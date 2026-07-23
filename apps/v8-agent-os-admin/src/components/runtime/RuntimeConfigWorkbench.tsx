@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { getRuntimeDisplayName, getRuntimeDisplayText, isCanonicalRuntimeKind, isLockedRuntimeKind } from "@/lib/runtime-admin";
 
 type RuntimePolicy = {
@@ -26,6 +27,8 @@ type RuntimeDescriptor = {
 type RuntimeSnapshot = {
     runtimes?: RuntimeDescriptor[];
 };
+
+const RUNTIME_CAPABILITIES_URL = "/api/runtime-capabilities";
 
 function resolveRuntimeToggleChecked(runtime: RuntimeDescriptor | null) {
     if (!runtime) return false;
@@ -49,18 +52,17 @@ export function RuntimeConfigWorkbench({
 }) {
     const t = useT();
     const { toast } = useToast();
-    const [loading, setLoading] = useState(true);
+    const cachedSnapshot = peekAdminJsonCache<RuntimeSnapshot>(RUNTIME_CAPABILITIES_URL);
+    const [loading, setLoading] = useState(() => !cachedSnapshot);
     const [saving, setSaving] = useState(false);
-    const [runtime, setRuntime] = useState<RuntimeDescriptor | null>(null);
+    const [runtime, setRuntime] = useState<RuntimeDescriptor | null>(
+        () => (cachedSnapshot?.runtimes || []).find((item) => item.kind === kind) || null,
+    );
 
-    const loadRuntime = useCallback(async () => {
-        setLoading(true);
+    const loadRuntime = useCallback(async (force = false) => {
+        if (!peekAdminJsonCache<RuntimeSnapshot>(RUNTIME_CAPABILITIES_URL)) setLoading(true);
         try {
-            const response = await fetch("/api/runtime-capabilities", { cache: "no-store" });
-            if (!response.ok) {
-                throw new Error(`Runtime capabilities failed: ${response.status}`);
-            }
-            const payload: RuntimeSnapshot = await response.json().catch(() => ({}));
+            const payload = await fetchAdminJson<RuntimeSnapshot>(RUNTIME_CAPABILITIES_URL, { force });
             const matched = (payload.runtimes || []).find((item) => item.kind === kind) || null;
             setRuntime(matched);
         } catch (error) {
@@ -108,7 +110,9 @@ export function RuntimeConfigWorkbench({
             if (!response.ok) {
                 throw new Error(String(payload?.detail || payload?.error || response.status));
             }
-            const matched = ((payload?.snapshot?.runtimes as RuntimeDescriptor[] | undefined) || []).find((item) => item.kind === kind) || null;
+            const snapshot = (payload?.snapshot || {}) as RuntimeSnapshot;
+            primeAdminJsonCache(RUNTIME_CAPABILITIES_URL, snapshot);
+            const matched = (snapshot.runtimes || []).find((item) => item.kind === kind) || null;
             setRuntime(matched);
         } catch (error) {
             console.error("Failed to save runtime config:", error);

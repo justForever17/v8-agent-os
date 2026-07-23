@@ -13,6 +13,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { tg } from "@/i18n/admin-legacy";
+import { fetchAdminJson, invalidateAdminJsonCache, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
 type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
 
@@ -50,6 +51,19 @@ interface ArtifactRecord {
 }
 
 const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "file"];
+const ARTIFACTS_URL = "/api/memory/artifacts?limit=160";
+const STORAGE_STATS_URL = "/api/storage-retention/stats";
+
+interface ArtifactListPayload {
+  artifacts?: ArtifactRecord[];
+}
+
+interface StorageStatsPayload {
+  budgetComponents?: { artifacts?: { maxBytes?: number; usedBytes?: number } };
+  config?: Record<string, unknown> & {
+    budgets?: Record<string, { maxBytes?: number; usedBytes?: number }>;
+  };
+}
 
 function bytesToMb(value?: number) {
   return Math.round(Number(value || 0) / 1024 / 1024);
@@ -108,15 +122,19 @@ export function ArtifactExplorerPanel() {
   const { toast } = useToast();
   const t = useT();
   const { locale } = useLocale();
-  const [loading, setLoading] = useState(true);
+  const cachedArtifactPayload = peekAdminJsonCache<ArtifactListPayload>(ARTIFACTS_URL);
+  const cachedArtifacts = Array.isArray(cachedArtifactPayload?.artifacts) ? cachedArtifactPayload.artifacts : [];
+  const cachedStats = peekAdminJsonCache<StorageStatsPayload>(STORAGE_STATS_URL);
+  const cachedBudget = cachedStats?.budgetComponents?.artifacts || cachedStats?.config?.budgets?.artifacts;
+  const [loading, setLoading] = useState(cachedArtifactPayload === undefined);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>(cachedArtifacts);
+  const [selectedId, setSelectedId] = useState<string | null>(() => getArtifactId(cachedArtifacts[0] || {}) || null);
+  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(cachedArtifacts[0] || null);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
-  const [artifactBudgetMb, setArtifactBudgetMb] = useState("");
-  const [artifactBudgetUsedMb, setArtifactBudgetUsedMb] = useState<number | null>(null);
+  const [artifactBudgetMb, setArtifactBudgetMb] = useState(() => cachedBudget?.maxBytes ? String(bytesToMb(cachedBudget.maxBytes)) : "");
+  const [artifactBudgetUsedMb, setArtifactBudgetUsedMb] = useState<number | null>(() => cachedBudget?.usedBytes != null ? bytesToMb(cachedBudget.usedBytes) : null);
 
   const artifactLabel = useCallback(
     (artifact: ArtifactRecord) => artifact.displayLabel || artifact.title || getArtifactId(artifact) || t("components.memory.ArtifactExplorerPanel.kd43de6cf"),
@@ -154,23 +172,21 @@ export function ArtifactExplorerPanel() {
     [t]
   );
 
-  const loadArtifacts = useCallback(async () => {
-    setLoading(true);
+  const loadArtifacts = useCallback(async (force = false) => {
+    if (peekAdminJsonCache<ArtifactListPayload>(ARTIFACTS_URL) === undefined) setLoading(true);
     try {
-      const response = await fetch("/api/memory/artifacts?limit=160", { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`Artifacts failed: ${response.status}`);
-      }
-      const data = await response.json();
-      const list = Array.isArray(data?.artifacts) ? data.artifacts : [];
+      const data = await fetchAdminJson<ArtifactListPayload>(ARTIFACTS_URL, { force });
+      const list = Array.isArray(data.artifacts) ? data.artifacts : [];
       setArtifacts(list);
-      if (!selectedId && list.length > 0) {
-        const firstId = getArtifactId(list[0]);
-        if (firstId) {
-          setSelectedId(firstId);
-          setSelectedArtifact(list[0]);
-        }
-      }
+      setSelectedId((currentId) => currentId && list.some((artifact) => getArtifactId(artifact) === currentId)
+        ? currentId
+        : getArtifactId(list[0] || {}) || null);
+      setSelectedArtifact((currentArtifact) => {
+        const currentId = currentArtifact ? getArtifactId(currentArtifact) : "";
+        return currentId && list.some((artifact) => getArtifactId(artifact) === currentId)
+          ? currentArtifact
+          : list[0] || null;
+      });
     } catch (error) {
       console.error("Failed to load artifacts:", error);
       toast({
@@ -181,12 +197,10 @@ export function ArtifactExplorerPanel() {
     } finally {
       setLoading(false);
     }
-  }, [selectedId, t, toast]);
+  }, [t, toast]);
 
-  const loadArtifactBudget = useCallback(async () => {
-    const response = await fetch("/api/storage-retention/stats", { cache: "no-store" });
-    if (!response.ok) return;
-    const payload = await response.json().catch(() => null);
+  const loadArtifactBudget = useCallback(async (force = false) => {
+    const payload = await fetchAdminJson<StorageStatsPayload>(STORAGE_STATS_URL, { force }).catch(() => null);
     const budget = payload?.budgetComponents?.artifacts || payload?.config?.budgets?.artifacts;
     if (budget?.maxBytes) setArtifactBudgetMb(String(bytesToMb(Number(budget.maxBytes))));
     if (budget?.usedBytes != null) setArtifactBudgetUsedMb(bytesToMb(Number(budget.usedBytes)));
@@ -194,8 +208,7 @@ export function ArtifactExplorerPanel() {
 
   const saveArtifactBudget = useCallback(async () => {
     if (!window.confirm(tg(t, "904b788f"))) return;
-    const statsResponse = await fetch("/api/storage-retention/stats", { cache: "no-store" });
-    const stats = await statsResponse.json().catch(() => null);
+    const stats = await fetchAdminJson<StorageStatsPayload>(STORAGE_STATS_URL, { force: true }).catch(() => null);
     const config = stats?.config || {};
     const budgets = { ...(config.budgets || {}) };
     budgets.artifacts = { ...(budgets.artifacts || {}), maxBytes: mbToBytes(artifactBudgetMb) };
@@ -216,7 +229,8 @@ export function ArtifactExplorerPanel() {
       title: t("components.memory.ArtifactExplorerPanel.k876e8c06"),
       description: "Artifact budget saved."
     });
-    await loadArtifactBudget();
+    invalidateAdminJsonCache("/api/storage-retention/");
+    await loadArtifactBudget(true);
   }, [artifactBudgetMb, loadArtifactBudget, t, toast]);
 
   const loadArtifactDetail = useCallback(async (artifactId: string, fallback?: ArtifactRecord) => {
@@ -299,7 +313,7 @@ export function ArtifactExplorerPanel() {
                             <FileImage className="h-5 w-5 text-primary" />
                             {t("components.memory.ArtifactExplorerPanel.title")}
                         </span>
-                        <Button variant="outline" size="sm" onClick={() => void loadArtifacts()}>
+                        <Button variant="outline" size="sm" onClick={() => void loadArtifacts(true)}>
                             <RefreshCw className="mr-2 h-4 w-4" />
                             {t("components.memory.ArtifactExplorerPanel.k876e8c06")}
                         </Button>

@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { tg, ti } from "@/i18n/admin-legacy";
+import { useAdminJsonResource } from "@/lib/use-admin-json-resource";
 type SummaryPayload = {
   pendingApprovals: number;
   recentRuns: number;
@@ -1445,29 +1446,17 @@ export default function OperationsCenterPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const runtime = useRuntimeOpsData();
-  const [summary, setSummary] = useState<SummaryPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const {
+    data: summary = null,
+    isLoading,
+    isRefreshing,
+    refresh: loadSummary,
+  } = useAdminJsonResource<SummaryPayload>("/api/operations-center/summary", { ttlMs: 15_000 });
+  const loading = isLoading || isRefreshing;
   const requestedTab = searchParams.get("tab") || "overview";
   const activeTab = VALID_TABS.has(requestedTab) ? requestedTab : "overview";
   const focusRunId = searchParams.get("focusRun");
   const focusSessionId = searchParams.get("focusSession");
-  const loadSummary = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch("/api/operations-center/summary", {
-        cache: "no-store"
-      });
-      const payload = await response.json().catch(() => null);
-      if (response.ok) {
-        setSummary(payload);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => {
-    void loadSummary();
-  }, []);
   const streamableHttpIssues = summary?.health?.mcp?.streamableHttpIssues || [];
   const degradedServers = summary?.health?.mcp?.degradedServers || [];
   const pendingApprovalMismatch = typeof summary?.pendingApprovals === "number" && summary.pendingApprovals !== runtime.approvals.length;

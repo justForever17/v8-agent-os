@@ -17,6 +17,7 @@ import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { useDebugMode } from "@/lib/useDebugMode";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
+import { fetchAdminJson, primeAdminJsonCache } from "@/lib/admin-client-cache";
 interface AIModel {
   id: string;
   modelRef?: string;
@@ -166,31 +167,27 @@ export default function SupervisorPage() {
     }
   };
   useEffect(() => {
-    Promise.all([fetch("/api/supervisor"), fetch("/api/models"), fetch("/api/mcp/tools"), fetch("/api/settings/vision-model")]).then(async ([supRes, modRes, mcpRes, visionRes]) => {
-      if (supRes.ok) {
-        const data = await supRes.json();
-        if (data.systemPrompt !== undefined) setSystemPrompt(data.systemPrompt);
-        setPromptBudgetDiagnostics(Array.isArray(data.prompt_budget_diagnostics) ? data.prompt_budget_diagnostics : []);
-        if (data.model_id) setSelectedModelId(data.model_id);else setSelectedModelId("default");
-        if (data.allowed_tools) setSelectedTools(data.allowed_tools);else setSelectedTools([]);
-        setLockedNativeTools(Array.isArray(data.locked_native_tools) ? data.locked_native_tools : []);
-        setRuntimeManagedTools(Array.isArray(data.runtime_managed_tools) ? data.runtime_managed_tools : []);
-        if (data.name) setName(data.name);
-        if (data.roleLabel) setRoleLabel(data.roleLabel);
-        if (data.avatar) setAvatar(data.avatar);
-        setSupervisorTemperature(data.supervisor_temperature === null || data.supervisor_temperature === undefined ? "" : String(data.supervisor_temperature));
-        setSubagentTemperature(data.subagent_temperature === null || data.subagent_temperature === undefined ? "" : String(data.subagent_temperature));
-      }
-      if (modRes.ok) setModels(await modRes.json());
-      if (mcpRes.ok) {
-        const data = await mcpRes.json();
-        setMcpTools(data.mcpTools || []);
-      }
-      if (visionRes.ok) {
-        const data = await visionRes.json();
-        setVisionModelId(data.value || "__empty__");
-        setVisionModelSource(typeof data.source === "string" ? data.source : null);
-      }
+    Promise.all([
+      fetchAdminJson<Record<string, unknown>>("/api/supervisor"),
+      fetchAdminJson<AIModel[]>("/api/models"),
+      fetchAdminJson<{ mcpTools?: MCPTool[] }>("/api/mcp/tools"),
+      fetchAdminJson<{ value?: string | null; source?: string | null }>("/api/settings/vision-model"),
+    ]).then(([data, modelData, mcpData, visionData]) => {
+      if (data.systemPrompt !== undefined) setSystemPrompt(String(data.systemPrompt || ""));
+      setPromptBudgetDiagnostics(Array.isArray(data.prompt_budget_diagnostics) ? data.prompt_budget_diagnostics as PromptBudgetDiagnostic[] : []);
+      setSelectedModelId(typeof data.model_id === "string" && data.model_id ? data.model_id : "default");
+      setSelectedTools(Array.isArray(data.allowed_tools) ? data.allowed_tools.map(String) : []);
+      setLockedNativeTools(Array.isArray(data.locked_native_tools) ? data.locked_native_tools as LockedTool[] : []);
+      setRuntimeManagedTools(Array.isArray(data.runtime_managed_tools) ? data.runtime_managed_tools as LockedTool[] : []);
+      if (typeof data.name === "string" && data.name) setName(data.name);
+      if (typeof data.roleLabel === "string" && data.roleLabel) setRoleLabel(data.roleLabel);
+      if (typeof data.avatar === "string") setAvatar(data.avatar);
+      setSupervisorTemperature(data.supervisor_temperature === null || data.supervisor_temperature === undefined ? "" : String(data.supervisor_temperature));
+      setSubagentTemperature(data.subagent_temperature === null || data.subagent_temperature === undefined ? "" : String(data.subagent_temperature));
+      setModels(Array.isArray(modelData) ? modelData : []);
+      setMcpTools(Array.isArray(mcpData.mcpTools) ? mcpData.mcpTools : []);
+      setVisionModelId(visionData.value || "__empty__");
+      setVisionModelSource(typeof visionData.source === "string" ? visionData.source : null);
       setIsLoading(false);
     }).catch(err => {
       console.error("Failed to load data", err);
@@ -256,6 +253,13 @@ export default function SupervisorPage() {
         });
         return;
       }
+      const savedData = await res.json().catch(() => null);
+      if (savedData && typeof savedData === "object") {
+        primeAdminJsonCache("/api/supervisor", savedData);
+        if (Array.isArray(savedData.prompt_budget_diagnostics)) {
+          setPromptBudgetDiagnostics(savedData.prompt_budget_diagnostics);
+        }
+      }
       supervisorSaved = true;
       const visionRes = await fetch("/api/settings/vision-model", {
         method: "POST",
@@ -277,14 +281,13 @@ export default function SupervisorPage() {
       }
       const visionData = await visionRes.json().catch(() => null);
       setVisionModelSource(typeof visionData?.source === "string" ? visionData.source : visionModelSource);
+      if (visionData && typeof visionData === "object") {
+        primeAdminJsonCache("/api/settings/vision-model", visionData);
+      }
       toast({
         title: t("app.admin.dashboard.supervisor.page.k86a2d3ea"),
         description: t("app.admin.dashboard.supervisor.page.k7b317041")
       });
-      const savedData = await fetch("/api/supervisor").then(response => response.json()).catch(() => null);
-      if (savedData && Array.isArray(savedData.prompt_budget_diagnostics)) {
-        setPromptBudgetDiagnostics(savedData.prompt_budget_diagnostics);
-      }
     } catch (error) {
       console.error("Failed to save supervisor prompt", error);
       toast({

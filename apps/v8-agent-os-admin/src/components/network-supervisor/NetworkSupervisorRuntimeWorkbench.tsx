@@ -17,6 +17,7 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import type { CanonicalConfigDiagnostics, LegacyPortNotice } from "@/lib/server/bridge-config";
 type PeerItem = {
     peerId: string;
@@ -459,6 +460,17 @@ const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", ws
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
 const EMPTY_NEIGHBOR_STATUS: NeighborStatus = { enabled: false, started: false, links: [], discovery: { candidateCount: 0, connectedCount: 0 } };
 const EMPTY_NEIGHBOR_TASK_SETTINGS: NeighborTaskSettings = { resultWakePolicy: "inbox" };
+const NETWORK_DATA_URLS = {
+    config: "/api/config-registry/network-supervisor-runtime",
+    status: "/api/network-supervisor/status",
+    peers: "/api/network-supervisor/peers",
+    tokens: "/api/network-supervisor/openai/tokens",
+    neighborStatus: "/api/network-supervisor/neighbors/status",
+    neighborCandidates: "/api/network-supervisor/neighbors/candidates",
+    neighborLinks: "/api/network-supervisor/neighbors/links",
+    neighborTaskSettings: "/api/network-supervisor/neighbors/task-settings",
+    neighborTasks: "/api/network-supervisor/neighbors/tasks?limit=20",
+} as const;
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 const joinCsv = (value?: string[]) => Array.isArray(value) ? value.join(", ") : "";
@@ -577,33 +589,43 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const t = useT();
     const { locale } = useLocale();
     const { toast } = useToast();
-    const [config, setConfig] = React.useState<RuntimeConfig>(DEFAULT_CONFIG);
-    const [status, setStatus] = React.useState<RuntimeStatus>(EMPTY_STATUS);
-    const [peers, setPeers] = React.useState<PeersPayload>(EMPTY_PEERS);
-    const [neighborStatus, setNeighborStatus] = React.useState<NeighborStatus>(EMPTY_NEIGHBOR_STATUS);
-    const [neighborCandidates, setNeighborCandidates] = React.useState<NeighborCandidate[]>([]);
-    const [neighborLinks, setNeighborLinks] = React.useState<NeighborLink[]>([]);
-    const [selectedNeighborLinkId, setSelectedNeighborLinkId] = React.useState("");
+    const cachedConfig = peekAdminJsonCache<{ data?: Partial<RuntimeConfig> }>(NETWORK_DATA_URLS.config);
+    const cachedStatus = peekAdminJsonCache<unknown>(NETWORK_DATA_URLS.status);
+    const cachedPeers = peekAdminJsonCache<unknown>(NETWORK_DATA_URLS.peers);
+    const cachedTokens = peekAdminJsonCache<{ items?: OpenAICompatToken[] }>(NETWORK_DATA_URLS.tokens);
+    const cachedNeighborStatus = peekAdminJsonCache<NeighborStatus>(NETWORK_DATA_URLS.neighborStatus);
+    const cachedNeighborCandidates = peekAdminJsonCache<{ items?: NeighborCandidate[] }>(NETWORK_DATA_URLS.neighborCandidates);
+    const cachedNeighborLinks = peekAdminJsonCache<{ items?: NeighborLink[] }>(NETWORK_DATA_URLS.neighborLinks);
+    const cachedNeighborTaskSettings = peekAdminJsonCache<Partial<NeighborTaskSettings>>(NETWORK_DATA_URLS.neighborTaskSettings);
+    const cachedNeighborTasks = peekAdminJsonCache<{ items?: NeighborTaskItem[] }>(NETWORK_DATA_URLS.neighborTasks);
+    const initialNeighborLinks = Array.isArray(cachedNeighborLinks?.items) ? cachedNeighborLinks.items : [];
+    const [config, setConfig] = React.useState<RuntimeConfig>(() => mergeConfig(cachedConfig?.data));
+    const [status, setStatus] = React.useState<RuntimeStatus>(() => cachedStatus === undefined ? EMPTY_STATUS : normalizeStatus(cachedStatus));
+    const [peers, setPeers] = React.useState<PeersPayload>(() => cachedPeers === undefined ? EMPTY_PEERS : normalizePeers(cachedPeers));
+    const [neighborStatus, setNeighborStatus] = React.useState<NeighborStatus>(cachedNeighborStatus || EMPTY_NEIGHBOR_STATUS);
+    const [neighborCandidates, setNeighborCandidates] = React.useState<NeighborCandidate[]>(() => Array.isArray(cachedNeighborCandidates?.items) ? cachedNeighborCandidates.items : []);
+    const [neighborLinks, setNeighborLinks] = React.useState<NeighborLink[]>(initialNeighborLinks);
+    const [selectedNeighborLinkId, setSelectedNeighborLinkId] = React.useState(initialNeighborLinks[0]?.linkId || "");
     const [pairingInvite, setPairingInvite] = React.useState<{ code: string; expiresAt: string; inviteId: string } | null>(null);
     const [pairingPeerId, setPairingPeerId] = React.useState("");
     const [pairingCode, setPairingCode] = React.useState("");
     const [neighborTimeline, setNeighborTimeline] = React.useState<NeighborMessage[]>([]);
     const [neighborMessage, setNeighborMessage] = React.useState("");
     const [neighborBusy, setNeighborBusy] = React.useState("");
-    const [neighborTaskSettings, setNeighborTaskSettings] = React.useState<NeighborTaskSettings>(EMPTY_NEIGHBOR_TASK_SETTINGS);
-    const [neighborTasks, setNeighborTasks] = React.useState<NeighborTaskItem[]>([]);
+    const [neighborTaskSettings, setNeighborTaskSettings] = React.useState<NeighborTaskSettings>(() => ({ resultWakePolicy: cachedNeighborTaskSettings?.resultWakePolicy === "per_result" ? "per_result" : "inbox" }));
+    const [neighborTasks, setNeighborTasks] = React.useState<NeighborTaskItem[]>(() => Array.isArray(cachedNeighborTasks?.items) ? cachedNeighborTasks.items : []);
     const [neighborTaskBody, setNeighborTaskBody] = React.useState("");
     const [neighborTaskCapabilities, setNeighborTaskCapabilities] = React.useState("");
     const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion"; capabilityTags: string; description: string }>({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
     const [peerForm, setPeerForm] = React.useState<PeerForm>(EMPTY_PEER_FORM);
     const [diag, setDiag] = React.useState<DiagState>(EMPTY_DIAG);
-    const [loading, setLoading] = React.useState(true);
+    const [loading, setLoading] = React.useState(cachedConfig === undefined || cachedStatus === undefined || cachedPeers === undefined);
     const [loadError, setLoadError] = React.useState<string | null>(null);
     const [guideOpen, setGuideOpen] = React.useState(false);
     const [docContent, setDocContent] = React.useState("");
     const [savingConfig, setSavingConfig] = React.useState(false);
     const [savingPeer, setSavingPeer] = React.useState(false);
-    const [tokens, setTokens] = React.useState<OpenAICompatToken[]>([]);
+    const [tokens, setTokens] = React.useState<OpenAICompatToken[]>(() => Array.isArray(cachedTokens?.items) ? cachedTokens.items : []);
     const [tokenLabel, setTokenLabel] = React.useState("");
     const [tokenBusy, setTokenBusy] = React.useState(false);
     const [adminOrigin, setAdminOrigin] = React.useState("http://localhost:9528");
@@ -837,64 +859,36 @@ env:
             });
         }
     }, [locale, t, toast]);
-    const loadAll = React.useCallback(async () => {
-        setLoading(true);
+    const loadAll = React.useCallback(async (force = false) => {
+        if (peekAdminJsonCache(NETWORK_DATA_URLS.config) === undefined
+            || peekAdminJsonCache(NETWORK_DATA_URLS.status) === undefined
+            || peekAdminJsonCache(NETWORK_DATA_URLS.peers) === undefined) {
+            setLoading(true);
+        }
         setLoadError(null);
         try {
-            const [configRes, statusRes, peersRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
-                fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
-                fetch("/api/network-supervisor/status", { cache: "no-store" }),
-                fetch("/api/network-supervisor/peers", { cache: "no-store" }),
-                fetch("/api/network-supervisor/openai/tokens", { cache: "no-store" }),
-                fetch("/api/network-supervisor/neighbors/status", { cache: "no-store" }),
-                fetch("/api/network-supervisor/neighbors/candidates", { cache: "no-store" }),
-                fetch("/api/network-supervisor/neighbors/links", { cache: "no-store" }),
-                fetch("/api/network-supervisor/neighbors/task-settings", { cache: "no-store" }),
-                fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" }),
-            ]);
             const [configData, statusData, peersData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
-                configRes.json().catch(() => ({})),
-                statusRes.json().catch(() => ({})),
-                peersRes.json().catch(() => ({})),
-                tokenRes.json().catch(() => ({})),
-                neighborStatusRes.json().catch(() => ({})),
-                neighborCandidatesRes.json().catch(() => ({})),
-                neighborLinksRes.json().catch(() => ({})),
-                neighborTaskSettingsRes.json().catch(() => ({})),
-                neighborTasksRes.json().catch(() => ({})),
+                fetchAdminJson<{ data?: Partial<RuntimeConfig> }>(NETWORK_DATA_URLS.config, { force }),
+                fetchAdminJson<unknown>(NETWORK_DATA_URLS.status, { force }),
+                fetchAdminJson<unknown>(NETWORK_DATA_URLS.peers, { force }),
+                fetchAdminJson<{ items?: OpenAICompatToken[] }>(NETWORK_DATA_URLS.tokens, { force }),
+                fetchAdminJson<NeighborStatus>(NETWORK_DATA_URLS.neighborStatus, { force }),
+                fetchAdminJson<{ items?: NeighborCandidate[] }>(NETWORK_DATA_URLS.neighborCandidates, { force }),
+                fetchAdminJson<{ items?: NeighborLink[] }>(NETWORK_DATA_URLS.neighborLinks, { force }),
+                fetchAdminJson<Partial<NeighborTaskSettings>>(NETWORK_DATA_URLS.neighborTaskSettings, { force }),
+                fetchAdminJson<{ items?: NeighborTaskItem[] }>(NETWORK_DATA_URLS.neighborTasks, { force }),
             ]);
-            if (!configRes.ok)
-                throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
-            if (!statusRes.ok)
-                throw new Error(detail(statusData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
-            if (!peersRes.ok)
-                throw new Error(detail(peersData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
-            if (!tokenRes.ok)
-                throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
-            if (!neighborStatusRes.ok)
-                throw new Error(detail(neighborStatusData, neighborCopy.errorStatusRead));
-            if (!neighborCandidatesRes.ok)
-                throw new Error(detail(neighborCandidatesData, neighborCopy.errorCandidatesRead));
-            if (!neighborLinksRes.ok)
-                throw new Error(detail(neighborLinksData, neighborCopy.errorLinksRead));
-            if (!neighborTaskSettingsRes.ok)
-                throw new Error(detail(neighborTaskSettingsData, neighborCopy.errorTaskSettingsRead));
-            if (!neighborTasksRes.ok)
-                throw new Error(detail(neighborTasksData, neighborCopy.errorTasksRead));
-            setConfig(mergeConfig((configData as {
-                data?: Partial<RuntimeConfig>;
-            }).data));
+            setConfig(mergeConfig(configData.data));
             setStatus(normalizeStatus(statusData));
             setPeers(normalizePeers(peersData));
-            setTokens(Array.isArray((tokenData as { items?: OpenAICompatToken[] }).items) ? (tokenData as { items: OpenAICompatToken[] }).items : []);
+            setTokens(Array.isArray(tokenData.items) ? tokenData.items : []);
             setNeighborStatus((neighborStatusData && typeof neighborStatusData === "object" ? neighborStatusData : EMPTY_NEIGHBOR_STATUS) as NeighborStatus);
-            setNeighborCandidates(Array.isArray((neighborCandidatesData as { items?: NeighborCandidate[] }).items) ? (neighborCandidatesData as { items: NeighborCandidate[] }).items : []);
-            const nextLinks = Array.isArray((neighborLinksData as { items?: NeighborLink[] }).items) ? (neighborLinksData as { items: NeighborLink[] }).items : [];
+            setNeighborCandidates(Array.isArray(neighborCandidatesData.items) ? neighborCandidatesData.items : []);
+            const nextLinks = Array.isArray(neighborLinksData.items) ? neighborLinksData.items : [];
             setNeighborLinks(nextLinks);
             setSelectedNeighborLinkId((prev) => prev && nextLinks.some((item) => item.linkId === prev) ? prev : (nextLinks[0]?.linkId || ""));
-            const taskSettings = neighborTaskSettingsData as Partial<NeighborTaskSettings>;
-            setNeighborTaskSettings({ resultWakePolicy: taskSettings.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
-            setNeighborTasks(Array.isArray((neighborTasksData as { items?: NeighborTaskItem[] }).items) ? (neighborTasksData as { items: NeighborTaskItem[] }).items : []);
+            setNeighborTaskSettings({ resultWakePolicy: neighborTaskSettingsData.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
+            setNeighborTasks(Array.isArray(neighborTasksData.items) ? neighborTasksData.items : []);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k105089b2");
@@ -949,7 +943,7 @@ env:
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorSwitch));
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorSwitch, description: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -992,7 +986,7 @@ env:
                 throw new Error(detail(payload, neighborCopy.errorPair));
             setPairingCode("");
             setPairingPeerId("");
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorPair, description: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -1012,7 +1006,7 @@ env:
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorSaveLink));
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorSaveLink, description: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -1026,7 +1020,7 @@ env:
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(detail(payload, neighborCopy.errorRevoke));
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorRevoke, description: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -1068,7 +1062,7 @@ env:
             setNeighborTaskSettings({ resultWakePolicy: payload.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
         } catch (error) {
             toast({ variant: "destructive", title: neighborCopy.errorTaskSettingsSave, description: error instanceof Error ? error.message : String(error) });
-            await loadAll();
+            await loadAll(true);
         }
     }, [loadAll, neighborCopy, toast]);
     const dispatchNeighborTask = React.useCallback(async (targetMode: "selected" | "all") => {
@@ -1192,7 +1186,7 @@ env:
                 title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreated"),
                 description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCreatedDescription"),
             });
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({
                 variant: "destructive",
@@ -1217,7 +1211,7 @@ env:
                 title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeleted"),
                 description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDeletedDescription"),
             });
-            await loadAll();
+            await loadAll(true);
         } catch (error) {
             toast({
                 variant: "destructive",
@@ -1282,11 +1276,12 @@ env:
             setConfig(mergeConfig((payload as {
                 data?: Partial<RuntimeConfig>;
             }).data));
+            primeAdminJsonCache(NETWORK_DATA_URLS.config, payload);
             toast({
                 title: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k96aea0e5"),
                 description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k059b20dc"),
             });
-            await loadAll();
+            await loadAll(true);
         }
         catch (error) {
             toast({
@@ -1348,7 +1343,7 @@ env:
                 description: t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k3112734f"),
             });
             setPeerForm((prev) => ({ ...prev, peerToken: "" }));
-            await loadAll();
+            await loadAll(true);
         }
         catch (error) {
             toast({
@@ -1380,7 +1375,7 @@ env:
             if (peerForm.peerId === peerId) {
                 setPeerForm(EMPTY_PEER_FORM);
             }
-            await loadAll();
+            await loadAll(true);
         }
         catch (error) {
             toast({
@@ -1427,7 +1422,7 @@ env:
                     ? "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k75ac8c0a"
                     : "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c12cef1"),
             });
-            await loadAll();
+            await loadAll(true);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf64b0727");
@@ -1444,7 +1439,7 @@ env:
     }, [diag.note, diag.peerId, diag.task, loadAll, t, toast]);
     return (<AdminPageShell>
             <AdminPageHeader title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k45a604ec"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.description"} badges={["components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kcd4380d3", "components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k959f4745"]} actions={<>
-                        <Button variant="outline" onClick={() => void loadAll()} disabled={loading}>
+                        <Button variant="outline" onClick={() => void loadAll(true)} disabled={loading}>
                             {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k876e8c06")}
                         </Button>
                         <Button variant="outline" onClick={() => void loadDocumentation()}>
@@ -1459,7 +1454,7 @@ env:
 
             {loadError ? (<ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k65ed1d75"} description={loadError} className="border-red-200">
                     <div className="flex items-center justify-end">
-                        <Button onClick={() => void loadAll()}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k3a3e39b1")}</Button>
+                        <Button onClick={() => void loadAll(true)}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k3a3e39b1")}</Button>
                     </div>
                 </ConfigCard>) : null}
 

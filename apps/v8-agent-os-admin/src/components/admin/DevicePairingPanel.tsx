@@ -8,6 +8,7 @@ import QRCode from "qrcode";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
 type PairingTicket = {
     pairingId: string;
@@ -26,25 +27,28 @@ type DeviceSession = {
     expiresAt: string;
 };
 
+type DeviceSessionsPayload = { devices?: DeviceSession[] };
+const DEVICE_SESSIONS_URL = "/api/client/devices";
+
 export function DevicePairingPanel() {
     const t = useT();
+    const cachedDevices = peekAdminJsonCache<DeviceSessionsPayload>(DEVICE_SESSIONS_URL);
     const [ticket, setTicket] = useState<PairingTicket | null>(null);
     const [busy, setBusy] = useState(false);
     const [copied, setCopied] = useState(false);
     const [error, setError] = useState("");
-    const [devices, setDevices] = useState<DeviceSession[]>([]);
-    const [devicesBusy, setDevicesBusy] = useState(true);
+    const [devices, setDevices] = useState<DeviceSession[]>(() => cachedDevices?.devices || []);
+    const [devicesBusy, setDevicesBusy] = useState(() => !cachedDevices);
     const [revokingId, setRevokingId] = useState("");
     const [qrDataUrl, setQrDataUrl] = useState("");
 
-    const loadDevices = useCallback(async () => {
-        setDevicesBusy(true);
+    const loadDevices = useCallback(async (force = false) => {
+        if (!peekAdminJsonCache<DeviceSessionsPayload>(DEVICE_SESSIONS_URL)) setDevicesBusy(true);
         try {
-            const response = await fetch("/api/client/devices", { cache: "no-store" });
-            const payload = await response.json().catch(() => ({}));
-            setDevices(response.ok && Array.isArray(payload?.devices) ? payload.devices : []);
+            const payload = await fetchAdminJson<DeviceSessionsPayload>(DEVICE_SESSIONS_URL, { force });
+            setDevices(Array.isArray(payload?.devices) ? payload.devices : []);
         } catch {
-            setDevices([]);
+            // Preserve the last known device list while the control plane recovers.
         } finally {
             setDevicesBusy(false);
         }
@@ -121,7 +125,7 @@ export function DevicePairingPanel() {
                 const payload = await response.json().catch(() => ({}));
                 throw new Error(String(payload?.error || t("components.admin.DevicePairingPanel.revokeFailed")));
             }
-            await loadDevices();
+            await loadDevices(true);
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : t("components.admin.DevicePairingPanel.revokeFailed"));
         } finally {

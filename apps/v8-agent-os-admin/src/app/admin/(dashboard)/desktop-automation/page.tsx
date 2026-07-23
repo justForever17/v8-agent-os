@@ -16,8 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
 type ModelOption = {
     id: string;
@@ -104,19 +109,35 @@ type ComputerUseAvailability = {
 
 export default function DesktopAutomationPage() {
     const t = useT();
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<ComputerUseData> | null>(null);
-    const [models, setModels] = useState<ModelOption[]>([]);
-    const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(null);
-    const [availability, setAvailability] = useState<ComputerUseAvailability | null>(null);
+    const [initialState] = useState(() => {
+        const envelope = peekConfigDomain<ComputerUseData>("computer-use") ?? null;
+        const models = peekAdminJsonCache<ModelOption[]>("/api/models");
+        const capabilitySnapshot = peekAdminJsonCache<Record<string, unknown>>("/api/runtime-capabilities");
+        const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
+        const featurePacks = peekAdminJsonCache<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs");
+        const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
+        return {
+            envelope,
+            models: Array.isArray(models) ? models : [],
+            runtimeCapability: runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null,
+            availability: peekAdminJsonCache<ComputerUseAvailability>("/api/computer-use/availability") ?? null,
+            featurePackMissing: featurePacks !== undefined
+                ? packs.find((item) => item.id === "computer_use_desktop")?.status !== "installed"
+                : false,
+        };
+    });
+    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<ComputerUseData> | null>(initialState.envelope);
+    const [models, setModels] = useState<ModelOption[]>(initialState.models);
+    const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(initialState.runtimeCapability);
+    const [availability, setAvailability] = useState<ComputerUseAvailability | null>(initialState.availability);
     const [availabilityRefreshKey, setAvailabilityRefreshKey] = useState(0);
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(!initialState.envelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
-    const [featurePackMissing, setFeaturePackMissing] = useState(false);
+    const [featurePackMissing, setFeaturePackMissing] = useState(initialState.featurePackMissing);
 
     const loadData = async (force = false) => {
-        setLoading(true);
         try {
             const [config, modelsResponse, capabilitySnapshot, featurePacks] = await Promise.all([
                 fetchConfigDomain<ComputerUseData>("computer-use", { force }),

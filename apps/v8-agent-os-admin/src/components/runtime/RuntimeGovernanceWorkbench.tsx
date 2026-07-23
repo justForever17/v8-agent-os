@@ -16,6 +16,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { ApprovalRecord, RunRecord, formatRunStatusLabel, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayText, isLockedRuntimeKind } from "@/lib/runtime-admin";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 type RuntimePolicy = {
   enabled?: boolean;
@@ -137,6 +138,12 @@ type MemoryDashboard = {
   };
   workflows?: Record<string, unknown>;
 };
+const RUNTIME_CAPABILITIES_URL = "/api/runtime-capabilities";
+const RUNS_URL = "/api/runs?limit=40";
+const APPROVALS_URL = "/api/approvals?status=pending";
+const CONVERSATIONS_URL = "/api/conversations";
+const MEMORY_DASHBOARD_URL = "/api/memory/dashboard";
+const MEMORY_AUDIT_URL = "/api/audit/logs?source_type=MEMORY&limit=50";
 const PRESET_LABELS: Record<RuntimePresetId, {
   title: string;
   description: string;
@@ -244,24 +251,30 @@ export function RuntimeGovernanceWorkbench({
     toast
   } = useToast();
   const t = useT();
-  const [loading, setLoading] = useState(true);
+  const cachedSnapshot = peekAdminJsonCache<CapabilitySnapshot>(RUNTIME_CAPABILITIES_URL);
+  const cachedRuns = peekAdminJsonCache<{ runs?: RunRecord[] }>(RUNS_URL);
+  const cachedApprovals = peekAdminJsonCache<{ approvals?: ApprovalRecord[] }>(APPROVALS_URL);
+  const cachedSessions = peekAdminJsonCache<SessionSummary[]>(CONVERSATIONS_URL);
+  const cachedMemory = peekAdminJsonCache<MemoryDashboard>(MEMORY_DASHBOARD_URL);
+  const cachedAudit = peekAdminJsonCache<{ logs?: MemoryAuditLog[] }>(MEMORY_AUDIT_URL);
+  const [loading, setLoading] = useState(!cachedSnapshot);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [query, setQuery] = useState(tg(t, "f8c5ad8f"));
-  const [snapshot, setSnapshot] = useState<CapabilitySnapshot>({
+  const [query, setQuery] = useState("");
+  const [snapshot, setSnapshot] = useState<CapabilitySnapshot>(cachedSnapshot || {
     count: 0,
     recommendations: [],
     runtimes: []
   });
   const [draftPolicies, setDraftPolicies] = useState<Record<string, Required<RuntimePolicy>>>({});
-  const [runs, setRuns] = useState<RunRecord[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [runs, setRuns] = useState<RunRecord[]>(Array.isArray(cachedRuns?.runs) ? cachedRuns.runs : []);
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>(Array.isArray(cachedApprovals?.approvals) ? cachedApprovals.approvals : []);
+  const [sessions, setSessions] = useState<SessionSummary[]>(Array.isArray(cachedSessions) ? cachedSessions : []);
   const [activeRuntimeKind, setActiveRuntimeKind] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [memoryDashboard, setMemoryDashboard] = useState<MemoryDashboard | null>(null);
-  const [memoryAuditLogs, setMemoryAuditLogs] = useState<MemoryAuditLog[]>([]);
+  const [memoryDashboard, setMemoryDashboard] = useState<MemoryDashboard | null>(cachedMemory || null);
+  const [memoryAuditLogs, setMemoryAuditLogs] = useState<MemoryAuditLog[]>(Array.isArray(cachedAudit?.logs) ? cachedAudit.logs : []);
   const runtimes = useMemo(() => snapshot.runtimes || [], [snapshot.runtimes]);
   const recommendations = useMemo(() => snapshot.recommendations || [], [snapshot.recommendations]);
   const runtimeNameMap = useMemo(() => new Map(runtimes.map(item => [item.kind, item.displayName] as const)), [runtimes]);
@@ -385,16 +398,12 @@ export function RuntimeGovernanceWorkbench({
   const filteredRecoverableSessions = useMemo(() => activeRuntimeKind ? recoverableSessions.filter(session => (session.workflow?.ownerRuntime || "chat") === activeRuntimeKind) : recoverableSessions, [activeRuntimeKind, recoverableSessions]);
   const memoryExtractionSummary = memoryDashboard?.extractions?.summary || {};
   const memoryMaintenanceSummary = memoryDashboard?.maintenance?.summary || {};
-  const loadSnapshot = useCallback(async (nextQuery?: string) => {
+  const loadSnapshot = useCallback(async (nextQuery?: string, force = false) => {
     const suffix = nextQuery?.trim() ? `?query=${encodeURIComponent(nextQuery.trim())}` : "";
-    const res = await fetch(`/api/runtime-capabilities${suffix}`, {
-      cache: "no-store"
+    const payload = await fetchAdminJson<CapabilitySnapshot>(`${RUNTIME_CAPABILITIES_URL}${suffix}`, {
+      force,
+      ttlMs: 15_000
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.detail || data?.error || t("components.runtime.RuntimeGovernanceWorkbench.k4a84157b"));
-    }
-    const payload = data as CapabilitySnapshot;
     setSnapshot(payload);
     setDraftPolicies(current => {
       const next = {
@@ -405,32 +414,23 @@ export function RuntimeGovernanceWorkbench({
       }
       return next;
     });
-  }, [t]);
-  const loadObservability = useCallback(async () => {
-    const [runsRes, approvalsRes, sessionsRes, memoryRes, auditRes] = await Promise.all([fetch("/api/runs?limit=40", {
-      cache: "no-store"
-    }), fetch("/api/approvals?status=pending", {
-      cache: "no-store"
-    }), fetch("/api/conversations", {
-      cache: "no-store"
-    }), fetch("/api/memory/dashboard", {
-      cache: "no-store"
-    }), fetch("/api/audit/logs?source_type=MEMORY&limit=50", {
-      cache: "no-store"
-    })]);
-    const runsData = runsRes.ok ? await runsRes.json().catch(() => ({})) : {};
-    const approvalsData = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
-    const sessionsData = sessionsRes.ok ? await sessionsRes.json().catch(() => []) : [];
-    const memoryData = memoryRes.ok ? await memoryRes.json().catch(() => ({})) : {};
-    const auditData = auditRes.ok ? await auditRes.json().catch(() => ({})) : {};
+  }, []);
+  const loadObservability = useCallback(async (force = false) => {
+    const [runsData, approvalsData, sessionsData, memoryData, auditData] = await Promise.all([
+      fetchAdminJson<{ runs?: RunRecord[] }>(RUNS_URL, { force, ttlMs: 10_000 }),
+      fetchAdminJson<{ approvals?: ApprovalRecord[] }>(APPROVALS_URL, { force, ttlMs: 10_000 }),
+      fetchAdminJson<SessionSummary[]>(CONVERSATIONS_URL, { force, ttlMs: 10_000 }),
+      fetchAdminJson<MemoryDashboard>(MEMORY_DASHBOARD_URL, { force, ttlMs: 15_000 }),
+      fetchAdminJson<{ logs?: MemoryAuditLog[] }>(MEMORY_AUDIT_URL, { force, ttlMs: 15_000 })
+    ]);
     setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
     setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
     setSessions(Array.isArray(sessionsData) ? sessionsData : []);
     setMemoryDashboard(memoryData || null);
     setMemoryAuditLogs(Array.isArray(auditData?.logs) ? auditData.logs : []);
   }, []);
-  const loadAll = useCallback(async (nextQuery?: string) => {
-    await Promise.all([loadSnapshot(nextQuery), loadObservability()]);
+  const loadAll = useCallback(async (nextQuery?: string, force = false) => {
+    await Promise.all([loadSnapshot(nextQuery, force), loadObservability(force)]);
   }, [loadObservability, loadSnapshot]);
   const inspectSession = useCallback(async (sessionId: string) => {
     setSelectedSessionId(sessionId);
@@ -457,7 +457,7 @@ export function RuntimeGovernanceWorkbench({
   useEffect(() => {
     void (async () => {
       try {
-        await loadAll(tg(t, "f8c5ad8f"));
+        await loadAll();
       } catch (error) {
         toast({
           variant: "destructive",
@@ -481,7 +481,7 @@ export function RuntimeGovernanceWorkbench({
   const handleSearch = async () => {
     setBusyKey("query");
     try {
-      await loadSnapshot(query);
+      await loadSnapshot(query, true);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -495,7 +495,7 @@ export function RuntimeGovernanceWorkbench({
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      await loadAll(query);
+      await loadAll(query, true);
       if (selectedSessionId) {
         await inspectSession(selectedSessionId);
       }
@@ -535,7 +535,7 @@ export function RuntimeGovernanceWorkbench({
           value1: kind
         })
       });
-      await loadAll(query);
+      await loadAll(query, true);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -560,7 +560,7 @@ export function RuntimeGovernanceWorkbench({
           value1: kind
         })
       });
-      await loadAll(query);
+      await loadAll(query, true);
     } catch (error) {
       toast({
         variant: "destructive",
@@ -598,7 +598,7 @@ export function RuntimeGovernanceWorkbench({
         title: "components.runtime.RuntimeGovernanceWorkbench.kbd7964c6",
         description: PRESET_LABELS[preset].title
       });
-      await loadAll(query);
+      await loadAll(query, true);
     } catch (error) {
       toast({
         variant: "destructive",

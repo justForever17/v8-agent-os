@@ -1,11 +1,11 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
 import { Activity, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import { useAdminJsonResource } from "@/lib/use-admin-json-resource";
 import { formatLocalDateTime } from "@/lib/time";
 import { useT } from "@/components/providers/LocaleProvider";
 import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCards";
@@ -213,27 +213,22 @@ function promptCacheHoverLines(
 export default function DashboardPage() {
     const t = useT();
     const [debugMode] = useDebugMode();
-    const [data, setData] = useState<DashboardData>(EMPTY_DATA);
-    const [telemetryError, setTelemetryError] = useState("");
-    const [loading, setLoading] = useState(true);
+    const statsResource = useAdminJsonResource<unknown>(
+        `/api/stats?days=${DASHBOARD_WINDOW_DAYS}`,
+        { ttlMs: 10_000 },
+    );
+    const normalized = useMemo(
+        () => statsResource.data === undefined
+            ? { data: EMPTY_DATA }
+            : normalizeDashboardData(statsResource.data),
+        [statsResource.data],
+    );
+    const data = normalized.data;
+    const telemetryError = statsResource.error || normalized.error || "";
 
-    useEffect(() => {
-        fetchAdminJson(`/api/stats?days=${DASHBOARD_WINDOW_DAYS}`, { ttlMs: 10_000 })
-            .then((payload) => {
-                const normalized = normalizeDashboardData(payload);
-                setData(normalized.data);
-                setTelemetryError(normalized.error ? String(normalized.error) : "");
-                setLoading(false);
-            })
-            .catch(err => {
-                console.error(err);
-                setData(EMPTY_DATA);
-                setTelemetryError(String(err?.message || err || "telemetry_fetch_failed"));
-                setLoading(false);
-            });
-    }, []);
-
-    if (loading) return <div className="flex h-96 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+    if (statsResource.isLoading) {
+        return <div className="flex h-96 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+    }
 
     return (
         <div className="space-y-8">

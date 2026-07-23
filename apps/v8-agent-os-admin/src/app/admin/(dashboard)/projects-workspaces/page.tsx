@@ -13,7 +13,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
 
 type ProjectsData = {
@@ -220,11 +225,22 @@ export default function ProjectsWorkspacesPage() {
     const t = useT();
     const { toast } = useToast();
 
-    const [projectsEnvelope, setProjectsEnvelope] = useState<ConfigRegistryEnvelope<ProjectsData> | null>(null);
-    const [workspaceEnvelope, setWorkspaceEnvelope] = useState<ConfigRegistryEnvelope<WorkspaceData> | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [initialState] = useState(() => {
+        const cachedProjects = peekConfigDomain<ProjectsData>("projects") ?? null;
+        const workspace = peekConfigDomain<WorkspaceData>("workspace") ?? null;
+        const projects = cachedProjects ? {
+            ...cachedProjects,
+            data: {
+                ...cachedProjects.data,
+                projects: sortProjects(Array.isArray(cachedProjects.data.projects) ? cachedProjects.data.projects : []),
+            },
+        } : null;
+        return { projects, workspace };
+    });
+    const [projectsEnvelope, setProjectsEnvelope] = useState<ConfigRegistryEnvelope<ProjectsData> | null>(initialState.projects);
+    const [workspaceEnvelope, setWorkspaceEnvelope] = useState<ConfigRegistryEnvelope<WorkspaceData> | null>(initialState.workspace);
 
-    const [workspaceDraft, setWorkspaceDraft] = useState("");
+    const [workspaceDraft, setWorkspaceDraft] = useState(() => String(initialState.workspace?.data.agent_workspace_path || ""));
     const [workspaceSaving, setWorkspaceSaving] = useState(false);
     const [workspaceSaved, setWorkspaceSaved] = useState(false);
     const [defaultRules, setDefaultRules] = useState<WorkspaceRulesPayload | null>(null);
@@ -240,29 +256,26 @@ export default function ProjectsWorkspacesPage() {
     const [newProjectPath, setNewProjectPath] = useState("");
     const [creatingProject, setCreatingProject] = useState(false);
     const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
-    const [projectEditors, setProjectEditors] = useState<Record<string, ProjectEditorState>>({});
+    const [projectEditors, setProjectEditors] = useState<Record<string, ProjectEditorState>>(() => (
+        buildProjectEditors(initialState.projects?.data.projects || [], {})
+    ));
 
     const load = useCallback(async () => {
-        setLoading(true);
-        try {
-            const [projects, workspace] = await Promise.all([
-                fetchConfigDomain<ProjectsData>("projects"),
-                fetchConfigDomain<WorkspaceData>("workspace"),
-            ]);
-            const sortedProjects = sortProjects(Array.isArray(projects.data.projects) ? projects.data.projects : []);
-            setProjectsEnvelope({
-                ...projects,
-                data: {
-                    ...projects.data,
-                    projects: sortedProjects,
-                },
-            });
-            setWorkspaceEnvelope(workspace);
-            setWorkspaceDraft(String(workspace.data.agent_workspace_path || ""));
-            setProjectEditors((previous) => buildProjectEditors(sortedProjects, previous));
-        } finally {
-            setLoading(false);
-        }
+        const [projects, workspace] = await Promise.all([
+            fetchConfigDomain<ProjectsData>("projects"),
+            fetchConfigDomain<WorkspaceData>("workspace"),
+        ]);
+        const sortedProjects = sortProjects(Array.isArray(projects.data.projects) ? projects.data.projects : []);
+        setProjectsEnvelope({
+            ...projects,
+            data: {
+                ...projects.data,
+                projects: sortedProjects,
+            },
+        });
+        setWorkspaceEnvelope(workspace);
+        setWorkspaceDraft(String(workspace.data.agent_workspace_path || ""));
+        setProjectEditors((previous) => buildProjectEditors(sortedProjects, previous));
     }, []);
 
     useEffect(() => {
@@ -822,7 +835,7 @@ export default function ProjectsWorkspacesPage() {
     const projects = projectsEnvelope?.data.projects || [];
     const defaultWorkspaceStatus = defaultRules?.workspaceStatus || workspaceEnvelope?.data.pathStatus || {};
 
-    if (loading || !projectsEnvelope || !workspaceEnvelope) {
+    if (!projectsEnvelope || !workspaceEnvelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />

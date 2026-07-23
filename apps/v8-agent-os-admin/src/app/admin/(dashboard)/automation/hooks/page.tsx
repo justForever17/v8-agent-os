@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, } from 
 import { RefreshCw, Code, Terminal, Zap, Plus, Pencil, Trash2, BookOpen, Workflow } from "lucide-react";
 import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { createTranslator } from "@/lib/locale";
 interface HookConfig {
     name: string;
@@ -72,8 +73,8 @@ const ATTACH_POLICY_OPTIONS = [
 function HooksPage() {
     const t = useT();
     const { locale } = useLocale();
-    const [hooks, setHooks] = useState<HookConfig[]>([]);
-    const [isLoading, setIsLoading] = useState(false);
+    const [hooks, setHooks] = useState<HookConfig[]>(() => peekAdminJsonCache<HooksConfigResponse>("/api/hooks")?.hooks || []);
+    const [isLoading, setIsLoading] = useState(() => !peekAdminJsonCache<HooksConfigResponse>("/api/hooks"));
     const [isToggling, setIsToggling] = useState<string | null>(null);
     // Dialog State
     const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -106,14 +107,11 @@ function HooksPage() {
             console.error("Failed to load documentation:", error);
         }
     };
-    const fetchHooks = useCallback(async () => {
-        setIsLoading(true);
+    const fetchHooks = useCallback(async (force = false) => {
+        if (!peekAdminJsonCache<HooksConfigResponse>("/api/hooks")) setIsLoading(true);
         try {
-            const res = await fetch("/api/hooks");
-            if (res.ok) {
-                const data: HooksConfigResponse = await res.json();
-                setHooks(data.hooks || []);
-            }
+            const data = await fetchAdminJson<HooksConfigResponse>("/api/hooks", { force });
+            setHooks(data.hooks || []);
         }
         catch (e) {
             console.error("Failed to fetch hooks:", e);
@@ -135,6 +133,7 @@ function HooksPage() {
             });
             if (res.ok) {
                 setHooks(newHooks);
+                primeAdminJsonCache("/api/hooks", { hooks: newHooks });
                 setIsDialogOpen(false);
             }
             else {
@@ -154,7 +153,11 @@ function HooksPage() {
                 body: JSON.stringify({ name, enabled: !currentEnabled }),
             });
             if (res.ok) {
-                setHooks((prev) => prev.map((h) => h.name === name ? { ...h, enabled: !currentEnabled } : h));
+                setHooks((prev) => {
+                    const next = prev.map((h) => h.name === name ? { ...h, enabled: !currentEnabled } : h);
+                    primeAdminJsonCache("/api/hooks", { hooks: next });
+                    return next;
+                });
             }
         }
         catch (e) {
@@ -268,7 +271,7 @@ function HooksPage() {
             <BookOpen className="mr-2 h-4 w-4"/>
             {t("app.admin.dashboard.automation.hooks.page.k2a0649a2")}
           </Button>
-          <Button onClick={fetchHooks} variant="outline" disabled={isLoading}>
+          <Button onClick={() => void fetchHooks(true)} variant="outline" disabled={isLoading}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}/>
             {t("app.admin.dashboard.automation.hooks.page.k876e8c06")}
           </Button>

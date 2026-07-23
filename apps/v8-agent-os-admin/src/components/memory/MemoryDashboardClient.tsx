@@ -22,6 +22,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { tg } from "@/i18n/admin-legacy";
 import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
+import { fetchAdminJson, invalidateAdminJsonCache, peekAdminJsonCache } from "@/lib/admin-client-cache";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DashboardData = any;
 interface KnowledgeItem {
@@ -81,6 +82,17 @@ interface KnowledgeHealth {
     sourceCoverage?: number;
   };
 }
+interface KnowledgeListPayload {
+  items?: KnowledgeItem[];
+}
+interface ResolutionCandidatesPayload {
+  items?: ResolutionCandidate[];
+}
+const MEMORY_DASHBOARD_URL = "/api/memory/dashboard";
+const MEMORY_KNOWLEDGE_URL = "/api/memory/knowledge";
+const MEMORY_QUARANTINE_URL = "/api/memory/knowledge?scope=global&status=quarantined&limit=100";
+const MEMORY_CANDIDATES_URL = "/api/memory/knowledge-resolution-candidates?limit=100";
+const MEMORY_HEALTH_URL = "/api/memory/knowledge-health";
 function formatScopeLabel(scope: string | undefined, labels: { global: string; project: string; workspace: string; channel: string }) {
   const value = String(scope || "global");
   if (value === "global") return labels.global;
@@ -111,15 +123,20 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     quarantined: t("app.admin.dashboard.memory.lifecycle.quarantined")
   }), [t]);
   const activeTab = VALID_TABS.has(requestedTab) ? requestedTab : "preferences";
-  const [data, setData] = useState<DashboardData>(null);
-  const [loading, setLoading] = useState(true);
+  const cachedDashboard = peekAdminJsonCache<DashboardData>(MEMORY_DASHBOARD_URL);
+  const cachedKnowledge = peekAdminJsonCache<KnowledgeListPayload>(MEMORY_KNOWLEDGE_URL);
+  const cachedQuarantine = peekAdminJsonCache<KnowledgeListPayload>(MEMORY_QUARANTINE_URL);
+  const cachedCandidates = peekAdminJsonCache<ResolutionCandidatesPayload>(MEMORY_CANDIDATES_URL);
+  const cachedHealth = peekAdminJsonCache<KnowledgeHealth>(MEMORY_HEALTH_URL);
+  const [data, setData] = useState<DashboardData>(cachedDashboard ?? null);
+  const [loading, setLoading] = useState(cachedDashboard === undefined);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<KnowledgeItem[]>([]);
   const [searching, setSearching] = useState(false);
-  const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]);
-  const [quarantinedGlobalKnowledge, setQuarantinedGlobalKnowledge] = useState<KnowledgeItem[]>([]);
-  const [resolutionCandidates, setResolutionCandidates] = useState<ResolutionCandidate[]>([]);
-  const [knowledgeHealth, setKnowledgeHealth] = useState<KnowledgeHealth | null>(null);
+  const [knowledge, setKnowledge] = useState<KnowledgeItem[]>(cachedKnowledge?.items || []);
+  const [quarantinedGlobalKnowledge, setQuarantinedGlobalKnowledge] = useState<KnowledgeItem[]>(cachedQuarantine?.items || []);
+  const [resolutionCandidates, setResolutionCandidates] = useState<ResolutionCandidate[]>(cachedCandidates?.items || []);
+  const [knowledgeHealth, setKnowledgeHealth] = useState<KnowledgeHealth | null>(cachedHealth ?? null);
   const [resolvingCandidateId, setResolvingCandidateId] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<KnowledgeItem | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -127,14 +144,10 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [graphFilter, setGraphFilter] = useState("");
   const [clearingDiagnostics, setClearingDiagnostics] = useState(false);
-  const loadDashboard = useCallback(async () => {
-    setLoading(true);
+  const loadDashboard = useCallback(async (force = false) => {
+    if (peekAdminJsonCache(MEMORY_DASHBOARD_URL) === undefined) setLoading(true);
     try {
-      const res = await fetch("/api/memory/dashboard", { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`Dashboard failed: ${res.status}`);
-      }
-      const json = await res.json();
+      const json = await fetchAdminJson<DashboardData>(MEMORY_DASHBOARD_URL, { force });
       setData(json);
     }
     catch (err) {
@@ -149,25 +162,13 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       setLoading(false);
     }
   }, [t, toast]);
-  const loadKnowledge = useCallback(async () => {
+  const loadKnowledge = useCallback(async (force = false) => {
     try {
-      const [activeRes, quarantinedRes, candidateRes, healthRes] = await Promise.all([
-      fetch("/api/memory/knowledge", { cache: "no-store" }),
-      fetch("/api/memory/knowledge?scope=global&status=quarantined&limit=100", { cache: "no-store" }),
-      fetch("/api/memory/knowledge-resolution-candidates?limit=100", { cache: "no-store" }),
-      fetch("/api/memory/knowledge-health", { cache: "no-store" })]
-      );
-      if (!activeRes.ok) {
-        throw new Error(`Knowledge failed: ${activeRes.status}`);
-      }
-      if (!quarantinedRes.ok) {
-        throw new Error(`Quarantined knowledge failed: ${quarantinedRes.status}`);
-      }
       const [activeJson, quarantinedJson, candidateJson, healthJson] = await Promise.all([
-        activeRes.json(),
-        quarantinedRes.json(),
-        candidateRes.ok ? candidateRes.json() : Promise.resolve({ items: [] }),
-        healthRes.ok ? healthRes.json() : Promise.resolve(null)
+        fetchAdminJson<KnowledgeListPayload>(MEMORY_KNOWLEDGE_URL, { force }),
+        fetchAdminJson<KnowledgeListPayload>(MEMORY_QUARANTINE_URL, { force }),
+        fetchAdminJson<ResolutionCandidatesPayload>(MEMORY_CANDIDATES_URL, { force }).catch(() => peekAdminJsonCache<ResolutionCandidatesPayload>(MEMORY_CANDIDATES_URL) || { items: [] }),
+        fetchAdminJson<KnowledgeHealth>(MEMORY_HEALTH_URL, { force }).catch(() => peekAdminJsonCache<KnowledgeHealth>(MEMORY_HEALTH_URL) || null)
       ]);
       setKnowledge(activeJson.items || []);
       setQuarantinedGlobalKnowledge(quarantinedJson.items || []);
@@ -192,7 +193,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         body: JSON.stringify({ resolution })
       });
       if (!response.ok) throw new Error(`Resolve failed: ${response.status}`);
-      await loadKnowledge();
+      await loadKnowledge(true);
       toast({ title: t("app.admin.dashboard.memory.pendingUpdates.resolvedTitle"), description: t("app.admin.dashboard.memory.pendingUpdates.resolvedDescription") });
     } catch (error) {
       console.error("Resolve knowledge candidate failed:", error);
@@ -216,6 +217,8 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       setKnowledge((prev) => prev.filter((k) => k.id !== id));
       setQuarantinedGlobalKnowledge((prev) => prev.filter((k) => k.id !== id));
       setSearchResults((prev) => prev.filter((k) => k.id !== id));
+      invalidateAdminJsonCache(MEMORY_KNOWLEDGE_URL);
+      void loadKnowledge(true);
     }
     catch (err) {
       console.error("Delete failed:", err);
@@ -225,7 +228,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         variant: "destructive"
       });
     }
-  }, [t, toast]);
+  }, [loadKnowledge, t, toast]);
   const handleEditKnowledge = useCallback((item: KnowledgeItem) => {
     setEditTarget(item);
     setEditDialogOpen(true);
@@ -236,7 +239,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       if (!res.ok) {
         throw new Error(`Restore failed: ${res.status}`);
       }
-      await loadKnowledge();
+      await loadKnowledge(true);
       toast({
         title: tg(t, "8564783d"),
         description: t("app.admin.dashboard.memory.restoreCreatedRevision")
@@ -257,7 +260,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       if (!res.ok) {
         throw new Error(`Revalidate failed: ${res.status}`);
       }
-      await loadKnowledge();
+      await loadKnowledge(true);
       toast({
         title: tg(t, "ec481ba6"),
         description: t("app.admin.dashboard.memory.revalidated")
@@ -285,7 +288,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     if (!res.ok) {
       throw new Error(`Save failed: ${res.status}`);
     }
-    await loadKnowledge();
+    await loadKnowledge(true);
     toast({
       title: t("app.admin.dashboard.memory.page.kddf0235b"),
       description: t("app.admin.dashboard.memory.knowledgeVersionCreated")
@@ -314,7 +317,9 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       await Promise.all(Array.from(selectedIds).map((id) => fetch(`/api/memory/knowledge/${id}`, { method: "DELETE" })));
       setKnowledge((prev) => prev.filter((item) => !selectedIds.has(item.id)));
       setSearchResults((prev) => prev.filter((item) => !selectedIds.has(item.id)));
+      invalidateAdminJsonCache(MEMORY_KNOWLEDGE_URL);
       setSelectedIds(new Set());
+      void loadKnowledge(true);
       toast({
         title: t("app.admin.dashboard.memory.page.k19c9dddb"),
         description: t("app.admin.dashboard.memory.page.k52850139")
@@ -323,7 +328,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     {
       setBulkDeleting(false);
     }
-  }, [selectedIds, t, toast]);
+  }, [loadKnowledge, selectedIds, t, toast]);
   const handleSelectAll = useCallback(() => {
     setSelectedIds((prev) => prev.size === knowledge.length ?
     new Set() :
@@ -371,7 +376,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
           payload_deletedInvocations_0: payload?.deletedInvocations || 0
         })
       });
-      await loadDashboard();
+      await loadDashboard(true);
     }
     catch (err) {
       console.error("Failed to clear memory diagnostics:", err);
@@ -416,7 +421,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                             {clearingDiagnostics ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.memory.page.k0c1ae6a0")}
                         </Button> : null}
-                    <Button variant="outline" size="sm" onClick={() => {void loadDashboard();void loadKnowledge();}}>
+                    <Button variant="outline" size="sm" onClick={() => {void loadDashboard(true);void loadKnowledge(true);}}>
                         <RefreshCw className="mr-2 h-4 w-4" />
                         {t("app.admin.dashboard.memory.page.k876e8c06")}
                     </Button>

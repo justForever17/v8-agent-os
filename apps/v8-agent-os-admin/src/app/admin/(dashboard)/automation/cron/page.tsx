@@ -23,7 +23,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { createTranslator, type TranslationKey } from "@/lib/locale";
 import { cn } from "@/lib/utils";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 
 type CronJob = {
     id: string;
@@ -331,8 +336,8 @@ function buildDefaultScheduleDraft() {
 function ScheduledTasksPage() {
     const t = useT();
     const { locale } = useLocale();
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<CronData> | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [initialEnvelope] = useState(() => peekConfigDomain<CronData>("cron") ?? null);
+    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<CronData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [dialogOpen, setDialogOpen] = useState(false);
@@ -361,18 +366,9 @@ function ScheduledTasksPage() {
         }
     };
 
-    const loadData = async (options?: { silent?: boolean }) => {
-        if (!options?.silent) {
-            setLoading(true);
-        }
-        try {
-            const next = await fetchConfigDomain<CronData>("cron");
-            setEnvelope(next);
-        } finally {
-            if (!options?.silent) {
-                setLoading(false);
-            }
-        }
+    const loadData = async () => {
+        const next = await fetchConfigDomain<CronData>("cron");
+        setEnvelope(next);
     };
 
     useEffect(() => {
@@ -505,7 +501,7 @@ function ScheduledTasksPage() {
                 status: "success",
                 message: payload.message || t("app.admin.dashboard.automation.cron.page.runNow.success"),
             });
-            void loadData({ silent: true });
+            void loadData();
         } catch (error) {
             setRunNotice({
                 jobId,
@@ -533,7 +529,7 @@ function ScheduledTasksPage() {
         );
     };
 
-    if (loading || !envelope) {
+    if (!envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />

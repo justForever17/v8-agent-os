@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useLocale } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 
 type DesktopPetActionRule = {
   id?: string;
@@ -120,6 +121,33 @@ const DEFAULT_ENVELOPE: ConfigEnvelope = {
     },
   },
 };
+
+function normalizeDesktopPetEnvelope(payload?: ConfigEnvelope | null): ConfigEnvelope {
+  return {
+    ...DEFAULT_ENVELOPE,
+    ...(payload || {}),
+    data: {
+      ...DEFAULT_ENVELOPE.data,
+      ...(payload?.data || {}),
+      appearance: {
+        ...DEFAULT_ENVELOPE.data.appearance,
+        ...(payload?.data?.appearance || {}),
+      },
+      eventVoice: {
+        ...DEFAULT_ENVELOPE.data.eventVoice,
+        ...(payload?.data?.eventVoice || {}),
+      },
+      effectSpectrum: {
+        ...DEFAULT_ENVELOPE.data.effectSpectrum,
+        ...(payload?.data?.effectSpectrum || {}),
+      },
+      attachmentCapture: {
+        ...DEFAULT_ENVELOPE.data.attachmentCapture,
+        ...(payload?.data?.attachmentCapture || {}),
+      },
+    },
+  };
+}
 
 const DEFAULT_EVENT_IDS: DesktopPetEventId[] = [
   "run.reasoning.delta",
@@ -271,8 +299,10 @@ function rowsToConfig(rows: EventRuleRow[], config: DesktopPetConfig): DesktopPe
 
 export default function DesktopPetSettingsPage() {
   const { locale, t } = useLocale();
-  const [envelope, setEnvelope] = useState<ConfigEnvelope>(DEFAULT_ENVELOPE);
-  const [loading, setLoading] = useState(true);
+  const [envelope, setEnvelope] = useState<ConfigEnvelope>(() => (
+    normalizeDesktopPetEnvelope(peekAdminJsonCache<ConfigEnvelope>(API_PATH))
+  ));
+  const [loading, setLoading] = useState(() => peekAdminJsonCache<ConfigEnvelope>(API_PATH) === undefined);
   const [saving, setSaving] = useState(false);
   const [runtimeState, setRuntimeState] = useState<ShellDesktopPetState | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
@@ -287,39 +317,12 @@ export default function DesktopPetSettingsPage() {
     layout: data.attachmentCapture?.layout || "desktop_pip_camera",
   };
 
-  const loadConfig = useCallback(async () => {
-    setLoading(true);
+  const loadConfig = useCallback(async (force = false) => {
+    if (peekAdminJsonCache<ConfigEnvelope>(API_PATH) === undefined) setLoading(true);
     setError(null);
     try {
-      const response = await fetch(API_PATH, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const payload = (await response.json()) as ConfigEnvelope;
-      setEnvelope({
-        ...DEFAULT_ENVELOPE,
-        ...payload,
-        data: {
-          ...DEFAULT_ENVELOPE.data,
-          ...(payload.data || {}),
-          appearance: {
-            ...DEFAULT_ENVELOPE.data.appearance,
-            ...(payload.data?.appearance || {}),
-          },
-          eventVoice: {
-            ...DEFAULT_ENVELOPE.data.eventVoice,
-            ...(payload.data?.eventVoice || {}),
-          },
-          effectSpectrum: {
-            ...DEFAULT_ENVELOPE.data.effectSpectrum,
-            ...(payload.data?.effectSpectrum || {}),
-          },
-          attachmentCapture: {
-            ...DEFAULT_ENVELOPE.data.attachmentCapture,
-            ...(payload.data?.attachmentCapture || {}),
-          },
-        },
-      });
+      const payload = await fetchAdminJson<ConfigEnvelope>(API_PATH, { force });
+      setEnvelope(normalizeDesktopPetEnvelope(payload));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -463,8 +466,11 @@ export default function DesktopPetSettingsPage() {
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
+      const nextEnvelope = normalizeDesktopPetEnvelope(envelope);
+      setEnvelope(nextEnvelope);
+      primeAdminJsonCache(API_PATH, nextEnvelope);
       setMessage(t("app.admin.dashboard.desktopPet.saved"));
-      await loadConfig();
+      void loadConfig(true);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {

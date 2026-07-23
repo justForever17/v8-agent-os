@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
 type EvidenceBundle = {
     evidenceBundleId?: string;
@@ -54,6 +55,12 @@ type ExperiencePack = {
     sourceMatrixDigest?: Array<{ title?: string; host?: string; url?: string; authorityScore?: number }>;
     createdFromBundleId?: string;
 };
+
+function ledgerUrl(includeArchived: boolean) {
+    const params = new URLSearchParams({ view: "ledger", scope: "global", limit: "30" });
+    if (includeArchived) params.set("includeArchived", "true");
+    return `/api/research-runtime?${params.toString()}`;
+}
 
 type LedgerPayload = {
     ok?: boolean;
@@ -188,26 +195,25 @@ function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeo
 
 export function ResearchRuntimeLedgerPanel() {
     const t = useT();
-    const [data, setData] = useState<LedgerPayload | null>(null);
+    const initialLedgerUrl = ledgerUrl(false);
+    const initialLedger = peekAdminJsonCache<LedgerPayload>(initialLedgerUrl);
+    const [data, setData] = useState<LedgerPayload | null>(initialLedger ?? null);
     const [query, setQuery] = useState("");
     const [packs, setPacks] = useState<ExperiencePack[]>([]);
     const [includeArchived, setIncludeArchived] = useState(false);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(initialLedger === undefined);
     const [error, setError] = useState("");
 
     const evidence = useMemo(() => data?.evidenceBundles || [], [data]);
     const timeline = useMemo(() => data?.confidenceTimeline || [], [data]);
     const visiblePacks = packs.length ? packs : data?.experiencePacks || [];
 
-    const refresh = useCallback(async () => {
-        setLoading(true);
+    const refresh = useCallback(async (force = false) => {
+        const url = ledgerUrl(includeArchived);
+        if (peekAdminJsonCache<LedgerPayload>(url) === undefined) setLoading(true);
         setError("");
         try {
-            const params = new URLSearchParams({ view: "ledger", scope: "global", limit: "30" });
-            if (includeArchived) params.set("includeArchived", "true");
-            const response = await fetch(`/api/research-runtime?${params.toString()}`, { cache: "no-store" });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_load_failed");
+            const payload = await fetchAdminJson<LedgerPayload>(url, { force });
             setData(payload);
         } catch (err) {
             setError(err instanceof Error ? err.message : "research_runtime_load_failed");
@@ -247,7 +253,7 @@ export function ResearchRuntimeLedgerPanel() {
                 });
                 const payload = await response.json();
                 if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_promote_failed");
-                await refresh();
+                await refresh(true);
                 await searchPacks();
             } catch (err) {
                 setError(err instanceof Error ? err.message : "research_runtime_promote_failed");
@@ -271,7 +277,7 @@ export function ResearchRuntimeLedgerPanel() {
                 });
                 const payload = await response.json();
                 if (!response.ok) throw new Error(payload?.detail || payload?.error || `research_runtime_${action}_failed`);
-                await refresh();
+                await refresh(true);
                 await searchPacks();
             } catch (err) {
                 setError(err instanceof Error ? err.message : `research_runtime_${action}_failed`);
@@ -295,7 +301,7 @@ export function ResearchRuntimeLedgerPanel() {
                 const response = await fetch(`/api/research-runtime?${params.toString()}`, { method: "DELETE" });
                 const payload = await response.json();
                 if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_delete_failed");
-                await refresh();
+                await refresh(true);
                 await searchPacks();
             } catch (err) {
                 setError(err instanceof Error ? err.message : "research_runtime_delete_failed");
@@ -321,7 +327,7 @@ export function ResearchRuntimeLedgerPanel() {
                         {t("app.admin.dashboard.research.runtime.ledger.description")}
                     </p>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={refresh} disabled={loading}>
+                <Button type="button" variant="outline" size="sm" onClick={() => void refresh(true)} disabled={loading}>
                     <RefreshCw className="mr-2 h-4 w-4" />
                     {t("app.admin.dashboard.research.runtime.ledger.refresh")}
                 </Button>

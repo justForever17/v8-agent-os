@@ -16,8 +16,13 @@ import { ModelSelect } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
 const RPAWorkbench = dynamic(
     () => import("@/components/rpa/RPAWorkbench").then((mod) => mod.RPAWorkbench),
@@ -65,17 +70,32 @@ type RuntimeCapabilityEntry = {
 
 export default function RpaRuntimePage() {
     const t = useT();
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<RpaData> | null>(null);
-    const [models, setModels] = useState<ModelOption[]>([]);
-    const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [initialState] = useState(() => {
+        const envelope = peekConfigDomain<RpaData>("rpa") ?? null;
+        const models = peekAdminJsonCache<ModelOption[]>("/api/models");
+        const capabilitySnapshot = peekAdminJsonCache<Record<string, unknown>>("/api/runtime-capabilities");
+        const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
+        const featurePacks = peekAdminJsonCache<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs");
+        const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
+        return {
+            envelope,
+            models: Array.isArray(models) ? models : [],
+            runtimeCapability: runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "rpa") || null,
+            featurePackMissing: featurePacks !== undefined
+                ? packs.find((item) => item.id === "rpa_automation")?.status !== "installed"
+                : false,
+        };
+    });
+    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<RpaData> | null>(initialState.envelope);
+    const [models, setModels] = useState<ModelOption[]>(initialState.models);
+    const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(initialState.runtimeCapability);
+    const [loading, setLoading] = useState(!initialState.envelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
-    const [featurePackMissing, setFeaturePackMissing] = useState(false);
+    const [featurePackMissing, setFeaturePackMissing] = useState(initialState.featurePackMissing);
 
     const loadData = async (force = false) => {
-        setLoading(true);
         try {
             const [config, modelList, capabilitySnapshot, featurePacks] = await Promise.all([
                 fetchConfigDomain<RpaData>("rpa", { force }),

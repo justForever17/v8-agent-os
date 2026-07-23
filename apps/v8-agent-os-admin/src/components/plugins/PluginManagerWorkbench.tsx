@@ -24,6 +24,7 @@ import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenc
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 
 type InstallState = {
@@ -118,6 +119,14 @@ const TABS: Array<{ id: Tab; labelKey: string }> = [
     { id: "jobs", labelKey: "components.plugins.PluginManagerWorkbench.tab.jobs" },
     { id: "logs", labelKey: "components.plugins.PluginManagerWorkbench.tab.logs" },
 ];
+const PLUGIN_CATALOG_URL = "/api/plugins/catalog";
+const PLUGIN_GRANTS_URL = "/api/plugins/grants";
+const PLUGIN_JOBS_URL = "/api/plugins/install-jobs";
+const PLUGIN_EVENTS_URL = "/api/plugins/events?limit=120";
+type PluginCatalogPayload = { plugins: Plugin[] };
+type PluginGrantsPayload = { items: Grant[] };
+type PluginJobsPayload = { items: Job[] };
+type PluginEventsPayload = { items: PluginEvent[] };
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, { cache: "no-store", ...init });
@@ -143,10 +152,10 @@ function StatusDot({ tone }: { tone: string }) {
 export function PluginManagerWorkbench() {
     const t = useT();
     const [requestedPluginId] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("plugin")?.trim().toLowerCase() || "");
-    const [plugins, setPlugins] = useState<Plugin[]>([]);
-    const [grants, setGrants] = useState<Grant[]>([]);
-    const [jobs, setJobs] = useState<Job[]>([]);
-    const [events, setEvents] = useState<PluginEvent[]>([]);
+    const [plugins, setPlugins] = useState<Plugin[]>(() => peekAdminJsonCache<PluginCatalogPayload>(PLUGIN_CATALOG_URL)?.plugins || []);
+    const [grants, setGrants] = useState<Grant[]>(() => peekAdminJsonCache<PluginGrantsPayload>(PLUGIN_GRANTS_URL)?.items || []);
+    const [jobs, setJobs] = useState<Job[]>(() => peekAdminJsonCache<PluginJobsPayload>(PLUGIN_JOBS_URL)?.items || []);
+    const [events, setEvents] = useState<PluginEvent[]>(() => peekAdminJsonCache<PluginEventsPayload>(PLUGIN_EVENTS_URL)?.items || []);
     const [requirements, setRequirements] = useState<RequirementResponse | null>(null);
     const [values, setValues] = useState<Record<string, string | boolean>>({});
     const [authorization, setAuthorization] = useState<AuthorizationFlowState | null>(null);
@@ -159,14 +168,20 @@ export function PluginManagerWorkbench() {
     const [previewJob, setPreviewJob] = useState<Job | null>(null);
     const [machineDiscovery, setMachineDiscovery] = useState<MachineDiscovery | null>(null);
 
-    const load = useCallback(async (refresh = false) => {
+    const load = useCallback(async (refreshCatalog = false, force = false) => {
         setError("");
         try {
+            const catalogRequest = refreshCatalog
+                ? jsonRequest<PluginCatalogPayload>(`${PLUGIN_CATALOG_URL}?refresh=true`).then((payload) => {
+                    primeAdminJsonCache(PLUGIN_CATALOG_URL, payload);
+                    return payload;
+                })
+                : fetchAdminJson<PluginCatalogPayload>(PLUGIN_CATALOG_URL, { force });
             const [catalogData, grantsData, jobsData, eventsData] = await Promise.all([
-                jsonRequest<{ plugins: Plugin[] }>(`/api/plugins/catalog${refresh ? "?refresh=true" : ""}`),
-                jsonRequest<{ items: Grant[] }>("/api/plugins/grants"),
-                jsonRequest<{ items: Job[] }>("/api/plugins/install-jobs"),
-                jsonRequest<{ items: PluginEvent[] }>("/api/plugins/events?limit=120"),
+                catalogRequest,
+                fetchAdminJson<PluginGrantsPayload>(PLUGIN_GRANTS_URL, { force }),
+                fetchAdminJson<PluginJobsPayload>(PLUGIN_JOBS_URL, { force }),
+                fetchAdminJson<PluginEventsPayload>(PLUGIN_EVENTS_URL, { force }),
             ]);
             setPlugins(catalogData.plugins || []);
             setGrants(grantsData.items || []);
@@ -211,7 +226,7 @@ export function PluginManagerWorkbench() {
     }, [loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled]);
     useEffect(() => {
         if (!jobs.some((job) => !TERMINAL_JOBS.has(job.state))) return;
-        const timer = window.setInterval(() => void load(), 1500);
+        const timer = window.setInterval(() => void load(false, true), 1500);
         return () => window.clearInterval(timer);
     }, [jobs, load]);
     useEffect(() => {
@@ -223,7 +238,7 @@ export function PluginManagerWorkbench() {
                 setAuthorization({ ...state, flow: authorization.flow });
                 if (state.status === "connected") {
                     await loadRequirements(selectedId);
-                    await load();
+                    await load(false, true);
                 }
             } catch (nextError) {
                 setAuthorization((current) => current ? { ...current, status: "failed", error: nextError instanceof Error ? nextError.message : String(nextError) } : current);
@@ -264,7 +279,7 @@ export function PluginManagerWorkbench() {
         setPreviewJob(job);
         setMachineDiscovery(job.plan?.machineDiscovery || machineDiscovery);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.planReady"));
-        await load();
+        await load(false, true);
     });
 
     const executeInstall = (plugin: Plugin) => runAction(`install:${plugin.id}`, async () => {
@@ -284,7 +299,7 @@ export function PluginManagerWorkbench() {
         });
         setPreviewJob(job);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.installQueued"));
-        await load();
+        await load(false, true);
     });
 
     const detect = (plugin: Plugin) => runAction(`detect:${plugin.id}`, async () => {
@@ -297,7 +312,7 @@ export function PluginManagerWorkbench() {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirementId: requirement.id, sourceId, confirmed: true }),
         });
         await loadRequirements(plugin.id);
-        await load();
+        await load(false, true);
     });
 
     const configure = (plugin: Plugin) => runAction(`configure:${plugin.id}`, async () => {
@@ -307,7 +322,7 @@ export function PluginManagerWorkbench() {
         setValues({});
         await loadRequirements(plugin.id);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.configured"));
-        await load();
+        await load(false, true);
     });
 
     const startOAuth = (plugin: Plugin, requirement: Requirement) => runAction(`oauth:${requirement.id}`, async () => {
@@ -335,7 +350,7 @@ export function PluginManagerWorkbench() {
     const doctor = (plugin: Plugin) => runAction(`doctor:${plugin.id}`, async () => {
         await jsonRequest(`/api/plugins/${plugin.id}/doctor`, { method: "POST" });
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.doctorDone"));
-        await load();
+        await load(false, true);
     });
 
     const uninstall = (plugin: Plugin) => runAction(`uninstall:${plugin.id}`, async () => {
@@ -343,7 +358,7 @@ export function PluginManagerWorkbench() {
         await jsonRequest(`/api/plugins/${plugin.id}`, { method: "DELETE" });
         setRequirements(null);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.uninstalled"));
-        await load();
+        await load(false, true);
     });
 
     return (
@@ -354,7 +369,7 @@ export function PluginManagerWorkbench() {
                     <h1 className="text-2xl font-semibold tracking-[-0.025em]">{t("components.plugins.PluginManagerWorkbench.title")}</h1>
                     <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.description")}</p>
                 </div>
-                <Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void load(true)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.refresh")}</Button>
+                <Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void load(true, true)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.refresh")}</Button>
             </header>
 
             <div className="flex items-center gap-1 overflow-x-auto border-b border-border/60">

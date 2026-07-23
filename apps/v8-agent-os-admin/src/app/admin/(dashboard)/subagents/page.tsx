@@ -21,6 +21,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { BrainCircuit, Cable, ChevronDown, ImageUp, Loader2, Pencil, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { useDebugMode } from "@/lib/useDebugMode";
 type Agent = {
   id: string;
@@ -640,40 +641,56 @@ export default function SubagentsPage() {
   const {
     toast
   } = useToast();
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [models, setModels] = useState<AIModel[]>([]);
-  const [mcpTools, setMcpTools] = useState<MCPTool[]>([]);
-  const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const cachedAgents = peekAdminJsonCache<Agent[]>("/api/agents");
+  const cachedModels = peekAdminJsonCache<AIModel[]>("/api/models");
+  const cachedDefaultModel = peekAdminJsonCache<{ modelId?: string; modelRef?: string }>("/api/settings/default-agent-model");
+  const cachedExtensions = peekAdminJsonCache<ExtensionsCatalogPayload>("/api/extensions/catalog");
+  const cachedSupervisor = peekAdminJsonCache<SupervisorConfigRegistryPayload>("/api/config-registry/supervisor");
+  const cachedToolSurface = peekAdminJsonCache<AgentToolSurfacePayload>("/api/agents/tool-surface");
+  const cachedExternalWorkers = normalizeExternalWorkers(cachedSupervisor?.data?.delegation?.externalWorkers);
+  const cachedMcpTools = Array.isArray(cachedExtensions?.mcp?.servers) ? cachedExtensions.mcp.servers.flatMap(server => Array.isArray(server.tools) ? server.tools.map(tool => ({
+    name: String(tool.name || "").trim(),
+    description: String(tool.description || "").trim(),
+    serverName: String(server.name || "MCP").trim() || "MCP"
+  })) : []).filter(tool => tool.name) : [];
+  const [agents, setAgents] = useState<Agent[]>(cachedAgents || []);
+  const [models, setModels] = useState<AIModel[]>(cachedModels || []);
+  const [mcpTools, setMcpTools] = useState<MCPTool[]>(cachedMcpTools);
+  const [skills, setSkills] = useState<SkillEntry[]>(Array.isArray(cachedExtensions?.skills?.items) ? cachedExtensions.skills.items : []);
   const [extensionsSummary, setExtensionsSummary] = useState<{
     mcpServerCount: number;
     connectedMcpServerCount: number;
     mcpToolCount: number;
   }>({
-    mcpServerCount: 0,
-    connectedMcpServerCount: 0,
-    mcpToolCount: 0
+    mcpServerCount: Number(cachedExtensions?.summary?.mcpServerCount || 0) || 0,
+    connectedMcpServerCount: Number(cachedExtensions?.summary?.connectedMcpServerCount || 0) || 0,
+    mcpToolCount: Number(cachedExtensions?.summary?.mcpToolCount || 0) || 0
   });
-  const [baselineSystemTools, setBaselineSystemTools] = useState<BaselineSystemTool[]>([]);
-  const [defaultModelId, setDefaultModelId] = useState("");
-  const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(null);
-  const [externalWorkers, setExternalWorkers] = useState<ExternalWorkerDescriptor[]>([]);
-  const [externalWorkersJson, setExternalWorkersJson] = useState("[]");
+  const [baselineSystemTools, setBaselineSystemTools] = useState<BaselineSystemTool[]>(Array.isArray(cachedToolSurface?.baselineSystemTools) ? cachedToolSurface.baselineSystemTools : []);
+  const [defaultModelId, setDefaultModelId] = useState(String(cachedDefaultModel?.modelRef || cachedDefaultModel?.modelId || "").trim());
+  const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(cachedSupervisor || null);
+  const [externalWorkers, setExternalWorkers] = useState<ExternalWorkerDescriptor[]>(cachedExternalWorkers);
+  const [externalWorkersJson, setExternalWorkersJson] = useState(JSON.stringify(cachedExternalWorkers, null, 2));
   const [showExternalWorkersJson, setShowExternalWorkersJson] = useState(false);
   const [editingExternalWorkerId, setEditingExternalWorkerId] = useState("");
   const [externalWorkerForm, setExternalWorkerForm] = useState<ExternalWorkerFormState>(DEFAULT_EXTERNAL_WORKER_FORM);
-  const [subagentTemperature, setSubagentTemperature] = useState("");
-  const [familyModeEnabled, setFamilyModeEnabled] = useState(true);
-  const [maxMembersPerFamily, setMaxMembersPerFamily] = useState(10);
-  const [researchEnabled, setResearchEnabled] = useState(true);
-  const [researchDefaultShards, setResearchDefaultShards] = useState(10);
-  const [researchMaxShards, setResearchMaxShards] = useState(30);
-  const [researchMaxRounds, setResearchMaxRounds] = useState(5);
-  const [recursiveDelegationEnabled, setRecursiveDelegationEnabled] = useState(DEFAULT_RECURSIVE_DELEGATION.enabled);
-  const [recursiveMaxDepth, setRecursiveMaxDepth] = useState(DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth);
-  const [recursiveMaxChildren, setRecursiveMaxChildren] = useState(DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation);
-  const [recursiveMaxTotalNodes, setRecursiveMaxTotalNodes] = useState(DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes);
-  const [recursiveMaxConcurrent, setRecursiveMaxConcurrent] = useState(DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations);
-  const [isLoading, setIsLoading] = useState(false);
+  const [subagentTemperature, setSubagentTemperature] = useState(() => {
+    const value = cachedSupervisor?.data?.modelParameters?.subagent?.temperature;
+    return value === null || value === undefined ? "" : String(value);
+  });
+  const [familyModeEnabled, setFamilyModeEnabled] = useState(cachedSupervisor?.data?.specialistRegistry?.familyModeEnabled !== false);
+  const [maxMembersPerFamily, setMaxMembersPerFamily] = useState(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Number(cachedSupervisor?.data?.specialistRegistry?.maxMembersPerFamily || 10) || 10)));
+  const [researchEnabled, setResearchEnabled] = useState(cachedSupervisor?.data?.research?.enabled !== false);
+  const [researchDefaultShards, setResearchDefaultShards] = useState(Math.max(1, Math.min(30, Number(cachedSupervisor?.data?.research?.defaultShardCount || 10) || 10)));
+  const [researchMaxShards, setResearchMaxShards] = useState(Math.max(1, Math.min(30, Number(cachedSupervisor?.data?.research?.maxShardCount || 30) || 30)));
+  const [researchMaxRounds, setResearchMaxRounds] = useState(Math.max(1, Math.min(5, Number(cachedSupervisor?.data?.research?.maxRounds || 5) || 5)));
+  const cachedRecursive = cachedSupervisor?.data?.delegation?.recursive;
+  const [recursiveDelegationEnabled, setRecursiveDelegationEnabled] = useState(cachedRecursive?.enabled !== false);
+  const [recursiveMaxDepth, setRecursiveMaxDepth] = useState(clampInt(cachedRecursive?.maxDelegationDepth, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100));
+  const [recursiveMaxChildren, setRecursiveMaxChildren] = useState(clampInt(cachedRecursive?.maxChildrenPerDelegation, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50));
+  const [recursiveMaxTotalNodes, setRecursiveMaxTotalNodes] = useState(clampInt(cachedRecursive?.maxTotalDelegationNodes, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000));
+  const [recursiveMaxConcurrent, setRecursiveMaxConcurrent] = useState(clampInt(cachedRecursive?.maxConcurrentDelegations, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50));
+  const [isLoading, setIsLoading] = useState(!cachedAgents);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingExternalWorkers, setIsSavingExternalWorkers] = useState(false);
@@ -852,30 +869,24 @@ export default function SubagentsPage() {
       [panel]: !current[panel]
     }));
   }, []);
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const fetchData = useCallback(async (force = false) => {
+    if (!peekAdminJsonCache<Agent[]>("/api/agents")) setIsLoading(true);
     try {
-      const [agentsRes, modelsRes, defaultModelRes, extensionsRes, supervisorRes, toolSurfaceRes] = await Promise.all([fetch("/api/agents", {
-        cache: "no-store"
-      }), fetch("/api/models", {
-        cache: "no-store"
-      }), fetch("/api/settings/default-agent-model", {
-        cache: "no-store"
-      }), fetch("/api/extensions/catalog", {
-        cache: "no-store"
-      }), fetch("/api/config-registry/supervisor", {
-        cache: "no-store"
-      }), fetch("/api/agents/tool-surface", {
-        cache: "no-store"
-      })]);
-      if (agentsRes.ok) setAgents(await agentsRes.json());
-      if (modelsRes.ok) setModels(await modelsRes.json());
-      if (defaultModelRes.ok) {
-        const data = await defaultModelRes.json();
-        setDefaultModelId(String(data.modelId || "").trim());
+      const [agentsResult, modelsResult, defaultModelResult, extensionsResult, supervisorResult, toolSurfaceResult] = await Promise.allSettled([
+        fetchAdminJson<Agent[]>("/api/agents", { force }),
+        fetchAdminJson<AIModel[]>("/api/models", { force }),
+        fetchAdminJson<{ modelId?: string; modelRef?: string }>("/api/settings/default-agent-model", { force }),
+        fetchAdminJson<ExtensionsCatalogPayload>("/api/extensions/catalog", { force, ttlMs: 15_000 }),
+        fetchAdminJson<SupervisorConfigRegistryPayload>("/api/config-registry/supervisor", { force }),
+        fetchAdminJson<AgentToolSurfacePayload>("/api/agents/tool-surface", { force })
+      ]);
+      if (agentsResult.status === "fulfilled") setAgents(agentsResult.value);
+      if (modelsResult.status === "fulfilled") setModels(modelsResult.value);
+      if (defaultModelResult.status === "fulfilled") {
+        setDefaultModelId(String(defaultModelResult.value.modelRef || defaultModelResult.value.modelId || "").trim());
       }
-      if (extensionsRes.ok) {
-        const data: ExtensionsCatalogPayload = await extensionsRes.json();
+      if (extensionsResult.status === "fulfilled") {
+        const data = extensionsResult.value;
         setSkills(Array.isArray(data.skills?.items) ? data.skills!.items! : []);
         const flattenedMcpTools = Array.isArray(data.mcp?.servers) ? data.mcp!.servers!.flatMap(server => Array.isArray(server.tools) ? server.tools.map(tool => ({
           name: String(tool.name || "").trim(),
@@ -889,8 +900,8 @@ export default function SubagentsPage() {
           mcpToolCount: Number(data.summary?.mcpToolCount || 0) || 0
         });
       }
-      if (supervisorRes.ok) {
-        const data: SupervisorConfigRegistryPayload = await supervisorRes.json();
+      if (supervisorResult.status === "fulfilled") {
+        const data = supervisorResult.value;
         setSupervisorDomainData(data);
         const temperature = data?.data?.modelParameters?.subagent?.temperature;
         setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
@@ -910,9 +921,13 @@ export default function SubagentsPage() {
         setRecursiveMaxConcurrent(clampInt(recursive.maxConcurrentDelegations, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50));
         syncExternalWorkers(data?.data?.delegation?.externalWorkers);
       }
-      if (toolSurfaceRes.ok) {
-        const data: AgentToolSurfacePayload = await toolSurfaceRes.json();
+      if (toolSurfaceResult.status === "fulfilled") {
+        const data = toolSurfaceResult.value;
         setBaselineSystemTools(Array.isArray(data.baselineSystemTools) ? data.baselineSystemTools : []);
+      }
+      const results = [agentsResult, modelsResult, defaultModelResult, extensionsResult, supervisorResult, toolSurfaceResult];
+      if (results.every(result => result.status === "rejected")) {
+        throw new Error(String((agentsResult as PromiseRejectedResult).reason || "request_failed"));
       }
     } catch (error) {
       console.error("Failed to fetch subagent data", error);
@@ -926,7 +941,7 @@ export default function SubagentsPage() {
     }
   }, [syncExternalWorkers, t, toast]);
   useEffect(() => {
-    void fetchData();
+    void fetchData(false);
   }, [fetchData]);
   useEffect(() => {
     if (isDialogOpen) {
@@ -966,6 +981,7 @@ export default function SubagentsPage() {
       throw new Error(String(data?.detail || data?.error || response.status));
     }
     setSupervisorDomainData(data);
+    primeAdminJsonCache("/api/config-registry/supervisor", data);
   }, [supervisorDomainData]);
   const handleSave = useCallback(async () => {
     if (!form.name.trim()) {
@@ -1051,7 +1067,7 @@ export default function SubagentsPage() {
       });
       setIsDialogOpen(false);
       setEditingAgent(null);
-      await fetchData();
+      await fetchData(true);
     } catch (error) {
       console.error("Failed to save subagent", error);
       toast({
@@ -1172,6 +1188,7 @@ export default function SubagentsPage() {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
       setSupervisorDomainData(data);
+      primeAdminJsonCache("/api/config-registry/supervisor", data);
       syncExternalWorkers(data?.data?.delegation?.externalWorkers);
       toast({
         title: t("app.admin.dashboard.subagents.page.externalWorkers.savedTitle"),
@@ -1213,6 +1230,7 @@ export default function SubagentsPage() {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
       setSupervisorDomainData(data);
+      primeAdminJsonCache("/api/config-registry/supervisor", data);
       const registry = data?.data?.specialistRegistry || {};
       setFamilyModeEnabled(registry.familyModeEnabled !== false);
       setMaxMembersPerFamily(Math.max(1, Math.min(MAX_SPECIALIST_FAMILY_MEMBERS, Number(registry.maxMembersPerFamily || 10) || 10)));
@@ -1261,6 +1279,7 @@ export default function SubagentsPage() {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
       setSupervisorDomainData(data);
+      primeAdminJsonCache("/api/config-registry/supervisor", data);
       const research = data?.data?.research || {};
       setResearchEnabled(research.enabled !== false);
       setResearchDefaultShards(Math.max(1, Math.min(30, Number(research.defaultShardCount || nextDefault) || nextDefault)));
@@ -1316,6 +1335,7 @@ export default function SubagentsPage() {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
       setSupervisorDomainData(data);
+      primeAdminJsonCache("/api/config-registry/supervisor", data);
       const recursive = data?.data?.delegation?.recursive || {};
       setRecursiveDelegationEnabled(recursive.enabled !== false);
       setRecursiveMaxDepth(clampInt(recursive.maxDelegationDepth, nextDepth, 1, 100));
@@ -1365,6 +1385,7 @@ export default function SubagentsPage() {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
       setSupervisorDomainData(data);
+      primeAdminJsonCache("/api/config-registry/supervisor", data);
       const temperature = data?.data?.modelParameters?.subagent?.temperature;
       setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
       toast({
@@ -1394,7 +1415,7 @@ export default function SubagentsPage() {
       toast({
         title: t("app.admin.dashboard.subagents.page.k1b2c89e7")
       });
-      await fetchData();
+      await fetchData(true);
     } catch (error) {
       console.error("Failed to delete subagent", error);
       toast({
@@ -1420,7 +1441,7 @@ export default function SubagentsPage() {
                     </div>
                 </div>
                 <div className="flex gap-2">
-                    <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
+                    <Button variant="outline" onClick={() => void fetchData(true)} disabled={isLoading}>
                         <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
                         {t("app.admin.dashboard.subagents.page.k876e8c06")}
                     </Button>

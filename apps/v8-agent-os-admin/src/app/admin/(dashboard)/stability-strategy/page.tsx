@@ -12,7 +12,12 @@ import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { RuntimeStabilityPanel } from "@/components/runtime/RuntimeStabilityPanel";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
 
 type StabilityData = {
@@ -30,23 +35,18 @@ const MODES = [
 
 export default function StabilityStrategyPage() {
     const t = useT();
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<StabilityData> | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [initialEnvelope] = useState(() => peekConfigDomain<StabilityData>("runtime-stability") ?? null);
+    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<StabilityData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
-    const [mode, setMode] = useState("balanced");
-    const [durability, setDurability] = useState(true);
+    const [mode, setMode] = useState(() => initialEnvelope?.data.sessionLanePolicy === "reject" ? "fast" : "balanced");
+    const [durability, setDurability] = useState(() => Boolean(initialEnvelope?.data.strictSupervisorDurability ?? true));
 
     const loadConfig = async () => {
-        setLoading(true);
-        try {
-            const next = await fetchConfigDomain<StabilityData>("runtime-stability");
-            setEnvelope(next);
-            setDurability(Boolean(next.data.strictSupervisorDurability ?? true));
-            setMode(next.data.sessionLanePolicy === "reject" ? "fast" : "balanced");
-        } finally {
-            setLoading(false);
-        }
+        const next = await fetchConfigDomain<StabilityData>("runtime-stability");
+        setEnvelope(next);
+        setDurability(Boolean(next.data.strictSupervisorDurability ?? true));
+        setMode(next.data.sessionLanePolicy === "reject" ? "fast" : "balanced");
     };
 
     useEffect(() => {
@@ -73,7 +73,7 @@ export default function StabilityStrategyPage() {
         }
     };
 
-    if (loading || !envelope) {
+    if (!envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />

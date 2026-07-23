@@ -98,7 +98,7 @@ export function Sidebar() {
                                             <Link
                                                 key={item.href}
                                                 href={item.href}
-                                                prefetch={false}
+                                                prefetch
                                                 onPointerEnter={() => {
                                                     router.prefetch(item.href);
                                                     void prefetchAdminRouteData(item.href);

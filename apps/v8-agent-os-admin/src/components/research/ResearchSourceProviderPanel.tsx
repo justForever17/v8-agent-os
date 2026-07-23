@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Loader2, RefreshCw, Save, Search, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
+import { fetchConfigDomain, peekConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
 
 type SourceProvider = {
@@ -54,6 +55,8 @@ type EditableProvider = SourceProvider & {
     apiKeyDraft: string;
 };
 
+const SOURCE_PROVIDERS_URL = "/api/research-runtime?view=source-providers";
+
 const REGION_LABELS: Record<string, string> = {
     cn: "app.admin.research.sourceProviders.region.cn",
     global: "app.admin.research.sourceProviders.region.global",
@@ -81,27 +84,29 @@ function mergeProviderConfig(provider: SourceProvider, envelope: ConfigRegistryE
 export function ResearchSourceProviderPanel() {
     const { toast } = useToast();
     const t = useT();
-    const [providers, setProviders] = useState<EditableProvider[]>([]);
-    const [sourceRouter, setSourceRouter] = useState<Record<string, unknown>>({});
-    const [systemBase, setSystemBase] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(null);
-    const [loading, setLoading] = useState(true);
+    const cachedProviders = peekAdminJsonCache<SourceProvidersPayload>(SOURCE_PROVIDERS_URL);
+    const cachedSystemBase = peekConfigDomain<SystemBaseData>("system-base");
+    const [providers, setProviders] = useState<EditableProvider[]>(
+        () => (cachedProviders?.providers || []).map((item) => mergeProviderConfig(item, cachedSystemBase || null)),
+    );
+    const [sourceRouter, setSourceRouter] = useState<Record<string, unknown>>(() => cachedProviders?.sourceRouter || {});
+    const [systemBase, setSystemBase] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(() => cachedSystemBase || null);
+    const [loading, setLoading] = useState(() => !cachedProviders || !cachedSystemBase);
     const [saving, setSaving] = useState(false);
     const [query, setQuery] = useState("");
     const [error, setError] = useState("");
 
-    const load = async () => {
-        setLoading(true);
+    const load = useCallback(async (force = false) => {
+        if (!peekAdminJsonCache<SourceProvidersPayload>(SOURCE_PROVIDERS_URL) || !peekConfigDomain<SystemBaseData>("system-base")) {
+            setLoading(true);
+        }
         setError("");
         try {
-            const [providersResponse, configEnvelope] = await Promise.all([
-                fetch("/api/research-runtime?view=source-providers", { cache: "no-store" }),
-                fetchConfigDomain<SystemBaseData>("system-base"),
+            const [payload, configEnvelope] = await Promise.all([
+                fetchAdminJson<SourceProvidersPayload>(SOURCE_PROVIDERS_URL, { force }),
+                fetchConfigDomain<SystemBaseData>("system-base", { force }),
             ]);
-            const providerPayload = (await providersResponse.json().catch(() => ({}))) as SourceProvidersPayload | { detail?: string; error?: string };
-            if (!providersResponse.ok || !(providerPayload as SourceProvidersPayload).ok) {
-                throw new Error((providerPayload as { detail?: string; error?: string }).detail || (providerPayload as { error?: string }).error || "source_provider_load_failed");
-            }
-            const payload = providerPayload as SourceProvidersPayload;
+            if (!payload.ok) throw new Error("source_provider_load_failed");
             setSystemBase(configEnvelope);
             setSourceRouter(payload.sourceRouter || {});
             setProviders((payload.providers || []).map((item) => mergeProviderConfig(item, configEnvelope)));
@@ -111,11 +116,11 @@ export function ResearchSourceProviderPanel() {
         } finally {
             setLoading(false);
         }
-    };
-
-    useEffect(() => {
-        void load();
     }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
     const filteredProviders = useMemo(() => {
         const needle = query.trim().toLowerCase();
@@ -208,7 +213,7 @@ export function ResearchSourceProviderPanel() {
                             placeholder={t("app.admin.research.sourceProviders.searchPlaceholder")}
                             className="h-9 w-full min-w-0 sm:w-64"
                         />
-                        <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading || saving}>
+                        <Button type="button" variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || saving}>
                             <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
                             {t("app.admin.research.sourceProviders.refresh")}
                         </Button>

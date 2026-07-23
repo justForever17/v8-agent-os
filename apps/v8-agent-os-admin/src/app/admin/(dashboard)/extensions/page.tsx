@@ -21,8 +21,13 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
+import {
+  fetchConfigDomain,
+  peekConfigDomain,
+  saveConfigDomain,
+  type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 import { tg } from "@/i18n/admin-legacy";
 type ExtensionCatalogResponse = {
   startupState?: "cold" | "refreshing" | "ready" | "error";
@@ -554,12 +559,23 @@ function validateMcpJsonInput(raw: string, t: TranslateFn): {
 }
 export default function ExtensionsPage() {
   const t = useT();
-  const [catalog, setCatalog] = useState<ExtensionCatalogResponse | null>(null);
-  const [health, setHealth] = useState<ExtensionHealthResponse | null>(null);
-  const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
-  const [models, setModels] = useState<SysModel[]>([]);
-  const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialState] = useState(() => {
+    const models = peekAdminJsonCache<SysModel[]>("/api/models");
+    const skillSafetyPayload = peekAdminJsonCache<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100");
+    return {
+      catalog: peekAdminJsonCache<ExtensionCatalogResponse>("/api/extensions/catalog") ?? null,
+      health: peekAdminJsonCache<ExtensionHealthResponse>("/api/extensions/health") ?? null,
+      configEnvelope: peekConfigDomain<ExtensionsConfigData>("extensions") ?? null,
+      models: Array.isArray(models) ? models : [],
+      skillSafetyReviews: Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : [],
+    };
+  });
+  const [catalog, setCatalog] = useState<ExtensionCatalogResponse | null>(initialState.catalog);
+  const [health, setHealth] = useState<ExtensionHealthResponse | null>(initialState.health);
+  const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(initialState.configEnvelope);
+  const [models, setModels] = useState<SysModel[]>(initialState.models);
+  const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>(initialState.skillSafetyReviews);
+  const [loading, setLoading] = useState(!initialState.catalog || !initialState.health || !initialState.configEnvelope);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -582,15 +598,14 @@ export default function ExtensionsPage() {
   const { toast } = useToast();
   const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
   const loadData = useCallback(async (force = false) => {
-    setLoading(true);
     try {
-      const [healthPayload, config, modelList, skillSafetyPayload] = await Promise.all([
+      const [healthPayload, config, modelList, skillSafetyPayload, catalogPayload] = await Promise.all([
       fetchAdminJson<ExtensionHealthResponse>("/api/extensions/health", { force }),
       fetchConfigDomain<ExtensionsConfigData>("extensions", { force }),
       fetchAdminJson<SysModel[]>("/api/models", { force }),
-      fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force })]
+      fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force }),
+      fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force })]
       );
-      const catalogPayload = await fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force });
       setCatalog(catalogPayload);
       setHealth(healthPayload);
       setConfigEnvelope(config);

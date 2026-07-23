@@ -12,6 +12,7 @@ import type { ControlPlaneModel, ControlPlanePayload, ProviderOverview } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 import { getPlatformLoginPresetConfig, inferPlatformLoginPreset, PLATFORM_LOGIN_PRESETS, type PlatformLoginPreset } from "@/lib/models/provider-admin";
 import { tg } from "@/i18n/admin-legacy";
 interface AIModel {
@@ -91,19 +92,31 @@ export default function ProviderConfigPage({ params
 
 }: {params: Promise<{id: string;}>;}) {
   const { id } = use(params);
+  const providerPath = `/api/providers/${id}`;
   const router = useRouter();
   const t = useT();
-  const [provider, setProvider] = useState<AIProvider | null>(null);
-  const [controlPlane, setControlPlane] = useState<ControlPlanePayload | null>(null);
-  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const cachedProvider = peekAdminJsonCache<AIProvider>(providerPath);
+  const [provider, setProvider] = useState<AIProvider | null>(() => cachedProvider || null);
+  const [controlPlane, setControlPlane] = useState<ControlPlanePayload | null>(() => peekAdminJsonCache<ControlPlanePayload>("/api/model-control-plane") || null);
+  const [defaultModelId, setDefaultModelId] = useState<string | null>(() => {
+    const cached = peekAdminJsonCache<{ modelRef?: string; modelId?: string }>("/api/settings/default-agent-model");
+    return cached?.modelRef || cached?.modelId || null;
+  });
+  const [isLoading, setIsLoading] = useState(() => !cachedProvider);
   const [isSaving, setIsSaving] = useState(false);
-  const [providerType, setProviderType] = useState<string>("API");
-  const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
-  const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
-  const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
-  const [providerBaseUrl, setProviderBaseUrl] = useState("");
-  const [providerOauthPath, setProviderOauthPath] = useState("");
+  const [providerType, setProviderType] = useState<string>(() => cachedProvider?.type || "API");
+  const [credentialMode, setCredentialMode] = useState<"apiKey" | "oauthFile">(() => cachedProvider?.type === "PLATFORM" ? "oauthFile" : cachedProvider?.credentialMode || "apiKey");
+  const [apiStandard, setApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">(() => cachedProvider?.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui" || "openai");
+  const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>(() => cachedProvider ? inferPlatformLoginPreset({
+    providerType: cachedProvider.type,
+    apiStandard: cachedProvider.apiStandard,
+    baseUrl: cachedProvider.baseUrl,
+    oauthPath: cachedProvider.oauthPath,
+    code: cachedProvider.code,
+    name: cachedProvider.name
+  }) : "codex");
+  const [providerBaseUrl, setProviderBaseUrl] = useState(() => cachedProvider?.baseUrl || "");
+  const [providerOauthPath, setProviderOauthPath] = useState(() => cachedProvider?.oauthPath || "");
   const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
   const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
   // Model Dialog State
@@ -111,16 +124,15 @@ export default function ProviderConfigPage({ params
   const [editingModel, setEditingModel] = useState<AIModel | null>(null);
   const [modelType, setModelType] = useState("TEXT");
   const { toast } = useToast();
-  const fetchProvider = useCallback(async () => {
-    setIsLoading(true);
+  const fetchProvider = useCallback(async (force = false) => {
+    if (!peekAdminJsonCache<AIProvider>(providerPath)) setIsLoading(true);
     try {
-      const [providerRes, controlPlaneRes, defaultModelRes] = await Promise.all([
-      fetch(`/api/providers/${id}`),
-      fetch("/api/model-control-plane", { cache: "no-store" }),
-      fetch("/api/settings/default-agent-model")]
-      );
-      if (providerRes.ok) {
-        const nextProvider = await providerRes.json();
+      const [nextProvider, nextControlPlane, defaultModel] = await Promise.all([
+        fetchAdminJson<AIProvider>(providerPath, { force }),
+        fetchAdminJson<ControlPlanePayload>("/api/model-control-plane", { force }),
+        fetchAdminJson<{ modelRef?: string; modelId?: string }>("/api/settings/default-agent-model", { force })
+      ]);
+      if (nextProvider) {
         const inferredPreset = inferPlatformLoginPreset({
           providerType: nextProvider.type,
           apiStandard: nextProvider.apiStandard,
@@ -136,17 +148,9 @@ export default function ProviderConfigPage({ params
         setPlatformLoginPreset(inferredPreset);
         setProviderBaseUrl(nextProvider.baseUrl || "");
         setProviderOauthPath(nextProvider.oauthPath || "");
-      } else
-      {
-        console.error("Failed to fetch provider");
       }
-      if (controlPlaneRes.ok) {
-        setControlPlane(await controlPlaneRes.json());
-      }
-      if (defaultModelRes.ok) {
-        const data = await defaultModelRes.json();
-        setDefaultModelId(data.modelRef || data.modelId || null);
-      }
+      setControlPlane(nextControlPlane);
+      setDefaultModelId(defaultModel.modelRef || defaultModel.modelId || null);
     }
     catch (error) {
       console.error("Error fetching provider:", error);
@@ -154,7 +158,7 @@ export default function ProviderConfigPage({ params
     {
       setIsLoading(false);
     }
-  }, [id]);
+  }, [providerPath]);
   useEffect(() => {
     fetchProvider();
   }, [fetchProvider]);
@@ -172,7 +176,7 @@ export default function ProviderConfigPage({ params
         headers: { "Content-Type": "application/json" }
       });
       if (res.ok) {
-        await fetchProvider();
+        await fetchProvider(true);
       }
     }
     catch (error) {
@@ -213,7 +217,7 @@ export default function ProviderConfigPage({ params
     }
     setIsModelDialogOpen(false);
     setEditingModel(null);
-    await fetchProvider();
+    await fetchProvider(true);
   };
   const handleDeleteModel = async (model: {
     id: string;

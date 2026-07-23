@@ -16,7 +16,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchAdminJson } from "@/lib/admin-client-cache";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import {
+  fetchConfigDomain,
+  peekConfigDomain,
+  saveConfigDomain,
+  type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 import { tg } from "@/i18n/admin-legacy";
 
 type DiagnosticsProviders = {
@@ -323,8 +328,12 @@ function resolveObservationRisk(entry: WorksetObservationEntry | null | undefine
 
 export default function EngineeringLanePage() {
   const t = useT();
-  const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<EngineeringLaneConfig> | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initialEnvelope] = useState(() => {
+    const cached = peekConfigDomain<EngineeringLaneConfig>("engineering-lane");
+    return cached ? { ...cached, data: asConfig(cached.data) } : null;
+  });
+  const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<EngineeringLaneConfig> | null>(initialEnvelope);
+  const [loading, setLoading] = useState(!initialEnvelope);
   const [saving, setSaving] = useState(false);
   const [proofLoading, setProofLoading] = useState(true);
   const [refreshingProof, setRefreshingProof] = useState(false);
@@ -373,7 +382,7 @@ export default function EngineeringLanePage() {
   }), [worksetObservations, proofSessionFilter, proofRunFilter, proofTaskBriefFilter, decisionSourceFilter, observationStateFilter, outsideFilter, worksetRiskFilter]);
 
   const load = async (force = false) => {
-    setLoading(true);
+    if (!envelope) setLoading(true);
     try {
       const next = await fetchConfigDomain<EngineeringLaneConfig>("engineering-lane", { force });
       setEnvelope({ ...next, data: asConfig(next.data) });

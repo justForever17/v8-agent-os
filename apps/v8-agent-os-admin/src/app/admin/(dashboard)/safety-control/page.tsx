@@ -18,8 +18,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
+import {
+  fetchConfigDomain,
+  peekConfigDomain,
+  saveConfigDomain,
+  type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 import { ti } from "@/i18n/admin-legacy";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
@@ -434,7 +439,7 @@ function applyPreset(config: SafetyData, preset: (typeof PRESET_OPTIONS)[number]
   }
   return next;
 }
-function detectPreset(config: SafetyData) {
+function detectPreset(config: SafetyData): (typeof PRESET_OPTIONS)[number]["key"] {
   if (config.machinePosture === "developer_mixed_host" && config.networkMutationRules?.sensitivePayloadVerdict === "block" && config.computerUseRules?.hotkeyLifecycleVerdict === "block" && config.v8IntegrityRules?.protectedConfigWriteVerdict === "block") {
     return "locked_down_sensitive";
   }
@@ -442,17 +447,27 @@ function detectPreset(config: SafetyData) {
 }
 export default function SafetyControlPage() {
   const t = useT();
-  const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SafetyData> | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialState] = useState(() => {
+    const cachedEnvelope = peekConfigDomain<SafetyData>("safety");
+    const normalized = cachedEnvelope ? normalizeSafetyData(cachedEnvelope.data) : null;
+    const models = peekAdminJsonCache<ModelOption[]>("/api/models");
+    return {
+      envelope: cachedEnvelope && normalized ? { ...cachedEnvelope, data: normalized } : null,
+      models: Array.isArray(models) ? models : [],
+      dashboard: peekAdminJsonCache<SafetyDashboard>("/api/safety/dashboard?limit=80") ?? null,
+      preset: normalized ? detectPreset(normalized) : "dedicated_runtime_host",
+    };
+  });
+  const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SafetyData> | null>(initialState.envelope);
+  const [models, setModels] = useState<ModelOption[]>(initialState.models);
+  const [loading, setLoading] = useState(!initialState.envelope);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>("dedicated_runtime_host");
-  const [dashboard, setDashboard] = useState<SafetyDashboard | null>(null);
+  const [preset, setPreset] = useState<(typeof PRESET_OPTIONS)[number]["key"]>(initialState.preset);
+  const [dashboard, setDashboard] = useState<SafetyDashboard | null>(initialState.dashboard);
   const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
   const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
   const loadConfig = async (force = false) => {
-    setLoading(true);
     try {
       const [next, modelList, safetyDashboard] = await Promise.all([
         fetchConfigDomain<SafetyData>("safety", { force }),

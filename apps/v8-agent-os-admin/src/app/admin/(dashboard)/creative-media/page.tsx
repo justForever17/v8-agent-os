@@ -14,7 +14,7 @@ import { ModelSelect, type AdminModelSelectOption } from "@/components/models/Mo
 import { useT } from "@/components/providers/LocaleProvider";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { useDebugMode } from "@/lib/useDebugMode";
 
 type CreativeMediaData = {
@@ -84,6 +84,8 @@ const EMPTY_DATA: CreativeMediaData = {
     costEntries: [],
     safetyEvents: [],
 };
+
+const CREATIVE_BOOTSTRAP_PATH = "/api/creative-media/bootstrap";
 
 const DEFAULT_OPERATION_ROWS: CreativeOperationRow[] = [
     { operationKind: "image.edit", modality: "image", priority: 100 },
@@ -339,8 +341,13 @@ function normalizeCreativeDiagnostics(value: Record<string, unknown>): Partial<C
 export default function CreativeMediaPage() {
     const t = useT();
     const [debugMode] = useDebugMode();
-    const [data, setData] = useState<CreativeMediaData>(EMPTY_DATA);
-    const [loading, setLoading] = useState(true);
+    const [data, setData] = useState<CreativeMediaData>(() => {
+        const cached = peekAdminJsonCache<Record<string, unknown>>(CREATIVE_BOOTSTRAP_PATH);
+        return cached === undefined ? EMPTY_DATA : normalizeCreativeBootstrap(cached);
+    });
+    const [loading, setLoading] = useState(() => (
+        peekAdminJsonCache<Record<string, unknown>>(CREATIVE_BOOTSTRAP_PATH) === undefined
+    ));
     const [savingModels, setSavingModels] = useState(false);
     const [error, setError] = useState("");
     const [modelPreferencesOpen, setModelPreferencesOpen] = useState(false);
@@ -365,10 +372,10 @@ export default function CreativeMediaPage() {
     }, []);
 
     const fetchData = useCallback(async (force = false) => {
-        setLoading(true);
+        if (peekAdminJsonCache<Record<string, unknown>>(CREATIVE_BOOTSTRAP_PATH) === undefined) setLoading(true);
         setError("");
         try {
-            const payload = await fetchAdminJson<Record<string, unknown>>("/api/creative-media/bootstrap", { force });
+            const payload = await fetchAdminJson<Record<string, unknown>>(CREATIVE_BOOTSTRAP_PATH, { force });
             setData(normalizeCreativeBootstrap(payload));
             void fetchDiagnostics(force);
         } catch (err) {
@@ -435,18 +442,18 @@ export default function CreativeMediaPage() {
             if (!response.ok) {
                 throw new Error(String(payload.detail || payload.error || response.statusText));
             }
+            const nextPreferences = normalizeModelPreferences(payload as Record<string, unknown>);
             setData((current) => ({
                 ...current,
-                modelPreferences: {
-                    candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
-                    connectedOptions: Array.isArray(payload.connectedOptions) ? payload.connectedOptions : [],
-                    diagnosticCandidates: Array.isArray(payload.diagnosticCandidates) ? payload.diagnosticCandidates : [],
-                    operationRows: Array.isArray(payload.operationRows) ? payload.operationRows : [],
-                    policies: payload.policies || {},
-                    updatedAt: payload.updatedAt || "",
-                    version: payload.version,
-                },
+                modelPreferences: nextPreferences,
             }));
+            const cachedBootstrap = peekAdminJsonCache<Record<string, unknown>>(CREATIVE_BOOTSTRAP_PATH);
+            if (cachedBootstrap) {
+                primeAdminJsonCache(CREATIVE_BOOTSTRAP_PATH, {
+                    ...cachedBootstrap,
+                    modelPreferences: payload,
+                });
+            }
         } catch (err) {
             setError(String(err));
         } finally {

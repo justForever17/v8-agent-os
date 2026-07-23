@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
@@ -259,6 +259,7 @@ type ModelHubBootstrapPayload = {
     catalog?: { providers?: CatalogProvider[] };
     audioConfig?: unknown;
 };
+const MODEL_HUB_BOOTSTRAP_URL = "/api/model-hub/bootstrap";
 type AudioVoicePreset = {
     value: string;
     label?: string;
@@ -685,11 +686,12 @@ async function readJsonErrorMessage(response: Response, fallback: string) {
 export default function ModelHubPage() {
     const { toast } = useToast();
     const t = useT();
-    const [providers, setProviders] = useState<AIProvider[]>([]);
-    const [models, setModels] = useState<AIModel[]>([]);
-    const [hubEnvelope, setHubEnvelope] = useState<ConfigRegistryEnvelope<ModelHubPayload> | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [hasLoadedAudioConfig, setHasLoadedAudioConfig] = useState(false);
+    const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL);
+    const [providers, setProviders] = useState<AIProvider[]>(() => Array.isArray(cachedBootstrap?.providers) ? cachedBootstrap.providers : []);
+    const [models, setModels] = useState<AIModel[]>(() => Array.isArray(cachedBootstrap?.models) ? cachedBootstrap.models : []);
+    const [hubEnvelope, setHubEnvelope] = useState<ConfigRegistryEnvelope<ModelHubPayload> | null>(() => cachedBootstrap?.hubEnvelope || null);
+    const [isLoading, setIsLoading] = useState(() => !cachedBootstrap);
+    const [hasLoadedAudioConfig, setHasLoadedAudioConfig] = useState(() => Boolean(cachedBootstrap));
     const [activeTab, setActiveTab] = useState("all");
     const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
     const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -713,8 +715,11 @@ export default function ModelHubPage() {
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
     const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
-    const [defaultModelRef, setDefaultModelRef] = useState<string | null>(null);
-    const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>([]);
+    const [defaultModelRef, setDefaultModelRef] = useState<string | null>(() => {
+        const value = cachedBootstrap?.defaultModel || {};
+        return value.modelRef || value.modelId || value.value || null;
+    });
+    const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>(() => Array.isArray(cachedBootstrap?.catalog?.providers) ? cachedBootstrap.catalog.providers : []);
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
     const [catalogRuntimeProtocol, setCatalogRuntimeProtocol] = useState<CatalogRuntimeProtocol>("default");
     const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("");
@@ -740,7 +745,7 @@ export default function ModelHubPage() {
     } | null>(null);
     const [manualModelEntryEnabled, setManualModelEntryEnabled] = useState(false);
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
-    const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(DEFAULT_AUDIO_CONFIG);
+    const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(() => mergeAudioConfig(cachedBootstrap?.audioConfig || null));
     const [isAudioSaving, setIsAudioSaving] = useState(false);
     const [customTtsRemoteVoices, setCustomTtsRemoteVoices] = useState<AudioVoiceOption[]>([]);
     const [isCustomTtsVoiceLoading, setIsCustomTtsVoiceLoading] = useState(false);
@@ -768,9 +773,9 @@ export default function ModelHubPage() {
     const [isTtsPreviewing, setIsTtsPreviewing] = useState(false);
     const selectedTtsModelRefRef = useRef("");
     const fetchData = async (force = false, keepModelOrder = false) => {
-        setIsLoading(true);
+        if (!peekAdminJsonCache(MODEL_HUB_BOOTSTRAP_URL)) setIsLoading(true);
         try {
-            const payload = await fetchAdminJson<ModelHubBootstrapPayload>("/api/model-hub/bootstrap", { force, ttlMs: 30_000 });
+            const payload = await fetchAdminJson<ModelHubBootstrapPayload>(MODEL_HUB_BOOTSTRAP_URL, { force, ttlMs: 30_000 });
             setProviders(Array.isArray(payload.providers) ? payload.providers : []);
             const nextModels = Array.isArray(payload.models) ? payload.models : [];
             setModels((current) => keepModelOrder ? preserveModelOrder(current, nextModels) : nextModels);

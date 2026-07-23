@@ -18,7 +18,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { resolveAdminLabel } from "@/lib/admin-labels";
-import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import {
+    fetchConfigDomain,
+    peekConfigDomain,
+    saveConfigDomain,
+    type ConfigRegistryEnvelope,
+} from "@/lib/config-registry";
 
 type SystemBaseData = {
     bridge?: {
@@ -288,8 +293,8 @@ function deriveDesktopLivePreset(config?: SystemBaseData["desktopLive"]): Deskto
 
 export default function SystemBasePage() {
     const t = useT();
-    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [initialEnvelope] = useState(() => peekConfigDomain<SystemBaseData>("system-base") ?? null);
+    const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(initialEnvelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [headscaleBusy, setHeadscaleBusy] = useState(false);
@@ -300,13 +305,8 @@ export default function SystemBasePage() {
     const [headscaleData, setHeadscaleData] = useState<HeadscalePanelData>({});
 
     const loadData = async () => {
-        setLoading(true);
-        try {
-            const next = await fetchConfigDomain<SystemBaseData>("system-base");
-            setEnvelope(next);
-        } finally {
-            setLoading(false);
-        }
+        const next = await fetchConfigDomain<SystemBaseData>("system-base");
+        setEnvelope(next);
     };
 
     useEffect(() => {
@@ -474,7 +474,7 @@ export default function SystemBasePage() {
         }));
     };
 
-    if (loading || !envelope) {
+    if (!envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />

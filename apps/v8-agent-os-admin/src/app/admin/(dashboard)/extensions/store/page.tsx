@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 
 type StoreTab = "skills" | "mcp";
@@ -146,12 +147,14 @@ function StoreIcon({ item }: { item: McpStoreItem }) {
 export default function ExtensionsStorePage() {
     const t = useT();
     const { toast } = useToast();
+    const cachedSkills = peekAdminJsonCache<StoreListResponse<SkillStoreItem>>("/api/extensions/store/skills?limit=30");
+    const cachedMcp = peekAdminJsonCache<StoreListResponse<McpStoreItem>>("/api/extensions/store/mcp?limit=30");
     const [activeTab, setActiveTab] = useState<StoreTab>("skills");
     const [isSwitcherVisible, setIsSwitcherVisible] = useState(true);
     const [query, setQuery] = useState("");
     const [debouncedQuery, setDebouncedQuery] = useState("");
-    const [skills, setSkills] = useState<StoreListResponse<SkillStoreItem> | null>(null);
-    const [mcp, setMcp] = useState<StoreListResponse<McpStoreItem> | null>(null);
+    const [skills, setSkills] = useState<StoreListResponse<SkillStoreItem> | null>(cachedSkills || null);
+    const [mcp, setMcp] = useState<StoreListResponse<McpStoreItem> | null>(cachedMcp || null);
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [loadError, setLoadError] = useState("");
@@ -205,15 +208,22 @@ export default function ExtensionsStorePage() {
         const params = new URLSearchParams();
         if (debouncedQuery) params.set("query", debouncedQuery);
         params.set("limit", "30");
-        if (refresh) params.set("refresh", "true");
+        const path = activeTab === "skills" ? "skills" : "mcp";
+        const cacheUrl = `/api/extensions/store/${path}?${params.toString()}`;
+        const cached = peekAdminJsonCache<StoreListResponse<SkillStoreItem | McpStoreItem>>(cacheUrl);
         setLoadError("");
         if (refresh) setRefreshing(true);
-        else setLoading(true);
+        else if (!cached) setLoading(true);
         try {
-            const path = activeTab === "skills" ? "skills" : "mcp";
-            const res = await fetch(`/api/extensions/store/${path}?${params.toString()}`, { cache: "no-store" });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(errorMessage(data, t("app.admin.dashboard.extensions.store.page.loadFailed")));
+            let data: StoreListResponse<SkillStoreItem | McpStoreItem>;
+            if (refresh) {
+                const refreshParams = new URLSearchParams(params);
+                refreshParams.set("refresh", "true");
+                data = await fetchAdminJson<StoreListResponse<SkillStoreItem | McpStoreItem>>(`/api/extensions/store/${path}?${refreshParams.toString()}`, { force: true });
+                primeAdminJsonCache(cacheUrl, data);
+            } else {
+                data = await fetchAdminJson<StoreListResponse<SkillStoreItem | McpStoreItem>>(cacheUrl);
+            }
             if (activeTab === "skills") setSkills(data as StoreListResponse<SkillStoreItem>);
             else setMcp(data as StoreListResponse<McpStoreItem>);
         } catch (error) {

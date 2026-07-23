@@ -16,6 +16,7 @@ import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { ag, tg, ti } from "@/i18n/admin-legacy";
 import { translateCurrentClient } from "@/lib/locale";
+import { fetchAdminJson, peekAdminJsonCache } from "@/lib/admin-client-cache";
 type AvailabilityPayload = {
   robotFramework?: boolean;
   rpaFramework?: boolean;
@@ -247,6 +248,18 @@ type RunRecord = {
   created_at?: string;
   metadata?: Record<string, unknown>;
 };
+type DraftListPayload = { drafts?: DraftPayload[] };
+type ScriptListPayload = { scripts?: ScriptPayload[] };
+type TemplateListPayload = { templates?: TemplatePayload[]; summary?: TemplateSummaryPayload };
+type ApprovalListPayload = { approvals?: ApprovalRecord[] };
+type RunListPayload = { runs?: RunRecord[] };
+
+const RPA_AVAILABILITY_URL = "/api/rpa/availability";
+const RPA_SCRIPTS_URL = "/api/rpa/scripts";
+const RPA_APPROVALS_URL = "/api/approvals?status=pending";
+const RPA_RUNS_URL = "/api/runs?limit=20";
+const rpaDraftsUrl = (includeArchived: boolean) => `/api/rpa/drafts?includeArchived=${includeArchived ? "true" : "false"}`;
+const rpaTemplatesUrl = (includeArchived: boolean) => `/api/rpa/templates?includeArchived=${includeArchived ? "true" : "false"}`;
 type RecordingSessionPayload = {
   recordingSessionId: string;
   traceRunId: string;
@@ -874,21 +887,29 @@ export function RPAWorkbench() {
     toast
   } = useToast();
   const t = useT();
-  const [loading, setLoading] = useState(true);
+  const cachedAvailability = peekAdminJsonCache<AvailabilityPayload>(RPA_AVAILABILITY_URL);
+  const cachedDrafts = peekAdminJsonCache<DraftListPayload>(rpaDraftsUrl(false));
+  const cachedScripts = peekAdminJsonCache<ScriptListPayload>(RPA_SCRIPTS_URL);
+  const cachedTemplates = peekAdminJsonCache<TemplateListPayload>(rpaTemplatesUrl(false));
+  const cachedApprovals = peekAdminJsonCache<ApprovalListPayload>(RPA_APPROVALS_URL);
+  const cachedRuns = peekAdminJsonCache<RunListPayload>(RPA_RUNS_URL);
+  const initialDrafts = Array.isArray(cachedDrafts?.drafts) ? cachedDrafts.drafts : [];
+  const initialTemplates = Array.isArray(cachedTemplates?.templates) ? cachedTemplates.templates : [];
+  const [loading, setLoading] = useState(cachedAvailability === undefined || cachedDrafts === undefined || cachedTemplates === undefined);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [availability, setAvailability] = useState<AvailabilityPayload>({});
-  const [drafts, setDrafts] = useState<DraftPayload[]>([]);
-  const [scripts, setScripts] = useState<ScriptPayload[]>([]);
-  const [templates, setTemplates] = useState<TemplatePayload[]>([]);
+  const [availability, setAvailability] = useState<AvailabilityPayload>(cachedAvailability || {});
+  const [drafts, setDrafts] = useState<DraftPayload[]>(initialDrafts);
+  const [scripts, setScripts] = useState<ScriptPayload[]>(Array.isArray(cachedScripts?.scripts) ? cachedScripts.scripts : []);
+  const [templates, setTemplates] = useState<TemplatePayload[]>(initialTemplates);
   const [showArchivedDrafts, setShowArchivedDrafts] = useState(false);
   const [showArchivedTemplates, setShowArchivedTemplates] = useState(false);
-  const [templateSummary, setTemplateSummary] = useState<TemplateSummaryPayload>({});
+  const [templateSummary, setTemplateSummary] = useState<TemplateSummaryPayload>(cachedTemplates?.summary || {});
   const [templateHistory, setTemplateHistory] = useState<TemplateHistoryRecord[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
-  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>(Array.isArray(cachedApprovals?.approvals) ? cachedApprovals.approvals : []);
+  const [runs, setRuns] = useState<RunRecord[]>(Array.isArray(cachedRuns?.runs) ? cachedRuns.runs : []);
   const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [selectedDraftId, setSelectedDraftId] = useState<string>("");
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(initialTemplates[0]?.id || "");
   const [studioDirty, setStudioDirty] = useState(false);
   const [templateNote, setTemplateNote] = useState("");
   const [variablesText, setVariablesText] = useState("{}");
@@ -1292,44 +1313,36 @@ export function RPAWorkbench() {
   const isRpaApproval = (approval: ApprovalRecord) => String(approval.approval_kind || "").startsWith("rpa") || !!approval.request?.rpa || String(approval.session_id || "").startsWith("rpa:");
   const rpaRuns = useMemo(() => runs.filter(isRpaRun).slice(0, 8), [runs]);
   const rpaApprovals = useMemo(() => approvals.filter(isRpaApproval), [approvals]);
-  const loadAll = useCallback(async () => {
-    setLoading(true);
+  const loadAll = useCallback(async (force = false) => {
+    const draftsUrl = rpaDraftsUrl(showArchivedDrafts);
+    const templatesUrl = rpaTemplatesUrl(showArchivedTemplates);
+    if ([RPA_AVAILABILITY_URL, draftsUrl, RPA_SCRIPTS_URL, templatesUrl, RPA_APPROVALS_URL, RPA_RUNS_URL]
+      .some((url) => peekAdminJsonCache(url) === undefined)) {
+      setLoading(true);
+    }
     try {
-      const [availabilityRes, draftsRes, scriptsRes, templatesRes, approvalsRes, runsRes] = await Promise.all([fetch("/api/rpa/availability", {
-        cache: "no-store"
-      }), fetch(`/api/rpa/drafts?includeArchived=${showArchivedDrafts ? "true" : "false"}`, {
-        cache: "no-store"
-      }), fetch("/api/rpa/scripts", {
-        cache: "no-store"
-      }), fetch(`/api/rpa/templates?includeArchived=${showArchivedTemplates ? "true" : "false"}`, {
-        cache: "no-store"
-      }), fetch("/api/approvals?status=pending", {
-        cache: "no-store"
-      }), fetch("/api/runs?limit=20", {
-        cache: "no-store"
-      })]);
-      const nextAvailability = availabilityRes.ok ? await availabilityRes.json() : {};
-      const nextDraftsPayload = draftsRes.ok ? await draftsRes.json() : {};
-      const nextScriptsPayload = scriptsRes.ok ? await scriptsRes.json() : {};
-      const nextTemplatesPayload = templatesRes.ok ? await templatesRes.json() : {};
-      const approvalsData = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
-      const runsData = runsRes.ok ? await runsRes.json().catch(() => ({})) : {};
+      const [nextAvailability, nextDraftsPayload, nextScriptsPayload, nextTemplatesPayload, approvalsData, runsData] = await Promise.all([
+        fetchAdminJson<AvailabilityPayload>(RPA_AVAILABILITY_URL, { force }),
+        fetchAdminJson<DraftListPayload>(draftsUrl, { force }),
+        fetchAdminJson<ScriptListPayload>(RPA_SCRIPTS_URL, { force }),
+        fetchAdminJson<TemplateListPayload>(templatesUrl, { force }),
+        fetchAdminJson<ApprovalListPayload>(RPA_APPROVALS_URL, { force }),
+        fetchAdminJson<RunListPayload>(RPA_RUNS_URL, { force }),
+      ]);
       setAvailability(nextAvailability || {});
-      const nextDrafts = Array.isArray(nextDraftsPayload?.drafts) ? nextDraftsPayload.drafts : [];
-      const nextScripts = Array.isArray(nextScriptsPayload?.scripts) ? nextScriptsPayload.scripts : [];
-      const nextTemplates = Array.isArray(nextTemplatesPayload?.templates) ? nextTemplatesPayload.templates : [];
+      const nextDrafts = Array.isArray(nextDraftsPayload.drafts) ? nextDraftsPayload.drafts : [];
+      const nextScripts = Array.isArray(nextScriptsPayload.scripts) ? nextScriptsPayload.scripts : [];
+      const nextTemplates = Array.isArray(nextTemplatesPayload.templates) ? nextTemplatesPayload.templates : [];
       setDrafts(nextDrafts);
       setScripts(nextScripts);
       setTemplates(nextTemplates);
-      setTemplateSummary(nextTemplatesPayload?.summary || {});
-      setApprovals(Array.isArray(approvalsData?.approvals) ? approvalsData.approvals : []);
-      setRuns(Array.isArray(runsData?.runs) ? runsData.runs : []);
-      if (selectedDraftId && !nextDrafts.some((draft: DraftPayload) => draft.id === selectedDraftId)) {
-        setSelectedDraftId("");
-      }
-      if (!selectedTemplateId && nextTemplates[0]?.id) {
-        setSelectedTemplateId(nextTemplates[0].id);
-      }
+      setTemplateSummary(nextTemplatesPayload.summary || {});
+      setApprovals(Array.isArray(approvalsData.approvals) ? approvalsData.approvals : []);
+      setRuns(Array.isArray(runsData.runs) ? runsData.runs : []);
+      setSelectedDraftId((currentId) => currentId && nextDrafts.some((draft) => draft.id === currentId) ? currentId : "");
+      setSelectedTemplateId((currentId) => currentId && nextTemplates.some((template) => template.id === currentId)
+        ? currentId
+        : nextTemplates[0]?.id || "");
     } catch (error) {
       console.error("[RPAWorkbench] load failed:", error);
       toast({
@@ -1340,7 +1353,7 @@ export function RPAWorkbench() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDraftId, selectedTemplateId, showArchivedDrafts, showArchivedTemplates, toast, t]);
+  }, [showArchivedDrafts, showArchivedTemplates, toast, t]);
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
@@ -1457,7 +1470,7 @@ export function RPAWorkbench() {
           value1: data.status
         }) : tg(t, "3d8c4a5f")
       });
-      await loadAll();
+      await loadAll(true);
       return data;
     } catch (error) {
       console.error(`[RPAWorkbench] ${actionKey} failed:`, error);
@@ -2642,7 +2655,7 @@ export function RPAWorkbench() {
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">{tg(t, "545938bb")}</h1>
                 </div>
-                <Button variant="outline" onClick={() => void loadAll()} disabled={loading || !!busyAction}>
+                <Button variant="outline" onClick={() => void loadAll(true)} disabled={loading || !!busyAction}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                     {t("app.admin.dashboard.creativeMedia.refresh")}
                 </Button>

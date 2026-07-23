@@ -19,6 +19,40 @@ from core.audio.tts_provider import (
 )
 
 
+def test_audio_config_keeps_edge_tts_as_the_exact_default_baseline():
+    normalized = _normalize_audio_config({})
+
+    assert normalized["tts"]["active_provider"] == "edge-tts"
+    assert normalized["tts"]["edge_tts"] == {
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "rate": "+0%",
+        "volume": "+0%",
+    }
+
+
+def test_audio_config_preserves_explicit_edge_tts_settings_while_other_voice_features_change():
+    normalized = _normalize_audio_config(
+        {
+            "tts": {
+                "active_provider": "edge-tts",
+                "edge_tts": {
+                    "voice": "en-US-AriaNeural",
+                    "rate": "+12%",
+                    "volume": "-4%",
+                },
+                "model_ref": {"modelRef": "minimax::speech-2.8-hd", "voice": "custom-voice"},
+            }
+        }
+    )
+
+    assert normalized["tts"]["active_provider"] == "edge-tts"
+    assert normalized["tts"]["edge_tts"] == {
+        "voice": "en-US-AriaNeural",
+        "rate": "+12%",
+        "volume": "-4%",
+    }
+
+
 def test_audio_config_preserves_model_ref_sections():
     normalized = _normalize_audio_config(
         {

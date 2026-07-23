@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { fetchAdminJson } from "@/lib/admin-client-cache";
 import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
@@ -277,11 +278,41 @@ type TtsVoiceCapabilities = {
     list?: boolean;
     delete?: boolean;
     preview?: boolean;
+    commit?: boolean;
+};
+type TtsVoiceAssetPolicy = {
+    assetScope?: "durable_remote" | "provider_slot" | "ephemeral_request" | "qualification_only" | string;
+    inventorySource?: "remote" | "local_projection" | "none" | string;
+    designFlow?: "direct" | "ephemeral" | "preview_then_commit" | "qualification_only" | string;
+    eligibilityStatus?: "available" | "eligible" | "requires_approval" | string;
+    consentRequired?: boolean;
+    docsUrl?: string;
+    applicationUrl?: string;
+};
+type TtsVoiceDesignCandidate = {
+    generatedVoiceId: string;
+    previewAudio: string;
+};
+type TtsVoiceTextConstraint = {
+    required?: boolean;
+    minChars?: number;
+    maxChars?: number | null;
+};
+type TtsVoiceDesignConstraints = {
+    prompt?: TtsVoiceTextConstraint;
+    previewText?: TtsVoiceTextConstraint;
+    voiceId?: TtsVoiceTextConstraint & {
+        role?: "none" | "custom_id" | "prefix" | "provider_slot" | string;
+        format?: string;
+    };
 };
 type TtsVoiceProviderInfo = {
     modelRef?: string;
     provider?: string;
     capabilities?: TtsVoiceCapabilities;
+    assetPolicy?: TtsVoiceAssetPolicy;
+    designConstraints?: TtsVoiceDesignConstraints;
+    credentialStatus?: "configured" | "missing";
     sampleLimits?: {
         minDurationSeconds?: number;
         maxDurationSeconds?: number;
@@ -658,6 +689,7 @@ export default function ModelHubPage() {
     const [models, setModels] = useState<AIModel[]>([]);
     const [hubEnvelope, setHubEnvelope] = useState<ConfigRegistryEnvelope<ModelHubPayload> | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [hasLoadedAudioConfig, setHasLoadedAudioConfig] = useState(false);
     const [activeTab, setActiveTab] = useState("all");
     const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
     const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -722,6 +754,15 @@ export default function ModelHubPage() {
     const [ttsClonePreviewText, setTtsClonePreviewText] = useState("");
     const [isTtsCloning, setIsTtsCloning] = useState(false);
     const [isTtsClonePanelOpen, setIsTtsClonePanelOpen] = useState(false);
+    const [isTtsDesignPanelOpen, setIsTtsDesignPanelOpen] = useState(false);
+    const [ttsDesignPrompt, setTtsDesignPrompt] = useState("");
+    const [ttsDesignPreviewText, setTtsDesignPreviewText] = useState("");
+    const [ttsDesignVoiceId, setTtsDesignVoiceId] = useState("");
+    const [ttsDesignVoiceName, setTtsDesignVoiceName] = useState("");
+    const [ttsDesignCandidates, setTtsDesignCandidates] = useState<TtsVoiceDesignCandidate[]>([]);
+    const [ttsVoiceOperationPreviewUrl, setTtsVoiceOperationPreviewUrl] = useState("");
+    const [isTtsDesigning, setIsTtsDesigning] = useState(false);
+    const [committingTtsDesignId, setCommittingTtsDesignId] = useState<string | null>(null);
     const [ttsPreviewText, setTtsPreviewText] = useState("");
     const [ttsPreviewUrl, setTtsPreviewUrl] = useState("");
     const [isTtsPreviewing, setIsTtsPreviewing] = useState(false);
@@ -735,6 +776,7 @@ export default function ModelHubPage() {
             setModels((current) => keepModelOrder ? preserveModelOrder(current, nextModels) : nextModels);
             setHubEnvelope(payload.hubEnvelope || null);
             setAudioConfig(mergeAudioConfig(payload.audioConfig || null));
+            setHasLoadedAudioConfig(true);
             const defaultData = payload.defaultModel || {};
             setDefaultModelRef(defaultData.modelRef || defaultData.modelId || defaultData.value || null);
             const catalogData = payload.catalog || {};
@@ -836,12 +878,48 @@ export default function ModelHubPage() {
     const selectedTtsModelRef = audioConfig.tts.model_ref?.modelRef || "";
     selectedTtsModelRefRef.current = selectedTtsModelRef;
     const modelRefTtsVoiceCapabilities = modelRefTtsVoiceInfo?.capabilities || {};
+    const modelRefTtsVoiceAssetPolicy = modelRefTtsVoiceInfo?.assetPolicy;
+    const modelRefTtsVoiceDesignConstraints = modelRefTtsVoiceInfo?.designConstraints;
+    const isQualificationOnlyVoice = modelRefTtsVoiceAssetPolicy?.assetScope === "qualification_only";
+    const isEphemeralReferenceVoice = modelRefTtsVoiceAssetPolicy?.assetScope === "ephemeral_request";
+    const isProviderSlotVoice = modelRefTtsVoiceAssetPolicy?.assetScope === "provider_slot";
+    const ttsVoiceDesignIdRole = modelRefTtsVoiceDesignConstraints?.voiceId?.role || "none";
+    const isTtsVoiceDesignIdVisible = ttsVoiceDesignIdRole !== "none";
+    const isTtsVoiceDesignIdRequired = modelRefTtsVoiceDesignConstraints?.voiceId?.required === true;
+    const ttsDesignPromptMinChars = modelRefTtsVoiceDesignConstraints?.prompt?.minChars ?? 1;
+    const ttsDesignPromptMaxChars = modelRefTtsVoiceDesignConstraints?.prompt?.maxChars ?? undefined;
+    const ttsDesignPreviewMinChars = modelRefTtsVoiceDesignConstraints?.previewText?.minChars ?? 1;
+    const ttsDesignPreviewMaxChars = modelRefTtsVoiceDesignConstraints?.previewText?.maxChars ?? undefined;
+    const ttsDesignVoiceIdMinChars = modelRefTtsVoiceDesignConstraints?.voiceId?.minChars ?? undefined;
+    const ttsDesignVoiceIdMaxChars = modelRefTtsVoiceDesignConstraints?.voiceId?.maxChars ?? undefined;
+    const ttsDesignVoiceIdFormat = modelRefTtsVoiceDesignConstraints?.voiceId?.format || "";
+    const ttsDesignVoiceIdPlaceholderKey = ttsVoiceDesignIdRole === "provider_slot"
+        ? "app.admin.dashboard.model.hub.audio.voiceSlotPlaceholder"
+        : ttsVoiceDesignIdRole === "prefix"
+            ? "app.admin.dashboard.model.hub.audio.voicePrefixPlaceholder"
+            : "app.admin.dashboard.model.hub.audio.voiceCustomIdPlaceholder";
+    const isTtsDesignVoiceIdFormatValid = !ttsDesignVoiceId.trim()
+        || (ttsDesignVoiceIdFormat === "ascii_identifier"
+            ? /^[A-Za-z][A-Za-z0-9_-]*[A-Za-z0-9]$/.test(ttsDesignVoiceId.trim())
+            : ttsDesignVoiceIdFormat === "ascii_alphanumeric"
+                ? /^[A-Za-z0-9]+$/.test(ttsDesignVoiceId.trim())
+                : true);
+    const isTtsDesignInputValid = ttsDesignPrompt.trim().length >= ttsDesignPromptMinChars
+        && (ttsDesignPromptMaxChars === undefined || ttsDesignPrompt.trim().length <= ttsDesignPromptMaxChars)
+        && ttsDesignPreviewText.trim().length >= ttsDesignPreviewMinChars
+        && (ttsDesignPreviewMaxChars === undefined || ttsDesignPreviewText.trim().length <= ttsDesignPreviewMaxChars)
+        && (!isTtsVoiceDesignIdRequired || Boolean(ttsDesignVoiceId.trim()))
+        && (!ttsDesignVoiceId.trim() || ttsDesignVoiceIdMinChars === undefined || ttsDesignVoiceId.trim().length >= ttsDesignVoiceIdMinChars)
+        && (!ttsDesignVoiceId.trim() || ttsDesignVoiceIdMaxChars === undefined || ttsDesignVoiceId.trim().length <= ttsDesignVoiceIdMaxChars)
+        && isTtsDesignVoiceIdFormatValid;
+    const isModelRefVoiceCredentialMissing = modelRefTtsVoiceInfo?.credentialStatus === "missing";
     const isManagedModelRefTtsVoice = audioConfig.tts.active_provider === "model_ref"
         && modelRefTtsVoiceInfo?.modelRef === selectedTtsModelRef
         && Boolean(modelRefTtsVoiceInfo?.provider)
-        && Object.values(modelRefTtsVoiceCapabilities).some(Boolean);
+        && (Boolean(modelRefTtsVoiceAssetPolicy) || Object.values(modelRefTtsVoiceCapabilities).some(Boolean));
     const selectedModelRefTtsVoice = modelRefTtsVoices.find((voice) => voice.value === audioConfig.tts.model_ref?.voice);
-    const isConfiguredModelRefTtsVoiceUnavailable = modelRefTtsVoiceListState === "loaded"
+    const isConfiguredModelRefTtsVoiceUnavailable = modelRefTtsVoiceCapabilities.list === true
+        && modelRefTtsVoiceListState === "loaded"
         && Boolean(audioConfig.tts.model_ref?.voice)
         && !selectedModelRefTtsVoice;
     const customSttProtocol = audioConfig.stt.providers.custom.protocol || "multipart";
@@ -873,6 +951,13 @@ export default function ModelHubPage() {
         setTtsCloneVoiceId("");
         setTtsClonePreviewText("");
         setIsTtsClonePanelOpen(false);
+        setIsTtsDesignPanelOpen(false);
+        setTtsDesignPrompt("");
+        setTtsDesignPreviewText("");
+        setTtsDesignVoiceId("");
+        setTtsDesignVoiceName("");
+        setTtsDesignCandidates([]);
+        setTtsVoiceOperationPreviewUrl("");
     }, [selectedTtsModelRef]);
     useEffect(() => {
         if (audioConfig.tts.active_provider !== "model_ref" || !selectedTtsModelRef) return;
@@ -896,6 +981,9 @@ export default function ModelHubPage() {
                     modelRef: selectedTtsModelRef,
                     provider: typeof payload.provider === "string" ? payload.provider : undefined,
                     capabilities: payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : undefined,
+                    assetPolicy: payload.assetPolicy && typeof payload.assetPolicy === "object" ? payload.assetPolicy : undefined,
+                    designConstraints: payload.designConstraints && typeof payload.designConstraints === "object" ? payload.designConstraints : undefined,
+                    credentialStatus: payload.credentialStatus === "configured" ? "configured" : "missing",
                     sampleLimits: payload.sampleLimits && typeof payload.sampleLimits === "object" ? payload.sampleLimits : undefined,
                 });
                 if (payload.capabilities?.list !== true) {
@@ -1623,6 +1711,9 @@ export default function ModelHubPage() {
                 modelRef: selectedTtsModelRef,
                 provider: typeof payload.provider === "string" ? payload.provider : undefined,
                 capabilities: payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : undefined,
+                assetPolicy: payload.assetPolicy && typeof payload.assetPolicy === "object" ? payload.assetPolicy : undefined,
+                designConstraints: payload.designConstraints && typeof payload.designConstraints === "object" ? payload.designConstraints : undefined,
+                credentialStatus: payload.credentialStatus === "configured" ? "configured" : "missing",
                 sampleLimits: payload.sampleLimits && typeof payload.sampleLimits === "object" ? payload.sampleLimits : undefined,
             });
             if (notify) {
@@ -1666,10 +1757,17 @@ export default function ModelHubPage() {
         }
     };
     const handleCloneModelRefTtsVoice = async () => {
-        if (!selectedTtsModelRef || !ttsCloneFile || !ttsCloneVoiceId.trim()) {
+        if (
+            !selectedTtsModelRef
+            || !ttsCloneFile
+            || (!isEphemeralReferenceVoice && !ttsCloneVoiceId.trim())
+            || (isEphemeralReferenceVoice && !ttsClonePreviewText.trim())
+        ) {
             toast({
                 variant: "destructive",
-                title: t("app.admin.dashboard.model.hub.audio.voiceCloneMissing"),
+                title: t(isEphemeralReferenceVoice
+                    ? "app.admin.dashboard.model.hub.audio.referenceVoiceMissing"
+                    : "app.admin.dashboard.model.hub.audio.voiceCloneMissing"),
             });
             return;
         }
@@ -1678,7 +1776,7 @@ export default function ModelHubPage() {
             const formData = new FormData();
             formData.append("action", "clone_from_upload");
             formData.append("modelRef", selectedTtsModelRef);
-            formData.append("voiceId", ttsCloneVoiceId.trim());
+            if (ttsCloneVoiceId.trim()) formData.append("voiceId", ttsCloneVoiceId.trim());
             if (ttsClonePreviewText.trim()) formData.append("previewText", ttsClonePreviewText.trim());
             formData.append("file", ttsCloneFile);
             const response = await fetch("/api/audio/model-ref-voices", {
@@ -1690,6 +1788,9 @@ export default function ModelHubPage() {
                 modelRef: selectedTtsModelRef,
                 provider: typeof payload.provider === "string" ? payload.provider : modelRefTtsVoiceInfo?.provider,
                 capabilities: payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : modelRefTtsVoiceInfo?.capabilities,
+                assetPolicy: payload.assetPolicy && typeof payload.assetPolicy === "object" ? payload.assetPolicy : modelRefTtsVoiceInfo?.assetPolicy,
+                designConstraints: payload.designConstraints && typeof payload.designConstraints === "object" ? payload.designConstraints : modelRefTtsVoiceInfo?.designConstraints,
+                credentialStatus: payload.credentialStatus === "configured" ? "configured" : modelRefTtsVoiceInfo?.credentialStatus,
                 sampleLimits: payload.sampleLimits && typeof payload.sampleLimits === "object" ? payload.sampleLimits : modelRefTtsVoiceInfo?.sampleLimits,
             });
             if (!response.ok || payload.ok === false) {
@@ -1700,14 +1801,25 @@ export default function ModelHubPage() {
                 });
                 return;
             }
+            const operationPreview = String(payload.previewAudio || payload.previewAudioUrl || "");
+            if (operationPreview) setTtsVoiceOperationPreviewUrl(operationPreview);
+            if (payload.ephemeral === true || modelRefTtsVoiceAssetPolicy?.assetScope === "ephemeral_request") {
+                setTtsCloneFile(null);
+                toast({ title: t("app.admin.dashboard.model.hub.audio.referenceVoiceReady") });
+                return;
+            }
             const clonedVoiceId = String(payload.voiceId || ttsCloneVoiceId.trim());
+            if (!clonedVoiceId) {
+                toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.voiceCloneFailed") });
+                return;
+            }
             setModelRefTtsVoices((current) => [
                 {
                     value: clonedVoiceId,
                     label: clonedVoiceId,
                     group: "custom",
-                    deletable: true,
-                    source: "local_ledger",
+                    deletable: modelRefTtsVoiceCapabilities.delete === true,
+                    source: modelRefTtsVoiceAssetPolicy?.inventorySource === "remote" ? "remote" : "local_projection",
                     availability: String(payload.availability || "pending_activation"),
                 },
                 ...current.filter((voice) => voice.value !== clonedVoiceId),
@@ -1719,9 +1831,125 @@ export default function ModelHubPage() {
             setTtsClonePreviewText("");
             setIsTtsClonePanelOpen(false);
             toast({ title: t("app.admin.dashboard.model.hub.audio.voiceCloneSuccess"), description: clonedVoiceId });
-            await handleFetchModelRefTtsVoices(false);
+            if (modelRefTtsVoiceCapabilities.list === true) await handleFetchModelRefTtsVoices(false);
         } finally {
             setIsTtsCloning(false);
+        }
+    };
+    const handleDesignModelRefTtsVoice = async () => {
+        if (!selectedTtsModelRef || !ttsDesignPrompt.trim() || !ttsDesignPreviewText.trim()) {
+            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.voiceDesignMissing") });
+            return;
+        }
+        if (isTtsVoiceDesignIdRequired && !ttsDesignVoiceId.trim()) {
+            const titleKey = ttsVoiceDesignIdRole === "provider_slot"
+                ? "app.admin.dashboard.model.hub.audio.voiceSlotRequired"
+                : ttsVoiceDesignIdRole === "prefix"
+                    ? "app.admin.dashboard.model.hub.audio.voicePrefixRequired"
+                    : "app.admin.dashboard.model.hub.audio.voiceCustomIdRequired";
+            toast({ variant: "destructive", title: t(titleKey) });
+            return;
+        }
+        if (!isTtsDesignInputValid) {
+            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.voiceDesignConstraintInvalid") });
+            return;
+        }
+        setIsTtsDesigning(true);
+        setTtsDesignCandidates([]);
+        try {
+            const response = await fetch("/api/audio/model-ref-voices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "design",
+                    modelRef: selectedTtsModelRef,
+                    prompt: ttsDesignPrompt.trim(),
+                    previewText: ttsDesignPreviewText.trim(),
+                    voiceId: ttsDesignVoiceId.trim(),
+                    voiceName: ttsDesignVoiceName.trim(),
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.ok === false) {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.audio.voiceDesignFailed"),
+                    description: voiceManagerErrorText(payload, t("app.admin.dashboard.model.hub.audio.voiceDesignFailed")),
+                });
+                return;
+            }
+            const candidates = Array.isArray(payload.candidates)
+                ? payload.candidates.filter((item: unknown): item is TtsVoiceDesignCandidate => {
+                    const candidate = item as Partial<TtsVoiceDesignCandidate>;
+                    return typeof candidate.generatedVoiceId === "string" && typeof candidate.previewAudio === "string";
+                })
+                : [];
+            setTtsDesignCandidates(candidates);
+            const operationPreview = String(payload.previewAudio || payload.previewAudioUrl || candidates[0]?.previewAudio || "");
+            if (operationPreview) setTtsVoiceOperationPreviewUrl(operationPreview);
+            if (payload.ephemeral === true || isEphemeralReferenceVoice) {
+                toast({ title: t("app.admin.dashboard.model.hub.audio.referenceVoiceReady") });
+                return;
+            }
+            const designedVoiceId = String(payload.voiceId || "").trim();
+            if (designedVoiceId) {
+                setModelRefTtsVoices((current) => [
+                    {
+                        value: designedVoiceId,
+                        label: ttsDesignVoiceName.trim() || designedVoiceId,
+                        group: "generated",
+                        deletable: modelRefTtsVoiceCapabilities.delete === true,
+                        source: modelRefTtsVoiceAssetPolicy?.inventorySource === "remote" ? "remote" : "local_projection",
+                        availability: String(payload.availability || "available"),
+                    },
+                    ...current.filter((voice) => voice.value !== designedVoiceId),
+                ]);
+                setTtsModelRefValue("voice", designedVoiceId);
+                if (modelRefTtsVoiceCapabilities.list === true) await handleFetchModelRefTtsVoices(false);
+            }
+            toast({ title: t("app.admin.dashboard.model.hub.audio.voiceDesignReady") });
+        } finally {
+            setIsTtsDesigning(false);
+        }
+    };
+    const handleCommitModelRefTtsDesign = async (candidate: TtsVoiceDesignCandidate) => {
+        if (!selectedTtsModelRef || !ttsDesignVoiceName.trim()) {
+            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.voiceNameRequired") });
+            return;
+        }
+        setCommittingTtsDesignId(candidate.generatedVoiceId);
+        try {
+            const response = await fetch("/api/audio/model-ref-voices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "commit_design",
+                    modelRef: selectedTtsModelRef,
+                    generatedVoiceId: candidate.generatedVoiceId,
+                    voiceName: ttsDesignVoiceName.trim(),
+                    voiceDescription: ttsDesignPrompt.trim(),
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.ok === false) {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.audio.voiceCommitFailed"),
+                    description: voiceManagerErrorText(payload, t("app.admin.dashboard.model.hub.audio.voiceCommitFailed")),
+                });
+                return;
+            }
+            const voiceId = String(payload.voiceId || "").trim();
+            if (!voiceId) {
+                toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.audio.voiceCommitFailed") });
+                return;
+            }
+            setTtsModelRefValue("voice", voiceId);
+            setTtsDesignCandidates([]);
+            if (modelRefTtsVoiceCapabilities.list === true) await handleFetchModelRefTtsVoices(false);
+            toast({ title: t("app.admin.dashboard.model.hub.audio.voiceCommitted") });
+        } finally {
+            setCommittingTtsDesignId(null);
         }
     };
     const handlePreviewTts = async () => {
@@ -2082,68 +2310,254 @@ export default function ModelHubPage() {
                                 </Select>
                                 {isManagedModelRefTtsVoice ? (
                                     <div className="grid gap-3 rounded-xl border bg-muted/20 p-3">
-                                        <Label>{t("app.admin.dashboard.model.hub.audio.modelRefVoiceManager")}</Label>
-                                        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
-                                            <SearchableVoiceSelect
-                                                value={audioConfig.tts.model_ref?.voice || ""}
-                                                options={modelRefTtsVoices}
-                                                placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")}
-                                                searchPlaceholder={t("app.admin.dashboard.model.hub.audio.voiceSearchPlaceholder")}
-                                                emptyLabel={t("app.admin.dashboard.model.hub.audio.voiceSearchEmpty")}
-                                                onValueChange={(value) => setTtsModelRefValue("voice", value)}
-                                                disabled={modelRefTtsVoiceListState === "loading" && modelRefTtsVoices.length === 0}
-                                                invalid={isConfiguredModelRefTtsVoiceUnavailable}
-                                                deleteLabel={t("app.admin.dashboard.model.hub.audio.deleteSelectedVoice")}
-                                                deletingValue={deletingModelRefTtsVoiceId}
-                                                onDelete={modelRefTtsVoiceCapabilities.delete === true
-                                                    ? (voice) => void handleDeleteModelRefTtsVoice(voice)
-                                                    : undefined}
-                                            />
-                                            {modelRefTtsVoiceCapabilities.list === true ? (
-                                                <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchModelRefTtsVoices()} disabled={isModelRefTtsVoiceLoading || !selectedTtsModelRef}>
-                                                    <RefreshCw className={`mr-2 h-4 w-4 ${isModelRefTtsVoiceLoading ? "animate-spin" : ""}`} />
-                                                    {t("app.admin.dashboard.model.hub.audio.fetchVoices")}
-                                                </Button>
-                                            ) : null}
-                                            {modelRefTtsVoiceCapabilities.clone === true ? (
-                                                <Button type="button" variant="outline" size="sm" onClick={() => setIsTtsClonePanelOpen((current) => !current)}>
-                                                    <Plus className="mr-2 h-4 w-4" />
-                                                    {t("app.admin.dashboard.model.hub.audio.uploadVoice")}
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Label>{t("app.admin.dashboard.model.hub.audio.modelRefVoiceManager")}</Label>
+                                                <Badge variant="outline">
+                                                    {t(`app.admin.dashboard.model.hub.audio.voicePolicy.${
+                                                        isQualificationOnlyVoice
+                                                            ? "qualification"
+                                                            : isEphemeralReferenceVoice
+                                                                ? "ephemeral"
+                                                                : isProviderSlotVoice
+                                                                    ? "slot"
+                                                                    : "remote"
+                                                    }`)}
+                                                </Badge>
+                                            </div>
+                                            {modelRefTtsVoiceAssetPolicy?.docsUrl ? (
+                                                <Button asChild type="button" variant="ghost" size="sm">
+                                                    <a href={modelRefTtsVoiceAssetPolicy.docsUrl} target="_blank" rel="noreferrer">
+                                                        <ExternalLink className="mr-2 h-4 w-4" />
+                                                        {t("app.admin.dashboard.model.hub.audio.voiceQualificationDocs")}
+                                                    </a>
                                                 </Button>
                                             ) : null}
                                         </div>
-                                        {selectedModelRefTtsVoice?.availability === "pending_activation" ? (
-                                            <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
-                                                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                                                {t("app.admin.dashboard.model.hub.audio.voicePendingActivation")}
-                                            </p>
-                                        ) : null}
-                                        {isConfiguredModelRefTtsVoiceUnavailable ? (
-                                            <p className="flex items-start gap-2 text-xs text-destructive" role="alert">
-                                                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                                                {t("app.admin.dashboard.model.hub.audio.voiceUnavailable")}
-                                            </p>
-                                        ) : null}
-                                        <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
-                                        {modelRefTtsVoiceCapabilities.clone === true && isTtsClonePanelOpen ? (
-                                        <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
-                                            <Label>{t("app.admin.dashboard.model.hub.audio.voiceCloneTitle")}</Label>
-                                            <Input value={ttsCloneVoiceId} onChange={(event) => setTtsCloneVoiceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder")} />
-                                            {modelRefTtsVoiceCapabilities.preview === true ? (
-                                                <Input value={ttsClonePreviewText} onChange={(event) => setTtsClonePreviewText(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder")} />
-                                            ) : null}
-                                            <Input type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav" onChange={(event) => setTtsCloneFile(event.target.files?.[0] || null)} />
-                                            <p className="text-xs text-muted-foreground">
-                                                {t("app.admin.dashboard.model.hub.audio.voiceCloneSampleHint", {
-                                                    seconds: modelRefTtsVoiceInfo?.sampleLimits?.minDurationSeconds ?? 10,
-                                                })}
-                                            </p>
-                                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCloneModelRefTtsVoice()} disabled={isTtsCloning || !ttsCloneFile || !ttsCloneVoiceId.trim()}>
-                                                <Upload className="mr-2 h-4 w-4" />
-                                                {isTtsCloning ? t("app.admin.dashboard.model.hub.audio.voiceCloning") : t("app.admin.dashboard.model.hub.audio.voiceCloneUpload")}
-                                            </Button>
-                                        </div>
-                                        ) : null}
+                                        {isQualificationOnlyVoice ? (
+                                            <div className="grid gap-3">
+                                                {ttsVoicePresets.length > 0 ? (
+                                                    <Select value={ttsVoicePresets.some((item) => item.value === audioConfig.tts.model_ref?.voice) ? audioConfig.tts.model_ref?.voice : undefined} onValueChange={(value) => setTtsModelRefValue("voice", value)}>
+                                                        <SelectTrigger><SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")} /></SelectTrigger>
+                                                        <SelectContent>
+                                                            {ttsVoicePresets.map((voice) => <SelectItem key={voice.value} value={voice.value}>{voice.label}</SelectItem>)}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <Input value={audioConfig.tts.model_ref?.voice || ""} onChange={(event) => setTtsModelRefValue("voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.customVoicePlaceholder")} />
+                                                )}
+                                                <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <Badge variant={modelRefTtsVoiceAssetPolicy?.eligibilityStatus === "eligible" ? "secondary" : "outline"}>
+                                                            {t(modelRefTtsVoiceAssetPolicy?.eligibilityStatus === "eligible"
+                                                                ? "app.admin.dashboard.model.hub.audio.voiceEligibilityEligible"
+                                                                : "app.admin.dashboard.model.hub.audio.voiceEligibilityRequired")}
+                                                        </Badge>
+                                                        {modelRefTtsVoiceAssetPolicy?.consentRequired ? (
+                                                            <span className="text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.audio.voiceConsentRequired")}</span>
+                                                        ) : null}
+                                                    </div>
+                                                    <p className="text-sm text-muted-foreground">{t("app.admin.dashboard.model.hub.audio.voiceQualificationDescription")}</p>
+                                                    {modelRefTtsVoiceAssetPolicy?.applicationUrl ? (
+                                                        <Button asChild type="button" variant="outline" size="sm" className="w-fit">
+                                                            <a href={modelRefTtsVoiceAssetPolicy.applicationUrl} target="_blank" rel="noreferrer">
+                                                                <ExternalLink className="mr-2 h-4 w-4" />
+                                                                {t("app.admin.dashboard.model.hub.audio.voiceQualificationApply")}
+                                                            </a>
+                                                        </Button>
+                                                    ) : null}
+                                                </div>
+                                                <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {isModelRefVoiceCredentialMissing ? (
+                                                    <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300" role="alert">
+                                                        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                                        {t("app.admin.dashboard.model.hub.audio.voiceCredentialMissing")}
+                                                    </p>
+                                                ) : null}
+                                                {modelRefTtsVoiceCapabilities.list === true ? (
+                                                    <SearchableVoiceSelect
+                                                        value={audioConfig.tts.model_ref?.voice || ""}
+                                                        options={modelRefTtsVoices}
+                                                        placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")}
+                                                        searchPlaceholder={t("app.admin.dashboard.model.hub.audio.voiceSearchPlaceholder")}
+                                                        emptyLabel={t("app.admin.dashboard.model.hub.audio.voiceSearchEmpty")}
+                                                        onValueChange={(value) => setTtsModelRefValue("voice", value)}
+                                                        disabled={modelRefTtsVoiceListState === "loading" && modelRefTtsVoices.length === 0}
+                                                        invalid={isConfiguredModelRefTtsVoiceUnavailable}
+                                                        deleteLabel={t("app.admin.dashboard.model.hub.audio.deleteSelectedVoice")}
+                                                        deletingValue={deletingModelRefTtsVoiceId}
+                                                        onDelete={modelRefTtsVoiceCapabilities.delete === true && !isModelRefVoiceCredentialMissing
+                                                            ? (voice) => void handleDeleteModelRefTtsVoice(voice)
+                                                            : undefined}
+                                                    />
+                                                ) : isEphemeralReferenceVoice ? (
+                                                    <p className="text-sm text-muted-foreground">{t("app.admin.dashboard.model.hub.audio.referenceVoiceDescription")}</p>
+                                                ) : (
+                                                    <Input
+                                                        value={audioConfig.tts.model_ref?.voice || ""}
+                                                        onChange={(event) => setTtsModelRefValue("voice", event.target.value)}
+                                                        placeholder={t(isProviderSlotVoice
+                                                            ? "app.admin.dashboard.model.hub.audio.voiceSlotPlaceholder"
+                                                            : "app.admin.dashboard.model.hub.audio.customVoicePlaceholder")}
+                                                    />
+                                                )}
+                                                <div className="flex flex-wrap gap-2">
+                                                    {modelRefTtsVoiceCapabilities.list === true ? (
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchModelRefTtsVoices()} disabled={isModelRefTtsVoiceLoading || !selectedTtsModelRef || isModelRefVoiceCredentialMissing}>
+                                                            <RefreshCw className={`mr-2 h-4 w-4 ${isModelRefTtsVoiceLoading ? "animate-spin" : ""}`} />
+                                                            {t("app.admin.dashboard.model.hub.audio.fetchVoices")}
+                                                        </Button>
+                                                    ) : null}
+                                                    {modelRefTtsVoiceCapabilities.clone === true ? (
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => setIsTtsClonePanelOpen((current) => !current)} disabled={isModelRefVoiceCredentialMissing}>
+                                                            <Upload className="mr-2 h-4 w-4" />
+                                                            {t(isEphemeralReferenceVoice
+                                                                ? "app.admin.dashboard.model.hub.audio.referenceVoiceUpload"
+                                                                : "app.admin.dashboard.model.hub.audio.uploadVoice")}
+                                                        </Button>
+                                                    ) : null}
+                                                    {modelRefTtsVoiceCapabilities.design === true ? (
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => setIsTtsDesignPanelOpen((current) => !current)} disabled={isModelRefVoiceCredentialMissing}>
+                                                            <Plus className="mr-2 h-4 w-4" />
+                                                            {t("app.admin.dashboard.model.hub.audio.voiceDesignAction")}
+                                                        </Button>
+                                                    ) : null}
+                                                </div>
+                                                {selectedModelRefTtsVoice?.availability === "pending_activation" ? (
+                                                    <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
+                                                        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                                        {t("app.admin.dashboard.model.hub.audio.voicePendingActivation")}
+                                                    </p>
+                                                ) : null}
+                                                {isConfiguredModelRefTtsVoiceUnavailable ? (
+                                                    <p className="flex items-start gap-2 text-xs text-destructive" role="alert">
+                                                        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                                        {t("app.admin.dashboard.model.hub.audio.voiceUnavailable")}
+                                                    </p>
+                                                ) : null}
+                                                {modelRefTtsVoiceCapabilities.clone === true && isTtsClonePanelOpen ? (
+                                                    <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
+                                                        <Label>{t(isEphemeralReferenceVoice
+                                                            ? "app.admin.dashboard.model.hub.audio.referenceVoiceTitle"
+                                                            : "app.admin.dashboard.model.hub.audio.voiceCloneTitle")}</Label>
+                                                        {!isEphemeralReferenceVoice ? (
+                                                            <Input value={ttsCloneVoiceId} onChange={(event) => setTtsCloneVoiceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder")} />
+                                                        ) : null}
+                                                        {modelRefTtsVoiceCapabilities.preview === true ? (
+                                                            <Input value={ttsClonePreviewText} onChange={(event) => setTtsClonePreviewText(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder")} />
+                                                        ) : null}
+                                                        <Input type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav" onChange={(event) => setTtsCloneFile(event.target.files?.[0] || null)} />
+                                                        <p className="text-xs text-muted-foreground">
+                                                            {t("app.admin.dashboard.model.hub.audio.voiceCloneSampleHint", {
+                                                                seconds: modelRefTtsVoiceInfo?.sampleLimits?.minDurationSeconds ?? 10,
+                                                            })}
+                                                        </p>
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => void handleCloneModelRefTtsVoice()} disabled={isTtsCloning || !ttsCloneFile || (!isEphemeralReferenceVoice && !ttsCloneVoiceId.trim()) || (isEphemeralReferenceVoice && !ttsClonePreviewText.trim())}>
+                                                            {isTtsCloning ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                                                            {isTtsCloning
+                                                                ? t("app.admin.dashboard.model.hub.audio.voiceCloning")
+                                                                : t(isEphemeralReferenceVoice
+                                                                    ? "app.admin.dashboard.model.hub.audio.referenceVoiceCreate"
+                                                                    : "app.admin.dashboard.model.hub.audio.voiceCloneUpload")}
+                                                        </Button>
+                                                    </div>
+                                                ) : null}
+                                                {modelRefTtsVoiceCapabilities.design === true && isTtsDesignPanelOpen ? (
+                                                    <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
+                                                        <Label>{t("app.admin.dashboard.model.hub.audio.voiceDesignTitle")}</Label>
+                                                        <div className="grid gap-1">
+                                                            <Textarea
+                                                                value={ttsDesignPrompt}
+                                                                onChange={(event) => setTtsDesignPrompt(event.target.value)}
+                                                                minLength={ttsDesignPromptMinChars}
+                                                                maxLength={ttsDesignPromptMaxChars}
+                                                                placeholder={t("app.admin.dashboard.model.hub.audio.voiceDesignPromptPlaceholder")}
+                                                            />
+                                                            {ttsDesignPromptMaxChars !== undefined || ttsDesignPromptMinChars > 1 ? (
+                                                                <p className="text-right text-xs text-muted-foreground">
+                                                                    {t("app.admin.dashboard.model.hub.audio.voiceDesignLength", {
+                                                                        count: ttsDesignPrompt.length,
+                                                                        min: ttsDesignPromptMinChars,
+                                                                        max: ttsDesignPromptMaxChars ?? "\u221e",
+                                                                    })}
+                                                                </p>
+                                                            ) : null}
+                                                        </div>
+                                                        <div className="grid gap-1">
+                                                            <Input
+                                                                value={ttsDesignPreviewText}
+                                                                onChange={(event) => setTtsDesignPreviewText(event.target.value)}
+                                                                minLength={ttsDesignPreviewMinChars}
+                                                                maxLength={ttsDesignPreviewMaxChars}
+                                                                placeholder={t("app.admin.dashboard.model.hub.audio.voiceDesignPreviewPlaceholder")}
+                                                            />
+                                                            {ttsDesignPreviewMaxChars !== undefined || ttsDesignPreviewMinChars > 1 ? (
+                                                                <p className="text-right text-xs text-muted-foreground">
+                                                                    {t("app.admin.dashboard.model.hub.audio.voiceDesignLength", {
+                                                                        count: ttsDesignPreviewText.length,
+                                                                        min: ttsDesignPreviewMinChars,
+                                                                        max: ttsDesignPreviewMaxChars ?? "\u221e",
+                                                                    })}
+                                                                </p>
+                                                            ) : null}
+                                                        </div>
+                                                        {isTtsVoiceDesignIdVisible ? (
+                                                            <div className="grid gap-1">
+                                                                <Input
+                                                                    value={ttsDesignVoiceId}
+                                                                    onChange={(event) => setTtsDesignVoiceId(event.target.value)}
+                                                                    minLength={ttsDesignVoiceIdMinChars}
+                                                                    maxLength={ttsDesignVoiceIdMaxChars}
+                                                                    aria-invalid={Boolean(ttsDesignVoiceId.trim()) && !isTtsDesignVoiceIdFormatValid}
+                                                                    placeholder={t(ttsDesignVoiceIdPlaceholderKey)}
+                                                                />
+                                                                {ttsDesignVoiceIdMaxChars !== undefined || (ttsDesignVoiceIdMinChars ?? 0) > 1 ? (
+                                                                    <p className="text-right text-xs text-muted-foreground">
+                                                                        {t("app.admin.dashboard.model.hub.audio.voiceDesignLength", {
+                                                                            count: ttsDesignVoiceId.length,
+                                                                            min: ttsDesignVoiceIdMinChars ?? 0,
+                                                                            max: ttsDesignVoiceIdMaxChars ?? "\u221e",
+                                                                        })}
+                                                                    </p>
+                                                                ) : null}
+                                                            </div>
+                                                        ) : null}
+                                                        {modelRefTtsVoiceAssetPolicy?.designFlow === "preview_then_commit" ? (
+                                                            <Input value={ttsDesignVoiceName} onChange={(event) => setTtsDesignVoiceName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceNamePlaceholder")} />
+                                                        ) : null}
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => void handleDesignModelRefTtsVoice()} disabled={isTtsDesigning || !isTtsDesignInputValid}>
+                                                            {isTtsDesigning ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Volume2 className="mr-2 h-4 w-4" />}
+                                                            {isTtsDesigning
+                                                                ? t("app.admin.dashboard.model.hub.audio.voiceDesigning")
+                                                                : t("app.admin.dashboard.model.hub.audio.voiceDesignGenerate")}
+                                                        </Button>
+                                                        {ttsDesignCandidates.map((candidate, index) => (
+                                                            <div key={candidate.generatedVoiceId} className="grid gap-2 rounded-md border bg-muted/30 p-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                                                <audio controls preload="metadata" src={candidate.previewAudio} className="h-9 w-full">
+                                                                    {t("app.admin.dashboard.model.hub.audio.previewUnsupported")}
+                                                                </audio>
+                                                                <Button type="button" size="sm" onClick={() => void handleCommitModelRefTtsDesign(candidate)} disabled={committingTtsDesignId !== null || !ttsDesignVoiceName.trim()}>
+                                                                    {committingTtsDesignId === candidate.generatedVoiceId
+                                                                        ? t("app.admin.dashboard.model.hub.audio.voiceCommitting")
+                                                                        : t("app.admin.dashboard.model.hub.audio.voiceCommitAction", { index: index + 1 })}
+                                                                </Button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : null}
+                                                {ttsVoiceOperationPreviewUrl ? (
+                                                    <audio controls autoPlay preload="metadata" src={ttsVoiceOperationPreviewUrl} className="h-10 w-full">
+                                                        {t("app.admin.dashboard.model.hub.audio.previewUnsupported")}
+                                                    </audio>
+                                                ) : null}
+                                                {!isEphemeralReferenceVoice ? (
+                                                    <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
+                                                ) : null}
+                                            </>
+                                        )}
                                     </div>
                                 ) : ttsVoicePresets.length > 0 ? (
                                     <Select value={ttsVoicePresets.some((item) => item.value === audioConfig.tts.model_ref?.voice) ? audioConfig.tts.model_ref?.voice : undefined} onValueChange={(value) => setTtsModelRefValue("voice", value)}>
@@ -2629,7 +3043,14 @@ export default function ModelHubPage() {
                     </div>)}
             </ConfigCard>
 
-            {systemAudioConfigCard}
+            {hasLoadedAudioConfig ? systemAudioConfigCard : (
+                <ConfigCard title={t("app.admin.dashboard.model.hub.audio.systemTitle")} description={t("app.admin.dashboard.model.hub.audio.systemDescription")} variant="list">
+                    <div className="flex min-h-44 items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+                        <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        {t("app.admin.dashboard.model.hub.audio.loadingConfig")}
+                    </div>
+                </ConfigCard>
+            )}
 
             {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 

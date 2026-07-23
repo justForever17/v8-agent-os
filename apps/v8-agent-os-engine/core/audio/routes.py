@@ -313,6 +313,21 @@ async def manage_model_ref_voices(
                 str(body.get("voiceId") or ""),
                 str(body.get("voiceType") or ""),
             )
+        if action == "design":
+            return await voice_customization_manager.design_voice(
+                model_ref,
+                prompt=str(body.get("prompt") or ""),
+                preview_text=str(body.get("previewText") or ""),
+                voice_id=str(body.get("voiceId") or ""),
+                voice_name=str(body.get("voiceName") or ""),
+            )
+        if action == "commit_design":
+            return await voice_customization_manager.commit_design(
+                model_ref,
+                generated_voice_id=str(body.get("generatedVoiceId") or ""),
+                voice_name=str(body.get("voiceName") or ""),
+                voice_description=str(body.get("voiceDescription") or ""),
+            )
         raise VoiceManagerError("Unsupported voice action.", code="unsupported_action")
     except VoiceManagerError as error:
         return _voice_manager_error(error)

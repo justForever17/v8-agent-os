@@ -60,13 +60,17 @@ def test_capabilities_are_declared_by_engine_adapter_metadata(monkeypatch: pytes
 
     assert manager.capabilities("minimax")["capabilities"] == {
         "clone": True,
-        "design": False,
+        "design": True,
         "list": True,
         "delete": True,
         "preview": True,
+        "commit": False,
     }
     assert manager.capabilities("aliyun")["provider"] == "aliyun_bailian_cosyvoice"
+    assert manager.capabilities("aliyun")["assetPolicy"]["inventorySource"] == "remote"
     assert manager.capabilities("volcengine")["capabilities"]["delete"] is False
+    assert manager.capabilities("volcengine")["capabilities"]["list"] is False
+    assert manager.capabilities("volcengine")["assetPolicy"]["assetScope"] == "provider_slot"
 
 
 def test_name_only_provider_is_not_treated_as_voice_customization_adapter(monkeypatch: pytest.MonkeyPatch) -> None:

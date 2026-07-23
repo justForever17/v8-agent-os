@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from io import BytesIO
 import re
@@ -26,6 +26,7 @@ MAX_VOICE_SAMPLE_BYTES = 20 * 1024 * 1024
 MIN_VOICE_SAMPLE_SECONDS = 10.0
 MAX_VOICE_SAMPLE_SECONDS = 5 * 60.0
 _MINIMAX_VOICE_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{6,254}[A-Za-z0-9]$")
+_ALIYUN_VOICE_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9]{1,10}$")
 _SUPPORTED_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav"}
 _VOICE_LEDGER_FILENAME = "audio_voice_ledger.json"
 _VOICE_SAMPLE_DIR = V8_AGENT_OS_HOME / "tmp" / "voice-samples"
@@ -59,6 +60,7 @@ class VoiceCustomizationCapabilities:
     list: bool
     delete: bool
     preview: bool
+    commit: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -67,6 +69,63 @@ class VoiceCustomizationCapabilities:
             "list": self.list,
             "delete": self.delete,
             "preview": self.preview,
+            "commit": self.commit,
+        }
+
+
+@dataclass(frozen=True)
+class VoiceAssetPolicy:
+    asset_scope: str
+    inventory_source: str
+    design_flow: str
+    eligibility_status: str
+    consent_required: bool
+    docs_url: str
+    application_url: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "assetScope": self.asset_scope,
+            "inventorySource": self.inventory_source,
+            "designFlow": self.design_flow,
+            "eligibilityStatus": self.eligibility_status,
+            "consentRequired": self.consent_required,
+            "docsUrl": self.docs_url,
+            "applicationUrl": self.application_url,
+        }
+
+
+@dataclass(frozen=True)
+class VoiceDesignConstraints:
+    prompt_min_chars: int = 1
+    prompt_max_chars: int | None = None
+    preview_text_min_chars: int = 1
+    preview_text_max_chars: int | None = None
+    voice_id_required: bool = False
+    voice_id_role: str = "none"
+    voice_id_min_chars: int | None = None
+    voice_id_max_chars: int | None = None
+    voice_id_format: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "prompt": {
+                "required": True,
+                "minChars": self.prompt_min_chars,
+                "maxChars": self.prompt_max_chars,
+            },
+            "previewText": {
+                "required": True,
+                "minChars": self.preview_text_min_chars,
+                "maxChars": self.preview_text_max_chars,
+            },
+            "voiceId": {
+                "required": self.voice_id_required,
+                "role": self.voice_id_role,
+                "minChars": self.voice_id_min_chars,
+                "maxChars": self.voice_id_max_chars,
+                "format": self.voice_id_format,
+            },
         }
 
 
@@ -83,29 +142,158 @@ class VoiceAdapterContext:
     model_meta: dict[str, Any]
     media_limits: dict[str, Any]
     capabilities: VoiceCustomizationCapabilities
+    asset_policy: VoiceAssetPolicy
+    design_constraints: VoiceDesignConstraints
 
 
 MINIMAX_CAPABILITIES = VoiceCustomizationCapabilities(
     clone=True,
-    design=False,
+    design=True,
     list=True,
     delete=True,
     preview=True,
 )
 ALIYUN_CAPABILITIES = VoiceCustomizationCapabilities(
     clone=True,
-    design=False,
+    design=True,
     list=True,
     delete=True,
-    preview=False,
+    preview=True,
 )
 VOLCENGINE_CAPABILITIES = VoiceCustomizationCapabilities(
     clone=True,
-    design=False,
+    design=True,
+    list=False,
+    delete=False,
+    preview=True,
+)
+MIMO_CAPABILITIES = VoiceCustomizationCapabilities(
+    clone=True,
+    design=True,
+    list=False,
+    delete=False,
+    preview=True,
+)
+ELEVENLABS_CAPABILITIES = VoiceCustomizationCapabilities(
+    clone=True,
+    design=True,
     list=True,
+    delete=True,
+    preview=True,
+    commit=True,
+)
+QUALIFICATION_ONLY_CAPABILITIES = VoiceCustomizationCapabilities(
+    clone=False,
+    design=False,
+    list=False,
     delete=False,
     preview=False,
 )
+
+
+MINIMAX_DESIGN_CONSTRAINTS = VoiceDesignConstraints(
+    preview_text_max_chars=500,
+    voice_id_role="custom_id",
+    voice_id_min_chars=8,
+    voice_id_max_chars=256,
+    voice_id_format="ascii_identifier",
+)
+ALIYUN_DESIGN_CONSTRAINTS = VoiceDesignConstraints(
+    prompt_max_chars=500,
+    preview_text_max_chars=200,
+    voice_id_required=True,
+    voice_id_role="prefix",
+    voice_id_min_chars=1,
+    voice_id_max_chars=10,
+    voice_id_format="ascii_alphanumeric",
+)
+VOLCENGINE_DESIGN_CONSTRAINTS = VoiceDesignConstraints(
+    prompt_max_chars=200,
+    preview_text_max_chars=300,
+    voice_id_required=True,
+    voice_id_role="provider_slot",
+)
+MIMO_DESIGN_CONSTRAINTS = VoiceDesignConstraints()
+ELEVENLABS_DESIGN_CONSTRAINTS = VoiceDesignConstraints(
+    prompt_min_chars=20,
+    prompt_max_chars=1000,
+    preview_text_min_chars=100,
+    preview_text_max_chars=1000,
+)
+NO_DESIGN_CONSTRAINTS = VoiceDesignConstraints()
+
+
+MINIMAX_ASSET_POLICY = VoiceAssetPolicy(
+    asset_scope="durable_remote",
+    inventory_source="remote",
+    design_flow="direct",
+    eligibility_status="available",
+    consent_required=False,
+    docs_url="https://platform.minimaxi.com/docs/api-reference/voice-design-design",
+)
+ALIYUN_ASSET_POLICY = VoiceAssetPolicy(
+    asset_scope="durable_remote",
+    inventory_source="remote",
+    design_flow="direct",
+    eligibility_status="available",
+    consent_required=False,
+    docs_url="https://help.aliyun.com/en/model-studio/voice-design-api-references",
+)
+VOLCENGINE_ASSET_POLICY = VoiceAssetPolicy(
+    asset_scope="provider_slot",
+    inventory_source="local_projection",
+    design_flow="direct",
+    eligibility_status="available",
+    consent_required=False,
+    docs_url="https://www.volcengine.com/docs/6561/2277844",
+)
+MIMO_ASSET_POLICY = VoiceAssetPolicy(
+    asset_scope="ephemeral_request",
+    inventory_source="none",
+    design_flow="ephemeral",
+    eligibility_status="available",
+    consent_required=False,
+    docs_url="https://platform.xiaomimimo.com/static/docs/usage-guide/speech-synthesis-v2.5.md",
+)
+ELEVENLABS_ASSET_POLICY = VoiceAssetPolicy(
+    asset_scope="durable_remote",
+    inventory_source="remote",
+    design_flow="preview_then_commit",
+    eligibility_status="available",
+    consent_required=False,
+    docs_url="https://elevenlabs.io/docs/api-reference/text-to-voice/design",
+)
+
+
+QUALIFICATION_POLICIES = {
+    "openai_custom_voice": VoiceAssetPolicy(
+        asset_scope="qualification_only",
+        inventory_source="none",
+        design_flow="qualification_only",
+        eligibility_status="requires_approval",
+        consent_required=True,
+        docs_url="https://developers.openai.com/api/docs/guides/text-to-speech#custom-voices",
+        application_url="https://help.openai.com/en/articles/10362446-api-model-availability-by-usage-tier-and-verification-status",
+    ),
+    "google_instant_custom_voice": VoiceAssetPolicy(
+        asset_scope="qualification_only",
+        inventory_source="none",
+        design_flow="qualification_only",
+        eligibility_status="requires_approval",
+        consent_required=True,
+        docs_url="https://cloud.google.com/text-to-speech/docs/chirp3-instant-custom-voice",
+        application_url="https://cloud.google.com/text-to-speech/docs/chirp3-instant-custom-voice#request-access",
+    ),
+    "azure_personal_voice": VoiceAssetPolicy(
+        asset_scope="qualification_only",
+        inventory_source="none",
+        design_flow="qualification_only",
+        eligibility_status="requires_approval",
+        consent_required=True,
+        docs_url="https://learn.microsoft.com/azure/ai-services/speech-service/personal-voice-overview",
+        application_url="https://aka.ms/customneural",
+    ),
+}
 
 
 ALIYUN_PRESET_VOICES = [
@@ -487,9 +675,77 @@ def _flatten_minimax_voices(payload: Any) -> list[dict[str, Any]]:
     return _dedupe_voices(voices)
 
 
+def _audio_data_url(audio_bytes: bytes, media_type: str) -> str:
+    normalized_type = _text(media_type) or "audio/wav"
+    return f"data:{normalized_type};base64,{base64.b64encode(audio_bytes).decode('ascii')}"
+
+
+def _base64_audio_data_url(value: Any, media_type: str = "audio/wav") -> str:
+    normalized = _text(value)
+    if not normalized:
+        return ""
+    if normalized.startswith("data:audio/"):
+        return normalized
+    try:
+        base64.b64decode(normalized, validate=True)
+    except (ValueError, TypeError):
+        return ""
+    return f"data:{media_type};base64,{normalized}"
+
+
+def _audio_media_type_for_format(value: Any, fallback: str = "audio/wav") -> str:
+    normalized = _text(value).lower().lstrip(".")
+    return {
+        "mp3": "audio/mpeg",
+        "mpeg": "audio/mpeg",
+        "m4a": "audio/mp4",
+        "mp4": "audio/mp4",
+        "ogg": "audio/ogg",
+        "opus": "audio/ogg",
+        "wav": "audio/wav",
+    }.get(normalized, fallback)
+
+
+def _hex_audio_data_url(value: Any, media_type: str = "audio/mpeg") -> str:
+    normalized = _text(value)
+    if not normalized:
+        return ""
+    try:
+        audio_bytes = bytes.fromhex(normalized)
+    except ValueError:
+        return ""
+    return _audio_data_url(audio_bytes, media_type)
+
+
+def _voice_items(payload: Any) -> list[dict[str, Any]]:
+    root = _as_dict(payload)
+    output = _as_dict(root.get("output"))
+    candidates = output.get("voice_list") or output.get("voices") or root.get("voices") or []
+    voices: list[dict[str, Any]] = []
+    for raw_item in candidates:
+        item = _as_dict(raw_item)
+        voice_id = _text(item.get("voice_id") or item.get("voiceId") or item.get("id"))
+        if not voice_id:
+            continue
+        name = _text(item.get("name") or item.get("voice_name") or item.get("prefix")) or voice_id
+        voices.append(
+            {
+                "value": voice_id,
+                "label": f"{name} · {voice_id}" if name != voice_id else voice_id,
+                "group": "custom",
+                "deletable": True,
+                "source": "remote",
+                "availability": "available",
+            }
+        )
+    return _dedupe_voices(voices)
+
+
 class VoiceCustomizationAdapter:
     adapter_id = ""
     capabilities = VoiceCustomizationCapabilities(False, False, False, False, False)
+    asset_policy = VoiceAssetPolicy("none", "none", "none", "unavailable", False, "")
+    design_constraints = NO_DESIGN_CONSTRAINTS
 
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
@@ -515,10 +771,33 @@ class VoiceCustomizationAdapter:
     ) -> dict[str, Any]:
         raise VoiceManagerError("Voice cloning is not supported.", code="unsupported_action", provider=self.adapter_id)
 
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        raise VoiceManagerError("Voice design is not supported.", code="unsupported_action", provider=self.adapter_id)
+
+    async def commit_design(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        generated_voice_id: str,
+        voice_name: str,
+        voice_description: str,
+    ) -> dict[str, Any]:
+        raise VoiceManagerError("Voice design commit is not supported.", code="unsupported_action", provider=self.adapter_id)
+
 
 class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
     adapter_id = "minimax_tts"
     capabilities = MINIMAX_CAPABILITIES
+    asset_policy = MINIMAX_ASSET_POLICY
+    design_constraints = MINIMAX_DESIGN_CONSTRAINTS
 
     @staticmethod
     def _api_root(base_url: str) -> str:
@@ -588,6 +867,36 @@ class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
         await _remove_ledger_entry(context, voice_id)
         return {"voiceId": voice_id}
 
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"prompt": prompt, "preview_text": preview_text}
+        if voice_id:
+            body["voice_id"] = voice_id
+        async with self._client() as client:
+            response = await client.post(
+                f"{self._api_root(context.base_url)}/voice_design",
+                headers={**self._headers(context), "Content-Type": "application/json"},
+                json=body,
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_minimax_success(response, payload)
+        resolved_voice_id = _text(payload.get("voice_id") or _as_dict(payload.get("data")).get("voice_id")) or voice_id
+        result: dict[str, Any] = {
+            "voiceId": resolved_voice_id,
+            "availability": "available",
+        }
+        preview_audio = _hex_audio_data_url(payload.get("trial_audio"))
+        if preview_audio:
+            result["previewAudio"] = preview_audio
+        return result
+
     async def clone_voice(
         self,
         context: VoiceAdapterContext,
@@ -649,6 +958,8 @@ class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
 class AliyunCosyVoiceAdapter(VoiceCustomizationAdapter):
     adapter_id = "aliyun_bailian_cosyvoice"
     capabilities = ALIYUN_CAPABILITIES
+    asset_policy = ALIYUN_ASSET_POLICY
+    design_constraints = ALIYUN_DESIGN_CONSTRAINTS
 
     @staticmethod
     def _endpoint(context: VoiceAdapterContext) -> str:
@@ -663,7 +974,18 @@ class AliyunCosyVoiceAdapter(VoiceCustomizationAdapter):
         return f"{base}/services/audio/tts/customization"
 
     async def list_voices(self, context: VoiceAdapterContext) -> dict[str, Any]:
-        return {"voices": _dedupe_voices([*ALIYUN_PRESET_VOICES, *_ledger_voices(context)])}
+        async with self._client(30.0) as client:
+            response = await client.post(
+                self._endpoint(context),
+                headers={"Authorization": f"Bearer {context.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "voice-enrollment",
+                    "input": {"action": "list_voice", "page_index": 0, "page_size": 100},
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        return {"voices": _dedupe_voices([*ALIYUN_PRESET_VOICES, *_voice_items(payload)])}
 
     async def delete_voice(self, context: VoiceAdapterContext, voice_id: str, voice_type: str) -> dict[str, Any]:
         async with self._client(30.0) as client:
@@ -674,8 +996,55 @@ class AliyunCosyVoiceAdapter(VoiceCustomizationAdapter):
             )
         payload = _response_json(response, self.adapter_id)
         _assert_generic_provider_success(response, payload, self.adapter_id)
-        await _remove_ledger_entry(context, voice_id)
         return {"voiceId": voice_id}
+
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        input_payload: dict[str, Any] = {
+            "action": "create_voice",
+            "target_model": context.provider_model_id,
+            "voice_prompt": prompt,
+            "preview_text": preview_text,
+            "language_hints": ["zh"],
+        }
+        prefix = voice_id or voice_name
+        input_payload["prefix"] = prefix
+        async with self._client() as client:
+            response = await client.post(
+                self._endpoint(context),
+                headers={"Authorization": f"Bearer {context.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "voice-enrollment",
+                    "input": input_payload,
+                    "parameters": {"sample_rate": 24000, "response_format": "wav"},
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        output = _as_dict(payload.get("output"))
+        resolved_voice_id = _text(output.get("voice_id") or output.get("voiceId")) or prefix
+        result: dict[str, Any] = {"voiceId": resolved_voice_id, "availability": "available"}
+        preview_payload = _as_dict(output.get("preview_audio"))
+        preview_audio = _base64_audio_data_url(
+            preview_payload.get("data")
+            or output.get("preview_audio")
+            or output.get("audio_data")
+            or output.get("audio"),
+            _audio_media_type_for_format(preview_payload.get("response_format"), "audio/wav"),
+        )
+        preview_url = _text(output.get("preview_url") or output.get("audio_url"))
+        if preview_audio:
+            result["previewAudio"] = preview_audio
+        elif preview_url.startswith(("http://", "https://")):
+            result["previewAudioUrl"] = preview_url
+        return result
 
     async def clone_voice(
         self,
@@ -711,13 +1080,14 @@ class AliyunCosyVoiceAdapter(VoiceCustomizationAdapter):
                 (("output", "voice_id"), ("output", "voiceId"), ("data", "voice_id"), ("voice_id",), ("voiceId",)),
             )
         ) or voice_id
-        await _upsert_ledger_entry(context, resolved_voice_id)
-        return {"voiceId": resolved_voice_id}
+        return {"voiceId": resolved_voice_id, "availability": "available"}
 
 
 class VolcengineVoiceAdapter(VoiceCustomizationAdapter):
     adapter_id = "volcengine_doubao_voice"
     capabilities = VOLCENGINE_CAPABILITIES
+    asset_policy = VOLCENGINE_ASSET_POLICY
+    design_constraints = VOLCENGINE_DESIGN_CONSTRAINTS
 
     @staticmethod
     def _endpoint(context: VoiceAdapterContext, suffix: str) -> str:
@@ -733,36 +1103,320 @@ class VolcengineVoiceAdapter(VoiceCustomizationAdapter):
     @staticmethod
     def _headers(context: VoiceAdapterContext) -> dict[str, str]:
         app_id = _text(context.provider_meta.get("voice_app_id") or context.provider_meta.get("voiceAppId"))
-        resource_id = _text(context.provider_meta.get("voice_resource_id") or context.provider_meta.get("voiceResourceId"))
-        if not app_id:
-            raise VoiceManagerError("Volcengine voice_app_id is missing.", code="credential_missing", provider=context.adapter_id)
-        if not resource_id:
-            raise VoiceManagerError("Volcengine voice_resource_id is missing.", code="credential_missing", provider=context.adapter_id)
-        return {
+        headers = {
             "Content-Type": "application/json",
-            "X-Api-App-Key": app_id,
-            "X-Api-Access-Key": context.api_key,
-            "X-Api-Resource-Id": resource_id,
-            "X-Api-Connect-Id": str(uuid4()),
+            "X-Api-Request-Id": str(uuid4()),
         }
+        if app_id:
+            headers.update({"X-Api-App-Key": app_id, "X-Api-Access-Key": context.api_key})
+        else:
+            headers["X-Api-Key"] = context.api_key
+        return headers
+
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            response = await client.post(
+                self._endpoint(context, "voice_design"),
+                headers=self._headers(context),
+                json={
+                    "speaker_id": voice_id,
+                    "text": preview_text,
+                    "prompt": {"text_prompt": prompt},
+                    "language": 0,
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        result: dict[str, Any] = {
+            "voiceId": _text(payload.get("speaker_id")) or voice_id,
+            "availability": "provider_slot",
+        }
+        preview_url = _text(payload.get("demo_audio"))
+        if preview_url.startswith(("http://", "https://")):
+            result["previewAudioUrl"] = preview_url
+        return result
+
+    async def clone_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        voice_id: str,
+        preview_text: str,
+        filename: str,
+        content_type: str,
+        audio_bytes: bytes,
+    ) -> dict[str, Any]:
+        audio_format = _audio_suffix(filename).removeprefix(".")
+        extra_params: dict[str, Any] = {}
+        if preview_text:
+            extra_params["demo_text"] = preview_text
+        async with self._client() as client:
+            response = await client.post(
+                self._endpoint(context, "voice_clone"),
+                headers=self._headers(context),
+                json={
+                    "speaker_id": voice_id,
+                    "audio": {
+                        "data": base64.b64encode(audio_bytes).decode("ascii"),
+                        "format": audio_format,
+                    },
+                    "language": 0,
+                    "extra_params": extra_params,
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        resolved_voice_id = _text(payload.get("speaker_id")) or voice_id
+        await _upsert_ledger_entry(context, resolved_voice_id)
+        result: dict[str, Any] = {"voiceId": resolved_voice_id, "availability": "provider_slot"}
+        speaker_status = payload.get("speaker_status") or []
+        first_status = _as_dict(speaker_status[0]) if isinstance(speaker_status, list) and speaker_status else {}
+        preview_url = _text(first_status.get("demo_audio") or payload.get("demo_audio"))
+        if preview_url.startswith(("http://", "https://")):
+            result["previewAudioUrl"] = preview_url
+        return result
+
+
+class XiaomiMiMoVoiceAdapter(VoiceCustomizationAdapter):
+    adapter_id = "xiaomi_mimo_tts"
+    capabilities = MIMO_CAPABILITIES
+    asset_policy = MIMO_ASSET_POLICY
+    design_constraints = MIMO_DESIGN_CONSTRAINTS
+
+    @staticmethod
+    def _endpoint(context: VoiceAdapterContext) -> str:
+        base = (_text(context.base_url) or "https://api.xiaomimimo.com/v1").rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        return f"{base}/chat/completions"
+
+    @staticmethod
+    def _headers(context: VoiceAdapterContext) -> dict[str, str]:
+        return {"api-key": context.api_key, "Content-Type": "application/json"}
+
+    @staticmethod
+    def _preview_audio(payload: dict[str, Any]) -> str:
+        choices = payload.get("choices") or []
+        choice = _as_dict(choices[0]) if choices else {}
+        message = _as_dict(choice.get("message"))
+        audio = _as_dict(message.get("audio"))
+        return _base64_audio_data_url(audio.get("data"), _text(audio.get("media_type")) or "audio/wav")
+
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            response = await client.post(
+                self._endpoint(context),
+                headers=self._headers(context),
+                json={
+                    "model": "mimo-v2.5-tts-voicedesign",
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": preview_text},
+                    ],
+                    "audio": {"format": "wav", "optimize_text_preview": True},
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        preview_audio = self._preview_audio(payload)
+        if not preview_audio:
+            raise VoiceManagerError(
+                "MiMo voice design returned no playable preview audio.",
+                status_code=502,
+                code="preview_audio_missing",
+                provider=self.adapter_id,
+                trace_id=_trace_id(response, payload),
+            )
+        return {"ephemeral": True, "availability": "ephemeral", "previewAudio": preview_audio}
+
+    async def clone_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        voice_id: str,
+        preview_text: str,
+        filename: str,
+        content_type: str,
+        audio_bytes: bytes,
+    ) -> dict[str, Any]:
+        media_type = _text(content_type)
+        if not media_type.startswith("audio/"):
+            media_type = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4"}.get(
+                _audio_suffix(filename),
+                "audio/mpeg",
+            )
+        async with self._client() as client:
+            response = await client.post(
+                self._endpoint(context),
+                headers=self._headers(context),
+                json={
+                    "model": "mimo-v2.5-tts-voiceclone",
+                    "messages": [
+                        {"role": "user", "content": ""},
+                        {"role": "assistant", "content": preview_text},
+                    ],
+                    "audio": {"format": "wav", "voice": _audio_data_url(audio_bytes, media_type)},
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        preview_audio = self._preview_audio(payload)
+        if not preview_audio:
+            raise VoiceManagerError(
+                "MiMo voice clone returned no playable preview audio.",
+                status_code=502,
+                code="preview_audio_missing",
+                provider=self.adapter_id,
+                trace_id=_trace_id(response, payload),
+            )
+        return {"ephemeral": True, "availability": "ephemeral", "previewAudio": preview_audio}
+
+
+class ElevenLabsVoiceAdapter(VoiceCustomizationAdapter):
+    adapter_id = "elevenlabs_tts"
+    capabilities = ELEVENLABS_CAPABILITIES
+    asset_policy = ELEVENLABS_ASSET_POLICY
+    design_constraints = ELEVENLABS_DESIGN_CONSTRAINTS
+
+    @staticmethod
+    def _origin(context: VoiceAdapterContext) -> str:
+        base = (_text(context.base_url) or "https://api.elevenlabs.io/v1").rstrip("/")
+        parsed = urlparse(base)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise VoiceManagerError("ElevenLabs base URL is invalid.", code="invalid_provider_base_url")
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    @staticmethod
+    def _headers(context: VoiceAdapterContext) -> dict[str, str]:
+        return {"xi-api-key": context.api_key}
 
     async def list_voices(self, context: VoiceAdapterContext) -> dict[str, Any]:
-        refreshed: list[dict[str, Any]] = []
-        for voice in _ledger_voices(context):
-            try:
-                async with self._client(30.0) as client:
-                    response = await client.post(
-                        self._endpoint(context, "get_voice"),
-                        headers=self._headers(context),
-                        json={"speaker_id": voice["value"]},
-                    )
-                payload = _response_json(response, self.adapter_id)
-                _assert_generic_provider_success(response, payload, self.adapter_id)
-                status = _text(payload.get("status") or payload.get("message"))
-                refreshed.append({**voice, "label": f"{voice['label']} · {status}" if status else voice["label"]})
-            except VoiceManagerError:
-                refreshed.append(voice)
-        return {"voices": _dedupe_voices([*VOLCENGINE_PRESET_VOICES, *refreshed])}
+        async with self._client(30.0) as client:
+            response = await client.get(
+                f"{self._origin(context)}/v2/voices",
+                headers=self._headers(context),
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        voices: list[dict[str, Any]] = []
+        for raw_item in payload.get("voices") or []:
+            item = _as_dict(raw_item)
+            voice_id = _text(item.get("voice_id") or item.get("voiceId"))
+            if not voice_id:
+                continue
+            name = _text(item.get("name")) or voice_id
+            category = _text(item.get("category")).lower()
+            voices.append(
+                {
+                    "value": voice_id,
+                    "label": f"{name} · {voice_id}" if name != voice_id else voice_id,
+                    "group": category or "custom",
+                    "deletable": category not in {"premade", "default"},
+                    "source": "remote",
+                    "availability": "available",
+                }
+            )
+        return {"voices": _dedupe_voices(voices)}
+
+    async def delete_voice(self, context: VoiceAdapterContext, voice_id: str, voice_type: str) -> dict[str, Any]:
+        async with self._client(30.0) as client:
+            response = await client.delete(
+                f"{self._origin(context)}/v1/voices/{voice_id}",
+                headers=self._headers(context),
+            )
+        payload = _response_json(response, self.adapter_id) if response.content else {}
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        return {"voiceId": voice_id}
+
+    async def design_voice(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+        voice_name: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "voice_description": prompt,
+            "model_id": "eleven_multilingual_ttv_v2",
+        }
+        if preview_text:
+            body["text"] = preview_text
+        async with self._client() as client:
+            response = await client.post(
+                f"{self._origin(context)}/v1/text-to-voice/design",
+                headers={**self._headers(context), "Content-Type": "application/json"},
+                json=body,
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        candidates: list[dict[str, Any]] = []
+        for raw_item in payload.get("previews") or []:
+            item = _as_dict(raw_item)
+            generated_voice_id = _text(item.get("generated_voice_id"))
+            preview_audio = _base64_audio_data_url(
+                item.get("audio_base_64"),
+                _text(item.get("media_type")) or "audio/mpeg",
+            )
+            if generated_voice_id and preview_audio:
+                candidates.append({"generatedVoiceId": generated_voice_id, "previewAudio": preview_audio})
+        if not candidates:
+            raise VoiceManagerError(
+                "ElevenLabs voice design returned no usable candidates.",
+                status_code=502,
+                code="design_candidates_missing",
+                provider=self.adapter_id,
+                trace_id=_trace_id(response, payload),
+            )
+        return {"candidates": candidates, "availability": "preview"}
+
+    async def commit_design(
+        self,
+        context: VoiceAdapterContext,
+        *,
+        generated_voice_id: str,
+        voice_name: str,
+        voice_description: str,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            response = await client.post(
+                f"{self._origin(context)}/v1/text-to-voice",
+                headers={**self._headers(context), "Content-Type": "application/json"},
+                json={
+                    "voice_name": voice_name,
+                    "voice_description": voice_description,
+                    "generated_voice_id": generated_voice_id,
+                },
+            )
+        payload = _response_json(response, self.adapter_id)
+        _assert_generic_provider_success(response, payload, self.adapter_id)
+        voice_id = _text(payload.get("voice_id") or payload.get("voiceId"))
+        if not voice_id:
+            raise VoiceManagerError(
+                "ElevenLabs committed the design without returning a voice ID.",
+                status_code=502,
+                code="voice_id_missing",
+                provider=self.adapter_id,
+                trace_id=_trace_id(response, payload),
+            )
+        return {"voiceId": voice_id, "availability": "available"}
 
     async def clone_voice(
         self,
@@ -776,17 +1430,33 @@ class VolcengineVoiceAdapter(VoiceCustomizationAdapter):
     ) -> dict[str, Any]:
         async with self._client() as client:
             response = await client.post(
-                self._endpoint(context, "voice_clone"),
+                f"{self._origin(context)}/v1/voices/add",
                 headers=self._headers(context),
-                json={"speaker_id": voice_id, "audio": base64.b64encode(audio_bytes).decode("ascii"), "language": 0},
+                data={"name": voice_id},
+                files={"files": (filename, audio_bytes, _text(content_type) or "application/octet-stream")},
             )
         payload = _response_json(response, self.adapter_id)
         _assert_generic_provider_success(response, payload, self.adapter_id)
-        resolved_voice_id = _text(
-            _nested_value(payload, (("data", "speaker_id"), ("speaker_id",), ("data", "speakerId"), ("speakerId",)))
-        ) or voice_id
-        await _upsert_ledger_entry(context, resolved_voice_id)
-        return {"voiceId": resolved_voice_id}
+        resolved_voice_id = _text(payload.get("voice_id") or payload.get("voiceId"))
+        if not resolved_voice_id:
+            raise VoiceManagerError(
+                "ElevenLabs voice clone returned no voice ID.",
+                status_code=502,
+                code="voice_id_missing",
+                provider=self.adapter_id,
+                trace_id=_trace_id(response, payload),
+            )
+        return {"voiceId": resolved_voice_id, "availability": "available"}
+
+
+class QualificationOnlyVoiceAdapter(VoiceCustomizationAdapter):
+    capabilities = QUALIFICATION_ONLY_CAPABILITIES
+    design_constraints = NO_DESIGN_CONSTRAINTS
+
+    def __init__(self, adapter_id: str, asset_policy: VoiceAssetPolicy) -> None:
+        super().__init__()
+        self.adapter_id = adapter_id
+        self.asset_policy = asset_policy
 
 
 _ADAPTER_ID_ALIASES = {
@@ -795,6 +1465,12 @@ _ADAPTER_ID_ALIASES = {
     "aliyun_bailian_cosyvoice": "aliyun_bailian_cosyvoice",
     "volcengine_ark_voice": "volcengine_doubao_voice",
     "volcengine_doubao_voice": "volcengine_doubao_voice",
+    "xiaomi_mimo_tts": "xiaomi_mimo_tts",
+    "elevenlabs_tts": "elevenlabs_tts",
+    "openai_audio": "openai_custom_voice",
+    "openai_audio_speech": "openai_custom_voice",
+    "google_cloud_tts": "google_instant_custom_voice",
+    "azure_speech_tts": "azure_personal_voice",
 }
 
 
@@ -804,10 +1480,16 @@ class VoiceCustomizationManager:
             MiniMaxVoiceAdapter(transport=transport),
             AliyunCosyVoiceAdapter(transport=transport),
             VolcengineVoiceAdapter(transport=transport),
+            XiaomiMiMoVoiceAdapter(transport=transport),
+            ElevenLabsVoiceAdapter(transport=transport),
+            *(
+                QualificationOnlyVoiceAdapter(adapter_id, policy)
+                for adapter_id, policy in QUALIFICATION_POLICIES.items()
+            ),
         )
         self._adapters = {adapter.adapter_id: adapter for adapter in adapters}
 
-    def resolve_context(self, model_ref: str) -> VoiceAdapterContext:
+    def resolve_context(self, model_ref: str, *, require_credential: bool = True) -> VoiceAdapterContext:
         normalized_ref = _text(model_ref)
         record = model_control_plane.get_model_record(normalized_ref)
         if not record:
@@ -831,12 +1513,24 @@ class VoiceCustomizationManager:
                 code="unsupported_voice_manager",
             )
         api_key = _text(provider_meta.get("api_key") or provider_meta.get("apiKey"))
-        if not api_key or api_key.startswith("oauth:") or "***" in api_key:
+        credential_configured = bool(api_key) and not api_key.startswith("oauth:") and "***" not in api_key
+        if require_credential and not credential_configured and adapter.asset_policy.asset_scope != "qualification_only":
             raise VoiceManagerError(
                 f"{adapter_id} API key is not configured.",
                 status_code=409,
                 code="credential_missing",
                 provider=adapter_id,
+            )
+        asset_policy = adapter.asset_policy
+        if asset_policy.asset_scope == "qualification_only":
+            qualification = (
+                _as_dict(model_meta.get("voiceCustomization"))
+                or _as_dict(media_limits.get("voiceCustomization"))
+                or _as_dict(provider_meta.get("voiceCustomization"))
+            )
+            asset_policy = replace(
+                asset_policy,
+                eligibility_status="eligible" if qualification.get("eligible") is True else "requires_approval",
             )
         provider_model_id = _text(media_limits.get("providerModelId")) or model_id.rsplit("/", 1)[-1]
         return VoiceAdapterContext(
@@ -844,24 +1538,97 @@ class VoiceCustomizationManager:
             model_ref=normalized_ref,
             model_id=model_id,
             provider_id=provider_id,
-            api_key=api_key,
+            api_key=api_key if credential_configured else "",
             base_url=_text(provider_meta.get("base_url") or provider_meta.get("baseUrl")),
             provider_model_id=provider_model_id,
             provider_meta=provider_meta,
             model_meta=model_meta,
             media_limits=media_limits,
             capabilities=adapter.capabilities,
+            asset_policy=asset_policy,
+            design_constraints=adapter.design_constraints,
         )
 
     def _adapter(self, context: VoiceAdapterContext) -> VoiceCustomizationAdapter:
         return self._adapters[context.adapter_id]
 
     @staticmethod
+    def _validate_design_inputs(
+        context: VoiceAdapterContext,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str,
+    ) -> None:
+        constraints = context.design_constraints
+        if len(prompt) < constraints.prompt_min_chars:
+            raise VoiceManagerError(
+                f"prompt must contain at least {constraints.prompt_min_chars} characters.",
+                code="design_prompt_too_short",
+                provider=context.adapter_id,
+            )
+        if constraints.prompt_max_chars is not None and len(prompt) > constraints.prompt_max_chars:
+            raise VoiceManagerError(
+                f"prompt must contain no more than {constraints.prompt_max_chars} characters.",
+                code="design_prompt_too_long",
+                provider=context.adapter_id,
+            )
+        if len(preview_text) < constraints.preview_text_min_chars:
+            raise VoiceManagerError(
+                f"previewText must contain at least {constraints.preview_text_min_chars} characters.",
+                code="preview_text_too_short",
+                provider=context.adapter_id,
+            )
+        if (
+            constraints.preview_text_max_chars is not None
+            and len(preview_text) > constraints.preview_text_max_chars
+        ):
+            raise VoiceManagerError(
+                f"previewText must contain no more than {constraints.preview_text_max_chars} characters.",
+                code="preview_text_too_long",
+                provider=context.adapter_id,
+            )
+        if constraints.voice_id_required and not voice_id:
+            raise VoiceManagerError(
+                "voiceId is required for this provider's voice-design flow.",
+                code="voice_id_required",
+                provider=context.adapter_id,
+            )
+        if not voice_id:
+            return
+        if constraints.voice_id_min_chars is not None and len(voice_id) < constraints.voice_id_min_chars:
+            raise VoiceManagerError(
+                "voiceId does not satisfy the provider's length requirements.",
+                code="invalid_voice_id",
+                provider=context.adapter_id,
+            )
+        if constraints.voice_id_max_chars is not None and len(voice_id) > constraints.voice_id_max_chars:
+            raise VoiceManagerError(
+                "voiceId does not satisfy the provider's length requirements.",
+                code="invalid_voice_id",
+                provider=context.adapter_id,
+            )
+        if constraints.voice_id_format == "ascii_identifier" and not _MINIMAX_VOICE_ID_PATTERN.fullmatch(voice_id):
+            raise VoiceManagerError(
+                "voiceId must start with a letter, use letters, numbers, '-' or '_', and end with a letter or number.",
+                code="invalid_voice_id",
+                provider=context.adapter_id,
+            )
+        if constraints.voice_id_format == "ascii_alphanumeric" and not _ALIYUN_VOICE_PREFIX_PATTERN.fullmatch(voice_id):
+            raise VoiceManagerError(
+                "voiceId must contain only ASCII letters or numbers.",
+                code="invalid_voice_id",
+                provider=context.adapter_id,
+            )
+
+    @staticmethod
     def _result(context: VoiceAdapterContext, **payload: Any) -> dict[str, Any]:
-        return {
+        result = {
             "ok": True,
             "provider": context.adapter_id,
             "capabilities": context.capabilities.as_dict(),
+            "assetPolicy": context.asset_policy.as_dict(),
+            "credentialStatus": "configured" if context.api_key else "missing",
             "sampleLimits": {
                 "formats": sorted(suffix.removeprefix(".") for suffix in _SUPPORTED_AUDIO_SUFFIXES),
                 "maxBytes": MAX_VOICE_SAMPLE_BYTES,
@@ -870,9 +1637,12 @@ class VoiceCustomizationManager:
             },
             **payload,
         }
+        if context.capabilities.design:
+            result["designConstraints"] = context.design_constraints.as_dict()
+        return result
 
     def capabilities(self, model_ref: str) -> dict[str, Any]:
-        context = self.resolve_context(model_ref)
+        context = self.resolve_context(model_ref, require_credential=False)
         return self._result(context, voices=[])
 
     async def list_voices(self, model_ref: str) -> dict[str, Any]:
@@ -905,20 +1675,103 @@ class VoiceCustomizationManager:
     ) -> dict[str, Any]:
         context = self.resolve_context(model_ref)
         normalized_voice_id = _text(voice_id)
-        if not normalized_voice_id:
+        if not normalized_voice_id and context.asset_policy.asset_scope != "ephemeral_request":
             raise VoiceManagerError("voiceId is required.", code="voice_id_required", provider=context.adapter_id)
         if not context.capabilities.clone:
             raise VoiceManagerError("Voice cloning is not supported.", code="unsupported_action", provider=context.adapter_id)
+        normalized_preview_text = _text(preview_text)
+        if context.asset_policy.asset_scope == "ephemeral_request" and not normalized_preview_text:
+            raise VoiceManagerError(
+                "previewText is required for an ephemeral reference voice.",
+                code="preview_text_required",
+                provider=context.adapter_id,
+            )
         duration = _validate_voice_sample(filename, audio_bytes)
         result = await self._adapter(context).clone_voice(
             context,
             voice_id=normalized_voice_id,
-            preview_text=_text(preview_text),
+            preview_text=normalized_preview_text,
             filename=filename,
             content_type=content_type,
             audio_bytes=audio_bytes,
         )
         return self._result(context, sampleDurationSeconds=round(duration, 3), **result)
+
+    async def design_voice(
+        self,
+        model_ref: str,
+        *,
+        prompt: str,
+        preview_text: str,
+        voice_id: str = "",
+        voice_name: str = "",
+    ) -> dict[str, Any]:
+        context = self.resolve_context(model_ref)
+        if not context.capabilities.design:
+            raise VoiceManagerError("Voice design is not supported.", code="unsupported_action", provider=context.adapter_id)
+        normalized_prompt = _text(prompt)
+        normalized_preview = _text(preview_text)
+        normalized_voice_id = _text(voice_id)
+        normalized_voice_name = _text(voice_name)
+        if not normalized_prompt:
+            raise VoiceManagerError("prompt is required.", code="design_prompt_required", provider=context.adapter_id)
+        if not normalized_preview:
+            raise VoiceManagerError(
+                "previewText is required.",
+                code="preview_text_required",
+                provider=context.adapter_id,
+            )
+        self._validate_design_inputs(
+            context,
+            prompt=normalized_prompt,
+            preview_text=normalized_preview,
+            voice_id=normalized_voice_id,
+        )
+        return self._result(
+            context,
+            **await self._adapter(context).design_voice(
+                context,
+                prompt=normalized_prompt,
+                preview_text=normalized_preview,
+                voice_id=normalized_voice_id,
+                voice_name=normalized_voice_name,
+            ),
+        )
+
+    async def commit_design(
+        self,
+        model_ref: str,
+        *,
+        generated_voice_id: str,
+        voice_name: str,
+        voice_description: str = "",
+    ) -> dict[str, Any]:
+        context = self.resolve_context(model_ref)
+        if not context.capabilities.commit:
+            raise VoiceManagerError(
+                "Voice design commit is not supported.",
+                code="unsupported_action",
+                provider=context.adapter_id,
+            )
+        normalized_generated_id = _text(generated_voice_id)
+        normalized_name = _text(voice_name)
+        if not normalized_generated_id:
+            raise VoiceManagerError(
+                "generatedVoiceId is required.",
+                code="generated_voice_id_required",
+                provider=context.adapter_id,
+            )
+        if not normalized_name:
+            raise VoiceManagerError("voiceName is required.", code="voice_name_required", provider=context.adapter_id)
+        return self._result(
+            context,
+            **await self._adapter(context).commit_design(
+                context,
+                generated_voice_id=normalized_generated_id,
+                voice_name=normalized_name,
+                voice_description=_text(voice_description),
+            ),
+        )
 
 
 voice_customization_manager = VoiceCustomizationManager()
@@ -928,7 +1781,9 @@ __all__ = [
     "MAX_VOICE_SAMPLE_BYTES",
     "MAX_VOICE_SAMPLE_SECONDS",
     "MIN_VOICE_SAMPLE_SECONDS",
+    "VoiceAssetPolicy",
     "VoiceCustomizationCapabilities",
+    "VoiceDesignConstraints",
     "VoiceCustomizationManager",
     "VoiceManagerError",
     "voice_customization_manager",

@@ -39,7 +39,9 @@ test("Managed TTS voices use a searchable confirmed selector and reveal upload c
   assert.match(managedBlock, /modelRefTtsVoiceCapabilities\.preview === true/);
   assert.match(managedBlock, /voiceCloneSampleHint/);
   assert.match(managedBlock, /sampleLimits\?\.minDurationSeconds \?\? 10/);
-  assert.doesNotMatch(managedBlock, /customVoicePlaceholder/);
+  assert.match(managedBlock, /isQualificationOnlyVoice/);
+  assert.match(managedBlock, /isProviderSlotVoice/);
+  assert.match(managedBlock, /modelRefTtsVoiceCapabilities\.list === true \? \(/);
   assert.match(managedBlock, /\.mp3,\.m4a,\.wav/);
 });
 
@@ -70,6 +72,71 @@ test("Model Hub discovers voice customization from Engine capabilities instead o
 
   assert.match(hub, /action: "capabilities", modelRef: selectedTtsModelRef/);
   assert.doesNotMatch(hub, /function isManagedModelRefTtsVoiceModel/);
+  assert.match(hub, /payload\.assetPolicy/);
+  assert.match(hub, /payload\.designConstraints/);
+  assert.match(hub, /payload\.credentialStatus/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.assetScope === "qualification_only"/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.assetScope === "ephemeral_request"/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.assetScope === "provider_slot"/);
   assert.match(hub, /providerCode/);
   assert.match(hub, /traceId/);
+});
+
+test("Voice design follows Engine-declared direct, ephemeral, slot, and preview-commit semantics", () => {
+  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(hub, /action: "design"/);
+  assert.match(hub, /action: "commit_design"/);
+  assert.match(hub, /generatedVoiceId: candidate\.generatedVoiceId/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.designFlow === "preview_then_commit"/);
+  assert.match(hub, /isTtsVoiceDesignIdRequired && !ttsDesignVoiceId\.trim\(\)/);
+  assert.match(hub, /ttsVoiceDesignIdRole === "prefix"/);
+  assert.match(hub, /minLength=\{ttsDesignPromptMinChars\}/);
+  assert.match(hub, /maxLength=\{ttsDesignPreviewMaxChars\}/);
+  assert.match(hub, /disabled=\{isTtsDesigning \|\| !isTtsDesignInputValid\}/);
+  assert.match(hub, /payload\.ephemeral === true \|\| isEphemeralReferenceVoice/);
+
+  const ephemeralBranchStart = hub.indexOf("if (payload.ephemeral === true || isEphemeralReferenceVoice)");
+  const persistentSelection = hub.indexOf('setTtsModelRefValue("voice", designedVoiceId)', ephemeralBranchStart);
+  assert.ok(ephemeralBranchStart >= 0);
+  assert.ok(persistentSelection > ephemeralBranchStart, "ephemeral result must return before persistent voice selection");
+  assert.match(hub.slice(ephemeralBranchStart, persistentSelection), /return;/);
+});
+
+test("Qualification-only providers expose official eligibility and consent paths without fake operations", () => {
+  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.eligibilityStatus === "eligible"/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.consentRequired/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.applicationUrl/);
+  assert.match(hub, /modelRefTtsVoiceAssetPolicy\?\.docsUrl/);
+  assert.match(hub, /voiceQualificationApply/);
+  assert.match(hub, /voiceQualificationDocs/);
+});
+
+test("Missing credentials block managed voice side effects while leaving capability discovery visible", () => {
+  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(hub, /isModelRefVoiceCredentialMissing/);
+  assert.match(hub, /disabled=\{isModelRefTtsVoiceLoading \|\| !selectedTtsModelRef \|\| isModelRefVoiceCredentialMissing\}/);
+  assert.match(hub, /onDelete=\{modelRefTtsVoiceCapabilities\.delete === true && !isModelRefVoiceCredentialMissing/);
+  assert.match(hub, /disabled=\{isModelRefVoiceCredentialMissing\}/);
+});
+
+test("Edge TTS remains the canonical no-key default and is not routed through voice customization", () => {
+  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(hub, /active_provider: "edge-tts"/);
+  assert.match(hub, /edge_tts: \{ voice: "zh-CN-XiaoxiaoNeural", rate: "\+0%", volume: "\+0%" \}/);
+  assert.match(hub, /audioConfig\.tts\.active_provider === "edge-tts"/);
+  assert.match(hub, /setTtsValue\("edge_tts", "voice", value\)/);
+});
+
+test("The audio surface does not expose the Edge fallback before canonical config loads", () => {
+  const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(false\)/);
+  assert.match(hub, /setAudioConfig\(mergeAudioConfig\(payload\.audioConfig \|\| null\)\);\s*setHasLoadedAudioConfig\(true\)/);
+  assert.match(hub, /hasLoadedAudioConfig \? systemAudioConfigCard/);
+  assert.match(hub, /audio\.loadingConfig/);
 });

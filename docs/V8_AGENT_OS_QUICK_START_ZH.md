@@ -168,7 +168,7 @@ Web、Shell、桌宠和 CLI 是本机可信入口，不使用 Phone 配对票据
 .\v8os.cmd restart
 .\v8os.cmd status --json
 .\v8os.cmd doctor --json
-.\v8os.cmd workspace
+.\v8os.cmd workspace show
 ```
 
 命令帮助以本机当前源码为准：
@@ -180,9 +180,10 @@ Web、Shell、桌宠和 CLI 是本机可信入口，不使用 Phone 配对票据
 
 ## 7. 继续阅读
 
-1. [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
-2. [API 参考](./V8_AGENT_OS_API_REFERENCE_ZH.md)
-3. [开发者指南](./V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
-4. [Engine 测试地图](../apps/v8-agent-os-engine/tests/README.md)
+1. [CLI 命令参考](./V8_AGENT_OS_CLI_REFERENCE_ZH.md)
+2. [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
+3. [API 参考](./V8_AGENT_OS_API_REFERENCE_ZH.md)
+4. [开发者指南](./V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
+5. [Engine 测试地图](../apps/v8-agent-os-engine/tests/README.md)
 
 涉及真实 provider、联网调研、媒体生成或高成本评测的测试必须显式启用 live harness；默认测试不应消耗外部额度。

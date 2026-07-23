@@ -85,6 +85,7 @@ docs/**
 !docs/assets/
 !docs/assets/banner.svg
 !docs/V8_AGENT_OS_API_REFERENCE_ZH.md
+!docs/V8_AGENT_OS_CLI_REFERENCE_ZH.md
 !docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md
 !docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md
 !docs/V8_AGENT_OS_QUICK_START_ZH.md

@@ -10,7 +10,7 @@
 
 <div align="center">
 
-[English](./README.md) · [快速开始](./docs/V8_AGENT_OS_QUICK_START_ZH.md) · [配置指南](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md) · [开发者指南](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md) · [发布页](https://github.com/justForever17/v8-agent-os/releases)
+[English](./README.md) · [快速开始](./docs/V8_AGENT_OS_QUICK_START_ZH.md) · [CLI 命令](./docs/V8_AGENT_OS_CLI_REFERENCE_ZH.md) · [配置指南](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md) · [开发者指南](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md) · [发布页](https://github.com/justForever17/v8-agent-os/releases)
 
 </div>
 

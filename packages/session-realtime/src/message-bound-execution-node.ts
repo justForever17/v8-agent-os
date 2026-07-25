@@ -111,10 +111,12 @@ function readNestedData(node: MessageBoundExecutionTimelineNode): Record<string,
   const episode = readRecord(data.episode);
   const handoff = readRecord(data.handoff);
   const handoffRef = readRecord(data.handoffRef);
-  if (Object.keys(episode).length > 0) return episode;
-  if (Object.keys(handoffRef).length > 0) return handoffRef;
-  if (Object.keys(handoff).length > 0) return handoff;
-  return data;
+  return {
+    ...data,
+    ...handoff,
+    ...handoffRef,
+    ...episode,
+  };
 }
 
 function inferKind(node: MessageBoundExecutionTimelineNode): MessageBoundExecutionNodeKind | null {
@@ -122,6 +124,12 @@ function inferKind(node: MessageBoundExecutionTimelineNode): MessageBoundExecuti
   const executionType = readString(node.executionType);
   const topic = readString(node.topic).toLowerCase();
   const toolName = readString(node.toolName).toLowerCase();
+  const data = readNestedData(node);
+  const runtimeKind = (
+    readString(data.kind)
+    || readString(data.runtimeKind)
+    || readString(data.runtime_kind)
+  ).toLowerCase();
   if (executionType === "tool_call" || executionType === "tool_result") {
     if (toolName === "runtime_broker" || topic.includes("runtime")) return "runtime";
     if (toolName === "delegation_broker" || topic.includes("delegation") || topic.includes("subagent")) return "subagent";
@@ -129,6 +137,7 @@ function inferKind(node: MessageBoundExecutionTimelineNode): MessageBoundExecuti
   }
   if (executionType !== "runtime_progress" && executionType !== "agent_start") return null;
   if (topic.startsWith("handoff.ref.")) return "handoff";
+  if (runtimeKind === "delegation" || runtimeKind === "subagent" || runtimeKind === "subagent_swarm") return "subagent";
   if (topic.includes("delegation") || topic.includes("subagent")) return "subagent";
   if (topic.startsWith("runtime.") || topic.startsWith("capability.need.")) return "runtime";
   return null;
@@ -257,6 +266,7 @@ export function messageBoundExecutionNodesToStageActivities(
       data: {
         ...(node.data || {}),
         runId: node.runId,
+        toolCallId: node.toolCallId,
         episodeId: node.episodeId,
         producerEpisodeId: node.episodeId,
         dispatchGroup: node.dispatchGroup,

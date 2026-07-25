@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 WAITING_RUN_STATUSES = {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"}
+INTERRUPTIBLE_RUN_STATUSES = {"queued", "running", *WAITING_RUN_STATUSES}
 
 
 @dataclass(slots=True)

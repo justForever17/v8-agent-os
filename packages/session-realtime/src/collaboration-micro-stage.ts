@@ -78,6 +78,7 @@ export type BuildCollaborationMicroStageOptions = {
 type StageDraft = CollaborationMicroStage & {
   latestScore: number;
   actorDrafts: Map<string, ActorDraft>;
+  actorIdByAlias: Map<string, string>;
 };
 
 type ActorDraft = CollaborationMicroStageActor & {
@@ -106,10 +107,14 @@ function getActivityData(activity: CollaborationMicroStageActivityInput) {
   const episode = readRecord(data.episode);
   const handoff = readRecord(data.handoff);
   const handoffRef = readRecord(data.handoffRef);
-  if (Object.keys(episode).length > 0) return episode;
-  if (Object.keys(handoffRef).length > 0) return handoffRef;
-  if (Object.keys(handoff).length > 0) return handoff;
-  return data;
+  const progress = readRecord(data.progress);
+  return {
+    ...data,
+    ...progress,
+    ...handoff,
+    ...handoffRef,
+    ...episode,
+  };
 }
 
 function getRunId(activity: CollaborationMicroStageActivityInput) {
@@ -164,11 +169,16 @@ function isMissingDelegation(activity: CollaborationMicroStageActivityInput) {
 function isSubagentActivity(activity: CollaborationMicroStageActivityInput) {
   const topic = readString(activity.topic);
   const runtimeKind = getRuntimeKind(activity);
-  return runtimeKind === "subagent_swarm"
-    || topic.startsWith("subagent.task.")
+  if (topic.startsWith("subagent.task.")
+    || topic.startsWith("subagent.text.")
+    || topic.startsWith("subagent.reasoning.")
     || topic.startsWith("delegation.child.")
     || topic.startsWith("delegation.")
-    || topic.startsWith("delegation_broker.");
+    || topic.startsWith("delegation_broker.")) {
+    return true;
+  }
+  if (runtimeKind !== "subagent_swarm") return false;
+  return topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.");
 }
 
 function isRuntimeActivity(activity: CollaborationMicroStageActivityInput) {
@@ -216,6 +226,10 @@ function getSubagentGroupCandidates(activity: CollaborationMicroStageActivityInp
     readString(data.dispatch_group),
     readString(data.delegationId),
     readString(data.delegation_id),
+    readString(data.childEpisodeId),
+    readString(data.child_episode_id),
+    readString(data.episodeId),
+    readString(data.episode_id),
     readString(data.parentDelegationId),
     readString(data.parent_delegation_id),
     readString(data.taskBriefId),
@@ -233,6 +247,8 @@ function getEpisodeId(activity: CollaborationMicroStageActivityInput) {
     || readString(data.producer_episode_id)
     || readString(data.needId)
     || readString(data.need_id)
+    || readString(data.toolCallId)
+    || readString(data.tool_call_id)
     || readString(activity.id);
 }
 
@@ -260,19 +276,26 @@ function normalizeActorKey(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-function getSubagentActorKey(activity: CollaborationMicroStageActivityInput, group: string) {
+function getSubagentActorAliases(activity: CollaborationMicroStageActivityInput) {
   const data = getActivityData(activity);
-  const explicit = readString(data.subagentId)
-    || readString(data.subagent_id)
-    || readString(data.agentId)
-    || readString(data.agent_id)
-    || readString(data.workerId)
-    || readString(data.worker_id)
-    || readString(data.childEpisodeId)
-    || readString(data.child_episode_id)
-    || readString(data.taskBriefId)
-    || readString(data.task_brief_id);
-  if (explicit) return `${group}:${explicit}`;
+  const explicit = [
+    readString(data.childEpisodeId),
+    readString(data.child_episode_id),
+    readString(data.episodeId),
+    readString(data.episode_id),
+    readString(data.delegationId),
+    readString(data.delegation_id),
+    readString(data.subagentId),
+    readString(data.subagent_id),
+    readString(data.agentId),
+    readString(data.agent_id),
+    readString(data.ownerAgentId),
+    readString(data.owner_agent_id),
+    readString(data.workerId),
+    readString(data.worker_id),
+    readString(data.taskBriefId),
+    readString(data.task_brief_id),
+  ].filter(Boolean).map((value) => `id:${value.toLowerCase()}`);
   const label = readString(data.subagentName)
     || readString(data.subagent_name)
     || readString(data.agentName)
@@ -281,7 +304,13 @@ function getSubagentActorKey(activity: CollaborationMicroStageActivityInput, gro
     || readString(data.target_label)
     || readString(data.workerType)
     || readString(data.worker_type);
-  if (label) return `${group}:${normalizeActorKey(label) || label}`;
+  if (label) explicit.push(`label:${normalizeActorKey(label) || label.toLowerCase()}`);
+  return Array.from(new Set(explicit));
+}
+
+function getSubagentActorKey(activity: CollaborationMicroStageActivityInput, group: string) {
+  const alias = getSubagentActorAliases(activity)[0];
+  if (alias) return alias.slice(alias.indexOf(":") + 1);
   return `${group}:${readString(activity.id) || readTimestamp(activity.timestamp)}`;
 }
 
@@ -307,6 +336,12 @@ function mergeActorDraft(actor: ActorDraft, step: CollaborationMicroStageStep, s
   actor.timestamp = Math.max(actor.timestamp, step.timestamp);
   actor.latestScore = Math.max(actor.latestScore, step.timestamp);
   if (step.detailRef) actor.detailRef = step.detailRef;
+  const currentLabel = normalizeActorKey(actor.label);
+  const nextLabel = normalizeActorKey(step.actorLabel || "");
+  const genericLabels = new Set(["", "agent_swarm", "subagent", "子代理", "子agent"]);
+  if (step.actorLabel && !genericLabels.has(nextLabel) && genericLabels.has(currentLabel)) {
+    actor.label = step.actorLabel;
+  }
   if (!actor.sourceActivityIds.includes(step.sourceActivityId)) {
     actor.sourceActivityIds.push(step.sourceActivityId);
   }
@@ -434,7 +469,7 @@ export function buildCollaborationMicroStages(
 
   for (const activity of orderedActivities) {
     const runId = getRunId(activity);
-    if (expectedRunId && runId && runId !== expectedRunId) continue;
+    if (expectedRunId && runId !== expectedRunId) continue;
 
     const kind: CollaborationMicroStageKind | null = isSubagentActivity(activity)
       ? "subagent"
@@ -472,7 +507,11 @@ export function buildCollaborationMicroStages(
     };
 
     const existing = drafts.get(stageId);
-    const actorId = getActorId(activity, kind, group);
+    const actorAliases = kind === "subagent" ? getSubagentActorAliases(activity) : [];
+    const aliasedActorId = existing && kind === "subagent"
+      ? actorAliases.map((alias) => existing.actorIdByAlias.get(alias)).find(Boolean)
+      : undefined;
+    const actorId = aliasedActorId || getActorId(activity, kind, group);
     if (!existing) {
       const actorDraft: ActorDraft = {
         id: actorId,
@@ -503,9 +542,12 @@ export function buildCollaborationMicroStages(
         actors: [actorDraft],
         latestScore: timestamp,
         actorDrafts: new Map([[actorId, actorDraft]]),
+        actorIdByAlias: new Map(actorAliases.map((alias) => [alias, actorId])),
       });
       continue;
     }
+
+    actorAliases.forEach((alias) => existing.actorIdByAlias.set(alias, actorId));
 
     const sourceIds = new Set([...existing.sourceActivityIds, step.sourceActivityId]);
     const nextStatus = mergeStatus(existing.status, status);
@@ -547,7 +589,7 @@ export function buildCollaborationMicroStages(
   return Array.from(drafts.values())
     .sort((left, right) => left.latestScore - right.latestScore)
     .slice(Math.max(0, drafts.size - limit))
-    .map(({ latestScore: _latestScore, actorDrafts, ...stage }) => ({
+    .map(({ latestScore: _latestScore, actorDrafts, actorIdByAlias: _actorIdByAlias, ...stage }) => ({
       ...stage,
       actors: Array.from(actorDrafts.values())
         .sort((left, right) => left.latestScore - right.latestScore)

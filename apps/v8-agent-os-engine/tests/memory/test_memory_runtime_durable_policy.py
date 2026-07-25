@@ -605,6 +605,64 @@ class MemoryScopeResolutionTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.payload["recommendedAction"], "create_new_session")
 
+    def test_bound_project_session_accepts_resolved_scope_as_followup_hint(self):
+        binding_service = _FakeBindingService()
+        binding_service.binding = SessionScopeBinding(
+            session_id="session-project-followup",
+            conversation_id="session-project-followup",
+            project_id="v8-agent-os",
+            workspace_id="v8-agent-os",
+            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+            scope_hint="global",
+            resolved_scope="project:v8-agent-os",
+            scope_source="request_explicit",
+        )
+        service = ScopeResolutionService(
+            project_registry=_FakeProjectRegistry(None),
+            binding_service=binding_service,
+            resolution_repo=_FakeResolutionRepo(),
+        )
+
+        result = service.resolve(
+            session_id="session-project-followup",
+            project_id="v8-agent-os",
+            workspace_id="v8-agent-os",
+            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+            scope_hint="project:v8-agent-os",
+        )
+
+        self.assertIs(result.binding, binding_service.binding)
+        self.assertEqual(result.binding.resolved_scope, "project:v8-agent-os")
+
+    def test_bound_project_session_still_rejects_unrelated_scope_hint(self):
+        binding_service = _FakeBindingService()
+        binding_service.binding = SessionScopeBinding(
+            session_id="session-project-wrong-hint",
+            conversation_id="session-project-wrong-hint",
+            project_id="v8-agent-os",
+            workspace_id="v8-agent-os",
+            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+            scope_hint="global",
+            resolved_scope="project:v8-agent-os",
+            scope_source="request_explicit",
+        )
+        service = ScopeResolutionService(
+            project_registry=_FakeProjectRegistry(None),
+            binding_service=binding_service,
+            resolution_repo=_FakeResolutionRepo(),
+        )
+
+        with self.assertRaises(ScopeBindingConflictError) as raised:
+            service.resolve(
+                session_id="session-project-wrong-hint",
+                project_id="v8-agent-os",
+                workspace_id="v8-agent-os",
+                workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+                scope_hint="project:other",
+            )
+
+        self.assertIn("scope_hint", raised.exception.payload["changedAnchors"])
+
 
 class MemoryStoreGovernanceTests(unittest.TestCase):
     def test_preference_overwrite_uses_latest_value_for_same_scope_key(self):

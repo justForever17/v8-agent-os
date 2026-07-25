@@ -168,17 +168,17 @@ function settleIncompleteStage(stage: CollaborationMicroStage): CollaborationMic
     const lastStepIndex = stage.steps.length - 1;
     return {
         ...stage,
-        status: "completed",
-        cue: "completed",
+        status: "degraded",
+        cue: "degraded",
         steps: stage.steps.map((step, index) => (
             index === lastStepIndex && !isFinalStatus(step.status)
-                ? { ...step, status: "completed", cue: "completed" }
+                ? { ...step, status: "degraded", cue: "degraded" }
                 : step
         )),
         actors: stage.actors.map((actor) => (
             isFinalStatus(actor.status)
                 ? actor
-                : { ...actor, status: "completed", cue: "completed" }
+                : { ...actor, status: "degraded", cue: "degraded" }
         )),
     };
 }
@@ -481,10 +481,11 @@ function scaleCollisionVolume(item: PositionedStageActorItem, volume: CollisionV
 }
 
 function collisionRectsForItem(item: PositionedStageActorItem): CollisionRect[] {
-    return [
-        scaleCollisionVolume(item, WORKSTATION_COLLISION),
-        scaleCollisionVolume(item, ROBOT_COLLISION),
-    ];
+    const rects = [scaleCollisionVolume(item, WORKSTATION_COLLISION)];
+    if (item.actor.kind === "subagent") {
+        rects.push(scaleCollisionVolume(item, ROBOT_COLLISION));
+    }
+    return rects;
 }
 
 function supervisorCollisionAt(point: { x: number; y: number }): CollisionRect {
@@ -880,6 +881,8 @@ function WorkCell({
                 zIndex: stageDepthZ(y + WORK_CELL_HEIGHT * scale),
             }}
             data-stage-depth={stageDepthZ(y + WORK_CELL_HEIGHT * scale)}
+            data-micro-stage-actor-kind={actor.kind}
+            data-micro-stage-actor-id={actor.id}
             data-collision-workstation={`${WORKSTATION_COLLISION.left},${WORKSTATION_COLLISION.top},${WORKSTATION_COLLISION.width},${WORKSTATION_COLLISION.height}`}
         >
             {(stage.renderPhase === "entering" || cue === "summon") ? (
@@ -888,24 +891,26 @@ function WorkCell({
             <div className="absolute left-0 top-1 z-[3]">
                 <WorkstationDisplay cue={cue} color={color} phase={stage.renderPhase} status={status} />
             </div>
-            <div
-                className={cn(
-                    "absolute left-[45px] top-[29px] z-[8] h-16 w-16 transition-[opacity,transform] ease-out",
-                    curtain && "animate-[microStageRobotCurtain_2.05s_ease-out_forwards]",
-                )}
-                data-collision-agent={`${ROBOT_COLLISION.left - 45},${ROBOT_COLLISION.top - 29},${ROBOT_COLLISION.width},${ROBOT_COLLISION.height}`}
-            >
+            {actor.kind === "subagent" ? (
                 <div
-                    className="absolute -top-2 left-1/2 z-20 flex max-w-[72px] -translate-x-1/2 items-center gap-1 rounded-full border bg-background/90 px-1.5 py-0.5 text-[8px] font-semibold leading-none text-foreground/90 shadow-sm backdrop-blur"
-                    style={{ borderColor: `${color}80` }}
-                    title={actorName}
+                    className={cn(
+                        "absolute left-[45px] top-[29px] z-[8] h-16 w-16 transition-[opacity,transform] ease-out",
+                        curtain && "animate-[microStageRobotCurtain_2.05s_ease-out_forwards]",
+                    )}
+                    data-collision-agent={`${ROBOT_COLLISION.left - 45},${ROBOT_COLLISION.top - 29},${ROBOT_COLLISION.width},${ROBOT_COLLISION.height}`}
                 >
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
-                    <span className="truncate">{actorName}</span>
+                    <div
+                        className="absolute -top-2 left-1/2 z-20 flex max-w-[72px] -translate-x-1/2 items-center gap-1 rounded-full border bg-background/90 px-1.5 py-0.5 text-[8px] font-semibold leading-none text-foreground/90 shadow-sm backdrop-blur"
+                        style={{ borderColor: `${color}80` }}
+                        title={actorName}
+                    >
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                        <span className="truncate">{actorName}</span>
+                    </div>
+                    <div className="absolute bottom-1 left-[18px] h-2 w-8 rounded-full bg-slate-950/20 blur-[1px] dark:bg-black/40" />
+                    <SubagentRobotSprite action={robotAction} color={color} />
                 </div>
-                <div className="absolute bottom-1 left-[18px] h-2 w-8 rounded-full bg-slate-950/20 blur-[1px] dark:bg-black/40" />
-                <SubagentRobotSprite action={robotAction} color={color} />
-            </div>
+            ) : null}
             {handoff ? (
                 <div
                     className="absolute left-[68px] top-[47px] h-5 w-4 animate-[microStageReportTravel_1.32s_ease-out_forwards] rounded border border-slate-400/70 bg-white shadow-sm"

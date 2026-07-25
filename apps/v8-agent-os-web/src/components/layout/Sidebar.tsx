@@ -344,10 +344,10 @@ export function Sidebar() {
                         {group.workspacePath ? (
                             <div
                                 className={cn(
-                                    "pointer-events-none ml-auto flex shrink-0 translate-x-1 items-center opacity-0 transition-[opacity,transform] duration-150",
-                                    "group-hover/header:pointer-events-auto group-hover/header:translate-x-0 group-hover/header:opacity-100",
-                                    "group-focus-within/header:pointer-events-auto group-focus-within/header:translate-x-0 group-focus-within/header:opacity-100",
-                                    presentationBusyKey === `group:${group.key}` && "pointer-events-auto translate-x-0 opacity-100",
+                                    "invisible relative z-10 ml-auto flex shrink-0 translate-x-1 items-center opacity-0 transition-[opacity,transform] duration-150",
+                                    "group-hover/header:visible group-hover/header:translate-x-0 group-hover/header:opacity-100",
+                                    "group-focus-within/header:visible group-focus-within/header:translate-x-0 group-focus-within/header:opacity-100",
+                                    presentationBusyKey === `group:${group.key}` && "visible translate-x-0 opacity-100",
                                 )}
                             >
                                 <button

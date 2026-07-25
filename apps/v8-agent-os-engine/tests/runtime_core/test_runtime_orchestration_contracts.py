@@ -16,10 +16,47 @@ from core.tools.native.command_governance import _windows_shell_syntax_violation
 from core.tools.native.runtime import RuntimeRouteTaskBrief
 from graph.parallel_support import (
     _repeat_sensitive_tool_call_signature,
+    _subagent_timeline_nodes_from_message,
     build_parallel_delegate_task_node,
 )
 from graph.workflow_assembly import _route_runtime_tool_commands, _workflow_entry_command
 from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+
+
+def test_subagent_timeline_projection_keeps_readable_activity_and_redacts_secrets() -> None:
+    assistant = AIMessage(
+        id="child-message-1",
+        content="已核对 README，并准备读取配置。",
+        additional_kwargs={"reasoning_content": "先比较两个文件的公开字段。"},
+        tool_calls=[{
+            "id": "child-tool-1",
+            "name": "read_native_file",
+            "args": {"path": "README.md", "api_key": "sk-private-test-value"},
+        }],
+    )
+
+    nodes = _subagent_timeline_nodes_from_message(assistant)
+
+    assert [node["topic"] for node in nodes] == [
+        "subagent.reasoning.delta",
+        "subagent.text.delta",
+        "subagent.tool.started",
+    ]
+    assert nodes[0]["content"] == "先比较两个文件的公开字段。"
+    assert nodes[1]["content"] == "已核对 README，并准备读取配置。"
+    assert nodes[2]["args"] == {"path": "README.md", "api_key": "<redacted>"}
+
+    tool_result = ToolMessage(
+        id="child-tool-result-1",
+        name="read_native_file",
+        tool_call_id="child-tool-1",
+        content="authorization: Bearer abcdefghijklmnop; title=V8 Agent OS",
+    )
+    result_nodes = _subagent_timeline_nodes_from_message(tool_result)
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["topic"] == "subagent.tool.finished"
+    assert "abcdefghijklmnop" not in result_nodes[0]["agentVisibleResult"]
+    assert "<redacted>" in result_nodes[0]["agentVisibleResult"]
 
 
 def _dependent_episode() -> dict:
@@ -109,6 +146,75 @@ def test_command_list_runtime_route_enters_runtime_episode() -> None:
     assert routed.update["runtime_dispatch_status"]["episodeId"] == "episode-1"
     assert routed.update["current_route_context"]["capabilityEpisodes"][0]["episodeId"] == "episode-1"
     assert len(routed.update["messages"]) == 1
+
+
+def test_mixed_runtime_route_results_prefer_queued_episode_without_concurrent_state_writes() -> None:
+    commands = [
+        Command(
+            goto="supervisor",
+            update={
+                "messages": [ToolMessage(content="queued", tool_call_id="runtime-route")],
+                "current_route_context": {"capabilityEpisodes": [{"episodeId": "episode-1"}]},
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "dispatched": True,
+                    "nextAction": "wait_episode",
+                    "episodeId": "episode-1",
+                },
+            },
+        ),
+        Command(
+            goto="supervisor",
+            update={
+                "messages": [ToolMessage(content="repair", tool_call_id="runtime-repair")],
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "dispatched": False,
+                    "blocked": True,
+                    "nextAction": "repair_task_contract",
+                },
+            },
+        ),
+    ]
+
+    routed = _route_runtime_tool_commands(commands)
+
+    assert isinstance(routed, Command)
+    assert routed.goto == "runtime_episode"
+    assert routed.update["runtime_dispatch_status"]["episodeId"] == "episode-1"
+    assert routed.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
+    assert [message.content for message in routed.update["messages"]] == ["queued", "repair"]
+
+
+def test_multiple_blocked_runtime_results_collapse_to_one_supervisor_transition() -> None:
+    commands = [
+        Command(
+            goto="supervisor",
+            update={
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "blocked": True,
+                    "nextAction": "repair_task_contract",
+                }
+            },
+        ),
+        Command(
+            goto="supervisor",
+            update={
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "blocked": True,
+                    "nextAction": "report_runtime_blocker",
+                }
+            },
+        ),
+    ]
+
+    routed = _route_runtime_tool_commands(commands)
+
+    assert isinstance(routed, Command)
+    assert routed.goto == "supervisor"
+    assert routed.update["runtime_dispatch_status"]["nextAction"] == "report_runtime_blocker"
 
 
 def test_non_runtime_command_list_remains_unmodified() -> None:
@@ -332,7 +438,8 @@ def test_parallel_delegation_publishes_denoised_progress_and_terminal_handoff(mo
 
     assert result.goto == "parallel_delegate_join"
     stages = [item["payload"]["progress"]["stage"] for item in events]
-    assert stages == ["started", "working", "handoff_ready"]
+    assert stages == ["started", "working", "responding", "handoff_ready"]
+    assert events[2]["payload"]["progress"]["timelineNode"]["topic"] == "subagent.text.delta"
     assert all(item["topic"] == "runtime.episode.progress" for item in events)
     assert heartbeats[-1][0] == "subagent::delegation-progress::worker"
 

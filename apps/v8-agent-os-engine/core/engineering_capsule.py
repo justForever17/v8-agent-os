@@ -105,6 +105,8 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
         or task.get("proof_expectations")
         or task.get("writeRequired")
         or task.get("write_required")
+        or "readOnly" in task
+        or "read_only" in task
     )
     if not explicit_contract:
         return {}

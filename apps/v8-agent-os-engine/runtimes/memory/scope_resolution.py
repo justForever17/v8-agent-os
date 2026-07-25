@@ -103,6 +103,15 @@ def _diff_scope_anchors(
             continue
         compared.append(key)
         existing_value = existing_anchors.get(key)
+        # ``scope_hint`` is descriptive input, not a second workspace identity.
+        # Web/Phone may project the canonical resolved scope back as the next
+        # request hint (for example an original ``global`` hint becomes
+        # ``project:v8-agent-os`` after project resolution).  Treat that
+        # canonical projection as the same binding while continuing to reject
+        # an unrelated explicit hint.
+        if key == "scope_hint" and requested_value == _normalize_anchor_value(existing_binding.resolved_scope):
+            matched[key] = requested_value
+            continue
         if existing_value == requested_value:
             matched[key] = requested_value
         else:
@@ -249,7 +258,11 @@ class ScopeResolutionService:
             channel_type=channel_type,
             channel_remote_id=channel_remote_id,
             thread_id=thread_id,
-            scope_hint=scope_hint,
+            # ``global`` is already neutralized when resolving the effective
+            # scope.  It must also be neutral in reuse checks, otherwise a
+            # client that omits or restores its default hint can falsely look
+            # like a workspace rebind.
+            scope_hint=None if neutralize_global_hint else normalized_scope_hint,
         )
 
         existing = self.binding_service.get_binding(session_id)

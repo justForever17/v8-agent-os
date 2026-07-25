@@ -62,11 +62,13 @@ function colorForSubagent(value: string) {
 function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProjection; nested?: boolean }) {
     const { colors, t } = useUiPrefs();
     const [expanded, setExpanded] = useState(false);
+    const failed = ["failed", "error", "cancelled", "degraded", "blocked"].includes(String(item.status || "").toLowerCase());
     const statusLabel = ["ok", "completed", "success", "terminated"].includes(item.status)
         ? t("src.components.chat.sessionoverviewpanel.subagent_returned")
         : ["queued", "running", "starting", "streaming", "updated"].includes(item.status)
             ? t("src.components.chat.sessionoverviewpanel.subagent_running")
-            : t("src.components.chat.sessionoverviewpanel.subagent_needs_attention");
+            : t("src.components.chat.sessionoverviewpanel.subagent_failed");
+    const failureDetail = failed ? item.summary || item.selfCheck : null;
     const resultByToolCall = useMemo(() => {
         const results = new Map<string, PhoneUiExecutionNode>();
         for (const event of item.events) {
@@ -92,7 +94,7 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
                 )}
                 <View style={styles.subagentBody}>
                     <Text numberOfLines={1} style={[styles.subagentName, { color: colors.text }]}>{item.name}</Text>
-                    <Text numberOfLines={1} style={[styles.subagentSummary, { color: colors.textMuted }]}>{item.taskGoal || item.summary || statusLabel}</Text>
+                    <Text numberOfLines={1} style={[styles.subagentSummary, { color: colors.textMuted }]}>{item.taskGoal || failureDetail || statusLabel}</Text>
                 </View>
                 <Text style={[styles.subagentStatus, { color: colors.textMuted }]}>{statusLabel}</Text>
                 <MaterialCommunityIcons name={expanded ? "chevron-up" : "chevron-down"} size={19} color={colors.textMuted} />
@@ -116,13 +118,12 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
                             />
                         );
                     })}
-                    {item.summary ? (
+                    {failureDetail ? (
                         <View style={[styles.subagentSummaryCard, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
-                            <Text style={[styles.subagentSummaryTitle, { color: colors.text }]}>{t("src.components.chat.sessionoverviewpanel.subagent_returned")}</Text>
-                            <ContentDispatcher node={{ id: `${item.id}:summary`, kind: "narrative", role: "assistant", content: item.summary, timestamp: item.timestamp }} />
+                            <Text style={[styles.subagentSummaryTitle, { color: colors.danger }]}>{t("src.components.chat.sessionoverviewpanel.subagent_failure_title")}</Text>
+                            <ContentDispatcher node={{ id: `${item.id}:failure`, kind: "narrative", role: "assistant", content: failureDetail, timestamp: item.timestamp }} />
                         </View>
                     ) : null}
-                    {item.selfCheck ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_self_check")}: {item.selfCheck}</Text> : null}
                     {item.artifactRefs.length ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_artifacts", { count: item.artifactRefs.length })}</Text> : null}
                     {item.children.map((child) => <SubagentReturnItem key={child.id} item={child} nested />)}
                 </View>

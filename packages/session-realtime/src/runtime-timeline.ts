@@ -63,7 +63,7 @@ function buildTimelineDedupeKey(input: {
   if (explicit) {
     return explicit;
   }
-  if (topic.startsWith("runtime.episode.")) {
+  if (topic.startsWith("runtime.episode.") || topic.startsWith("handoff.ref.")) {
     const episodeId = readNestedString(
       metadata,
       "episode.episodeId",
@@ -74,7 +74,16 @@ function buildTimelineDedupeKey(input: {
       "episode_id",
       "needId",
     ) || readString(input.fallbackId);
-    return `runtime-episode:${runId}:${episodeId || topic}:${topic}:${status}`;
+    const handoffId = readNestedString(
+      metadata,
+      "handoff.handoffId",
+      "handoff.handoff_id",
+      "handoff.handoffRefId",
+      "handoff.handoff_ref_id",
+      "handoffRef.handoffId",
+      "handoffRef.handoff_id",
+    );
+    return `runtime-episode:${runId}:${episodeId || handoffId || topic}:${topic}:${status}`;
   }
   if (topic.startsWith("delegation.") || topic.startsWith("subagent.")) {
     const dispatchGroup = readString(
@@ -215,7 +224,9 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
   }
 
   const kind: AuthoritativeRuntimeTimelineEntry["kind"] =
-    normalized.name === "artifact_recorded"
+    topic.startsWith("handoff.ref.")
+      ? "handoff"
+      : normalized.name === "artifact_recorded"
       ? "artifact"
       : normalized.name === "ask_user"
         || normalized.name === "approval_requested"
@@ -232,7 +243,12 @@ export function buildAuthoritativeRuntimeTimelineEntryFromEvent(
             : "progress";
 
   const metadata = normalized.data;
-  const status = normalized.status || (typeof normalized.data?.status === "string" ? normalized.data.status : undefined);
+  const handoff = asRecord(normalized.data?.handoff || normalized.data?.handoffRef);
+  const episode = asRecord(normalized.data?.episode);
+  const status = normalized.status
+    || (typeof normalized.data?.status === "string" ? normalized.data.status : undefined)
+    || readString(episode.state, handoff.status)
+    || undefined;
   const eventId = normalized.event_id || `timeline-${topic}-${normalized.seq || summary}`;
   const dedupeKey = readString(normalized.data?.dedupeKey, normalized.data?.dedupe_key)
     || buildTimelineDedupeKey({ runtimeId, topic, runId: normalized.run_id, status, metadata, fallbackId: eventId });

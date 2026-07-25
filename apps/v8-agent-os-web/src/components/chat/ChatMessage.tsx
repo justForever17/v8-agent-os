@@ -19,6 +19,7 @@ import {
     type ComposerPresentation,
 } from "@v8/session-realtime/composer-inline-references";
 import {
+    buildCollaborationMicroStagesFromMessageBoundNodes,
     buildMessageBoundCollaborationMicroStagePlacement,
     buildMessageBoundExecutionNodes,
     getMessageBoundExecutionTimelineNodeIdentityCandidates,
@@ -49,6 +50,7 @@ interface ChatMessageProps {
     userName?: string | null;
     runtimeActivities?: RuntimeStageActivity[];
     executionActive?: boolean;
+    animateEntrance?: boolean;
 }
 
 interface MessageActionButtonsProps {
@@ -77,7 +79,6 @@ function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
     return node.kind === "execution";
 }
 
-const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
 const MICRO_STAGE_ACTIVITY_LIMIT = 80;
 
 type ChatTimelineRenderSegment = TimelineSegment | {
@@ -90,15 +91,19 @@ function hasToolCallId(node: UiTimelineNode): node is UiExecutionNode & { toolCa
 }
 
 function toMicroStageActivityInput(activity: RuntimeStageActivity): CollaborationMicroStageActivityInput {
+    const data = activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
+        ? activity.node.data as Record<string, unknown>
+        : {};
     return {
         id: activity.id,
         topic: activity.topic,
         summary: activity.summary,
         timestamp: activity.timestamp,
         runtimeId: activity.runtimeId,
-        data: activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
-            ? activity.node.data as Record<string, unknown>
-            : {},
+        data: {
+            ...data,
+            runId: activity.node.runId || data.runId || data.run_id || activity.messageId,
+        },
     };
 }
 
@@ -110,8 +115,8 @@ function getExecutionToolName(node: UiExecutionNode) {
     return String(node.toolName || node.data?.toolName || node.data?.tool_name || "").trim().toLowerCase();
 }
 
-function isMicroStageSupersededTimelineNode(node: UiTimelineNode, microStageVisible: boolean) {
-    if (!microStageVisible || !isExecutionNode(node)) {
+function isMicroStageSupersededTimelineNode(node: UiTimelineNode) {
+    if (!isExecutionNode(node)) {
         return false;
     }
 
@@ -124,8 +129,7 @@ function isMicroStageSupersededTimelineNode(node: UiTimelineNode, microStageVisi
             || topic.startsWith("delegation_broker.");
     }
 
-    return (node.executionType === "tool_call" || node.executionType === "tool_result")
-        && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
+    return false;
 }
 
 function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
@@ -142,7 +146,9 @@ function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
         }
         if (node.executionType === "tool_call" || node.executionType === "tool_result") {
             const toolName = getExecutionToolName(node);
-            return toolName !== "write_todos" && toolName !== "update_todo" && toolName !== "ask_user";
+            return toolName !== "write_todos"
+                && toolName !== "update_todo"
+                && toolName !== "ask_user";
         }
         if (node.executionType === "runtime_progress") {
             return Boolean(String(node.label || node.topic || "").trim());
@@ -411,7 +417,25 @@ function MessageActionButtons({
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [], executionActive = false }: ChatMessageProps) {
+function AssistantActivityDots({ label }: { label: string }) {
+    return (
+        <div
+            className="flex min-h-6 min-w-12 items-center justify-center gap-1.5"
+            role="status"
+            aria-label={label}
+        >
+            {[0, 1, 2].map((index) => (
+                <span
+                    key={index}
+                    className="size-1.5 rounded-full bg-primary/80 motion-safe:animate-bounce motion-reduce:animate-none"
+                    style={{ animationDelay: `${index * 140}ms`, animationDuration: "920ms" }}
+                />
+            ))}
+        </div>
+    );
+}
+
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [], executionActive = false, animateEntrance = false }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
@@ -463,7 +487,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         () => Array.from(new Set([
             ...(Array.isArray(message.images) ? message.images : []),
             ...visualAttachmentUrls,
-        ]))
+        ]
             .map((value) => {
                 const raw = String(value || "").trim();
                 if (!raw) {
@@ -471,7 +495,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 }
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
-            .filter((value) => Boolean(value) && !audioAttachmentUrls.has(value.toLowerCase())),
+            .filter((value) => Boolean(value) && !audioAttachmentUrls.has(value.toLowerCase())))),
         [audioAttachmentUrls, message.images, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
@@ -525,6 +549,15 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         ),
         [message.runId, messageBoundExecutionNodes],
     );
+    const messageBoundMicroStages = useMemo(
+        () => buildCollaborationMicroStagesFromMessageBoundNodes(messageBoundExecutionNodes, {
+            runId: message.runId,
+            locale: "zh-CN",
+            limit: 10,
+            maxStepsPerStage: 4,
+        }),
+        [message.runId, messageBoundExecutionNodes],
+    );
     const liveFallbackMicroStages = useMemo(
         () => buildCollaborationMicroStages(
             bubbleExecutionActivities.map(toMicroStageActivityInput),
@@ -537,9 +570,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         ),
         [bubbleExecutionActivities, message.runId],
     );
-    const visibleBubbleMicroStages = messageBoundMicroStagePlacement?.stages.length
-        ? messageBoundMicroStagePlacement.stages
-        : liveFallbackMicroStages;
+    const visibleBubbleMicroStages = liveFallbackMicroStages.length
+        ? liveFallbackMicroStages
+        : messageBoundMicroStages;
     const microStageSceneKey = `collaboration-stage:${message.runId || visibleBubbleMicroStages[0]?.id || message.id}`;
     const microStageAnchorIndex = useMemo(
         () => findMicroStageAnchorIndex(
@@ -555,7 +588,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const microStageVisible = visibleBubbleMicroStages.length > 0;
     const visibleNodes = useMemo(() => {
         return (message.nodes || []).filter((node) => {
-            if (isMicroStageSupersededTimelineNode(node, microStageVisible)) {
+            if (isMicroStageSupersededTimelineNode(node)) {
                 return false;
             }
             if (!hasToolCallId(node) || node.executionType !== 'tool_result') {
@@ -594,7 +627,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 });
                 stageInserted = true;
             }
-            if (isMicroStageSupersededTimelineNode(node, microStageVisible)) {
+            if (isMicroStageSupersededTimelineNode(node)) {
                 return;
             }
             if (hasToolCallId(node) && node.executionType === "tool_result" && toolCallIds.has(node.toolCallId.trim())) {
@@ -657,6 +690,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         || imagesArray.length > 0
         || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
     );
+    const assistantEmptyActive = message.role === "assistant"
+        && Boolean(isLoading && isLast)
+        && !assistantHasVisibleSurface;
 
     if (message.role === "assistant" && !assistantHasVisibleSurface && !(isLoading && isLast)) {
         return null;
@@ -668,7 +704,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         return (
             <>
                 <motion.div 
-                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                    initial={animateEntrance ? { opacity: 0, y: 10, scale: 0.98 } : false}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
                     className={cn("mx-auto mb-6 flex w-full flex-row-reverse gap-2.5 sm:mb-7 sm:gap-3.5", isTool ? "max-w-4xl" : "max-w-3xl")}
@@ -773,7 +809,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         <div 
                                             key={i} 
                                             className={cn(
-                                                "relative rounded-xl overflow-hidden bg-black/20 shrink-0 border border-white/20 shadow-inner group/image cursor-pointer hover:border-white/40 transition-colors animate-in zoom-in-95 duration-300",
+                                                "relative rounded-xl overflow-hidden bg-black/20 shrink-0 border border-white/20 shadow-inner group/image cursor-pointer hover:border-white/40 transition-colors duration-300",
+                                                animateEntrance && "animate-in zoom-in-95",
                                                 imagesArray.length === 1 ? "w-full max-w-[320px] max-h-[240px]" : "w-32 h-32"
                                             )}
                                             onClick={() => {
@@ -850,7 +887,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     return (
         <>
         <motion.div 
-            initial={{ opacity: 0, y: 10, scale: 0.98 }}
+            initial={animateEntrance ? { opacity: 0, y: 10, scale: 0.98 } : false}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
             className="group mx-auto mb-6 flex w-full max-w-4xl flex-col gap-2.5 sm:mb-7 sm:gap-3"
@@ -896,14 +933,12 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
             </div>
 
             {/* Content Body */}
-                <div className={cn(
+            <div className={cn(
                 "relative min-w-0 overflow-hidden rounded-[24px] rounded-tl-sm transition-all duration-500 sm:min-w-[300px]",
                 "bg-white/40 dark:bg-zinc-900/40 border border-white/20 dark:border-white/5 backdrop-blur-xl shadow-xl shadow-black/5"
             )}>
-                {/* Decorative top sheen */}
-                <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-violet-500/40 via-purple-400/20 to-transparent opacity-80" />
-
-                <div className="space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]">
+                <div className="min-h-[56px] space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]" aria-live="polite">
+                    {assistantEmptyActive ? <AssistantActivityDots label={t("web.chat.supervisorResponding")} /> : null}
                     {timelineSegments.map((segment, index) => {
                         if (segment.kind === "collaboration_stage") {
                             return (

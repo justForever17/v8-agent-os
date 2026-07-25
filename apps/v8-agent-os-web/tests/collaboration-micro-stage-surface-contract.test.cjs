@@ -94,6 +94,11 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
     assert.match(scene, /const SUPERVISOR_TRAVEL_DURATION_MS = 1400/);
     assert.match(scene, /const PATROL_INTERVAL_MS = 5200/);
     assert.match(scene, /function settleIncompleteStage/);
+    assert.match(scene, /status: "degraded"/);
+    assert.doesNotMatch(
+      scene.match(/function settleIncompleteStage[\s\S]*?\n\}/)?.[0] || "",
+      /status: "completed"/,
+    );
     assert.match(scene, /function preserveMonotonicFinalStageState/);
     assert.match(scene, /const renderStage = preserveMonotonicFinalStageState\(stage, previous\)/);
     assert.match(scene, /const unfinishedStages = visibleStages\.filter\(\(stage\) => !isFinalStatus\(stage\.status\)\)/);
@@ -139,15 +144,58 @@ test("Web composer follows the authoritative session run state instead of guessi
   const input = readText("apps/v8-agent-os-web/src/components/chat/InputArea.tsx");
 
   assert.match(client, /sessionRunning=\{activeConversationRunning\}/);
-  assert.match(client, /canStopRun=\{isLoading\}/);
+  assert.match(client, /canStopRun=\{canInterruptProjectedRun\}/);
+  assert.match(client, /streamingConversationIdRef\.current = submittingConversationId/);
+  assert.match(client, /settleTerminalStream\(terminalRunId\)/);
   assert.match(client, /sessionProjection\?\.runtimeStatus/);
   assert.match(client, /currentRun\?\.status/);
-  assert.match(client, /observedStatuses\.some\(\(status\) => activeStatuses\.includes\(status\)\)/);
+  assert.match(client, /deriveComposerRunActivity\(\{/);
   assert.ok((client.match(/if \(activeConversationRunning\)/g) || []).length >= 2);
   assert.match(input, /const runActive = sessionRunning \|\| isLoading/);
   assert.match(input, /const canQueueWhileRunning = runActive && canSubmit/);
   assert.match(input, /const canStopActiveRun = runActive && !canQueueWhileRunning/);
   assert.match(input, /const showRunBusy = runActive && !canQueueWhileRunning && !canStopActiveRun/);
+});
+
+test("micro-stage replaces duplicate runtime prose without hiding real tool calls", () => {
+  const webMessage = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const phoneMessage = readText("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx");
+  const phoneDispatcher = readText("apps/v8-agent-os-phone/src/components/chat/ContentDispatcher.tsx");
+  const phoneVisibility = readText("apps/v8-agent-os-phone/src/lib/chat-node-visibility.ts");
+
+  for (const source of [webMessage, phoneMessage]) {
+    assert.match(source, /topic\.startsWith\("runtime\.episode\."\)/);
+    assert.match(source, /topic\.startsWith\("handoff\.ref\."\)/);
+    assert.doesNotMatch(source, /MICRO_STAGE_TOOL_NAMES/);
+    assert.doesNotMatch(source, /toolName !== "tool_observation_detail"/);
+  }
+  assert.doesNotMatch(phoneDispatcher, /tool_observation_detail/);
+  assert.doesNotMatch(phoneVisibility, /tool_observation_detail/);
+});
+
+test("Web and Phone keep the active Supervisor placeholder inside the normal bubble without the purple sheen", () => {
+  const webMessage = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const phoneMessage = readText("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx");
+
+  assert.match(webMessage, /assistantEmptyActive \? <AssistantActivityDots label=/);
+  assert.match(webMessage, /min-h-\[56px\]/);
+  assert.doesNotMatch(webMessage, /Decorative top sheen/);
+  assert.doesNotMatch(webMessage, /h-\[2px\].*bg-gradient-to-r/);
+
+  assert.match(phoneMessage, /assistantEmptyActive \? \(/);
+  assert.match(phoneMessage, /<AssistantActivityDots/);
+  assert.doesNotMatch(phoneMessage, /assistantBubbleSheen/);
+});
+
+test("Web and Phone bind live collaboration to the current run before message-only fallback", () => {
+  const webMessage = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const phoneMessage = readText("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx");
+
+  for (const source of [webMessage, phoneMessage]) {
+    assert.match(source, /runId: activity\.node\.runId \|\| data\.runId \|\| data\.run_id \|\| activity\.messageId/);
+    assert.match(source, /const visibleBubbleMicroStages = liveFallbackMicroStages\.length/);
+    assert.match(source, /\? liveFallbackMicroStages\s*:\s*messageBoundMicroStages/);
+  }
 });
 
 test("Web and Phone use the standing subagent workstation and semantic event screen", () => {
@@ -235,7 +283,9 @@ test("Web and Phone keep Supervisor, robot, and workstation collision volumes se
   assert.match(webScene, /data-collision-supervisor/);
   assert.match(webScene, /data-collision-workstation/);
   assert.match(webScene, /data-collision-agent/);
+  assert.match(webScene, /actor\.kind === "subagent"/);
   assert.match(phoneScene, /styles\.robotNameLabel/);
+  assert.match(phoneScene, /actor\.kind === "subagent"/);
   assert.match(phoneScene, /setSupervisorFacingLeft\(restingFacingLeft\)/);
 });
 
@@ -244,7 +294,7 @@ test("Web topbar locale menu stays above the multifunction workbench", () => {
   const workbench = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
 
   assert.match(localeToggle, /DropdownMenuContent align="end" className="z-\[100\] w-44"/);
-  assert.match(workbench, /"z-\[70\] flex min-h-0 flex-col/);
+  assert.match(workbench, /"v8-workbench-surface z-\[70\] flex min-h-0 flex-col/);
   assert.match(workbench, /className="relative z-\[71\]/);
 });
 

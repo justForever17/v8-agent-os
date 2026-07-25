@@ -164,6 +164,106 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(timeline[1]["runtimeId"], "research")
         self.assertEqual(timeline[1]["metadata"]["episodeId"], "episode_research")
 
+    def test_runtime_episode_progress_projects_only_sanitized_subagent_timeline_node(self):
+        events = [
+            {
+                "event_id": "evt_subagent_tool",
+                "run_id": "run_subagent",
+                "seq": 9,
+                "topic": "runtime.episode.progress",
+                "payload": {
+                    "episodeId": "subagent::delegation_one::reviewer",
+                    "kind": "delegation",
+                    "state": "active",
+                    "progress": {
+                        "stage": "tool_execution",
+                        "status": "running",
+                        "summary": "正在读取文件。",
+                        "agentName": "Reviewer",
+                        "rawOutput": "must-not-project",
+                        "timelineNode": {
+                            "id": "tool-1:call",
+                            "kind": "execution",
+                            "executionType": "tool_call",
+                            "topic": "subagent.tool.started",
+                            "toolName": "read_native_file",
+                            "toolCallId": "tool-1",
+                            "args": {"path": "README.md"},
+                            "providerMetadata": {"secret": "must-not-project"},
+                        },
+                    },
+                    "scheduler": {"lease": "must-not-project"},
+                },
+                "event_ts": "2026-07-25T12:00:00Z",
+                "source": {},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["runtimeId"], "subagent_swarm")
+        self.assertEqual(timeline[0]["metadata"]["progress"]["timelineNode"]["topic"], "subagent.tool.started")
+        self.assertEqual(
+            timeline[0]["metadata"]["dedupeKey"],
+            "subagent-timeline:subagent::delegation_one::reviewer:tool-1:call",
+        )
+        self.assertNotIn("rawOutput", str(timeline[0]))
+        self.assertNotIn("providerMetadata", str(timeline[0]))
+        self.assertNotIn("scheduler", str(timeline[0]))
+        self.assertNotIn("must-not-project", str(timeline[0]))
+
+    def test_runtime_episode_progress_without_timeline_node_stays_runtime_surface_only(self):
+        events = [
+            {
+                "event_id": "evt_scheduler_progress",
+                "run_id": "run_subagent",
+                "seq": 10,
+                "topic": "runtime.episode.progress",
+                "payload": {
+                    "episodeId": "subagent::delegation_one::reviewer",
+                    "kind": "delegation",
+                    "progress": {"stage": "working", "summary": "internal scheduler update"},
+                },
+                "event_ts": "2026-07-25T12:00:01Z",
+                "source": {},
+            }
+        ]
+
+        self.assertEqual(project_runtime_timeline_from_events(events), [])
+
+    def test_subagent_text_delta_projects_bounded_content_without_runtime_diagnostics(self):
+        events = [
+            {
+                "event_id": "evt_subagent_text",
+                "run_id": "run_subagent",
+                "seq": 11,
+                "topic": "subagent.text.delta",
+                "payload": {
+                    "snapshot": "**复核结论**\n\nREADME 首标题清晰。",
+                    "segmentKey": "segment-1",
+                    "ownerAgentId": "reviewer",
+                    "runtimeContext": {
+                        "delegation_id": "subagent::delegation_one::reviewer",
+                        "workspace_path": "C:/private/worktree",
+                    },
+                    "_diagnostics": {"provider": "must-not-project"},
+                },
+                "event_ts": "2026-07-25T12:00:02Z",
+                "source": {},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["topic"], "subagent.text.delta")
+        self.assertEqual(timeline[0]["metadata"]["content"], "**复核结论**\n\nREADME 首标题清晰。")
+        self.assertEqual(timeline[0]["metadata"]["delegationId"], "subagent::delegation_one::reviewer")
+        self.assertNotIn("workspace_path", str(timeline[0]))
+        self.assertNotIn("_diagnostics", str(timeline[0]))
+        self.assertNotIn("must-not-project", str(timeline[0]))
+
     def test_runtime_episode_projection_keeps_compact_handoff_without_raw_task_contract(self):
         events = [
             {

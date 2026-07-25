@@ -226,9 +226,15 @@ function collectSpecOutputs(value: unknown, target: Map<string, SessionOutputPro
 function toolResultSucceeded(value: unknown): boolean {
   if (typeof value === "string") {
     const normalized = value.trim();
-    if (/^(?:error|failed|blocked)\b/i.test(normalized)) return false;
     const parsed = parseJsonCandidate(normalized);
-    return parsed === normalized ? Boolean(normalized) : toolResultSucceeded(parsed);
+    if (parsed !== normalized) return toolResultSucceeded(parsed);
+    if (!normalized) return false;
+    if (
+      /^(?:error|failed|blocked)\b/i.test(normalized)
+      || /\b(?:status|state)\s*[:=]\s*(?:error|failed|blocked|cancelled|rejected)\b/i.test(normalized)
+      || /["']?(?:ok|success)["']?\s*[:=]\s*false\b/i.test(normalized)
+    ) return false;
+    return true;
   }
   if (Array.isArray(value)) return value.some(toolResultSucceeded);
   const record = recordOf(value);

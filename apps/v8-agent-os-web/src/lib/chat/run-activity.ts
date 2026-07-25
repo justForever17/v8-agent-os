@@ -35,6 +35,14 @@ export type ComposerRunActivityInput = {
     conversationStatus?: unknown;
 };
 
+export type InterruptibleRunInput = {
+    controlRunId?: unknown;
+    currentRunId?: unknown;
+    controlCanInterrupt?: unknown;
+    currentRunStatus?: unknown;
+    runtimeStatus?: unknown;
+};
+
 function normalizeStatus(value: unknown) {
     return String(value || "").trim().toLowerCase();
 }
@@ -46,6 +54,14 @@ export function runStatusAllowsInterrupt(value: unknown) {
 export function isRecognizedRunStatus(value: unknown) {
     const status = normalizeStatus(value);
     return ACTIVE_RUN_STATUSES.has(status) || TERMINAL_RUN_STATUSES.has(status);
+}
+
+export function deriveInterruptibleRunId(input: InterruptibleRunInput): string | null {
+    const runId = String(input.controlRunId || input.currentRunId || "").trim();
+    if (!runId) return null;
+    if (input.controlCanInterrupt === true) return runId;
+    const status = normalizeStatus(input.currentRunStatus || input.runtimeStatus);
+    return runStatusAllowsInterrupt(status) ? runId : null;
 }
 
 /**

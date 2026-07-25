@@ -12,10 +12,13 @@ function readText(relativePath) {
 test("Spec confirmation uses a document review surface instead of generic approval details", () => {
   const governance = readText("apps/v8-agent-os-web/src/components/chat/GovernanceApprovalModal.tsx");
   const documentDialog = readText("apps/v8-agent-os-web/src/components/chat/SpecDocumentConfirmationDialog.tsx");
+  const locale = readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json");
   assert.match(governance, /SpecDocumentConfirmationDialog/);
   assert.match(documentDialog, /rewrite_stage/);
-  assert.match(documentDialog, /同意并继续/);
-  assert.match(documentDialog, /需要修改/);
+  assert.match(documentDialog, /web\.specConfirmation\.approve/);
+  assert.match(documentDialog, /web\.specConfirmation\.requestRevision/);
+  assert.match(locale, /"web\.specConfirmation\.approve": "同意并继续"/);
+  assert.match(locale, /"web\.specConfirmation\.requestRevision": "需要修改"/);
   assert.doesNotMatch(documentDialog, />specId</);
   assert.doesNotMatch(documentDialog, />workspace</);
   const dialog = readText("apps/v8-agent-os-web/src/components/ui/dialog.tsx");
@@ -31,13 +34,16 @@ test("ask_user reserves a stable composer surface", () => {
 
 test("Workbench uses a compact overflow-safe tab row without embedded Agent Browser", () => {
   const shell = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
+  const locale = readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json");
   const store = readText("apps/v8-agent-os-web/src/store/workbench-store.ts");
   const proxy = readText("apps/v8-agent-os-web/src/app/api/workbench/[[...segments]]/route.ts");
   const nextConfig = readText("apps/v8-agent-os-web/next.config.ts");
   assert.match(shell, /data-workbench-tab-scroller/);
   assert.match(shell, /startAutoScroll/);
-  assert.match(shell, /向左浏览标签/);
-  assert.match(shell, /向右浏览标签/);
+  assert.match(shell, /web\.workbench\.tabs\.previous/);
+  assert.match(shell, /web\.workbench\.tabs\.next/);
+  assert.match(locale, /"web\.workbench\.tabs\.previous": "向左浏览标签"/);
+  assert.match(locale, /"web\.workbench\.tabs\.next": "向右浏览标签"/);
   assert.match(shell, /scrollbarWidth: "none"/);
   assert.doesNotMatch(shell, /browser\/prepare/);
   assert.doesNotMatch(shell, /createBrowser/);
@@ -60,9 +66,11 @@ test("Agent Browser remains Engine-managed and parent-bounded outside Workbench"
 test("Spec documents are normal Workbench products and overview uses a human label", () => {
   const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
   const summary = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const locale = readText("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json");
   const projection = readText("packages/session-realtime/src/session-output-projection.ts");
   const specTool = readText("apps/v8-agent-os-engine/core/tools/native/spec.py");
-  assert.match(workbench, /title: "概览"/);
+  assert.match(workbench, /title: "web\.workbench\.overview"/);
+  assert.match(locale, /"web\.workbench\.overview": "概览"/);
   assert.doesNotMatch(workbench, /title: "会话概览"/);
   assert.match(summary, /buildSessionOutputProjection/);
   assert.match(summary, /\{output\.name\}/);
@@ -158,6 +166,34 @@ test("Subagent details stream the shared Human Surface components without exposi
   assert.match(webRenderer, /<MediaPlayer/);
   assert.match(phoneOverview, /<ContentDispatcher/);
   assert.doesNotMatch(webRenderer, /\[runtime\.episode\./);
+  assert.match(webRenderer, /failureDetail/);
+  assert.match(webRenderer, /web\.workbench\.subagent\.failureTitle/);
+  assert.doesNotMatch(webRenderer, /item\.acceptanceStatus/);
+  assert.match(phoneOverview, /failureDetail/);
+  assert.match(phoneOverview, /subagent_failure_title/);
+});
+
+test("Workbench confirmation status reopens the authoritative interaction and never labels generic attention as confirmation", () => {
+  const chatClient = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  const workbench = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const recoveryCallback = chatClient.match(/const openPendingConfirmation = useCallback\(\(\) => \{([\s\S]*?)\n    \}, \[openGovernanceApproval\]\);/);
+
+  assert.ok(recoveryCallback, "approval recovery callback should remain explicit");
+  assert.match(recoveryCallback[1], /openGovernanceApproval\(\)/);
+  assert.doesNotMatch(recoveryCallback[1], /AskUser|setAskUserModalOpen/);
+  assert.match(chatClient, /pendingConfirmation=\{effectivePendingApproval\}/);
+  assert.match(chatClient, /const effectivePendingApproval = Boolean\(governancePendingApprovalId\)/);
+  assert.match(chatClient, /liveGovernanceApprovals/);
+  assert.match(chatClient, /resolvedGovernanceApprovalIds/);
+  assert.match(chatClient, /slightly older snapshot can arrive after approval\.requested/);
+  assert.match(chatClient, /setDismissedGovernanceApprovalId\(governancePendingApprovalId\)/);
+  assert.match(chatClient, /removeGovernanceApproval\(governancePendingApprovalId\)/);
+  assert.match(chatClient, /normalizedEvent\.topic === "approval\.requested"/);
+  assert.match(chatClient, /normalizedEvent\.topic === "approval\.approved" \|\| normalizedEvent\.topic === "approval\.rejected"/);
+  assert.match(workbench, /currentRuntime \|\| pendingConfirmation/);
+  assert.match(workbench, /pendingConfirmation\s*\? t\("web\.workbench\.runtime\.awaiting"\)/);
+  assert.match(workbench, /currentRuntime\?\.status === "attention"\s*\? t\("web\.workbench\.runtime\.needsAttention"\)/);
+  assert.match(workbench, /onClick=\{pendingConfirmation \? onOpenPendingConfirmation : undefined\}/);
 });
 
 test("User sources stay separate from session artifacts and Phone renders voice playback inline", () => {

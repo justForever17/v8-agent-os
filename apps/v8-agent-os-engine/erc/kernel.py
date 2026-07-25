@@ -423,16 +423,27 @@ class ExecutionRuntimeCore:
         run_record = run_service.get_run(run_id)
         if not run_record:
             return None
+        transition = command_service.interrupt_run(run_id, reason=reason)
+        if not transition.get("updated"):
+            return {
+                "ignored": True,
+                "reason": transition.get("reason") or "run_not_interruptible",
+                "run_status": transition.get("currentStatus") or run_record.get("status"),
+                "run_id": run_id,
+            }
         emitter = self._emitter_for_run(run_record, component="erc", node="command_service")
         transition_event = emitter.emit(
             "run.state.changed",
-            {"from_status": run_record.get("status"), "to_status": "paused", "reason": reason},
+            {
+                "from_status": transition.get("previousStatus") or run_record.get("status"),
+                "to_status": "paused",
+                "reason": reason,
+            },
         )
         event = emitter.emit(
             "run.interrupted",
             {"run_id": run_id, "reason": reason},
         )
-        command_service.interrupt_run(run_id, reason=reason)
         workflow_ledger_service.sync_run_status(run_id, run_status="interrupted", reason=reason)
         return {"transition_event": transition_event, "command_event": event}
 

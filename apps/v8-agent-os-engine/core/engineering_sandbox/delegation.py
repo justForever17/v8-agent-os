@@ -78,11 +78,12 @@ def prepare_delegated_engineering_workspace(
         or route_context.get("worktreeId")
         or ""
     ).strip() or None
-    if current_depth > 0 and capsule_mode == "verify" and not parent_worktree_id:
-        # A generic subagent review may carry an engineering-shaped read contract
-        # without belonging to a managed Engineering run. Keep its existing
-        # workspace/Safety boundary; only nested managed branches receive a child
-        # worktree snapshot of their parent's uncommitted changes.
+    if capsule_mode == "verify" and not parent_worktree_id:
+        # A read-only inspection has no candidate branch to isolate. Keep it on
+        # the active/original workspace so its Capsule path and native read-tool
+        # boundary describe the same checkout. A verification task receives a
+        # child worktree only when it must snapshot a managed parent's pending
+        # changes.
         return None
     prepared = get_engineering_sandbox_service().prepare_task_workspace(
         workspace_root=original_workspace,

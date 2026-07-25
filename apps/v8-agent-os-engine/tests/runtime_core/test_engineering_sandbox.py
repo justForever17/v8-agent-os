@@ -1223,6 +1223,50 @@ subprocess.Popen([
     assert not failed_policy.exists()
 
 
+def test_top_level_read_only_inspection_keeps_original_workspace(monkeypatch, tmp_path: Path) -> None:
+    allocation_attempted = False
+
+    def _unexpected_service():
+        nonlocal allocation_attempted
+        allocation_attempted = True
+        raise AssertionError("read-only inspection must not allocate a managed worktree")
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
+        _unexpected_service,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_brief = normalize_task_brief(
+        {
+            "taskBriefId": "inspect-original",
+            "goal": "Compare README.md with package.json and return line evidence.",
+            "context": {"workspacePath": str(workspace)},
+            "readOnly": True,
+            "readSet": ["README.md", "package.json"],
+            "verificationContract": ["Return cited evidence without modifying files."],
+            "expectedOutputs": ["README.md and package.json evidence"],
+            "acceptanceContract": "Return a conclusion with line references.",
+        }
+    )
+
+    prepared = prepare_delegated_engineering_workspace(
+        base_state={
+            "run_id": "run-read-only",
+            "session_id": "session-read-only",
+            "project_id": "demo",
+            "workspace_path": str(workspace),
+        },
+        task_brief=task_brief,
+        delegation_id="delegation-read-only",
+        current_depth=0,
+        runtime_context={"run_id": "run-read-only", "workspace_path": str(workspace)},
+    )
+
+    assert prepared is None
+    assert allocation_attempted is False
+
+
 @pytest.mark.skipif(locate_sandbox_host() is None, reason="native sandbox host has not been built")
 def test_grandchild_verification_gets_separate_read_only_snapshot_of_parent_changes(
     tmp_path: Path,

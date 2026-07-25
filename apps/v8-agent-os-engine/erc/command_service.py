@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from erc.models import ApprovalRequest
+from erc.models import ApprovalRequest, INTERRUPTIBLE_RUN_STATUSES
 from erc.run_service import run_service
 
 
@@ -258,13 +258,17 @@ class CommandService:
         run_service.transition_run(run_id, status="cancelled", error_message=reason)
         self.issue_control_signal(run_id, command="cancel", reason=reason)
 
-    def interrupt_run(self, run_id: str, *, reason: Optional[str] = None) -> None:
-        run_service.transition_run(
+    def interrupt_run(self, run_id: str, *, reason: Optional[str] = None) -> Dict[str, Any]:
+        transition = run_service.transition_run_if_status(
             run_id,
+            expected_statuses=INTERRUPTIBLE_RUN_STATUSES,
             status="paused",
             metadata={"interrupt_reason": reason} if reason else None,
         )
+        if not transition.get("updated"):
+            return transition
         self.issue_control_signal(run_id, command="interrupt", reason=reason)
+        return transition
 
     def retry_run(self, run_id: str, *, reason: Optional[str] = None) -> None:
         self.issue_control_signal(run_id, command="retry", reason=reason)

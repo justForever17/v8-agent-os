@@ -4,7 +4,6 @@ const HIDDEN_RUNTIME_PROGRESS_TOPICS = new Set([
     "session.connected",
     "session.subscribed",
 ]);
-
 export function isHiddenPhoneTimelineNode(node: PhoneUiTimelineNode | null | undefined) {
     if (!node) {
         return false;

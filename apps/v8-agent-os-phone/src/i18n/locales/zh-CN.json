@@ -868,6 +868,8 @@
   "src.components.chat.sessionoverviewpanel.subagent_returned": "已回流",
   "src.components.chat.sessionoverviewpanel.subagent_running": "进行中",
   "src.components.chat.sessionoverviewpanel.subagent_needs_attention": "需要处理",
+  "src.components.chat.sessionoverviewpanel.subagent_failed": "执行失败",
+  "src.components.chat.sessionoverviewpanel.subagent_failure_title": "协作执行失败",
   "src.components.chat.sessionoverviewpanel.subagent_self_check": "自检",
   "src.components.chat.sessionoverviewpanel.subagent_artifacts": "已回流 {count} 个产物引用",
   "src.components.chat.collaborationmicrostagescene.view_overview": "协作已收起，查看概览",

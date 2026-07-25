@@ -32,6 +32,16 @@ from erc.workflow_projection import workflow_projection_service
 
 class SnapshotService:
     @staticmethod
+    def _latest_session_run_id(session_id: str) -> Optional[str]:
+        list_runs = getattr(db, "list_run_records", None)
+        if not callable(list_runs):
+            return None
+        rows = list_runs(session_id=session_id, limit=1)
+        if not rows:
+            return None
+        return str(rows[0].get("id") or "").strip() or None
+
+    @staticmethod
     def _session_sources(session_id: str) -> list[dict[str, Any]]:
         list_sources = getattr(db, "list_session_sources", None)
         if not callable(list_sources):
@@ -124,10 +134,13 @@ class SnapshotService:
         run_id: Optional[str] = None,
         latest_seq: Optional[int] = None,
     ) -> Dict:
+        resolved_run_id = str(run_id or "").strip()
+        if not resolved_run_id:
+            raise ValueError("runtime snapshot persistence requires run lineage")
         db.add_runtime_snapshot(
             snapshot_id=f"snap_{uuid.uuid4().hex}",
             session_id=session_id,
-            run_id=run_id,
+            run_id=resolved_run_id,
             latest_seq=int(latest_seq if latest_seq is not None else db.get_latest_runtime_seq(session_id)),
             snapshot_type=snapshot_type,
             snapshot=snapshot,
@@ -144,13 +157,15 @@ class SnapshotService:
             canonical_version=canonical_version,
             legacy_chat_unsupported=legacy_chat_unsupported,
         )
-        self.record_runtime_snapshot(
-            session_id=session_id,
-            run_id=run_id,
-            latest_seq=latest_seq,
-            snapshot_type="chat_projection",
-            snapshot=snapshot,
-        )
+        resolved_run_id = str(run_id or "").strip() or self._latest_session_run_id(session_id)
+        if resolved_run_id:
+            self.record_runtime_snapshot(
+                session_id=session_id,
+                run_id=resolved_run_id,
+                latest_seq=latest_seq,
+                snapshot_type="chat_projection",
+                snapshot=snapshot,
+            )
         return snapshot
 
     def ensure_chat_projection_row(self, session_id: str) -> Optional[Dict]:
@@ -162,8 +177,17 @@ class SnapshotService:
             or int(snapshot_row.get("latest_seq") or 0) < latest_runtime_seq
             or int((snapshot_row.get("snapshot") or {}).get("canonicalVersion") or 0) < latest_canonical_version
         ):
-            self.refresh_chat_projection(session_id)
+            refreshed_snapshot = self.refresh_chat_projection(session_id)
             snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
+            if not snapshot_row:
+                snapshot_row = {
+                    "session_id": session_id,
+                    "run_id": None,
+                    "latest_seq": latest_runtime_seq,
+                    "snapshot_type": "chat_projection",
+                    "snapshot": refreshed_snapshot,
+                    "transient": True,
+                }
         elif snapshot_row and not isinstance(snapshot_row.get("snapshot"), dict):
             snapshot_row = db.get_latest_runtime_snapshot(session_id, snapshot_type="chat_projection")
         if snapshot_row and isinstance(snapshot_row.get("snapshot"), dict):

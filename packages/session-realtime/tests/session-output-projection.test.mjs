@@ -96,3 +96,35 @@ test("user message attachments are never duplicated into the overview", () => {
   assert.equal(projection.some((item) => item.path === "uploads/input.png"), false);
   assert.equal(projection.some((item) => item.path === "out/future.html"), false);
 });
+
+test("failed file tools never become overview outputs after the result is compacted for agents", () => {
+  const projection = buildSessionOutputProjection([{
+    id: "assistant-failed-write",
+    role: "assistant",
+    nodes: [
+      {
+        id: "write-call",
+        kind: "execution",
+        executionType: "tool_call",
+        toolName: "write_native_file",
+        toolCallId: "call-failed-write",
+        args: { path: "src/never-created.ts" },
+      },
+      {
+        id: "write-result",
+        kind: "execution",
+        executionType: "tool_result",
+        toolName: "write_native_file",
+        toolCallId: "call-failed-write",
+        result: [
+          "write native file result",
+          "Status: failed",
+          "Summary:",
+          "The workspace is not trusted, so the write was blocked.",
+        ].join("\n"),
+      },
+    ],
+  }]);
+
+  assert.deepEqual(projection, []);
+});

@@ -6432,7 +6432,6 @@ export default function ChatScreen() {
                         commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                         specCommand: pendingSpecCommand,
                         specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
-                        supervisorWorkMode,
                         skillReferences: pendingSkills,
                         pluginReferences: pendingPlugins,
                         contextMentions: [
@@ -6585,7 +6584,6 @@ export default function ChatScreen() {
                     commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                     specCommand: pendingSpecCommand,
                     specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
-                    supervisorWorkMode,
                     skillReferences: pendingSkills,
                     pluginReferences: pendingPlugins,
                     contextMentions: [

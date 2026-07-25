@@ -46,6 +46,43 @@ test("Web refreshes visible session activity without replaying the initial loadi
   assert.match(context, /showInitialLoading = !hasLoadedRef\.current/);
 });
 
+test("Web waits for the trusted local session before hydrating conversation history and realtime", () => {
+  const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+
+  assert.match(
+    client,
+    /\/\/ Fetch history when ID changes\s+useEffect\(\(\) => \{\s+if \(status !== "authenticated"\) \{\s+return;/,
+  );
+  assert.match(
+    client,
+    /useEffect\(\(\) => \{\s+if \(status !== "authenticated" \|\| !activeConversationId\) \{\s+return;\s+\}\s+\s*const eventSource = new EventSource/,
+  );
+  assert.match(
+    client,
+    /\[activeConversationId, clearApprovalState, isLoading, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages\]/,
+  );
+  assert.match(
+    client,
+    /\[activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns, status\]/,
+  );
+  assert.match(
+    client,
+    /if \(status !== "authenticated" \|\| !activeConversationId\) \{\s+applySessionProcessSurface\(\[\], \{ forceClear: true \}\);/,
+  );
+});
+
+test("local HTTP preview cookies follow the configured public protocol instead of production mode", () => {
+  const auth = readText("apps/v8-agent-os-web/src/lib/auth.ts");
+  const connection = readText("apps/v8-agent-os-web/src/app/api/connection/route.ts");
+  const policy = readText("apps/v8-agent-os-web/src/lib/server/cookie-policy.ts");
+
+  assert.match(policy, /AUTH_URL \|\| process\.env\.NEXTAUTH_URL/);
+  assert.match(policy, /startsWith\("https:\/\/"\)/);
+  assert.match(auth, /secure: shouldUseSecureCookies\(\)/);
+  assert.match(connection, /secure: shouldUseSecureCookies\(\)/);
+  assert.doesNotMatch(`${auth}\n${connection}`, /secure: process\.env\.NODE_ENV === ["']production["']/);
+});
+
 test("stream completion callbacks do not close over a later temporal-dead-zone declaration", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
@@ -57,4 +94,32 @@ test("ask_user responses use the authenticated Admin client surface", () => {
 
   assert.match(route, /\/client\/ask-user\/\$\{encodeURIComponent\(id\)\}\/respond/);
   assert.match(route, /requireAdminProxyContext/);
+});
+
+test("Web durable chat submission stays behind the authenticated Admin proxy", () => {
+  const route = readText("apps/v8-agent-os-web/src/app/api/chat-submit/route.ts");
+
+  assert.match(route, /requireAdminProxyContext/);
+  assert.match(route, /safeAdminProxyFetch/);
+  assert.match(route, /"\/client\/chat-submit"/);
+  assert.match(route, /clientMessageId/);
+});
+
+test("Web workspace media previews use an authenticated binary proxy", () => {
+  const route = readText("apps/v8-agent-os-web/src/app/api/workspace/resource/route.ts");
+
+  assert.match(route, /requireAdminProxyContext/);
+  assert.match(route, /safeAdminProxyFetch/);
+  assert.match(route, /`\/workspace\/resource\$\{req\.nextUrl\.search\}`/);
+  assert.match(route, /req\.headers\.get\("range"\)/);
+  assert.match(route, /"Content-Range"/);
+  assert.match(route, /"Accept-Ranges"/);
+});
+
+test("keyboard submission cannot outrun attachment persistence", () => {
+  const input = readText("apps/v8-agent-os-web/src/components/chat/InputArea.tsx");
+
+  assert.match(input, /if \(uploading\) \{\s+showInlineNotice\("info", t\("web\.chat\.attachments\.uploading"\)\);\s+return;/);
+  assert.match(input, /onSubmit=\{async \(e\) => \{\s+if \(uploading\) \{\s+e\.preventDefault\(\);/);
+  assert.match(input, /disabled=\{uploading \|\| showRunBusy \|\| \(!runActive && !canSubmit\)\}/);
 });

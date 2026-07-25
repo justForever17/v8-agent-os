@@ -116,6 +116,7 @@ export type UiTimelineNode = UiNarrativeNode | UiExecutionNode | UiGovernanceNod
 // --- Main Chat Session/Run Model ---
 export interface Message {
     id: string;
+    renderKey?: string;
     role: 'user' | 'assistant' | 'system' | 'tool';
     runId?: string;
     ordinal?: number;

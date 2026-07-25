@@ -137,6 +137,7 @@ class _FakeSnapshotDb:
         self.legacy_messages: list[dict] = []
         self.runtime_events: list[dict] = []
         self.snapshots: list[dict] = []
+        self.run_records: list[dict] = [{"id": "run-snapshot"}]
 
     def get_latest_runtime_seq(self, session_id: str):
         return self.latest_seq
@@ -167,6 +168,9 @@ class _FakeSnapshotDb:
             if row.get("session_id") == session_id and row.get("snapshot_type") == snapshot_type:
                 return dict(row)
         return None
+
+    def list_run_records(self, *, session_id: str, limit: int = 20):
+        return [dict(row) for row in self.run_records[:limit]]
 
 
 class _FakeProcessSurfaceDb:
@@ -880,6 +884,25 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(snapshot["messages"], [])
         self.assertEqual(snapshot["latest_seq"], 7)
 
+    def test_snapshot_without_run_lineage_remains_transient(self):
+        fake_db = _FakeSnapshotDb()
+        fake_db.run_records = []
+        fake_db.latest_seq = 3
+        fake_db.canonical_version = 1
+        service = SnapshotService()
+
+        with mock.patch.object(snapshot_service_module, "db", fake_db), mock.patch.object(
+            snapshot_service_module,
+            "build_canonical_chat_messages",
+            return_value=[{"id": "assistant-1", "role": "assistant", "content": "done"}],
+        ):
+            row = service.ensure_chat_projection_row("session-without-run")
+
+        self.assertTrue(row["transient"])
+        self.assertIsNone(row["run_id"])
+        self.assertEqual(row["snapshot"]["latest_seq"], 3)
+        self.assertEqual(fake_db.snapshots, [])
+
 
 class AttachmentPreflightContractTest(unittest.TestCase):
     def _chat_run(self, *, tmp_path: Path, latest_user_content: str, attachments: list[dict]):
@@ -951,12 +974,18 @@ class AttachmentPreflightContractTest(unittest.TestCase):
                 "core.tools.vision_media_analyzer.vision_media_analyzer",
                 fake_tool,
             ):
-                events = asyncio.run(runtime._run_attachment_preflight(chat_run, stream_state))
+                async def collect_events():
+                    return [event async for event in runtime._run_attachment_preflight(chat_run, stream_state)]
+
+                events = asyncio.run(collect_events())
 
         self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
-        invoke_payload = invoke.call_args.args[0]
-        self.assertEqual(invoke_payload["file_path"], str(voice_path))
-        self.assertEqual(invoke_payload["prompt"], runtime._voice_extract_prompt())
+        tool_call = invoke.call_args.args[0]
+        self.assertEqual(tool_call["name"], "vision_media_analyzer")
+        self.assertEqual(tool_call["type"], "tool_call")
+        self.assertTrue(str(tool_call["id"]).startswith("call_v8_attachment_preflight_"))
+        self.assertEqual(tool_call["args"]["file_path"], str(voice_path))
+        self.assertEqual(tool_call["args"]["prompt"], runtime._voice_extract_prompt())
         final_user_content = chat_run.lc_messages[-1].content
         self.assertIn("[Supervisor attachment opening tool results]", final_user_content)
         self.assertIn("用户说：测试语音", final_user_content)
@@ -995,7 +1024,10 @@ class AttachmentPreflightContractTest(unittest.TestCase):
                 "core.tools.native.workspace_file.read_native_file",
                 fake_tool,
             ):
-                events = asyncio.run(runtime._run_attachment_preflight(chat_run, stream_state))
+                async def collect_events():
+                    return [event async for event in runtime._run_attachment_preflight(chat_run, stream_state)]
+
+                events = asyncio.run(collect_events())
 
         self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
         invoke.assert_called_once_with({"path": str(note_path)})
@@ -1003,6 +1035,61 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         self.assertIn("[Supervisor attachment opening tool results]", final_user_content)
         self.assertIn("Original user text: 请总结这个文件", final_user_content)
         self.assertIn("文件内容：Demo", final_user_content)
+
+    def test_attachment_preflight_yields_tool_card_before_provider_work_starts(self):
+        import asyncio
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "sample.png"
+            image_path.write_bytes(b"fake-png")
+            chat_run = self._chat_run(
+                tmp_path=Path(tmp),
+                latest_user_content="看看这张图",
+                attachments=[
+                    {
+                        "name": "sample.png",
+                        "workspacePath": str(image_path),
+                        "mimeType": "image/png",
+                        "mediaKind": "image",
+                    }
+                ],
+            )
+
+            invoke = mock.Mock(return_value="图片内容：测试图像")
+            fake_tool = SimpleNamespace(invoke=invoke)
+
+            async def observe_order():
+                iterator = runtime._run_attachment_preflight(chat_run, stream_state)
+                first = await anext(iterator)
+                invoked_before_start_was_renderable = invoke.called
+                second = await anext(iterator)
+                with self.assertRaises(StopAsyncIteration):
+                    await anext(iterator)
+                return first, second, invoked_before_start_was_renderable
+
+            with mock.patch.object(
+                runtime,
+                "_emit_message_targeted_runtime_event",
+                side_effect=lambda _chat_run, _state, **kwargs: {"topic": kwargs["topic"], "payload": kwargs["payload"]},
+            ), mock.patch(
+                "core.tools.vision_media_analyzer.vision_media_analyzer",
+                fake_tool,
+            ):
+                first, second, invoked_before_start_was_renderable = asyncio.run(observe_order())
+
+        self.assertEqual(first["topic"], "tool.started")
+        self.assertFalse(invoked_before_start_was_renderable)
+        self.assertEqual(second["topic"], "tool.finished")
+        invoke.assert_called_once()
+        tool_call = invoke.call_args.args[0]
+        self.assertEqual(tool_call["name"], "vision_media_analyzer")
+        self.assertEqual(tool_call["type"], "tool_call")
+        self.assertEqual(tool_call["args"]["file_path"], str(image_path))
+        self.assertEqual(tool_call["args"]["prompt"], "看看这张图")
 
     def test_supported_attachments_do_not_inject_raw_file_notice_before_preflight(self):
         import tempfile

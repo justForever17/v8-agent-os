@@ -834,6 +834,7 @@ class RuntimeEpisodeRunner:
                 "delegationDepth",
                 "parentEpisodeId",
                 "rootEpisodeId",
+                "timelineNode",
             }
             compact_progress = {
                 key: value
@@ -2895,6 +2896,17 @@ class RuntimeEpisodeRunner:
             worker_briefs=worker_briefs,
             key="writeRequired",
         )
+        explicit_read_only = RuntimeEpisodeRunner._engineering_contract_value(
+            need=need,
+            inputs=inputs,
+            worker_briefs=worker_briefs,
+            key="readOnly",
+        )
+        # A read-only Engineering episode still performs real work and must
+        # return evidence.  It is not a plan-only request merely because its
+        # write contract is empty.
+        if explicit_read_only is True:
+            return False
         if explicit_write is False and RuntimeEpisodeRunner._any_engineering_worker_brief_requires_write(worker_briefs):
             return False
         if explicit_write is False:
@@ -2978,6 +2990,7 @@ class RuntimeEpisodeRunner:
                 context.setdefault("workspacePath", workspace_path)
             expected_outputs = item.get("expectedOutputs") or item.get("expected_outputs") or context.get("expectedOutputs")
             write_required = item.get("writeRequired") if "writeRequired" in item else item.get("write_required")
+            read_only_declared = bool(item.get("readOnly") or item.get("read_only"))
             validate_skill_artifact = bool(item.get("validateSkillArtifact") or item.get("validate_skill_artifact"))
             artifact_write_required = bool(write_required is True) or deliverable_kind in {
                 "artifact",
@@ -3033,9 +3046,14 @@ class RuntimeEpisodeRunner:
             if expected_outputs:
                 context.setdefault("expectedOutputs", expected_outputs)
                 expected_text = json.dumps(expected_outputs, ensure_ascii=False, default=str).lower()
-                artifact_write_required = artifact_write_required or bool(
-                    re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", expected_text)
-                )
+                # expectedOutputs may describe evidence to return (including
+                # source filenames and line citations).  It is not write
+                # authority.  Keep the narrow legacy inference only when the
+                # caller did not explicitly declare a read-only/no-write task.
+                if not read_only_declared and write_required is not False:
+                    artifact_write_required = artifact_write_required or bool(
+                        re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", expected_text)
+                    )
             read_targets = [
                 str(value or "").strip()
                 for value in list(item.get("readSet") or [])
@@ -5581,6 +5599,7 @@ class RuntimeEpisodeRunner:
             progress_fingerprints: set[str] = set()
 
             def _progress(progress_payload: dict[str, Any]) -> None:
+                timeline_node = progress_payload.get("timelineNode") if isinstance(progress_payload.get("timelineNode"), dict) else None
                 compact = {
                     "stage": str(progress_payload.get("stage") or "working").strip(),
                     "status": str(progress_payload.get("status") or "running").strip(),
@@ -5598,6 +5617,7 @@ class RuntimeEpisodeRunner:
                         or episode.get("parent_episode_id")
                     ),
                     "rootEpisodeId": episode.get("rootEpisodeId") or episode.get("root_episode_id") or episode.get("episodeId"),
+                    **({"timelineNode": to_jsonable(timeline_node)} if timeline_node else {}),
                 }
                 fingerprint = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
                 if fingerprint in progress_fingerprints:

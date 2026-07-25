@@ -22,5 +22,5 @@ test("structured Phone narrative does not reinterpret inline think tags", () => 
   const bubble = readText("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx");
   assert.match(parser, /parseInlineThinking = true/);
   assert.match(dispatcher, /parsePhoneContentBlocks\(String\(node\.content \|\| ""\), false, 0, false\)/);
-  assert.match(bubble, /rawHasStructuredNodes \? \[\] : parsePhoneContentBlocks\(String\(message\.content \|\| ""\)\)/);
+  assert.match(bubble, /hasStructuredNodes \? \[\] : parsePhoneContentBlocks\(String\(message\.content \|\| ""\)\)/);
 });

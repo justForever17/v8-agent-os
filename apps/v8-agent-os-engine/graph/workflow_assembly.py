@@ -62,16 +62,40 @@ def _route_runtime_tool_commands(command):
     """
     command_items = [item for item in command if isinstance(item, Command)] if isinstance(command, list) else []
     update = _merged_tool_command_update(command_items) if command_items else dict(getattr(command, "update", None) or {})
+    runtime_statuses = [
+        dict((getattr(item, "update", None) or {}).get("runtime_dispatch_status") or {})
+        for item in command_items
+        if isinstance((getattr(item, "update", None) or {}).get("runtime_dispatch_status"), dict)
+    ]
+    runtime_statuses = [status for status in runtime_statuses if status]
     runtime_status = dict(update.get("runtime_dispatch_status") or {})
     messages = list(update.get("messages") or [])
-    should_wait = str(runtime_status.get("nextAction") or "").strip() == "wait_episode"
+    waiting_status = next(
+        (
+            status
+            for status in runtime_statuses
+            if str(status.get("nextAction") or "").strip() == "wait_episode"
+            and bool(status.get("dispatched", True))
+        ),
+        None,
+    )
+    should_wait = waiting_status is not None or str(runtime_status.get("nextAction") or "").strip() == "wait_episode"
     for message in messages:
         additional = dict(getattr(message, "additional_kwargs", None) or {})
         if str(additional.get("recommendedNextAction") or "").strip() == "wait_episode":
             should_wait = True
             break
     if should_wait:
+        if waiting_status is not None:
+            update["runtime_dispatch_status"] = waiting_status
         return Command(goto="runtime_episode", update=update)
+    # Multiple runtime broker calls in one provider turn are executed by
+    # ToolNode concurrently. Returning their Command[] unchanged makes
+    # LangGraph apply more than one value to runtime_dispatch_status in the
+    # same step. Collapse only runtime-bearing commands; ordinary multi-tool
+    # routing keeps its existing semantics.
+    if len(command_items) > 1 and runtime_statuses:
+        return Command(goto="supervisor", update=update)
     return command
 
 

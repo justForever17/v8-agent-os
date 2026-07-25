@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 import api.chat_realtime_routes as routes
 import erc.run_service as run_service_module
@@ -137,6 +137,33 @@ def test_chat_submit_defers_engineering_context_pack_until_background_run(monkey
     assert calls and calls[0]["transport"] == "submit"
     assert calls[0]["build_engineering_context"] is False
     assert scheduled and scheduled[0][1] == "submit"
+
+
+def test_chat_submit_defers_graph_thread_until_acceptance_response_is_sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_db(monkeypatch, tmp_path)
+    scheduled: list[tuple[ChatRequest, str, str | None]] = []
+    fake_chat_run = SimpleNamespace(session_id="session-background", active_run_id="run-background")
+    background_tasks = BackgroundTasks()
+
+    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
+    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-background", "role": "user"})
+    monkeypatch.setattr(
+        routes,
+        "_schedule_chat_run",
+        lambda request, *, transport, run_id=None: scheduled.append((request, transport, run_id)) or run_id,
+    )
+
+    response = asyncio.run(
+        routes.chat_submit(
+            _chat_request(session_id="session-background", client_message_id="client-background"),
+            background_tasks,
+        )
+    )
+
+    assert response["accepted"] is True
+    assert scheduled == []
+    asyncio.run(background_tasks())
+    assert scheduled and scheduled[0][1:] == ("submit", response["runId"])
 
 
 def test_completed_run_consumes_next_pending_message_in_same_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, useState } from 'react';
 
 import {
     buildAssistantMessage,
@@ -33,9 +33,10 @@ type AbortableTransport = {
 
 interface UseLangGraphStreamOptions {
     apiEndpoint: string;
+    submitEndpoint?: string;
     onError?: (error: Error) => void;
     onFinish?: (messages: Message[]) => void;
-    onConnect?: (conversationId: string) => void;
+    onConnect?: (conversationId: string, transport: 'stream' | 'submit') => void;
     onCustomEvent?: (event: any) => void;
 }
 
@@ -109,9 +110,11 @@ function isAudioUrl(value: string) {
     return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(String(value || "").trim());
 }
 
-export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
+export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
     const { messages, setMessages, isLoading, setIsLoading } = useChatStore();
+    const [submittedRunId, setSubmittedRunId] = useState<string | null>(null);
     const abortControllerRef = useRef<AbortableTransport | null>(null);
+    const submittedRunIdRef = useRef<string | null>(null);
     const pendingMessagesRef = useRef<Message[] | null>(null);
     const commitFrameRef = useRef<number | null>(null);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -195,7 +198,7 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         if (event.type === 'protocol_connected') {
             const connectedSessionId = event.sessionId || event.conversationId;
             if (connectedSessionId && handlersRef.current.onConnect) {
-                handlersRef.current.onConnect(connectedSessionId);
+                handlersRef.current.onConnect(connectedSessionId, 'stream');
             }
             return false;
         }
@@ -251,7 +254,7 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
 
         const convId = response.headers.get('x-v8-agent-os-conversation-id');
         if (convId && handlersRef.current.onConnect) {
-            handlersRef.current.onConnect(convId);
+            handlersRef.current.onConnect(convId, 'stream');
         }
 
         const reader = response.body.getReader();
@@ -344,6 +347,38 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         flushPendingMessages();
         return localMessages;
     }, [apiEndpoint, applyStreamEvent, flushPendingMessages, scheduleMessagesCommit]);
+
+    const submitDurableRun = useCallback(async (requestBody: any) => {
+        if (!submitEndpoint) {
+            return null;
+        }
+        const abortController = new AbortController();
+        abortControllerRef.current = { abort: () => abortController.abort() };
+        const response = await fetch(submitEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+            signal: abortController.signal,
+        });
+        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+        abortControllerRef.current = null;
+        if (!response.ok) {
+            const detail = payload.detail && typeof payload.detail === 'object'
+                ? payload.detail as Record<string, unknown>
+                : {};
+            throw new Error(String(
+                detail.summary
+                || detail.error
+                || payload.error
+                || payload.message
+                || `HTTP error! status: ${response.status}`,
+            ));
+        }
+        if (payload.accepted !== true) {
+            throw new Error('Engine did not accept the chat run.');
+        }
+        return payload;
+    }, [submitEndpoint]);
 
     const hydrateFromSnapshot = useCallback(async (sessionId: string) => {
         const snapshotRes = await fetch(`/api/realtime/sessions/${sessionId}/snapshot`, { cache: 'no-store' });
@@ -479,8 +514,36 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 attachments: dataAttachments,
             };
             applyScopeRequestFields(requestBody, data);
-            const finalMessages = await streamNdjson(requestBody, newHistory);
+            if (submitEndpoint) {
+                requestBody.clientMessageId = tempUserMsg.id;
+                requestBody.data = {
+                    ...(requestBody.data || {}),
+                    clientMessageId: tempUserMsg.id,
+                };
+                const payload = await submitDurableRun(requestBody);
+                const conversationId = String(
+                    payload?.conversationId
+                    || payload?.session_id
+                    || data?.conversationId
+                    || '',
+                ).trim();
+                const runId = String(payload?.runId || payload?.run_id || '').trim();
+                const queued = payload?.queued === true;
+                if (conversationId && handlersRef.current.onConnect) {
+                    handlersRef.current.onConnect(conversationId, 'submit');
+                }
+                if (queued) {
+                    await tryResyncConversation(conversationId || data?.conversationId, 'queued submit');
+                    setIsLoading(false);
+                    if (handlersRef.current.onFinish) handlersRef.current.onFinish(messagesRef.current);
+                } else {
+                    submittedRunIdRef.current = runId || null;
+                    setSubmittedRunId(runId || null);
+                }
+                return true;
+            }
 
+            const finalMessages = await streamNdjson(requestBody, newHistory);
             if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
             return true;
 
@@ -491,19 +554,47 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             return false;
         } finally {
             flushPendingMessages();
-            setIsLoading(false);
-            abortControllerRef.current = null;
+            if (!submitEndpoint || !submittedRunIdRef.current) {
+                setIsLoading(false);
+            }
+            if (!submittedRunIdRef.current) {
+                abortControllerRef.current = null;
+            }
         }
 
-    }, [flushPendingMessages, messages, streamNdjson, setIsLoading, setMessages, tryResyncConversation]);
+    }, [flushPendingMessages, messages, setIsLoading, setMessages, streamNdjson, submitDurableRun, submitEndpoint, tryResyncConversation]);
 
     const stop = useCallback(() => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
-            flushPendingMessages();
-            setIsLoading(false);
         }
+        submittedRunIdRef.current = null;
+        setSubmittedRunId(null);
+        flushPendingMessages();
+        setIsLoading(false);
+    }, [flushPendingMessages, setIsLoading]);
+
+    const settleTerminalStream = useCallback((runId?: string | null) => {
+        // The session realtime channel is authoritative for run completion. A
+        // provider HTTP stream can close late (or omit its final delimiter), so
+        // do not keep the composer busy after Engine has published a terminal
+        // run event. We deliberately leave the transport alive long enough to
+        // accept any already-buffered final message nodes.
+        const normalizedRunId = String(runId || '').trim();
+        if (
+            submittedRunIdRef.current
+            && normalizedRunId
+            && submittedRunIdRef.current !== normalizedRunId
+        ) {
+            return false;
+        }
+        flushPendingMessages();
+        submittedRunIdRef.current = null;
+        setSubmittedRunId(null);
+        setIsLoading(false);
+        if (handlersRef.current.onFinish) handlersRef.current.onFinish(messagesRef.current);
+        return true;
     }, [flushPendingMessages, setIsLoading]);
 
     const sendToolOutput = useCallback(async (toolCallId: string, output: string, data?: any) => {
@@ -576,5 +667,16 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         return response.json().catch(() => ({}));
     }, []);
 
-    return { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand };
+    return {
+        messages,
+        isLoading,
+        sendMessage,
+        stop,
+        settleTerminalStream,
+        setMessages,
+        sendToolOutput,
+        resolveApproval,
+        dispatchRunCommand,
+        submittedRunId,
+    };
 }

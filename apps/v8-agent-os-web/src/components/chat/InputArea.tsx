@@ -895,6 +895,10 @@ export function InputArea({
                 return;
             }
             const form = e.currentTarget.closest('form');
+            if (uploading) {
+                showInlineNotice("info", t("web.chat.attachments.uploading"));
+                return;
+            }
             if (form && !isLoading) form.requestSubmit();
         }
     };
@@ -1238,6 +1242,11 @@ export function InputArea({
             onDrop={handleFileDrop}
             onDragEnd={resetFileDragState}
             onSubmit={async (e) => {
+                if (uploading) {
+                    e.preventDefault();
+                    showInlineNotice("info", t("web.chat.attachments.uploading"));
+                    return;
+                }
                 if (selectedCommandPreset?.memoryAction === "session_extraction") {
                     e.preventDefault();
                     if (!onManualMemory) {
@@ -1255,7 +1264,6 @@ export function InputArea({
                 const nextData: Record<string, unknown> = {};
                 const pendingSpecMode = specModeEnabled;
                 nextData.safetyApprovalMode = safetyApprovalMode;
-                nextData.supervisorWorkMode = supervisorWorkMode;
                 if (contextSessionRefs.length > 0) {
                     nextData.contextSessionRefs = contextSessionRefs;
                 }

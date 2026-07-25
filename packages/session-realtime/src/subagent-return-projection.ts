@@ -163,7 +163,26 @@ function runtimeContext(payload: Record<string, unknown>) {
 }
 
 function episodeFromPayload(payload: Record<string, unknown>) {
-  return nestedRecord(payload, "episode");
+  const nested = nestedRecord(payload, "episode");
+  if (Object.keys(nested).length) return nested;
+
+  const episodeId = text(
+    payload.episodeId
+      || payload.episode_id
+      || payload.producerEpisodeId
+      || payload.producer_episode_id,
+  );
+  const kind = text(payload.episodeKind || payload.episode_kind || payload.runtimeKind || payload.runtime_kind);
+  if (!episodeId && !kind) return {};
+  return {
+    episodeId,
+    kind,
+    parentEpisodeId: payload.parentEpisodeId || payload.parent_episode_id,
+    rootEpisodeId: payload.rootEpisodeId || payload.root_episode_id,
+    state: payload.state || payload.status,
+    targetLabel: payload.targetLabel || payload.target_label || payload.agentName || payload.agent_name,
+    reason: payload.taskGoal || payload.task_goal || payload.reason,
+  };
 }
 
 function taskBriefFromEpisode(episode: Record<string, unknown>) {
@@ -177,6 +196,24 @@ function isDelegationEpisode(episode: Record<string, unknown>) {
   const kind = text(episode.kind || episode.runtimeKind || episode.runtime_kind).toLowerCase();
   const targetKind = text(episode.targetKind || episode.target_kind).toLowerCase();
   return kind === "delegation" || targetKind === "local_agent" || targetKind === "subagent";
+}
+
+function humanNameFromEpisodeId(value: unknown): string {
+  const episodeId = text(value);
+  const parts = episodeId.split("::").filter(Boolean);
+  const slug = parts[parts.length - 1] || "";
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return "";
+  return slug
+    .split("-")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function humanNameFromHandoff(value: unknown): string {
+  const summary = text(value);
+  const match = /^\s*(?:-\s*Summary:\s*)?\[([^\]\n]{1,80})\s+执行完毕\]/i.exec(summary);
+  return match?.[1]?.trim() || "";
 }
 
 function eventSeqOf(node: SubagentReturnTimelineNode, fallbackIndex: number) {
@@ -385,7 +422,11 @@ function mergeTerminalProjection(
     ...item.artifactRefs,
     ...stringArray(payload.adoptedArtifactRefs || payload.artifactRefs || payload.artifact_refs),
   ])).slice(0, 12);
-  const terminalKind = topic.endsWith(".failed") ? "failed" : topic.endsWith(".completed") ? "completed" : "status";
+  const terminalKind = topic.endsWith(".failed") || ["failed", "degraded", "blocked", "cancelled"].includes(item.status)
+    ? "failed"
+    : topic.endsWith(".completed") || ["completed", "ready", "ok", "succeeded"].includes(item.status)
+      ? "completed"
+      : "status";
   const terminalLabel = terminalKind === "failed"
     ? "协作任务未完成"
     : terminalKind === "completed"
@@ -454,21 +495,48 @@ export function buildSubagentReturnProjection(
       if (!isDelegationEpisode(episode)) return;
       const episodeId = text(episode.episodeId || episode.episode_id || episode.id);
       if (!episodeId) return;
-      const parentDelegationId = text(episode.parentEpisodeId || episode.parent_episode_id || payload.parentDelegationId || payload.parent_delegation_id) || null;
+      const progress = nestedRecord(payload, "progress");
+      const timelineNode = nestedRecord(progress, "timelineNode", "timeline_node");
+      const parentEpisodeId = text(episode.parentEpisodeId || episode.parent_episode_id || progress.parentDelegationId || progress.parent_delegation_id || payload.parentDelegationId || payload.parent_delegation_id);
+      const parentDelegationId = parentEpisodeId.startsWith("subagent::") ? parentEpisodeId : null;
       const taskBrief = taskBriefFromEpisode(episode);
       const inputs = nestedRecord(episode, "inputs");
+      const explicitDepth = numberValue(progress.delegationDepth || progress.delegation_depth || payload.delegationDepth || payload.delegation_depth, 0);
       const item = ensure({
         id: episodeId,
         delegationId: episodeId,
         invocationId: text(episode.invocationId || episode.invocation_id) || null,
         parentDelegationId,
-        depth: parentDelegationId ? 2 : 1,
-        name: text(episode.targetLabel || episode.target_label || episode.targetId || episode.target_id || inputs.agentName || inputs.agentId) || "Subagent",
-        taskGoal: compactTruth(taskBrief.goal || episode.reason || inputs.taskGoal || inputs.reason, 360),
+        depth: explicitDepth || (parentDelegationId ? 2 : 1),
+        name: text(progress.agentName || progress.agent_name || episode.targetLabel || episode.target_label || episode.targetId || episode.target_id || inputs.agentName || inputs.agentId)
+          || humanNameFromEpisodeId(episodeId)
+          || "Subagent",
+        taskGoal: compactTruth(taskBrief.goal || episode.reason || inputs.taskGoal || inputs.reason || node.label || node.content, 360),
         timestamp: eventTimestampOf(node, index + 1),
       });
-      const state = text(episode.state || payload.status).toLowerCase();
+      const state = text(progress.status || episode.state || payload.status).toLowerCase();
       item.status = normalizedStatus(topic, state);
+      if (Object.keys(timelineNode).length) {
+        const embeddedTopic = text(timelineNode.topic).toLowerCase();
+        if (embeddedTopic) {
+          activityFromNode(item, {
+            ...timelineNode,
+            id: text(timelineNode.id) || `${text(node.id || node.eventId)}:timeline`,
+            eventId: text(node.eventId || node.id),
+            eventSeq: numberValue(node.eventSeq, index + 1),
+            timestamp: numberValue(node.timestamp, index + 1),
+            ownerMessageId: node.ownerMessageId,
+            data: {
+              ...recordOf(timelineNode.data),
+              ownerRuntimeId: "subagent_swarm",
+              ownerAgentKind: "subagent",
+              ownerAgentId: item.name,
+              delegationId: episodeId,
+            },
+          }, index, embeddedTopic);
+          return;
+        }
+      }
       const kind: SubagentActivityEvent["kind"] = topic.endsWith(".started")
         ? "started"
         : topic.endsWith(".completed")
@@ -481,7 +549,7 @@ export function buildSubagentReturnProjection(
         : kind === "completed"
           ? "协作执行已完成"
           : kind === "failed"
-            ? "协作执行需要处理"
+            ? "协作执行失败"
             : state.includes("waiting_child")
               ? "正在等待下级协作结果"
               : "协作状态已更新";
@@ -494,6 +562,19 @@ export function buildSubagentReturnProjection(
       const seq = eventSeqOf(node, index);
       if (kind === "started" && !item.startedEventSeq) item.startedEventSeq = seq;
       if (kind === "completed" || kind === "failed") item.completedEventSeq = seq;
+      const handoff = nestedRecord(payload, "handoff", "handoffRef");
+      if ((kind === "completed" || kind === "failed") && Object.keys(handoff).length) {
+        const compactSummary = compactTruth(
+          humanConclusion(handoff.compactSummary || handoff.compact_summary || handoff.summary),
+        );
+        item.name = humanNameFromHandoff(handoff.compactSummary || handoff.compact_summary || handoff.summary) || item.name;
+        item.summary = compactSummary || item.summary;
+        item.artifactRefs = Array.from(new Set([
+          ...item.artifactRefs,
+          ...stringArray(handoff.artifactRefs || handoff.artifact_refs),
+          ...stringArray(handoff.evidenceRefs || handoff.evidence_refs),
+        ])).slice(0, 12);
+      }
       return;
     }
 
@@ -517,8 +598,19 @@ export function buildSubagentReturnProjection(
       taskGoal: compactTruth(payload.taskGoal || payload.task_goal, 360),
       timestamp: eventTimestampOf(node, index + 1),
     });
-    if (isTerminal) mergeTerminalProjection(item, node, index, topic, payload);
-    else activityFromNode(item, node, index, topic);
+    if (isTerminal) {
+      mergeTerminalProjection(item, node, index, topic, payload);
+    } else if (topic.startsWith("handoff.ref.")) {
+      const handoff = nestedRecord(payload, "handoff", "handoffRef");
+      mergeTerminalProjection(item, node, index, topic, {
+        ...payload,
+        ...handoff,
+        resultText: handoff.compactSummary || handoff.compact_summary || handoff.summary || node.label,
+        status: handoff.status || payload.status,
+      });
+    } else {
+      activityFromNode(item, node, index, topic);
+    }
   });
 
   const items = Array.from(byId.values());
@@ -534,6 +626,12 @@ export function buildSubagentReturnProjection(
   }
   const byDelegationId = new Map(items.filter((item) => item.delegationId).map((item) => [item.delegationId as string, item]));
   const byInvocationId = new Map(items.filter((item) => item.invocationId).map((item) => [item.invocationId as string, item]));
+  const stableOrder = (left: SubagentReturnProjection, right: SubagentReturnProjection) => (
+    numberValue(left.startedEventSeq, Number.MAX_SAFE_INTEGER)
+      - numberValue(right.startedEventSeq, Number.MAX_SAFE_INTEGER)
+    || left.timestamp - right.timestamp
+    || left.id.localeCompare(right.id)
+  );
   const roots: SubagentReturnProjection[] = [];
   for (const item of items) {
     const parent = (item.parentDelegationId && byDelegationId.get(item.parentDelegationId))
@@ -541,5 +639,6 @@ export function buildSubagentReturnProjection(
     if (parent && parent.id !== item.id) parent.children.push(item);
     else roots.push(item);
   }
-  return roots.sort((left, right) => right.timestamp - left.timestamp);
+  for (const item of items) item.children.sort(stableOrder);
+  return roots.sort(stableOrder);
 }

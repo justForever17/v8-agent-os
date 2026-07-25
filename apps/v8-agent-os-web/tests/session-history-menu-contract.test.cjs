@@ -31,9 +31,9 @@ test("web history items expose a lightweight V8OS session ID context menu", () =
   assert.match(source, /editingSessionId === canonicalSessionId/);
   assert.match(source, /editingGroupKey === group\.key/);
   assert.match(source, /\/api\/workspace-presentations/);
-  assert.match(source, /group-hover\/header:pointer-events-auto/);
+  assert.match(source, /group-hover\/header:visible/);
   assert.match(source, /group-hover\/task:pointer-events-auto/);
-  assert.match(source, /pointer-events-none ml-auto flex shrink-0/);
+  assert.match(source, /invisible relative z-10 ml-auto flex shrink-0/);
   assert.match(source, /hover:bg-transparent hover:text-foreground hover:opacity-100 hover:brightness-125/);
   assert.match(source, /<Pin className=\{cn\("h-4 w-4 -rotate-45"/);
   assert.doesNotMatch(source, /text-muted-foreground hover:bg-muted hover:text-foreground/);
@@ -137,7 +137,7 @@ test("human session surfaces compact oversized live-session payloads before Web 
   const phoneDb = readText("apps/v8-agent-os-phone/src/services/LocalDatabaseService.ts");
   const webClient = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
-  assert.match(engineRoutes, /compact_runtime_timeline = list\(runtime_timeline\[-160:\]\)/);
+  assert.match(engineRoutes, /select_runtime_timeline_window\(runtime_timeline, recent_limit=160, milestone_limit=32\)/);
   assert.match(engineRoutes, /"runtimeTimeline": compact_runtime_timeline/);
   assert.match(engineRoutes, /"sourceCount": runtime_timeline_count/);
   assert.match(adminResource, /compactSurfaceValue/);

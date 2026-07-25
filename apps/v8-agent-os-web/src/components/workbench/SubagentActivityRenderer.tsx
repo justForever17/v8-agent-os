@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Bot, CheckCircle2, CircleDot, GitBranch, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, GitBranch } from "lucide-react";
 import {
     buildSubagentReturnProjection,
     type AdminProcessRef,
@@ -31,9 +31,13 @@ function findProjection(items: SubagentReturnProjection[], id: string): Subagent
 function statusLabel(status: string, t: ReturnType<typeof useT>) {
     const normalized = String(status || "").toLowerCase();
     if (["ok", "completed", "success", "terminated"].includes(normalized)) return t("web.workbench.subagent.status.completed");
-    if (["failed", "cancelled", "degraded"].includes(normalized)) return t("web.workbench.subagent.status.attention");
+    if (["failed", "error", "cancelled", "degraded", "blocked"].includes(normalized)) return t("web.workbench.subagent.status.failed");
     if (normalized.includes("waiting")) return t("web.workbench.subagent.status.waiting");
     return t("web.workbench.subagent.status.running");
+}
+
+function isFailedStatus(status: string) {
+    return ["failed", "error", "cancelled", "degraded", "blocked"].includes(String(status || "").toLowerCase());
 }
 
 function statusTone(status: string) {
@@ -112,6 +116,7 @@ function SubagentEventStream({ item, processes }: { item: SubagentReturnProjecti
 
 function SubagentSection({ item, processes, nested = false }: { item: SubagentReturnProjection; processes: AdminProcessRef[]; nested?: boolean }) {
     const t = useT();
+    const failureDetail = isFailedStatus(item.status) ? item.summary || item.selfCheck : null;
     return (
         <section className={nested ? "mt-5 border-l border-border/60 pl-4" : ""}>
             {nested ? (
@@ -122,16 +127,10 @@ function SubagentSection({ item, processes, nested = false }: { item: SubagentRe
                 </div>
             ) : null}
             <SubagentEventStream item={item} processes={processes} />
-            {item.summary ? (
-                <div className="mt-4 rounded-xl border border-border/60 bg-muted/20 p-3">
-                    <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-foreground"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />{t("web.workbench.subagent.conclusion")}</div>
-                    <ContentDispatcher node={{ id: `${item.id}:summary`, kind: "narrative", role: "assistant", content: item.summary, timestamp: item.timestamp }} isExecuting={false} isStreaming={false} />
-                </div>
-            ) : null}
-            {item.acceptanceStatus && item.acceptanceStatus !== "pending" ? (
-                <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] leading-5 text-foreground/85">
-                    <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                    <span>{item.acceptanceSummary || t("web.workbench.subagent.accepted")}</span>
+            {failureDetail ? (
+                <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/5 p-3">
+                    <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-rose-700 dark:text-rose-300"><AlertTriangle className="h-3.5 w-3.5" />{t("web.workbench.subagent.failureTitle")}</div>
+                    <ContentDispatcher node={{ id: `${item.id}:failure`, kind: "narrative", role: "assistant", content: failureDetail, timestamp: item.timestamp }} isExecuting={false} isStreaming={false} />
                 </div>
             ) : null}
             {item.children.map((child) => <SubagentSection key={child.id} item={child} processes={processes} nested />)}

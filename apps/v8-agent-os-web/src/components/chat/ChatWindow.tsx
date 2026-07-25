@@ -309,7 +309,7 @@ export function ChatWindow({
                             ) : (
                                 messages.map((m, index) => (
                                     <div
-                                        key={m.role === "assistant" && m.runId ? `assistant:${m.runId}` : m.id}
+                                        key={m.renderKey || (m.role === "assistant" && m.runId ? `assistant:${m.runId}` : m.id)}
                                         data-turn-id={m.turnId || undefined}
                                     >
                                         <ChatMessage
@@ -322,6 +322,7 @@ export function ChatWindow({
                                             userName={userName}
                                             runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
                                             executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
+                                            animateEntrance={Boolean(isLoading && index >= messages.length - 2)}
                                         />
                                     </div>
                                 ))

@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { authConfig } from "./auth.config";
+import { shouldUseSecureCookies } from "./server/cookie-policy";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
     ...authConfig,
@@ -17,7 +18,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                 httpOnly: true,
                 sameSite: 'lax',
                 path: '/',
-                secure: process.env.NODE_ENV === 'production',
+                secure: shouldUseSecureCookies(),
             },
         },
     },

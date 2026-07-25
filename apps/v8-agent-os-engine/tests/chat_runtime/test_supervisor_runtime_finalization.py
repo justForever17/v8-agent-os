@@ -2284,3 +2284,36 @@ def test_runtime_episode_handoff_resume_restarts_wait_graph_instead_of_resuming_
 
     assert result == "fresh-runtime-handoff-graph"
     assert calls == ["start"]
+
+
+def test_client_transport_disconnect_cancels_a_phantom_running_run(monkeypatch):
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(active_run_id="run-client-disconnect")
+    cancelled = []
+
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.get_run_record",
+        lambda run_id: {"id": run_id, "status": "running"},
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.erc_kernel.cancel_run",
+        lambda run_id, *, reason: cancelled.append((run_id, reason)),
+    )
+
+    assert runtime.finalize_client_transport_disconnect(chat_run, transport="websocket") is True
+    assert cancelled == [("run-client-disconnect", "websocket_client_disconnected")]
+
+
+def test_durable_submit_disconnect_does_not_cancel_engine_owned_run(monkeypatch):
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(active_run_id="run-durable-submit")
+    cancel_run = Mock()
+
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.get_run_record",
+        lambda run_id: {"id": run_id, "status": "running"},
+    )
+    monkeypatch.setattr("runtimes.chat.runtime.erc_kernel.cancel_run", cancel_run)
+
+    assert runtime.finalize_client_transport_disconnect(chat_run, transport="submit") is False
+    cancel_run.assert_not_called()

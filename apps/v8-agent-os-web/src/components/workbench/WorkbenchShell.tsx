@@ -29,6 +29,8 @@ type WorkbenchShellProps = {
     runtimeModel: RuntimeStageModel;
     workspacePath?: string;
     onSendFileLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
+    pendingConfirmation?: boolean;
+    onOpenPendingConfirmation?: () => void;
 };
 
 function documentIcon(kind: string) {

@@ -13,6 +13,7 @@ import {
 } from "@v8/session-realtime";
 import { buildComposerInlineSegments } from "@v8/session-realtime/composer-inline-references";
 import {
+    buildCollaborationMicroStagesFromMessageBoundNodes,
     buildMessageBoundCollaborationMicroStagePlacement,
     buildMessageBoundExecutionNodes,
     getMessageBoundExecutionTimelineNodeIdentityCandidates,
@@ -52,7 +53,6 @@ import {
 } from "@/src/lib/runtime-stage";
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
-const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
 const MICRO_STAGE_ACTIVITY_LIMIT = 80;
 
 type PhoneTimelineRenderSegment = MessageTimelineSegment<PhoneUiTimelineNode> | {
@@ -64,32 +64,20 @@ function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNod
     return node.kind === "execution";
 }
 
-function isSupervisorVisibleActivityNode(node: PhoneUiTimelineNode) {
-    if (node.kind === "narrative") {
-        return parsePhoneContentBlocks(String(node.content || ""), false, 0, false)
-            .some((block) => block.type !== "voice" && block.content.trim().length > 0);
-    }
-
-    if (!isExecutionNode(node)) {
-        return false;
-    }
-
-    const executionType = String(node.executionType || "").trim();
-    return executionType === "reasoning"
-        || executionType === "tool_call"
-        || executionType === "tool_result";
-}
-
 function toMicroStageActivityInput(activity: PhoneRuntimeStageActivity): CollaborationMicroStageActivityInput {
+    const data = activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
+        ? activity.node.data as Record<string, unknown>
+        : {};
     return {
         id: activity.id,
         topic: activity.topic,
         summary: activity.summary,
         timestamp: activity.timestamp,
         runtimeId: activity.runtimeId,
-        data: activity.node.kind === "execution" && activity.node.data && typeof activity.node.data === "object"
-            ? activity.node.data as Record<string, unknown>
-            : {},
+        data: {
+            ...data,
+            runId: activity.node.runId || data.runId || data.run_id || activity.messageId,
+        },
     };
 }
 
@@ -107,8 +95,8 @@ function getExecutionToolName(node: PhoneUiExecutionNode) {
     return String(node.toolName || node.data?.toolName || node.data?.tool_name || "").trim().toLowerCase();
 }
 
-function isMicroStageSupersededTimelineNode(node: PhoneUiTimelineNode, microStageVisible: boolean) {
-    if (!microStageVisible || !isExecutionNode(node)) {
+function isMicroStageSupersededTimelineNode(node: PhoneUiTimelineNode) {
+    if (!isExecutionNode(node)) {
         return false;
     }
 
@@ -121,8 +109,7 @@ function isMicroStageSupersededTimelineNode(node: PhoneUiTimelineNode, microStag
             || topic.startsWith("delegation_broker.");
     }
 
-    return (node.executionType === "tool_call" || node.executionType === "tool_result")
-        && MICRO_STAGE_TOOL_NAMES.has(getExecutionToolName(node));
+    return false;
 }
 
 function findMicroStageAnchorIndex(nodes: PhoneUiTimelineNode[], sourceNodeIds: string[]) {
@@ -525,9 +512,11 @@ function TraceGroup({
 function AssistantActivityDots({
     active,
     primaryColor,
+    label,
 }: {
     active: boolean;
     primaryColor: string;
+    label: string;
 }) {
     const dotA = useSharedValue(0);
     const dotB = useSharedValue(0);
@@ -584,7 +573,7 @@ function AssistantActivityDots({
     }));
 
     return (
-        <View style={styles.activityDotsWrap} accessibilityLabel="assistant active">
+        <View style={styles.activityDotsWrap} accessibilityLabel={label} accessibilityRole="progressbar">
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotAStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotBStyle]} />
             <Animated.View style={[styles.activityDot, { backgroundColor: primaryColor }, dotCStyle]} />
@@ -1009,11 +998,6 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const rawRenderableNodes = toolExecutionView.renderableNodes;
     const resultNodesByToolCallId = toolExecutionView.resultNodesByToolCallId;
-    const rawHasStructuredNodes = rawRenderableNodes.length > 0;
-    const rawFallbackBlocks = useMemo(
-        () => (rawHasStructuredNodes ? [] : parsePhoneContentBlocks(String(message.content || ""))),
-        [rawHasStructuredNodes, message.content],
-    );
     const horizontalBubbleLimit = Math.max(196, width - (isLandscape ? 176 : 76));
     const sharedTextBubbleWidth = Math.max(
         176,
@@ -1026,12 +1010,6 @@ export const MessageBubble = memo(function MessageBubble({
     const assistantBubbleBorder = themeMode === "dark" ? "rgba(255,255,255,0.08)" : palette.border;
     const assistantActionSurface = themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.74)";
     const assistantActive = !isUser && isLast && isLoading;
-    const hasSupervisorVisibleActivity = useMemo(() => {
-        if (rawHasStructuredNodes) {
-            return rawRenderableNodes.some(isSupervisorVisibleActivityNode);
-        }
-        return rawFallbackBlocks.some((block) => block.type !== "voice" && block.content.trim().length > 0);
-    }, [rawFallbackBlocks, rawHasStructuredNodes, rawRenderableNodes]);
     const messageBoundExecutionNodes = useMemo(
         () => buildMessageBoundExecutionNodes([message as unknown as MessageBoundExecutionMessage]),
         [message],
@@ -1048,9 +1026,18 @@ export const MessageBubble = memo(function MessageBubble({
         ),
         [locale, message.runId, messageBoundExecutionNodes],
     );
+    const messageBoundMicroStages = useMemo(
+        () => buildCollaborationMicroStagesFromMessageBoundNodes(messageBoundExecutionNodes, {
+            runId: message.runId,
+            locale,
+            limit: 10,
+            maxStepsPerStage: 4,
+        }),
+        [locale, message.runId, messageBoundExecutionNodes],
+    );
     const liveFallbackMicroStages = useMemo(
         () => buildCollaborationMicroStages(
-            hasSupervisorVisibleActivity && !isUser && isLast
+            !isUser && isLast
                 ? runtimeActivities
                     .filter(isPhoneMicroStageActivity)
                     .slice(0, MICRO_STAGE_ACTIVITY_LIMIT)
@@ -1063,11 +1050,11 @@ export const MessageBubble = memo(function MessageBubble({
                 maxStepsPerStage: 4,
             },
         ),
-        [hasSupervisorVisibleActivity, isLast, isUser, locale, message.runId, runtimeActivities],
+        [isLast, isUser, locale, message.runId, runtimeActivities],
     );
-    const visibleBubbleMicroStages = messageBoundMicroStagePlacement?.stages.length
-        ? messageBoundMicroStagePlacement.stages
-        : liveFallbackMicroStages;
+    const visibleBubbleMicroStages = liveFallbackMicroStages.length
+        ? liveFallbackMicroStages
+        : messageBoundMicroStages;
     const microStageSceneKey = `collaboration-stage:${message.runId || visibleBubbleMicroStages[0]?.id || messageIdentity}`;
     const microStageAnchorIndex = useMemo(
         () => findMicroStageAnchorIndex(
@@ -1087,8 +1074,8 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const microStageVisible = visibleBubbleMicroStages.length > 0;
     const renderableNodes = useMemo(
-        () => rawRenderableNodes.filter((node) => !isMicroStageSupersededTimelineNode(node, microStageVisible)),
-        [microStageVisible, rawRenderableNodes],
+        () => rawRenderableNodes.filter((node) => !isMicroStageSupersededTimelineNode(node)),
+        [rawRenderableNodes],
     );
     const hasStructuredNodes = renderableNodes.length > 0 || microStageVisible;
     const fallbackBlocks = useMemo(
@@ -1120,7 +1107,7 @@ export const MessageBubble = memo(function MessageBubble({
                 });
                 stageInserted = true;
             }
-            if (isMicroStageSupersededTimelineNode(node, microStageVisible)) {
+            if (isMicroStageSupersededTimelineNode(node)) {
                 return;
             }
             chunk.push(node);
@@ -1184,16 +1171,6 @@ export const MessageBubble = memo(function MessageBubble({
         }
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
     }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
-    const hasAssistantNarrativeText = useMemo(() => {
-        if (hasStructuredNodes) {
-            return renderableNodes.some((node) => (
-                node.kind === "narrative"
-                && parsePhoneContentBlocks(String(node.content || ""), false, 0, false).some((block) => block.type !== "voice" && block.content.trim())
-            ));
-        }
-        return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());
-    }, [fallbackBlocks, hasStructuredNodes, renderableNodes]);
-    const showInlineActivityDots = assistantActive && hasStructuredNodes && !hasAssistantNarrativeText;
     const voiceOnly = !isUser && voiceDescriptors.length > 0 && !hasRenderableText;
     const taskProgress = message.metadata?.assistantTaskProgress && typeof message.metadata.assistantTaskProgress === "object"
         ? message.metadata.assistantTaskProgress as {
@@ -1485,14 +1462,6 @@ export const MessageBubble = memo(function MessageBubble({
         );
     }
 
-    if (assistantEmptyActive) {
-        return (
-            <View style={styles.assistantActivityRow}>
-                <AssistantActivityDots active={assistantActive} primaryColor={palette.primary} />
-            </View>
-        );
-    }
-
     return (
         <View style={styles.assistantRow}>
             <View style={[styles.avatarShell, assistantActive && styles.avatarShellActive]}>
@@ -1546,10 +1515,14 @@ export const MessageBubble = memo(function MessageBubble({
                             },
                         ]}
                     >
-                        {!assistantEmptyActive ? (
-                            <View style={[styles.assistantBubbleSheen, { backgroundColor: assistantActive ? `${palette.primary}66` : `${palette.primary}40` }]} />
-                        ) : null}
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
+                            {assistantEmptyActive ? (
+                                <AssistantActivityDots
+                                    active={assistantActive}
+                                    primaryColor={palette.primary}
+                                    label={t("src.screens.chatscreen.replying")}
+                                />
+                            ) : null}
                             {hasStructuredNodes ? (
                                 timelineSegments.map((segment, index) => {
                                     if (segment.kind === "collaboration_stage") {
@@ -1653,12 +1626,6 @@ export const MessageBubble = memo(function MessageBubble({
                                     );
                                 })
                             ) : null}
-                            {showInlineActivityDots ? (
-                                <View style={styles.assistantInlineActivity}>
-                                    <AssistantActivityDots active={assistantActive} primaryColor={palette.primary} />
-                                </View>
-                            ) : null}
-
                         </View>
                     </View>
                 </View>
@@ -1818,12 +1785,6 @@ const styles = StyleSheet.create({
         marginBottom: spacing.lg,
         minWidth: 0,
     },
-    assistantActivityRow: {
-        alignSelf: "flex-start",
-        marginBottom: spacing.lg,
-        paddingLeft: 8,
-        paddingVertical: 6,
-    },
     avatarShell: {
         width: 36,
         paddingTop: 2,
@@ -1937,9 +1898,6 @@ const styles = StyleSheet.create({
         borderRadius: 20,
         borderTopLeftRadius: 20,
     },
-    assistantBubbleSheen: {
-        height: 2,
-    },
     assistantExecutionMap: {
         marginBottom: 2,
     },
@@ -1985,10 +1943,6 @@ const styles = StyleSheet.create({
     traceGroupContent: {
         width: "100%",
         gap: 3,
-    },
-    assistantInlineActivity: {
-        alignSelf: "flex-start",
-        paddingTop: 2,
     },
     assistantText: {
         fontSize: 14,

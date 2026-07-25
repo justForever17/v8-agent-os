@@ -18,10 +18,24 @@ test("Web renders the newest canonical turn before the optional navigation index
   assert.match(client, /const indexPagePromise = loadConversationTurnIndexPage/);
   assert.ok(client.indexOf("setMessages(normalized)") < client.indexOf("const indexPage = await indexPagePromise"));
   assert.match(client, /around: target\.turnId/);
+  assert.match(client, /messagesRef\.current\.some\(\(message\) => message\.turnId === target\.turnId\)/);
+  assert.match(client, /\.\.\.messagesRef\.current,\s*\.\.\.turnPage\.messages/);
+  assert.match(client, /radius: 1/);
+  assert.match(client, /messageCacheRef/);
+  assert.match(client, /useLayoutEffect/);
   assert.match(client, /onReachTop=\{loadOlderConversationTurn\}/);
   assert.match(client, /mergeTurnIndexEntries\(incoming\.flatMap<ChatTurnIndexEntry>/);
   assert.match(window, /<TurnNavigator/);
   assert.match(route, /requireAdminProxyContext/);
+});
+
+test("Web keeps historical messages mounted without replaying entrance motion", () => {
+  const message = readText("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const window = readText("apps/v8-agent-os-web/src/components/chat/ChatWindow.tsx");
+
+  assert.match(message, /animateEntrance\?: boolean/);
+  assert.match(message, /initial=\{animateEntrance \? \{ opacity: 0/);
+  assert.match(window, /animateEntrance=\{Boolean\(isLoading && index >= messages\.length - 2\)\}/);
 });
 
 test("Web keeps queued messages isolated to the active conversation", () => {

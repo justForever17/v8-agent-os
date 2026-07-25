@@ -1160,7 +1160,6 @@ export async function submitChatMessage(
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 specMode: (options.specMode || options.specCommand) ? true : undefined,
-                supervisorWorkMode: options.supervisorWorkMode || undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
@@ -1452,7 +1451,6 @@ type SendChatOptions = {
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
     specMode?: boolean;
-    supervisorWorkMode?: "daily" | "engineering";
     specCommand?: { action: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex"; specId?: string; stage?: string };
     supervisorReasoningEffort?: string;
     safetyApprovalMode?: "manual" | "reduced" | "minimal";
@@ -1487,7 +1485,6 @@ export async function sendChatMessageStream(
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 specMode: (options.specMode || options.specCommand) ? true : undefined,
-                supervisorWorkMode: options.supervisorWorkMode || undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0

@@ -8,6 +8,7 @@ import {
     serializeAdminConnection,
     type AdminConnection,
 } from "@/lib/server/admin-connection";
+import { shouldUseSecureCookies } from "@/lib/server/cookie-policy";
 
 export async function GET() {
     const current = await getActiveAdminConnection();
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
                 value: serializeAdminConnection(connection),
                 httpOnly: true,
                 sameSite: "lax",
-                secure: process.env.NODE_ENV === "production",
+                secure: shouldUseSecureCookies(),
                 path: "/",
             });
         }

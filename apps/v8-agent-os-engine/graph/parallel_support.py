@@ -16,6 +16,8 @@ from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_broker import task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
+from core.observability_db import redact_observability_text
+from core.response_normalizer import extract_text_and_reasoning
 from core.runtime_continuation import (
     RuntimeContinuationContractError,
     normalize_runtime_continuation_request,
@@ -472,6 +474,108 @@ def _compact_message_text(message: Any, *, limit: int = 900) -> str:
     if len(normalized) > limit:
         return normalized[: limit - 3].rstrip() + "..."
     return normalized
+
+
+_SUBAGENT_TIMELINE_SECRET_KEY = re.compile(
+    r"(?:api[_-]?key|authorization|cookie|credential|encrypted[_-]?content|password|secret|signature|token)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_subagent_timeline_value(value: Any, *, depth: int = 0) -> Any:
+    """Keep only bounded, human-usable child activity for the shared timeline."""
+
+    if depth > 5 or value is None:
+        return None
+    if isinstance(value, str):
+        redacted = redact_observability_text(value)
+        return redacted if len(redacted) <= 2400 else redacted[:2399].rstrip() + "…"
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [
+            _sanitize_subagent_timeline_value(item, depth=depth + 1)
+            for item in list(value)[:32]
+        ]
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for key, nested in list(value.items())[:48]:
+            normalized_key = str(key)
+            output[normalized_key] = (
+                "<redacted>"
+                if _SUBAGENT_TIMELINE_SECRET_KEY.search(normalized_key)
+                else _sanitize_subagent_timeline_value(nested, depth=depth + 1)
+            )
+        return output
+    return _sanitize_subagent_timeline_value(str(value), depth=depth + 1)
+
+
+def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
+    """Project a LangChain child message into safe, ordered Human Surface nodes.
+
+    Opaque reasoning continuations and provider metadata are deliberately omitted.
+    The original message remains available to the execution runtime; this projection
+    is only the compact observation stream used by Web and Phone.
+    """
+
+    role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
+    message_id = str(getattr(message, "id", None) or uuid.uuid4().hex).strip()
+    nodes: list[dict[str, Any]] = []
+    if role in {"ai", "assistant"}:
+        visible_text, reasoning = extract_text_and_reasoning(message)
+        safe_reasoning = str(_sanitize_subagent_timeline_value(reasoning) or "").strip()
+        if safe_reasoning:
+            nodes.append(
+                {
+                    "id": f"{message_id}:reasoning",
+                    "kind": "execution",
+                    "executionType": "reasoning",
+                    "topic": "subagent.reasoning.delta",
+                    "content": safe_reasoning,
+                }
+            )
+        safe_text = str(_sanitize_subagent_timeline_value(visible_text) or "").strip()
+        if safe_text:
+            nodes.append(
+                {
+                    "id": f"{message_id}:text",
+                    "kind": "narrative",
+                    "role": "assistant",
+                    "topic": "subagent.text.delta",
+                    "content": safe_text,
+                }
+            )
+        for ordinal, call in enumerate(_tool_call_dicts_from_message(message)):
+            tool_name = str(call.get("name") or "tool").strip() or "tool"
+            tool_call_id = str(call.get("id") or f"{message_id}:tool:{ordinal}").strip()
+            nodes.append(
+                {
+                    "id": f"{tool_call_id}:call",
+                    "kind": "execution",
+                    "executionType": "tool_call",
+                    "topic": "subagent.tool.started",
+                    "toolName": tool_name,
+                    "toolCallId": tool_call_id,
+                    "args": _sanitize_subagent_timeline_value(_normalize_tool_call_args(call.get("args"))),
+                }
+            )
+        return nodes
+    if role == "tool":
+        tool_name = str(getattr(message, "name", None) or "tool").strip() or "tool"
+        tool_call_id = str(getattr(message, "tool_call_id", None) or message_id).strip()
+        content = getattr(message, "content", "")
+        nodes.append(
+            {
+                "id": f"{message_id}:result",
+                "kind": "execution",
+                "executionType": "tool_result",
+                "topic": "subagent.tool.finished",
+                "toolName": tool_name,
+                "toolCallId": tool_call_id,
+                "agentVisibleResult": _sanitize_subagent_timeline_value(content),
+            }
+        )
+    return nodes
 
 
 def _subagent_result_summary(messages: list[Any], *, limit: int = 900) -> str:
@@ -2368,23 +2472,34 @@ async def _run_parallel_agent_branch(
         result_update = getattr(result, "update", None) or {}
         local_state = _merge_state_update(local_state, result_update)
         for message in list(result_update.get("messages") or []) if isinstance(result_update, dict) else []:
-            for tool_name in _extract_tool_names_from_message(message):
-                _publish_parallel_progress(
-                    progress_callback,
-                    stage="tool_started",
-                    status="running",
-                    summary=f"正在使用 {tool_name}。",
-                    toolName=tool_name,
+            for timeline_node in _subagent_timeline_nodes_from_message(message):
+                topic = str(timeline_node.get("topic") or "").strip()
+                tool_name = str(timeline_node.get("toolName") or "").strip()
+                stage = (
+                    "tool_started"
+                    if topic == "subagent.tool.started"
+                    else "tool_finished"
+                    if topic == "subagent.tool.finished"
+                    else "reasoning"
+                    if topic == "subagent.reasoning.delta"
+                    else "responding"
                 )
-            role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
-            if role == "tool":
-                tool_name = str(getattr(message, "name", None) or "tool").strip() or "tool"
+                summary = (
+                    f"正在使用 {tool_name}。"
+                    if stage == "tool_started"
+                    else f"{tool_name} 已返回结果。"
+                    if stage == "tool_finished"
+                    else f"{branch.get('agentName') or agent_id} 正在核对证据。"
+                    if stage == "reasoning"
+                    else f"{branch.get('agentName') or agent_id} 正在回传进展。"
+                )
                 _publish_parallel_progress(
                     progress_callback,
-                    stage="tool_finished",
+                    stage=stage,
                     status="running",
-                    summary=f"{tool_name} 已返回结果。",
-                    toolName=tool_name,
+                    summary=summary,
+                    toolName=tool_name or None,
+                    timelineNode=timeline_node,
                 )
         delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
         child_requests = _extract_child_delegation_requests(
@@ -3092,7 +3207,9 @@ def build_parallel_delegate_task_node(
             raw_stage = str(progress.get("stage") or "working").strip().lower()
             stage = "tool_execution" if raw_stage in {"tool_started", "tool_finished"} else raw_stage
             status = str(progress.get("status") or "running").strip().lower()
-            fingerprint = (stage, status)
+            timeline_node = progress.get("timelineNode") if isinstance(progress.get("timelineNode"), dict) else None
+            timeline_identity = str((timeline_node or {}).get("id") or (timeline_node or {}).get("toolCallId") or "")
+            fingerprint = (f"{stage}:{timeline_identity}", status)
             if fingerprint in emitted_progress:
                 return
             emitted_progress.add(fingerprint)
@@ -3116,6 +3233,7 @@ def build_parallel_delegate_task_node(
                             "agentName": branch.get("agentName") or agent_id,
                             "delegationId": branch.get("delegationId"),
                             "taskBriefId": branch.get("taskBriefId"),
+                            **({"timelineNode": timeline_node} if timeline_node else {}),
                         },
                     },
                     source={"runtime": "delegation", "component": "parallel_delegate_task"},

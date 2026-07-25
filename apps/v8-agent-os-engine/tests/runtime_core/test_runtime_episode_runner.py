@@ -10,7 +10,7 @@ from langgraph.types import Send
 from erc.runtime_context import bind_runtime_context
 from core.database import DatabaseManager, db
 from core.agents import default_subagent_configs
-from core.delegation_broker import choose_best_local_agent_with_diagnostics
+from core.delegation_broker import build_workset_dispatch_decisions, choose_best_local_agent_with_diagnostics
 from core.engineering_capsule import engineering_capsule_mode
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
@@ -299,7 +299,18 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
 
     async def _fake_branch(_arg, _agent_data, progress_callback=None):
         if progress_callback:
-            progress_callback({"stage": "working", "status": "running", "summary": "Reviewing orchestration."})
+            progress_callback({
+                "stage": "reasoning",
+                "status": "running",
+                "summary": "Reviewing orchestration.",
+                "timelineNode": {
+                    "id": "child-message-1:reasoning",
+                    "kind": "execution",
+                    "executionType": "reasoning",
+                    "topic": "subagent.reasoning.delta",
+                    "content": "Comparing the requested evidence.",
+                },
+            })
         return [], [], {
             "taskBriefId": "PLAN-1",
             "delegationId": delegation_id,
@@ -340,15 +351,33 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     stored = manager.get_runtime_episode(delegation_id)
     handoffs = manager.list_runtime_episode_handoffs(delegation_id)
     with manager.get_connection() as conn:
-        topics = [row["topic"] for row in conn.execute(
-            "SELECT topic FROM runtime_episode_events WHERE episode_id = ? ORDER BY created_at",
+        event_rows = conn.execute(
+            "SELECT topic, payload_json FROM runtime_episode_events WHERE episode_id = ? ORDER BY created_at",
             (delegation_id,),
-        ).fetchall()]
+        ).fetchall()
+    topics = [row["topic"] for row in event_rows]
+    progress_payloads = [
+        json.loads(row["payload_json"])
+        for row in event_rows
+        if row["topic"] == "runtime.episode.progress"
+    ]
     assert results[0]["status"] == "ok"
     assert child_ids == []
     assert stored["state"] == "completed"
     assert handoffs[-1]["payload"]["status"] == "ready"
     assert "runtime.episode.progress" in topics
+    timeline_progress = next(
+        payload["progress"]
+        for payload in progress_payloads
+        if isinstance(payload.get("progress", {}).get("timelineNode"), dict)
+    )
+    assert timeline_progress["timelineNode"] == {
+        "id": "child-message-1:reasoning",
+        "kind": "execution",
+        "executionType": "reasoning",
+        "topic": "subagent.reasoning.delta",
+        "content": "Comparing the requested evidence.",
+    }
     assert "handoff.ref.created" in topics
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.completed")
     assert topics[-1] == "runtime.episode.completed"
@@ -1073,6 +1102,63 @@ def test_engineering_mixed_spec_tasks_do_not_become_plan_only():
         inputs={"workspacePath": "E:/Projects/test3"},
         worker_briefs=worker_briefs,
     ) is True
+
+
+def test_engineering_read_only_execution_is_not_plan_only():
+    runner = RuntimeEpisodeRunner()
+    worker_briefs = [
+        {
+            "taskBriefId": "READ-001",
+            "goal": "Compare README.md with package.json and return cited evidence.",
+            "readOnly": True,
+            "writeRequired": False,
+            "readSet": ["README.md", "package.json"],
+            "writeSet": [],
+            "expectedOutputs": ["README.md line citation", "package.json name citation"],
+            "acceptanceContract": "Return the comparison and declare that no writes were performed.",
+        }
+    ]
+
+    assert runner._is_engineering_plan_only_request(
+        need={"kind": "engineering", "writeRequired": False},
+        inputs={"writeRequired": False},
+        worker_briefs=worker_briefs,
+    ) is False
+
+
+def test_engineering_read_only_output_citations_do_not_infer_file_writes(tmp_path):
+    runner = RuntimeEpisodeRunner()
+    normalized = runner._prepare_engineering_worker_briefs_for_delegation(
+        [
+            {
+                "taskBriefId": "READ-002",
+                "goal": "Read and compare the declared project metadata.",
+                "readOnly": True,
+                "writeRequired": False,
+                "readSet": ["README.md", "package.json"],
+                "writeSet": [],
+                "expectedOutputs": [
+                    "README.md product name with line number",
+                    "package.json name value with line number",
+                ],
+                "acceptanceContract": "Return cited evidence and no-writes declaration.",
+            }
+        ],
+        need={"kind": "engineering", "writeRequired": False},
+        inputs={"workspacePath": str(tmp_path), "writeRequired": False},
+        workspace_path=str(tmp_path),
+    )
+
+    brief = normalized[0]
+    capsule = brief["engineeringTaskCapsule"]
+    assert brief["readOnly"] is True
+    assert brief["writeRequired"] is False
+    assert brief["writeSet"] == []
+    assert capsule["executionMode"] == "read_only"
+    assert capsule["contractStatus"] == "valid"
+    decision = build_workset_dispatch_decisions(normalized, auto_dispatch=True)[0]
+    assert decision["blocked"] is False
+    assert decision["risk"] == "read_only_safe"
 
 
 @pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])

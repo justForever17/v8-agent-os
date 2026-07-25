@@ -15,6 +15,7 @@ import { normalizeRealtimeEvent } from "@/lib/realtime";
 import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
     deriveComposerRunActivity,
+    deriveInterruptibleRunId,
     isRecognizedRunStatus,
     runStatusAllowsInterrupt,
     terminalRunStatusFromTopic,
@@ -34,7 +35,7 @@ import {
     type StreamLatencyStats,
 } from "@/lib/streaming-diagnostics";
 import { Message } from "@/store/chat-types";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { signIn, useSession } from "next-auth/react";
@@ -82,6 +83,7 @@ import {
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
+    type SessionApprovalView,
 } from "@v8/session-realtime";
 
 const AskUserModal = dynamic(
@@ -924,6 +926,7 @@ export default function ChatClient() {
 
     // Track which conversation is currently streaming to prevent overwriting state
     const streamingConversationIdRef = useRef<string | null>(null);
+    const streamingTransportRef = useRef<"stream" | "submit" | null>(null);
 
     // Sound Effect Logic
     const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -952,6 +955,9 @@ export default function ChatClient() {
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
+    const [governanceApprovalOverlaySessionId, setGovernanceApprovalOverlaySessionId] = useState<string | null>(activeConversationId);
+    const [liveGovernanceApprovals, setLiveGovernanceApprovals] = useState<SessionApprovalView[]>([]);
+    const [resolvedGovernanceApprovalIds, setResolvedGovernanceApprovalIds] = useState<string[]>([]);
     const [projects, setProjects] = useState<ProjectDescriptor[]>([]);
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
@@ -1323,19 +1329,33 @@ export default function ChatClient() {
     }, [patchConversationSummary]);
 
     // Initialize Hook
-    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand } = useLangGraphStream({
+    const {
+        messages,
+        isLoading,
+        sendMessage,
+        stop,
+        settleTerminalStream,
+        setMessages,
+        sendToolOutput,
+        resolveApproval,
+        dispatchRunCommand,
+        submittedRunId,
+    } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
+        submitEndpoint: `/api/chat-submit`,
         onFinish: () => {
             refreshConversations();
             streamingConversationIdRef.current = null; // Reset when done
+            streamingTransportRef.current = null;
             const conversationId = activeConversationIdRef.current;
             if (conversationId) {
                 void loadRuns(conversationId);
             }
         },
-        onConnect: (newId) => {
+        onConnect: (newId, transport) => {
             // Record that we are streaming this ID
             streamingConversationIdRef.current = newId;
+            streamingTransportRef.current = transport;
 
             // Silently update URL if it changes (e.g. from new chat)
             if (activeConversationId !== newId) {
@@ -1350,6 +1370,7 @@ export default function ChatClient() {
         onError: (error) => {
             console.error("Chat error:", error);
             streamingConversationIdRef.current = null;
+            streamingTransportRef.current = null;
             if (error.message.includes("Conversation not found") || error.message.includes("404")) {
                 router.replace('/chat');
             }
@@ -1399,6 +1420,8 @@ export default function ChatClient() {
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const isLoadingRef = useRef(isLoading);
     const messagesRef = useRef<Message[]>(messages);
+    const messageCacheRef = useRef(new Map<string, Message[]>());
+    const renderedConversationIdRef = useRef<string | null>(activeConversationId);
     const realtimeMessageStateRef = useRef(
         createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS),
     );
@@ -1438,41 +1461,62 @@ export default function ChatClient() {
             });
         }
     }, [patchConversationSummary, supervisorWorkMode, updateConversationPresentation]);
+    const localConversationLoading = Boolean(
+        isLoading
+        && streamingConversationIdRef.current === activeConversationId,
+    );
+    const localSubmittedRunId = localConversationLoading ? submittedRunId : null;
     const activeConversationRunning = useMemo(() => {
         const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
         return deriveComposerRunActivity({
-            localStreamActive: isLoading,
+            localStreamActive: localConversationLoading,
             runtimeStatus: sessionProjection?.runtimeStatus,
             currentRunStatus: currentRun?.status,
             workflowStatus: sessionProjection?.controls?.workflowStatus || sessionProjection?.workflow?.status,
             conversationStatus: activeConversation?.status,
         });
-    }, [activeConversationId, conversations, currentRun?.status, isLoading, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.status]);
+    }, [activeConversationId, conversations, currentRun?.status, localConversationLoading, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.status]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
     );
-    const governanceApprovals = useMemo(
-        () => (sessionProjection?.approvals || []),
-        [sessionProjection?.approvals],
-    );
+    const governanceApprovals = useMemo(() => {
+        const overlayMatchesSession = governanceApprovalOverlaySessionId === activeConversationId;
+        const resolvedIds = new Set(overlayMatchesSession ? resolvedGovernanceApprovalIds : []);
+        const seenIds = new Set<string>();
+        return [
+            ...(overlayMatchesSession ? liveGovernanceApprovals : []),
+            ...(sessionProjection?.approvals || []),
+        ].filter((approval) => {
+            const approvalId = readString(approval.id)
+                || readString(approval.approvalId)
+                || readString(approval.approval_id);
+            if (!approvalId || resolvedIds.has(approvalId) || seenIds.has(approvalId)) {
+                return false;
+            }
+            seenIds.add(approvalId);
+            return true;
+        });
+    }, [activeConversationId, governanceApprovalOverlaySessionId, liveGovernanceApprovals, resolvedGovernanceApprovalIds, sessionProjection?.approvals]);
     const governancePendingApproval = governanceApprovals[0] || null;
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
     const hasAskUserPending = Boolean(askUserApprovalId || askUserToolCallId);
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
-    const canInterruptProjectedRun = Boolean(
-        activeConversationRunning
-        && projectionRunId
-        && sessionProjection?.controls?.canInterrupt,
-    );
+    const interruptibleRunId = activeConversationRunning
+        ? deriveInterruptibleRunId({
+            controlRunId: localSubmittedRunId || sessionProjection?.controls?.runId,
+            currentRunId: currentRun?.id,
+            controlCanInterrupt: localSubmittedRunId ? true : sessionProjection?.controls?.canInterrupt,
+            currentRunStatus: localSubmittedRunId ? "running" : currentRun?.status,
+            runtimeStatus: sessionProjection?.runtimeStatus,
+        })
+        : null;
+    const canInterruptProjectedRun = Boolean(interruptibleRunId);
     const handleStopActiveRun = useCallback(() => {
-        if (isLoading) {
-            stop();
-        }
-        if (!projectionRunId || !sessionProjection?.controls?.canInterrupt) {
+        if (!interruptibleRunId) {
             return;
         }
-        void dispatchRunCommand(projectionRunId, "interrupt", "web_composer_interrupt")
+        void dispatchRunCommand(interruptibleRunId, "interrupt", "web_composer_interrupt")
             .then(() => {
                 const conversationId = activeConversationIdRef.current;
                 if (conversationId) void loadRuns(conversationId);
@@ -1480,7 +1524,7 @@ export default function ChatClient() {
             .catch((error) => {
                 console.warn("[ChatClient] Failed to interrupt active run:", error);
             });
-    }, [dispatchRunCommand, isLoading, loadRuns, projectionRunId, sessionProjection?.controls?.canInterrupt, stop]);
+    }, [dispatchRunCommand, interruptibleRunId, loadRuns]);
     const effectiveStatus = hasAskUserPending
         ? "waiting_input"
         : governancePendingApprovalId || currentRun?.status === "waiting_approval"
@@ -1489,10 +1533,10 @@ export default function ChatClient() {
             || currentRun?.status
             || normalizeWorkflowStatusForRunBar(sessionProjection?.controls?.workflowStatus)
             || normalizeWorkflowStatusForRunBar(sessionProjection?.workflow?.status);
-    const effectivePendingApproval = Boolean(
-        governancePendingApprovalId
-        || currentRun?.status === "waiting_approval",
-    );
+    // A waiting run is not, by itself, a recoverable approval surface. Only
+    // advertise confirmation when the authoritative projection contains the
+    // approval record that the modal needs in order to reopen.
+    const effectivePendingApproval = Boolean(governancePendingApprovalId);
     const projectionTodos = sessionProjection?.todos?.items || [];
     const projectionTodoStale = Boolean(sessionProjection?.todos?.isStale);
     const projectionProcesses = useMemo(
@@ -1832,6 +1876,71 @@ export default function ChatClient() {
         setGovernanceApprovalOpen(true);
     }, [governancePendingApprovalId]);
 
+    const upsertGovernanceApproval = useCallback((approval: SessionApprovalView) => {
+        const approvalId = readString(approval.id) || readString(approval.approvalId) || readString(approval.approval_id);
+        if (!approvalId) {
+            return;
+        }
+        // Realtime approvals are kept outside the snapshot projection. A
+        // slightly older snapshot can arrive after approval.requested, and the
+        // approval must remain recoverable until its matching resolution event.
+        setGovernanceApprovalOverlaySessionId(activeConversationIdRef.current);
+        setResolvedGovernanceApprovalIds((current) => current.filter((item) => item !== approvalId));
+        setLiveGovernanceApprovals((current) => [
+            approval,
+            ...current.filter((item) => {
+                const itemId = readString(item.id) || readString(item.approvalId) || readString(item.approval_id);
+                return itemId !== approvalId;
+            }),
+        ]);
+    }, []);
+
+    const removeGovernanceApproval = useCallback((approvalId: string) => {
+        const normalizedApprovalId = String(approvalId || "").trim();
+        if (!normalizedApprovalId) {
+            return;
+        }
+        setResolvedGovernanceApprovalIds((current) => (
+            current.includes(normalizedApprovalId) ? current : [...current, normalizedApprovalId]
+        ));
+        setLiveGovernanceApprovals((current) => current.filter((item) => {
+            const itemId = readString(item.id) || readString(item.approvalId) || readString(item.approval_id);
+            return itemId !== normalizedApprovalId;
+        }));
+        setSessionProjection((current) => {
+            if (!current) {
+                return current;
+            }
+            const approvals = (current.approvals || []).filter((item) => {
+                const itemId = readString(item.id) || readString(item.approvalId) || readString(item.approval_id);
+                return itemId !== normalizedApprovalId;
+            });
+            if (approvals.length === (current.approvals || []).length) {
+                return current;
+            }
+            const hasPendingApproval = approvals.length > 0;
+            return {
+                ...current,
+                approvals,
+                controls: {
+                    ...(current.controls || {}),
+                    canApprove: hasPendingApproval,
+                    canReject: hasPendingApproval,
+                    canOpenApproval: hasPendingApproval,
+                    pendingApprovalCount: approvals.length,
+                },
+                summary: current.summary ? {
+                    ...current.summary,
+                    pendingApprovalCount: approvals.length,
+                } : current.summary,
+            };
+        });
+    }, []);
+
+    const openPendingConfirmation = useCallback(() => {
+        openGovernanceApproval();
+    }, [openGovernanceApproval]);
+
     const handleGovernanceApprovalDismiss = useCallback(() => {
         if (governancePendingApprovalId) {
             setDismissedGovernanceApprovalId(governancePendingApprovalId);
@@ -1865,15 +1974,54 @@ export default function ChatClient() {
         setGovernanceApprovalBusy(true);
         try {
             await resolveApproval(governancePendingApprovalId, answer, approve);
+            // Keep the resolved id dismissed until the authoritative snapshot
+            // removes it. Otherwise the stale projection reopens the modal in
+            // the render immediately following a successful response.
+            setDismissedGovernanceApprovalId(governancePendingApprovalId);
+            removeGovernanceApproval(governancePendingApprovalId);
             setGovernanceApprovalOpen(false);
-            setDismissedGovernanceApprovalId("");
         } finally {
             setGovernanceApprovalBusy(false);
         }
-    }, [governancePendingApprovalId, resolveApproval]);
+    }, [governancePendingApprovalId, removeGovernanceApproval, resolveApproval]);
+
+    useLayoutEffect(() => {
+        const previousConversationId = renderedConversationIdRef.current;
+        activeConversationIdRef.current = activeConversationId;
+        if (previousConversationId === activeConversationId) {
+            return;
+        }
+        if (previousConversationId && messagesRef.current.length > 0) {
+            messageCacheRef.current.set(previousConversationId, cloneMessages(messagesRef.current));
+        }
+        if (
+            !previousConversationId
+            && activeConversationId
+            && streamingConversationIdRef.current === activeConversationId
+            && isLoadingRef.current
+        ) {
+            renderedConversationIdRef.current = activeConversationId;
+            messageCacheRef.current.set(activeConversationId, cloneMessages(messagesRef.current));
+            return;
+        }
+        const cached = activeConversationId
+            ? cloneMessages(messageCacheRef.current.get(activeConversationId) || [])
+            : [];
+        renderedConversationIdRef.current = activeConversationId;
+        messagesRef.current = cached;
+        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+            cached,
+            WEB_STREAM_LIFECYCLE_OPTIONS,
+        );
+        setMessages(cached);
+    }, [activeConversationId, setMessages]);
 
     useEffect(() => {
-        activeConversationIdRef.current = activeConversationId;
+        setGovernanceApprovalOverlaySessionId(activeConversationId);
+        setLiveGovernanceApprovals([]);
+        setResolvedGovernanceApprovalIds([]);
+        setDismissedGovernanceApprovalId("");
+        setGovernanceApprovalOpen(false);
     }, [activeConversationId]);
 
     useEffect(() => {
@@ -1882,6 +2030,10 @@ export default function ChatClient() {
 
     useEffect(() => {
         messagesRef.current = messages;
+        const renderedConversationId = renderedConversationIdRef.current;
+        if (renderedConversationId && renderedConversationId === activeConversationIdRef.current) {
+            messageCacheRef.current.set(renderedConversationId, cloneMessages(messages));
+        }
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             messages,
             WEB_STREAM_LIFECYCLE_OPTIONS,
@@ -1892,6 +2044,10 @@ export default function ChatClient() {
         if (!sessionId) return false;
         return isLoadingRef.current && streamingConversationIdRef.current === sessionId;
     }, []);
+
+    const isLocalNdjsonStreamActive = useCallback((sessionId: string | null | undefined) => {
+        return isLocalStreamActive(sessionId) && streamingTransportRef.current === "stream";
+    }, [isLocalStreamActive]);
 
     const normalizeTurnPageMessages = useCallback((items: unknown[]) => {
         const hasTimelineNodes = items.some((message: unknown) =>
@@ -2130,6 +2286,7 @@ export default function ChatClient() {
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
         messagesRef.current = normalized;
+        messageCacheRef.current.set(conversationId, cloneMessages(normalized));
         setMessages(normalized);
         const detailProcesses = Array.isArray(detailPayload?.processes) ? detailPayload.processes : [];
         if (detailProcesses.length > 0) {
@@ -2214,14 +2371,32 @@ export default function ChatClient() {
             if (!target || activeConversationIdRef.current !== conversationId) {
                 return;
             }
+            if (messagesRef.current.some((message) => message.turnId === target.turnId)) {
+                setFocusedTurnId(target.turnId);
+                window.setTimeout(() => {
+                    setFocusedTurnId((current) => current === target.turnId ? null : current);
+                }, 900);
+                return;
+            }
             const turnPage = await loadConversationTurnPage(conversationId, {
                 around: target.turnId,
-                radius: 0,
+                radius: 1,
             });
             if (activeConversationIdRef.current !== conversationId) {
                 return;
             }
-            const nextMessages = normalizeMessagesForState(turnPage.messages);
+            const nextMessages = normalizeMessagesForState([
+                ...messagesRef.current,
+                ...turnPage.messages,
+            ]).map((message, index) => ({ message, index })).sort((left, right) => {
+                const leftPosition = Number(left.message.turnPosition || 0);
+                const rightPosition = Number(right.message.turnPosition || 0);
+                if (leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition) {
+                    return leftPosition - rightPosition;
+                }
+                const timestampDelta = Number(left.message.timestamp || 0) - Number(right.message.timestamp || 0);
+                return timestampDelta || left.index - right.index;
+            }).map(({ message }) => message);
             mergeTurnIndexEntries(nextMessages.flatMap<ChatTurnIndexEntry>((message) => (
                 message.turnId && Number(message.turnPosition || 0) > 0
                     ? [{
@@ -2232,8 +2407,7 @@ export default function ChatClient() {
                     }]
                     : []
             )));
-            turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
-            setHasOlderTurns(Boolean(turnPage.pageInfo.hasOlder));
+            setHasOlderTurns((current) => current || Boolean(turnPage.pageInfo.hasOlder));
             messagesRef.current = nextMessages;
             realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
                 nextMessages,
@@ -2317,7 +2491,7 @@ export default function ChatClient() {
     }, [applySessionProcessSurface]);
 
     useEffect(() => {
-        if (!activeConversationId) {
+        if (status !== "authenticated" || !activeConversationId) {
             applySessionProcessSurface([], { forceClear: true });
             return;
         }
@@ -2331,7 +2505,7 @@ export default function ChatClient() {
         return () => {
             window.clearInterval(timer);
         };
-    }, [activeConversationId, applySessionProcessSurface, loadSessionProcesses]);
+    }, [activeConversationId, applySessionProcessSurface, loadSessionProcesses, status]);
 
     const buildScopePayload = useCallback((conversationId?: string | null) => ({
         conversationId: conversationId || activeConversationIdRef.current || undefined,
@@ -2776,6 +2950,15 @@ export default function ChatClient() {
         const runtimeTimelineEntry = buildRuntimeTimelineEntryFromEvent(rawEvent);
         const terminalRunStatus = terminalRunStatusFromTopic(normalizedEvent.topic, normalizedEvent.data);
         if (terminalRunStatus) {
+            const terminalRunId = readString((normalizedEvent as Record<string, unknown>).run_id)
+                || readString((normalizedEvent as Record<string, unknown>).runId);
+            if (isLocalStreamActive(conversationId)) {
+                const settled = settleTerminalStream(terminalRunId);
+                if (settled) {
+                    streamingConversationIdRef.current = null;
+                    streamingTransportRef.current = null;
+                }
+            }
             setSessionProjection((current) => current ? {
                 ...current,
                 runtimeStatus: terminalRunStatus,
@@ -2798,7 +2981,7 @@ export default function ChatClient() {
             normalizedEvent.name === "session_coordination"
             || String(normalizedEvent.topic || "").startsWith("session_coordination.");
 
-        const localStreamActive = isLocalStreamActive(conversationId);
+        const localStreamActive = isLocalNdjsonStreamActive(conversationId);
         if (
             localStreamActive
             && !runtimeTimelineEntry
@@ -2851,11 +3034,34 @@ export default function ChatClient() {
             }
         }
 
-        if (
-            normalizedEvent.topic === "approval.approved"
-            || normalizedEvent.topic === "approval.rejected"
-            || normalizedEvent.topic === "ask_user.resolved"
-        ) {
+        if (normalizedEvent.topic === "approval.requested") {
+            const eventData = asPlainRecord(normalizedEvent.data);
+            const approvalKind = readString(eventData.approvalKind) || readString(eventData.approval_kind);
+            const interactionKind = readString(eventData.interactionKind) || readString(eventData.interaction_kind);
+            if (approvalKind.toLowerCase() !== "ask_user" && interactionKind.toLowerCase() !== "ask_user") {
+                const approvalId = readString(eventData.approvalId) || readString(eventData.approval_id);
+                upsertGovernanceApproval({
+                    id: approvalId,
+                    approvalId,
+                    approvalKind,
+                    status: "pending",
+                    question: readString(eventData.question),
+                    prompt: readString(eventData.prompt) || readString(eventData.question),
+                    request: asPlainRecord(eventData.request),
+                });
+            }
+        }
+
+        if (normalizedEvent.topic === "approval.approved" || normalizedEvent.topic === "approval.rejected") {
+            const eventData = asPlainRecord(normalizedEvent.data);
+            const approvalId = readString(eventData.approvalId) || readString(eventData.approval_id);
+            if (approvalId) {
+                setDismissedGovernanceApprovalId(approvalId);
+                removeGovernanceApproval(approvalId);
+            }
+        }
+
+        if (normalizedEvent.topic === "ask_user.resolved") {
             clearApprovalState();
         }
 
@@ -2973,7 +3179,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, patchConversationSummary, setMessages, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, isLocalNdjsonStreamActive, isLocalStreamActive, loadRuns, patchConversationSummary, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -3121,6 +3327,9 @@ export default function ChatClient() {
         // [REMOVED] Optimistic UI: The useLangGraphStream hook now handles both User and AI placeholders internally.
         // This prevents the "Flicker" caused by state conflicts (Client vs Hook)
 
+        const submittingConversationId = activeConversationIdRef.current;
+        streamingConversationIdRef.current = submittingConversationId;
+        streamingTransportRef.current = "submit";
         try {
             const accepted = await sendMessage(currentInput, {
                 agentId: undefined, // selectedAgent?.id,
@@ -3131,11 +3340,19 @@ export default function ChatClient() {
             if (accepted) {
                 clearPendingContextSessionRefs();
             } else {
+                if (streamingConversationIdRef.current === submittingConversationId) {
+                    streamingConversationIdRef.current = null;
+                    streamingTransportRef.current = null;
+                }
                 if (messageOverride === null) setInput(currentInput);
             }
             return Boolean(accepted);
         } catch (error) {
             console.error("[ChatClient] Failed to send initial message:", error);
+            if (streamingConversationIdRef.current === submittingConversationId) {
+                streamingConversationIdRef.current = null;
+                streamingTransportRef.current = null;
+            }
             const errorMessage = error instanceof Error && error.message ? error.message : "";
             if (isWorkspaceBindingErrorMessage(errorMessage)) {
                 setWorkspaceChooserVisible(true);
@@ -3227,6 +3444,9 @@ export default function ChatClient() {
         setHasOlderTurns(false);
         setIsLoadingOlderTurns(false);
 
+        const submittingConversationId = activeConversationIdRef.current;
+        streamingConversationIdRef.current = submittingConversationId;
+        streamingTransportRef.current = "submit";
         void sendMessage("", {
             agentId: undefined,
             userId: session?.user?.id,
@@ -3235,13 +3455,36 @@ export default function ChatClient() {
         }).then((accepted) => {
             if (accepted) {
                 clearPendingContextSessionRefs();
+            } else if (streamingConversationIdRef.current === submittingConversationId) {
+                streamingConversationIdRef.current = null;
+                streamingTransportRef.current = null;
             }
+        }).catch((error) => {
+            if (streamingConversationIdRef.current === submittingConversationId) {
+                streamingConversationIdRef.current = null;
+                streamingTransportRef.current = null;
+            }
+            console.error("[ChatClient] Failed to send voice audio message:", error);
         });
     };
 
     // Fetch history when ID changes
     useEffect(() => {
+        if (status !== "authenticated") {
+            return;
+        }
         if (activeConversationId) {
+            if (
+                isLoading
+                && streamingConversationIdRef.current
+                && streamingConversationIdRef.current !== activeConversationId
+            ) {
+                // Detach only the local optimistic transport state. The durable
+                // Engine run continues and remains observable from its session.
+                stop();
+                streamingConversationIdRef.current = null;
+                streamingTransportRef.current = null;
+            }
             // CRITICAL FIX: If we are currently streaming content for this ID, 
             // DO NOT fetch from DB. The DB history is stale (empty) compared to our live stream.
             // Fetching would overwrite our live state with empty history, causing the "Flicker/Disappear" bug.
@@ -3284,10 +3527,10 @@ export default function ChatClient() {
             messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, clearApprovalState, isLoading, loadConversationHistory, loadRuns, loadSessionScope, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, isLoading, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages]);
 
     useEffect(() => {
-        if (!activeConversationId) {
+        if (status !== "authenticated" || !activeConversationId) {
             return;
         }
 
@@ -3373,7 +3616,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns, status]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -3598,12 +3841,11 @@ export default function ChatClient() {
                         </div>
                     ) : (
                         <ChatWindow
-                            key={activeConversationId || "new"}
                             messages={messages}
                             processes={hudProcesses}
                             contextReferences={projectionContextReferences}
                             conversationId={activeConversationId}
-                            isLoading={isLoading}
+                            isLoading={localConversationLoading}
                             userAvatar={chatUserAvatar}
                             userName={chatUserName}
                             shellClassName="w-full"
@@ -3700,9 +3942,9 @@ export default function ChatClient() {
                                         });
                                     }}
                                     onVoiceAudioMessage={handleVoiceAudioMessage}
-                                    isLoading={isLoading}
+                                    isLoading={localConversationLoading}
                                     sessionRunning={activeConversationRunning}
-                                    canStopRun={isLoading || canInterruptProjectedRun}
+                                    canStopRun={canInterruptProjectedRun}
                                     onStop={handleStopActiveRun}
                                     selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"
@@ -3773,6 +4015,8 @@ export default function ChatClient() {
                 runtimeModel={runtimeStageModel}
                 workspacePath={scopeBinding?.workspacePath || mainWorkspacePath || ""}
                 onSendFileLineComment={handleFileLineComment}
+                pendingConfirmation={effectivePendingApproval}
+                onOpenPendingConfirmation={openPendingConfirmation}
             />
         ) : null}
 

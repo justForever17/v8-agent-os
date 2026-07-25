@@ -182,17 +182,17 @@ function settleIncompleteStage(stage: CollaborationMicroStage): CollaborationMic
     const lastStepIndex = stage.steps.length - 1;
     return {
         ...stage,
-        status: "completed",
-        cue: "completed",
+        status: "degraded",
+        cue: "degraded",
         steps: stage.steps.map((step, index) => (
             index === lastStepIndex && !isFinalStatus(step.status)
-                ? { ...step, status: "completed", cue: "completed" }
+                ? { ...step, status: "degraded", cue: "degraded" }
                 : step
         )),
         actors: stage.actors.map((actor) => (
             isFinalStatus(actor.status)
                 ? actor
-                : { ...actor, status: "completed", cue: "completed" }
+                : { ...actor, status: "degraded", cue: "degraded" }
         )),
     };
 }
@@ -536,10 +536,11 @@ function scaleCollisionVolume(item: PositionedStageActorItem, volume: CollisionV
 }
 
 function collisionRectsForItem(item: PositionedStageActorItem): CollisionRect[] {
-    return [
-        scaleCollisionVolume(item, WORKSTATION_COLLISION),
-        scaleCollisionVolume(item, ROBOT_COLLISION),
-    ];
+    const rects = [scaleCollisionVolume(item, WORKSTATION_COLLISION)];
+    if (item.actor.kind === "subagent") {
+        rects.push(scaleCollisionVolume(item, ROBOT_COLLISION));
+    }
+    return rects;
 }
 
 function supervisorCollisionAt(point: { x: number; y: number }): CollisionRect {
@@ -968,25 +969,27 @@ const WorkCell = memo(function WorkCell({
             <View style={styles.workstationLayer}>
                 <WorkstationDisplay cue={cue} color={color} phase={phase} status={actorStatus} />
             </View>
-            <Animated.View style={[styles.robotLayer, botStyle]}>
-                <View
-                    pointerEvents="none"
-                    style={[
-                        styles.robotNameLabel,
-                        {
-                            backgroundColor: dark ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.92)",
-                            borderColor: `${color}80`,
-                        },
-                    ]}
-                >
-                    <View style={[styles.robotNameDot, { backgroundColor: color }]} />
-                    <Text style={[styles.robotNameText, { color: palette.text }]} numberOfLines={1}>
-                        {actorName}
-                    </Text>
-                </View>
-                <GroundShadow width={38} opacity={0.18} />
-                <SubagentRobotSprite action={robotAction} color={color} />
-            </Animated.View>
+            {actor.kind === "subagent" ? (
+                <Animated.View style={[styles.robotLayer, botStyle]}>
+                    <View
+                        pointerEvents="none"
+                        style={[
+                            styles.robotNameLabel,
+                            {
+                                backgroundColor: dark ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.92)",
+                                borderColor: `${color}80`,
+                            },
+                        ]}
+                    >
+                        <View style={[styles.robotNameDot, { backgroundColor: color }]} />
+                        <Text style={[styles.robotNameText, { color: palette.text }]} numberOfLines={1}>
+                            {actorName}
+                        </Text>
+                    </View>
+                    <GroundShadow width={38} opacity={0.18} />
+                    <SubagentRobotSprite action={robotAction} color={color} />
+                </Animated.View>
+            ) : null}
             {isHandoff && (
                 <Animated.View style={[styles.reportLayer, reportStyle]} pointerEvents="none">
                     <ReportScroll color={color} />

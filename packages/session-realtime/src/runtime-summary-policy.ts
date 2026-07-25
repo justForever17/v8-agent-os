@@ -8,10 +8,13 @@ export function shouldProjectRuntimeSummarySignal(signal: RuntimeSummarySignal) 
   const kind = String(signal.kind || "").trim().toLowerCase();
   const topic = String(signal.topic || "").trim().toLowerCase();
   const executionType = String(signal.executionType || "").trim().toLowerCase();
-  if (kind === "tool" || ["tool_call", "tool_result", "reasoning"].includes(executionType)) {
+  if (topic === "runtime.episode.progress") {
     return false;
   }
-  if (["heartbeat", "lease", "snapshot", "checkpoint", "metrics", "trace", "debug"].some((token) => topic.includes(token))) {
+  if (["tool", "diagnostic"].includes(kind) || ["tool_call", "tool_result", "reasoning"].includes(executionType)) {
+    return false;
+  }
+  if (["heartbeat", "lease", "snapshot", "checkpoint", "metrics", "trace", "debug", "diagnostic"].some((token) => topic.includes(token))) {
     return false;
   }
   return !(

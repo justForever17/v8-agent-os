@@ -12,7 +12,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from api.models import ChatRequest, ChatToolCall
@@ -95,6 +95,16 @@ from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop, Comp
 
 
 _NETWORK_SUPERVISOR_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
+_CLIENT_BOUND_CHAT_TRANSPORTS = {"http", "websocket"}
+_DISCONNECT_CANCELLABLE_RUN_STATES = {
+    "queued",
+    "pending",
+    "starting",
+    "attached",
+    "observing",
+    "streaming",
+    "running",
+}
 _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "ask_user",
     "fetch_skill_instructions",
@@ -1113,18 +1123,17 @@ class ChatRuntime:
         self,
         chat_run: ChatRunContext,
         stream_state: ChatStreamState,
-    ) -> list[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         if chat_run.is_resume_request:
-            return []
+            return
         attachments = [dict(item) for item in list(chat_run.request.attachments or []) if isinstance(item, dict)]
         if not attachments:
-            return []
+            return
 
         from core.tools.native.workspace_file import read_native_file
         from core.tools.vision_media_analyzer import vision_media_analyzer
 
         summaries: list[dict[str, str]] = []
-        emitted: list[dict[str, Any]] = []
         for index, attachment in enumerate(attachments):
             kind = self._attachment_media_kind(attachment)
             if kind in {"audio", "image", "video"}:
@@ -1171,7 +1180,7 @@ class ChatRuntime:
             stream_state.active_tool_call_ids.add(tool_call_id)
             stream_state.watchdog.note_tool_start(tool_call_id)
             stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": tool_name, "args": display_args})
-            emitted.append(self._emit_message_targeted_runtime_event(
+            yield self._emit_message_targeted_runtime_event(
                 chat_run,
                 stream_state,
                 topic="tool.started",
@@ -1179,7 +1188,7 @@ class ChatRuntime:
                 node=start_node,
                 agent_id="supervisor",
                 runtime_node="attachment_preflight",
-            ))
+            )
 
             try:
                 if tool_name == "read_native_file":
@@ -1200,8 +1209,16 @@ class ChatRuntime:
                         "source_id": str(attachment.get("sourceId") or attachment.get("source_id") or attachment.get("id") or "").strip() or None,
                     }
                     with bind_runtime_context(**attachment_runtime_context):
-                        output = await asyncio.to_thread(vision_media_analyzer.invoke, invoke_payload)
-                status = "completed"
+                        output = await asyncio.to_thread(
+                            vision_media_analyzer.invoke,
+                            {
+                                "name": tool_name,
+                                "args": invoke_payload,
+                                "id": tool_call_id,
+                                "type": "tool_call",
+                            },
+                        )
+                status = "failed" if str(getattr(output, "status", "")).strip().lower() == "error" else "completed"
             except Exception as exc:
                 output = (
                     "结果：附件预读失败\n"
@@ -1240,7 +1257,7 @@ class ChatRuntime:
             }
             stream_state.watchdog.note_tool_end(tool_call_id)
             stream_state.active_tool_call_ids.discard(tool_call_id)
-            emitted.append(self._emit_message_targeted_runtime_event(
+            yield self._emit_message_targeted_runtime_event(
                 chat_run,
                 stream_state,
                 topic="tool.finished",
@@ -1248,7 +1265,7 @@ class ChatRuntime:
                 node=result_node,
                 agent_id="supervisor",
                 runtime_node="attachment_preflight",
-            ))
+            )
             summaries.append({
                 "name": name,
                 "tool": tool_name,
@@ -1260,7 +1277,6 @@ class ChatRuntime:
                 break
 
         self._append_attachment_preflight_context(chat_run, summaries)
-        return emitted
 
     def _latest_user_content(self, request: ChatRequest) -> str:
         for candidate in reversed(request.messages):
@@ -8607,6 +8623,29 @@ class ChatRuntime:
         ]
 
     @staticmethod
+    def finalize_client_transport_disconnect(chat_run: ChatRunContext, *, transport: str) -> bool:
+        """Close a client-bound run when its only execution transport disappears.
+
+        Durable submit/resume workers are intentionally excluded: they must
+        survive page navigation and Engine-owned recovery. This guard only
+        prevents legacy HTTP/WebSocket streams from releasing the session lane
+        while leaving a phantom ``running`` record behind.
+        """
+
+        normalized_transport = str(transport or "").strip().lower()
+        if normalized_transport not in _CLIENT_BOUND_CHAT_TRANSPORTS:
+            return False
+        run_id = str(getattr(chat_run, "active_run_id", "") or "").strip()
+        if not run_id:
+            return False
+        record = db.get_run_record(run_id) or {}
+        status = str(record.get("status") or "").strip().lower()
+        if status not in _DISCONNECT_CANCELLABLE_RUN_STATES:
+            return False
+        erc_kernel.cancel_run(run_id, reason=f"{normalized_transport}_client_disconnected")
+        return True
+
+    @staticmethod
     def _completion_final_text(chat_run: ChatRunContext, stream_state: ChatStreamState | None = None) -> str:
         if stream_state is not None:
             authoritative = str(stream_state.authoritative_final_text or "").strip()
@@ -9407,7 +9446,7 @@ class ChatRuntime:
                     yield preflight_event
                 return
 
-            for attachment_event in await self._run_attachment_preflight(chat_run, stream_state):
+            async for attachment_event in self._run_attachment_preflight(chat_run, stream_state):
                 yield attachment_event
 
             writing_route = (
@@ -9767,6 +9806,9 @@ class ChatRuntime:
             )
             self.persist_final_assistant_message(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)
+        except (asyncio.CancelledError, GeneratorExit):
+            self.finalize_client_transport_disconnect(chat_run, transport=transport)
+            raise
         except CompatExternalToolRequest as exc:
             payload = dict(getattr(exc, "payload", {}) or {})
             interrupted_signal = {

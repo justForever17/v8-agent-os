@@ -41,8 +41,13 @@ apply(state, {
   data: { ownerStreamKey: "trace-1", traceGroupId: "stable-trace-1" },
 });
 
+const optimisticAssistant = state.messages.find((message) => message.role === "assistant");
+const optimisticRenderKey = optimisticAssistant?.renderKey;
+assert.ok(optimisticRenderKey, "assistant placeholder should receive a stable render key");
+
 apply(state, {
   type: "text_chunk",
+  message_id: "assistant-canonical-timeline",
   run_id: "run_timeline",
   runtimeId: "chat",
   targets: ["message"],
@@ -94,6 +99,8 @@ apply(state, {
 const assistant = state.messages.find((message) => message.role === "assistant");
 assert.ok(assistant, "assistant message should exist");
 assert.ok(Array.isArray(assistant.nodes), "assistant nodes should exist");
+assert.equal(assistant.id, "assistant-canonical-timeline", "canonical message id should replace the optimistic id");
+assert.equal(assistant.renderKey, optimisticRenderKey, "canonical reconciliation must not remount the active bubble");
 
 const nodeKinds = assistant.nodes.map((node) => node.kind === "execution" ? `${node.kind}:${node.executionType}` : node.kind);
 assert.deepEqual(nodeKinds.slice(0, 4), [

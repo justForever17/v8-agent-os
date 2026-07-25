@@ -957,8 +957,10 @@ export function buildAssistantMessage(
     ...defaultAgentProfile,
     ...activeAgentProfile,
   };
+  const id = nextId("assistant", options?.createId);
   return {
-    id: nextId("assistant", options?.createId),
+    id,
+    renderKey: id,
     role: "assistant",
     content: "",
     runId,

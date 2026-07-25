@@ -1151,6 +1151,109 @@ def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -
     return metadata
 
 
+def _runtime_episode_progress_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Project only the already-sanitized worker timeline node.
+
+    Runtime episode progress also carries scheduler and recovery details. Those remain
+    on Runtime Surface; the session timeline only needs stable lineage plus the
+    bounded node produced by the worker progress adapter.
+    """
+    progress = _runtime_nested_record(payload, "progress")
+    timeline_node = _runtime_nested_record(progress, "timelineNode", "timeline_node")
+    embedded_topic = _read_string(timeline_node, ["topic"])
+    if not timeline_node or not embedded_topic.startswith("subagent."):
+        return {}
+
+    allowed_node_keys = {
+        "id",
+        "kind",
+        "executionType",
+        "execution_type",
+        "topic",
+        "content",
+        "role",
+        "toolName",
+        "tool_name",
+        "toolCallId",
+        "tool_call_id",
+        "args",
+        "result",
+        "agentVisibleResult",
+        "agent_visible_result",
+        "artifact",
+    }
+    compact_node = {
+        str(key): _sanitize_tool_payload_value(value)
+        for key, value in timeline_node.items()
+        if key in allowed_node_keys and value not in (None, "", [], {})
+    }
+    if not compact_node:
+        return {}
+
+    compact_progress: Dict[str, Any] = {"timelineNode": compact_node}
+    for source_key, target_key in [
+        ("stage", "stage"),
+        ("status", "status"),
+        ("agentId", "agentId"),
+        ("agentName", "agentName"),
+        ("delegationId", "delegationId"),
+        ("taskBriefId", "taskBriefId"),
+        ("parentDelegationId", "parentDelegationId"),
+        ("delegationDepth", "delegationDepth"),
+    ]:
+        value = progress.get(source_key)
+        if value not in (None, ""):
+            compact_progress[target_key] = value
+
+    metadata = _runtime_episode_metadata(payload, payload)
+    metadata["progress"] = compact_progress
+    timeline_node_id = _read_string(compact_node, ["id"])
+    episode_id = _read_string(metadata, ["episodeId"])
+    if timeline_node_id:
+        metadata["dedupeKey"] = f"subagent-timeline:{episode_id or 'episode'}:{timeline_node_id}"
+    return metadata
+
+
+def _subagent_delta_metadata(payload: Dict[str, Any], topic: str) -> Dict[str, Any]:
+    """Keep a bounded subagent narrative/reasoning delta with stable lineage."""
+    runtime_context = _runtime_nested_record(payload, "runtimeContext", "runtime_context")
+    content = _read_string(payload, ["snapshot", "content", "summary", "message"])
+    if not content:
+        return {}
+    content = content[:6000]
+    metadata: Dict[str, Any] = {
+        "runtimeId": "subagent_swarm",
+        "ownerRuntimeId": "subagent_swarm",
+        "ownerAgentKind": "subagent",
+        "content": content,
+    }
+    for source, keys in [
+        (payload, ["ownerAgentId", "owner_agent_id"]),
+        (payload, ["delegationId", "delegation_id"]),
+        (payload, ["invocationId", "invocation_id"]),
+        (payload, ["taskBriefId", "task_brief_id"]),
+        (runtime_context, ["subagent_id", "subagentId"]),
+        (runtime_context, ["delegation_id", "delegationId"]),
+    ]:
+        value = _read_string(source, keys)
+        if not value:
+            continue
+        if "subagent" in keys[0].lower() or "owneragent" in keys[0].lower():
+            metadata.setdefault("ownerAgentId", value)
+        elif "delegation" in keys[0].lower():
+            metadata.setdefault("delegationId", value)
+        elif "invocation" in keys[0].lower():
+            metadata.setdefault("invocationId", value)
+        elif "taskbrief" in keys[0].lower():
+            metadata.setdefault("taskBriefId", value)
+    segment_key = _read_string(payload, ["segmentKey", "segment_key", "streamRunKey", "stream_run_key"])
+    if segment_key:
+        metadata["dedupeKey"] = f"subagent-delta:{topic}:{segment_key}"
+    if topic == "subagent.reasoning.delta":
+        metadata["reasoningKind"] = _read_string(payload, ["reasoningKind", "reasoning_kind"]) or "summary"
+    return metadata
+
+
 def _runtime_episode_id(record: Dict[str, Any], event: Dict[str, Any]) -> str:
     return _read_string(
         record,
@@ -1246,10 +1349,36 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
     runtime_id = ""
 
     if topic == "runtime.episode.progress":
-        # Fine-grained worker progress remains available in the Runtime Surface. It is
-        # not authoritative user-facing narration and must not become a synthetic
-        # progress message in Web/Phone.
-        return None
+        metadata = _runtime_episode_progress_metadata(payload)
+        if not metadata:
+            # Scheduler chatter remains Runtime Surface only. A server-sanitized
+            # timeline node is the explicit opt-in for the subagent detail surface.
+            return None
+        progress = _runtime_nested_record(payload, "progress")
+        return _runtime_timeline_entry(
+            event,
+            runtime_id="subagent_swarm",
+            kind="progress",
+            summary=_truncate_runtime_summary(_read_string(progress, ["summary"]) or "协作过程已更新", 140),
+            status=_runtime_status_from_topic(topic, progress),
+            actor_label=_read_string(progress, ["agentName", "agent_name"]) or _runtime_actor_label("subagent_swarm"),
+            metadata=metadata,
+        )
+    if topic in {"subagent.text.delta", "subagent.reasoning.delta"}:
+        metadata = _subagent_delta_metadata(payload, topic)
+        if not metadata:
+            return None
+        owner_agent_id = _read_string(metadata, ["ownerAgentId"])
+        summary = "协作回复已更新" if topic == "subagent.text.delta" else "协作思考已更新"
+        return _runtime_timeline_entry(
+            event,
+            runtime_id="subagent_swarm",
+            kind="progress",
+            summary=summary,
+            status="active",
+            actor_label=owner_agent_id or _runtime_actor_label("subagent_swarm"),
+            metadata=metadata,
+        )
     if topic.startswith("capability.need."):
         record = _runtime_nested_record(payload, "need") or payload
         runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)

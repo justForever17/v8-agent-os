@@ -12,7 +12,9 @@ test("runtime status projection excludes message-level reasoning and tool noise"
     { executionType: "reasoning", kind: "progress" },
     { executionType: "tool_call", kind: "progress" },
     { topic: "runtime.lease.heartbeat", kind: "progress" },
+    { topic: "runtime.episode.progress", kind: "progress" },
     { topic: "run.checkpoint.saved", kind: "progress" },
+    { topic: "runtime.episode.handoff_resume_not_scheduled", kind: "diagnostic" },
   ]) {
     assert.equal(shouldProjectRuntimeSummarySignal(signal), false);
   }

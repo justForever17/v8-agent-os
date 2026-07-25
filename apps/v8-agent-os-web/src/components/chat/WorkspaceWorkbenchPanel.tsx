@@ -29,6 +29,8 @@ interface WorkspaceWorkbenchPanelProps {
     todos: TodoHudItem[];
     todoStale?: boolean;
     runtimeModel: RuntimeStageModel;
+    pendingConfirmation?: boolean;
+    onOpenPendingConfirmation?: () => void;
 }
 
 function text(value: unknown) {
@@ -92,7 +94,11 @@ function SubagentAvatar({ item }: { item: SubagentReturnProjection }) {
 function subagentStatusLabel(status: string, t: ReturnType<typeof useT>) {
     if (["ok", "completed", "success", "terminated"].includes(status)) return t("web.workbench.subagent.returned");
     if (["queued", "running", "starting", "streaming", "updated"].includes(status)) return t("web.workbench.subagent.running");
-    return t("web.workbench.subagent.needsAttention");
+    return t("web.workbench.subagent.failed");
+}
+
+function isFailedStatus(status: string) {
+    return ["failed", "error", "cancelled", "degraded", "blocked"].includes(String(status || "").toLowerCase());
 }
 
 function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentReturnProjection; onOpen: (item: SubagentReturnProjection) => void; nested?: boolean }) {
@@ -108,7 +114,7 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
                 <SubagentAvatar item={item} />
                 <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium text-foreground">{item.name}</span>
-                    <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || item.summary || t("web.workbench.subagent.defaultSummary")}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || (isFailedStatus(item.status) ? item.summary : null) || t("web.workbench.subagent.defaultSummary")}</span>
                 </span>
                 <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status, t)}</span>
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -133,6 +139,8 @@ export function WorkspaceWorkbenchPanel({
     todos,
     todoStale,
     runtimeModel,
+    pendingConfirmation = false,
+    onOpenPendingConfirmation,
 }: WorkspaceWorkbenchPanelProps) {
     const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
@@ -226,11 +234,25 @@ export function WorkspaceWorkbenchPanel({
     return (
         <div className="h-full min-h-0 overflow-auto bg-background">
             <div className="mx-auto w-full max-w-[760px]">
-            {currentRuntime ? (
-                <div className="flex min-h-10 items-center gap-2 border-b border-border/55 px-3 py-2 text-[11px]">
-                    <CircleDot className={`h-3 w-3 shrink-0 ${currentRuntime.status === "attention" ? "text-amber-500" : "text-emerald-500"}`} />
-                    <span className="font-medium text-foreground">{currentRuntime.status === "attention" ? t("web.workbench.runtime.awaiting") : t("web.workbench.runtime.running")}</span>
-                    <span className="min-w-0 flex-1 truncate text-muted-foreground">{currentRuntime.lastActivity || currentRuntime.stepTitle || currentRuntime.shortLabel || currentRuntime.label}</span>
+            {currentRuntime || pendingConfirmation ? (
+                <div className="border-b border-border/55">
+                <button
+                    type="button"
+                    disabled={!pendingConfirmation || !onOpenPendingConfirmation}
+                    onClick={pendingConfirmation ? onOpenPendingConfirmation : undefined}
+                    className="flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-[11px] disabled:cursor-default enabled:hover:bg-muted/35 enabled:focus-visible:ring-2 enabled:focus-visible:ring-inset enabled:focus-visible:ring-primary"
+                >
+                    <CircleDot className={`h-3 w-3 shrink-0 ${pendingConfirmation || currentRuntime?.status === "attention" ? "text-amber-500" : "text-emerald-500"}`} />
+                    <span className="font-medium text-foreground">{
+                        pendingConfirmation
+                            ? t("web.workbench.runtime.awaiting")
+                            : currentRuntime?.status === "attention"
+                                ? t("web.workbench.runtime.needsAttention")
+                            : t("web.workbench.runtime.running")
+                    }</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">{currentRuntime?.lastActivity || currentRuntime?.stepTitle || currentRuntime?.shortLabel || currentRuntime?.label || ""}</span>
+                    {pendingConfirmation ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                </button>
                 </div>
             ) : null}
 

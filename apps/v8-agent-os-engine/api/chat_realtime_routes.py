@@ -947,7 +947,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
 
 @router.post("/chat/submit")
-async def chat_submit(request: ChatRequest):
+async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = None):
     session_id = _resolve_request_session_id(request)
     _ensure_workspace_binding_for_user_task(request, session_id=session_id, transport="submit")
 
@@ -1016,7 +1016,20 @@ async def chat_submit(request: ChatRequest):
                 run_id=chat_run.active_run_id,
                 role="user",
             )
-    _schedule_chat_run(execution_request, transport="submit", run_id=run_id)
+    # Start the graph only after FastAPI has flushed the acceptance response.
+    # Graph preparation performs synchronous work in its worker thread; starting
+    # it here can contend for the GIL and delay the run-id response until the
+    # first model turn has already completed. Direct callers keep the legacy
+    # path so focused unit tests can invoke this function without an ASGI app.
+    if background_tasks is not None:
+        background_tasks.add_task(
+            _schedule_chat_run,
+            execution_request,
+            transport="submit",
+            run_id=run_id,
+        )
+    else:
+        _schedule_chat_run(execution_request, transport="submit", run_id=run_id)
     return {
         "accepted": True,
         "session_id": session_id,
@@ -1267,6 +1280,15 @@ async def chat_websocket(websocket: WebSocket):
                     await _send_json_safe(websocket,
                         _runtime_error_event("runtime.not_found", f"Run '{command.run_id}' does not exist", run_id=command.run_id)
                     )
+                    continue
+
+                if command_result.get("ignored"):
+                    await _send_json_safe(websocket, {
+                        "kind": "command_result",
+                        "topic": topic,
+                        "run_id": command.run_id,
+                        "payload": command_result,
+                    })
                     continue
 
                 if command_result.get("transition_event"):

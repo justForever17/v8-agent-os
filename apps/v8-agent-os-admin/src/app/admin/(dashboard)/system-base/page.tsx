@@ -244,6 +244,7 @@ function transportLabel(kind: string | undefined, t: (value: string) => string) 
     if (normalized === "wireguard") return "WireGuard";
     if (normalized === "tailscale") return "Tailscale";
     if (normalized === "headscale") return "Headscale";
+    if (normalized === "cloudflare_tunnel") return "Cloudflare Tunnel";
     if (normalized === "custom_vpn") return t("app.admin.dashboard.system.base.remoteLink.customVpn");
     return t("app.admin.dashboard.system.base.remoteLink.manualUrl");
 }
@@ -303,6 +304,8 @@ export default function SystemBasePage() {
     const [headscaleTtlMinutes, setHeadscaleTtlMinutes] = useState(60);
     const [headscaleMessage, setHeadscaleMessage] = useState("");
     const [headscaleData, setHeadscaleData] = useState<HeadscalePanelData>({});
+    const [cloudflareProbeState, setCloudflareProbeState] = useState<"idle" | "probing" | "success" | "error">("idle");
+    const [cloudflareProbeMessage, setCloudflareProbeMessage] = useState("");
 
     const loadData = async () => {
         const next = await fetchConfigDomain<SystemBaseData>("system-base");
@@ -376,6 +379,31 @@ export default function SystemBasePage() {
             );
         }
         return payload;
+    };
+
+    const verifyCloudflareTunnel = async () => {
+        const profile = (envelope?.data.remoteLink?.transportProfiles || []).find((item) => (
+            item.id === (envelope?.data.remoteLink?.activeProfileId || "")
+        ));
+        const adminBaseUrl = String(profile?.adminBaseUrl || "").trim();
+        setCloudflareProbeState("probing");
+        setCloudflareProbeMessage("");
+        try {
+            const response = await fetch("/api/client/link/verify-cloudflare", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ adminBaseUrl }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload?.ok) {
+                throw new Error(String(payload?.error || "cloudflare_tunnel_probe_failed"));
+            }
+            setCloudflareProbeState("success");
+            setCloudflareProbeMessage(t("app.admin.dashboard.system.base.remoteLink.cloudflareVerified"));
+        } catch (error) {
+            setCloudflareProbeState("error");
+            setCloudflareProbeMessage(error instanceof Error ? error.message : String(error));
+        }
     };
 
     const refreshHeadscale = async () => {
@@ -496,6 +524,10 @@ export default function SystemBasePage() {
     const headscaleCreatedKey = String(headscaleData.createdPreauthKey?.["key"] || "");
     const headscaleStatusError = String(headscaleData.status?.["error"] || "");
     const activeRemoteLinkProfile = remoteLinkProfiles.find((profile) => profile.id === remoteLink.activeProfileId) || remoteLinkProfiles[0] || {};
+    const activeRemoteLinkKind = String(activeRemoteLinkProfile.kind || "").replace(/-/g, "_");
+    const activeRemoteLinkUrlFields = activeRemoteLinkKind === "cloudflare_tunnel"
+        ? (["adminBaseUrl"] as const)
+        : (["adminBaseUrl", "engineBaseUrl", "peerBaseUrl"] as const);
     const desktopLivePreset = deriveDesktopLivePreset(desktopLive);
     const s3 = envelope.data.s3 || {};
     const runtimeInfo = envelope.data.runtimeInfo || {};
@@ -640,12 +672,14 @@ export default function SystemBasePage() {
                                 <Label>{t("app.admin.dashboard.system.base.remoteLink.activeProfile")}</Label>
                                 <Select
                                     value={remoteLink.activeProfileId || activeRemoteLinkProfile.id || "manual-local"}
-                                    onValueChange={(value) =>
+                                    onValueChange={(value) => {
+                                        setCloudflareProbeState("idle");
+                                        setCloudflareProbeMessage("");
                                         updateData((current) => ({
                                             ...current,
                                             remoteLink: { ...(current.remoteLink || {}), activeProfileId: value },
-                                        }))
-                                    }
+                                        }));
+                                    }}
                                 >
                                     <SelectTrigger>
                                         <SelectValue placeholder={t("app.admin.dashboard.system.base.remoteLink.chooseProfile")} />
@@ -667,8 +701,8 @@ export default function SystemBasePage() {
                                 </div>
                             </div>
                         </div>
-                        <div className="grid gap-4 md:grid-cols-3">
-                            {(["adminBaseUrl", "engineBaseUrl", "peerBaseUrl"] as const).map((field) => (
+                        <div className={`grid gap-4 ${activeRemoteLinkKind === "cloudflare_tunnel" ? "md:grid-cols-1" : "md:grid-cols-3"}`}>
+                            {activeRemoteLinkUrlFields.map((field) => (
                                 <div key={field} className="space-y-2">
                                     <Label>
                                         {field === "adminBaseUrl"
@@ -679,7 +713,11 @@ export default function SystemBasePage() {
                                     </Label>
                                     <Input
                                         value={String(activeRemoteLinkProfile[field] || "")}
-                                        onChange={(event) =>
+                                        onChange={(event) => {
+                                            if (activeRemoteLinkKind === "cloudflare_tunnel") {
+                                                setCloudflareProbeState("idle");
+                                                setCloudflareProbeMessage("");
+                                            }
                                             updateData((current) => {
                                                 const currentRemote = current.remoteLink || {};
                                                 const activeId = currentRemote.activeProfileId || activeRemoteLinkProfile.id || "manual-local";
@@ -690,13 +728,45 @@ export default function SystemBasePage() {
                                                     ...current,
                                                     remoteLink: { ...currentRemote, transportProfiles: nextProfiles },
                                                 };
-                                            })
-                                        }
-                                        placeholder={field === "adminBaseUrl" ? "http://192.168.x.x:9528" : "http://192.168.x.x:9530"}
+                                            });
+                                        }}
+                                        placeholder={activeRemoteLinkKind === "cloudflare_tunnel"
+                                            ? "https://v8.example.com"
+                                            : field === "adminBaseUrl" ? "http://192.168.x.x:9528" : "http://192.168.x.x:9530"}
                                     />
                                 </div>
                             ))}
                         </div>
+                        {activeRemoteLinkKind === "cloudflare_tunnel" ? (
+                            <div className="rounded-2xl border border-border bg-card p-4">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <div className="font-semibold text-foreground">
+                                            {t("app.admin.dashboard.system.base.remoteLink.cloudflareDomain")}
+                                        </div>
+                                        <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                            {t("app.admin.dashboard.system.base.remoteLink.cloudflareHelp")}
+                                        </div>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        disabled={cloudflareProbeState === "probing"}
+                                        onClick={() => void verifyCloudflareTunnel()}
+                                    >
+                                        {cloudflareProbeState === "probing"
+                                            ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            : <Shield className="mr-2 h-4 w-4" />}
+                                        {t("app.admin.dashboard.system.base.remoteLink.cloudflareVerify")}
+                                    </Button>
+                                </div>
+                                {cloudflareProbeMessage ? (
+                                    <div className={`mt-3 text-xs ${cloudflareProbeState === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}`}>
+                                        {cloudflareProbeMessage}
+                                    </div>
+                                ) : null}
+                            </div>
+                        ) : null}
                         <div className="rounded-2xl border border-border bg-card p-4 text-xs leading-5 text-muted-foreground">
                             <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.diagnostics")}</div>
                             <div>

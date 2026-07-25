@@ -39,9 +39,10 @@ import type {
     MusicTrack,
     UploadedWorkspaceFile,
     DevicePairingManifest,
+    DeviceConnectionEndpoint,
     WorkbenchFilePage,
 } from "@/src/types/admin";
-import { orderAdminBaseUrlCandidates } from "@/src/lib/admin-connection-profiles";
+import { orderAdminBaseUrlCandidates, sanitizeConnectionEndpoints } from "@/src/lib/admin-connection-profiles";
 import type { SessionSourceRef } from "@v8/session-realtime";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
@@ -106,6 +107,8 @@ type ParsedDevicePairing = {
     adminUrls: string[];
     lanUrls: string[];
     tailscaleUrls: string[];
+    cloudflareUrls: string[];
+    endpoints: DeviceConnectionEndpoint[];
     code: string;
     instanceId: string;
     serverId: string;
@@ -126,6 +129,8 @@ function readManifestFromUnknown(value: unknown): DevicePairingManifest | null {
         adminUrls: Array.isArray(record.adminUrls) ? record.adminUrls.map((item) => String(item || "")) : [],
         lanUrls: Array.isArray(record.lanUrls) ? record.lanUrls.map((item) => String(item || "")) : [],
         tailscaleUrls: Array.isArray(record.tailscaleUrls) ? record.tailscaleUrls.map((item) => String(item || "")) : [],
+        cloudflareUrls: Array.isArray(record.cloudflareUrls) ? record.cloudflareUrls.map((item) => String(item || "")) : [],
+        endpoints: sanitizeConnectionEndpoints(record.endpoints),
         pairingCode: typeof record.pairingCode === "string" ? record.pairingCode : "",
         code: typeof record.code === "string" ? record.code : "",
         surface: typeof record.surface === "string" ? record.surface : "",
@@ -160,6 +165,9 @@ export function parseDevicePairingUri(pairingUri: string): ParsedDevicePairing {
             adminUrls: rawManifest.adminUrls || [],
             lanUrls: rawManifest.lanUrls || [],
             tailscaleUrls: rawManifest.tailscaleUrls || [],
+            cloudflareUrls: rawManifest.cloudflareUrls || [],
+            endpoints: rawManifest.endpoints || [],
+            preferPrimary: false,
         });
         const code = String(rawManifest.pairingCode || rawManifest.code || "").trim();
         if (adminUrls.length === 0 || !code) {
@@ -170,6 +178,8 @@ export function parseDevicePairingUri(pairingUri: string): ParsedDevicePairing {
             adminUrls,
             lanUrls: rawManifest.lanUrls || [],
             tailscaleUrls: rawManifest.tailscaleUrls || [],
+            cloudflareUrls: rawManifest.cloudflareUrls || [],
+            endpoints: rawManifest.endpoints || [],
             code,
             instanceId: String(rawManifest.instanceId || "").trim(),
             serverId: String(rawManifest.serverId || rawManifest.instanceId || "").trim(),
@@ -194,6 +204,9 @@ export function parseDevicePairingUri(pairingUri: string): ParsedDevicePairing {
         adminUrls: urlManifest?.adminUrls || [],
         lanUrls: urlManifest?.lanUrls || [],
         tailscaleUrls: urlManifest?.tailscaleUrls || [],
+        cloudflareUrls: urlManifest?.cloudflareUrls || [],
+        endpoints: urlManifest?.endpoints || [],
+        preferPrimary: false,
     });
     if (adminUrls.length === 0 || !code) {
         throw new Error(translateCurrent("app.login.invalid_pairing_link"));
@@ -203,6 +216,8 @@ export function parseDevicePairingUri(pairingUri: string): ParsedDevicePairing {
         adminUrls,
         lanUrls: urlManifest?.lanUrls || [],
         tailscaleUrls: urlManifest?.tailscaleUrls || [],
+        cloudflareUrls: urlManifest?.cloudflareUrls || [],
+        endpoints: urlManifest?.endpoints || [],
         code,
         instanceId,
         serverId,
@@ -216,6 +231,21 @@ export async function pairDevice(input: DevicePairingInput): Promise<AuthSession
     let lastError: unknown = null;
     for (const adminBaseUrl of pairing.adminUrls) {
         try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 5_000);
+            const instanceResponse = await fetch(buildAdminApiUrl(adminBaseUrl, "/api/client/instance"), {
+                method: "GET",
+                signal: controller.signal,
+            });
+            const instancePayload = await readJsonOrThrow<{ instanceId?: string }>(
+                instanceResponse,
+                translateCurrent("app.login.pairing_failed"),
+            );
+            const candidateInstanceId = String(instancePayload.instanceId || "").trim();
+            if (pairing.instanceId && candidateInstanceId !== pairing.instanceId) {
+                clearTimeout(timer);
+                continue;
+            }
             const response = await fetch(buildAdminApiUrl(adminBaseUrl, "/api/client/pairing/consume"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -224,15 +254,29 @@ export async function pairDevice(input: DevicePairingInput): Promise<AuthSession
                     instanceId: pairing.instanceId || undefined,
                     deviceName: input.deviceName || "v8-phone",
                 }),
-            });
+                signal: controller.signal,
+            }).finally(() => clearTimeout(timer));
             const payload = await readJsonOrThrow<AuthSessionPayload>(response, translateCurrent("app.login.pairing_failed"));
+            const returnedInstanceId = String(payload.instanceId || payload.serverId || "").trim();
+            if (pairing.instanceId && returnedInstanceId && returnedInstanceId !== pairing.instanceId) {
+                throw new Error(translateCurrent("app.login.invalid_pairing_link"));
+            }
             return {
                 ...payload,
                 adminBaseUrl: payload.adminBaseUrl || adminBaseUrl,
                 serverId: pairing.serverId || payload.serverId || payload.instanceId,
                 instanceId: payload.instanceId || pairing.instanceId,
                 adminUrls: pairing.adminUrls,
-                pairingManifest: pairing.manifest,
+                pairingManifest: pairing.manifest || {
+                    version: 2,
+                    instanceId: pairing.instanceId || candidateInstanceId,
+                    serverId: pairing.serverId || candidateInstanceId,
+                    adminUrls: pairing.adminUrls,
+                    lanUrls: pairing.lanUrls,
+                    tailscaleUrls: pairing.tailscaleUrls,
+                    cloudflareUrls: pairing.cloudflareUrls,
+                    endpoints: pairing.endpoints,
+                },
             };
         } catch (error) {
             lastError = error;

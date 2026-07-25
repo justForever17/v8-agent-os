@@ -264,7 +264,9 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /windowsHide:\s*true/);
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
-  assert.match(runner, /const runtimeHostname = app === "admin" \? "0\.0\.0\.0" : "127\.0\.0\.1"/);
+  assert.match(runner, /V8_ADMIN_HOSTNAME/);
+  assert.match(runner, /\|\| "::"/);
+  assert.match(runner, /: "127\.0\.0\.1"/);
   assert.match(runner, /HOSTNAME:\s*runtimeHostname/);
   assert.match(runner, /PORT:\s*port/);
   assert.match(runner, /buildHome/);

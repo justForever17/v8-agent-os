@@ -8,7 +8,7 @@ function collectAdminUrls(linkManifest: ReturnType<typeof buildClientLinkManifes
     const urls = [
         fallbackBaseUrl,
         linkManifest.admin?.baseUrl || "",
-        ...(linkManifest.profiles || []).map((profile) => profile.adminBaseUrl || ""),
+        ...(linkManifest.endpoints || []).map((endpoint) => endpoint.baseUrl || ""),
     ];
     return urls
         .map((url) => String(url || "").trim().replace(/\/+$/, "").replace(/\/api$/, ""))
@@ -39,10 +39,20 @@ export async function POST(req: NextRequest) {
         const linkManifest = buildClientLinkManifest(adminBaseUrl);
         const pairingManifest = {
             kind: "v8_device_pairing_manifest",
-            version: 1,
+            version: 2,
             serverId: linkManifest.serverId || linkManifest.instanceId,
             instanceId: ticket.instanceId,
             adminUrls: collectAdminUrls(linkManifest, ticket.adminBaseUrl),
+            lanUrls: (linkManifest.endpoints || [])
+                .filter((endpoint) => endpoint.kind === "lan" || endpoint.kind === "lan_ipv6")
+                .map((endpoint) => endpoint.baseUrl),
+            tailscaleUrls: (linkManifest.endpoints || [])
+                .filter((endpoint) => endpoint.kind === "tailscale" || endpoint.kind === "headscale")
+                .map((endpoint) => endpoint.baseUrl),
+            cloudflareUrls: (linkManifest.endpoints || [])
+                .filter((endpoint) => endpoint.kind === "cloudflare_tunnel")
+                .map((endpoint) => endpoint.baseUrl),
+            endpoints: linkManifest.endpoints || [],
             pairingCode: ticket.pairingCode,
             surface: ticket.surface,
         };

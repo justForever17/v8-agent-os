@@ -44,6 +44,15 @@ export type DevicePairingInput = {
     deviceName?: string;
 };
 
+export type DeviceConnectionEndpoint = {
+    id?: string;
+    kind?: "lan" | "lan_ipv6" | "wireguard" | "tailscale" | "headscale" | "cloudflare_tunnel" | "custom_vpn" | "manual_url";
+    baseUrl?: string;
+    scope?: "local" | "remote";
+    priority?: number;
+    enabled?: boolean;
+};
+
 export type DevicePairingManifest = {
     kind?: string;
     version?: string | number;
@@ -52,6 +61,8 @@ export type DevicePairingManifest = {
     adminUrls?: string[];
     lanUrls?: string[];
     tailscaleUrls?: string[];
+    cloudflareUrls?: string[];
+    endpoints?: DeviceConnectionEndpoint[];
     pairingCode?: string;
     code?: string;
     surface?: string;
@@ -91,6 +102,7 @@ export type V8LinkManifest = {
     clientGateway?: string;
     transportKind?: string;
     activeProfileId?: string;
+    endpoints?: DeviceConnectionEndpoint[];
     admin?: {
         baseUrl?: string;
         apiBaseUrl?: string;

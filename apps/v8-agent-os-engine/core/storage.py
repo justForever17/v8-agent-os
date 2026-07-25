@@ -1204,6 +1204,7 @@ class StorageManager:
                     {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
                     {"id": "tailscale", "kind": "tailscale", "label": "Tailscale", "enabled": True},
                     {"id": "headscale", "kind": "headscale", "label": "Headscale", "enabled": True},
+                    {"id": "cloudflare-tunnel", "kind": "cloudflare_tunnel", "label": "Cloudflare Tunnel", "enabled": True},
                     {"id": "custom-vpn", "kind": "custom_vpn", "label": "Custom VPN", "enabled": True},
                 ],
                 "diagnostics": {"readOnly": True},

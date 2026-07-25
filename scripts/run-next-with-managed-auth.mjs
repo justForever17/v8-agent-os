@@ -18,7 +18,13 @@ if (!['admin', 'web'].includes(app) || !['dev', 'build', 'start'].includes(mode)
 }
 // Phone is the only remote client and reaches Engine exclusively through the
 // authenticated Admin BFF. Web remains a local-only desktop surface.
-const runtimeHostname = app === "admin" ? "0.0.0.0" : "127.0.0.1";
+// Binding Admin to the IPv6 unspecified address keeps the Phone gateway dual-stack
+// on Node's default socket policy: IPv6 clients connect directly while IPv4 clients
+// continue through IPv4-mapped addresses. Operators on IPv6-disabled hosts can
+// explicitly retain the legacy bind with V8_ADMIN_HOSTNAME=0.0.0.0.
+const runtimeHostname = app === "admin"
+  ? (String(process.env.V8_ADMIN_HOSTNAME || "").trim() || "::")
+  : "127.0.0.1";
 
 const appDir = path.join(repoRoot, "apps", `v8-agent-os-${app}`);
 const buildHome = path.join(repoRoot, ".next-v8os-home");

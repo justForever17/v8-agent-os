@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-TRANSPORT_KINDS = {"manual_url", "lan", "wireguard", "tailscale", "headscale", "custom_vpn"}
+TRANSPORT_KINDS = {"manual_url", "lan", "wireguard", "tailscale", "headscale", "cloudflare_tunnel", "custom_vpn"}
 
 
 def normalize_transport_kind(value: Any) -> str:
@@ -30,6 +30,23 @@ def with_api_suffix(value: Any, suffix: str) -> str:
     if not base:
         return ""
     return f"{base}/{suffix.strip('/')}"
+
+
+def is_stable_cloudflare_origin(value: Any) -> bool:
+    normalized = strip_api_suffix(value)
+    if not normalized:
+        return False
+    try:
+        parsed = urlparse(normalized)
+    except ValueError:
+        return False
+    hostname = str(parsed.hostname or "").strip().lower()
+    return bool(
+        parsed.scheme == "https"
+        and hostname
+        and hostname != "trycloudflare.com"
+        and not hostname.endswith(".trycloudflare.com")
+    )
 
 
 def derive_ws_url(base_url: str) -> str:
@@ -63,6 +80,7 @@ def default_remote_link_config(*, admin_base_url: str = "", engine_base_url: str
             {"id": "wireguard", "kind": "wireguard", "label": "WireGuard", "enabled": True},
             {"id": "tailscale", "kind": "tailscale", "label": "Tailscale", "enabled": True},
             {"id": "headscale", "kind": "headscale", "label": "Headscale", "enabled": True},
+            {"id": "cloudflare-tunnel", "kind": "cloudflare_tunnel", "label": "Cloudflare Tunnel", "enabled": True},
             {"id": "custom-vpn", "kind": "custom_vpn", "label": "Custom VPN", "enabled": True},
         ],
         "diagnostics": {"readOnly": True},
@@ -161,6 +179,17 @@ def _is_private_ip(value: str) -> bool:
         return False
 
 
+def _is_usable_client_ip(value: str) -> bool:
+    try:
+        import ipaddress
+
+        normalized = str(value or "").split("%", 1)[0]
+        ip = ipaddress.ip_address(normalized)
+        return not bool(ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local)
+    except Exception:
+        return False
+
+
 def _candidate_ips() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -176,7 +205,7 @@ def _candidate_ips() -> list[dict[str, Any]]:
             continue
         for family, _, _, _, sockaddr in infos:
             ip = str(sockaddr[0])
-            if ip in seen or _host_is_loopback(ip):
+            if ip in seen or _host_is_loopback(ip) or not _is_usable_client_ip(ip):
                 continue
             seen.add(ip)
             items.append(
@@ -472,6 +501,65 @@ def _active_profile(remote_link: dict[str, Any]) -> dict[str, Any]:
     return profiles[0] if profiles else {}
 
 
+def _build_connection_endpoints(
+    *,
+    admin_base_url: str,
+    remote_link: dict[str, Any],
+    candidate_ips: list[dict[str, Any]],
+    tailscale_recommended: dict[str, Any],
+) -> list[dict[str, Any]]:
+    endpoints: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def append(endpoint: dict[str, Any]) -> None:
+        base_url = strip_api_suffix(endpoint.get("baseUrl"))
+        if not base_url or base_url in seen:
+            return
+        seen.add(base_url)
+        endpoints.append({**endpoint, "baseUrl": base_url, "enabled": bool(endpoint.get("enabled", True))})
+
+    for item in candidate_ips:
+        address = str(item.get("address") or "").strip()
+        if not address:
+            continue
+        family = str(item.get("family") or "").lower()
+        kind = "lan_ipv6" if family == "ipv6" or ":" in address else "lan"
+        append(
+            {
+                "id": f"{kind}:{address}",
+                "kind": kind,
+                "scope": "local",
+                "priority": 11 if kind == "lan_ipv6" else 10,
+                "baseUrl": _url_for_host(admin_base_url, address, 9528),
+            }
+        )
+
+    for index, raw_profile in enumerate(list(remote_link.get("transportProfiles") or [])):
+        if not isinstance(raw_profile, dict) or raw_profile.get("enabled") is False:
+            continue
+        profile = dict(raw_profile)
+        kind = normalize_transport_kind(profile.get("kind"))
+        configured_url = strip_api_suffix(profile.get("adminBaseUrl"))
+        if kind == "tailscale" and not configured_url:
+            configured_url = strip_api_suffix(tailscale_recommended.get("adminBaseUrl"))
+        if not configured_url:
+            continue
+        if kind == "cloudflare_tunnel" and not is_stable_cloudflare_origin(configured_url):
+            continue
+        priority = 20 if kind == "wireguard" else 30 if kind in {"tailscale", "headscale"} else 40 if kind == "cloudflare_tunnel" else 50 if kind == "custom_vpn" else 60
+        append(
+            {
+                "id": str(profile.get("id") or f"{kind}:{index}"),
+                "kind": kind,
+                "scope": "local" if kind == "lan" else "remote",
+                "priority": priority,
+                "baseUrl": configured_url,
+            }
+        )
+
+    return sorted(endpoints, key=lambda item: int(item.get("priority") or 100))
+
+
 def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str, Any]:
     from core.storage import storage
 
@@ -499,10 +587,18 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
     warnings = list(diagnostics.get("warnings") or [])
     if not remote_link.get("enabled", True):
         warnings.append("remote_link_disabled")
+    if transport_kind == "cloudflare_tunnel" and not is_stable_cloudflare_origin(active.get("adminBaseUrl")):
+        warnings.append("cloudflare_stable_https_origin_required")
+    endpoints = _build_connection_endpoints(
+        admin_base_url=admin_base,
+        remote_link=remote_link,
+        candidate_ips=list(diagnostics.get("candidateIps") or []),
+        tailscale_recommended=tailscale_recommended,
+    )
     return {
         "ok": True,
         "kind": "v8_link_manifest",
-        "version": "1",
+        "version": "2",
         "transportKind": transport_kind,
         "activeProfileId": str(active.get("id") or remote_link.get("activeProfileId") or ""),
         "admin": {
@@ -536,6 +632,7 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
             for item in remote_link.get("transportProfiles", [])
             if isinstance(item, dict)
         ],
+        "endpoints": endpoints,
         "capabilities": {
             "adminProxy": True,
             "phoneUpload": True,

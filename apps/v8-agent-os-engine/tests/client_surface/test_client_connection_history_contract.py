@@ -18,7 +18,10 @@ def test_phone_pairing_uses_manifest_and_ordered_server_profiles() -> None:
 
     assert "v8_device_pairing_manifest" in admin_ticket_route
     assert "adminUrls" in admin_ticket_route
+    assert "endpoints" in admin_ticket_route
+    assert "cloudflareUrls" in admin_ticket_route
     assert "manifest: JSON.stringify(pairingManifest)" in admin_ticket_route
+    assert "...(linkManifest.profiles || [])" not in admin_ticket_route
 
     assert "parseManifestText" in phone_api
     assert "pairing.adminUrls" in phone_api
@@ -26,7 +29,31 @@ def test_phone_pairing_uses_manifest_and_ordered_server_profiles() -> None:
 
     assert "orderAdminBaseUrlCandidates" in profiles
     assert "isTailscaleHost" in profiles
-    assert "return [...tailscale, ...lan, ...manual]" in profiles
+    assert "lan_ipv6" in profiles
+    assert "cloudflare_tunnel" in profiles
+    assert "endpointRank" in profiles
+
+
+def test_cloudflare_phone_remote_link_is_verified_and_separate_from_network_supervisor() -> None:
+    verify_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/link/verify-cloudflare/route.ts")
+    pairing_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/pairing/tickets/route.ts")
+    runtime_config = _read_repo_file("apps/v8-agent-os-admin/src/lib/server/runtime-config.ts")
+    phone_api = _read_repo_file("apps/v8-agent-os-phone/src/lib/phone-api.ts")
+    phone_profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
+    phone_session = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
+
+    assert 'resolveClientUser(req)' in verify_route
+    assert 'owner.role !== "ADMIN"' in verify_route
+    assert 'parsed.protocol !== "https:"' in verify_route
+    assert 'hostname.endsWith(".trycloudflare.com")' in verify_route
+    assert '`${origin}/api/client/instance`' in verify_route
+    assert '"phone_remote_link_verification"' in verify_route
+    for source in (verify_route, pairing_route, phone_api, phone_profiles, phone_session):
+        assert "network-supervisor" not in source
+        assert "network_supervisor" not in source
+        assert "peerToken" not in source
+        assert "wakeSupervisor" not in source
+    assert '"cloudflare_stable_https_origin_required"' in runtime_config
 
 
 def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
@@ -39,6 +66,23 @@ def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
     refresh_failure_block_start = source.index("const refreshed = await refreshSession();")
     refresh_failure_block = source[refresh_failure_block_start: refresh_failure_block_start + 250]
     assert "signOut()" not in refresh_failure_block
+
+
+def test_phone_connection_candidates_are_typed_and_return_to_verified_lan() -> None:
+    profiles = _read_repo_file("apps/v8-agent-os-phone/src/lib/admin-connection-profiles.ts")
+    session = _read_repo_file("apps/v8-agent-os-phone/src/providers/app-session.tsx")
+    pairing_route = _read_repo_file("apps/v8-agent-os-phone/app/pair.tsx")
+
+    assert 'kind === "lan_ipv6"' in profiles
+    assert 'kind === "cloudflare_tunnel"' in profiles
+    assert "sanitizeConnectionEndpoints" in profiles
+    assert 'buildAdminApiUrl(candidate, "/api/client/instance")' in session
+    assert 'buildAdminApiUrl(candidate, "/api/client/connection")' in session
+    assert "activeInstanceIdRef" in session
+    assert "localConnectionCandidatesRef" in session
+    assert "AppState.addEventListener" in session
+    assert "setInterval" in session
+    assert 'query.set("manifest", params.manifest)' in pairing_route
 
 
 def test_local_trusted_client_boundary_is_documented() -> None:

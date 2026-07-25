@@ -1,6 +1,6 @@
 import { normalizeAdminBaseUrl } from "@/src/lib/admin-client";
 import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
-import type { ConnectionSummary } from "@/src/types/admin";
+import type { ConnectionSummary, DeviceConnectionEndpoint } from "@/src/types/admin";
 
 export type AdminConnectionProfile = {
     id: string;
@@ -13,6 +13,8 @@ export type AdminConnectionProfile = {
     adminUrls?: string[];
     lanUrls?: string[];
     tailscaleUrls?: string[];
+    cloudflareUrls?: string[];
+    endpoints?: DeviceConnectionEndpoint[];
     adminApiBaseUrl?: string;
     bridgeMode?: string;
     transportKind?: string;
@@ -54,22 +56,84 @@ function isTailscaleHost(hostname: string) {
     return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname) || /\.ts\.net$/i.test(hostname);
 }
 
+function normalizeHostname(hostname: string) {
+    return String(hostname || "").trim().replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+}
+
 function isLanHost(hostname: string) {
-    return /^10\./.test(hostname)
-        || /^192\.168\./.test(hostname)
-        || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+    const normalized = normalizeHostname(hostname);
+    return /^10\./.test(normalized)
+        || /^192\.168\./.test(normalized)
+        || /^172\.(1[6-9]|2\d|3[01])\./.test(normalized);
+}
+
+function isIpv6Host(hostname: string) {
+    return normalizeHostname(hostname).includes(":");
+}
+
+function normalizeEndpointKind(value: unknown): DeviceConnectionEndpoint["kind"] {
+    const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+    if (["lan", "lan_ipv6", "wireguard", "tailscale", "headscale", "cloudflare_tunnel", "custom_vpn", "manual_url"].includes(normalized)) {
+        return normalized as DeviceConnectionEndpoint["kind"];
+    }
+    return "manual_url";
 }
 
 function classifyAdminUrl(value: string) {
     try {
         const url = new URL(value);
-        const hostname = url.hostname || "";
+        const hostname = normalizeHostname(url.hostname || "");
         if (isTailscaleHost(hostname)) return "tailscale";
         if (isLanHost(hostname)) return "lan";
+        if (isIpv6Host(hostname) && hostname !== "::1") return "lan_ipv6";
     } catch {
         // Fall through to manual.
     }
-    return "manual";
+    return "manual_url";
+}
+
+function sanitizeConnectionEndpoint(value: unknown, fallbackKind?: DeviceConnectionEndpoint["kind"]): DeviceConnectionEndpoint | null {
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    const baseUrl = normalizeAdminBaseUrl(String(record.baseUrl || record.adminBaseUrl || ""));
+    if (!baseUrl) return null;
+    const inferredKind = classifyAdminUrl(baseUrl) as DeviceConnectionEndpoint["kind"];
+    const kind = normalizeEndpointKind(record.kind || fallbackKind || inferredKind);
+    const priorityValue = Number(record.priority);
+    return {
+        id: String(record.id || `${kind}:${baseUrl}`),
+        kind,
+        baseUrl,
+        scope: record.scope === "local" || record.scope === "remote"
+            ? record.scope
+            : kind === "lan" || kind === "lan_ipv6" ? "local" : "remote",
+        priority: Number.isFinite(priorityValue) ? priorityValue : undefined,
+        enabled: record.enabled !== false,
+    };
+}
+
+function endpointRank(endpoint: DeviceConnectionEndpoint) {
+    if (typeof endpoint.priority === "number" && Number.isFinite(endpoint.priority)) return endpoint.priority;
+    if (endpoint.kind === "lan" || endpoint.kind === "lan_ipv6") return 10;
+    if (endpoint.kind === "wireguard") return 20;
+    if (endpoint.kind === "tailscale" || endpoint.kind === "headscale") return 30;
+    if (endpoint.kind === "cloudflare_tunnel") return 40;
+    if (endpoint.kind === "custom_vpn") return 50;
+    return 60;
+}
+
+export function sanitizeConnectionEndpoints(value: unknown) {
+    if (!Array.isArray(value)) return [] as DeviceConnectionEndpoint[];
+    const seen = new Set<string>();
+    return value
+        .map((item) => sanitizeConnectionEndpoint(item))
+        .filter((item): item is DeviceConnectionEndpoint => Boolean(item && item.enabled !== false && item.baseUrl))
+        .filter((item) => {
+            const key = normalizeAdminBaseUrl(item.baseUrl || "");
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
 }
 
 export function orderAdminBaseUrlCandidates(input: {
@@ -77,30 +141,33 @@ export function orderAdminBaseUrlCandidates(input: {
     adminUrls?: string[] | null;
     lanUrls?: string[] | null;
     tailscaleUrls?: string[] | null;
+    cloudflareUrls?: string[] | null;
+    endpoints?: DeviceConnectionEndpoint[] | null;
+    preferPrimary?: boolean;
 }) {
-    const all = [
-        ...(input.tailscaleUrls || []),
-        ...(input.lanUrls || []),
-        ...(input.adminUrls || []),
-        input.primary || "",
-    ]
-        .map((item) => normalizeAdminBaseUrl(item))
-        .filter(Boolean);
-    const tailscale: string[] = [];
-    const lan: string[] = [];
-    const manual: string[] = [];
-    for (const url of all) {
-        const kind = classifyAdminUrl(url);
-        if (kind === "tailscale") {
-            tailscale.push(url);
-        } else if (kind === "lan") {
-            lan.push(url);
-        } else {
-            manual.push(url);
-        }
+    const endpointInputs: DeviceConnectionEndpoint[] = [
+        ...(input.endpoints || []),
+        ...(input.lanUrls || []).map((baseUrl) => ({ baseUrl, kind: classifyAdminUrl(baseUrl) === "lan_ipv6" ? "lan_ipv6" as const : "lan" as const, scope: "local" as const })),
+        ...(input.tailscaleUrls || []).map((baseUrl) => ({ baseUrl, kind: "tailscale" as const, scope: "remote" as const })),
+        ...(input.cloudflareUrls || []).map((baseUrl) => ({ baseUrl, kind: "cloudflare_tunnel" as const, scope: "remote" as const })),
+        ...(input.adminUrls || []).map((baseUrl) => ({ baseUrl, kind: classifyAdminUrl(baseUrl) as DeviceConnectionEndpoint["kind"] })),
+    ];
+    const primary = normalizeAdminBaseUrl(input.primary || "");
+    if (primary) {
+        const matchingEndpoint = endpointInputs.find((item) => normalizeAdminBaseUrl(item.baseUrl || "") === primary);
+        const primaryEndpoint: DeviceConnectionEndpoint = {
+            id: `primary:${primary}`,
+            baseUrl: primary,
+            kind: matchingEndpoint?.kind || classifyAdminUrl(primary) as DeviceConnectionEndpoint["kind"],
+            scope: matchingEndpoint?.scope,
+            priority: input.preferPrimary === false ? undefined : -100,
+        };
+        if (input.preferPrimary === false) endpointInputs.push(primaryEndpoint);
+        else endpointInputs.unshift(primaryEndpoint);
     }
-    return [...tailscale, ...lan, ...manual]
-        .filter((item, index, list) => list.indexOf(item) === index);
+    return sanitizeConnectionEndpoints(endpointInputs)
+        .sort((left, right) => endpointRank(left) - endpointRank(right))
+        .map((item) => normalizeAdminBaseUrl(item.baseUrl || ""));
 }
 
 function sanitizeProfile(value: unknown): AdminConnectionProfile | null {
@@ -123,6 +190,8 @@ function sanitizeProfile(value: unknown): AdminConnectionProfile | null {
         adminUrls: sanitizeStringArray(record.adminUrls),
         lanUrls: sanitizeStringArray(record.lanUrls),
         tailscaleUrls: sanitizeStringArray(record.tailscaleUrls),
+        cloudflareUrls: sanitizeStringArray(record.cloudflareUrls),
+        endpoints: sanitizeConnectionEndpoints(record.endpoints),
         adminApiBaseUrl: typeof record.adminApiBaseUrl === "string" ? record.adminApiBaseUrl : "",
         bridgeMode: typeof record.bridgeMode === "string" ? record.bridgeMode : "",
         transportKind: typeof record.transportKind === "string" ? record.transportKind : "",
@@ -177,6 +246,8 @@ export function upsertAdminConnectionProfile(
         adminUrls?: string[] | null;
         lanUrls?: string[] | null;
         tailscaleUrls?: string[] | null;
+        cloudflareUrls?: string[] | null;
+        endpoints?: DeviceConnectionEndpoint[] | null;
         accessToken?: string | null;
         refreshToken?: string | null;
     },
@@ -213,9 +284,20 @@ export function upsertAdminConnectionProfile(
                 ...((input.summary?.linkManifest?.profiles || []).map((item) => item.adminBaseUrl || "")),
                 input.summary?.linkManifest?.admin?.baseUrl || "",
             ],
+            endpoints: [
+                ...(input.endpoints || []),
+                ...(existing?.endpoints || []),
+                ...((input.summary?.linkManifest?.endpoints || [])),
+            ],
         }),
         lanUrls: sanitizeStringArray([...(input.lanUrls || []), ...(existing?.lanUrls || [])]),
         tailscaleUrls: sanitizeStringArray([...(input.tailscaleUrls || []), ...(existing?.tailscaleUrls || [])]),
+        cloudflareUrls: sanitizeStringArray([...(input.cloudflareUrls || []), ...(existing?.cloudflareUrls || [])]),
+        endpoints: sanitizeConnectionEndpoints([
+            ...(input.endpoints || []),
+            ...(existing?.endpoints || []),
+            ...((input.summary?.linkManifest?.endpoints || [])),
+        ]),
         adminApiBaseUrl: summaryConnection.adminApiBaseUrl || summaryConnection.configuredAdminApiBaseUrl || existing?.adminApiBaseUrl || "",
         bridgeMode: summaryConnection.bridgeMode || existing?.bridgeMode || "",
         transportKind: summaryConnection.transportKind || existing?.transportKind || "",

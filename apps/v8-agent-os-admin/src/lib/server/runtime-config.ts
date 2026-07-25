@@ -54,6 +54,15 @@ type RemoteLinkProfile = {
     peerBaseUrl?: string;
 };
 
+type ClientConnectionEndpoint = {
+    id: string;
+    kind: "lan" | "lan_ipv6" | "wireguard" | "tailscale" | "headscale" | "cloudflare_tunnel" | "custom_vpn" | "manual_url";
+    baseUrl: string;
+    scope: "local" | "remote";
+    priority: number;
+    enabled: boolean;
+};
+
 type RemoteLinkConfig = {
     enabled?: boolean;
     activeProfileId?: string;
@@ -167,9 +176,24 @@ function withApiSuffix(value: unknown, suffix: string) {
 
 function normalizeTransportKind(value: unknown) {
     const normalized = String(value || "").trim().toLowerCase().replace(/-/g, "_");
-    return ["manual_url", "lan", "wireguard", "tailscale", "headscale", "custom_vpn"].includes(normalized)
+    return ["manual_url", "lan", "wireguard", "tailscale", "headscale", "cloudflare_tunnel", "custom_vpn"].includes(normalized)
         ? normalized
         : "manual_url";
+}
+
+function isStableCloudflareOrigin(value: unknown) {
+    const normalized = stripApiSuffix(value);
+    if (!normalized) return false;
+    try {
+        const parsed = new URL(normalized);
+        const hostname = parsed.hostname.toLowerCase();
+        return parsed.protocol === "https:"
+            && Boolean(hostname)
+            && hostname !== "trycloudflare.com"
+            && !hostname.endsWith(".trycloudflare.com");
+    } catch {
+        return false;
+    }
 }
 
 function buildRemoteLinkContext(requestOrigin?: string) {
@@ -184,6 +208,7 @@ function buildRemoteLinkContext(requestOrigin?: string) {
         { id: "wireguard", kind: "wireguard", label: "WireGuard", enabled: true },
         { id: "tailscale", kind: "tailscale", label: "Tailscale", enabled: true },
         { id: "headscale", kind: "headscale", label: "Headscale", enabled: true },
+        { id: "cloudflare-tunnel", kind: "cloudflare_tunnel", label: "Cloudflare Tunnel", enabled: true },
         { id: "custom-vpn", kind: "custom_vpn", label: "Custom VPN", enabled: true },
     ];
     const profilesById = new Map<string, RemoteLinkProfile>();
@@ -217,6 +242,83 @@ function isTailscaleIpv4(address: string) {
     return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address);
 }
 
+function formatUrlHost(address: string) {
+    const normalized = String(address || "").trim().replace(/^\[/, "").replace(/\]$/, "");
+    return normalized.includes(":") ? `[${normalized}]` : normalized;
+}
+
+function isUsableLocalAddress(entry: os.NetworkInterfaceInfo) {
+    const address = String(entry.address || "").trim();
+    if (!address || entry.internal) return false;
+    if (entry.family === "IPv4") return !address.startsWith("169.254.");
+    if (entry.family === "IPv6") {
+        const normalized = address.toLowerCase().split("%")[0] || "";
+        return Boolean(normalized && normalized !== "::" && normalized !== "::1" && !normalized.startsWith("fe80:"));
+    }
+    return false;
+}
+
+function resolveAdminOriginForAddress(address: string, requestOrigin?: string) {
+    let protocol = "http:";
+    let port = "9528";
+    try {
+        const parsed = new URL(String(requestOrigin || resolveAdminPublicBaseUrl() || ""));
+        protocol = parsed.protocol || protocol;
+        port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    } catch {
+        // Keep defaults.
+    }
+    const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
+    return `${protocol}//${formatUrlHost(address)}${suffix}`;
+}
+
+function buildClientConnectionEndpoints(requestOrigin: string | undefined, profiles: RemoteLinkProfile[]) {
+    const endpoints: ClientConnectionEndpoint[] = [];
+    const seen = new Set<string>();
+    const push = (endpoint: ClientConnectionEndpoint) => {
+        const baseUrl = stripApiSuffix(endpoint.baseUrl);
+        if (!baseUrl || seen.has(baseUrl)) return;
+        seen.add(baseUrl);
+        endpoints.push({ ...endpoint, baseUrl });
+    };
+
+    Object.values(os.networkInterfaces())
+        .flat()
+        .filter((entry): entry is os.NetworkInterfaceInfo => Boolean(entry && isUsableLocalAddress(entry)))
+        .forEach((entry) => {
+            const kind = entry.family === "IPv6" ? "lan_ipv6" : "lan";
+            push({
+                id: `${kind}:${entry.address}`,
+                kind,
+                baseUrl: resolveAdminOriginForAddress(entry.address, requestOrigin),
+                scope: "local",
+                priority: kind === "lan" ? 10 : 11,
+                enabled: true,
+            });
+        });
+
+    profiles.forEach((profile, index) => {
+        if (profile.enabled === false) return;
+        const baseUrl = stripApiSuffix(profile.adminBaseUrl || "");
+        if (!baseUrl) return;
+        const kind = normalizeTransportKind(profile.kind) as ClientConnectionEndpoint["kind"];
+        if (kind === "cloudflare_tunnel" && !isStableCloudflareOrigin(baseUrl)) return;
+        push({
+            id: String(profile.id || `${kind}:${index}`),
+            kind,
+            baseUrl,
+            scope: kind === "lan" ? "local" : "remote",
+            priority: kind === "wireguard" ? 20
+                : kind === "tailscale" || kind === "headscale" ? 30
+                    : kind === "cloudflare_tunnel" ? 40
+                        : kind === "custom_vpn" ? 50 : 60,
+            enabled: true,
+        });
+    });
+
+    return endpoints.sort((left, right) => left.priority - right.priority);
+}
+
 function resolveActiveRemoteLinkAdminBaseUrl(requestOrigin?: string) {
     const context = buildRemoteLinkContext(requestOrigin);
     const activeProfile = context.activeProfile || {};
@@ -224,10 +326,10 @@ function resolveActiveRemoteLinkAdminBaseUrl(requestOrigin?: string) {
         return "";
     }
     const configured = resolveReachableClientSurfaceOrigin(stripApiSuffix(activeProfile.adminBaseUrl || ""));
-    if (configured) {
+    const kind = normalizeTransportKind(activeProfile.kind);
+    if (configured && (kind !== "cloudflare_tunnel" || isStableCloudflareOrigin(configured))) {
         return configured;
     }
-    const kind = normalizeTransportKind(activeProfile.kind);
     if (kind === "lan" || kind === "wireguard" || kind === "tailscale" || kind === "headscale" || kind === "custom_vpn") {
         return resolveLocalNetworkAdminOrigin(requestOrigin, kind);
     }
@@ -246,11 +348,15 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
     const warnings = [
         adminBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "admin_loopback_not_reachable_from_phone" : "",
         engineBaseUrl.match(/^https?:\/\/(127\.|localhost|\[::1\]|::1)/i) ? "engine_loopback_not_reachable_from_phone" : "",
+        transportKind === "cloudflare_tunnel" && !isStableCloudflareOrigin(activeProfile.adminBaseUrl)
+            ? "cloudflare_stable_https_origin_required"
+            : "",
     ].filter(Boolean);
+    const endpoints = buildClientConnectionEndpoints(requestOrigin, profiles);
     return {
         ok: true,
         kind: "v8_link_manifest",
-        version: "1",
+        version: "2",
         instanceId: identity.instanceId,
         ownerMode: "single_owner",
         clientGateway: "admin_bff",
@@ -275,6 +381,7 @@ export function buildAdminLinkManifest(requestOrigin?: string) {
             engineBaseUrl: stripApiSuffix(profile.engineBaseUrl || ""),
             peerBaseUrl: stripApiSuffix(profile.peerBaseUrl || ""),
         })),
+        endpoints,
         capabilities: {
             adminProxy: true,
             pairing: true,
@@ -322,6 +429,7 @@ export function buildClientLinkManifest(requestOrigin?: string) {
             enabled: profile.enabled,
             adminBaseUrl: profile.adminBaseUrl,
         })),
+        endpoints: manifest.endpoints,
         capabilities: manifest.capabilities,
         diagnostics: manifest.diagnostics,
         warnings: manifest.warnings,
@@ -484,6 +592,15 @@ function scoreLocalIpv4(address: string, preferredKind?: string) {
     return 50;
 }
 
+function scoreLocalAddress(entry: os.NetworkInterfaceInfo, preferredKind?: string) {
+    if (entry.family === "IPv4") return scoreLocalIpv4(entry.address, preferredKind);
+    if (entry.family === "IPv6") {
+        const kind = normalizeTransportKind(preferredKind);
+        return kind === "lan" ? 95 : 75;
+    }
+    return 0;
+}
+
 function resolveLocalNetworkAdminOrigin(requestOrigin?: string, preferredKind?: string) {
     let protocol = "http:";
     let port = "9528";
@@ -498,17 +615,15 @@ function resolveLocalNetworkAdminOrigin(requestOrigin?: string, preferredKind?: 
     const candidates = Object.values(os.networkInterfaces())
         .flat()
         .filter((entry): entry is os.NetworkInterfaceInfo => Boolean(entry))
-        .filter((entry) => entry.family === "IPv4" && !entry.internal)
-        .map((entry) => entry.address)
-        .filter((address) => address && !address.startsWith("169.254."))
-        .sort((left, right) => scoreLocalIpv4(right, preferredKind) - scoreLocalIpv4(left, preferredKind));
+        .filter(isUsableLocalAddress)
+        .sort((left, right) => scoreLocalAddress(right, preferredKind) - scoreLocalAddress(left, preferredKind));
 
     const selected = candidates[0];
     if (!selected) {
         return "";
     }
     const suffix = port && !["80", "443"].includes(port) ? `:${port}` : "";
-    return `${protocol}//${selected}${suffix}`;
+    return `${protocol}//${formatUrlHost(selected.address)}${suffix}`;
 }
 
 export function resolvePairingAdminBaseUrlFromRequest(

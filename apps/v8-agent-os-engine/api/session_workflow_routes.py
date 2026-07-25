@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .models import RuntimeCapabilityPolicyPayload, RuntimeStabilityConfigPayload, ScopeResolvePayload, SessionScopeBindingPayload
 from core.context_governance import (
@@ -23,6 +23,7 @@ from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.workbench_files import workbench_file_service
 from core.workbench_events import emit_workbench_document_event
+from core.session_activity import session_activity_broker
 from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
@@ -516,6 +517,42 @@ def _refresh_web_session_index_safely() -> None:
         pass
 
 
+@router.get("/sessions/activity-stream")
+async def stream_session_activity(
+    request: Request,
+    user_email: str = Header(default="", alias="x-v8-agent-os-user-email"),
+):
+    owner_id = str(user_email or "").strip()
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="session_activity_owner_required")
+
+    async def _events():
+        cursor = session_activity_broker.current_seq
+        yield f"event: ready\ndata: {json.dumps({'seq': cursor}, ensure_ascii=False)}\n\n"
+        while not await request.is_disconnected():
+            cursor, signals = await asyncio.to_thread(
+                session_activity_broker.wait,
+                owner_id=owner_id,
+                after_seq=cursor,
+                timeout_seconds=12.0,
+            )
+            if signals:
+                for signal in signals:
+                    yield f"event: activity\ndata: {json.dumps(signal, ensure_ascii=False)}\n\n"
+            else:
+                yield f"event: heartbeat\ndata: {json.dumps({'seq': cursor}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/sessions")
 async def get_sessions():
     """Retrieve all sessions handled by the Python DB Engine."""
@@ -578,6 +615,11 @@ async def create_session(data: dict = Body(...)):
         controls = build_projection_controls(workflow_view, approvals)
         session_source = _derive_session_source(session or {"id": session_id, "metadata": {}}, None)
         _refresh_web_session_index_safely()
+        session_activity_broker.publish(
+            owner_id=str((session or {}).get("user_id") or data.get("userId") or "anonymous"),
+            session_id=session_id,
+            topic="session.created",
+        )
         return build_session_history_materialized_record(
             session_row={**_enrich_session_navigation(session or {}), "controls": controls},
             workflow_view=workflow_view,
@@ -643,6 +685,11 @@ async def patch_session_presentation(session_id: str, data: dict = Body(...)):
             run_record=run_record,
         )
         _refresh_web_session_index_safely()
+        session_activity_broker.publish(
+            owner_id=session_user_id,
+            session_id=session_id,
+            topic="session.presentation.updated",
+        )
         return record
     except HTTPException:
         raise
@@ -659,10 +706,17 @@ async def delete_session(session_id: str):
         from runtimes.plugin_manager.service import plugin_manager_service
         from erc.session_coordination_service import session_coordination_service
 
+        current = db.get_session(session_id) or {}
+        owner_id = str(current.get("user_id") or current.get("userId") or "").strip()
         plugin_manager_service.revoke_session_grants(session_id)
         session_coordination_service.prepare_session_deletion(session_id)
         db.delete_session(session_id)
         _refresh_web_session_index_safely()
+        session_activity_broker.publish(
+            owner_id=owner_id,
+            session_id=session_id,
+            topic="session.deleted",
+        )
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

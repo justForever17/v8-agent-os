@@ -10,6 +10,7 @@ export type SessionSourceProjection = {
   url: string | null;
   previewUrl: string | null;
   workspacePath: string | null;
+  workspaceRelativePath: string | null;
   resourceRef: Record<string, unknown> | null;
   createdAt: string | null;
 };
@@ -44,6 +45,38 @@ function fileName(value: string): string {
   return parts[parts.length - 1] || value;
 }
 
+function normalizedPath(value: unknown): string {
+  const normalized = decoded(text(value)).split(/[?#]/, 1)[0].replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\.\//, "");
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function relativePathFromUrl(value: unknown): string {
+  const raw = text(value);
+  if (!raw) return "";
+  try {
+    const url = new URL(raw, "http://v8os.local");
+    return text(url.searchParams.get("workspace_relative_path") || url.searchParams.get("workspaceRelativePath"));
+  } catch {
+    return "";
+  }
+}
+
+function normalizedResourceUrl(value: unknown): string {
+  const raw = text(value);
+  if (!raw) return "";
+  try {
+    const url = new URL(raw, "http://v8os.local");
+    const entries = [...url.searchParams.entries()].sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ));
+    const query = new URLSearchParams(entries).toString();
+    const origin = url.origin === "http://v8os.local" ? "" : url.origin.toLowerCase();
+    return `${origin}${decoded(url.pathname).replace(/\\/g, "/")}${query ? `?${query}` : ""}`;
+  } catch {
+    return decoded(raw).replace(/\\/g, "/");
+  }
+}
+
 function inferMime(name: string, explicit: string): string | null {
   if (explicit) return explicit.split(";", 1)[0].trim().toLowerCase();
   const lower = decoded(name).toLowerCase().split(/[?#]/, 1)[0];
@@ -68,10 +101,22 @@ function normalizeSource(raw: unknown, fallbackMessageId: string | null = null):
   const item = recordOf(raw);
   const metadata = recordOf(item.metadata);
   const resourceRef = recordOf(item.resourceRef || item.resource_ref);
+  const resourceMetadata = recordOf(resourceRef.metadata);
   const id = text(item.sourceId || item.source_id || item.id);
   const url = text(item.externalUrl || item.external_url || item.publicUrl || item.public_url || item.url || resourceRef.adminPath) || null;
   const previewUrl = text(item.previewUrl || item.preview_url || item.publicUrl || item.public_url || item.url || resourceRef.adminPath) || url;
-  const workspacePath = text(item.workspacePath || item.workspace_path || item.workspaceRelativePath || item.workspace_relative_path || item.path) || null;
+  const workspaceRelativePath = text(
+    item.workspaceRelativePath
+    || item.workspace_relative_path
+    || resourceRef.workspaceRelativePath
+    || resourceRef.workspace_relative_path
+    || metadata.workspaceRelativePath
+    || metadata.workspace_relative_path
+    || resourceMetadata.workspaceRelativePath
+    || resourceMetadata.workspace_relative_path
+    || relativePathFromUrl(url),
+  ) || null;
+  const workspacePath = text(item.workspacePath || item.workspace_path || item.path || workspaceRelativePath) || null;
   const name = text(item.title || item.name || item.displayLabel || resourceRef.displayLabel)
     || fileName(workspacePath || url || id || "来源");
   const mimeType = inferMime(name || url || workspacePath || "", text(item.mimeType || item.mime_type || item.type));
@@ -87,8 +132,37 @@ function normalizeSource(raw: unknown, fallbackMessageId: string | null = null):
     url,
     previewUrl,
     workspacePath,
+    workspaceRelativePath,
     resourceRef: Object.keys(resourceRef).length ? resourceRef : null,
     createdAt: text(item.createdAt || item.created_at) || null,
+  };
+}
+
+function sourceFingerprints(candidate: SessionSourceProjection): string[] {
+  return [
+    candidate.workspaceRelativePath ? `workspace-relative:${normalizedPath(candidate.workspaceRelativePath)}` : "",
+    candidate.url ? `url:${normalizedResourceUrl(candidate.url)}` : "",
+    candidate.previewUrl ? `preview:${normalizedResourceUrl(candidate.previewUrl)}` : "",
+    candidate.workspacePath ? `workspace:${normalizedPath(candidate.workspacePath)}` : "",
+    candidate.id ? `id:${candidate.id}` : "",
+  ].filter(Boolean);
+}
+
+function mergeSource(current: SessionSourceProjection, candidate: SessionSourceProjection): SessionSourceProjection {
+  return {
+    ...candidate,
+    ...current,
+    messageId: current.messageId || candidate.messageId,
+    name: current.name || candidate.name,
+    sourceKind: current.sourceKind || candidate.sourceKind,
+    mimeType: current.mimeType || candidate.mimeType,
+    mediaKind: current.mimeType ? current.mediaKind : candidate.mediaKind,
+    url: current.url || candidate.url,
+    previewUrl: current.previewUrl || candidate.previewUrl,
+    workspacePath: current.workspacePath || candidate.workspacePath,
+    workspaceRelativePath: current.workspaceRelativePath || candidate.workspaceRelativePath,
+    resourceRef: current.resourceRef || candidate.resourceRef,
+    createdAt: current.createdAt || candidate.createdAt,
   };
 }
 
@@ -97,13 +171,21 @@ export function buildSessionSourceProjection(
   sessionSources: SessionSourceRef[] | unknown[] | null | undefined = [],
 ): SessionSourceProjection[] {
   const output: SessionSourceProjection[] = [];
-  const seen = new Set<string>();
+  const fingerprintToIndex = new Map<string, number>();
   const append = (candidate: SessionSourceProjection | null) => {
     if (!candidate) return;
-    const key = candidate.id || candidate.url || candidate.workspacePath;
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    const fingerprints = sourceFingerprints(candidate);
+    const existingIndex = fingerprints
+      .map((fingerprint) => fingerprintToIndex.get(fingerprint))
+      .find((index): index is number => typeof index === "number");
+    if (typeof existingIndex === "number") {
+      output[existingIndex] = mergeSource(output[existingIndex], candidate);
+      for (const fingerprint of sourceFingerprints(output[existingIndex])) fingerprintToIndex.set(fingerprint, existingIndex);
+      return;
+    }
+    const nextIndex = output.length;
     output.push(candidate);
+    for (const fingerprint of fingerprints) fingerprintToIndex.set(fingerprint, nextIndex);
   };
 
   for (const raw of sessionSources || []) append(normalizeSource(raw));

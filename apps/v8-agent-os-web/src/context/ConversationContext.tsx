@@ -238,19 +238,63 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        let stopped = false;
+        let activityStream: EventSource | null = null;
+        let reconnectTimer: number | null = null;
+        let refreshTimer: number | null = null;
+        let reconnectDelayMs = 500;
+
+        const scheduleRefresh = (delayMs = 80) => {
+            if (refreshTimer !== null) {
+                window.clearTimeout(refreshTimer);
+            }
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                if (!stopped) {
+                    void fetchConversations();
+                }
+            }, delayMs);
+        };
+
         const refreshWhenVisible = () => {
             if (document.visibilityState === "visible") {
-                void fetchConversations();
+                scheduleRefresh(0);
             }
         };
 
+        const connectActivityStream = () => {
+            if (stopped) return;
+            activityStream?.close();
+            activityStream = new EventSource("/api/realtime/session-activity/stream");
+            const handleActivity = () => scheduleRefresh();
+            activityStream.addEventListener("ready", handleActivity);
+            activityStream.addEventListener("activity", handleActivity);
+            activityStream.onopen = () => {
+                reconnectDelayMs = 500;
+            };
+            activityStream.onerror = () => {
+                activityStream?.close();
+                activityStream = null;
+                if (stopped || reconnectTimer !== null) return;
+                const delay = reconnectDelayMs;
+                reconnectDelayMs = Math.min(8_000, reconnectDelayMs * 2);
+                reconnectTimer = window.setTimeout(() => {
+                    reconnectTimer = null;
+                    connectActivityStream();
+                }, delay);
+            };
+        };
+
         void fetchConversations();
+        connectActivityStream();
         window.addEventListener("focus", refreshWhenVisible);
         document.addEventListener("visibilitychange", refreshWhenVisible);
-        const intervalId = window.setInterval(refreshWhenVisible, 3500);
 
         return () => {
-            window.clearInterval(intervalId);
+            stopped = true;
+            activityStream?.close();
+            if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+            if (refreshTimer !== null) window.clearTimeout(refreshTimer);
             window.removeEventListener("focus", refreshWhenVisible);
             document.removeEventListener("visibilitychange", refreshWhenVisible);
         };

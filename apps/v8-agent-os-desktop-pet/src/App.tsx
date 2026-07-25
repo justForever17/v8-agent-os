@@ -530,6 +530,10 @@ If the user uploaded an image representation (which represents what you 'see' th
   const v8ActiveConversationIdRef = useRef(v8ActiveConversationId);
   const shellActiveConversationIdRef = useRef('');
   const v8ConnectInFlightRef = useRef<Promise<boolean> | null>(null);
+  const refreshV8ListsRef = useRef<(
+    preferredConversationId?: string,
+    options?: { silent?: boolean; includeProjects?: boolean },
+  ) => Promise<V8Conversation[]>>(async () => []);
   const v8ReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const desktopPetConfigRequestRef = useRef(0);
   const shutdownReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -797,22 +801,29 @@ If the user uploaded an image representation (which represents what you 'see' th
     return '';
   };
 
-  const refreshV8Lists = async (preferredConversationId = shellActiveConversationIdRef.current) => {
+  const refreshV8Lists = async (
+    preferredConversationId = shellActiveConversationIdRef.current,
+    options?: { silent?: boolean; includeProjects?: boolean },
+  ) => {
     const client = v8ClientRef.current;
     if (!client?.getSession()) {
-      setV8ListsLoading(false);
+      if (!options?.silent) setV8ListsLoading(false);
       return [] as V8Conversation[];
     }
-    setV8ListsLoading(true);
+    if (!options?.silent) setV8ListsLoading(true);
     try {
       const [conversations, projectPayload] = await Promise.all([
         client.listConversations(),
-        client.listProjects().catch(() => ({ projects: [] as V8Project[] })),
+        options?.includeProjects === false
+          ? Promise.resolve(null)
+          : client.listProjects().catch(() => ({ projects: [] as V8Project[] })),
       ]);
       const conversationList = Array.isArray(conversations) ? conversations : [];
       v8ConversationsRef.current = conversationList;
       setV8Conversations(conversationList);
-      setV8Projects(Array.isArray(projectPayload.projects) ? projectPayload.projects : []);
+      if (projectPayload) {
+        setV8Projects(Array.isArray(projectPayload.projects) ? projectPayload.projects : []);
+      }
 
       const runningConversation = latestRunningConversation(conversationList);
       const storedConversationId = client.getActiveConversationId();
@@ -846,9 +857,59 @@ If the user uploaded an image representation (which represents what you 'see' th
       setV8Error(error?.message || 'V8OS 列表刷新失败');
       return [] as V8Conversation[];
     } finally {
-      setV8ListsLoading(false);
+      if (!options?.silent) setV8ListsLoading(false);
     }
   };
+
+  useEffect(() => {
+    refreshV8ListsRef.current = refreshV8Lists;
+  });
+
+  useEffect(() => {
+    const client = v8ClientRef.current;
+    if (!v8Session?.accessToken || !client) return;
+    let stopped = false;
+    let reconnectDelayMs = 500;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!stopped) {
+          void refreshV8ListsRef.current(shellActiveConversationIdRef.current, {
+            silent: true,
+            includeProjects: false,
+          });
+        }
+      }, 120);
+    };
+
+    const run = async () => {
+      while (!stopped) {
+        controller = new AbortController();
+        try {
+          await client.streamSessionActivity((eventName) => {
+            if (eventName === 'ready' || eventName === 'activity') scheduleRefresh();
+          }, controller.signal);
+          reconnectDelayMs = 500;
+        } catch {
+          if (stopped || controller.signal.aborted) break;
+        }
+        if (stopped) break;
+        await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs));
+        reconnectDelayMs = Math.min(8_000, reconnectDelayMs * 2);
+      }
+    };
+
+    void run();
+    return () => {
+      stopped = true;
+      controller?.abort();
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [v8Session?.accessToken, v8Session?.adminBaseUrl]);
 
   const refreshDesktopPetConfig = useCallback(async (source = 'runtime_sync') => {
     const client = v8ClientRef.current;

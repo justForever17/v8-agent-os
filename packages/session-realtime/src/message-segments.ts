@@ -42,12 +42,17 @@ const TRACE_EXECUTION_TYPES = new Set<string>([
   "tool_result",
   "runtime_progress",
 ]);
+const ATTACHMENT_PREFLIGHT_CALL_PREFIX = "call_v8_attachment_preflight_";
 
 function nodeKey(node: TimelineSegmentNode, index: number) {
   return String(node.id || `node-${index}`).trim() || `node-${index}`;
 }
 
 export function isTraceTimelineNode(node: TimelineSegmentNode | null | undefined) {
+  const toolCallId = String(node?.toolCallId || "").trim();
+  if (toolCallId.startsWith(ATTACHMENT_PREFLIGHT_CALL_PREFIX)) {
+    return false;
+  }
   return Boolean(
     node
     && node.kind === "execution"

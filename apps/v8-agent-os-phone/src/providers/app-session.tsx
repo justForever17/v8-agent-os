@@ -47,6 +47,7 @@ type SessionContextValue = {
     adminBaseUrl: string;
     accessToken: string;
     activeConversationId: string | null;
+    sessionActivityVersion: number;
     setAdminBaseUrl: (next: string) => Promise<void>;
     setActiveConversationId: (next: string | null) => Promise<void>;
     pairDevice: (input: DevicePairingInput) => Promise<void>;
@@ -193,6 +194,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [user, setUser] = React.useState<PhoneUser | null>(null);
     const [userAvatarUri, setUserAvatarUri] = React.useState("");
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
+    const [sessionActivityVersion, setSessionActivityVersion] = React.useState(0);
     const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
     const bootStartedAtRef = React.useRef(Date.now());
     const statusRef = React.useRef<SessionStatus>("booting");
@@ -653,6 +655,53 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         await openStream(nextAccessToken);
     }, [accessToken, adminBaseUrl, refreshSession, signOut, syncEngineClockFromHeader]);
 
+    React.useEffect(() => {
+        if (status !== "authenticated") return;
+
+        let stopped = false;
+        let reconnectDelayMs = 500;
+        let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+        let controller: AbortController | null = null;
+
+        const scheduleRefresh = () => {
+            if (refreshTimer) clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(() => {
+                refreshTimer = null;
+                if (!stopped) setSessionActivityVersion((current) => current + 1);
+            }, 120);
+        };
+
+        const run = async () => {
+            while (!stopped) {
+                controller = new AbortController();
+                try {
+                    await authorizedRealtimeStream(
+                        "/api/client/realtime/session-activity/stream",
+                        (eventName) => {
+                            if (eventName === "ready" || eventName === "activity") {
+                                scheduleRefresh();
+                            }
+                        },
+                        controller.signal,
+                    );
+                    reconnectDelayMs = 500;
+                } catch {
+                    if (stopped || controller.signal.aborted) break;
+                }
+                if (stopped) break;
+                await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs));
+                reconnectDelayMs = Math.min(8_000, reconnectDelayMs * 2);
+            }
+        };
+
+        void run();
+        return () => {
+            stopped = true;
+            controller?.abort();
+            if (refreshTimer) clearTimeout(refreshTimer);
+        };
+    }, [authorizedRealtimeStream, status]);
+
     const contextValue = React.useMemo<SessionContextValue>(() => ({
         status,
         user,
@@ -660,6 +709,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         adminBaseUrl,
         accessToken,
         activeConversationId,
+        sessionActivityVersion,
         setAdminBaseUrl,
         setActiveConversationId,
         pairDevice,
@@ -670,7 +720,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         authorizedRealtimeStream,
         engineClockOffsetMs,
         getEngineNowMs,
-    }), [status, user, userAvatarUri, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
+    }), [status, user, userAvatarUri, adminBaseUrl, accessToken, activeConversationId, sessionActivityVersion, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

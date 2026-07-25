@@ -3367,6 +3367,26 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+        session_id = str(event.get("session_id") or "").strip()
+        topic = str(event.get("topic") or "").strip()
+        if not session_id:
+            return
+        try:
+            from core.session_activity import is_session_activity_topic, session_activity_broker
+
+            if not is_session_activity_topic(topic):
+                return
+            session = self.get_session(session_id) or {}
+            session_activity_broker.publish(
+                owner_id=str(session.get("user_id") or session.get("userId") or ""),
+                session_id=session_id,
+                topic=topic,
+            )
+        except Exception:
+            # The durable runtime event is authoritative. A transient client
+            # wakeup failure must never roll back or falsify runtime progress.
+            return
+
     def get_runtime_events(self, session_id: str, after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

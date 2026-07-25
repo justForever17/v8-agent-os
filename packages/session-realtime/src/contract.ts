@@ -241,6 +241,7 @@ export type SessionSourceRef = {
   title?: string | null;
   mimeType?: string | null;
   workspacePath?: string | null;
+  workspaceRelativePath?: string | null;
   externalUrl?: string | null;
   previewUrl?: string | null;
   resourceRef?: Record<string, unknown> | null;

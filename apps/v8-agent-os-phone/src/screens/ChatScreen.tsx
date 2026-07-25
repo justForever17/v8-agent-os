@@ -2041,6 +2041,7 @@ export default function ChatScreen() {
         adminBaseUrl,
         accessToken,
         activeConversationId,
+        sessionActivityVersion,
         setActiveConversationId,
         authorizedFetch,
         authorizedRealtimeStream,
@@ -2066,6 +2067,8 @@ export default function ChatScreen() {
     const loadingConversationIdRef = useRef<string | null>(null);
     const hydratedConversationIdRef = useRef<string | null>(null);
     const loadSupportDataRef = useRef<() => Promise<void>>(async () => undefined);
+    const conversationIndexRefreshRef = useRef<Promise<void> | null>(null);
+    const conversationIndexRefreshPendingRef = useRef(false);
     const loadConversationRef = useRef<(conversationId: string, options?: { force?: boolean; token?: number }) => Promise<boolean>>(async () => false);
     const startRealtimeRef = useRef<(conversationId: string, transitionToken?: number) => Promise<void>>(async () => undefined);
     const stopRealtimeRef = useRef<(options?: { preserveMessageState?: boolean }) => void>(() => undefined);
@@ -3567,12 +3570,51 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, loadProjects, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, sessionIndexNamespace, setActiveConversationId]);
 
+    const refreshConversationIndex = useCallback((): Promise<void> => {
+        if (conversationIndexRefreshRef.current) {
+            conversationIndexRefreshPendingRef.current = true;
+            return conversationIndexRefreshRef.current;
+        }
+        const request = (async () => {
+            try {
+                do {
+                    conversationIndexRefreshPendingRef.current = false;
+                    try {
+                        const nextConversations = await listConversations(authorizedFetch);
+                        const sorted = sortSessionHistory(nextConversations);
+                        sessionIndexReadyRef.current = true;
+                        setConversations(sorted);
+                        await localDatabase.setSessionIndex(sessionIndexNamespace, sorted);
+                        const currentSessionId = activeConversationIdRef.current;
+                        if (
+                            currentSessionId
+                            && !sorted.some((item) => (item.sessionId || item.id) === currentSessionId)
+                        ) {
+                            await setActiveConversationId(null);
+                        }
+                    } catch (error) {
+                        console.warn("[phone/chat] session activity refresh failed", error instanceof Error ? error.message : error);
+                    }
+                } while (conversationIndexRefreshPendingRef.current);
+            } finally {
+                conversationIndexRefreshRef.current = null;
+            }
+        })();
+        conversationIndexRefreshRef.current = request;
+        return request;
+    }, [authorizedFetch, sessionIndexNamespace, setActiveConversationId]);
+
     useEffect(() => {
         if (!sessionIndexReadyRef.current || status !== "authenticated") {
             return;
         }
         void localDatabase.setSessionIndex(sessionIndexNamespace, conversations);
     }, [conversations, sessionIndexNamespace, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated" || sessionActivityVersion <= 0) return;
+        void refreshConversationIndex();
+    }, [refreshConversationIndex, sessionActivityVersion, status]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const profileStartedAt = getPerfNowMs();

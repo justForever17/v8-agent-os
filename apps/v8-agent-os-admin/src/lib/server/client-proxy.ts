@@ -214,3 +214,37 @@ export async function proxyClientAdminStream(
         return toClientProxyErrorResponse(error, "Backend Service Unavailable");
     }
 }
+
+export async function proxyClientEngineStream(
+    req: NextRequest,
+    targetPath: string,
+    defaultContentType: string,
+    init?: RequestInit,
+) {
+    try {
+        const response = await fetchClientEngine(req, targetPath, {
+            ...init,
+            signal: req.signal,
+        });
+
+        if (!response.ok || !response.body) {
+            const detail = await response.text().catch(() => "");
+            return NextResponse.json(
+                { error: detail || "Realtime stream unavailable" },
+                { status: response.status || 502 },
+            );
+        }
+
+        return new NextResponse(response.body, {
+            status: response.status,
+            headers: buildPassthroughHeaders(response, {
+                "Content-Type": response.headers.get("Content-Type") || defaultContentType,
+                "Cache-Control": response.headers.get("Cache-Control") || "no-cache, no-transform",
+                "X-Accel-Buffering": response.headers.get("X-Accel-Buffering") || "no",
+                "Connection": response.headers.get("Connection") || "keep-alive",
+            }),
+        });
+    } catch (error) {
+        return toClientProxyErrorResponse(error, "Engine Service Unavailable");
+    }
+}

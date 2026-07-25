@@ -28,7 +28,7 @@ import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
 
 export default function SessionsScreen() {
-    const { status, user, userAvatarUri, adminBaseUrl, activeConversationId, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
+    const { status, user, userAvatarUri, adminBaseUrl, activeConversationId, sessionActivityVersion, setActiveConversationId, authorizedFetch, getEngineNowMs } = useAppSession();
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const sessionIndexNamespace = useMemo(
@@ -50,32 +50,42 @@ export default function SessionsScreen() {
         { key: "settings", icon: "cog-outline", onPress: () => router.push("/settings" as Href) },
     ];
 
-    const load = useCallback(async () => {
-        setRefreshing(true);
+    const load = useCallback(async (options?: { showSpinner?: boolean; useCache?: boolean; surfaceErrors?: boolean }) => {
+        const showSpinner = options?.showSpinner !== false;
+        const useCache = options?.useCache !== false;
+        const surfaceErrors = options?.surfaceErrors !== false;
+        if (showSpinner) setRefreshing(true);
         let hasCachedSessions = false;
         try {
-            const cached = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
-            if (cached.length > 0) {
-                hasCachedSessions = true;
-                setConversations(cached);
+            if (useCache) {
+                const cached = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
+                if (cached.length > 0) {
+                    hasCachedSessions = true;
+                    setConversations(cached);
+                }
             }
             const next = await listConversations(authorizedFetch);
             setConversations(next);
             await localDatabase.setSessionIndex(sessionIndexNamespace, next);
         } catch (error) {
-            if (!hasCachedSessions) {
+            if (surfaceErrors && !hasCachedSessions) {
                 Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
             }
         } finally {
-            setRefreshing(false);
+            if (showSpinner) setRefreshing(false);
         }
     }, [authorizedFetch, sessionIndexNamespace, t]);
 
     useEffect(() => {
         if (status === "authenticated") {
-            void load();
+            void load({ showSpinner: true, useCache: true, surfaceErrors: true });
         }
     }, [load, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated" || sessionActivityVersion <= 0) return;
+        void load({ showSpinner: false, useCache: false, surfaceErrors: false });
+    }, [load, sessionActivityVersion, status]);
 
     const createNew = async () => {
         setBusy(true);
@@ -168,7 +178,7 @@ export default function SessionsScreen() {
 
                 <ScrollView
                     contentContainerStyle={styles.content}
-                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load()} />}
+                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load({ showSpinner: true, useCache: false, surfaceErrors: true })} />}
                 >
                     <Pressable style={[styles.newButton, busy && styles.disabled]} onPress={() => void createNew()}>
                         <MaterialCommunityIcons name="plus" size={18} color="#FFFFFF" />

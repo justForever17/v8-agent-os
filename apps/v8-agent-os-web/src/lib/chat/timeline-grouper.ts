@@ -13,6 +13,9 @@ export function isCollapsibleTraceNode(node: UiTimelineNode): boolean {
     }
     
     const execNode = node as UiExecutionNode;
+    if (String(execNode.toolCallId || "").startsWith("call_v8_attachment_preflight_")) {
+        return false;
+    }
     
     // 1. 推理思考过程 (ThinkingCard)
     if (execNode.executionType === "reasoning") {

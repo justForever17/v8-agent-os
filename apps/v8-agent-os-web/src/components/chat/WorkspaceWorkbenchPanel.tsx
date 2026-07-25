@@ -8,11 +8,12 @@ import {
     buildSubagentReturnProjection,
     type AdminProcessRef,
     type SessionOutputProjection,
+    type SessionSourceProjection,
     type SessionSourceRef,
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
 
-import { createArtifactDocument, createSubagentActivityDocument } from "@/lib/workbench";
+import { createArtifactDocument, createExternalArtifactDocument, createSubagentActivityDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -189,6 +190,39 @@ export function WorkspaceWorkbenchPanel({
         if (artifact) openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" });
     }, [openDocument, sessionId]);
 
+    const openSource = useCallback((source: SessionSourceProjection) => {
+        setFileError("");
+        const workspacePath = source.workspaceRelativePath || source.workspacePath;
+        if (workspacePath) {
+            void resolveAndOpenWorkspaceFile(workspacePath, { sessionId }).catch((reason) => {
+                setFileError(reason instanceof Error ? reason.message : String(reason));
+            });
+            return;
+        }
+        const resourceUrl = source.previewUrl || source.url;
+        if (!resourceUrl) return;
+        const renderer = source.mediaKind === "image"
+            ? "image"
+            : source.mediaKind === "video"
+                ? "video"
+                : source.mediaKind === "audio"
+                    ? "audio"
+                    : source.mimeType === "application/pdf"
+                        ? "pdf"
+                        : source.mimeType?.includes("markdown")
+                            ? "markdown"
+                            : source.mimeType?.startsWith("text/")
+                                ? "text"
+                                : "download";
+        openDocument(createExternalArtifactDocument({
+            id: `source:${source.id}`,
+            title: source.name,
+            url: resourceUrl,
+            renderer,
+            mimeType: source.mimeType || undefined,
+        }), { activate: true, mode: "split" });
+    }, [openDocument, sessionId]);
+
     useEffect(() => {
         if (!sessionId) {
             setRuntimeArtifacts([]);
@@ -295,7 +329,13 @@ export function WorkspaceWorkbenchPanel({
 
             {sources.length ? <Section title={t("web.workbench.section.sources")} icon={Paperclip} count={sources.length} defaultOpen={false}>
                 {sources.map((source) => (
-                    <div key={source.id} className="flex min-h-10 items-center gap-2 border-b border-border/30 px-3 py-1.5 text-[11px] last:border-b-0">
+                    <button
+                        key={source.id}
+                        type="button"
+                        disabled={!source.workspaceRelativePath && !source.workspacePath && !source.previewUrl && !source.url}
+                        onClick={() => openSource(source)}
+                        className="group flex min-h-10 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 enabled:hover:bg-muted/40 enabled:focus-visible:ring-2 enabled:focus-visible:ring-inset enabled:focus-visible:ring-primary disabled:cursor-default"
+                    >
                         <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium">{source.name}</span>
@@ -303,7 +343,8 @@ export function WorkspaceWorkbenchPanel({
                                 {source.mediaKind === "audio" ? t("web.workbench.source.audio") : source.mediaKind === "image" ? t("web.workbench.source.image") : source.mediaKind === "video" ? t("web.workbench.source.video") : t("web.workbench.source.file")}
                             </span>
                         </span>
-                    </div>
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                    </button>
                 ))}
             </Section> : null}
 

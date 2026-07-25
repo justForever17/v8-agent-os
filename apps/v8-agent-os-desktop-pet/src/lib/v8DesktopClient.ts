@@ -455,6 +455,18 @@ export class V8DesktopClientAdapter {
     }
   }
 
+  async streamSessionActivity(
+    onEvent: (eventName: string, payload: unknown) => void,
+    signal: AbortSignal,
+  ) {
+    await this.streamAdminSse(
+      "/api/client/realtime/session-activity/stream",
+      onEvent,
+      signal,
+      "会话活动流",
+    );
+  }
+
   private async streamRealtimeSessionViaEngineWs(
     conversationId: string,
     onEvent: (eventName: string, payload: unknown) => void,
@@ -530,13 +542,25 @@ export class V8DesktopClientAdapter {
     onEvent: (eventName: string, payload: unknown) => void,
     signal: AbortSignal,
   ) {
+    await this.streamAdminSse(
+      `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/stream?surface=desktop&compact=1`,
+      onEvent,
+      signal,
+      "实时流",
+    );
+  }
+
+  private async streamAdminSse(
+    path: string,
+    onEvent: (eventName: string, payload: unknown) => void,
+    signal: AbortSignal,
+    label: string,
+  ) {
     const session = this.session;
     if (!session?.accessToken) {
       throw new Error("尚未连接 V8OS Admin");
     }
-    const response = await fetch(localProxyPath(
-      `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/stream?surface=desktop&compact=1`,
-    ), {
+    const response = await fetch(localProxyPath(path), {
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
         "x-v8-admin-base": session.adminBaseUrl,
@@ -544,7 +568,7 @@ export class V8DesktopClientAdapter {
       signal,
     });
     if (!response.ok || !response.body) {
-      throw new Error(`实时流连接失败：${response.status}`);
+      throw new Error(`${label}连接失败：${response.status}`);
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

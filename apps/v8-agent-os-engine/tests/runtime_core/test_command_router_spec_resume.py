@@ -416,6 +416,67 @@ def test_runtime_episode_handoff_resume_requires_completion_gate_wait_marker(mon
     assert scheduled == []
 
 
+def test_supervisor_native_tool_correction_is_system_resume_and_single_use(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    run_record = {
+        "id": "run_native_correction",
+        "session_id": "session_native_correction",
+        "conversation_id": "session_native_correction",
+        "user_id": "user_demo",
+        "run_type": "chat",
+        "status": "running",
+        "metadata": {"provider": "minimax", "model": "MiniMax-M3"},
+    }
+
+    def _schedule(request, *, transport, run_id):
+        scheduled.append({"request": request, "transport": transport, "run_id": run_id})
+        return run_id
+
+    def _claim(run_id, *, key, expected_state, next_value, expected_status):
+        marker = run_record["metadata"].get(key)
+        current_state = str(marker.get("state") or "") if isinstance(marker, dict) else ""
+        if current_state != expected_state:
+            return {"updated": False, "reason": f"metadata_state_mismatch:{current_state or 'missing'}"}
+        run_record["metadata"][key] = dict(next_value)
+        return {"updated": True, "run_record": dict(run_record)}
+
+    router.configure(schedule_chat_run=_schedule)
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: dict(run_record))
+    monkeypatch.setattr("erc.command_router.run_service.update_metadata_key_if_state", _claim)
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        router,
+        "_scope_payload_for_session",
+        lambda _session_id: {
+            "workspace_path": "E:/Projects/test3",
+            "scope_hint": "workspace",
+            "scope_mode": "explicit",
+        },
+    )
+
+    first = router.schedule_supervisor_native_tool_correction(
+        "run_native_correction",
+        tool_names=["run_system_command", "http_request"],
+    )
+    second = router.schedule_supervisor_native_tool_correction(
+        "run_native_correction",
+        tool_names=["run_system_command"],
+    )
+
+    assert first["resume_scheduled"] is True
+    assert second["resume_scheduled"] is False
+    assert second["resume_error"] == "supervisor_native_tool_correction_already_used"
+    assert len(scheduled) == 1
+    request = scheduled[0]["request"]
+    assert scheduled[0]["transport"] == "system_resume"
+    assert request.resume_run_id == "run_native_correction"
+    assert request.messages[0].role == "system"
+    assert "textual pseudo tool markup" in request.messages[0].content
+    assert "only corrective continuation" in request.messages[0].content
+    assert request.resume_value["supervisorNativeToolCorrection"]["attempt"] == 1
+
+
 def test_runtime_episode_handoff_resume_waits_for_other_top_level_episode(monkeypatch):
     router = RuntimeCommandRouter()
     scheduled = []

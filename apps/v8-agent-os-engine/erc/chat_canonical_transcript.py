@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 from core.database import db
 from core.json_safe import to_jsonable
 from core.multimodal_payload_adapter import normalize_artifact_record
+from core.provider_continuation import strip_private_provider_continuation
 
 
 CanonicalNode = dict[str, Any]
@@ -257,8 +258,14 @@ def _is_human_surface_artifact(artifact: dict[str, Any]) -> bool:
     return "/.v8/uploads/" not in path_probe
 
 
-def format_canonical_message(row: CanonicalMessage, runtime_artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    metadata = _as_dict(row.get("metadata"))
+def format_canonical_message(
+    row: CanonicalMessage,
+    runtime_artifacts: list[dict[str, Any]] | None = None,
+    *,
+    include_private: bool = False,
+) -> dict[str, Any]:
+    stored_metadata = _as_dict(row.get("metadata"))
+    metadata = dict(stored_metadata) if include_private else strip_private_provider_continuation(stored_metadata)
     stored_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
     base_nodes = normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
     stored_artifacts = [dict(item) for item in _as_list(row.get("artifacts")) if isinstance(item, dict)]
@@ -663,8 +670,8 @@ def build_canonical_chat_turn_window(
     }
 
 
-def export_legacy_message_payload(row: CanonicalMessage) -> dict[str, Any]:
-    formatted = format_canonical_message(row)
+def export_legacy_message_payload(row: CanonicalMessage, *, include_private: bool = False) -> dict[str, Any]:
+    formatted = format_canonical_message(row, include_private=include_private)
     return {
         "id": formatted["id"],
         "session_id": row.get("session_id"),

@@ -405,6 +405,133 @@ def test_runtime_episode_wait_node_merges_completed_handoff() -> None:
     assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
 
 
+def test_runtime_episode_wait_node_preserves_terminal_brief_coverage_for_supervisor() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_brief_coverage_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "research", "reason": "cover three questions"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary="Research bundle ready.",
+        status="ready",
+        extra={
+            "taskBriefIds": ["fts5", "jsonb", "python-win"],
+            "taskBriefCount": 3,
+            "sourceCount": 4,
+            "limitations": ["One version remains provisional."],
+            "terminalEpisode": True,
+            "remainingHandoffsExpected": 0,
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]
+    assert projected["taskBriefIds"] == ["fts5", "jsonb", "python-win"]
+    assert projected["taskBriefCount"] == 3
+    assert projected["remainingHandoffsExpected"] == 0
+    assert "no further handoffs will arrive" in str(message.content)
+    assert "fts5, jsonb, python-win" in str(message.content)
+
+
+def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_research_gap_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "research", "reason": "verify official contracts"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary="Two briefs are supported; one still lacks official evidence.",
+        status="degraded",
+        extra={
+            "detailRef": "research://bundle/research-gap",
+            "taskBriefIds": ["fts5", "jsonb", "python-win"],
+            "coveredTaskBriefIds": ["fts5", "python-win"],
+            "missingTaskBriefIds": ["jsonb"],
+            "claimBlockers": ["jsonb"],
+            "evidenceGaps": [
+                {
+                    "taskBriefId": "jsonb",
+                    "status": "unverified",
+                    "blocksClaim": True,
+                    "blocksDownstream": False,
+                    "limitations": ["Official SQLite JSONB boundary was not established."],
+                    "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                }
+            ],
+            "downstreamAllowed": True,
+            "continuationPolicy": {
+                "retryLimit": 1,
+                "retryExhaustedAction": "continue_with_explicit_evidence_gaps",
+            },
+            "coverageComplete": False,
+            "recommendedNextAction": "retry_missing_research_briefs",
+            "taskBriefResults": [
+                {
+                    "taskBriefId": "jsonb",
+                    "status": "degraded",
+                    "answer": "Only one secondary source was found; the official release boundary remains unresolved.",
+                    "evidenceBundleId": "jsonb-partial",
+                    "researchRef": "research://bundle/jsonb-partial",
+                    "detailTool": "research_broker(mode='get_evidence', evidenceBundleId='jsonb-partial')",
+                    "sourceUrls": ["https://example.test/jsonb"],
+                    "sourceCount": 1,
+                    "claimCount": 2,
+                    "limitations": ["Official SQLite JSONB boundary was not established."],
+                    "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                }
+            ],
+            "terminalEpisode": True,
+            "remainingHandoffsExpected": 0,
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="degraded", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    assert command.goto == "supervisor"
+    assert command.update["runtime_dispatch_status"]["state"] == "degraded_handoff_ready"
+    message = command.update["messages"][0]
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]
+    assert projected["coveredTaskBriefIds"] == ["fts5", "python-win"]
+    assert projected["missingTaskBriefIds"] == ["jsonb"]
+    assert projected["claimBlockers"] == ["jsonb"]
+    assert projected["evidenceGaps"][0]["taskBriefId"] == "jsonb"
+    assert projected["evidenceGaps"][0]["blocksClaim"] is True
+    assert projected["evidenceGaps"][0]["blocksDownstream"] is False
+    assert projected["downstreamAllowed"] is True
+    assert projected["continuationPolicy"]["retryExhaustedAction"] == "continue_with_explicit_evidence_gaps"
+    assert projected["coverageComplete"] is False
+    assert projected["detailRef"] == ""
+    assert projected["results"][0]["result"].startswith("Only one secondary source")
+    assert projected["results"][0]["sourceUrls"] == ["https://example.test/jsonb"]
+    assert projected["results"][0]["detailTool"] == (
+        "research_broker(mode='get_evidence', evidenceBundleId='jsonb-partial')"
+    )
+    assert projected["results"][0]["evidenceStatusReasons"] == ["explicit_critical_evidence_gap"]
+    assert "covered=fts5, python-win; missing=jsonb; complete=False" in str(message.content)
+    assert "retry only the missing brief IDs once" in str(message.content)
+    assert "explicit_critical_evidence_gap" in str(message.content)
+    assert "research:// is evidence lineage, not a toolobs:// rawRef" in str(message.content)
+    assert "never pass research:// to tool_observation_detail" in str(message.content)
+
+
 def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss() -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_proof_{uuid4().hex}"
@@ -451,6 +578,73 @@ def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss
     assert "sha256=2b6be405" in content
     assert "evidence: complete" in content
     assert projected["evidenceComplete"] is True
+
+
+def test_runtime_episode_wait_node_quarantines_rejected_worker_success_claim() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_rejected_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "engineering", "reason": "write a governed baseline"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="engineering_degraded",
+        compact_summary="All baseline files landed and verification passed.",
+        status="degraded",
+        extra={
+            "delegationHandoff": {
+                "status": "failed",
+                "results": [
+                    {
+                        "taskBriefId": "baseline-implementation",
+                        "targetLabel": "Implementation Engineer",
+                        "status": "error",
+                        "error": "managed_worktree_finalize_failed:worktree_write_set_violation",
+                        "workerReportedSummary": "All baseline files landed and verification passed.",
+                        "artifactRefs": [
+                            {"path": "baseline/manifest.json", "kind": "workspace_artifact"}
+                        ],
+                        "artifactRefsAccepted": False,
+                        "sandboxEvidence": {
+                            "state": "failed",
+                            "candidateState": "quarantined_unmerged",
+                            "errorCode": "worktree_write_set_violation",
+                            "violations": ["baseline/.tmp/probe.json"],
+                            "writeSet": ["baseline/manifest.json"],
+                            "repairAction": "Repair the task contract and route one bounded retry.",
+                        },
+                        "verificationEvidence": {"passed": True},
+                    }
+                ],
+            },
+            "terminalEpisode": True,
+            "remainingHandoffsExpected": 0,
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="degraded", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected_handoff = message.additional_kwargs["v8_runtime_handoffs"][0]
+    projected = projected_handoff["results"][0]
+    assert "All baseline files landed" not in projected_handoff["summary"]
+    assert projected["result"] == "managed_worktree_finalize_failed:worktree_write_set_violation"
+    assert projected["artifactRefsAccepted"] is False
+    assert projected["artifactRefs"][0]["accepted"] is False
+    assert projected["artifactRefs"][0]["state"] == "quarantined_unmerged"
+    assert projected["proofRefs"] == []
+    assert projected["verificationPassed"] is False
+    assert projected["evidenceComplete"] is False
+    assert projected["workerReport"].startswith("All baseline files landed")
+    assert projected["sandboxEvidence"]["violations"] == ["baseline/.tmp/probe.json"]
+    assert "quarantined candidates (unmerged)" in str(message.content)
+    assert "All baseline files landed and verification passed" not in str(message.content)
 
 
 def test_runtime_episode_wait_node_projects_recursive_grandchild_verification_truth() -> None:

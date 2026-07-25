@@ -55,6 +55,89 @@ def test_openai_reasoning_summary_is_summary_kind():
     assert events[0].diagnostics["reasoningKind"] == "summary"
 
 
+def test_provider_reasoning_block_with_visible_summary_becomes_canonical_reasoning():
+    events = _adapter_events(
+        {
+            "content": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "先核对约束，再执行。"}],
+                    "encrypted_content": "opaque-provider-state",
+                }
+            ]
+        },
+        surface={
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": ["reasoning.summary"],
+            "displayKind": "summary",
+        },
+    )
+
+    assert [event.event_type for event in events] == ["reasoning_delta"]
+    assert events[0].delta == "先核对约束，再执行。"
+    assert "opaque-provider-state" not in str(events[0].diagnostics)
+
+
+def test_provider_reasoning_block_with_empty_summary_is_not_fabricated_as_thinking():
+    events = _adapter_events(
+        {
+            "content": [
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "encrypted_content": "opaque-provider-state",
+                }
+            ]
+        },
+        surface={
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": ["reasoning.summary"],
+            "displayKind": "summary",
+        },
+    )
+
+    assert events == []
+
+
+def test_terminal_reasoning_summary_with_text_is_visible_when_not_streamed():
+    adapter = LangChainCanonicalModelEventAdapter()
+    events = adapter.normalize_chat_model_end(
+        {
+            "event": "on_chat_model_end",
+            "run_id": "model-terminal-summary",
+            "data": {
+                "output": {
+                    "content": [
+                        {
+                            "type": "reasoning",
+                            "summary": [{"type": "summary_text", "text": "先检查约束，再给出结果。"}],
+                            "encrypted_content": "opaque-terminal-state",
+                        },
+                        {"type": "text", "text": "计算结果为 42。"},
+                    ]
+                }
+            },
+        },
+        text_snapshots={},
+        reasoning_snapshots={},
+        reasoning_surface={
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": ["reasoning.summary"],
+            "displayKind": "summary",
+        },
+    )
+
+    assert [event.event_type for event in events] == ["text_delta", "reasoning_delta"]
+    assert events[1].delta == "先检查约束，再给出结果。"
+    assert "opaque-terminal-state" not in str(events[1].diagnostics)
+
+
 def test_unconfigured_reasoning_content_is_unverified_thinking_not_text():
     events = _adapter_events({"additional_kwargs": {"reasoning_content": "progress-like text"}})
 

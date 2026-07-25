@@ -496,6 +496,8 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["webBrokerCallCount"], 4)
         self.assertIn("researchRuntimeWarning", payload)
         self.assertIn("research_broker", payload["recommendedNextAction"])
+        self.assertIn("Research episode", payload["researchRuntimeWarning"])
+        self.assertNotIn("research.core", payload["researchRuntimeWarning"])
 
     def test_web_search_explicit_metaso_requires_agent_browser_profile_when_not_allowlisted(self):
         with patch(
@@ -869,6 +871,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
         with patch("core.native_tools.storage.get_all_agents", return_value=[agent]), patch(
             "core.native_tools.storage.get_supervisor_config",
             return_value={"delegation": {"externalWorkers": []}},
+        ), patch(
+            "core.tools.native.delegation.prepare_delegated_engineering_workspace",
+            return_value=None,
         ):
             command = delegation_broker.func(
                 mode="dispatch",
@@ -879,6 +884,8 @@ class WebAndS3BrokerTests(unittest.TestCase):
                         "requiredCapabilities": ["software_engineering", "implement"],
                         "behaviorScope": ["workspace_changes"],
                         "writeSet": ["apps/v8-agent-os-engine"],
+                        "expectedOutputs": ["A bounded implementation patch"],
+                        "acceptanceContract": ["The requested patch is implemented and verified"],
                         "executionLaneHint": "subagent",
                     }
                 ],
@@ -909,6 +916,9 @@ class WebAndS3BrokerTests(unittest.TestCase):
         with patch("core.native_tools.storage.get_all_agents", return_value=[agent]), patch(
             "core.native_tools.storage.get_supervisor_config",
             return_value={"delegation": {"externalWorkers": []}},
+        ), patch(
+            "core.tools.native.delegation.prepare_delegated_engineering_workspace",
+            return_value=None,
         ):
             command = delegation_broker.func(
                 mode="dispatch",
@@ -919,6 +929,8 @@ class WebAndS3BrokerTests(unittest.TestCase):
                         "requiredCapabilities": ["software_engineering", "implement"],
                         "behaviorScope": ["workspace_changes"],
                         "writeSet": ["apps/v8-agent-os-engine"],
+                        "expectedOutputs": ["A bounded implementation patch"],
+                        "acceptanceContract": ["The requested patch is implemented and verified"],
                         "executionLaneHint": "subagent",
                     },
                     {

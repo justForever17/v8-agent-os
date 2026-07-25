@@ -85,6 +85,13 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
     assert stored["state"] == "failed"
     assert stored["resultRef"]
     assert stored["recoverable"] is True
+    with manager.get_connection() as conn:
+        topics = [row["topic"] for row in conn.execute(
+            "SELECT topic FROM runtime_episode_events WHERE episode_id = ? ORDER BY created_at",
+            (episode["episodeId"],),
+        ).fetchall()]
+    assert "handoff.ref.created" in topics
+    assert topics.index("handoff.ref.created") < topics.index("runtime.episode.failed")
 
 
 def test_runtime_episode_build_inherits_runtime_context_binding():
@@ -221,7 +228,7 @@ def test_engineering_plan_only_with_worker_brief_generates_real_delegated_plan(m
     assert captured["kind"] == "delegation"
     assert captured["inputs"]["workerBriefs"][0]["taskBriefId"] == "PLAN-001"
     assert handoff["status"] == "ready"
-    assert handoff["engineeringState"] == "work_plan_started"
+    assert handoff["engineeringState"] == "work_plan_ready"
     assert handoff["deliverableKind"] == "plan_only"
     assert handoff["writeRequired"] is False
     assert "three-phase implementation plan" in handoff["compactSummary"]
@@ -342,6 +349,8 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     assert stored["state"] == "completed"
     assert handoffs[-1]["payload"]["status"] == "ready"
     assert "runtime.episode.progress" in topics
+    assert "handoff.ref.created" in topics
+    assert topics.index("handoff.ref.created") < topics.index("runtime.episode.completed")
     assert topics[-1] == "runtime.episode.completed"
 
 
@@ -411,6 +420,92 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
     assert "TASK-001 finished" in dependency_results[0]["summary"]
 
 
+def test_local_delegation_materializes_upstream_change_chain_before_dependent_worker(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    seen_args: dict[str, dict] = {}
+    materialized: list[dict] = []
+    base_commit = "1" * 40
+    upstream_commit = "2" * 40
+    downstream_commit = "3" * 40
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        seen_args[task_id] = arg
+        return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} finished"}, []
+
+    def _fake_finalize(branch, summary):
+        task_id = branch["taskBriefId"]
+        change = {
+            "repositoryId": "repo-test",
+            "worktreeId": f"worktree-{task_id}",
+            "branchName": f"v8os/{task_id}",
+            "baseCommit": base_commit if task_id == "TASK-001" else upstream_commit,
+            "commitId": upstream_commit if task_id == "TASK-001" else downstream_commit,
+            "changedPaths": ["upstream.txt" if task_id == "TASK-001" else "downstream.txt"],
+            "status": "candidate",
+        }
+        return {**summary, "gitChangeSet": change}
+
+    class _Prepared:
+        execution_workspace_root = "E:/managed/downstream"
+
+        @staticmethod
+        def runtime_context():
+            return {
+                "workspace_path": "E:/managed/downstream",
+                "workspacePath": "E:/managed/downstream",
+                "worktree_id": "worktree-TASK-002",
+                "worktreeId": "worktree-TASK-002",
+                "sandbox_policy": {"base_commit": upstream_commit},
+            }
+
+    class _SandboxService:
+        def materialize_task_dependencies(self, **kwargs):
+            materialized.append(kwargs)
+            return _Prepared(), SimpleNamespace()
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    monkeypatch.setattr("graph.parallel_support._finalize_managed_branch_workspace", _fake_finalize)
+    monkeypatch.setattr("graph.parallel_support._delegation_summary_allows_changeset_promotion", lambda _summary: False)
+    monkeypatch.setattr(
+        "core.engineering_sandbox.service.get_engineering_sandbox_service",
+        lambda: _SandboxService(),
+    )
+    first = _delegation_send("TASK-001")
+    second = _delegation_send("TASK-002", deps=["TASK-001"])
+    first.arg["parallel_branch"]["engineeringWorkspace"] = {
+        "worktree_id": "worktree-TASK-001",
+        "workspace_path": "E:/managed/upstream",
+    }
+    second.arg["parallel_branch"]["engineeringWorkspace"] = {
+        "worktree_id": "worktree-TASK-002",
+        "workspace_path": "E:/managed/downstream-original",
+    }
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=[first, second]),
+            {"episodeId": "episode_test", "runId": "run-test", "inputs": {}, "need": {}},
+        )
+    )
+
+    assert len(materialized) == 1
+    assert materialized[0]["worktree_id"] == "worktree-TASK-002"
+    assert materialized[0]["change_sets"][0]["commitId"] == upstream_commit
+    assert seen_args["TASK-002"]["workspace_path"] == "E:/managed/downstream"
+    assert [item["commitId"] for item in results[1]["workspaceDependencyChain"]] == [
+        upstream_commit,
+        downstream_commit,
+    ]
+
+
 def test_cross_episode_degraded_handoff_can_continue_when_recovery_allows(monkeypatch):
     upstream = {
         "episodeId": "episode_research_degraded",
@@ -459,6 +554,79 @@ def test_cross_episode_degraded_handoff_can_continue_when_recovery_allows(monkey
     assert dependency["canContinueParent"] is True
     assert dependency["degradedReason"] == "research_run_missing_evidence"
     assert prepared["inputs"]["taskBriefs"][0]["context"]["dependencyResults"] == [dependency]
+
+
+def test_cross_episode_workspace_lineage_stays_runtime_internal(monkeypatch):
+    change_set = {
+        "repositoryId": "repo-test",
+        "worktreeId": "worktree-upstream",
+        "branchName": "v8os/run/test/task-upstream",
+        "baseCommit": "1" * 40,
+        "commitId": "2" * 40,
+        "changedPaths": ["upstream.txt"],
+        "status": "candidate",
+    }
+    upstream = {
+        "episodeId": "episode_engineering_upstream",
+        "runId": "run-cross-episode-lineage",
+        "kind": "engineering",
+        "state": "completed",
+        "inputs": {"taskBriefs": [{"taskBriefId": "ENGINEERING-UPSTREAM"}]},
+        "metadata": {
+            "workspaceDependencyState": {
+                "workspaceDependencyChain": [change_set],
+                "workspaceDependencyTaskIds": ["ENGINEERING-UPSTREAM"],
+            }
+        },
+    }
+    downstream = {
+        "episodeId": "episode_engineering_downstream",
+        "runId": "run-cross-episode-lineage",
+        "kind": "engineering",
+        "state": "queued",
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": "ENGINEERING-DOWNSTREAM",
+                    "dependency": ["ENGINEERING-UPSTREAM"],
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(
+        runtime_episode_runner_module.db,
+        "list_runtime_episodes",
+        lambda **_kwargs: [upstream, downstream],
+    )
+    monkeypatch.setattr(
+        runtime_episode_runner_module.db,
+        "list_runtime_episode_handoffs",
+        lambda episode_id: (
+            [
+                {
+                    "handoffId": "handoff-upstream",
+                    "payload": {
+                        "status": "completed",
+                        "compactSummary": "Upstream implementation is accepted and ready.",
+                    },
+                }
+            ]
+            if episode_id == "episode_engineering_upstream"
+            else []
+        ),
+    )
+
+    runtime_results, _active = RuntimeEpisodeRunner._cross_episode_dependency_context(downstream)
+    prepared, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(downstream)
+
+    assert runtime_results["ENGINEERING-UPSTREAM"]["workspaceDependencyChain"] == [change_set]
+    assert gate is None
+    agent_result = prepared["inputs"]["dependencyResults"][0]
+    assert agent_result["summary"] == "Upstream implementation is accepted and ready."
+    assert "workspaceDependencyChain" not in agent_result
+    assert "workspaceDependencyTaskIds" not in agent_result
+    brief_result = prepared["inputs"]["taskBriefs"][0]["context"]["dependencyResults"][0]
+    assert "workspaceDependencyChain" not in brief_result
 
 
 def test_cross_episode_degraded_handoff_blocks_when_recovery_disallows(monkeypatch):
@@ -764,6 +932,61 @@ def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeh
     assert results[1]["blockedDependencies"] == ["TASK-001"]
 
 
+def test_engineering_expected_artifact_guard_reads_managed_child_worktree(monkeypatch, tmp_path):
+    parent_workspace = tmp_path / "parent"
+    child_workspace = tmp_path / "child"
+    parent_workspace.mkdir()
+    (child_workspace / "baseline").mkdir(parents=True)
+    (child_workspace / "baseline" / "probe.py").write_text("print('ready')\n", encoding="utf-8")
+    runner = RuntimeEpisodeRunner()
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        return [], [], {"taskBriefId": task_id, "status": "ok", "summary": "artifact written"}, []
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    task_brief = {
+        "taskBriefId": "managed-write",
+        "goal": "Write the managed artifact.",
+        "writeRequired": True,
+        "writeSet": ["baseline/probe.py"],
+        "expectedArtifacts": ["baseline/probe.py"],
+    }
+    send = Send(
+        "parallel_delegate_task",
+        {
+            "parallel_branch": {
+                "agentId": "worker",
+                "agentName": "worker",
+                "taskBriefId": "managed-write",
+                "taskBrief": task_brief,
+                "reason": "Run managed-write",
+                "engineeringWorkspace": {"workspace_path": str(child_workspace)},
+            }
+        },
+    )
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=[send]),
+            {
+                "episodeId": "episode-managed-child",
+                "inputs": {"workspacePath": str(parent_workspace)},
+                "need": {},
+            },
+        )
+    )
+
+    assert results[0]["status"] == "ok"
+    assert results[0].get("error") != "expected_artifact_not_ready"
+
+
 def test_engineering_plan_only_with_task_briefs_delegates_a_plan_specialist(monkeypatch):
     captured: dict = {}
 
@@ -813,7 +1036,7 @@ def test_engineering_plan_only_with_task_briefs_delegates_a_plan_specialist(monk
     assert captured["kind"] == "delegation"
     assert captured["inputs"]["workerBriefs"][0]["taskBriefId"] == "task-1"
     assert handoff["status"] == "ready"
-    assert handoff["engineeringState"] == "work_plan_started"
+    assert handoff["engineeringState"] == "work_plan_ready"
     assert handoff["deliverableKind"] == "plan_only"
     assert handoff["writeRequired"] is False
 
@@ -1032,7 +1255,7 @@ def test_engineering_write_contract_not_confused_by_plan_only_text_in_acceptance
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
 
     assert handoff["status"] == "ready"
-    assert handoff["engineeringState"] == "execution_started"
+    assert handoff["engineeringState"] == "handoff_ready"
     assert handoff["delegationHandoff"]["createdFiles"] == ["index.html", "src/main.js", "README.md"]
 
 
@@ -1125,6 +1348,89 @@ def test_engineering_write_episode_rejects_claim_only_handoff_without_structured
 
     assert handoff["status"] == "degraded"
     assert handoff["errorCode"] == "engineering_missing_write_evidence"
+
+
+def test_engineering_write_episode_routes_bounded_repair_for_failed_managed_worktree(monkeypatch):
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "failed",
+            "compactSummary": "Delegated implementation failed finalization.",
+            "results": [
+                {
+                    "taskBriefId": "baseline-implementation",
+                    "delegationId": "delegation-baseline",
+                    "status": "error",
+                    "error": "managed_worktree_finalize_failed:worktree_write_set_violation",
+                    "summary": "Managed worktree rejected: worktree_write_set_violation.",
+                    "workerReportedSummary": "All baseline files landed and verification passed.",
+                    "artifactRefs": [
+                        {
+                            "path": "baseline/manifest.json",
+                            "kind": "workspace_artifact",
+                            "accepted": False,
+                            "state": "quarantined_unmerged",
+                        }
+                    ],
+                    "artifactRefsAccepted": False,
+                    "sandboxEvidence": {
+                        "state": "failed",
+                        "errorCode": "worktree_write_set_violation",
+                        "violations": ["baseline/.tmp/probe.json"],
+                        "writeSet": ["baseline/manifest.json"],
+                        "repairAction": "Repair the task contract and route one bounded retry.",
+                    },
+                },
+                {
+                    "taskBriefId": "baseline-verification",
+                    "status": "blocked",
+                    "error": "dependency_failed",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "create a baseline with proof"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "baseline-implementation",
+                        "goal": "Create the baseline implementation.",
+                        "writeRequired": True,
+                        "writeSet": ["baseline/manifest.json"],
+                        "expectedOutputs": ["baseline manifest"],
+                        "acceptanceContract": ["The manifest is written and valid."],
+                    },
+                    {
+                        "taskBriefId": "baseline-verification",
+                        "goal": "Persist verification evidence.",
+                        "writeRequired": True,
+                        "writeSet": ["baseline/reports/verification.json"],
+                        "expectedOutputs": ["verification report"],
+                        "acceptanceContract": ["The report records passing checks."],
+                        "dependency": ["baseline-implementation"],
+                    },
+                ]
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["errorCode"] == "engineering_delegated_tasks_blocked"
+    assert handoff["repairTaskBriefIds"] == ["baseline-implementation"]
+    assert handoff["failedTaskBriefIds"] == ["baseline-implementation", "baseline-verification"]
+    assert handoff["failedTaskBriefs"][0]["violations"] == ["baseline/.tmp/probe.json"]
+    assert "Do not inspect" in handoff["consumerHint"]
+    assert RuntimeEpisodeRunner._delegation_handoff_has_write_evidence(
+        handoff["delegationHandoff"]
+    ) is False
 
 
 def test_expected_artifact_path_preserves_absolute_windows_workspace_path(tmp_path):
@@ -1268,7 +1574,7 @@ def test_engineering_write_episode_accepts_ready_handoff_with_created_files(monk
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
 
     assert handoff["status"] == "ready"
-    assert handoff["engineeringState"] == "execution_started"
+    assert handoff["engineeringState"] == "handoff_ready"
     assert handoff["delegationHandoff"]["createdFiles"] == ["index.html", "src/main.js", "README.md"]
     assert "index.html" in handoff["compactSummary"]
     assert "npm test" in handoff["compactSummary"]
@@ -1301,6 +1607,76 @@ def test_delegation_handoff_visible_evidence_summary_extracts_nested_evidence():
     assert "artifact://pixel-demo" in summary
     assert "proof://unit-test" in summary
     assert "No browser smoke was run." in summary
+
+
+def test_engineering_handoff_projects_merged_child_delivery_without_exposing_worktree(monkeypatch, tmp_path):
+    child_worktree = "E:\\.v8os-worktrees\\repo\\child\\index.html"
+    (tmp_path / "src").mkdir()
+    (tmp_path / "index.html").write_text("<main>ready</main>", encoding="utf-8")
+    (tmp_path / "src" / "main.js").write_text("console.log('ready')", encoding="utf-8")
+
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "ready",
+            "compactSummary": "Delegation completed the implementation.",
+            "results": [
+                {
+                    "taskBriefId": "page-implementation",
+                    "status": "ok",
+                    "sandboxEvidence": {"state": "completed"},
+                    "parentWorktreeMerge": {"status": "merged_to_parent"},
+                    "gitChangeSet": {
+                        "status": "candidate",
+                        "changedPaths": ["index.html", "src/main.js"],
+                    },
+                    "artifactRefs": [child_worktree],
+                    "proofRefs": ["proof://browser-smoke"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "implement the page"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workspacePath": str(tmp_path),
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "page-implementation",
+                        "goal": "Implement and verify the page.",
+                        "writeRequired": True,
+                        "writeSet": ["index.html", "src/main.js"],
+                        "expectedOutputs": ["index.html", "src/main.js"],
+                        "acceptanceContract": "Return changed files and browser proof.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "handoff_ready"
+    assert handoff["deliveryProjection"] == {
+        "state": "merged_to_parent",
+        "accepted": True,
+        "workspaceScope": "current_active_workspace_root",
+        "changedPaths": ["index.html", "src/main.js"],
+        "taskBriefIds": ["page-implementation"],
+        "mergedResultCount": 1,
+        "blockedResultCount": 0,
+    }
+    assert "already merged into the current Active Workspace Root" in handoff["consumerHint"]
+    assert "index.html" in handoff["visibleEvidenceSummary"]
+    assert "src/main.js" in handoff["visibleEvidenceSummary"]
+    assert ".v8os-worktrees" not in handoff["visibleEvidenceSummary"]
+    assert child_worktree not in handoff["compactSummary"]
 
 
 def test_delegation_episode_without_tasks_returns_degraded_missing_tasks_handoff():
@@ -1449,7 +1825,10 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
                     "evidenceBundleId": "research_march7",
                     "researchAnswerPack": {
                         "answer": "官方资料与多源证据已汇总。",
-                        "sources": [{"title": "Official", "url": "https://example.com/official"}],
+                        "sources": [
+                            {"title": "Official", "url": "https://example.com/official"},
+                            {"title": "Independent", "url": "https://example.org/independent"},
+                        ],
                         "claimTable": [{"claim": "supported", "confidence": "high"}],
                         "limitations": [],
                     },
@@ -1499,7 +1878,20 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert handoff["status"] == "ready"
     assert handoff["runMode"] == "run"
     assert handoff["researchRefs"] == ["research://bundle/research_march7"]
-    assert handoff["sourceCount"] == 1
+    assert handoff["sourceCount"] == 2
+    result = handoff["taskBriefResults"][0]
+    assert result["answer"] == "官方资料与多源证据已汇总。"
+    assert result["sourceUrls"] == [
+        "https://example.com/official",
+        "https://example.org/independent",
+    ]
+    assert result["detailTool"] == (
+        "research_broker(mode='get_evidence', evidenceBundleId='research_march7')"
+    )
+    assert "detailRef" not in handoff
+    assert handoff["detailTool"] == (
+        "research_broker(mode='get_evidence', evidenceBundleId='research_march7')"
+    )
 
 
 def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
@@ -1535,6 +1927,613 @@ def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
     assert handoff["status"] == "degraded"
     assert handoff["degradedReason"] == "research_run_missing_evidence"
     assert handoff["researchRefs"] == []
+
+
+def test_research_episode_combines_every_task_brief_into_one_evidence_contract(monkeypatch):
+    calls: list[dict] = []
+
+    def _fake_research_broker(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("mode") == "run":
+            query = str(kwargs.get("query") or "")
+            bundle_id = (
+                "research_fts5"
+                if "FTS5" in query
+                else "research_jsonb"
+                if "JSONB" in query
+                else "research_python_win"
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "evidenceBundleId": bundle_id,
+                    "researchAnswerPack": {
+                        "answer": f"Covered: {query}",
+                        "sources": [
+                            {
+                                "title": "Official",
+                                "url": (
+                                    "https://sqlite.org/fts5.html"
+                                    if bundle_id == "research_fts5"
+                                    else "https://sqlite.org/json1.html"
+                                    if bundle_id == "research_jsonb"
+                                    else "https://docs.python.org/3/using/windows.html"
+                                ),
+                            }
+                        ],
+                        "claimTable": [{"claim": "covered", "confidence": "high"}],
+                        "limitations": ["One source is illustrative in this contract test."],
+                    },
+                }
+            )
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "establish a compatibility baseline"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "query": "Assess the current compatibility baseline.",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "fts5",
+                        "goal": "Check current SQLite FTS5 support.",
+                        "detailRefs": ["https://sqlite.org/fts5.html"],
+                    },
+                    {
+                        "taskBriefId": "jsonb",
+                        "routeQuery": "Check current SQLite JSONB support.",
+                        "detailRefs": ["https://sqlite.org/json1.html"],
+                    },
+                    {
+                        "taskBriefId": "python-win",
+                        "question": "Check current Python support on Windows.",
+                        "detailRefs": ["https://docs.python.org/3/using/windows.html"],
+                    },
+                ],
+            }
+        },
+    )
+    episode["run_id"] = "run-research-scope"
+    episode["session_id"] = "session-research-scope"
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert [item["mode"] for item in calls] == [
+        "search_experience",
+        "run",
+        "search_experience",
+        "run",
+        "search_experience",
+        "run",
+    ]
+    run_queries = [item["query"] for item in calls if item["mode"] == "run"]
+    assert run_queries == [
+        "Check current SQLite FTS5 support.",
+        "Check current SQLite JSONB support.",
+        "Check current Python support on Windows.",
+    ]
+    for call in calls:
+        assert call["freshness"] == "current"
+        assert call["sourcePolicy"] == "authoritative"
+        assert call["state"]["run_id"] == "run-research-scope"
+        assert call["state"]["session_id"] == "session-research-scope"
+    assert [item["seedUrls"] for item in calls if item["mode"] == "run"] == [
+        ["https://sqlite.org/fts5.html"],
+        ["https://sqlite.org/json1.html"],
+        ["https://docs.python.org/3/using/windows.html"],
+    ]
+    assert handoff["taskBriefIds"] == ["fts5", "jsonb", "python-win"]
+    assert handoff["taskBriefCount"] == 3
+    assert handoff["terminalEpisode"] is True
+    assert handoff["remainingHandoffsExpected"] == 0
+    assert handoff["coverageComplete"] is True
+    assert handoff["coveredTaskBriefIds"] == ["fts5", "jsonb", "python-win"]
+    assert handoff["missingTaskBriefIds"] == []
+    assert handoff["researchRefs"] == [
+        "research://bundle/research_fts5",
+        "research://bundle/research_jsonb",
+        "research://bundle/research_python_win",
+    ]
+    assert handoff["evidenceBundleId"] == ""
+    assert handoff["evidenceBundleIds"] == [
+        "research_fts5",
+        "research_jsonb",
+        "research_python_win",
+    ]
+    assert "detailTool" not in handoff
+
+
+def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_coverage(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        query = str(kwargs.get("query") or "")
+        if "JSONB" in query:
+            return json.dumps({"ok": True, "summary": "Provider returned no official evidence."})
+        bundle_id = "fts5" if "FTS5" in query else "python-win"
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": bundle_id,
+                "researchAnswerPack": {
+                    "answer": f"Covered {query}",
+                    "sources": [{"title": "Official", "url": f"https://example.com/{bundle_id}"}],
+                    "claimTable": [{"claim": "covered"}],
+                },
+            }
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "multi-brief evidence"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {"taskBriefId": "fts5", "goal": "Check FTS5."},
+                    {"taskBriefId": "jsonb", "goal": "Check JSONB."},
+                    {"taskBriefId": "python-win", "goal": "Check Python on Windows."},
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["researchState"] == "partial_evidence"
+    assert handoff["coverageComplete"] is False
+    assert handoff["coveredTaskBriefIds"] == ["fts5", "python-win"]
+    assert handoff["missingTaskBriefIds"] == ["jsonb"]
+    assert handoff["recommendedNextAction"] == "retry_missing_research_briefs"
+    assert "ad-hoc chain of web calls" in handoff["consumerHint"]
+    assert handoff["claimBlockers"] == ["jsonb"]
+    assert handoff["downstreamAllowed"] is True
+    assert handoff["continuationPolicy"]["retryExhaustedAction"] == "continue_with_explicit_evidence_gaps"
+    assert handoff["evidenceGaps"][0]["taskBriefId"] == "jsonb"
+    assert handoff["evidenceGaps"][0]["blocksClaim"] is True
+    assert handoff["evidenceGaps"][0]["blocksDownstream"] is False
+    assert handoff["evidenceGaps"][0]["evidenceStatusReasons"]
+
+
+def test_research_episode_does_not_mark_explicitly_unanswered_brief_ready(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_unanswered",
+                "researchAnswerPack": {
+                    "answer": "现有材料无法全面回答该兼容性问题。",
+                    "sources": [{"title": "SQLite", "url": "https://sqlite.org/json1.html"}],
+                    "claimTable": [{"claim": "A related page exists", "confidence": "low"}],
+                    "limitations": ["关键版本边界证据不足，无法核实。"],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify current SQLite JSONB behavior"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "sqlite-jsonb",
+                        "goal": "Verify current SQLite JSONB behavior.",
+                        "detailRefs": ["https://sqlite.org/json1.html"],
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["missingTaskBriefIds"] == ["sqlite-jsonb"]
+    result = handoff["taskBriefResults"][0]
+    assert result["status"] == "degraded"
+    assert "explicit_critical_evidence_gap" in result["evidenceStatusReasons"]
+
+
+def test_research_episode_does_not_mark_reliable_conclusion_gap_ready(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_unreliable_conclusion",
+                "researchAnswerPack": {
+                    "answer": "现有来源无法给出关于 SQLite FTS5 官方发布边界的可靠结论。",
+                    "sources": [
+                        {"title": "SQLite", "url": "https://sqlite.org/fts5.html"},
+                        {"title": "SQLite changes", "url": "https://sqlite.org/changes.html"},
+                    ],
+                    "claimTable": [{"claim": "相关页面存在", "confidence": "low"}],
+                    "limitations": [],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify current SQLite FTS5 release boundary"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "sqlite-fts5-release",
+                        "goal": "Verify the current SQLite FTS5 release boundary.",
+                        "detailRefs": ["https://sqlite.org/fts5.html"],
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["missingTaskBriefIds"] == ["sqlite-fts5-release"]
+    result = handoff["taskBriefResults"][0]
+    assert result["status"] == "degraded"
+    assert "explicit_critical_evidence_gap" in result["evidenceStatusReasons"]
+
+
+def test_research_episode_does_not_mark_missing_official_information_ready(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_missing_official_python",
+                "researchAnswerPack": {
+                    "answer": "Two community pages discuss Python on Windows, but they do not establish the requested contract.",
+                    "sources": [
+                        {"title": "Community A", "url": "https://example.com/a"},
+                        {"title": "Community B", "url": "https://example.com/b"},
+                    ],
+                    "claimTable": [{"claim": "Community discussion exists", "confidence": "low"}],
+                    "limitations": [
+                        "缺少来自python.org官方的Windows安装包类型、版本支持矩阵和安装路径说明。"
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify Python Windows official support"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "python-windows",
+                        "goal": "Verify the official Python Windows support contract.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["missingTaskBriefIds"] == ["python-windows"]
+    assert "explicit_critical_evidence_gap" in handoff["taskBriefResults"][0]["evidenceStatusReasons"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "在严格遵守仅使用 SOURCES 的约束下，无法对 FTS5 当前官方现状给出任何实质性结论。",
+        "关于 JSONB 合并时间与官方声明，当前记录均无 SOURCES 可佐证。",
+        "The requested official facts cannot be answered with the SOURCES provided and remain unverified.",
+    ],
+)
+def test_research_episode_rejects_real_provider_evidence_gap_phrases(monkeypatch, answer):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_real_gap_phrase",
+                "researchAnswerPack": {
+                    "answer": answer,
+                    "sources": [
+                        {"title": "Community A", "url": "https://example.com/a"},
+                        {"title": "Community B", "url": "https://example.com/b"},
+                    ],
+                    "claimTable": [{"claim": "Related discussion exists", "confidence": "low"}],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify official status"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "official-status",
+                        "goal": "Verify the current official status.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["taskBriefResults"][0]["status"] == "degraded"
+    assert "explicit_critical_evidence_gap" in handoff["taskBriefResults"][0]["evidenceStatusReasons"]
+
+
+def test_research_final_repair_handoff_does_not_invite_a_third_attempt(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_final_repair_gap",
+                "researchAnswerPack": {
+                    "answer": "The requested official facts cannot be answered with the supplied SOURCES.",
+                    "sources": [
+                        {"title": "Community A", "url": "https://example.com/a"},
+                        {"title": "Community B", "url": "https://example.com/b"},
+                    ],
+                    "claimTable": [{"claim": "Related discussion exists", "confidence": "low"}],
+                },
+            }
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "final managed repair"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "researchRepair": {
+                    "priorAttempts": 1,
+                    "repairBudget": 1,
+                    "repairAttempt": 1,
+                    "finalRepairAttempt": True,
+                },
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "official-status",
+                        "goal": "Verify the current official status.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["retryExhausted"] is True
+    assert handoff["recommendedNextAction"] == "report_blocker"
+    assert handoff["continuationPolicy"]["retryExhausted"] is True
+    assert "Do not retry this branch" in handoff["consumerHint"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            "SOURCES 未直接给出 2026 最新稳定版本与官方支持边界，因此本回答只能列出相关页面。"
+            + "补充背景材料。" * 180
+        ),
+        (
+            "官方页面标题与导航信息。" * 220
+            + "基于上述来源，无法据其形成可信回答。"
+        ),
+        (
+            "现有 SOURCES 仅能确认相关页面存在，无法基于当前 SOURCES 对该兼容性问题给出可被基线脚本直接验证的结论。"
+            + "补充背景材料。" * 180
+        ),
+    ],
+)
+def test_research_episode_scans_bounded_long_answer_for_declared_evidence_gap(monkeypatch, answer):
+    assert len(answer) > 600
+
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_long_declared_gap",
+                "researchAnswerPack": {
+                    "answer": answer,
+                    "sources": [
+                        {"title": "Official page", "url": "https://example.com/official"},
+                    ],
+                    "claimTable": [{"claim": "An official page exists", "confidence": "low"}],
+                    "limitations": [],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify official current contract"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "official-current-contract",
+                        "goal": "Verify the official current contract.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    result = handoff["taskBriefResults"][0]
+    assert result["status"] == "degraded"
+    assert "explicit_critical_evidence_gap" in result["evidenceStatusReasons"]
+
+
+def test_research_episode_rejects_explicitly_stale_latest_claim(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_stale_latest",
+                "researchAnswerPack": {
+                    "answer": "SQLite 最新稳定版本为 3.34.0（2020 年 12 月发布）。",
+                    "sources": [
+                        {"title": "SQLite FTS5", "url": "https://sqlite.org/fts5.html"},
+                        {"title": "SQLite changes", "url": "https://sqlite.org/changes.html"},
+                    ],
+                    "claimTable": [{"claim": "3.34.0 is latest", "confidence": "high"}],
+                    "limitations": [],
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify current SQLite release"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "sqlite-current",
+                        "goal": "Verify the current latest stable SQLite release.",
+                        "detailRefs": ["https://sqlite.org/changes.html"],
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["missingTaskBriefIds"] == ["sqlite-current"]
+    assert "freshness_claim_stale" in handoff["taskBriefResults"][0]["evidenceStatusReasons"]
+
+
+def test_research_episode_enforces_explicit_source_count_contract(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": True,
+                "evidenceBundleId": "research_single_source",
+                "researchAnswerPack": {
+                    "answer": "One source supports the claim.",
+                    "sources": [{"title": "Python", "url": "https://docs.python.org/3/using/windows.html"}],
+                    "claimTable": [{"claim": "Supported by one source", "confidence": "medium"}],
+                    "limitations": [],
+                },
+            }
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify Python Windows support"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "python-windows",
+                        "goal": "Verify current Python support on Windows.",
+                        "detailRefs": ["https://docs.python.org/3/using/windows.html"],
+                        "expectedOutputs": ["At least 2 independent sources"],
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    result = handoff["taskBriefResults"][0]
+    assert "source_floor_not_met:2" in result["evidenceStatusReasons"]
 
 
 def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):

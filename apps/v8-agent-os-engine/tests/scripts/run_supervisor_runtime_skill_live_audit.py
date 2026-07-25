@@ -38,6 +38,7 @@ class LiveCaseSpec:
     source_required: bool = False
     skill_required: bool = False
     forbid_runtime_episodes: bool = False
+    expected_episode_kinds: list[str] = field(default_factory=list)
     explicit_degradation_ok: bool = False
     skill_references: list[dict[str, Any]] = field(default_factory=list)
     context_mentions: list[dict[str, Any]] = field(default_factory=list)
@@ -126,6 +127,68 @@ def _wait_for_engine(engine_url: str, *, timeout: float = 20.0) -> tuple[bool, s
             last_error = f"{type(exc).__name__}: {exc}"
             time.sleep(0.75)
     return False, last_error
+
+
+def _ensure_explicit_live_workspace_trusted(workspace: Path) -> tuple[bool, dict[str, Any]]:
+    """Trust and adopt only the disposable workspace supplied to this live side-effect harness.
+
+    Product trust remains unchanged.  This helper is called only for the case
+    that already requires ``--allow-side-effects``; normal Engine execution
+    never adopts an arbitrary workspace implicitly.
+    """
+
+    event: dict[str, Any] = {"workspacePath": str(workspace), "action": "unchanged"}
+    if not workspace.exists() or not workspace.is_dir():
+        event["error"] = "workspace_missing_or_not_directory"
+        return False, event
+    try:
+        from core.workspace_authority import workspace_authority_service
+        from runtimes.memory.project_registry import project_registry_service
+
+        project = project_registry_service.find_project_for_workspace(workspace_path=str(workspace))
+        trust_state = str(getattr(project, "workspace_trust_state", "") or "").strip().lower() if project else ""
+        if project is None or trust_state != "trusted":
+            project = project_registry_service.save_project(
+                {
+                    "name": "Supervisor joint live harness workspace",
+                    "workspacePath": str(workspace),
+                    "workspaceTrustState": "trusted",
+                    "workspaceTrustSource": "user_confirmed_live_harness",
+                    "tags": ["live_harness", "supervisor_joint_runtime"],
+                }
+            )
+            event["action"] = "registered_trusted_project"
+        else:
+            event["action"] = "already_trusted"
+        event["projectId"] = str(getattr(project, "project_id", "") or "")
+        event["workspaceId"] = str(getattr(project, "workspace_id", "") or "")
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        sandbox = get_engineering_sandbox_service()
+        repository = sandbox.project_repository_status(
+            workspace_root=str(workspace),
+            project_id=event["projectId"] or None,
+        )
+        if bool(repository.get("adoptionRequired")):
+            repository = sandbox.adopt_project_repository(
+                workspace_root=str(workspace),
+                project_id=event["projectId"] or None,
+            )
+            event["action"] += "+adopted_repository"
+        event["repository"] = {
+            "state": ((repository.get("repository") or {}).get("state")),
+            "adoptionRequired": bool(repository.get("adoptionRequired")),
+        }
+        authority = workspace_authority_service.resolve(
+            runtime_kind="engineering",
+            explicit_workspace_path=str(workspace),
+            explicit_project_id=event["projectId"] or None,
+        )
+        event["authority"] = authority.as_dict()
+        return bool(authority.side_effects_allowed), event
+    except Exception as exc:  # noqa: BLE001 - live harness must preserve the preflight failure.
+        event["error"] = f"{type(exc).__name__}: {exc}"
+        return False, event
 
 
 def _default_model_profile_label() -> str:
@@ -229,6 +292,21 @@ def _case_specs(selected_case: str) -> list[LiveCaseSpec]:
             explicit_degradation_ok=True,
         ),
     ]
+    if selected_case == "joint_research_delivery":
+        return [
+            LiveCaseSpec(
+                case_id="joint_research_delivery",
+                title="多主题时效调研应连续进入 Research 与 Engineering",
+                prompt=(
+                    "团队准备重做一个本地数据兼容性基线。请查清 2026 年当前 SQLite FTS5、"
+                    "SQLite JSONB 和 Python 在 Windows 上的官方现状，再在当前工作区留下让同事"
+                    "可以一键复现、机器读取并继续扩展的最小基线。别只给建议，依据、能运行的东西、"
+                    "验证结果和关键取舍都整理好，不要改别的项目。"
+                ),
+                expected_episode_kinds=["research", "engineering"],
+                source_required=True,
+            )
+        ]
     if selected_case == "all":
         return cases
     return [case for case in cases if case.case_id == selected_case]
@@ -686,6 +764,11 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
     spec = result.spec
     findings: list[AuditFinding] = []
     tool_set = set(result.actual_tools)
+    episode_kinds = {
+        str(item.get("kind") or item.get("runtimeKind") or item.get("episodeKind") or "").strip().lower()
+        for item in result.episodes
+        if isinstance(item, dict)
+    }
     if result.status in {"failed", "timeout"}:
         findings.append(
             AuditFinding(
@@ -701,9 +784,13 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
         )
     for forbidden in spec.forbidden_tools:
         forbidden_seen = forbidden in tool_set
-        if forbidden in {"runtime_broker", "delegation_broker"}:
+        if forbidden == "runtime_broker":
             forbidden_seen = forbidden_seen or bool(result.episodes) or any(
-                topic.startswith("runtime.episode.") or topic.startswith("delegation.") or topic.startswith("subagent.")
+                topic.startswith("runtime.episode.") for topic in result.observed_topics
+            )
+        elif forbidden == "delegation_broker":
+            forbidden_seen = forbidden_seen or any(
+                topic.startswith("delegation.") or topic.startswith("subagent.")
                 for topic in result.observed_topics
             )
         if forbidden_seen:
@@ -745,6 +832,20 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
                 regression_test="tests/agent_quality/test_writing_routing.py::test_simple_doc_does_not_route_runtime",
             )
         )
+    missing_episode_kinds = [kind for kind in spec.expected_episode_kinds if kind not in episode_kinds]
+    if missing_episode_kinds:
+        findings.append(
+            AuditFinding(
+                severity="P0",
+                case_id=spec.case_id,
+                title=spec.title,
+                summary=f"联合执行链缺少 runtime：{', '.join(missing_episode_kinds)}",
+                evidence=_redact({"episodeKinds": sorted(episode_kinds), "episodes": result.episodes[:8]}),
+                modules=["graph/supervisor_context.py", "graph/workflow_assembly.py", "core/runtime_episode_runner.py"],
+                recommended_fix="先修 Supervisor 对复合调研交付的连续路线认知，再核查 terminal handoff 是否恢复同一 run。",
+                regression_test="tests/scripts/run_supervisor_runtime_skill_live_audit.py --case joint_research_delivery --allow-side-effects",
+            )
+        )
     for expected in spec.expected_all_tools:
         if expected not in tool_set:
             severity = "P0" if expected == "fetch_skill_instructions" else "P1"
@@ -760,7 +861,7 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
                     regression_test="tests/agent_quality/test_skill_writing_routing.py",
                 )
             )
-    if spec.expected_any_tools and not any(tool in tool_set or any(tool in event for event in result.key_events) for tool in spec.expected_any_tools):
+    if spec.expected_any_tools and not any(tool in tool_set for tool in spec.expected_any_tools):
         route_observed = "runtime_broker" in spec.expected_any_tools and (
             bool(result.episodes) or any(topic.startswith("runtime.episode.") for topic in result.observed_topics)
         )
@@ -1027,20 +1128,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--case",
         default="all",
-        choices=["simple_doc", "ambiguous_doc", "weather", "huashu_plan", "huashu_video_gap", "source_write", "all"],
+        choices=["simple_doc", "ambiguous_doc", "weather", "huashu_plan", "huashu_video_gap", "source_write", "joint_research_delivery", "all"],
     )
     parser.add_argument("--engine-url", default=DEFAULT_ENGINE_URL)
     parser.add_argument("--workspace", default=str(REPO_ROOT))
     parser.add_argument("--max-wait", type=float, default=420.0)
     parser.add_argument("--write-report", action="store_true")
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--allow-side-effects", action="store_true", help="Reserved for future cases. Current cases are read-only/chat-only.")
+    parser.add_argument("--allow-side-effects", action="store_true", help="Allow the explicit disposable workspace used by side-effect live cases.")
     parser.add_argument("--strict", action="store_true", help="Return non-zero on any P1/P2 finding, not only P0.")
     args = parser.parse_args(argv)
 
     if not args.live:
         print("Refusing to call live Engine/model without --live.", file=sys.stderr)
         return 2
+    if args.case == "joint_research_delivery" and not args.allow_side_effects:
+        print("joint_research_delivery writes a disposable workspace; pass --allow-side-effects.", file=sys.stderr)
+        return 2
+    if args.case == "joint_research_delivery":
+        trusted, trust_event = _ensure_explicit_live_workspace_trusted(Path(args.workspace).expanduser().resolve(strict=False))
+        print(f"[live-audit] workspace preflight: {_redact(trust_event)}")
+        if not trusted:
+            print("joint_research_delivery workspace trust preflight failed.", file=sys.stderr)
+            return 2
     model_profile = args.model_profile or _default_model_profile_label()
     ok, error = _wait_for_engine(args.engine_url)
     if not ok:

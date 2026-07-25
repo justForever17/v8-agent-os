@@ -20,6 +20,7 @@ ALLOWLIST = {
     "core/model_reasoning_repair.py",
     "core/model_thinking_control.py",
     "core/provider_compatibility.py",
+    "core/provider_continuation.py",
     "core/reasoning_payload_contract.py",
     "core/reasoning_surface_contract.py",
     "core/response_normalizer.py",
@@ -55,7 +56,7 @@ def test_background_runtime_code_does_not_directly_read_reasoning_payloads() -> 
 def _python_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*.py"):
         parts = set(path.parts)
-        if ".venv" in parts or "__pycache__" in parts:
+        if ".venv" in parts or ".python" in parts or "__pycache__" in parts:
             continue
         yield path
 

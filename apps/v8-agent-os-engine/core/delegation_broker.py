@@ -680,6 +680,13 @@ _TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS = {
     "assignedTaskSummaries",
     "parentContext",
     "workerContext",
+    # These fields are rendered by the delegated system contract with explicit
+    # authority labels.  Dumping them into the user-like task query makes a
+    # sibling goal look like additional work and makes an upstream handoff look
+    # like untrusted prose instead of bounded evidence.
+    "activeCollaborators",
+    "collaborationBoundary",
+    "dependencyResults",
 }
 
 

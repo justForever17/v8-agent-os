@@ -211,6 +211,60 @@ def test_write_task_rejects_managed_worktree_with_no_changed_paths(monkeypatch) 
     assert result["sandboxEvidence"]["state"] == "no_changes"
 
 
+def test_write_set_violation_quarantines_worker_claim_and_exposes_bounded_repair(monkeypatch) -> None:
+    class FakeService:
+        def finalize_task_workspace(self, *, worktree_id: str, commit_message: str):
+            raise ManagedGitError(
+                "worktree_write_set_violation",
+                "The task changed paths outside its approved write set.",
+                details={
+                    "violations": ["baseline/.tmp/probe.json", "baseline/.tmp/probe.pretty.json"],
+                    "writeSet": ["baseline/manifest.json"],
+                },
+            )
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.service.get_engineering_sandbox_service",
+        lambda: FakeService(),
+    )
+
+    result = _finalize_managed_branch_workspace(
+        {
+            "taskBriefId": "baseline-implementation",
+            "taskBrief": {
+                "taskBriefId": "baseline-implementation",
+                "writeRequired": True,
+                "writeSet": ["baseline/manifest.json"],
+            },
+            "engineeringWorkspace": {
+                "worktree_id": "worktree-write-set-violation",
+                "sandbox_lease_id": "lease-write-set-violation",
+                "sandbox_policy_digest": "policy-write-set-violation",
+            },
+        },
+        {
+            "status": "ok",
+            "summary": "All baseline files landed and verification passed.",
+            "resultText": "Implementation complete.",
+            "artifactRefs": [{"path": "baseline/manifest.json", "kind": "workspace_artifact"}],
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"] == "managed_worktree_finalize_failed:worktree_write_set_violation"
+    assert result["workerReportedSummary"].startswith("All baseline files landed")
+    assert result["summary"].startswith("Managed worktree rejected")
+    assert result["artifactRefsAccepted"] is False
+    assert result["artifactRefs"][0]["accepted"] is False
+    assert result["artifactRefs"][0]["state"] == "quarantined_unmerged"
+    assert result["sandboxEvidence"]["violations"] == [
+        "baseline/.tmp/probe.json",
+        "baseline/.tmp/probe.pretty.json",
+    ]
+    assert "route one bounded retry" in result["repairAction"]
+    assert "Do not inspect" in result["repairAction"]
+
+
 def test_failed_managed_worktree_is_preserved_but_never_merged(monkeypatch) -> None:
     from core.engineering_sandbox.contracts import GitChangeSetRef
 
@@ -719,6 +773,82 @@ def test_parallel_change_sets_merge_in_integration_worktree_then_promote(tmp_pat
     assert set(promoted) == {"one.txt", "two.txt"}
     assert (workspace / "one.txt").read_text(encoding="utf-8") == "one\n"
     assert (workspace / "two.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_dependency_changes_become_downstream_baseline_not_downstream_output(tmp_path: Path) -> None:
+    database = DatabaseManager(tmp_path / "state.db")
+    git = _git_service(tmp_path)
+    service = EngineeringSandboxService(home=tmp_path / "v8-home", git_service=git, database=database)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("base\n", encoding="utf-8")
+    service.ensure_project_repository(
+        workspace_root=workspace,
+        project_id="dependency-demo",
+        allow_initialize=True,
+    )
+    upstream = service.prepare_task_workspace(
+        workspace_root=workspace,
+        project_id="dependency-demo",
+        session_id="session",
+        run_id="run",
+        delegation_id="delegation-upstream",
+        worktree_id="task-upstream",
+        write_set=("upstream.txt",),
+        actor_role="direct_subagent",
+        runtime_kind="engineering",
+        network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
+    )
+    downstream = service.prepare_task_workspace(
+        workspace_root=workspace,
+        project_id="dependency-demo",
+        session_id="session",
+        run_id="run",
+        delegation_id="delegation-downstream",
+        worktree_id="task-downstream",
+        write_set=("downstream.txt",),
+        actor_role="direct_subagent",
+        runtime_kind="engineering",
+        network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
+    )
+    Path(upstream.execution_workspace_root, "upstream.txt").write_text("accepted upstream\n", encoding="utf-8")
+    upstream_change = service.finalize_task_workspace(
+        worktree_id=upstream.worktree.worktree_id,
+        commit_message="test: upstream",
+    )
+
+    materialized, dependency_baseline = service.materialize_task_dependencies(
+        worktree_id=downstream.worktree.worktree_id,
+        run_id="run",
+        change_sets=(upstream_change.as_dict(),),
+    )
+
+    assert Path(materialized.execution_workspace_root, "upstream.txt").read_text(encoding="utf-8") == "accepted upstream\n"
+    assert dependency_baseline.changed_paths == ("upstream.txt",)
+    assert materialized.worktree.base_commit == materialized.lease.policy.base_commit
+    with database.get_connection() as conn:
+        row = conn.execute(
+            "SELECT base_commit FROM engineering_worktrees WHERE worktree_id = ?",
+            (downstream.worktree.worktree_id,),
+        ).fetchone()
+    assert row is not None
+    assert str(row["base_commit"]) == materialized.worktree.base_commit
+
+    Path(materialized.execution_workspace_root, "downstream.txt").write_text("downstream only\n", encoding="utf-8")
+    downstream_change = service.finalize_task_workspace(
+        worktree_id=downstream.worktree.worktree_id,
+        commit_message="test: downstream",
+    )
+
+    assert downstream_change.changed_paths == ("downstream.txt",)
+    service.build_run_integration(
+        run_id="run",
+        invocation_id="dependent-delivery",
+        change_sets=(upstream_change.as_dict(), downstream_change.as_dict()),
+    )
+    service.promote_run_integration(run_id="run")
+    assert (workspace / "upstream.txt").read_text(encoding="utf-8") == "accepted upstream\n"
+    assert (workspace / "downstream.txt").read_text(encoding="utf-8") == "downstream only\n"
 
 
 def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(tmp_path: Path) -> None:

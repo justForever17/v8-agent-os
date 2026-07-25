@@ -48,7 +48,7 @@ def test_runtime_broker_default_is_decision_summary():
     assert visible.startswith("Runtime route menu")
     assert "research.core" in visible
     assert "Runtime route menu" in visible
-    assert "Candidate routes" in visible
+    assert "Run-scoped tool groups (not execution routes)" in visible
     _assert_not_json_wrapper(visible)
 
 

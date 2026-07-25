@@ -20,6 +20,7 @@ ACTIVE_EPISODE_STATES = {
     "waiting_child",
     "waiting_external",
     "waiting_approval",
+    "waiting_input",
 }
 TERMINAL_EPISODE_STATES = {"completed", "degraded", "failed", "merged", "cancelled"}
 
@@ -38,7 +39,7 @@ def runtime_episode_parent_id(episode: Mapping[str, Any]) -> str:
     return str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
 
 
-def runtime_episode_write_set(episode: Mapping[str, Any]) -> list[str]:
+def _runtime_episode_raw_write_set(episode: Mapping[str, Any]) -> list[str]:
     inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
     briefs = inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or []
     raw_input_write_set = inputs.get("writeSet") or inputs.get("write_set") or []
@@ -54,6 +55,12 @@ def runtime_episode_write_set(episode: Mapping[str, Any]) -> list[str]:
         capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), Mapping) else {}
         values.extend(list(capsule.get("writeSet") or capsule.get("write_set") or []))
 
+    return [str(value or "").strip().strip("`'\"").replace("\\", "/") for value in values if str(value or "").strip()]
+
+
+def runtime_episode_write_set(episode: Mapping[str, Any]) -> list[str]:
+    values = _runtime_episode_raw_write_set(episode)
+
     normalized: list[str] = []
     for value in values:
         text = str(value or "").strip().strip("`'\"").replace("\\", "/")
@@ -62,6 +69,62 @@ def runtime_episode_write_set(episode: Mapping[str, Any]) -> list[str]:
         text = "/".join(part for part in text.split("/") if part).casefold()
         if text and text not in normalized:
             normalized.append(text)
+    return normalized
+
+
+def _runtime_episode_has_repairable_write_contract(
+    episode: Mapping[str, Any],
+    *,
+    replacement_write_set: set[str],
+) -> bool:
+    """Return true when a later precise contract can replace this malformed one.
+
+    Directory placeholders and managed-worktree absolute paths are contract
+    defects, not durable write obligations.  Explicit relative files remain
+    obligations and must still be present in the replacement contract.
+    """
+
+    has_repairable_entry = False
+    explicit_relative_files: set[str] = set()
+    for raw_value in _runtime_episode_raw_write_set(episode):
+        value = raw_value.strip()
+        is_absolute = value.startswith("/") or (
+            len(value) >= 3 and value[1] == ":" and value[2] == "/"
+        )
+        is_directory_placeholder = value.endswith("/")
+        if is_absolute or is_directory_placeholder:
+            has_repairable_entry = True
+            continue
+        normalized = "/".join(part for part in value.split("/") if part).casefold()
+        if normalized:
+            explicit_relative_files.add(normalized)
+    return has_repairable_entry and explicit_relative_files.issubset(replacement_write_set)
+
+
+def runtime_episode_task_brief_ids(episode: Mapping[str, Any]) -> list[str]:
+    """Return the stable task identities owned by one runtime attempt.
+
+    A repair may legitimately replace an over-broad directory write set with
+    explicit files (or replace invalid absolute paths with workspace-relative
+    paths).  The task brief id is the durable identity across those contract
+    repairs; path containment alone cannot recognize the replacement.
+    """
+
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    briefs = inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or []
+    normalized: list[str] = []
+    for brief in list(briefs or []):
+        if not isinstance(brief, Mapping):
+            continue
+        value = str(
+            brief.get("taskBriefId")
+            or brief.get("task_brief_id")
+            or brief.get("taskId")
+            or brief.get("task_id")
+            or ""
+        ).strip()
+        if value and value not in normalized:
+            normalized.append(value)
     return normalized
 
 
@@ -134,6 +197,11 @@ def runtime_handoffs_have_verified_write_delivery(
                     status = str(result.get("status") or "").strip().lower()
                     if result.get("passed") is True or status in {"verified", "passed", "success", "completed"}:
                         verified = True
+            acceptance_check = item.get("acceptanceCheck") or item.get("acceptance_check")
+            if isinstance(acceptance_check, Mapping):
+                must = acceptance_check.get("must")
+                if isinstance(must, Mapping) and must.get("passed") is True:
+                    verified = True
             for key in (
                 "changedPaths",
                 "changed_paths",
@@ -192,10 +260,11 @@ def superseded_runtime_episode_ids(
             index,
         )
 
-    proven: list[tuple[dict[str, Any], set[str], tuple[str, int]]] = []
+    proven: list[tuple[dict[str, Any], set[str], set[str], tuple[str, int]]] = []
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
         write_set = set(runtime_episode_write_set(episode))
+        task_brief_ids = set(runtime_episode_task_brief_ids(episode))
         state = str(episode.get("state") or "").strip().lower()
         if (
             episode_id
@@ -205,24 +274,43 @@ def superseded_runtime_episode_ids(
                 write_set=write_set,
             )
         ):
-            proven.append((episode, write_set, _time_key(episode, index)))
+            proven.append((episode, write_set, task_brief_ids, _time_key(episode, index)))
 
     superseded: set[str] = set()
     for index, episode in enumerate(rows):
         episode_id = _episode_id(episode)
         write_set = set(runtime_episode_write_set(episode))
+        task_brief_ids = set(runtime_episode_task_brief_ids(episode))
         if not episode_id or not write_set:
             continue
         episode_time = _time_key(episode, index)
         workspace = _runtime_episode_workspace_identity(episode)
-        for candidate, candidate_write_set, candidate_time in proven:
+        episode_kind = normalize_capability_kind(episode.get("kind"))
+        for candidate, candidate_write_set, candidate_task_brief_ids, candidate_time in proven:
             candidate_id = _episode_id(candidate)
             candidate_workspace = _runtime_episode_workspace_identity(candidate)
             if candidate_id == episode_id or candidate_time <= episode_time:
                 continue
+            candidate_kind = normalize_capability_kind(candidate.get("kind"))
+            cross_kind_same_task = (
+                candidate_kind != episode_kind
+                and bool(task_brief_ids)
+                and task_brief_ids.issubset(candidate_task_brief_ids)
+                and write_set.issubset(candidate_write_set)
+            )
+            if candidate_kind != episode_kind and not cross_kind_same_task:
+                continue
             if workspace and candidate_workspace and workspace != candidate_workspace:
                 continue
-            if write_set.issubset(candidate_write_set):
+            same_task_repair = (
+                bool(task_brief_ids)
+                and task_brief_ids.issubset(candidate_task_brief_ids)
+                and _runtime_episode_has_repairable_write_contract(
+                    episode,
+                    replacement_write_set=candidate_write_set,
+                )
+            )
+            if cross_kind_same_task or same_task_repair or write_set.issubset(candidate_write_set):
                 superseded.add(episode_id)
                 break
     return superseded
@@ -544,10 +632,20 @@ def append_handoff_ref(route_context: dict[str, Any] | None, handoff_ref: dict[s
     producer_id = str(handoff_ref.get("producerEpisodeId") or "").strip()
     if producer_id:
         handoff_status = str(handoff_ref.get("status") or "").strip().lower()
+        # A handoff can explicitly pause for one missing, user/Supervisor
+        # supplied input.  Treat that as a live episode state; collapsing it
+        # to ``completed`` is what previously released the lane while the
+        # runtime still had work to do.
+        if handoff_status in {"waiting_input", "awaiting_input", "needs_input"}:
+            next_state = "waiting_input"
+        elif handoff_status in {"running", "waiting", "pending"}:
+            next_state = "waiting"
+        else:
+            next_state = "failed" if handoff_status == "failed" else "completed"
         context, episode = transition_runtime_episode(
             context,
             producer_id,
-            state="failed" if handoff_status == "failed" else "completed",
+            state=next_state,
             resultRef=handoff_ref.get("handoffRefId"),
         )
         episodes = [dict(item) for item in list(context.get("capabilityEpisodes") or []) if isinstance(item, dict)]

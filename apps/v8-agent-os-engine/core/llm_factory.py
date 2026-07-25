@@ -40,7 +40,9 @@ from core.model_thinking_control import (
     ensure_anthropic_thinking_budget_headroom,
     merge_model_request_patch,
     no_think_request_patch,
+    provider_reasoning_transport_patch,
     reasoning_effort_request_patch,
+    reasoning_summary_request_patch,
     resolve_reasoning_effort_control_for_metadata,
     resolve_thinking_control_for_metadata,
 )
@@ -1006,10 +1008,18 @@ class LLMFactory:
         final_kwargs = merge_model_request_patch(final_kwargs, no_think_request_patch(meta.get("thinking_control")))
         final_kwargs = merge_model_request_patch(
             final_kwargs,
+            provider_reasoning_transport_patch(meta),
+        )
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
             reasoning_effort_request_patch(
                 meta.get("reasoning_effort_control"),
                 meta.get("request_reasoning_effort"),
             ),
+        )
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
+            reasoning_summary_request_patch(meta),
         )
         # Protocol is a model binding, never inferred from a route at request
         # time. Only an explicit Responses binding opts into that schema, and

@@ -25,6 +25,7 @@ ChatScheduler = Callable[..., Optional[str]]
 RUNTIME_EPISODE_RESUME_METADATA_KEY = "runtimeEpisodeResume"
 RUNTIME_EPISODE_RESUME_TERMINAL_STATES = TERMINAL_EPISODE_STATES
 RUNTIME_EPISODE_RESUME_MAX_WORKER_RETRIES = 2
+SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY = "supervisorNativeToolCorrection"
 
 
 class RuntimeCommandRouter:
@@ -291,15 +292,7 @@ class RuntimeCommandRouter:
     def _chat_messages_from_session(self, session_id: str) -> list[ChatMessage]:
         messages: list[ChatMessage] = []
         for record in db.get_messages(session_id):
-            metadata = record.get("metadata") or {}
-            messages.append(
-                ChatMessage(
-                    role=record.get("role") or "user",
-                    content=record.get("content") or "",
-                    name=metadata.get("tool_name") if record.get("role") == "tool" else None,
-                    tool_call_id=metadata.get("tool_call_id") if record.get("role") == "tool" else None,
-                )
-            )
+            messages.append(ChatMessage.from_persisted_record(record))
         return messages
 
     def _canonical_chat_messages_for_coordination(self, session_id: str) -> list[ChatMessage]:
@@ -574,6 +567,51 @@ class RuntimeCommandRouter:
             resume_run_id=run_record["id"],
             resume_value=resume_value,
             data=request_data,
+        )
+
+    def _build_supervisor_native_tool_correction_request(
+        self,
+        run_record: Dict[str, Any],
+        *,
+        tool_names: list[str],
+    ) -> ChatRequest:
+        """Build one non-user corrective continuation for pseudo tool markup."""
+
+        scope_payload = self._scope_payload_for_session(run_record["session_id"])
+        compact_tool_names = [str(item or "").strip() for item in tool_names if str(item or "").strip()][:8]
+        correction = {
+            "kind": "native_tool_protocol_correction",
+            "attempt": 1,
+            "maxAttempts": 1,
+            "toolNames": compact_tool_names,
+        }
+        return ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "[V8OS Native Tool Protocol Correction]\n"
+                        "Your previous response contained textual pseudo tool markup. It was not executed and proves no side effect. "
+                        "This is the only corrective continuation for this run. Do not repeat or quote the markup. "
+                        "Either issue a real native structured tool call from the currently exposed tool surface, continue through the "
+                        "already-owned managed runtime, or report a concise blocker. An exhausted managed Research branch must not be "
+                        "replaced with direct web/local command calls. If a shell call is actually needed, use the shell dialect declared "
+                        "by the current Engineering Kernel environment. Never claim completion without typed handoff or proof.\n"
+                        f"Rejected pseudo tool names: {', '.join(compact_tool_names) or '(unknown)'}"
+                    ),
+                )
+            ],
+            config=self._engine_config_from_run(run_record),
+            session_id=run_record["session_id"],
+            conversation_id=run_record.get("conversation_id") or run_record["session_id"],
+            user_id=run_record.get("user_id") or "anonymous",
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            resume_run_id=run_record["id"],
+            resume_value={"supervisorNativeToolCorrection": correction},
         )
 
     def _build_spec_continuation_payload(
@@ -946,6 +984,129 @@ class RuntimeCommandRouter:
                 "resume_mode": "chat",
                 "resume_scheduled": scheduled,
                 "resumed_run_id": scheduled_run_id or run_record["id"],
+                **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
+            }
+
+    def schedule_supervisor_native_tool_correction(
+        self,
+        run_id: str,
+        *,
+        tool_names: list[str] | None = None,
+    ) -> Dict[str, Any]:
+        """Schedule exactly one durable Supervisor protocol correction."""
+
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_id_missing"}
+        with self._runtime_episode_resume_lock:
+            run_record = db.get_run_record(normalized_run_id)
+            if not run_record:
+                return {"resume_mode": None, "resume_scheduled": False, "resume_error": "run_not_found"}
+            if self._resume_mode_for_run(run_record) != "chat":
+                return {
+                    "resume_mode": self._resume_mode_for_run(run_record),
+                    "resume_scheduled": False,
+                    "resume_error": "not_chat_run",
+                }
+            status = str(run_record.get("status") or "").strip()
+            if status != "running":
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": f"run_not_running:{status or 'unknown'}",
+                }
+            metadata = dict(run_record.get("metadata") or {})
+            current_marker = (
+                dict(metadata.get(SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY) or {})
+                if isinstance(metadata.get(SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY), dict)
+                else {}
+            )
+            current_state = str(current_marker.get("state") or "").strip().lower()
+            if current_state:
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": "supervisor_native_tool_correction_already_used",
+                    "current_state": current_state,
+                }
+            if self._schedule_chat_run is None:
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": "chat_scheduler_unavailable",
+                }
+
+            compact_tool_names = [str(item or "").strip() for item in list(tool_names or []) if str(item or "").strip()][:8]
+            marker = {
+                "state": "scheduled",
+                "attempt": 1,
+                "maxAttempts": 1,
+                "toolNames": compact_tool_names,
+            }
+            claim = run_service.update_metadata_key_if_state(
+                normalized_run_id,
+                key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                expected_state="",
+                next_value=marker,
+                expected_status="running",
+            )
+            if not bool(claim.get("updated")):
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": str(claim.get("reason") or "supervisor_native_tool_correction_claim_failed"),
+                }
+            run_record = dict(claim.get("run_record") or run_record)
+            correction_request = self._build_supervisor_native_tool_correction_request(
+                run_record,
+                tool_names=compact_tool_names,
+            )
+            try:
+                scheduled_run_id = self._schedule_chat_run(
+                    correction_request,
+                    transport="system_resume",
+                    run_id=normalized_run_id,
+                )
+            except Exception as exc:
+                run_service.update_metadata_key_if_state(
+                    normalized_run_id,
+                    key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                    expected_state="scheduled",
+                    next_value={**marker, "state": "failed", "lastError": "chat_scheduler_raised"},
+                    expected_status="running",
+                )
+                return {
+                    "resume_mode": "chat",
+                    "resume_scheduled": False,
+                    "resume_error": f"chat_scheduler_raised:{type(exc).__name__}",
+                }
+            scheduled = bool(scheduled_run_id)
+            if not scheduled:
+                run_service.update_metadata_key_if_state(
+                    normalized_run_id,
+                    key=SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY,
+                    expected_state="scheduled",
+                    next_value={**marker, "state": "failed", "lastError": "chat_scheduler_returned_empty_run_id"},
+                    expected_status="running",
+                )
+            self._emit_resume_event(
+                run_record,
+                "run.supervisor.native_tool_correction.scheduled"
+                if scheduled
+                else "run.supervisor.native_tool_correction.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "transport": "system_resume",
+                    "resumeReason": "native_tool_protocol_correction",
+                    "scheduledRunId": scheduled_run_id or normalized_run_id,
+                    "toolNames": compact_tool_names,
+                    **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": scheduled,
+                "resumed_run_id": scheduled_run_id or normalized_run_id,
                 **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
             }
 

@@ -10,8 +10,10 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
+from core.database import db
 from core.delegation_broker import normalize_task_brief, normalize_task_briefs
 from core.runtime_episodes import (
     build_runtime_episode,
@@ -30,6 +32,11 @@ from core.runtime_tool_access import (
     runtime_tool_groups_catalog,
 )
 from core.runtime_route_contract import runtime_route_parameter_guidance
+from core.runtime_continuation import (
+    RuntimeContinuationContractError,
+    normalize_runtime_continuation_request,
+    validate_runtime_continuation_answers,
+)
 from core.spec_service import spec_service
 from erc.runtime_context import get_runtime_context
 
@@ -43,10 +50,18 @@ class RuntimeRouteTaskBrief(BaseModel):
         min_length=1,
         description="Stable Supervisor-owned task ID, unique within this route call.",
     )
-    goal: str = Field(min_length=1, description="Concrete runtime outcome stated as an executable goal.")
+    goal: str = Field(
+        min_length=1,
+        description=(
+            "One short sentence naming this brief's outcome. Put detailed checklists in bounded context/refs; "
+            "do not spend the argument budget on a long prose restatement."
+        ),
+    )
     context: dict[str, Any] | str = Field(
         default_factory=dict,
-        description="Current symptom/request plus relevant spec, episode, handoff, or proof references.",
+        description=(
+            "Bounded current symptom plus high-value refs only; do not repeat a full research checklist or the user prompt."
+        ),
     )
     writeRequired: bool = Field(
         default=False,
@@ -58,11 +73,25 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     writeSet: list[str] = Field(
         default_factory=list,
-        description="Array of bounded workspace-relative output paths. Use [] for read-only work; never pass a string.",
+        description=(
+            "Exhaustive array of bounded paths relative to the original bound workspace that the task or its commands "
+            "may create or modify, including temporary/cache/report files. Never copy an absolute managed-worktree "
+            "path from a runtime handoff. Declare deterministic files, or contain variable filenames below one declared "
+            "output directory. Use [] for read-only work; never pass a string."
+        ),
+    )
+    expectedArtifacts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Final deliverable paths only. Every final artifact must also be covered by writeSet; "
+            "do not use this field as a broader write grant."
+        ),
     )
     expectedOutputs: list[str] = Field(
         default_factory=list,
-        description="Array of human-readable deliverables or result records expected from the runtime.",
+        description=(
+            "Short array of the essential deliverable classes (normally 1-3), not one entry per sub-question."
+        ),
     )
     acceptance: dict[str, Any] | list[Any] | str | None = Field(
         default=None,
@@ -70,7 +99,7 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     acceptanceContract: dict[str, Any] | list[Any] | str | None = Field(
         default=None,
-        description="Explicit checks that prove the task is complete.",
+        description="One to three concise checks that prove this brief is complete.",
     )
     constraints: list[str] = Field(
         default_factory=list,
@@ -78,7 +107,7 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     detailRefs: list[str] = Field(
         default_factory=list,
-        description="Array of durable detail/spec/evidence references. Use [] or omit when empty.",
+        description="Highest-value durable detail/spec/evidence references only (normally at most 3). Use [] or omit when empty.",
     )
     dependency: list[str] = Field(
         default_factory=list,
@@ -105,7 +134,7 @@ class RuntimeRouteTaskBrief(BaseModel):
             return []
         return value
 
-    @field_validator("expectedOutputs", mode="before")
+    @field_validator("expectedOutputs", "expectedArtifacts", mode="before")
     @classmethod
     def _normalize_explicit_expected_outputs(cls, value: Any) -> Any:
         """Canonicalize explicit provider output maps into the typed list."""
@@ -135,28 +164,89 @@ class RuntimeRouteTaskBrief(BaseModel):
 
 class RuntimeRouteInputs(BaseModel):
     # extra="allow" intentionally keeps workerBriefs/tasks readable for old
-    # persisted calls while the public schema advertises only taskBriefs.
+    # persisted calls while the public schema advertises the two current
+    # Canonical internal fields remain stable after the provider-facing
+    # parallel Research arrays are restored at the tool boundary.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     workspacePath: str | None = Field(
         default=None,
         description="Current bound workspace root. Do not borrow a workspace from another session.",
     )
+    researchBriefs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Canonical Research transport: a complete map of stable taskBriefId to one short goal. "
+            "Use this map for Research instead of a nested taskBriefs array; some OpenAI-compatible providers "
+            "silently retain only the first object in nested arrays. Put every currently known independent fact "
+            "domain in this one map before adding optional detail."
+        ),
+    )
+    researchBriefContexts: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional compact Research context keyed by the same stable IDs as researchBriefs. "
+            "Keys must be a subset of researchBriefs; values are bounded hints, not raw provider payloads."
+        ),
+    )
     taskBriefs: list[RuntimeRouteTaskBrief] = Field(
         default_factory=list,
-        description="Canonical array of Supervisor-owned task briefs. New calls must use this field.",
+        description=(
+            "Canonical nested task array for Engineering, Creative Media, Computer Use, RPA, and Delegation routes. "
+            "Research routes use the internal researchBriefs map restored from provider-safe parallel arrays. "
+            "Engineering routes use one coherent independently executable/acceptable unit per brief and dependencies for ordering. "
+            "When a request includes source implementation plus separately generated proof/report output, those MUST be separate briefs; "
+            "the proof/report brief depends on the implementation brief."
+        ),
     )
     proofExpectations: list[str] = Field(
         default_factory=list,
         description="Array of evidence the handoff must return, such as artifact refs and verification outcomes.",
     )
-
     @field_validator("proofExpectations", mode="before")
     @classmethod
     def _normalize_explicit_proof_expectations(cls, value: Any) -> Any:
         if isinstance(value, str):
             return [value.strip()] if value.strip() else []
         return value
+
+    @model_validator(mode="after")
+    def _expand_research_brief_map(self) -> "RuntimeRouteInputs":
+        brief_map = {
+            str(brief_id or "").strip(): str(goal or "").strip()
+            for brief_id, goal in dict(self.researchBriefs or {}).items()
+            if str(brief_id or "").strip() and str(goal or "").strip()
+        }
+        context_map = {
+            str(brief_id or "").strip(): str(context or "").strip()
+            for brief_id, context in dict(self.researchBriefContexts or {}).items()
+            if str(brief_id or "").strip() and str(context or "").strip()
+        }
+        if not brief_map:
+            if context_map:
+                raise ValueError("researchBriefContexts requires a non-empty researchBriefs map")
+            return self
+        unknown_context_ids = sorted(set(context_map) - set(brief_map))
+        if unknown_context_ids:
+            raise ValueError(
+                "researchBriefContexts contains IDs absent from researchBriefs: "
+                + ", ".join(unknown_context_ids[:8])
+            )
+        if self.taskBriefs:
+            raise ValueError("Research routes must use either researchBriefs or taskBriefs, never both")
+        self.researchBriefs = brief_map
+        self.researchBriefContexts = context_map
+        self.taskBriefs = [
+            RuntimeRouteTaskBrief(
+                taskBriefId=brief_id,
+                goal=goal,
+                context=context_map.get(brief_id, {}),
+                readOnly=True,
+                writeSet=[],
+            )
+            for brief_id, goal in brief_map.items()
+        ]
+        return self
 
 
 class RuntimeRouteNeed(BaseModel):
@@ -174,7 +264,195 @@ class RuntimeRouteNeed(BaseModel):
     )
     inputs: RuntimeRouteInputs = Field(
         default_factory=RuntimeRouteInputs,
-        description="Typed workspace, taskBriefs, and proof expectations for the runtime episode.",
+        description=(
+            "Typed workspace, complete Research brief map or specialist taskBriefs, and proof expectations. "
+            "For Research use inputs.researchBriefs; other routes use inputs.taskBriefs."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_runtime_transport(self) -> "RuntimeRouteNeed":
+        transport_conflicts = list((self.model_extra or {}).get("transportConflicts") or [])
+        transport_errors = list((self.model_extra or {}).get("transportErrors") or [])
+        if transport_conflicts:
+            raise ValueError(
+                "Conflicting flat and legacy route fields: " + ", ".join(str(item) for item in transport_conflicts[:8])
+            )
+        if transport_errors:
+            raise ValueError("Invalid provider route transport: " + ", ".join(str(item) for item in transport_errors[:8]))
+        if self.kind != "research" and self.inputs.researchBriefs:
+            raise ValueError("researchBriefs is only valid for Research routes")
+        legacy_inputs = dict(self.inputs.model_extra or {})
+        has_legacy_briefs = any(
+            isinstance(legacy_inputs.get(key), list) and legacy_inputs.get(key)
+            for key in ("workerBriefs", "worker_briefs", "tasks")
+        )
+        if self.kind == "research" and not self.inputs.taskBriefs and not has_legacy_briefs:
+            raise ValueError("Research route requires at least one complete Research brief")
+        return self
+
+
+class RuntimeRoutePublicNeed(BaseModel):
+    """Deprecated read-compatible route envelope hidden from provider schemas."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    kind: Literal["research", "engineering", "creative_media", "computer_use", "rpa", "delegation"] = Field(
+        description="Execution runtime family selected for this route."
+    )
+    source: str = Field(default="supervisor", description="Contract owner; normally supervisor.")
+    reason: str = Field(
+        min_length=1,
+        description="Why this runtime is the correct execution path for the current user task.",
+    )
+    workspacePath: str | None = Field(
+        default=None,
+        description="Current bound workspace root; omit when the session binding already supplies it.",
+    )
+    researchBriefs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Research only: complete stable taskBriefId -> one-sentence goal map. "
+            "Put every currently known independent fact domain in this map."
+        ),
+    )
+    researchBriefContexts: dict[str, str] = Field(
+        default_factory=dict,
+        description="Research only: optional compact context keyed by IDs present in researchBriefs.",
+    )
+    taskBriefs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Non-Research execution briefs. Each object requires taskBriefId and goal. A write brief also requires "
+            "writeRequired=true, bounded writeSet, expectedOutputs, and acceptanceContract; expectedArtifacts must "
+            "be covered by writeSet. Use dependencies for ordering. Engine performs the strict field/type validation."
+        ),
+    )
+    proofExpectations: list[str] = Field(
+        default_factory=list,
+        description="Compact evidence outcomes the terminal handoff must return.",
+    )
+
+
+class RuntimeBrokerArgs(BaseModel):
+    """Strict public arguments for the Supervisor runtime entry."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    mode: str = Field(
+        default="list",
+        description="Operation. Use route for execution, list for the compact catalog, and grant/revoke only for explicit run-scoped tool groups.",
+    )
+    runtime_kind: str | None = Field(
+        default=None,
+        description="Legacy/list/grant hint. For mode=route use routeKind.",
+    )
+    tool_group: str | None = Field(
+        default=None,
+        description="Single run-scoped tool group for mode=grant/revoke.",
+    )
+    tool_groups: list[str] | None = Field(
+        default=None,
+        description="Array of run-scoped tool groups for mode=grant/revoke.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Grant/revoke audit reason. For mode=route use routeReason.",
+    )
+    detail_level: str = Field(
+        default="summary",
+        description="summary by default; catalog/detail/full only when diagnostics are needed.",
+    )
+    routeKind: Literal["research", "engineering", "creative_media", "computer_use", "rpa", "delegation"] | None = Field(
+        default=None,
+        description="For mode=route: the specialist runtime family.",
+    )
+    routeReason: str | None = Field(
+        default=None,
+        description="For mode=route: one short sentence explaining why this runtime is the correct path.",
+    )
+    workspacePath: str | None = Field(
+        default=None,
+        description="For mode=route: current bound workspace root; omit when session binding already supplies it.",
+    )
+    researchBriefIds: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Research route only: complete ordered list of every currently known stable taskBriefId. "
+            "List all IDs before optional detail."
+        ),
+    )
+    researchBriefGoals: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Research route only: short goals matching researchBriefIds by position. "
+            "The two arrays must have equal length; never omit an already-known domain."
+        ),
+    )
+    researchBriefContexts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Research route only: optional compact contexts matching researchBriefIds by position. "
+            "Omit the whole array when no context is needed."
+        ),
+    )
+    taskBriefs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Non-Research execution briefs, used only for non-Research routes. Each object requires taskBriefId and goal. "
+            "A write brief also requires writeRequired=true, bounded writeSet, expectedOutputs, and acceptanceContract; "
+            "expectedArtifacts must be covered by writeSet. Every writeSet entry is relative to the original bound "
+            "workspace, never an absolute managed-worktree path copied from a handoff. Engine performs the strict "
+            "field/type validation."
+        ),
+    )
+    proofExpectations: list[str] = Field(
+        default_factory=list,
+        description="For mode=route: compact evidence outcomes the terminal handoff must return.",
+    )
+    need: SkipJsonSchema[RuntimeRoutePublicNeed | None] = Field(
+        default=None,
+        description="Deprecated read-compatible route envelope; hidden from provider schemas.",
+    )
+    allow_direct_fallback: bool = Field(
+        default=False,
+        description="Internal compatibility flag. Keep false for ordinary Supervisor routing.",
+    )
+    episode_id: str | None = Field(
+        default=None,
+        description="Required only for mode=resume. Must identify the waiting_input episode in the current session.",
+    )
+    continuation_request_id: str | None = Field(
+        default=None,
+        description="Required only for mode=resume. Must exactly match the latest waiting continuationRequest.requestId.",
+    )
+    continuation_inputs: dict[str, Any] | None = Field(
+        default=None,
+        description="Required only for mode=resume. Exact user/Supervisor answers keyed by requiredInputs.id.",
+    )
+    tool_call_id: Annotated[str, InjectedToolCallId] = ""
+    state: Annotated[dict[str, Any], InjectedState] = None
+
+
+def _runtime_broker_validation_error(error: ValidationError) -> str:
+    unknown_fields = [
+        str(item.get("loc", [""])[-1])
+        for item in error.errors(include_url=False, include_context=False, include_input=False)
+        if str(item.get("type") or "") == "extra_forbidden" and item.get("loc")
+    ]
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "typed_tool_arguments_invalid",
+            "summary": "runtime_broker rejected arguments outside its typed contract.",
+            "unknownFields": list(dict.fromkeys(unknown_fields))[:8],
+            "nextAction": (
+                "Retry once with every Research domain in the matching researchBriefIds/researchBriefGoals arrays "
+                "or every other runtime work unit in taskBriefs. "
+                "Do not place a brief in top-level item/task/brief fields."
+            ),
+        },
+        ensure_ascii=False,
     )
 
 
@@ -182,6 +460,130 @@ def _model_payload(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(exclude_none=True)
     return value
+
+
+_PUBLIC_ROUTE_INPUT_FIELDS = (
+    "workspacePath",
+    "researchBriefs",
+    "researchBriefContexts",
+    "taskBriefs",
+    "proofExpectations",
+)
+
+
+def _restore_internal_route_need(value: Any) -> Any:
+    """Translate the shallow provider transport into the canonical inputs envelope."""
+
+    if not isinstance(value, dict):
+        return value
+    payload = dict(value)
+    nested_inputs = dict(payload.pop("inputs", {}) or {}) if isinstance(payload.get("inputs"), dict) else {}
+    conflicts: list[str] = []
+    for field_name in _PUBLIC_ROUTE_INPUT_FIELDS:
+        if field_name not in payload:
+            continue
+        flat_value = payload.pop(field_name)
+        nested_value = nested_inputs.get(field_name)
+        flat_meaningful = flat_value not in (None, "", [], {})
+        nested_meaningful = nested_value not in (None, "", [], {})
+        if flat_meaningful and nested_meaningful and flat_value != nested_value:
+            conflicts.append(field_name)
+            continue
+        if flat_meaningful or not nested_meaningful:
+            nested_inputs[field_name] = flat_value
+    payload["inputs"] = nested_inputs
+    if conflicts:
+        payload["transportConflicts"] = conflicts
+    return payload
+
+
+def _route_need_from_public_transport(
+    value: Any,
+    *,
+    route_kind: Any = None,
+    route_reason: Any = None,
+    workspace_path: Any = None,
+    research_brief_ids: Any = None,
+    research_brief_goals: Any = None,
+    research_brief_contexts: Any = None,
+    task_briefs: Any = None,
+    proof_expectations: Any = None,
+) -> Any:
+    """Restore the provider-safe root transport to the canonical route need."""
+
+    legacy = _model_payload(value)
+    root_values = [
+        route_kind,
+        route_reason,
+        workspace_path,
+        research_brief_ids,
+        research_brief_goals,
+        research_brief_contexts,
+        task_briefs,
+        proof_expectations,
+    ]
+    has_root_transport = any(item not in (None, "", [], {}) for item in root_values)
+    if isinstance(legacy, dict):
+        restored = _restore_internal_route_need(legacy)
+        if has_root_transport and isinstance(restored, dict):
+            restored["transportConflicts"] = ["legacy need and root route fields"]
+        return restored
+    if not has_root_transport:
+        return None
+
+    brief_ids = [str(item or "").strip() for item in list(research_brief_ids or [])]
+    brief_goals = [str(item or "").strip() for item in list(research_brief_goals or [])]
+    brief_contexts = [str(item or "").strip() for item in list(research_brief_contexts or [])]
+    transport_errors: list[str] = []
+    if len(brief_ids) != len(brief_goals):
+        transport_errors.append("researchBriefIds and researchBriefGoals must have equal length")
+    if brief_contexts and len(brief_contexts) != len(brief_ids):
+        transport_errors.append("researchBriefContexts must be omitted or match researchBriefIds length")
+    if any(not item for item in brief_ids):
+        transport_errors.append("researchBriefIds cannot contain blank IDs")
+    if any(not item for item in brief_goals):
+        transport_errors.append("researchBriefGoals cannot contain blank goals")
+    if len(set(brief_ids)) != len(brief_ids):
+        transport_errors.append("researchBriefIds must be unique")
+
+    inputs: dict[str, Any] = {}
+    if str(workspace_path or "").strip():
+        inputs["workspacePath"] = str(workspace_path).strip()
+    if brief_ids and len(brief_ids) == len(brief_goals) and not transport_errors:
+        inputs["researchBriefs"] = dict(zip(brief_ids, brief_goals))
+        if brief_contexts:
+            inputs["researchBriefContexts"] = {
+                brief_id: context
+                for brief_id, context in zip(brief_ids, brief_contexts)
+                if context
+            }
+    if list(task_briefs or []):
+        inputs["taskBriefs"] = list(task_briefs or [])
+    if list(proof_expectations or []):
+        inputs["proofExpectations"] = list(proof_expectations or [])
+    payload: dict[str, Any] = {
+        "kind": route_kind,
+        "reason": route_reason,
+        "inputs": inputs,
+    }
+    if transport_errors:
+        payload["transportErrors"] = transport_errors
+    return payload
+
+
+def _public_route_validation_field(location: Any) -> str:
+    """Project internal validation paths back onto the provider-visible schema."""
+
+    parts = [str(part) for part in list(location or [])]
+    if parts and parts[0] == "inputs":
+        parts = parts[1:]
+    if parts and parts[0] == "kind":
+        parts[0] = "routeKind"
+    elif parts and parts[0] == "reason":
+        parts[0] = "routeReason"
+    elif parts and parts[0] in {"researchBriefs", "researchBriefContexts"}:
+        return "researchBriefIds/researchBriefGoals"
+    return ".".join(parts) if parts else "route"
 
 
 def _runtime_broker_payload(
@@ -535,6 +937,96 @@ def _route_brief_is_write_task(brief: dict[str, Any], *, kind: str) -> bool:
     )
 
 
+_URLISH_HOST_PATH = re.compile(
+    r"^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*"
+    r"\.(?:ai|app|cloud|cn|co|com|dev|edu|gov|io|net|org)(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def _declared_artifact_paths_outside_write_set(
+    *,
+    write_set: list[str],
+    workspace_path: str = "",
+    explicit_artifacts: list[str] | None = None,
+) -> list[str]:
+    """Return explicit expected artifact paths not covered by ``writeSet``.
+
+    Acceptance is intentionally excluded.  It is human-readable proof prose,
+    not an authority source: backticked sentences, URLs, slash-separated
+    technology names, inputs, and forbidden paths must never be guessed into a
+    write contract.  Only the typed ``expectedArtifacts`` field may contradict
+    the explicit grant, and this check never widens that grant.
+    """
+
+    def _normal(value: Any) -> str:
+        text = str(value or "").strip().strip("`'\"").replace("\\", "/")
+        text = re.sub(r"^\./+", "", text)
+        text = re.sub(r"/+", "/", text)
+        return text.rstrip("/.,;:)]}>").lower()
+
+    workspace = _normal(workspace_path)
+    declared_entries = [
+        (_normal(item), str(item or "").strip().replace("\\", "/").endswith("/"))
+        for item in list(write_set or [])
+        if _normal(item)
+    ]
+    declared = [item for item, _is_directory in declared_entries]
+
+    def _is_absolute(value: str) -> bool:
+        return value.startswith("/") or bool(re.match(r"^[a-z]:/", value, re.IGNORECASE))
+
+    def _covered(candidate: str) -> bool:
+        token = _normal(candidate)
+        if (
+            not token
+            or token.startswith(("http://", "https://", "file://", "spec://"))
+            or _URLISH_HOST_PATH.match(token)
+        ):
+            return True
+        token_variants = {token}
+        if workspace and not _is_absolute(token):
+            token_variants.add(_normal(f"{workspace}/{token}"))
+        for grant in declared:
+            grant_variants = {grant}
+            if workspace and not _is_absolute(grant):
+                grant_variants.add(_normal(f"{workspace}/{grant}"))
+            for candidate_variant in token_variants:
+                for grant_variant in grant_variants:
+                    if (
+                        candidate_variant == grant_variant
+                        or candidate_variant.startswith(grant_variant.rstrip("/") + "/")
+                        # expectedArtifacts may use a workspace-relative suffix
+                        # after writeSet names the same file below a task
+                        # directory. Segment-safe suffix matching does not widen
+                        # write authority.
+                        or grant_variant.endswith("/" + candidate_variant)
+                    ):
+                        return True
+        # A Spec may name a declared output directory by its full path, then
+        # name one expected child relative to that directory's parent. This is
+        # still the same explicit directory grant.
+        for grant, is_directory in declared_entries:
+            if not is_directory or "/" not in grant:
+                continue
+            grant_name = grant.rsplit("/", 1)[-1]
+            if token == grant_name or token.startswith(grant_name + "/"):
+                return True
+        return False
+
+    found: list[str] = []
+    for token in list(explicit_artifacts or []):
+        normalized = _normal(token)
+        if (
+            normalized
+            and ("/" in normalized or "." in normalized)
+            and not _covered(normalized)
+            and normalized not in found
+        ):
+            found.append(normalized)
+    return found[:24]
+
+
 def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, workspace_path: str = "") -> dict[str, Any]:
     if not tasks:
         return {
@@ -582,6 +1074,19 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
                 missing.append("expectedOutputs")
             if not has_acceptance:
                 missing.append("acceptance")
+            undeclared_output_paths = _declared_artifact_paths_outside_write_set(
+                write_set=write_set,
+                workspace_path=workspace_path,
+                explicit_artifacts=list(brief.get("expectedArtifacts") or []),
+            )
+            if undeclared_output_paths:
+                missing.append("writeSet(expected_artifact_not_declared)")
+            failure = {"taskBriefId": task_id, "missingFields": missing}
+            if undeclared_output_paths:
+                failure["undeclaredArtifactPaths"] = undeclared_output_paths
+            if missing:
+                failures.append(failure)
+                continue
         if missing:
             failures.append({"taskBriefId": task_id, "missingFields": missing})
 
@@ -591,13 +1096,256 @@ def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, work
             "reason": "write_task_contract_incomplete",
             "blocking": True,
             "message": (
-                "Write-capable runtime tasks require an explicit writeSet, expectedOutputs, and acceptance contract. "
-                "The workspace root, prose hints, dependencies, and input files are not write grants."
+                "Write-capable runtime tasks require an exhaustive writeSet, expectedOutputs, and acceptance contract. "
+                "Every explicit expectedArtifacts path must be covered by writeSet; acceptance prose, the workspace root, "
+                "dependencies, and input files are never write grants."
             ),
             "tasks": failures,
             "requiredFields": ["writeSet", "expectedOutputs", "acceptance"],
         }
     return {"status": "ready", "reason": "explicit_task_contract", "blocking": False}
+
+
+_ENGINEERING_REPAIR_FAILURE_STATES = {"degraded", "failed"}
+_ENGINEERING_REPAIR_BUDGET = 1
+_RESEARCH_REPAIR_BUDGET = 1
+_RESEARCH_TERMINAL_STATES = {"completed", "degraded", "failed", "cancelled"}
+_RESEARCH_ACTIVE_STATES = {"queued", "leased", "running", "waiting_external_tool", "waiting_input"}
+_RESEARCH_NON_CONSUMING_FAILURE_CODES = {"episode_runner_unavailable"}
+
+
+def _normalized_engineering_write_scope(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return the exact union of explicitly granted Engineering paths."""
+
+    normalized: set[str] = set()
+    for brief in tasks:
+        if not isinstance(brief, dict):
+            continue
+        for item in list(brief.get("writeSet") or brief.get("write_set") or []):
+            path = str(item or "").strip().replace("\\", "/")
+            path = re.sub(r"^\./+", "", path)
+            path = re.sub(r"/+", "/", path).rstrip("/")
+            if not path:
+                continue
+            if os.name == "nt" or re.match(r"^[A-Za-z]:/", path):
+                path = path.casefold()
+            normalized.add(path)
+    return tuple(sorted(normalized))
+
+
+def _engineering_route_retry_state(
+    *,
+    tasks: list[dict[str, Any]],
+    route_context: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Enforce one durable repair for the same Engineering write scope.
+
+    Task IDs and brief grouping are not identity: a model must not bypass the
+    budget by renaming or recombining tasks that grant the same union of paths.
+    Persisted run episodes supplement the checkpoint projection so a restart
+    cannot silently reset the budget.
+    """
+
+    write_scope = _normalized_engineering_write_scope(tasks)
+    if not write_scope:
+        return {
+            "priorFailedAttempts": 0,
+            "repairBudget": _ENGINEERING_REPAIR_BUDGET,
+            "repairAttempt": 0,
+            "exhausted": False,
+        }
+
+    context = dict(route_context or {})
+    episode_by_id: dict[str, dict[str, Any]] = {}
+    anonymous_episodes: list[dict[str, Any]] = []
+
+    def _remember_episode(raw_episode: Any) -> None:
+        if not isinstance(raw_episode, dict):
+            return
+        episode = dict(raw_episode)
+        episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        if episode_id:
+            episode_by_id[episode_id] = {**episode_by_id.get(episode_id, {}), **episode}
+        else:
+            anonymous_episodes.append(episode)
+
+    for raw_episode in list(context.get("capabilityEpisodes") or []):
+        _remember_episode(raw_episode)
+
+    runtime_context = get_runtime_context()
+    state_payload = dict(state or {})
+    run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or state_payload.get("run_id")
+        or state_payload.get("runId")
+        or context.get("run_id")
+        or context.get("runId")
+        or ""
+    ).strip()
+    if run_id:
+        try:
+            for raw_episode in db.list_runtime_episodes(run_id=run_id, limit=100):
+                _remember_episode(raw_episode)
+        except Exception:
+            # Checkpoint truth remains sufficient for the current graph turn;
+            # database recovery is an additional durability rail.
+            pass
+
+    prior_failed_attempts = 0
+    for episode in [*episode_by_id.values(), *anonymous_episodes]:
+        if str(episode.get("kind") or "").strip().lower() != "engineering":
+            continue
+        if str(episode.get("state") or "").strip().lower() not in _ENGINEERING_REPAIR_FAILURE_STATES:
+            continue
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        if not inputs and isinstance(episode.get("need"), dict):
+            candidate_inputs = episode["need"].get("inputs")
+            inputs = candidate_inputs if isinstance(candidate_inputs, dict) else {}
+        episode_tasks = _explicit_task_briefs_from_inputs(inputs)
+        if _normalized_engineering_write_scope(episode_tasks) == write_scope:
+            prior_failed_attempts += 1
+
+    return {
+        "priorFailedAttempts": prior_failed_attempts,
+        "repairBudget": _ENGINEERING_REPAIR_BUDGET,
+        "repairAttempt": min(prior_failed_attempts, _ENGINEERING_REPAIR_BUDGET),
+        "exhausted": prior_failed_attempts > _ENGINEERING_REPAIR_BUDGET,
+    }
+
+
+def _normalized_research_brief_ids(tasks: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return the stable identities of one managed Research branch."""
+
+    return tuple(
+        sorted(
+            {
+                str(task.get("taskBriefId") or task.get("task_brief_id") or "").strip()
+                for task in tasks
+                if isinstance(task, dict)
+                and str(task.get("taskBriefId") or task.get("task_brief_id") or "").strip()
+            }
+        )
+    )
+
+
+def _same_research_branch(
+    requested_brief_ids: tuple[str, ...],
+    episode_brief_ids: tuple[str, ...],
+) -> bool:
+    """Treat a missing-evidence subset as repair work for its parent branch.
+
+    A Research handoff commonly asks the Supervisor to retry only the missing
+    briefs. Exact tuple equality therefore lets the model reset the durable
+    budget simply by narrowing the contract. Disjoint contracts remain
+    independent; partial overlaps that introduce new briefs are not guessed to
+    be the same branch.
+    """
+
+    requested = set(requested_brief_ids)
+    existing = set(episode_brief_ids)
+    if not requested or not existing:
+        return False
+    return requested.issubset(existing) or existing.issubset(requested)
+
+
+def _research_episode_consumed_attempt(episode: dict[str, Any]) -> bool:
+    """Return whether a terminal episode actually consumed Research work."""
+
+    error_code = str(episode.get("errorCode") or episode.get("error_code") or "").strip().lower()
+    if error_code in _RESEARCH_NON_CONSUMING_FAILURE_CODES:
+        return False
+    return str(episode.get("state") or "").strip().lower() in _RESEARCH_TERMINAL_STATES
+
+
+def _research_route_retry_state(
+    *,
+    tasks: list[dict[str, Any]],
+    route_context: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bound one Research branch to an initial attempt and one durable repair.
+
+    Task brief IDs are the Supervisor-authored contract identities. Both the
+    checkpoint projection and persisted episodes participate so an Engine
+    restart cannot reset the budget or create a duplicate in-flight branch.
+    """
+
+    brief_ids = _normalized_research_brief_ids(tasks)
+    if not brief_ids:
+        return {
+            "taskBriefIds": [],
+            "priorAttempts": 0,
+            "repairBudget": _RESEARCH_REPAIR_BUDGET,
+            "repairAttempt": 0,
+            "exhausted": False,
+            "inFlightEpisodeIds": [],
+        }
+
+    context = dict(route_context or {})
+    episode_by_id: dict[str, dict[str, Any]] = {}
+    anonymous_episodes: list[dict[str, Any]] = []
+
+    def _remember_episode(raw_episode: Any) -> None:
+        if not isinstance(raw_episode, dict):
+            return
+        episode = dict(raw_episode)
+        episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        if episode_id:
+            episode_by_id[episode_id] = {**episode_by_id.get(episode_id, {}), **episode}
+        else:
+            anonymous_episodes.append(episode)
+
+    for raw_episode in list(context.get("capabilityEpisodes") or []):
+        _remember_episode(raw_episode)
+
+    runtime_context = get_runtime_context()
+    state_payload = dict(state or {})
+    run_id = str(
+        runtime_context.get("run_id")
+        or runtime_context.get("runId")
+        or state_payload.get("run_id")
+        or state_payload.get("runId")
+        or context.get("run_id")
+        or context.get("runId")
+        or ""
+    ).strip()
+    if run_id:
+        try:
+            for raw_episode in db.list_runtime_episodes(run_id=run_id, limit=100):
+                _remember_episode(raw_episode)
+        except Exception:
+            pass
+
+    prior_attempts = 0
+    in_flight_episode_ids: list[str] = []
+    for episode in [*episode_by_id.values(), *anonymous_episodes]:
+        if str(episode.get("kind") or "").strip().lower() != "research":
+            continue
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        if not inputs and isinstance(episode.get("need"), dict):
+            candidate_inputs = episode["need"].get("inputs")
+            inputs = candidate_inputs if isinstance(candidate_inputs, dict) else {}
+        episode_brief_ids = _normalized_research_brief_ids(_explicit_task_briefs_from_inputs(inputs))
+        if not _same_research_branch(brief_ids, episode_brief_ids):
+            continue
+        episode_state = str(episode.get("state") or "").strip().lower()
+        if _research_episode_consumed_attempt(episode):
+            prior_attempts += 1
+        elif episode_state in _RESEARCH_ACTIVE_STATES:
+            episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+            if episode_id:
+                in_flight_episode_ids.append(episode_id)
+
+    return {
+        "taskBriefIds": list(brief_ids),
+        "priorAttempts": prior_attempts,
+        "repairBudget": _RESEARCH_REPAIR_BUDGET,
+        "repairAttempt": min(prior_attempts, _RESEARCH_REPAIR_BUDGET),
+        "exhausted": prior_attempts > _RESEARCH_REPAIR_BUDGET,
+        "inFlightEpisodeIds": sorted(set(in_flight_episode_ids)),
+    }
 
 
 def _safe_compact_text(value: Any, *, limit: int = 6000) -> str:
@@ -2001,6 +2749,116 @@ def _filter_spec_task_briefs_by_refs(
     return selected, matched
 
 
+def _managed_research_context_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Carry compact Research truth into a later runtime route.
+
+    A Research evidence gap blocks the unsupported claim, not necessarily a
+    reversible implementation.  Keeping this projection in the route tool
+    makes the handoff lossless even when a model forgets to copy the fields
+    into an Engineering/Creative brief.  It contains no raw tool payloads or
+    credentials.
+    """
+
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    raw_handoffs = list(route_context.get("effectiveHandoffRefs") or route_context.get("handoffRefs") or [])
+    ready_ids: list[str] = []
+    research_refs: list[str] = []
+    limitations: list[str] = []
+    gaps_by_id: dict[str, dict[str, Any]] = {}
+
+    def add_unique(target: list[str], value: Any, limit: int = 24) -> None:
+        text = str(value or "").strip()
+        if text and text not in target and len(target) < limit:
+            target.append(text)
+
+    for raw in raw_handoffs:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind") or "").strip().lower()
+        if "research" not in kind:
+            continue
+        for ref in list(raw.get("researchRefs") or raw.get("proofRefs") or []):
+            add_unique(research_refs, ref, limit=12)
+        for result in list(raw.get("taskBriefResults") or []):
+            if not isinstance(result, dict):
+                continue
+            brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+            if not brief_id:
+                continue
+            status = str(result.get("status") or "degraded").strip().lower()
+            if status in {"ready", "completed", "success", "ok"}:
+                add_unique(ready_ids, brief_id)
+                add_unique(research_refs, result.get("researchRef"), limit=12)
+                gaps_by_id.pop(brief_id, None)
+                continue
+            gap = {
+                "taskBriefId": brief_id,
+                "status": "unverified",
+                "blocksClaim": True,
+                "blocksDownstream": bool(result.get("blocksDownstream", False)),
+                "limitations": [str(item)[:500] for item in list(result.get("limitations") or [])[:6]],
+                "evidenceStatusReasons": [
+                    str(item)[:160] for item in list(result.get("evidenceStatusReasons") or [])[:6]
+                ],
+            }
+            gaps_by_id[brief_id] = gap
+            for item in gap["limitations"]:
+                add_unique(limitations, item, limit=8)
+        for brief_id in list(raw.get("coveredTaskBriefIds") or []):
+            normalized = str(brief_id or "").strip()
+            if normalized:
+                add_unique(ready_ids, normalized)
+                gaps_by_id.pop(normalized, None)
+        for brief_id in list(raw.get("missingTaskBriefIds") or []):
+            normalized = str(brief_id or "").strip()
+            if normalized and normalized not in gaps_by_id:
+                gaps_by_id[normalized] = {
+                    "taskBriefId": normalized,
+                    "status": "unverified",
+                    "blocksClaim": True,
+                    "blocksDownstream": False,
+                    "limitations": [],
+                    "evidenceStatusReasons": ["missing_task_brief_evidence"],
+                }
+        for gap in list(raw.get("evidenceGaps") or []):
+            if not isinstance(gap, dict):
+                continue
+            brief_id = str(gap.get("taskBriefId") or gap.get("taskId") or "").strip()
+            if brief_id:
+                if str(gap.get("status") or "").strip().lower() in {"ready", "completed", "success", "ok"}:
+                    gaps_by_id.pop(brief_id, None)
+                    add_unique(ready_ids, brief_id)
+                    continue
+                gaps_by_id[brief_id] = {
+                    "taskBriefId": brief_id,
+                    "status": "unverified",
+                    "blocksClaim": bool(gap.get("blocksClaim", True)),
+                    "blocksDownstream": bool(gap.get("blocksDownstream", False)),
+                    "limitations": [str(item)[:500] for item in list(gap.get("limitations") or [])[:6]],
+                    "evidenceStatusReasons": [
+                        str(item)[:160] for item in list(gap.get("evidenceStatusReasons") or [])[:6]
+                    ],
+                }
+        for item in list(raw.get("limitations") or []):
+            add_unique(limitations, item, limit=8)
+
+    gaps = list(gaps_by_id.values())[:24]
+    if not ready_ids and not gaps and not research_refs:
+        return {}
+    return {
+        "source": "managed_research_handoff",
+        "readyTaskBriefIds": ready_ids[:24],
+        "researchRefs": research_refs[:12],
+        "evidenceGaps": gaps,
+        "limitations": limitations[:8],
+        "downstreamAllowed": bool(ready_ids) and not any(
+            bool(item.get("blocksDownstream")) for item in gaps
+        ),
+        "requiresLocalValidation": bool(ready_ids),
+        "neverClaimUnverifiedFacts": True,
+    }
+
+
 def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> str:
     candidates: list[str] = []
     for key in ("kind", "runtimeKind", "runtime_kind", "runtime", "capability", "routeIntent", "route_intent", "tool"):
@@ -2071,6 +2929,22 @@ def _enrich_route_need_for_episode(
                 }
             inputs["workspacePath"] = bound_workspace
             inputs.pop("workspace_path", None)
+
+    # Preserve Research evidence lineage when the Supervisor moves to a
+    # downstream execution runtime.  This is automatic context propagation,
+    # not a route classifier or an authorization grant.
+    if kind in {"engineering", "creative_media", "delegation", "computer_use", "rpa"}:
+        research_context = _managed_research_context_from_state(state)
+        if research_context:
+            supplied_context = inputs.get("researchContext") if isinstance(inputs.get("researchContext"), dict) else {}
+            merged_context = dict(research_context)
+            if supplied_context:
+                # Engine-owned gap/ref truth wins; retain only extra bounded
+                # notes the Supervisor intentionally supplied.
+                for key, value in supplied_context.items():
+                    if key not in {"evidenceGaps", "researchRefs", "readyTaskBriefIds", "downstreamAllowed"}:
+                        merged_context[key] = value
+            inputs["researchContext"] = merged_context
 
     if kind in {"engineering", "delegation"}:
         explicit_route_tasks = _explicit_task_briefs_from_inputs(inputs)
@@ -2352,7 +3226,7 @@ def _emit_runtime_episode_event(topic: str, payload: dict[str, Any]) -> None:
     emit_runtime_episode_event(topic, payload, source={"runtime": "supervisor", "tool": "runtime_broker"})
 
 
-@tool
+@tool(args_schema=RuntimeBrokerArgs)
 def runtime_broker(
     mode: Annotated[
         str,
@@ -2360,40 +3234,241 @@ def runtime_broker(
     ] = "list",
     runtime_kind: Annotated[
         Optional[str],
-        "Legacy/list/grant hint. For mode=route put the runtime family in need.kind.",
+        "Legacy/list/grant hint. For mode=route use routeKind.",
     ] = None,
     tool_group: Annotated[Optional[str], "Single run-scoped tool group for mode=grant/revoke."] = None,
     tool_groups: Annotated[Optional[list[str]], "Array of run-scoped tool groups for mode=grant/revoke."] = None,
     reason: Annotated[
         Optional[str],
-        "Grant/revoke audit reason. For mode=route the required execution reason belongs in need.reason.",
+        "Grant/revoke audit reason. For mode=route use routeReason.",
     ] = None,
     detail_level: Annotated[str, "summary by default; catalog/detail/full only when diagnostics are needed."] = "summary",
+    routeKind: Annotated[
+        Optional[str],
+        "For mode=route: research, engineering, creative_media, computer_use, rpa, or delegation.",
+    ] = None,
+    routeReason: Annotated[Optional[str], "For mode=route: one short routing reason."] = None,
+    workspacePath: Annotated[Optional[str], "Current bound workspace root; normally omit it."] = None,
+    researchBriefIds: Annotated[
+        Optional[list[str]],
+        "Research only: complete ordered stable-ID list. Enumerate every known domain before optional detail.",
+    ] = None,
+    researchBriefGoals: Annotated[
+        Optional[list[str]],
+        "Research only: matching short goals in the same order and count as researchBriefIds.",
+    ] = None,
+    researchBriefContexts: Annotated[
+        Optional[list[str]],
+        "Research only: optional matching compact contexts; omit unless needed.",
+    ] = None,
+    taskBriefs: Annotated[
+        Optional[list[dict[str, Any]]],
+        "Non-Research only: typed execution briefs with bounded write/proof contracts where required.",
+    ] = None,
+    proofExpectations: Annotated[
+        Optional[list[str]],
+        "Compact evidence outcomes the terminal handoff must return.",
+    ] = None,
     need: Annotated[
         RuntimeRouteNeed | None,
-        "Required for mode=route. Use need.kind, need.reason, and need.inputs.taskBriefs; preserve object/array JSON types.",
+        "Deprecated hidden read-compatible route envelope.",
     ] = None,
     allow_direct_fallback: Annotated[
         bool,
         "Internal compatibility flag. Keep false for ordinary Supervisor routing.",
     ] = False,
+    episode_id: Annotated[
+        Optional[str],
+        "Required only for mode=resume. Must identify the waiting_input episode in the current session.",
+    ] = None,
+    continuation_request_id: Annotated[
+        Optional[str],
+        "Required only for mode=resume. Must exactly match the latest waiting continuationRequest.requestId.",
+    ] = None,
+    continuation_inputs: Annotated[
+        Optional[dict[str, Any]],
+        "Required only for mode=resume. Exact user/Supervisor answers keyed by requiredInputs.id.",
+    ] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Supervisor route broker for V8OS active execution runtimes; waits for typed specialist handoff.
+    """L3 managed runtime entry: route specialist lifecycle/recovery/proof and receive a typed handoff; never use it as a web reader or polling API.
 
-    Use `mode='route'` with the canonical `need.kind`, `need.reason`, and `need.inputs.taskBriefs` contract when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration. Minimal valid shape: `{"mode":"route","need":{"kind":"engineering","reason":"continue and verify","inputs":{"taskBriefs":[{"taskBriefId":"task-1","goal":"fix and verify","writeSet":[],"expectedOutputs":["verified result"],"acceptanceContract":["verification passes"]}]}}}`. Replace values without changing JSON types. Omit optional arrays when empty; for multi-task routes use `dependencies:["upstream-task-id"]`.
-    `taskBriefs` is the only field new calls should use. `workerBriefs` and `tasks` remain read-compatible legacy aliases but are intentionally omitted from the advertised schema.
-    Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
-    `need` is a typed Supervisor-owned contract. Every write-capable task must declare writeRequired, a bounded writeSet, expectedOutputs, and acceptance/acceptanceContract. Missing fields block dispatch; the workspace root and prose hints are never inferred as write grants. Omit need.inputs.workspacePath or copy the current runtime workspace exactly; never infer a nested project path. Engine keeps the current session binding authoritative and records any correction.
-    Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
-    Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
-    Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.
-    A route result queues an episode and the graph moves to the managed runtime wait automatically. Never poll with wait_episode or repeated observe/status calls; do not claim completion until the typed handoff/proof returns. After a ready handoff reports status=ok/ready with concrete artifact refs and verification values, consume that governed proof directly. Do not route a duplicate verification episode for the same acceptance criteria unless the handoff explicitly reports missing evidence, a blocker, or contradictory values.
+    `mode='route'` uses root routeKind/routeReason fields. Research submits parallel primitive arrays
+    researchBriefIds/researchBriefGoals; other runtimes submit taskBriefs. The Engine restores and strictly validates
+    the canonical internal inputs envelope. Follow the Runtime capability
+    registry's single Research ladder rather than inferring a route from visible tools.
+
+    Research episode: use it for several independent fact domains, managed progress/recovery, or evidence that must cross
+    into another workflow. The initial parallel arrays contain every currently known domain as stable ID + short goal;
+    the Engine zips them into read-only internal task briefs. An owned missing brief gets one bounded managed repair; never
+    downgrade it to direct web/research calls. Consume the terminal handoff's answers, sources, limitations, and gaps.
+
+    Engineering episode: each brief is one coherent executable/acceptable unit. Express ordering with dependencies.
+    Every write brief declares writeRequired=true, an exhaustive bounded writeSet including command side effects,
+    final expectedArtifacts covered by that writeSet, expectedOutputs, and acceptanceContract. Repair only an exact
+    reported contract or execution gap once; delegation is not an alternate spelling for an Engineering episode.
+
+    Research shape: `{"mode":"route","routeKind":"research","routeReason":"verify known domains","researchBriefIds":["domain-a","domain-b"],"researchBriefGoals":["verify A","verify B"]}`.
+    Engineering shape: `{"mode":"route","routeKind":"engineering","routeReason":"implement and verify","taskBriefs":[{"taskBriefId":"implementation","goal":"implement the bounded change","writeRequired":true,"writeSet":["src/feature.py"],"expectedArtifacts":["src/feature.py"],"expectedOutputs":["working implementation"],"acceptanceContract":["the requirement is implemented"]},{"taskBriefId":"verification","goal":"persist proof","writeRequired":true,"writeSet":["reports/verification.json"],"expectedArtifacts":["reports/verification.json"],"expectedOutputs":["verification report"],"acceptanceContract":["checks pass and the report records them"],"dependencies":["implementation"]}]}`.
+
+    New Research calls use researchBriefIds + researchBriefGoals; other routes use taskBriefs. Preserve JSON array/object types. Use `list` only for a compact catalog and `grant`
+    only for explicit run-scoped facade access. A successful route automatically waits for the typed handoff: never call
+    repeated observe/status/wait_episode, and never claim completion from a queued episode or incomplete proof.
+    In user-facing text say 深度调研、编程模式、多媒体创作、桌面操作、自动流程 or 子代理协作, not this tool name.
     """
     normalized_mode = str(mode or "list").strip().lower()
-    need_payload_for_intent = _model_payload(need)
+    need_payload_for_intent = _route_need_from_public_transport(
+        need,
+        route_kind=routeKind,
+        route_reason=routeReason,
+        workspace_path=workspacePath,
+        research_brief_ids=researchBriefIds,
+        research_brief_goals=researchBriefGoals,
+        research_brief_contexts=researchBriefContexts,
+        task_briefs=taskBriefs,
+        proof_expectations=proofExpectations,
+    )
     route_context = dict((state or {}).get("current_route_context") or {})
+    if normalized_mode == "resume":
+        requested_episode_id = str(episode_id or "").strip()
+        requested_continuation_id = str(continuation_request_id or "").strip()
+        supplied_inputs = dict(continuation_inputs or {}) if isinstance(continuation_inputs, dict) else {}
+        current_session_id = str(
+            (state or {}).get("session_id")
+            or (state or {}).get("sessionId")
+            or route_context.get("session_id")
+            or route_context.get("sessionId")
+            or ""
+        ).strip()
+        episode = db.get_runtime_episode(requested_episode_id) if requested_episode_id else None
+        episode_session_id = str(
+            (episode or {}).get("session_id") or (episode or {}).get("sessionId") or ""
+        ).strip()
+        episode_state = str((episode or {}).get("state") or "").strip().lower()
+        error = ""
+        summary = ""
+        if not requested_episode_id or not requested_continuation_id or not supplied_inputs:
+            error = "runtime_resume_inputs_required"
+            summary = "mode=resume requires episode_id, continuation_request_id, and non-empty continuation_inputs."
+        elif not episode:
+            error = "runtime_episode_not_found"
+            summary = "The requested runtime episode does not exist."
+        elif not current_session_id or not episode_session_id or current_session_id != episode_session_id:
+            error = "runtime_episode_session_mismatch"
+            summary = "A runtime episode can only be resumed from its owning session."
+        elif episode_state != "waiting_input":
+            error = "runtime_episode_not_waiting_input"
+            summary = f"The runtime episode is in state '{episode_state or 'unknown'}', not waiting_input."
+        handoff_rows = db.list_runtime_episode_handoffs(requested_episode_id)
+        latest_handoff_row = handoff_rows[-1] if handoff_rows else {}
+        previous_handoff = dict(
+            latest_handoff_row.get("payload")
+            or latest_handoff_row.get("handoff")
+            or latest_handoff_row
+            or {}
+        )
+        normalized_inputs: dict[str, Any] = {}
+        continuation_request: dict[str, Any] = {}
+        if not error:
+            raw_request = previous_handoff.get("continuationRequest")
+            if not isinstance(raw_request, dict):
+                error = "runtime_continuation_contract_missing"
+                summary = "The latest waiting handoff does not contain a typed continuation request."
+            else:
+                try:
+                    continuation_request = normalize_runtime_continuation_request(raw_request)
+                    if requested_continuation_id != str(continuation_request.get("requestId") or ""):
+                        raise RuntimeContinuationContractError(
+                            "runtime_continuation_request_mismatch",
+                            "continuation_request_id does not match the latest waiting request.",
+                        )
+                    request_source = dict(continuation_request.get("source") or {})
+                    source_episode_id = str(request_source.get("runtimeEpisodeId") or "").strip()
+                    source_session_id = str(request_source.get("sessionId") or "").strip()
+                    if source_episode_id != requested_episode_id or source_session_id != episode_session_id:
+                        raise RuntimeContinuationContractError(
+                            "runtime_continuation_lineage_mismatch",
+                            "The continuation request does not belong to this runtime episode and session.",
+                        )
+                    normalized_inputs = validate_runtime_continuation_answers(
+                        continuation_request,
+                        supplied_inputs,
+                    )
+                except RuntimeContinuationContractError as exc:
+                    error = exc.code
+                    summary = str(exc)
+        if error:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=summary,
+                                error=error,
+                                detail_level=detail_level,
+                                next_action="Use the latest typed continuation request and answer exactly its requiredInputs; do not create a replacement route.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+        resumed = db.resume_runtime_episode(
+            requested_episode_id,
+            resume_token={
+                "resumedFrom": "supervisor_input",
+                "continuationRequestId": requested_continuation_id,
+                "continuationInputs": normalized_inputs,
+                "previousHandoffRef": str(
+                    previous_handoff.get("handoffRefId") or previous_handoff.get("handoffId") or ""
+                ),
+                "previousHandoff": previous_handoff,
+            },
+        ) or {**dict(episode or {}), "state": "queued"}
+        updated_context = upsert_runtime_episode(route_context, resumed)
+        _emit_runtime_episode_event(
+            "runtime.episode.resumed",
+            {
+                "episode": resumed,
+                "resumeSource": "supervisor_input",
+                "continuationRequestId": requested_continuation_id,
+                "continuationInputKeys": sorted(str(key) for key in normalized_inputs),
+            },
+        )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_runtime_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary="Runtime episode resumed with the requested inputs.",
+                            detail_level=detail_level,
+                            episode=resumed,
+                            next_action="The graph owns waiting for the resumed episode; do not poll or route a replacement runtime.",
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                "current_route_context": updated_context,
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_resume",
+                    "dispatched": True,
+                    "blocked": False,
+                    "reason": "runtime_episode_resumed",
+                    "episodeId": requested_episode_id,
+                    "episodeKind": str(resumed.get("kind") or ""),
+                    "episodeCount": 1,
+                    "nextAction": "wait_episode",
+                },
+            },
+        )
     if normalized_mode == "list" and _runtime_list_request_should_route(
         need=need_payload_for_intent,
         runtime_kind=runtime_kind,
@@ -2420,8 +3495,8 @@ def runtime_broker(
                             ],
                             detail_level=detail_level,
                             next_action=(
-                                "For execution, call runtime_broker(mode='route') with the canonical typed need contract: "
-                                "need.kind, need.reason, and need.inputs.taskBriefs. Use grant only for explicit tool-group access."
+                                "For execution, call runtime_broker(mode='route') with routeKind, routeReason, and "
+                                "researchBriefIds/researchBriefGoals or taskBriefs. Use grant only for explicit tool-group access."
                             ),
                         ),
                         tool_call_id=tool_call_id,
@@ -2462,14 +3537,14 @@ def runtime_broker(
                             content=_runtime_broker_payload(
                                 mode=normalized_mode,
                                 ok=False,
-                                summary="runtime_broker(mode=route) requires the typed need contract.",
+                                summary="runtime_broker(mode=route) requires the typed route contract.",
                                 error="typed_need_required",
                                 detail_level=detail_level,
                                 next_action=(
-                                    "Call route once with need={kind, reason, inputs}. Write-capable tasks must include "
+                                    "Call route once with routeKind, routeReason, and taskBriefs. Write-capable tasks must include "
                                     "taskBriefId, goal, writeSet, expectedOutputs, and acceptance."
                                 ),
-                                parameter_guidance=runtime_route_parameter_guidance(runtime_kind or "engineering"),
+                                parameter_guidance=runtime_route_parameter_guidance(routeKind or runtime_kind or "engineering"),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2490,7 +3565,7 @@ def runtime_broker(
         except ValidationError as exc:
             validation_errors = [
                 {
-                    "field": ".".join(str(part) for part in error.get("loc") or []),
+                    "field": _public_route_validation_field(error.get("loc")),
                     "type": str(error.get("type") or "invalid"),
                 }
                 for error in exc.errors(include_url=False, include_context=False, include_input=False)[:8]
@@ -2507,7 +3582,7 @@ def runtime_broker(
                                 error="typed_need_invalid",
                                 detail_level=detail_level,
                                 next_action=(
-                                    "Repair need.kind, need.reason, and need.inputs.taskBriefs. "
+                                    "Repair routeKind, routeReason, and researchBriefIds/researchBriefGoals or taskBriefs. "
                                     "Do not pass JSON strings or infer a write contract from prose."
                                 ),
                                 route_brief_quality={
@@ -2536,6 +3611,14 @@ def runtime_broker(
             )
         need_payload = typed_need.model_dump(exclude_none=True)
         route_kind = _normalize_capability_kind(need_payload.get("kind"))
+        if route_kind == "research":
+            # Parallel primitive arrays are the provider-safe public transport.
+            # Persist and execute only the expanded internal taskBriefs contract so every
+            # downstream runtime sees one stable shape.
+            normalized_inputs = dict(need_payload.get("inputs") or {})
+            normalized_inputs.pop("researchBriefs", None)
+            normalized_inputs.pop("researchBriefContexts", None)
+            need_payload["inputs"] = normalized_inputs
         if not route_kind:
             return Command(
                 goto="supervisor",
@@ -2545,12 +3628,12 @@ def runtime_broker(
                             content=_runtime_broker_payload(
                                 mode=normalized_mode,
                                 ok=False,
-                                summary="runtime_broker(mode=route) requires need.kind or runtime_kind.",
+                                summary="runtime_broker(mode=route) requires routeKind.",
                                 error="missing_capability_kind",
                                 next_action=(
-                                    "Call route with need.kind, need.reason, and need.inputs.taskBriefs using the canonical parameter contract."
+                                    "Call route with routeKind, routeReason, and researchBriefIds/researchBriefGoals or taskBriefs."
                                 ),
-                                parameter_guidance=runtime_route_parameter_guidance(runtime_kind or "engineering"),
+                                parameter_guidance=runtime_route_parameter_guidance(routeKind or runtime_kind or "engineering"),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2627,11 +3710,11 @@ def runtime_broker(
                                 error=public_error,
                                 detail_level=detail_level,
                                 next_action=(
-                                    "Repair need.inputs.taskBriefs and call route once. Write tasks require writeSet, "
-                                    "expectedOutputs, and acceptance; read-only tasks must explicitly set readOnly=true."
+                                    "Repair only the exact task fields or declared artifacts shown in routeBriefQuality, "
+                                    "then retry the same runtime route once. Do not switch runtime families to bypass "
+                                    "a contract error; read-only tasks must explicitly set readOnly=true."
                                 ),
                                 route_brief_quality=route_brief_quality,
-                                parameter_guidance=runtime_route_parameter_guidance(route_kind),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2648,6 +3731,110 @@ def runtime_broker(
                     },
                 },
             )
+        research_repair_state: dict[str, Any] | None = None
+        if route_kind == "engineering":
+            engineering_tasks = _explicit_task_briefs_from_inputs(route_inputs)
+            repair_state = _engineering_route_retry_state(
+                tasks=engineering_tasks,
+                route_context=route_context,
+                state=state,
+            )
+            if bool(repair_state.get("exhausted")):
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_runtime_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=False,
+                                    summary=(
+                                        "The same Engineering write scope already used its initial attempt and one "
+                                        "bounded repair; another episode was not queued."
+                                    ),
+                                    error="engineering_retry_exhausted",
+                                    detail_level=detail_level,
+                                    route_brief_quality={
+                                        "status": "blocked",
+                                        "reason": "engineering_retry_exhausted",
+                                        "blocking": True,
+                                        **repair_state,
+                                    },
+                                    next_action=(
+                                        "Report the compact blocker and retained evidence. Only a materially different "
+                                        "user-authorized scope may create a new Engineering contract in this run."
+                                    ),
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "current_route_context": route_context,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_broker_route",
+                            "dispatched": False,
+                            "blocked": True,
+                            "reason": "engineering_retry_exhausted",
+                            "episodeKind": route_kind,
+                            "episodeCount": 0,
+                            "nextAction": "report_runtime_blocker",
+                        },
+                    },
+                )
+            if int(repair_state.get("priorFailedAttempts") or 0) == 1:
+                route_inputs = dict(route_inputs)
+                route_inputs["engineeringRepair"] = {
+                    **repair_state,
+                    "finalRepairAttempt": True,
+                }
+                need_payload = {**need_payload, "inputs": route_inputs}
+        elif route_kind == "research":
+            research_repair_state = _research_route_retry_state(
+                tasks=_explicit_task_briefs_from_inputs(route_inputs),
+                route_context=route_context,
+                state=state,
+            )
+            if list(research_repair_state.get("inFlightEpisodeIds") or []):
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_runtime_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=False,
+                                    summary="The same managed Research branch is already running; no duplicate episode was queued.",
+                                    error="research_episode_in_flight",
+                                    detail_level=detail_level,
+                                    route_brief_quality={
+                                        "status": "blocked",
+                                        "reason": "research_episode_in_flight",
+                                        "blocking": True,
+                                        **research_repair_state,
+                                    },
+                                    next_action="Wait for the graph-owned typed handoff. Do not poll or replace it with direct web calls.",
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "current_route_context": route_context,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_broker_route",
+                            "dispatched": False,
+                            "blocked": True,
+                            "reason": "research_episode_in_flight",
+                            "episodeKind": route_kind,
+                            "episodeCount": 0,
+                            "nextAction": "wait_episode",
+                        },
+                    },
+                )
+            if int(research_repair_state.get("priorAttempts") or 0) == 1:
+                route_inputs = dict(route_inputs)
+                route_inputs["researchRepair"] = {
+                    **research_repair_state,
+                    "finalRepairAttempt": True,
+                }
+                need_payload = {**need_payload, "inputs": route_inputs}
         reused_handoff = _current_governed_handoff_reuse(
             state=state,
             need=need_payload,
@@ -2699,6 +3886,47 @@ def runtime_broker(
                         )
                     ],
                     "current_route_context": updated_context,
+                },
+            )
+        if route_kind == "research" and bool((research_repair_state or {}).get("exhausted")):
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=(
+                                    "The same Research branch already used its initial attempt and one bounded repair; "
+                                    "another episode was not queued."
+                                ),
+                                error="research_retry_exhausted",
+                                detail_level=detail_level,
+                                route_brief_quality={
+                                    "status": "blocked",
+                                    "reason": "research_retry_exhausted",
+                                    "blocking": True,
+                                    **dict(research_repair_state or {}),
+                                },
+                                next_action=(
+                                    "Carry the typed evidence gaps into a locally verifiable downstream task when safe, "
+                                    "or report the compact blocker. Do not create an ad-hoc web-call substitute."
+                                ),
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "runtime_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "research_retry_exhausted",
+                        "episodeKind": route_kind,
+                        "episodeCount": 0,
+                        "nextAction": "carry_evidence_gaps_or_report_blocker",
+                    },
                 },
             )
         requested_groups = _capability_route_groups(
@@ -2897,6 +4125,9 @@ def runtime_broker(
             "current_route_context": route_context,
         },
     )
+
+
+runtime_broker.handle_validation_error = _runtime_broker_validation_error
 __all__ = [
     "RuntimeRouteInputs",
     "RuntimeRouteNeed",

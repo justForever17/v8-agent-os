@@ -1,8 +1,102 @@
 import uuid
+from collections.abc import Mapping
 
 from langchain_core.messages import AIMessage, ToolMessage
 
 from core.response_normalizer import ensure_reasoning_content, sanitize_model_tool_calls
+
+
+_SAME_BATCH_FILE_PRODUCERS = {"write_native_file"}
+_SAME_BATCH_FILE_CONSUMERS = {"run_system_command", "command_session_broker"}
+
+
+def _tool_call_name(call) -> str:
+    if not isinstance(call, Mapping):
+        return str(getattr(call, "name", "") or "").strip()
+    for key in ("name", "toolName", "tool_name"):
+        value = call.get(key)
+        if value:
+            return str(value).strip()
+    for key in ("function", "functionCall", "function_call"):
+        nested = call.get(key)
+        if isinstance(nested, Mapping) and nested.get("name"):
+            return str(nested.get("name") or "").strip()
+    return ""
+
+
+def _tool_call_id(call) -> str:
+    if not isinstance(call, Mapping):
+        return str(getattr(call, "id", "") or "").strip()
+    for key in ("id", "tool_call_id", "toolCallId", "providerToolCallId"):
+        value = call.get(key)
+        if value:
+            return str(value).strip()
+    for key in ("function", "functionCall", "function_call"):
+        nested = call.get(key)
+        if isinstance(nested, Mapping) and nested.get("id"):
+            return str(nested.get("id") or "").strip()
+    return ""
+
+
+def _content_block_tool_call(block):
+    if not isinstance(block, Mapping):
+        return None
+    if _tool_call_name(block):
+        return block
+    for key in ("function", "functionCall", "function_call"):
+        nested = block.get(key)
+        if isinstance(nested, Mapping) and _tool_call_name(nested):
+            return nested
+    return None
+
+
+def defer_same_batch_file_consumers(response):
+    """Split a write→execute dependency into separate model turns.
+
+    Independent writes remain parallel.  Only the narrow, repeatedly observed
+    unsafe batch is corrected: a native file producer and a shell/session
+    consumer in the same model response.  The consumer can be requested on the
+    next turn after the write ToolMessage exists, so no capability is removed.
+    """
+
+    calls = list(getattr(response, "tool_calls", None) or [])
+    names = {_tool_call_name(call) for call in calls}
+    if not (names & _SAME_BATCH_FILE_PRODUCERS and names & _SAME_BATCH_FILE_CONSUMERS):
+        return response
+
+    deferred = [call for call in calls if _tool_call_name(call) in _SAME_BATCH_FILE_CONSUMERS]
+    kept = [call for call in calls if _tool_call_name(call) not in _SAME_BATCH_FILE_CONSUMERS]
+    response.tool_calls = kept
+
+    additional_kwargs = dict(getattr(response, "additional_kwargs", None) or {})
+    if isinstance(additional_kwargs.get("tool_calls"), list):
+        additional_kwargs["tool_calls"] = [
+            call
+            for call in additional_kwargs["tool_calls"]
+            if _tool_call_name(call) not in _SAME_BATCH_FILE_CONSUMERS
+        ]
+    additional_kwargs["v8_deferred_dependent_tool_calls"] = [
+        {
+            "id": _tool_call_id(call),
+            "name": _tool_call_name(call),
+            "reason": "await_native_file_write_result",
+        }
+        for call in deferred
+    ]
+    response.additional_kwargs = additional_kwargs
+
+    for attribute in ("content", "content_blocks"):
+        blocks = getattr(response, attribute, None)
+        if not isinstance(blocks, list):
+            continue
+        filtered = []
+        for block in blocks:
+            tool_call = _content_block_tool_call(block)
+            if tool_call is not None and _tool_call_name(tool_call) in _SAME_BATCH_FILE_CONSUMERS:
+                continue
+            filtered.append(block)
+        setattr(response, attribute, filtered)
+    return response
 
 
 def sanitize_message_chain(messages):
@@ -54,6 +148,8 @@ def sanitize_message_chain(messages):
                     additional_kwargs={
                         key: value for key, value in message.additional_kwargs.items() if key != "tool_calls"
                     },
+                    response_metadata=dict(getattr(message, "response_metadata", {}) or {}),
+                    usage_metadata=getattr(message, "usage_metadata", None),
                 )
                 sanitized.append(ensure_reasoning_content(clean_message))
         elif isinstance(message, ToolMessage):
@@ -72,4 +168,4 @@ def sanitize_message_chain(messages):
 
 def sanitize_response_tool_calls(response):
     """Repair fragmented tool calls and normalize reasoning fields."""
-    return sanitize_model_tool_calls(response)
+    return defer_same_batch_file_consumers(sanitize_model_tool_calls(response))

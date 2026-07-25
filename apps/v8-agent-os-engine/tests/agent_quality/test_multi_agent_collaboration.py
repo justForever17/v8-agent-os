@@ -81,7 +81,7 @@ def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> Non
     engineering_handoff = db.list_runtime_episode_handoffs(engineering["episodeId"])[-1]["payload"]
 
     assert engineering_handoff["kind"] == "engineering_patch_bundle"
-    assert engineering_handoff["engineeringState"] == "execution_started"
+    assert engineering_handoff["engineeringState"] == "handoff_ready"
     assert engineering_handoff["delegationHandoff"]["taskConfirmed"] is True
     assert "subagent_result:worker-1" in engineering_handoff["delegationHandoff"]["refs"]
 

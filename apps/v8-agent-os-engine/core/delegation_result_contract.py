@@ -142,10 +142,25 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "lane": item.get("lane"),
         "status": status,
         "error": item.get("error"),
+        "errorMessage": _compact(item.get("errorMessage"), limit=600),
         "dispatchStatus": item.get("dispatchStatus"),
+        "requiredInputs": to_jsonable(item.get("requiredInputs"))
+        if isinstance(item.get("requiredInputs"), list)
+        else None,
+        "continuationRequest": to_jsonable(item.get("continuationRequest"))
+        if isinstance(item.get("continuationRequest"), dict)
+        else None,
         "artifactRefs": to_jsonable(artifact_refs),
+        "artifactRefsAccepted": item.get("artifactRefsAccepted"),
+        "proofRefs": to_jsonable(_list(item.get("proofRefs"))),
+        "creativeExecutionEvidence": to_jsonable(item.get("creativeExecutionEvidence"))
+        if isinstance(item.get("creativeExecutionEvidence"), dict)
+        else None,
         "missingArtifactEvidence": missing_artifact_evidence,
         "localSelfCheck": local_self_check,
+        "repairAction": _compact(item.get("repairAction"), limit=900),
+        "workerReportedSummary": _compact(item.get("workerReportedSummary"), limit=900),
+        "workerReportedResultText": _compact(item.get("workerReportedResultText"), limit=1200),
         "acceptanceHint": acceptance_hint,
         "supervisorAcceptance": supervisor_acceptance,
         "resultSchemaMatched": bool(result_schema_matched),

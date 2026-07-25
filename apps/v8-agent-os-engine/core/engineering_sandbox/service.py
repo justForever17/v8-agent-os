@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -267,7 +268,11 @@ class EngineeringSandboxService:
                         state=str(existing_row["state"]),
                     )
                     policy_file = self.policy_root / f"{policy.lease_id}.json"
-                    if not policy_file.exists():
+                    expected_policy_file = _json(policy.as_dict()) + "\n"
+                    if (
+                        not policy_file.exists()
+                        or policy_file.read_text(encoding="utf-8", errors="replace") != expected_policy_file
+                    ):
                         _atomic_json(policy_file, policy.as_dict())
                     return PreparedEngineeringWorkspace(
                         repository=repository,
@@ -414,6 +419,233 @@ class EngineeringSandboxService:
             lease=lease,
             policy_file=str(policy_file),
         )
+
+    def materialize_task_dependencies(
+        self,
+        *,
+        worktree_id: str,
+        run_id: str,
+        change_sets: Iterable[Mapping[str, Any]],
+    ) -> tuple[PreparedEngineeringWorkspace, GitChangeSetRef]:
+        """Make accepted upstream changes the immutable baseline of one task.
+
+        The dependency patch is committed before the worker starts, then both
+        the worktree record and active sandbox policy move to that commit.  A
+        downstream finalization therefore reports only the downstream delta,
+        while crash recovery can reconstruct the exact accepted dependency
+        chain from preserved Git objects.
+        """
+
+        parsed: list[GitChangeSetRef] = []
+        seen_commits: set[tuple[str, str]] = set()
+        for raw in change_sets:
+            item = dict(raw or {})
+            change_set = GitChangeSetRef(
+                repository_id=str(item.get("repositoryId") or item.get("repository_id") or ""),
+                worktree_id=str(item.get("worktreeId") or item.get("worktree_id") or ""),
+                branch_name=str(item.get("branchName") or item.get("branch_name") or ""),
+                base_commit=str(item.get("baseCommit") or item.get("base_commit") or ""),
+                commit_id=str(item.get("commitId") or item.get("commit_id") or ""),
+                changed_paths=tuple(item.get("changedPaths") or item.get("changed_paths") or ()),
+                insertions=int(item.get("insertions") or 0),
+                deletions=int(item.get("deletions") or 0),
+                status=str(item.get("status") or "candidate"),
+            )
+            key = (change_set.repository_id, change_set.commit_id)
+            if (
+                not change_set.repository_id
+                or not change_set.base_commit
+                or not change_set.commit_id
+                or key in seen_commits
+                or change_set.status == "no_changes"
+                or change_set.commit_id == change_set.base_commit
+            ):
+                continue
+            seen_commits.add(key)
+            parsed.append(change_set)
+        if not parsed:
+            raise ManagedGitError(
+                "dependency_change_sets_required",
+                "No effective dependency change sets were supplied.",
+            )
+
+        with self._lock:
+            row = self._get_worktree_row(worktree_id)
+            if row is None:
+                raise ManagedGitError(
+                    "dependency_target_worktree_not_found",
+                    "The dependent managed worktree record does not exist.",
+                )
+            if str(row["run_id"] or "").strip() != str(run_id or "").strip():
+                raise ManagedGitError(
+                    "dependency_target_run_mismatch",
+                    "The dependent worktree belongs to another runtime run.",
+                )
+            if str(row["change_set_json"] or "").strip():
+                raise ManagedGitError(
+                    "dependency_target_already_finalized",
+                    "Dependencies cannot be injected after the dependent task was finalized.",
+                )
+            repository = self._get_repository(str(row["repository_id"] or ""))
+            if repository is None:
+                raise ManagedGitError(
+                    "managed_repository_not_found",
+                    "The dependent worktree repository record is missing.",
+                )
+            if any(item.repository_id != repository.repository_id for item in parsed):
+                raise ManagedGitError(
+                    "dependency_chain_repository_mismatch",
+                    "Upstream changes belong to another repository.",
+                )
+            lease_row = self._get_active_lease_for_worktree(worktree_id)
+            if lease_row is None:
+                raise ManagedGitError(
+                    "dependency_target_lease_missing",
+                    "The dependent worktree has no active sandbox lease.",
+                )
+            policy = SandboxPolicy.from_dict(json.loads(str(lease_row["policy_json"] or "{}")))
+            topology = self._topology_from_worktree_row(row)
+            worktree = ManagedWorktree(
+                worktree_id=str(row["worktree_id"]),
+                repository_id=str(row["repository_id"]),
+                branch_name=str(row["branch_name"]),
+                base_commit=str(row["base_commit"]),
+                topology=topology,
+                state=str(row["state"]),
+            )
+            descriptor = "\n".join(
+                f"{item.repository_id}:{item.base_commit}:{item.commit_id}"
+                for item in parsed
+            )
+            chain_digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
+            chain_id = f"dependency_{worktree_id}_{chain_digest[:16]}"
+            closure = self.git.compose_change_set_chain(
+                repository,
+                run_id=run_id,
+                chain_id=chain_id,
+                change_sets=parsed,
+            )
+            target_root = Path(str(topology.worktree_root))
+            closure_tree = str(
+                self.git.run(
+                    ["rev-parse", f"{closure.commit_id}^{{tree}}"],
+                    cwd=target_root,
+                ).stdout
+                or ""
+            ).strip()
+            current_head = str(
+                self.git.run(["rev-parse", "HEAD"], cwd=target_root).stdout or ""
+            ).strip()
+            current_tree = str(
+                self.git.run(
+                    ["rev-parse", f"{current_head}^{{tree}}"],
+                    cwd=target_root,
+                ).stdout
+                or ""
+            ).strip()
+            status = self.git.run(
+                ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                cwd=target_root,
+                text=False,
+            )
+            if status.stdout:
+                dirty_snapshot = self.git.snapshot_base_commit(
+                    repository,
+                    run_id=f"{run_id}-{worktree_id}-dependency-recovery",
+                    source_repository_root=target_root,
+                )
+                dirty_tree = str(
+                    self.git.run(
+                        ["rev-parse", f"{dirty_snapshot}^{{tree}}"],
+                        cwd=target_root,
+                    ).stdout
+                    or ""
+                ).strip()
+                if dirty_tree != closure_tree:
+                    raise ManagedGitError(
+                        "dependency_target_not_clean",
+                        "The dependent worktree changed before its dependency baseline was ready.",
+                        details={"worktreeId": worktree_id},
+                    )
+            elif current_tree != closure_tree:
+                self.git.apply_change_set_to_worktree(
+                    target_repository_root=target_root,
+                    repository=repository,
+                    change_set=closure,
+                    run_id=f"{run_id}-{worktree_id}-dependency-materialize",
+                )
+
+            baseline = self.git.finalize_worktree(
+                worktree,
+                write_set=closure.changed_paths,
+                commit_message=f"V8OS dependency baseline for {worktree_id}",
+            )
+            updated_policy = SandboxPolicy.from_dict(
+                {
+                    **policy.as_dict(),
+                    "base_commit": baseline.commit_id,
+                }
+            )
+            policy_file = self.policy_root / f"{policy.lease_id}.json"
+            previous_policy_payload = policy.as_dict()
+            _atomic_json(policy_file, updated_policy.as_dict())
+            now = _utc_now_iso()
+
+            def _write() -> None:
+                with self.database.get_connection() as conn:
+                    conn.execute(
+                        "UPDATE engineering_worktrees SET base_commit = ?, updated_at = ? WHERE worktree_id = ?",
+                        (baseline.commit_id, now, worktree_id),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE sandbox_execution_leases
+                        SET policy_digest = ?, policy_json = ?, updated_at = ?
+                        WHERE lease_id = ? AND state IN ('active', 'finalizing')
+                        """,
+                        (
+                            updated_policy.digest,
+                            _json(updated_policy.as_dict()),
+                            now,
+                            policy.lease_id,
+                        ),
+                    )
+                    conn.commit()
+
+            try:
+                self.database._run_write_with_retry(_write)
+            except Exception:
+                _atomic_json(policy_file, previous_policy_payload)
+                raise
+
+            updated_worktree = ManagedWorktree(
+                worktree_id=worktree.worktree_id,
+                repository_id=worktree.repository_id,
+                branch_name=worktree.branch_name,
+                base_commit=baseline.commit_id,
+                topology=worktree.topology,
+                state=worktree.state,
+            )
+            updated_lease = SandboxLease(
+                lease_id=policy.lease_id,
+                policy=updated_policy,
+                state=SandboxLeaseState(str(lease_row["state"])),
+                capabilities=SandboxCapabilities.from_dict(
+                    json.loads(str(lease_row["capabilities_json"] or "{}"))
+                ),
+                created_at=str(lease_row["created_at"]),
+                activated_at=str(lease_row["activated_at"] or "") or None,
+                expires_at=str(lease_row["expires_at"] or "") or None,
+            )
+            return (
+                PreparedEngineeringWorkspace(
+                    repository=repository,
+                    worktree=updated_worktree,
+                    lease=updated_lease,
+                    policy_file=str(policy_file),
+                ),
+                closure,
+            )
 
     def wrap_runtime_command(
         self,
@@ -611,9 +843,22 @@ class EngineeringSandboxService:
             )
         if not parsed or not parsed[0].repository_id:
             raise ManagedGitError("integration_change_sets_required", "No managed Git candidates were supplied.")
+        repository = self._get_repository(parsed[0].repository_id)
+        if repository is None:
+            raise ManagedGitError("managed_repository_not_found", "The managed repository record is missing.")
+        if any(item.repository_id != repository.repository_id for item in parsed):
+            raise ManagedGitError(
+                "integration_topology_mismatch",
+                "Candidate change sets do not belong to one repository.",
+            )
+        candidate_descriptor = "\n".join(
+            f"{item.repository_id}:{item.base_commit}:{item.commit_id}"
+            for item in parsed
+        )
+        candidate_digest = hashlib.sha256(candidate_descriptor.encode("utf-8")).hexdigest()
         integration_id = "integration_" + uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"v8os:{run_id}:{invocation_id}:{parsed[0].repository_id}",
+            f"v8os:{run_id}:{invocation_id}:{parsed[0].repository_id}:{candidate_digest}",
         ).hex[:24]
         existing = self._get_worktree_row(integration_id)
         if existing is not None and str(existing["change_set_json"] or "").strip():
@@ -640,14 +885,21 @@ class EngineeringSandboxService:
                     status=str(payload.get("status") or "integration_candidate"),
                 ),
             )
-        repository = self._get_repository(parsed[0].repository_id)
-        if repository is None:
-            raise ManagedGitError("managed_repository_not_found", "The managed repository record is missing.")
+        integration_candidates = parsed
+        if len({item.base_commit for item in parsed}) > 1:
+            integration_candidates = [
+                self.git.compose_change_set_chain(
+                    repository,
+                    run_id=run_id,
+                    chain_id=f"integration-source-{candidate_digest[:16]}",
+                    change_sets=parsed,
+                )
+            ]
         integration, combined = self.git.integrate_change_sets(
             repository,
             run_id=run_id,
             integration_id=integration_id,
-            change_sets=parsed,
+            change_sets=integration_candidates,
         )
         self._persist_worktree(
             integration,

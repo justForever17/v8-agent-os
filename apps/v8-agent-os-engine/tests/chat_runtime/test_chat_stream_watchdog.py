@@ -99,15 +99,121 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(
             chat_runtime_module.supervisor_runner,
             "get_state_snapshot",
-            new=mock.AsyncMock(return_value={"parallel_results": [], "current_route_context": {}}),
+            new=mock.AsyncMock(
+                return_value={
+                    "parallel_results": [],
+                    "current_route_context": {
+                        "capabilityEpisodes": [
+                            {
+                                "kind": "engineering",
+                                "inputs": {
+                                    "taskBriefs": [
+                                        {
+                                            "taskBriefId": "engineering-task",
+                                            "goal": "Implement the bounded change.",
+                                            "writeSet": ["src/example.py"],
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                }
+            ),
         ):
             await runtime.emit_engineering_lane_projection(chat_run, bundle)
 
         event = chat_run.events[-1]
         self.assertEqual(event["topic"], "engineering.plan.projected")
-        self.assertEqual(event["payload"]["summary"], "工程执行合同已投影 · 0 个工程任务")
+        self.assertEqual(event["payload"]["summary"], "工程执行合同已投影 · 1 个工程任务")
         self.assertEqual(event["payload"]["riskFlags"], ["write_set_missing"])
         self.assertEqual(event["payload"]["traceRef"], {"runId": "run_test"})
+
+    async def test_engineering_projection_does_not_project_research_brief_as_engineering(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        chat_run.engineering_change_set = {}
+        chat_run.prepared = SimpleNamespace(
+            engineering_trigger_decision={"active": True},
+            engineering_context_pack={
+                "contextPack": {
+                    "codingExecutionContractPreview": {
+                        "enabled": True,
+                        "writeSet": [],
+                        "riskFlags": ["write_set_missing"],
+                    }
+                }
+            },
+            engineering_mode="auto",
+        )
+        bundle = ChatExecutionBundle(
+            run_handle=object(),
+            runner_bundle=SupervisorExecutionBundle(graph=None, payload=None, graph_config={}, diagnostics={}),
+        )
+
+        with mock.patch.object(
+            chat_runtime_module.supervisor_runner,
+            "get_state_snapshot",
+            new=mock.AsyncMock(
+                return_value={
+                    "parallel_results": [],
+                    "current_route_context": {
+                        "capabilityEpisodes": [
+                            {
+                                "kind": "research",
+                                "inputs": {
+                                    "taskBriefs": [
+                                        {
+                                            "taskBriefId": "research-domain",
+                                            "goal": "Verify the current fact.",
+                                            "readOnly": True,
+                                            "writeSet": [],
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                }
+            ),
+        ):
+            await runtime.emit_engineering_lane_projection(chat_run, bundle)
+
+        self.assertEqual(chat_run.events, [])
+
+    async def test_noop_engineering_workspace_is_not_presented_as_delivery(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        chat_run.engineering_workspace = {"worktree_id": "worktree_noop"}
+        chat_run.engineering_change_set = {}
+        change_set = SimpleNamespace(
+            changed_paths=(),
+            as_dict=lambda: {
+                "worktreeId": "worktree_noop",
+                "changedPaths": [],
+                "status": "no_changes",
+            },
+        )
+        sandbox_service = SimpleNamespace(
+            finalize_task_workspace=mock.Mock(return_value=change_set),
+            record_run_integration_decision=mock.Mock(),
+        )
+
+        with mock.patch(
+            "core.engineering_sandbox.service.get_engineering_sandbox_service",
+            return_value=sandbox_service,
+        ):
+            await runtime.finalize_supervisor_engineering_workspace(
+                chat_run,
+                None,
+                final_text="No engineering work was executed.",
+            )
+
+        self.assertEqual(chat_run.events, [])
+        sandbox_service.record_run_integration_decision.assert_called_once_with(
+            run_id="run_test",
+            decision="ignored",
+        )
 
     def test_runtime_episode_chain_uses_long_timeout_window(self):
         state = GraphStreamWatchdogState()

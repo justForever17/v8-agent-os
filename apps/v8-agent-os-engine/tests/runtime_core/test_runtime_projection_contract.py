@@ -9,6 +9,7 @@ from core.runtime_projection import (
     project_chat_messages_from_events,
     merge_authoritative_timeline_messages,
     project_runtime_timeline_from_events,
+    select_runtime_timeline_window,
 )
 
 
@@ -73,6 +74,28 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(len(timeline), 1)
         self.assertEqual(timeline[0]["summary"], "扩展候选执行完成")
         self.assertEqual(timeline[0]["status"], "completed")
+        self.assertNotIn("messagePreview", timeline[0]["metadata"])
+
+    def test_extension_candidate_projection_keeps_counts_not_candidate_payloads(self):
+        events = [
+            {
+                "event_id": "evt_extension_route",
+                "run_id": "run_x",
+                "seq": 1,
+                "topic": "extension.route.selected",
+                "payload": {
+                    "skillCandidates": [{"name": "gh", "description": "large private payload"}],
+                    "mcpToolCandidates": [{"name": "github.search", "inputSchema": {"type": "object"}}],
+                    "routing": {"private": "do not project"},
+                },
+                "source": {},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(timeline[0]["metadata"], {"skillCount": 1, "mcpToolCount": 1})
+        self.assertNotIn("large private payload", str(timeline))
 
     def test_run_state_changed_reads_to_status_payload(self):
         events = [
@@ -141,6 +164,52 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(timeline[1]["runtimeId"], "research")
         self.assertEqual(timeline[1]["metadata"]["episodeId"], "episode_research")
 
+    def test_runtime_episode_projection_keeps_compact_handoff_without_raw_task_contract(self):
+        events = [
+            {
+                "event_id": "evt_creative_complete",
+                "run_id": "run_creative",
+                "seq": 5,
+                "topic": "runtime.episode.completed",
+                "payload": {
+                    "episode": {
+                        "episodeId": "episode_creative",
+                        "kind": "creative_media",
+                        "state": "completed",
+                        "reason": "准备创意媒体执行方案",
+                        "need": {"inputs": {"privatePrompt": "do not project"}},
+                    },
+                    "handoffRefs": [
+                        {
+                            "handoffRefId": "handoff_creative",
+                            "producerEpisodeId": "episode_creative",
+                            "kind": "asset_bundle",
+                            "status": "ready",
+                            "compactSummary": "Creative Media recipe compiled",
+                            "handoffStage": "compiled",
+                            "requiresContinuation": True,
+                            "recommendedNextAction": "Create provider jobs",
+                            "privateProviderPayload": {"secret": "do not project"},
+                        }
+                    ],
+                    "resume": {"resume_error": "internal scheduling detail"},
+                },
+                "source": {"agent_id": "supervisor"},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+        metadata = timeline[0]["metadata"]
+
+        self.assertEqual(metadata["episodeId"], "episode_creative")
+        self.assertTrue(metadata["requiresContinuation"])
+        self.assertEqual(metadata["handoff"]["handoffStage"], "compiled")
+        self.assertEqual(metadata["handoffRefs"][0]["handoffRefId"], "handoff_creative")
+        self.assertNotIn("episode", metadata)
+        self.assertNotIn("resume", metadata)
+        self.assertNotIn("privateProviderPayload", str(metadata))
+        self.assertNotIn("do not project", str(metadata))
+
     def test_delegation_broker_missing_result_marks_dispatch_unconfirmed(self):
         events = [
             {
@@ -176,6 +245,73 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(missing[0]["runtimeId"], "subagent_swarm")
         self.assertEqual(missing[0]["status"], "missing_result")
         self.assertIn("未确认实际派发", missing[0]["summary"])
+
+    def test_creative_media_tool_projection_keeps_actor_but_not_raw_result(self):
+        events = [
+            {
+                "event_id": "evt_creative_start",
+                "run_id": "run_creative",
+                "seq": 10,
+                "topic": "creative_media.tool.started",
+                "payload": {
+                    "runtimeId": "creative_media",
+                    "ownerAgentKind": "runtime",
+                    "ownerAgentId": "supervisor",
+                    "tool": {
+                        "toolCallId": "call_creative",
+                        "toolName": "creative_media_jobs",
+                        "args": {"prompt": "private prompt"},
+                    },
+                },
+                "source": {"agent_id": "supervisor"},
+            },
+            {
+                "event_id": "evt_creative_finish",
+                "run_id": "run_creative",
+                "seq": 11,
+                "topic": "creative_media.tool.finished",
+                "payload": {
+                    "runtimeId": "creative_media",
+                    "ownerAgentKind": "runtime",
+                    "ownerAgentId": "supervisor",
+                    "tool": {
+                        "toolCallId": "call_creative",
+                        "toolName": "creative_media_jobs",
+                        "result": {"ok": True, "status": "failed", "raw": "private provider payload"},
+                    },
+                },
+                "source": {"agent_id": "supervisor"},
+            },
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual([entry["topic"] for entry in timeline], [
+            "creative_media.tool.started",
+            "creative_media.tool.finished",
+        ])
+        self.assertEqual(timeline[0]["runtimeId"], "creative_media")
+        self.assertEqual(timeline[0]["metadata"]["ownerAgentId"], "supervisor")
+        self.assertEqual(timeline[1]["status"], "failed")
+        self.assertFalse(timeline[1]["metadata"]["ok"])
+        self.assertNotIn("args", timeline[0]["metadata"])
+        self.assertNotIn("result", timeline[1]["metadata"])
+        self.assertNotIn("private provider payload", str(timeline))
+
+    def test_compact_runtime_window_keeps_old_handoff_amid_recent_noise(self):
+        timeline = [
+            {"id": "handoff", "seq": 1, "topic": "handoff.ref.created"},
+            *[
+                {"id": f"noise-{index}", "seq": index + 2, "topic": "extension.route.selected"}
+                for index in range(220)
+            ],
+        ]
+
+        compact = select_runtime_timeline_window(timeline, recent_limit=160, milestone_limit=32)
+
+        self.assertEqual(len(compact), 161)
+        self.assertEqual(compact[0]["id"], "handoff")
+        self.assertEqual(compact[-1]["id"], "noise-219")
 
     def test_tool_started_projection_sanitizes_runtime_internal_args(self):
         events = [

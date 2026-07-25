@@ -583,6 +583,7 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Spec Ref Usage", "specRefUsage", 900),
     ("Expected Output", "expectedOutput", 800),
     ("Expected Outputs", "expectedOutputs", 900),
+    ("Upstream Dependency Results", "dependencyResults", 7200),
     ("Task Context", "notes", 1800),
     ("Upstream Handoffs", "upstreamHandoffs", 7200),
     ("Handoff Usage", "handoffUsage", 900),
@@ -888,12 +889,15 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         if active_collaborators:
             lines.append("")
             lines.append("Concurrent Collaboration Boundaries:")
-            lines.append("- These are reverse-boundary warnings, not work you should absorb. Do not duplicate or mutate a peer's scope; report a conflict when boundaries overlap.")
+            lines.append("- These are reverse-boundary exclusions, not work you should absorb. The current task brief and its writeSet remain your only positive execution authority.")
+            lines.append("- Do not create, modify, verify, or run a command whose side effects produce a peer task's outputs. Choose a non-writing check or return a boundary conflict when current acceptance would cross that line.")
             for item in active_collaborators[:12]:
                 name = _compact_prompt_value(item.get("name")) or "peer"
+                task_id = _compact_prompt_value(item.get("taskBriefId"))
                 work_summary = _compact_prompt_value(item.get("workSummary")) or "concurrent delegated work"
                 status = _compact_prompt_value(item.get("status"))
-                lines.append(f"- {name}: {work_summary}" + (f" ({status})" if status else ""))
+                identity = f"{name} [{task_id}]" if task_id else name
+                lines.append(f"- EXCLUDED — {identity}: {work_summary}" + (f" ({status})" if status else ""))
         lines.extend(_agent_visible_context_lines(context))
         writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
         if writing_brief:

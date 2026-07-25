@@ -17,9 +17,12 @@ from graph.supervisor_turn import (
     _runtime_episode_recoverable_failure,
     _runtime_handoff_continuation_message,
     _runtime_handoff_requires_continuation,
+    _runtime_research_gap_state,
+    _managed_research_retry_need,
     _runtime_handoff_final_response,
     _runtime_handoff_final_text,
     _runtime_handoff_final_message,
+    _runtime_handoff_final_advisory_pending,
     _retry_delegation_acceptance_once,
     _runtime_recoverable_failure_final_response,
     _runtime_recoverable_failure_final_text,
@@ -649,11 +652,388 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     assert "You are the delivery owner" in content
     assert "detail, verification, repair, or runtime tools" in content
     assert "do not re-read the same artifact" in content
+    assert "no additional handoff will arrive" in content
+    assert "declared taskBriefIds" in content
+    assert "research-plus-implementation" in content
+    assert "unfinished delivery contract" in content
+    assert "machine-readable baseline" in content
+    assert "route one typed Engineering episode before the first implementation command" in content
+    assert "Skill may improve the method" in content
+    assert "never wait for phantom handoffs" in content
+    assert "quarantined candidate" in content
+    assert "managed child worktree path is execution provenance" in content
+    assert "parentWorktreeMerge.status=merged_to_parent" in content
+    assert "already present in the current Active Workspace Root" in content
+    assert "do not route the same acceptance criteria again" in content
+    assert "repairTaskBriefIds" in content
+    assert "do not poll the terminal episode" in content
     assert "evidence=complete" in content
     assert "验收决定：ACCEPT" in content
     assert "验收决定：RETRY" in content
     assert "验收决定：IGNORE" in content
     assert "Do not call tools" not in content
+    assert "single review edge" in content
+    assert "one bounded verification pass is clean" in content
+
+
+def test_runtime_handoff_final_advisory_is_one_edge_per_persisted_summary():
+    first_summary = HumanMessage(
+        content="[Runtime Episode Handoff Ready]",
+        additional_kwargs={"v8_governance_type": "runtime_handoff"},
+    )
+    assert _runtime_handoff_final_advisory_pending({"messages": [first_summary]})
+
+    local_action = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "write-1",
+                "name": "write_native_file",
+                "args": {"path": "README.md", "content": "verified"},
+            }
+        ],
+    )
+    local_result = ToolMessage(content='{"ok":true}', tool_call_id="write-1", name="write_native_file")
+    assert not _runtime_handoff_final_advisory_pending(
+        {"messages": [first_summary, local_action, local_result]}
+    )
+
+    second_summary = HumanMessage(
+        content="[Runtime Episode Handoff Ready]",
+        additional_kwargs={"v8_governance_type": "runtime_handoff"},
+    )
+    assert _runtime_handoff_final_advisory_pending(
+        {"messages": [first_summary, local_action, local_result, second_summary]}
+    )
+
+    # Synthetic recovery states without a persisted summary retain guidance.
+    assert _runtime_handoff_final_advisory_pending({"messages": []})
+
+
+def test_degraded_research_handoff_projects_exact_gap_and_one_managed_retry():
+    state = {
+        "runtime_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "resume_supervisor",
+            "state": "degraded_handoff_ready",
+            "handoffCount": 1,
+        },
+        "current_route_context": {
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "episode-research-1",
+                    "kind": "research",
+                    "inputs": {
+                        "taskBriefs": [
+                            {
+                                "taskBriefId": "sqlite-jsonb",
+                                "goal": "Verify the current official SQLite JSONB contract.",
+                                "readOnly": True,
+                                "writeSet": [],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-research-1",
+                    "producerEpisodeId": "episode-research-1",
+                    "kind": "research_evidence_bundle",
+                    "status": "degraded",
+                    "coveredTaskBriefIds": ["sqlite-fts5"],
+                    "missingTaskBriefIds": ["sqlite-jsonb"],
+                    "taskBriefResults": [
+                        {
+                            "taskBriefId": "sqlite-jsonb",
+                            "status": "degraded",
+                            "limitations": ["Missing official SQLite documentation."],
+                            "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+
+    gap = _runtime_research_gap_state(state)
+    assert gap["missingTaskBriefIds"] == ["sqlite-jsonb"]
+    assert gap["attempts"] == {"sqlite-jsonb": 1}
+    assert gap["retryAvailable"] is True
+    assert _runtime_handoff_requires_continuation(state)
+    content = str(_runtime_handoff_continuation_message(state).content)
+    assert "sqlite-jsonb" in content
+    assert "Verify the current official SQLite JSONB contract" in content
+    assert "Exactly one managed retry remains" in content
+    assert "Do not call tool_observation_detail on a runtime_broker route receipt" in content
+    typed_block = content.split("```json\n", 1)[1].split("\n```", 1)[0]
+    typed_args = json.loads(typed_block)
+    assert typed_args["mode"] == "route"
+    assert typed_args["routeKind"] == "research"
+    assert typed_args["researchBriefIds"] == ["sqlite-jsonb"]
+    assert typed_args["researchBriefGoals"] == ["Verify the current official SQLite JSONB contract."]
+    retry_context = json.loads(typed_args["researchBriefContexts"][0])
+    assert retry_context == {
+        "priorEvidenceStatus": "degraded",
+        "priorEvidenceReasons": ["explicit_critical_evidence_gap"],
+        "priorLimitations": ["Missing official SQLite documentation."],
+    }
+
+
+def test_research_retry_correction_requires_exact_runtime_tool_call():
+    state = {
+        "current_route_context": {
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "episode-research-1",
+                    "kind": "research",
+                    "inputs": {
+                        "taskBriefs": [
+                            {
+                                "taskBriefId": "python-windows",
+                                "goal": "Verify the official Python Windows support contract.",
+                                "readOnly": True,
+                                "writeSet": [],
+                                "detailRefs": ["https://python.org/downloads/windows/"],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "handoffRefs": [
+                {
+                    "kind": "research_evidence_bundle",
+                    "producerEpisodeId": "episode-research-1",
+                    "status": "degraded",
+                    "missingTaskBriefIds": ["python-windows"],
+                    "taskBriefResults": [
+                        {
+                            "taskBriefId": "python-windows",
+                            "status": "degraded",
+                            "limitations": ["No official source was found."],
+                            "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    calls = []
+    bound_tool_names = []
+
+    def robust_invoke(_llm, messages, _tools, **_kwargs):
+        calls.append(messages[-1].content)
+        bound_tool_names.append([getattr(tool, "name", "") for tool in _tools])
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "retry-research",
+                    "name": "runtime_broker",
+                    "args": _managed_research_retry_need(_runtime_research_gap_state(state)),
+                }
+            ],
+        )
+
+    corrected = supervisor_turn_module._retry_missing_research_briefs_once(
+        AIMessage(content="我会马上重试。"),
+        state=state,
+        prepared_messages=[HumanMessage(content="original")],
+        invoke_llm=object(),
+        filtered_tools=[SimpleNamespace(name="runtime_broker")],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert corrected.tool_calls[0]["name"] == "runtime_broker"
+    assert len(calls) == 1
+    assert bound_tool_names == [["runtime_broker"]]
+    assert "exact typed route arguments" in calls[0]
+    assert '"researchBriefIds":["python-windows"]' in calls[0]
+    assert '"researchBriefGoals":["Verify the official Python Windows support contract."]' in calls[0]
+    assert '"researchBriefContexts":[' in calls[0]
+
+
+def test_second_degraded_research_handoff_exhausts_retry_and_blocks_false_completion():
+    handoff = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "missingTaskBriefIds": ["sqlite-jsonb"],
+        "taskBriefResults": [
+            {
+                "taskBriefId": "sqlite-jsonb",
+                "status": "degraded",
+                "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+            }
+        ],
+    }
+    state = {
+        "current_route_context": {
+            "handoffRefs": [
+                {**handoff, "producerEpisodeId": "episode-research-1"},
+                {**handoff, "producerEpisodeId": "episode-research-2"},
+            ]
+        }
+    }
+
+    gap = _runtime_research_gap_state(state)
+    assert gap["attempts"] == {"sqlite-jsonb": 2}
+    assert gap["retryAvailable"] is False
+    assert not _runtime_handoff_requires_continuation(state)
+    final_advisory = str(_runtime_handoff_final_message(state).content)
+    assert "managed Research retry is exhausted" in final_advisory
+    assert "Do not create a third Research route" in final_advisory
+
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {"episodeId": "episode-research-1", "kind": "research", "state": "degraded"},
+            {"episodeId": "episode-research-2", "kind": "research", "state": "degraded"},
+        ],
+        handoffs_by_episode={
+            "episode-research-1": [{"payload": {**handoff, "createdAt": "2026-07-24T10:00:00Z"}}],
+            "episode-research-2": [{"payload": {**handoff, "createdAt": "2026-07-24T10:05:00Z"}}],
+        },
+        final_text="全部文件已完成并验证。",
+    )
+    assert decision.action == "fail"
+    assert decision.reason == "research_brief_evidence_incomplete"
+    assert decision.details["missingTaskBriefIds"] == ["sqlite-jsonb"]
+
+
+def test_exhausted_research_gap_does_not_swallow_pending_engineering_milestone():
+    handoff = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "downstreamAllowed": True,
+        "coveredTaskBriefIds": ["sqlite-fts5"],
+        "missingTaskBriefIds": ["python-win"],
+        "taskBriefResults": [
+            {"taskBriefId": "sqlite-fts5", "status": "ready", "researchRef": "research://bundle/fts5"},
+            {
+                "taskBriefId": "python-win",
+                "status": "degraded",
+                "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+            },
+        ],
+    }
+    state = {
+        "todos": [{"text": "进入编程模式实现并做本地验证", "status": "pending"}],
+        "current_route_context": {
+            "capabilityEpisodes": [
+                {"episodeId": "episode-research-1", "kind": "research"},
+                {"episodeId": "episode-research-2", "kind": "research"},
+            ],
+            "handoffRefs": [
+                {**handoff, "producerEpisodeId": "episode-research-1"},
+                {**handoff, "producerEpisodeId": "episode-research-2"},
+            ],
+        },
+    }
+
+    gap = _runtime_research_gap_state(state)
+    assert gap["retryAvailable"] is False
+    assert gap["downstreamAllowed"] is True
+    assert gap["readyTaskBriefIds"] == ["sqlite-fts5"]
+    assert _runtime_handoff_requires_continuation(state) is True
+    continuation = str(_runtime_handoff_continuation_message(state).content)
+    assert "Pending runtime kinds: engineering" in continuation
+    assert "block only the corresponding unsupported claims" in continuation
+    assert "route that downstream runtime now" in continuation
+
+
+def test_exhausted_research_gap_can_finish_after_verified_downstream_carries_exact_gap():
+    research_handoff = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "createdAt": "2026-07-24T10:05:00Z",
+        "missingTaskBriefIds": ["python-win"],
+        "taskBriefResults": [
+            {
+                "taskBriefId": "python-win",
+                "status": "degraded",
+                "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+            }
+        ],
+    }
+    engineering_handoff = {
+        "kind": "engineering_patch_bundle",
+        "status": "ready",
+        "artifactRefs": ["workspace://reports/local-baseline.json"],
+        "proofRefs": ["proof://local-baseline-verified"],
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {"episodeId": "episode-research", "kind": "research", "state": "degraded"},
+            {
+                "episodeId": "episode-engineering",
+                "kind": "engineering",
+                "state": "completed",
+                "inputs": {
+                    "researchContext": {
+                        "downstreamAllowed": True,
+                        "evidenceGaps": [
+                            {
+                                "taskBriefId": "python-win",
+                                "blocksClaim": True,
+                                "blocksDownstream": False,
+                            }
+                        ],
+                    },
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "local-baseline",
+                            "goal": "Verify the reversible local baseline without asserting the missing external fact.",
+                            "readOnly": True,
+                            "writeSet": [],
+                        }
+                    ],
+                },
+            },
+        ],
+        handoffs_by_episode={
+            "episode-research": [{"payload": research_handoff}],
+            "episode-engineering": [{"payload": engineering_handoff}],
+        },
+        final_text="本地基线已验证；未核实的官方 Windows 声明仍明确列为限制。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "research_gaps_carried_to_verified_downstream"
+    assert decision.details["severity"] == "advisory"
+    assert decision.details["missingTaskBriefIds"] == ["python-win"]
+    assert decision.details["downstream"]["episodeId"] == "episode-engineering"
+
+
+def test_later_ready_research_retry_resolves_prior_gap_for_completion_gate():
+    degraded = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "createdAt": "2026-07-24T10:00:00Z",
+        "missingTaskBriefIds": ["sqlite-jsonb"],
+        "taskBriefResults": [{"taskBriefId": "sqlite-jsonb", "status": "degraded"}],
+    }
+    ready = {
+        "kind": "research_evidence_bundle",
+        "status": "ready",
+        "createdAt": "2026-07-24T10:05:00Z",
+        "coveredTaskBriefIds": ["sqlite-jsonb"],
+        "missingTaskBriefIds": [],
+        "taskBriefResults": [{"taskBriefId": "sqlite-jsonb", "status": "ready"}],
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {"episodeId": "episode-research-1", "kind": "research", "state": "degraded"},
+            {"episodeId": "episode-research-2", "kind": "research", "state": "completed"},
+        ],
+        handoffs_by_episode={
+            "episode-research-1": [{"payload": degraded}],
+            "episode-research-2": [{"payload": ready}],
+        },
+        final_text="已交付来源结论。",
+    )
+    assert decision.action == "complete"
 
 
 def test_runtime_handoff_resume_does_not_repeat_memory_first_gate():
@@ -771,6 +1151,101 @@ def test_completion_gate_reports_forward_only_text_as_advisory():
     assert decision.action == "complete"
     assert decision.reason == "forward_only_supervisor_advisory"
     assert decision.details["severity"] == "advisory"
+
+
+def test_completion_gate_rejects_textual_side_effect_tool_markup_as_execution():
+    decision = evaluate_supervisor_completion(
+        final_text=(
+            "文件已经写好。\n"
+            "<tool_call><invoke name=\"write_native_file\">"
+            "<parameter name=\"path\">report.json</parameter>"
+            "</invoke></tool_call>"
+        ),
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "supervisor_pseudo_tool_markup_not_executed"
+    assert decision.details["toolNames"] == ["write_native_file"]
+    assert decision.details["nextAction"] == "retry_with_native_structured_tool_calls_or_report_blocker"
+
+
+def test_finalize_success_schedules_one_native_tool_correction_before_failing(monkeypatch):
+    emitted = []
+    run_handle = SimpleNamespace(complete=Mock(), transition=Mock(), fail=Mock())
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=False, spec_id="", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-native-correction",
+        active_run_id="run-native-correction",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    scheduled = []
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episodes", lambda **_kwargs: [])
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episode_handoffs", lambda _episode_id: [])
+    monkeypatch.setattr(
+        ChatRuntime,
+        "_completion_final_text",
+        lambda *_args, **_kwargs: '<tool_call><invoke name="run_system_command"></invoke></tool_call>',
+    )
+    monkeypatch.setattr(
+        "erc.command_router.runtime_command_router.schedule_supervisor_native_tool_correction",
+        lambda run_id, *, tool_names: scheduled.append((run_id, tool_names))
+        or {"resume_scheduled": True, "resumed_run_id": run_id},
+    )
+
+    result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "running"
+    assert result["reason"] == "supervisor_native_tool_correction_scheduled"
+    assert scheduled == [("run-native-correction", ["run_system_command"])]
+    run_handle.transition.assert_called_once_with(
+        "running",
+        reason="supervisor_native_tool_correction_scheduled",
+        node="completion_gate",
+    )
+    run_handle.fail.assert_not_called()
+    run_handle.complete.assert_not_called()
+    assert emitted[0][0] == "run.completion.native_tool_correction_scheduled"
+
+
+def test_finalize_success_fails_when_native_tool_correction_is_already_used(monkeypatch):
+    emitted = []
+    run_handle = SimpleNamespace(complete=Mock(), transition=Mock(), fail=Mock())
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=False, spec_id="", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-native-correction",
+        active_run_id="run-native-correction",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episodes", lambda **_kwargs: [])
+    monkeypatch.setattr("runtimes.chat.runtime.db.list_runtime_episode_handoffs", lambda _episode_id: [])
+    monkeypatch.setattr(
+        ChatRuntime,
+        "_completion_final_text",
+        lambda *_args, **_kwargs: '<tool_call><invoke name="run_system_command"></invoke></tool_call>',
+    )
+    monkeypatch.setattr(
+        "erc.command_router.runtime_command_router.schedule_supervisor_native_tool_correction",
+        lambda *_args, **_kwargs: {
+            "resume_scheduled": False,
+            "resume_error": "supervisor_native_tool_correction_already_used",
+        },
+    )
+    monkeypatch.setattr(ChatRuntime, "_expire_plugin_task_grants", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ChatRuntime, "_abort_engineering_workspaces", lambda *_args, **_kwargs: None)
+
+    result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "supervisor_pseudo_tool_markup_not_executed"
+    run_handle.fail.assert_called_once_with(
+        "supervisor_pseudo_tool_markup_not_executed",
+        node="completion_gate",
+    )
+    assert emitted[0][0] == "run.completion.blocked"
 
 
 def test_runtime_recoverable_failure_message_blocks_false_completion():

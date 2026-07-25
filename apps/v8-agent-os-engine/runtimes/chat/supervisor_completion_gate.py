@@ -15,6 +15,41 @@ from core.runtime_episodes import (
 
 
 RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}
+_PSEUDO_SIDE_EFFECT_TOOL_NAMES = {
+    "write_native_file",
+    "write_file",
+    "run_system_command",
+    "runtime_broker",
+    "spec_broker",
+    "creative_media_assets",
+    "creative_media_jobs",
+    "creative_media_edit",
+}
+
+
+def _pseudo_side_effect_tool_names(text: str) -> list[str]:
+    """Detect textual tool markup that a provider failed to emit structurally.
+
+    Keep the invariant narrow: ordinary prose mentioning a tool is allowed,
+    while an XML/DSML-shaped invocation of a side-effect tool cannot be
+    accepted as execution evidence.
+    """
+
+    normalized = str(text or "")
+    if not re.search(r"<\s*tool_call\b", normalized, flags=re.IGNORECASE):
+        return []
+    names = {
+        match.group(1).strip()
+        for match in re.finditer(
+            r"<\s*invoke\b[^>]*\bname\s*=\s*['\"]([^'\"]+)['\"]",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if match.group(1).strip()
+    }
+    return sorted(name for name in names if name in _PSEUDO_SIDE_EFFECT_TOOL_NAMES)
+
+
 @dataclass(frozen=True, slots=True)
 class SupervisorCompletionDecision:
     action: str = "complete"
@@ -501,6 +536,145 @@ def _non_spec_write_delivery_failure(
     return None
 
 
+def _unresolved_research_evidence_gaps(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Return latest unresolved Research brief truth across bounded retries."""
+
+    latest: dict[str, tuple[str, int, dict[str, Any]]] = {}
+    sequence = 0
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        if str(episode.get("kind") or "").strip().lower() != "research":
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        for raw_handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            if not isinstance(raw_handoff, Mapping):
+                continue
+            sequence += 1
+            handoff = _handoff_payload(raw_handoff)
+            kind = str(handoff.get("kind") or "").strip().lower()
+            if "research" not in kind:
+                continue
+            timestamp = str(
+                handoff.get("createdAt")
+                or raw_handoff.get("created_at")
+                or episode.get("updatedAt")
+                or episode.get("updated_at")
+                or episode.get("createdAt")
+                or episode.get("created_at")
+                or ""
+            )
+            results = [dict(item) for item in list(handoff.get("taskBriefResults") or []) if isinstance(item, Mapping)]
+            covered_ids = [str(item).strip() for item in list(handoff.get("coveredTaskBriefIds") or []) if str(item).strip()]
+            missing_ids = [str(item).strip() for item in list(handoff.get("missingTaskBriefIds") or []) if str(item).strip()]
+
+            def _record(brief_id: str, *, status: str, reasons: list[str] | None = None) -> None:
+                if not brief_id:
+                    return
+                record = {
+                    "episodeId": episode_id,
+                    "handoffRefId": handoff.get("handoffRefId") or handoff.get("handoffId"),
+                    "taskBriefId": brief_id,
+                    "status": status,
+                    "evidenceStatusReasons": list(reasons or [])[:8],
+                }
+                previous = latest.get(brief_id)
+                key = (timestamp, sequence)
+                if previous is None or key >= (previous[0], previous[1]):
+                    latest[brief_id] = (timestamp, sequence, record)
+
+            for result in results:
+                brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+                status = str(result.get("status") or "degraded").strip().lower()
+                _record(
+                    brief_id,
+                    status=status,
+                    reasons=[str(item) for item in list(result.get("evidenceStatusReasons") or []) if str(item).strip()],
+                )
+            for brief_id in covered_ids:
+                _record(brief_id, status="ready")
+            for brief_id in missing_ids:
+                _record(brief_id, status="degraded", reasons=["missing_task_brief_evidence"])
+            if str(handoff.get("status") or "").strip().lower() == "degraded" and not (results or covered_ids or missing_ids):
+                fallback_ids = [
+                    str(item).strip()
+                    for item in list(handoff.get("taskBriefIds") or [])
+                    if str(item).strip()
+                ] or [f"research:{episode_id or 'unknown'}"]
+                for brief_id in fallback_ids:
+                    _record(brief_id, status="degraded", reasons=["research_handoff_degraded"])
+
+    return [
+        record
+        for _timestamp, _sequence, record in latest.values()
+        if str(record.get("status") or "").strip().lower() not in {"ready", "completed", "success", "ok"}
+    ]
+
+
+def _completed_downstream_carrying_research_gaps(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+    research_gaps: Iterable[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Return governed downstream evidence that explicitly carried gaps.
+
+    Missing external evidence remains a claim blocker.  It may stop being a
+    whole-run blocker only after a downstream runtime received the exact gap
+    IDs and returned a ready handoff with its own local proof contract.
+    """
+
+    missing_ids = {
+        str(item.get("taskBriefId") or "").strip()
+        for item in research_gaps
+        if str(item.get("taskBriefId") or "").strip()
+    }
+    if not missing_ids:
+        return None
+    downstream_kinds = {"engineering", "creative_media", "computer_use", "rpa", "delegation"}
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        kind = str(episode.get("kind") or "").strip().lower()
+        if kind not in downstream_kinds:
+            continue
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+        context = inputs.get("researchContext") if isinstance(inputs.get("researchContext"), Mapping) else {}
+        carried_gaps = {
+            str(item.get("taskBriefId") or item.get("taskId") or "").strip()
+            for item in list(context.get("evidenceGaps") or [])
+            if isinstance(item, Mapping)
+            and str(item.get("taskBriefId") or item.get("taskId") or "").strip()
+        }
+        if not missing_ids.issubset(carried_gaps) or not bool(context.get("downstreamAllowed")):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        ready_handoffs: list[dict[str, Any]] = []
+        for raw_handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            if not isinstance(raw_handoff, Mapping):
+                continue
+            handoff = _handoff_payload(raw_handoff)
+            if str(handoff.get("status") or "").strip().lower() not in {"ready", "completed", "success", "ok"}:
+                continue
+            ready_handoffs.append(
+                {
+                    "handoffRefId": handoff.get("handoffRefId") or handoff.get("handoffId"),
+                    "proofRefs": list(handoff.get("proofRefs") or handoff.get("verificationRefs") or [])[:8],
+                    "artifactRefs": list(handoff.get("artifactRefs") or handoff.get("refs") or [])[:8],
+                }
+            )
+        if ready_handoffs:
+            return {
+                "episodeId": episode_id,
+                "kind": kind,
+                "carriedTaskBriefIds": sorted(carried_gaps),
+                "handoffs": ready_handoffs[:4],
+            }
+    return None
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -528,6 +702,17 @@ def evaluate_supervisor_completion(
             details={"episodeIds": active[:12]},
         )
 
+    pseudo_tools = _pseudo_side_effect_tool_names(final_text)
+    if pseudo_tools:
+        return SupervisorCompletionDecision(
+            action="fail",
+            reason="supervisor_pseudo_tool_markup_not_executed",
+            details={
+                "toolNames": pseudo_tools,
+                "nextAction": "retry_with_native_structured_tool_calls_or_report_blocker",
+            },
+        )
+
     superseded_ids = superseded_runtime_episode_ids(normalized_episodes, normalized_handoffs)
     effective_episodes = [
         episode
@@ -544,14 +729,16 @@ def evaluate_supervisor_completion(
         state = str(episode.get("state") or "").strip().lower()
         handoffs = normalized_handoffs.get(episode_id, [])
         if state in {"failed", "cancelled"} and not any(
-            str(item.get("status") or "").strip().lower() in {"ready", "degraded"} for item in handoffs
+            str(_handoff_payload(item).get("status") or "").strip().lower() in {"ready", "degraded"}
+            for item in handoffs
         ):
             return SupervisorCompletionDecision(
                 action="fail",
                 reason="required_runtime_episode_failed_without_handoff",
                 details={"episodeId": episode_id, "state": state},
             )
-        for handoff in handoffs:
+        for raw_handoff in handoffs:
+            handoff = _handoff_payload(raw_handoff)
             status = str(handoff.get("status") or "").strip().lower()
             kind = str(handoff.get("kind") or "").strip().lower()
             run_mode = str(handoff.get("runMode") or "").strip().lower()
@@ -571,6 +758,25 @@ def evaluate_supervisor_completion(
                         "status": status,
                     },
                 )
+
+    research_gaps = _unresolved_research_evidence_gaps(effective_episodes, normalized_handoffs)
+    research_gap_continuation = None
+    if research_gaps:
+        research_gap_continuation = _completed_downstream_carrying_research_gaps(
+            effective_episodes,
+            normalized_handoffs,
+            research_gaps,
+        )
+        if research_gap_continuation is None:
+            return SupervisorCompletionDecision(
+                action="fail",
+                reason="research_brief_evidence_incomplete",
+                details={
+                    "missingTaskBriefIds": [str(item.get("taskBriefId") or "") for item in research_gaps[:12]],
+                    "gaps": research_gaps[:12],
+                    "nextAction": "retry_missing_research_briefs_once_or_continue_with_explicit_gaps",
+                },
+            )
 
     missing_delegation_acceptance = _delegation_acceptance_missing(
         effective_episodes,
@@ -692,7 +898,7 @@ def evaluate_supervisor_completion(
         # Treating this as a failure poisons the run with a false terminal
         # status while the continuation is already in flight.
 
-    if effective_episodes and _looks_forward_only(final_text):
+    if research_gap_continuation is None and effective_episodes and _looks_forward_only(final_text):
         return SupervisorCompletionDecision(
             action="complete",
             reason="forward_only_supervisor_advisory",
@@ -700,6 +906,22 @@ def evaluate_supervisor_completion(
                 "severity": "advisory",
                 "finalTextPreview": str(final_text or "").strip()[:240],
                 "message": "Supervisor ended with forward-looking wording; review delivery completeness without overriding its decision.",
+            },
+        )
+
+    if research_gap_continuation is not None:
+        return SupervisorCompletionDecision(
+            action="complete",
+            reason="research_gaps_carried_to_verified_downstream",
+            details={
+                "severity": "advisory",
+                "missingTaskBriefIds": [str(item.get("taskBriefId") or "") for item in research_gaps[:12]],
+                "gaps": research_gaps[:12],
+                "downstream": research_gap_continuation,
+                "message": (
+                    "Unverified Research claims remain omitted, while a downstream runtime carried the exact gap IDs "
+                    "and returned governed local delivery evidence."
+                ),
             },
         )
 

@@ -27,6 +27,12 @@ from core.v8_agent_os_paths import (
 from core.memory_maintenance_contract import normalize_cron_config_with_system_job
 
 
+# Optional user-authored overlay. Built-in Supervisor cognition is assembled
+# from code-owned contracts, so a new profile must not seed this file with a
+# second, mutable copy of the operating model.
+DEFAULT_SUPERVISOR_PROMPT_OVERLAY = ""
+
+
 def _default_workspace_path() -> str:
     return str(WORKSPACE_HOME)
 
@@ -292,8 +298,8 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- Use `delegate_parallel` only for bounded fan-out, at most two subtasks, with isolated scopes.\n"
         "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n\n",
         "## Delegation Discipline\n"
-        "- If a task is small, local, and realistically finishes within 1-10 tool steps, solve it directly.\n"
-        "- If a task needs a distinct role, independent context, parallel execution, broad multi-file implementation, or source-backed research plus coding, use `delegation_broker` / Engineering discipline first.\n"
+        "- Solve work directly whenever that is the clearest path, including long multi-file projects in session Engineering work mode.\n"
+        "- Use `delegation_broker` or an Engineering episode when a distinct role, independent context, parallel execution, recovery, or durable proof materially helps.\n"
         "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
         "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
@@ -997,65 +1003,10 @@ class StorageManager:
         for d in dirs_to_create:
             d.mkdir(parents=True, exist_ok=True)
         defaults = {
-            "V8_AGENT_OS.md": (
-                "# V8 Agent OS Supervisor Prompt\n\n"
-                "You are V8 Agent OS, the user-facing intelligent supervisor for a recoverable AI operating system.\n"
-                "You are not a generic chat bot. Your primary responsibility is to understand the user's instruction, choose the right product path, keep work correct, recoverable, observable, and merge verified results.\n\n"
-                "## Primary Goal\n"
-                "- Solve user tasks with the smallest stable plan that still preserves recoverability.\n"
-                "- Prefer the right V8OS mode over ad-hoc tool chaos when a task needs stronger context, boundaries, or proof.\n"
-                "- Keep long tasks resumable, inspectable, and stable.\n\n"
-                f"{_PRODUCT_LANGUAGE_PROMPT_BLOCK}"
-                "## Runtime Worldview\n"
-                "Think in product paths, not in giant capability catalogs.\n"
-                "- Prefer the active mode card and current route over memorizing every subsystem.\n"
-                "- Treat 记忆系统, 定时与触发, 插件管理中心, 桌面操作, and 自动流程 as managed systems that can be consulted or delegated when needed.\n"
-                "- Only expand deeper diagnostic detail when the current task truly depends on it.\n\n"
-                "## Multi-Runtime Orchestration\n"
-                "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
-                "- For complex or freshness-sensitive research, grant `research.core` and first call `research_broker(mode=\"search_experience\")` for reusable experience packs; run new `research_broker(mode=\"run\")` only when packs are missing, stale, low-confidence, or conflicting.\n"
-                "- 编程模式 / Engineering work mode is a session-level Supervisor posture. It permits direct long-running project execution; it does not force an Engineering Runtime episode.\n"
-                "- Use a named registered subagent or Engineering episode when specialist context, parallelism, recovery, or durable proof is useful. Do not auto-route solely because a task is large or multi-file.\n"
-                "- Before adding a hard restriction for an Agent failure, verify the Agent received the exact registry names, task contract, workspace facts, tool availability, and peer-boundary summary. Repair missing information first.\n"
-                "- New project creation can use Engineering project-creation workspace mode after workspace inventory; do not treat an empty workspace alone as sufficient, but do not block Engineering only because repoDetected=false.\n"
-                "- Do not say you are dispatching or assigning a subagent unless you actually call `delegation_broker`; if you choose direct Supervisor execution, say that directly.\n"
-                "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
-                "## Tool Discipline\n"
-                "- Choose direct Supervisor execution, a runtime-managed path, or a named subagent by delivery quality, specialist context, parallelism, recovery, and proof needs.\n"
-                "- Use route-selected skills / MCP and explicit plugin grants instead of exploring every tool family at once.\n"
-                "- Baseline system tools are a normal direct execution surface; task size alone never removes them from the Supervisor.\n"
-                "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
-                "- Use command sessions, not sync commands, for scaffolding, dependency installs, dev servers, CLIs that may prompt, and long-running processes.\n\n"
-                "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n"
-                "## Delegation Discipline\n"
-                "- Solve work directly whenever that is the clearest path, including long multi-file projects in session Engineering work mode.\n"
-                "- Delegate when a distinct role, independent context, parallel execution, recovery, or durable proof materially helps.\n"
-                "- If the registered Agent list has a real capability gap, use `agent_broker` to list, propose, obtain one explicit user approval, create, validate, and then delegate to the exact new name in the same run.\n"
-                "- Use `delegation_broker` as the internal canonical delegation entrypoint, but say 子代理 / 协作 worker to users.\n"
-                "- For manual local delegation, choose an exact registered subagent name from the visible name+description registry and pass task.targetAgentName. Do not blindly dispatch by family.\n"
-                "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
-                "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-                "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
-                "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n"
-                "## Todo Discipline\n"
-                "- For non-trivial tasks, create and maintain todos.\n"
-                "- A plan is not decoration: keep it updated.\n"
-                "- Prefer one `in_progress` item at a time unless parallel work is explicit.\n"
-                "- If progress stalls, explain the blocker and adjust the plan.\n\n"
-                "## Recoverability And Observability\n"
-                "- Keep work resumable, inspectable, and event-backed.\n"
-                "- If something is blocked, say what is blocked, what is done, and what should happen next.\n"
-                "- When external channels or plugins are involved, trust runtime state over stale projections.\n\n"
-                "## Language Protocol\n"
-                "- Infer the preferred user-visible language from the latest human request and keep Supervisor plans, runtime briefs, tool summaries, and final replies in that language.\n"
-                "- Preserve raw code, commands, stdout/stderr, provider names, protocol fields, and file paths in their original form.\n"
-                "- Use product words for user-facing explanations; keep canonical ids, tool names, model ids, protocol fields, and page paths unchanged only in tool calls, diagnostics, logs, or exact references.\n\n"
-                "## Collaboration Style\n"
-                "- Be decisive, but do not guess when a runtime fact can be observed.\n"
-                "- Prefer small, reversible changes over clever but brittle jumps.\n"
-                "- When a task spans multiple runtimes, route intentionally instead of collapsing everything into one response.\n"
-                "- When a user asks for implementation, move forward unless a choice is truly architecture-breaking.\n"
-            ),
+            # This file is an optional user-authored overlay. Built-in
+            # Supervisor cognition lives in code-owned contracts and must not
+            # be copied into, reconstructed from, or required from this file.
+            "V8_AGENT_OS.md": DEFAULT_SUPERVISOR_PROMPT_OVERLAY,
             "users.json": json.dumps({"users": []}, indent=2, ensure_ascii=False),
         }
 
@@ -1069,7 +1020,6 @@ class StorageManager:
             except PermissionError:
                 continue
 
-        self._sanitize_stock_supervisor_prompt_file()
         self._ensure_default_subagents()
         self._ensure_config_json_exists()
         self._remove_deprecated_subagent_model_bindings()
@@ -1145,23 +1095,6 @@ class StorageManager:
             # ids and known deprecated ids are managed here.
         except (OSError, PermissionError) as exc:
             print(f"[Storage] Default subagent initialization skipped: {exc}")
-
-    def _sanitize_stock_supervisor_prompt_file(self):
-        filepath = self.base_dir / "V8_AGENT_OS.md"
-        if not filepath.exists():
-            return
-        try:
-            content = filepath.read_text(encoding="utf-8")
-        except (OSError, PermissionError):
-            return
-        sanitized = _sanitize_stock_supervisor_prompt_text(content)
-        if sanitized == content:
-            return
-        try:
-            with open(filepath, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(sanitized)
-        except (OSError, PermissionError):
-            return
 
     def _remove_deprecated_subagent_model_bindings(self) -> None:
         """Remove bindings for retired managed defaults after their files are gone.
@@ -2542,30 +2475,8 @@ class StorageManager:
         except (TypeError, ValueError):
             max_members = 10
         raw["maxMembersPerFamily"] = max(1, min(max_members, 50))
-        exposure_mode = str(raw.get("exposureMode") or "family_cards").strip().lower()
-        if exposure_mode not in {"family_cards", "legacy_matched_members"}:
-            exposure_mode = "family_cards"
-        raw["exposureMode"] = exposure_mode
-        auto_reveal_raw = raw.get("autoReveal") if isinstance(raw.get("autoReveal"), dict) else {}
-        try:
-            min_confidence = float(auto_reveal_raw.get("minConfidence", 0.9))
-        except (TypeError, ValueError):
-            min_confidence = 0.9
-        try:
-            min_margin = float(auto_reveal_raw.get("minScoreMargin", 0.15))
-        except (TypeError, ValueError):
-            min_margin = 0.15
-        try:
-            max_families = int(auto_reveal_raw.get("maxFamilies", 1))
-        except (TypeError, ValueError):
-            max_families = 1
-        raw["autoReveal"] = {
-            "enabled": _as_bool(auto_reveal_raw.get("enabled"), True),
-            "minConfidence": max(0.0, min(min_confidence, 1.0)),
-            "minScoreMargin": max(0.0, min(min_margin, 1.0)),
-            "maxFamilies": max(0, min(max_families, 3)),
-            "requireNoAmbiguity": _as_bool(auto_reveal_raw.get("requireNoAmbiguity"), True),
-        }
+        raw["exposureMode"] = "family_cards"
+        raw.pop("autoReveal", None)
         raw["families"] = normalize_specialist_families_config(raw.get("families"))
         return raw
 

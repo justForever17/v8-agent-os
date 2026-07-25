@@ -58,6 +58,7 @@ def build_engineering_kernel_context(
         "[ENGINEERING KERNEL]",
         "This run starts with authoritative workspace awareness. Do not spend a tool call rediscovering the active workspace.",
         f"Environment: OS={command_env['osName']}; shellDialect={command_env['shellDialect']}; commandLanguage={command_env['commandLanguage']}",
+        "Tool dependency discipline: parallel calls must be independent. A read-to-write-to-verify or producer-to-consumer chain must await each prior ToolMessage; never verify a write in the same tool batch.",
         f"Execution posture: {execution_posture}",
     ]
     if capsule:
@@ -71,7 +72,7 @@ def build_engineering_kernel_context(
     elif actor_identity.is_supervisor:
         if supervisor_work_mode == "engineering":
             lines.append(
-                "Engineering work mode is active. The Supervisor may independently execute long-running project work with common file and command tools inside the active workspace. Delegation and Engineering episodes are optional execution strategies for parallelism, specialist context, recovery, or durable proof; they are not prerequisites for direct implementation."
+                "Engineering work mode is active. The Supervisor may independently execute long-running project work with common file and command tools inside the active workspace. Delegation and Engineering episodes are optional execution strategies for parallelism, specialist context, recovery, or durable proof; they are not prerequisites for direct implementation. This freedom applies when choosing a path at the task boundary; it does not erase an unfinished managed runtime chain. After a Research handoff, remaining multi-output work with execution proof, recovery, or machine-readable baseline requirements continues through a typed Engineering episode before the first implementation command."
             )
             lines.append(
                 "For direct implementation, inspect before editing, keep changes scoped to the user's task, preserve unrelated work, verify proportionally to risk, and report concrete evidence."

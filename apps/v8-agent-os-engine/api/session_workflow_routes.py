@@ -30,6 +30,7 @@ from core.runtime_projection import (
     project_ask_user_interactions,
     project_runtime_timeline_from_events,
     project_pending_approvals,
+    select_runtime_timeline_window,
 )
 from core.time_truth import latest_utc_iso
 from erc.capability_registry import capability_registry
@@ -1130,20 +1131,31 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
             runtime_timeline = payload.get("runtimeTimeline")
             runtime_timeline_count = len(runtime_timeline) if isinstance(runtime_timeline, list) else 0
             if compact == 1:
-                compact_runtime_timeline = list(runtime_timeline[-160:]) if isinstance(runtime_timeline, list) else []
+                compact_runtime_timeline = (
+                    select_runtime_timeline_window(runtime_timeline, recent_limit=160, milestone_limit=32)
+                    if isinstance(runtime_timeline, list)
+                    else []
+                )
+                historical_milestone_count = max(0, len(compact_runtime_timeline) - min(runtime_timeline_count, 160))
+                runtime_timeline_window = {
+                    **(
+                        payload.get("runtimeTimelineWindow")
+                        if isinstance(payload.get("runtimeTimelineWindow"), dict)
+                        else {}
+                    ),
+                    "sourceCount": runtime_timeline_count,
+                    "limit": len(compact_runtime_timeline) if historical_milestone_count else 160,
+                    "compacted": True,
+                }
+                if historical_milestone_count:
+                    runtime_timeline_window.update({
+                        "recentLimit": 160,
+                        "historicalMilestoneCount": historical_milestone_count,
+                    })
                 payload = {
                     **payload,
                     "runtimeTimeline": compact_runtime_timeline,
-                    "runtimeTimelineWindow": {
-                        **(
-                            payload.get("runtimeTimelineWindow")
-                            if isinstance(payload.get("runtimeTimelineWindow"), dict)
-                            else {}
-                        ),
-                        "sourceCount": runtime_timeline_count,
-                        "limit": 160,
-                        "compacted": True,
-                    },
+                    "runtimeTimelineWindow": runtime_timeline_window,
                 }
             snapshot = payload.get("snapshot")
             if isinstance(snapshot, dict):

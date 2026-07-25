@@ -75,19 +75,6 @@ _ENGINEERING_ROUTE_TOOLS = {
 _RESEARCH_ROUTE_TOOLS = {"web_broker"}
 _PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_PLANNING_WEB_TOOL_LIMIT", 8, minimum=1)
 _SPEC_PLANNING_WEB_TOOL_LIMIT = _int_env("V8_AGENT_OS_SPEC_PLANNING_WEB_TOOL_LIMIT", 12, minimum=1)
-_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT", 0, minimum=0)
-_SUPERVISOR_DIRECT_PRESSURE_LIMIT = _int_env("V8_AGENT_OS_SUPERVISOR_DIRECT_PRESSURE_LIMIT", 0, minimum=0)
-_SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
-    "ask_user",
-    "fetch_skill_instructions",
-    "memory_broker",
-    "research_broker",
-    "runtime_broker",
-    "session_message_broker",
-    "spec_broker",
-    "update_todo",
-    "write_todos",
-}
 
 
 def _spec_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
@@ -251,43 +238,6 @@ def _planning_fact_gathering_allowed(
         args = _safe_tool_args(tool_call.get("args"))
         return _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or ""))
     return False
-
-
-def _supervisor_direct_pressure_count(tool_calls_or_names: list[Any]) -> int:
-    count = 0
-    for item in tool_calls_or_names:
-        if isinstance(item, dict):
-            tool_name = str(item.get("name") or "").strip()
-            args = _safe_tool_args(item.get("args"))
-        else:
-            tool_name = str(item or "").strip()
-            args = {}
-        if not tool_name or tool_name in _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS:
-            continue
-        if tool_name == "run_system_command" and _planning_readonly_command_allowed(str(args.get("command") or args.get("_raw") or "")):
-            continue
-        if tool_name in SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS or tool_name.startswith(("creative_media_", "computer_use_", "rpa_")):
-            count += 1
-    return count
-
-
-def _supervisor_limited_write_native_file_allowed(
-    tool_name: str,
-    *,
-    direct_pressure_count: int,
-    project_write_count: int,
-) -> bool:
-    if str(tool_name or "").strip() != "write_native_file":
-        return False
-    write_limit_ok = (
-        _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT <= 0
-        or project_write_count <= _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT
-    )
-    pressure_limit_ok = (
-        _SUPERVISOR_DIRECT_PRESSURE_LIMIT <= 0
-        or direct_pressure_count <= _SUPERVISOR_DIRECT_PRESSURE_LIMIT
-    )
-    return write_limit_ok and pressure_limit_ok
 
 
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
@@ -875,7 +825,6 @@ def _supervisor_direct_scope_hard_block_message(
     tool_calls = _supervisor_direct_tool_calls(getattr(request, "state", None), tool_call)
     tool_names = [str(call.get("name") or "").strip() for call in tool_calls if str(call.get("name") or "").strip()]
     tool_step_count = len([name for name in tool_names if name])
-    direct_pressure_count = _supervisor_direct_pressure_count(tool_calls)
     project_write_count = len([name for name in tool_names if name in SUPERVISOR_DIRECT_SCOPE_PROJECT_WRITE_TOOLS])
     explicit_tool_limit = _explicit_user_tool_call_limit(_user_request_from_state(state_mapping), tool_name)
     current_tool_count = len([name for name in tool_names if name == tool_name])
@@ -972,18 +921,9 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons.append("spec_runtime_execution_requires_runtime_episode")
     if bool(runtime_dispatch_status.get("blocked")):
         hard_reasons.append(str(runtime_dispatch_status.get("blockedReason") or runtime_dispatch_status.get("reason") or "runtime_dispatch_blocked"))
-    limited_write_allowed = _supervisor_limited_write_native_file_allowed(
-        tool_name,
-        direct_pressure_count=direct_pressure_count,
-        project_write_count=project_write_count,
-    )
     ordinary_supervisor_tool = tool_name in _ENGINEERING_ROUTE_TOOLS or tool_name in _RESEARCH_ROUTE_TOOLS
-    if route_required and not limited_write_allowed and not ordinary_supervisor_tool:
+    if route_required and not ordinary_supervisor_tool:
         hard_reasons.append("capability_route_required")
-    if _SUPERVISOR_DIRECT_PRESSURE_LIMIT > 0 and direct_pressure_count > _SUPERVISOR_DIRECT_PRESSURE_LIMIT:
-        hard_reasons.append("supervisor_direct_pressure_gt_budget")
-    if _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT > 0 and project_write_count > _SUPERVISOR_DIRECT_WRITE_NATIVE_FILE_LIMIT:
-        hard_reasons.append("supervisor_project_file_writes_gt_budget")
     if not hard_reasons:
         return None
     raw_reasons = ", ".join(hard_reasons)
@@ -1008,7 +948,7 @@ def _supervisor_direct_scope_hard_block_message(
         if has_active_episode
         else (
             "Next step: call runtime_broker(mode='route') with the canonical typed need contract from routeIntent "
-            "(need.kind, need.reason, need.inputs.taskBriefs), then wait for the episode handoff before continuing."
+            "(routeKind, routeReason, and matching researchBriefIds/researchBriefGoals or taskBriefs), then wait for the episode handoff before continuing."
         )
     )
     content = (
@@ -1029,7 +969,6 @@ def _supervisor_direct_scope_hard_block_message(
             "runId": run_id,
             "blockedTool": tool_name,
             "toolStepCount": tool_step_count,
-            "directPressureCount": direct_pressure_count,
             "projectWriteCount": project_write_count,
             "reasons": hard_reasons,
             "capabilityNeed": route_intent,
@@ -1109,7 +1048,18 @@ def _runtime_parameter_repair_message(request: Any, error_text: str) -> ToolMess
     args = dict(tool_call.get("args") or {})
     need = args.get("need") if isinstance(args.get("need"), dict) else {}
     kind = str(need.get("kind") or args.get("runtime_kind") or "engineering").strip().lower() or "engineering"
-    fields = _validation_error_fields(text)
+    fields = []
+    for field in _validation_error_fields(text):
+        public_field = field
+        if public_field.startswith("need.inputs."):
+            public_field = public_field[len("need.inputs.") :]
+        elif public_field.startswith("need."):
+            public_field = public_field[len("need.") :]
+        if public_field == "kind":
+            public_field = "routeKind"
+        elif public_field == "reason":
+            public_field = "routeReason"
+        fields.append(public_field)
     return ToolMessage(
         content=render_runtime_route_repair_hint(kind, invalid_fields=fields),
         name=tool_name,

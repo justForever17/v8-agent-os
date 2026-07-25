@@ -87,33 +87,29 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
             "tool_call_runtime_invalid",
             args={
                 "mode": "route",
-                "need": {
-                    "kind": "engineering",
-                    "reason": "continue the current fix",
-                    "inputs": {
-                        "taskBriefs": [
-                            {
-                                "taskBriefId": "fix-1",
-                                "goal": "Fix and verify the failure.",
-                                "dependency": "",
-                            }
-                        ]
-                    },
-                },
+                "routeKind": "engineering",
+                "routeReason": "continue the current fix",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "fix-1",
+                        "goal": "Fix and verify the failure.",
+                        "dependency": "",
+                    }
+                ],
             },
         )
 
         async def execute(_request):
             raise ValueError(
                 "Error invoking tool 'runtime_broker' with kwargs <redacted> with error:\n"
-                "need.inputs.taskBriefs.0.dependencies: Input should be a valid list"
+                "taskBriefs.0.dependencies: Input should be a valid list"
             )
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
         self.assertEqual(result.additional_kwargs["riskCode"], "runtime_route_parameter_repair")
-        self.assertEqual(result.additional_kwargs["invalidFields"], ["need.inputs.taskBriefs.0.dependencies"])
+        self.assertEqual(result.additional_kwargs["invalidFields"], ["taskBriefs.0.dependencies"])
         self.assertIn("repairable parameter-shape error", str(result.content))
         self.assertIn('"taskBriefs": [', str(result.content))
         self.assertNotIn('"dependency":', str(result.content))

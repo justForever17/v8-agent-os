@@ -29,6 +29,13 @@ from core.delegation_broker import (
 from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.llm_factory import llm_factory
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
+from core.provider_continuation import (
+    PRIVATE_PROVIDER_CONTINUATION_KEY,
+    build_replay_ai_message_payload,
+    extract_provider_continuation,
+    merge_provider_continuations,
+    provider_continuation_matches_target,
+)
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.model_thinking_control import normalize_reasoning_effort, resolve_session_reasoning_effort_override
@@ -53,8 +60,7 @@ from core.stream_chunk_aggregator import TextChunkAggregator
 from core.storage import storage
 from core.context_window_guard import context_window_guard
 from core.agents import build_specialist_family_registry, normalize_specialist_family_id
-from core.task_boundary_resolver import attach_task_boundary_decision
-from core.task_shape_classifier import classify_task_shape
+from core.task_boundary_resolver import attach_task_boundary_decision, build_supervisor_task_context
 from core.tool_invocation_ids import make_tool_invocation_id
 from core.tools.native.tool_governance import normalize_safety_approval_mode
 from core.workspace_capability import build_workspace_binding
@@ -316,6 +322,8 @@ class ChatStreamState:
     current_agent: str = "supervisor"
     output_buffer: list[str] = field(default_factory=list)
     reasoning_buffer: list[str] = field(default_factory=list)
+    provider_continuation: dict[str, Any] = field(default_factory=dict)
+    provider_continuation_model_run_id: str = ""
     authoritative_final_text: str | None = None
     tool_calls_buffer: list[dict[str, Any]] = field(default_factory=list)
     streamed_model_run_ids: set[str] = field(default_factory=set)
@@ -363,13 +371,43 @@ class ChatStreamState:
     delegation_dispatch_seen: bool = False
     delegation_claim_diagnostic_emitted: bool = False
     reasoning_suppressed_count: int = 0
-    supervisor_tool_step_count: int = 0
-    supervisor_project_write_count: int = 0
-    supervisor_direct_scope_exceeded_emitted: bool = False
-    supervisor_direct_scope_gate_active: bool = False
     supervisor_thinking_active_run_ids: set[str] = field(default_factory=set)
     supervisor_thinking_started_run_ids: set[str] = field(default_factory=set)
     supervisor_thinking_finished_run_ids: set[str] = field(default_factory=set)
+
+
+def _assistant_export_requires_persistence(export_payload: dict[str, Any]) -> bool:
+    metadata = export_payload.get("metadata") if isinstance(export_payload.get("metadata"), dict) else {}
+    return bool(
+        str(export_payload.get("content") or "")
+        or export_payload.get("tool_calls")
+        or export_payload.get("reasoning_content")
+        or metadata.get(PRIVATE_PROVIDER_CONTINUATION_KEY)
+    )
+
+
+def _apply_provider_continuation_event(
+    stream_state: ChatStreamState,
+    *,
+    kind: str,
+    model_run_id: str,
+    candidate: Any = None,
+) -> None:
+    normalized_run_id = str(model_run_id or "").strip()
+    if kind == "on_chat_model_start" or (
+        normalized_run_id
+        and normalized_run_id != stream_state.provider_continuation_model_run_id
+    ):
+        stream_state.provider_continuation = {}
+        stream_state.provider_continuation_model_run_id = normalized_run_id
+    if kind not in {"on_chat_model_stream", "on_chat_model_end"}:
+        return
+    captured = extract_provider_continuation(candidate)
+    if captured:
+        stream_state.provider_continuation = merge_provider_continuations(
+            stream_state.provider_continuation,
+            captured,
+        )
 
 
 canonical_transcript_builder = CanonicalTranscriptBuilder()
@@ -683,13 +721,58 @@ class ChatRuntime:
             },
         }
 
-    def _to_langchain_messages(self, request: ChatRequest) -> list[Any]:
+    @staticmethod
+    def _provider_continuation_target_metadata(request: ChatRequest) -> dict[str, Any] | None:
+        """Resolve only the catalog contract needed to replay private provider blocks."""
+        if not any(bool(getattr(message, "_provider_continuation", None)) for message in request.messages):
+            return None
+        try:
+            metadata = llm_factory.get_model_metadata(str(request.config.model_name or "").strip())
+            return dict(metadata or {}) if isinstance(metadata, dict) else {}
+        except Exception:
+            # A missing/temporarily invalid catalog entry must not prevent the
+            # visible conversation from loading.  The replay gate below will
+            # conservatively drop protocol-specific opaque blocks in this case.
+            return {}
+
+    def _to_langchain_messages(
+        self,
+        request: ChatRequest,
+        *,
+        target_model_metadata: dict[str, Any] | None = None,
+    ) -> list[Any]:
         lc_messages: list[Any] = []
         wire_to_internal, _internal_to_wire = build_external_tool_alias_maps(request.config.external_tools)
+        metadata_was_resolved = target_model_metadata is not None
+        target_model_metadata = dict(target_model_metadata or {})
+        target_provider = str(
+            target_model_metadata.get("api_standard")
+            or target_model_metadata.get("provider_id")
+            or request.config.provider
+            or "openai"
+        )
+        target_wire_protocol = str(
+            target_model_metadata.get("wire_protocol")
+            or target_model_metadata.get("wireProtocol")
+            or ""
+        )
+        target_provider_adapter = str(target_model_metadata.get("provider_adapter") or "")
         for message in request.messages:
             if message.role == "user":
                 lc_messages.append(HumanMessage(content=message.content))
             elif message.role == "assistant":
+                continuation = dict(getattr(message, "_provider_continuation", {}) or {})
+                if metadata_was_resolved and not provider_continuation_matches_target(
+                    continuation,
+                    target_provider=target_provider,
+                    target_wire_protocol=target_wire_protocol,
+                    target_provider_adapter=target_provider_adapter,
+                ):
+                    continuation = {}
+                replay_content, replay_kwargs, replay_metadata = build_replay_ai_message_payload(
+                    message.content,
+                    continuation,
+                )
                 tool_calls_payload: list[dict[str, Any]] = []
                 for item in list(message.tool_calls or []):
                     if not isinstance(item, ChatToolCall):
@@ -710,9 +793,22 @@ class ChatRuntime:
                         }
                     )
                 if tool_calls_payload:
-                    lc_messages.append(AIMessage(content=message.content, tool_calls=tool_calls_payload))
+                    lc_messages.append(
+                        AIMessage(
+                            content=replay_content,
+                            tool_calls=tool_calls_payload,
+                            additional_kwargs=replay_kwargs,
+                            response_metadata=replay_metadata,
+                        )
+                    )
                 else:
-                    lc_messages.append(AIMessage(content=message.content))
+                    lc_messages.append(
+                        AIMessage(
+                            content=replay_content,
+                            additional_kwargs=replay_kwargs,
+                            response_metadata=replay_metadata,
+                        )
+                    )
             elif message.role == "system":
                 lc_messages.append(SystemMessage(content=message.content))
             elif message.role == "tool":
@@ -2202,9 +2298,17 @@ class ChatRuntime:
         session_id = request.session_id or str(uuid.uuid4())
         conversation_id = request.conversation_id or session_id
         user_id = request.user_id or "anonymous"
+        request.session_id = session_id
+        request.conversation_id = conversation_id
+        request.user_id = user_id
+        # Resolve the selected role/model before rehydrating assistant history;
+        # private provider continuation is protocol-bound and must never be
+        # replayed into a different provider or wire channel.
+        self._resolve_engine_config(request)
+        target_model_metadata = self._provider_continuation_target_metadata(request)
         attachments = self._normalize_request_attachments(request)
         self._ensure_latest_user_content_for_attachments(request, attachments)
-        lc_messages = self._to_langchain_messages(request)
+        lc_messages = self._to_langchain_messages(request, target_model_metadata=target_model_metadata)
         self._inject_uploaded_file_notices(request, lc_messages)
         (
             command_preset,
@@ -2262,10 +2366,6 @@ class ChatRuntime:
         )
         self._inject_session_coordination_message(lc_messages, session_coordination_message)
 
-        request.session_id = session_id
-        request.conversation_id = conversation_id
-        request.user_id = user_id
-        self._resolve_engine_config(request)
         requested_reasoning_effort = (
             getattr(request.data, "supervisor_reasoning_effort", None)
             if request.data
@@ -2478,15 +2578,7 @@ class ChatRuntime:
             {"supervisorWorkMode": prepared.supervisor_work_mode},
         )
         try:
-            prepared.task_shape_hint = classify_task_shape(
-                prepared.latest_user_content,
-                workspace_descriptor={
-                    "projectId": scope_result.binding.project_id,
-                    "workspaceId": scope_result.binding.workspace_id,
-                    "workspacePath": scope_result.binding.workspace_path,
-                    "resolvedScope": scope_result.binding.resolved_scope,
-                },
-            )
+            prepared.task_shape_hint = build_supervisor_task_context(prepared.latest_user_content)
             if prepared.spec_mode:
                 hint = dict(prepared.task_shape_hint or {})
                 spec_id = str(getattr(prepared, "spec_id", "") or "").strip()
@@ -2778,7 +2870,7 @@ class ChatRuntime:
                 "primaryTaskShape": "unknown",
                 "secondaryTaskShapes": [],
                 "confidence": 0.0,
-                "reason": "task_shape_classifier_failed",
+                "reason": "task_context_preparation_failed",
                 "error": str(exc),
                 "policy": "hint_only_non_authoritative_no_reveal_no_grant",
             }
@@ -3482,6 +3574,11 @@ class ChatRuntime:
             if isinstance(resume_value.get("runtimeEpisodeHandoff"), dict)
             else {}
         )
+        native_tool_correction_resume = (
+            dict(resume_value.get("supervisorNativeToolCorrection") or {})
+            if isinstance(resume_value.get("supervisorNativeToolCorrection"), dict)
+            else {}
+        )
         runtime_dispatch_status: dict[str, Any] | None = None
         if runtime_handoff_resume:
             resume_episode_id = str(runtime_handoff_resume.get("episodeId") or "").strip()
@@ -3520,6 +3617,12 @@ class ChatRuntime:
                     "episodeKind": resume_episode_kind,
                     "episodeCount": 1,
                 }
+        if native_tool_correction_resume:
+            current_route_context = {
+                **current_route_context,
+                "supervisorNativeToolCorrection": native_tool_correction_resume,
+                "supervisor_native_tool_correction": native_tool_correction_resume,
+            }
         if compat_diagnostics:
             current_route_context = {
                 **current_route_context,
@@ -3789,6 +3892,14 @@ class ChatRuntime:
         return isinstance(handoff, dict) and str(handoff.get("episodeId") or "").strip() != ""
 
     @staticmethod
+    def _is_supervisor_native_tool_correction_resume(chat_run: ChatRunContext) -> bool:
+        if not chat_run.is_resume_request:
+            return False
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        correction = resume_value.get("supervisorNativeToolCorrection")
+        return isinstance(correction, dict) and int(correction.get("attempt") or 0) == 1
+
+    @staticmethod
     def _has_pending_spec_stage_approval(chat_run: ChatRunContext) -> bool:
         try:
             rows = db.list_pending_approvals(run_id=chat_run.active_run_id, status="pending")
@@ -3998,6 +4109,7 @@ class ChatRuntime:
                 self._is_spec_continuation_resume(chat_run)
                 or self._is_spec_revision_resume(chat_run)
                 or self._is_runtime_handoff_resume(chat_run)
+                or self._is_supervisor_native_tool_correction_resume(chat_run)
             ):
                 return await self.create_execution_bundle(chat_run=chat_run)
             return await self.create_resume_bundle(chat_run=chat_run)
@@ -4849,123 +4961,6 @@ class ChatRuntime:
             agent_id=stream_state.current_agent,
             node="subagent_swarm",
         )
-
-    def _maybe_emit_supervisor_direct_scope_diagnostic(
-        self,
-        chat_run: ChatRunContext,
-        stream_state: ChatStreamState,
-        *,
-        tool_name: str,
-        tool_inputs: dict[str, Any] | None = None,
-        owner: dict[str, Any],
-    ) -> None:
-        if stream_state.supervisor_direct_scope_exceeded_emitted:
-            return
-        if not bool(owner.get("displayInMessage")) or str(owner.get("ownerAgentKind") or "") != "supervisor":
-            return
-        normalized_tool = str(tool_name or "").strip()
-        if normalized_tool in {"delegation_broker", "runtime_broker"}:
-            return
-        if _chat_runtime_supervisor_tool_is_lightweight(normalized_tool, tool_inputs):
-            return
-        project_write_tools = {"write_native_file", "replace_native_file", "edit_native_file", "delete_native_file"}
-        if normalized_tool in project_write_tools:
-            stream_state.supervisor_project_write_count += 1
-        stream_state.supervisor_tool_step_count += 1
-        exceeded_reasons: list[str] = []
-        if stream_state.supervisor_tool_step_count > 10:
-            exceeded_reasons.append("tool_steps_gt_10")
-        if stream_state.supervisor_project_write_count > 3:
-            exceeded_reasons.append("project_file_writes_gt_3")
-        if not exceeded_reasons:
-            return
-        stream_state.supervisor_direct_scope_exceeded_emitted = True
-        stream_state.supervisor_direct_scope_gate_active = True
-        chat_run.emit_runtime_event(
-            "supervisor.direct_scope.exceeded",
-            {
-                "riskCode": "supervisor_direct_scope_exceeded",
-                "summary": "Supervisor direct 执行已超过小任务阈值，应转入对应 Runtime episode。",
-                "toolStepCount": stream_state.supervisor_tool_step_count,
-                "projectWriteCount": stream_state.supervisor_project_write_count,
-                "latestTool": normalized_tool,
-                "reasons": exceeded_reasons,
-                "recommendedNextAction": "调用 runtime_broker(mode='route') 创建能力 episode；需要独立 worker/subagent 时调用 delegation_broker(dispatch)。",
-            },
-            agent_id=stream_state.current_agent,
-            node="supervisor_direct_scope_guard",
-        )
-
-    def _enforce_supervisor_direct_scope_gate(
-        self,
-        chat_run: ChatRunContext,
-        stream_state: ChatStreamState,
-        *,
-        tool_name: str,
-        tool_inputs: dict[str, Any] | None = None,
-        owner: dict[str, Any],
-    ) -> bool:
-        normalized_tool = str(tool_name or "").strip()
-        if normalized_tool == "delegation_broker":
-            stream_state.supervisor_direct_scope_gate_active = False
-            return False
-        if _chat_runtime_supervisor_tool_is_lightweight(normalized_tool, tool_inputs):
-            return False
-        if not stream_state.supervisor_direct_scope_gate_active:
-            return False
-        if not bool(owner.get("displayInMessage")) or str(owner.get("ownerAgentKind") or "") != "supervisor":
-            return False
-        allowed_escape_tools = {"delegation_broker", "runtime_broker", "ask_user", "write_todos", "update_todo"}
-        if normalized_tool in allowed_escape_tools:
-            return False
-        gated_tools = {
-            "run_system_command",
-            "command_session_broker",
-            "web_broker",
-            "write_native_file",
-            "replace_native_file",
-            "edit_native_file",
-            "delete_native_file",
-            "computer_use_execute",
-            "computer_use_click",
-            "computer_use_type_text",
-            "computer_use_drag",
-        }
-        if normalized_tool not in gated_tools and not normalized_tool.startswith(("creative_media_", "computer_use_", "rpa_")):
-            return False
-        if self._supervisor_tool_allowed_by_runtime_episode(chat_run, normalized_tool):
-            return False
-        route_required = self._supervisor_direct_scope_requires_engineering_route(chat_run)
-        payload = {
-            "riskCode": "supervisor_direct_scope_blocked",
-            "summary": (
-                "Supervisor direct 执行已进入硬门禁；复杂工程任务后续可变更/长耗时工具必须先进入对应 Runtime episode。"
-                if route_required
-                else "Supervisor direct 执行已进入硬门禁；后续可变更/长耗时工具必须先进入 Runtime/delegation 主链。"
-            ),
-            "blockedTool": normalized_tool,
-            "toolStepCount": stream_state.supervisor_tool_step_count,
-            "projectWriteCount": stream_state.supervisor_project_write_count,
-            "allowedNextTools": ["runtime_broker", "delegation_broker", "ask_user"],
-            "directExceptionAllowed": False,
-            "recommendedNextAction": (
-                "调用 runtime_broker(mode='route') 创建 Engineering/Research/Creative/Computer/RPA/delegation episode。"
-                if route_required
-                else "调用 runtime_broker(mode='route') 或 delegation_broker(dispatch)，不要请求 direct exception。"
-            ),
-        }
-        chat_run.emit_runtime_event(
-            "supervisor.direct_scope.blocked",
-            payload,
-            agent_id=stream_state.current_agent,
-            node="supervisor_direct_scope_guard",
-        )
-        # Tool-start callbacks are an observation surface, not the safe place to
-        # prevent side effects. The actual pre-execution stop lives in
-        # graph.tool_routing.async_tool_call_wrapper; this event keeps Phone/Web
-        # diagnostics in the correct timeline without turning the whole run into
-        # a generic failure.
-        return True
 
     @staticmethod
     def _supervisor_tool_allowed_by_runtime_episode(chat_run: ChatRunContext, tool_name: str) -> bool:
@@ -7100,6 +7095,21 @@ class ChatRuntime:
         if agent_event:
             emitted_events.append(agent_event)
 
+        if kind in {"on_chat_model_start", "on_chat_model_stream", "on_chat_model_end"}:
+            continuation_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
+            if bool(continuation_owner.get("displayInMessage")):
+                continuation_candidate = (
+                    data.get("chunk")
+                    if kind == "on_chat_model_stream"
+                    else data.get("output") if kind == "on_chat_model_end" else None
+                )
+                _apply_provider_continuation_event(
+                    stream_state,
+                    kind=kind,
+                    model_run_id=str(event.get("run_id") or ""),
+                    candidate=continuation_candidate,
+                )
+
         if kind == "on_chain_stream":
             interrupt_request = self._extract_interrupt_request(data.get("chunk"))
             if interrupt_request:
@@ -7443,21 +7453,6 @@ class ChatRuntime:
             )
             if tool_call_id:
                 stream_state.tool_owner_by_tool_call_id[tool_call_id] = dict(owner)
-            self._maybe_emit_supervisor_direct_scope_diagnostic(
-                chat_run,
-                stream_state,
-                tool_name=str(name or ""),
-                tool_inputs=inputs if isinstance(inputs, dict) else {},
-                owner=owner,
-            )
-            if self._enforce_supervisor_direct_scope_gate(
-                chat_run,
-                stream_state,
-                tool_name=str(name or ""),
-                tool_inputs=inputs if isinstance(inputs, dict) else {},
-                owner=owner,
-            ):
-                return emitted_events
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             stream_state.active_tool_call_ids.add(active_tool_key)
             tool_start_event = {
@@ -7770,6 +7765,11 @@ class ChatRuntime:
             metadata_updates={
                 "timestamp": self._now_timestamp_ms(),
                 "agentId": stream_state.current_agent,
+                **(
+                    {PRIVATE_PROVIDER_CONTINUATION_KEY: stream_state.provider_continuation}
+                    if stream_state.provider_continuation
+                    else {}
+                ),
             },
             finalize=True,
         )
@@ -7786,9 +7786,9 @@ class ChatRuntime:
                 node="canonical_transcript",
             )
             raise RuntimeError(error_message)
-        export_payload = export_legacy_message_payload(row)
+        export_payload = export_legacy_message_payload(row, include_private=True)
         final_content = str(export_payload.get("content") or "")
-        if not final_content and not export_payload.get("tool_calls") and not export_payload.get("reasoning_content"):
+        if not _assistant_export_requires_persistence(export_payload):
             return
         db.add_message(
             msg_id=assistant_message_id,
@@ -8174,21 +8174,37 @@ class ChatRuntime:
                 }
             )
 
+        route_context = (state or {}).get("current_route_context")
+        engineering_episodes = (
+            [
+                dict(episode)
+                for episode in list(route_context.get("capabilityEpisodes") or [])
+                if isinstance(episode, dict)
+                and str(episode.get("kind") or episode.get("runtimeKind") or episode.get("runtime_kind") or "")
+                .strip()
+                .lower()
+                == "engineering"
+            ]
+            if isinstance(route_context, dict)
+            else []
+        )
         task_briefs: list[dict[str, Any]] = []
-        if not task_briefs:
-            route_context = (state or {}).get("current_route_context")
-            if isinstance(route_context, dict):
-                for episode in list(route_context.get("capabilityEpisodes") or []):
-                    if not isinstance(episode, dict):
-                        continue
-                    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
-                    for key in ("workerBriefs", "taskBriefs"):
-                        candidates = [dict(item) for item in list(inputs.get(key) or []) if isinstance(item, dict)]
-                        if candidates:
-                            task_briefs = candidates
-                            break
-                    if task_briefs:
-                        break
+        for episode in engineering_episodes:
+            inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+            for key in ("workerBriefs", "taskBriefs"):
+                candidates = [dict(item) for item in list(inputs.get(key) or []) if isinstance(item, dict)]
+                if candidates:
+                    task_briefs = candidates
+                    break
+            if task_briefs:
+                break
+        direct_change_set = getattr(chat_run, "engineering_change_set", None) or {}
+        direct_changed_paths = list(direct_change_set.get("changedPaths") or [])
+        if not engineering_episodes and not selected_delegations and not direct_changed_paths:
+            # Engineering context is prepared optimistically for workflows that may
+            # continue from Research into implementation. A dormant context pack or
+            # a Research brief is not executed Engineering work.
+            return
         task_capsules: list[dict[str, Any]] = []
         for item in task_briefs[:12]:
             capsule = item.get("engineeringTaskCapsule") if isinstance(item.get("engineeringTaskCapsule"), dict) else {}
@@ -8271,6 +8287,15 @@ class ChatRuntime:
             commit_message=f"V8OS Supervisor engineering run {chat_run.active_run_id}",
         )
         chat_run.engineering_change_set = change_set.as_dict()
+        if not change_set.changed_paths:
+            # Research-first workflows may prepare an Engineering workspace before
+            # they know whether implementation will run. A no-op candidate must not
+            # be presented as an Engineering delivery.
+            sandbox_service.record_run_integration_decision(
+                run_id=chat_run.active_run_id,
+                decision="ignored",
+            )
+            return
         managed_delegation_results: list[dict[str, Any]] = []
         if execution_bundle is not None:
             state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
@@ -8812,6 +8837,36 @@ class ChatRuntime:
                 "reason": decision.reason,
                 "run_id": chat_run.active_run_id,
             }
+        if decision.action == "fail" and decision.reason == "supervisor_pseudo_tool_markup_not_executed":
+            from erc.command_router import runtime_command_router
+
+            correction = runtime_command_router.schedule_supervisor_native_tool_correction(
+                chat_run.active_run_id,
+                tool_names=[str(item) for item in list(decision.details.get("toolNames") or [])],
+            )
+            if bool(correction.get("resume_scheduled")):
+                chat_run.emit_runtime_event(
+                    "run.completion.native_tool_correction_scheduled",
+                    {
+                        "reason": decision.reason,
+                        "attempt": 1,
+                        "maxAttempts": 1,
+                        "toolNames": list(decision.details.get("toolNames") or [])[:8],
+                    },
+                    agent_id=None,
+                    node="completion_gate",
+                )
+                chat_run.run_handle.transition(
+                    "running",
+                    reason="supervisor_native_tool_correction_scheduled",
+                    node="completion_gate",
+                )
+                return {
+                    "type": "done",
+                    "status": "running",
+                    "reason": "supervisor_native_tool_correction_scheduled",
+                    "run_id": chat_run.active_run_id,
+                }
         if decision.action == "fail":
             chat_run.emit_runtime_event(
                 "run.completion.blocked",

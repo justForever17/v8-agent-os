@@ -23,8 +23,10 @@ _CODE_INTENT_RE = re.compile(
 _VOICE_INTENT_RE = re.compile(r"(语音|朗读|播报|tts|voice|speak|发语音)", re.IGNORECASE)
 _ROUTE_INTENT_RE = re.compile(r"(skill|工具|插件|mcp|公众号|微信|文档|视频|图片|财报|会议纪要|代码审查)", re.IGNORECASE)
 _READ_ONLY_EXECUTION_RE = re.compile(
-    r"(不要|不需要|禁止|无需|只读|仅规划|仅方案|不真实).{0,18}(写|改|落盘|修改|变更|文件)"
-    r"|(不写|不落盘|不修改|不改动).{0,18}(项目|源码|文件|workspace|repo)"
+    r"(只读(?:审查|检查|分析|任务)?|仅规划|仅方案)"
+    r"|(?:不要|不需要|禁止|无需|不真实).{0,8}(?:写入|写|修改|改动|变更|落盘)"
+    r".{0,8}(?:任何|当前|这个|本)?(?:项目|源码|文件|工作区|workspace|repo)"
+    r"|(?:不写|不落盘|不修改|不改动)(?:任何|当前|这个|本)?(?:项目|源码|文件|工作区|workspace|repo)"
     r"|without\s+(?:actually\s+)?(?:writing|modifying|changing)|read[- ]only",
     re.IGNORECASE,
 )
@@ -137,17 +139,14 @@ def _engineering_active(state: dict[str, Any], user_query: str) -> bool:
 
 def _read_only_execution_intent(user_query: str, state: dict[str, Any]) -> bool:
     query = str(user_query or "")
-    if _READ_ONLY_EXECUTION_RE.search(query):
+    explicit_state = state.get("execution_intent") if isinstance(state.get("execution_intent"), dict) else {}
+    if explicit_state.get("readOnly") is True or explicit_state.get("read_only") is True:
         return True
-    hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
-    writing_route = hint.get("writingRoute") if isinstance(hint.get("writingRoute"), dict) else {}
-    boundary = hint.get("boundaryDecision") if isinstance(hint.get("boundaryDecision"), dict) else {}
-    return bool(
-        writing_route.get("present")
-        and not writing_route.get("requiresArtifact")
-        and str(boundary.get("executionMode") or "").strip() in {"engineering_runtime", "research_runtime"}
-        and any(marker in query.lower() for marker in ("不写", "不真实写", "只读", "read-only", "read only"))
-    )
+    # Scope boundaries such as "do not modify other projects" authorize work
+    # inside the bound workspace; they must not be reclassified as a global
+    # read-only instruction.  Only an unambiguous read-only phrase (or a typed
+    # execution intent above) may suppress writes.
+    return bool(_READ_ONLY_EXECUTION_RE.search(query))
 
 
 def _scope_conflict_from_state(state: dict[str, Any]) -> dict[str, Any] | None:

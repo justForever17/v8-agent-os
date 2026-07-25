@@ -4070,6 +4070,7 @@ class DatabaseManager:
             "waiting_child",
             "waiting_external",
             "waiting_approval",
+            "waiting_input",
         )
         placeholders = ", ".join("?" for _ in active_states)
         cancelled_ids: list[str] = []
@@ -4409,7 +4410,7 @@ class DatabaseManager:
             query += " AND parent_episode_id = ?"
             params.append(parent_episode_id)
         if active_only:
-            query += " AND state IN ('detected', 'routed', 'queued', 'leased', 'active', 'waiting', 'waiting_dependency', 'waiting_child', 'waiting_external', 'waiting_approval')"
+            query += " AND state IN ('detected', 'routed', 'queued', 'leased', 'active', 'waiting', 'waiting_dependency', 'waiting_child', 'waiting_external', 'waiting_approval', 'waiting_input')"
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(int(limit or 100))
         with self.get_connection() as conn:

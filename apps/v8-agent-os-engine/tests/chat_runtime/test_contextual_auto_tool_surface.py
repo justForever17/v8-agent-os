@@ -518,6 +518,40 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertNotIn("SHOULD_NOT_DUMP_DESIGN_FULL_TEXT", content)
         self.assertNotIn("SHOULD_NOT_DUMP_BUNDLE", content)
 
+    def test_delegated_task_contract_labels_peer_scope_as_excluded_and_keeps_dependency_evidence(self):
+        content = _format_delegated_task_contract(
+            {
+                "taskBriefId": "skeleton",
+                "goal": "Create only the package skeleton.",
+                "writeSet": ["src/package.py"],
+                "context": {
+                    "activeCollaborators": [
+                        {
+                            "taskBriefId": "reports",
+                            "name": "Implementation Engineer",
+                            "workSummary": "Generate reports/result.json.",
+                            "status": "queued_or_active",
+                        }
+                    ],
+                    "dependencyResults": [
+                        {
+                            "taskBriefId": "research",
+                            "status": "ok",
+                            "summary": "Source-backed compatibility evidence is ready.",
+                        }
+                    ],
+                },
+                "expectedOutputs": ["Package skeleton"],
+                "acceptanceContract": ["src/package.py exists"],
+            }
+        )
+
+        self.assertIn("Concurrent Collaboration Boundaries:", content)
+        self.assertIn("EXCLUDED — Implementation Engineer [reports]", content)
+        self.assertIn("command whose side effects produce a peer task's outputs", content)
+        self.assertIn("Upstream Dependency Results", content)
+        self.assertIn("Source-backed compatibility evidence is ready", content)
+
     def test_delegated_task_contract_renders_engineering_execution_and_handoff_contract(self):
         content = _format_delegated_task_contract(
             {

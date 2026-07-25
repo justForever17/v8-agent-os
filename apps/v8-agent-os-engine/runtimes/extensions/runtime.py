@@ -3914,7 +3914,7 @@ class ExtensionsRuntimeService:
 
         lines = [
             "\n[Extensions Runtime]",
-            "- Extension candidates are optional references. Use them only when they materially help the current task.",
+            "- Extension candidates are optional discovery references, not a selected route or a reason to ask the user. Prefer the owning local/native capability; fetch or invoke a candidate only when the user named it or it materially improves the method or evidence.",
             f"- Skill candidates: {len(selected_skill_names)} / installed: {len(skill_entries)}",
             f"- MCP tool candidates: {len(exposed_mcp_tool_names)} / connected tools: {len(mcp_tools)}",
         ]

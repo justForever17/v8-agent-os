@@ -602,7 +602,7 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
         lines.append("Active grants: none")
     groups = payload.get("availableGroups") or payload.get("groups") or []
     if isinstance(groups, list) and groups:
-        lines.append("Candidate routes:")
+        lines.append("Run-scoped tool groups (not execution routes):")
         for group in groups[:10]:
             if isinstance(group, dict):
                 name = group.get("group") or group.get("name")
@@ -615,6 +615,15 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
                 lines.append(f"- {_short_text(group, 100)}")
         if len(groups) > 10:
             lines.append(f"- … {len(groups) - 10} more; use catalog detail")
+        if any(
+            str((group.get("group") or group.get("name")) if isinstance(group, dict) else group).strip()
+            == "delegation.recursive"
+            for group in groups
+        ):
+            lines.append(
+                "- delegation.recursive lets an owning runtime fan out bounded child work; "
+                "it does not replace an Engineering route."
+            )
     omitted = payload.get("omitted")
     if isinstance(omitted, dict) and omitted.get("availableGroups"):
         lines.append(f"Catalog compacted: {omitted.get('availableGroups')} group(s) hidden; use catalog/detail only when needed.")
@@ -632,13 +641,38 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
             ]
             if invalid_fields:
                 lines.append("Invalid fields: " + ", ".join(invalid_fields))
-        missing = quality.get("missingFields") or quality.get("requiredFields")
-        if isinstance(missing, list) and missing:
-            lines.append("Missing contract fields: " + ", ".join(str(item) for item in missing[:10]))
+        task_failures = quality.get("tasks")
+        rendered_task_failure = False
+        if isinstance(task_failures, list):
+            for task_failure in task_failures[:6]:
+                if not isinstance(task_failure, dict):
+                    continue
+                task_id = _short_text(task_failure.get("taskBriefId") or "task", 80)
+                missing_fields = task_failure.get("missingFields")
+                if isinstance(missing_fields, list) and missing_fields:
+                    lines.append(
+                        f"Task {task_id} needs repair: "
+                        + ", ".join(_short_text(item, 100) for item in missing_fields[:8])
+                    )
+                    rendered_task_failure = True
+                undeclared_paths = task_failure.get("undeclaredArtifactPaths")
+                if isinstance(undeclared_paths, list) and undeclared_paths:
+                    lines.append(
+                        "Declared artifacts outside writeSet: "
+                        + ", ".join(_short_text(item, 120) for item in undeclared_paths[:6])
+                    )
+                    rendered_task_failure = True
+        if not rendered_task_failure:
+            missing = quality.get("missingFields") or quality.get("requiredFields")
+            if isinstance(missing, list) and missing:
+                lines.append("Missing contract fields: " + ", ".join(str(item) for item in missing[:10]))
     guidance = payload.get("parameterGuidance")
     if failed and isinstance(guidance, dict):
+        canonical_map = str(guidance.get("canonicalTaskMap") or "").strip()
         canonical = str(guidance.get("canonicalTaskArray") or "").strip()
-        if canonical:
+        if canonical_map:
+            lines.append(f"Canonical Research map: {canonical_map}")
+        elif canonical:
             lines.append(f"Canonical task array: {canonical}")
         discipline = guidance.get("discipline")
         if isinstance(discipline, list):
@@ -646,6 +680,12 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
                 rendered = str(item or "").strip()
                 if rendered:
                     lines.append(f"- {_short_text(rendered, 260)}")
+            # Keep the type/array invariant visible even when the longer
+            # copyable example is trimmed by the Agent Surface budget.
+            if any("Omit optional arrays when empty" in str(item or "") for item in discipline):
+                lines.append(
+                    "- Omit optional arrays when empty; preserve object/array types and never use an empty string."
+                )
         example = guidance.get("example")
         if isinstance(example, dict):
             lines.append("Copyable parameter shape:")

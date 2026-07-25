@@ -112,7 +112,7 @@ STATEFUL_UNOBSERVED_REASONS: dict[str, str] = {
 }
 
 BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
-    "runtime_broker": {"mode": "list"},
+    "runtime_broker": {"mode": "list", "need": None},
     "session_context_broker": {"sourceSessionId": "calibration-missing-session", "mode": "summary"},
     "session_message_broker": {"mode": "status", "messageId": "calibration-missing-message"},
     "mcp_server_config": {"mode": "mcp_list"},

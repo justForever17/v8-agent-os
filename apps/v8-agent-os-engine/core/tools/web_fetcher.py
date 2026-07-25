@@ -5796,12 +5796,12 @@ def web_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Quick public-web helper for one URL, one small lookup, or one page extraction.
+    """L1 普通网页读取器：一个已知页面、页面结构或全新孤立窄事实；返回网页材料，不产出受管证据结论或 handoff。
 
-    Use `web_broker` to quickly read a page, search a narrow question, or extract page structure. It is the
-    fast path for "look this up" or "read this URL", not the evidence-building path. For multi-source facts,
-    fresh provider/API details, source ranking, conflicting claims, reusable research results, or decisions
-    that need citations, request 深度调研 and use `research_broker` instead of chaining many quick web calls.
+    Use this for one URL/page or one narrow inline lookup. Use `research_broker` for one focused multi-source question;
+    use a Research episode for several independent domains, recovery/progress, or evidence that must feed a later
+    workflow. A brief already owned by a Research episode must be repaired there, never by chaining this tool.
+    An unreadable page is transport evidence, not proof that the requested fact is false.
 
     mode:
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search
@@ -5809,17 +5809,11 @@ def web_broker(
     - extract: 抽取结构化内容，适合 article / links / metadata / media / raw_html / ui_snapshot
     - search: Source Router 公开搜索，返回清洗后的搜索结果列表和 provider/网络路由质量信号
 
-    fetch_mode:
-    - static is the default first choice for normal article/docs/wiki reading: fastest, cleanest, and no browser dependency
-    - auto/dynamic/stealth are opt-in fallbacks for JS-rendered pages, login-backed pages, or anti-bot/challenge pages
-    - for page code/DOM/UI structure, use mode=extract with extract=raw_html or ui_snapshot instead of normal read
+    fetch_mode: static is the default; use auto/dynamic/stealth for JS/login/challenge pages. For DOM/UI structure,
+    use mode=extract with extract=raw_html or ui_snapshot.
 
-    debug:
-    - 默认 false，只返回对 agent 真正有价值的精简结果
-    - true 时把 transport / TLS / fallback / selector 等调试字段放进 debug 子对象
-
-    useAgentBrowserProfile:
-    - Admin 开启 Agent profile 且目标域名命中 allowlist 时，浏览器读取路径会自动复用登录态；显式 true 可强制直接使用该 profile。
+    debug=false keeps the Agent result compact; true adds transport/TLS/fallback/selector diagnostics.
+    useAgentBrowserProfile=true skips public/static attempts and uses the allowlisted Agent browser profile.
     """
     normalized_mode = str(mode or "fetch").strip().lower()
     if normalized_mode not in {"fetch", "read", "extract", "search"}:
@@ -5864,11 +5858,12 @@ def web_broker(
         compact["webBrokerCallCount"] = call_count
     if over_research_threshold:
         compact["researchRuntimeWarning"] = (
-            "web_broker 已超过本轮建议上限（3 次）。复杂、多源、新鲜度敏感或需要来源排序的调研，"
-            "必须申请 research.core 并改用 research_broker / Research Runtime。"
+            "本轮已连续使用 web_broker。请重新判断剩余范围：只有一个聚焦的多源问题时改用 "
+            "research_broker；还有多个独立事实 brief、需要恢复/进度/typed handoff，或证据要交给后续"
+            "执行时，通过 runtime_broker route 创建一个 Research episode。不要继续用网页调用手工拼调研流程。"
         )
         compact["recommendedNextAction"] = (
-            "stop_ad_hoc_web_broker; request research.core; call research_broker(mode='search_experience') "
-            "then research_broker(mode='run') when needed"
+            "reassess_scope; choose one focused research_broker call or one managed Research episode; "
+            "do not chain both as parallel orchestration"
         )
     return json.dumps(compact, ensure_ascii=False, indent=2)

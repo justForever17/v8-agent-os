@@ -16,8 +16,7 @@ from core.prompt_budget import (
 )
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.storage import storage
-from core.task_boundary_resolver import render_task_boundary_hint
-from core.task_shape_classifier import classify_task_shape, render_task_shape_hint
+from core.task_boundary_resolver import build_supervisor_task_context, render_task_boundary_hint
 from core.host_load import render_host_load_line
 from core.memory_store import VOICE_INTERACTION_EXECUTION_HINT
 from core.safety_active_defense import render_host_alerts_line
@@ -35,28 +34,46 @@ logger = logging.getLogger("v8_agent_os.supervisor")
 _STABLE_SYSTEM_CONTEXT_CACHE: dict[str, dict[str, str]] = {}
 _STABLE_SYSTEM_CONTEXT_CACHE_LIMIT = 64
 _PASSIVE_RAG_HINT_TOKENS = (
-    "remember",
-    "recall",
-    "history",
-    "previous",
-    "before",
-    "again",
-    "context",
-    "workspace",
-    "project",
-    "继续",
-    "之前",
-    "上次",
-    "记得",
-    "历史",
-    "上下文",
-    "项目",
-    "工作区",
+    "do you remember",
+    "remember when",
+    "recall the previous",
+    "continue from the previous",
+    "previous turn",
+    "previous session",
+    "prior context",
+    "same session",
+    "last time",
+    "继续上一轮",
+    "继续上次",
+    "接着刚才",
+    "上一轮",
+    "上一次",
+    "之前那",
+    "前面提到",
+    "你还记得",
+    "从记忆中",
+    "历史会话",
+    "历史记录",
+    "继续上下文",
+    "同一个 session",
+    "队列消息",
 )
+
+
+def has_explicit_recall_cue(user_query: str) -> bool:
+    """Distinguish continuity requests from work *about* memory systems.
+
+    Words such as ``memory``, ``history``, ``workspace`` or ``记忆`` are valid
+    domain nouns.  They must not force a prior-session recall before ordinary
+    research or Engineering work.
+    """
+
+    normalized_query = str(user_query or "").strip().casefold()
+    return any(token.casefold() in normalized_query for token in _PASSIVE_RAG_HINT_TOKENS)
 
 _SUPERVISOR_OPERATING_CONTRACT = """[Supervisor Operating Contract]
 You are the V8OS internal intelligent supervisor: the user-facing coordinator, capable executor, and final synthesizer for this turn.
-Your job is to obey the user's current instruction, clarify missing intent, choose the right work path, keep evidence/proof visible, and merge results from runtimes, subagents, skills, and memory.
+Your job is to obey the user's current instruction, act on sufficient intent, choose the right work path, keep evidence/proof visible, and merge results from runtimes, subagents, skills, and memory. Resolve reversible implementation details with reasonable defaults; clarify only a missing user choice that changes the requested outcome, an irreversible/high-impact action, or an actual permission boundary.
 Principle: Supervisor First, Runtime Grounded. Memory, runtime hints, and gates are supporting signals. They help you steer accurately; they do not outrank the user's current instruction or replace your judgment.
 
 Product language:
@@ -65,16 +82,21 @@ Product language:
 - If the user asks how V8OS works, explain the product word first, then mention the canonical id only as a diagnostic identifier.
 
 Path selection:
-- Direct path: answer, inspect, use file/command tools, implement, verify, and deliver directly whenever that is the clearest path. In session Engineering work mode this may be a long-running, multi-file project; task size alone is never a reason to forbid direct Supervisor execution.
-- Runtime path: route work when a strengthened runtime materially improves specialist context, parallelism, proof, media/provider handling, desktop control, or recovery. Internally use `runtime_broker` route mode with its canonical typed `need.kind`, `need.reason`, and `need.inputs.taskBriefs` contract; tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
+- Direct path: answer, inspect, implement, verify, and deliver with projected local tools when the work is bounded and self-contained. Task size alone does not forbid direct Engineering work. An active managed continuation still owns its unfinished scope; visible tools and confidence do not override it.
+- Runtime path: route work when a strengthened runtime materially improves specialist context, parallelism, proof, media/provider handling, desktop control, or recovery. Call `runtime_broker` route mode with root `routeKind`/`routeReason`; Research uses matching `researchBriefIds`/`researchBriefGoals`, other runtimes use `taskBriefs`. The Engine restores the canonical internal envelope. Tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
   Active execution runtimes you may route into: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. Use the product names 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作 when speaking to users.
   Passive/support runtimes are not ordinary execution targets: 记忆系统 is queried/maintained when relevant, 定时与触发 is configured only when the user asks for scheduled or event-triggered behavior, 插件管理中心 provides explicitly authorized extensions, and 网络连接 provides governed connection support.
-- Subagent path: `delegation_broker` is your direct, governed entry for dispatching subagents or external workers. Use it when Research, Engineering, Creative Media, writing, review, or specialist-parallel work needs independent workers. Give concrete task briefs with goal, context, required skills/capabilities, evidence refs, deliverables, and acceptance criteria. For `mode="dispatch"`, the same tool call MUST contain a non-empty flat `tasks=[{taskBriefId, goal, ...}]`; never issue an empty dispatch and never wrap an item inside `taskBrief`. When speaking to the user, say 子代理 or 协作 worker, not the broker tool name. Do not use it as a shortcut for internal runtimes such as Desktop Control, RPA, Memory maintenance, or Automation; route those through their runtime. Subagents may request child work only through their brokered path when the brief/budget allows it; you still merge and verify the final result.
+- Research and delivery: follow the single `<research_path_ladder>` in the Runtime capability registry. When current facts must feed durable artifacts, finish the selected Research layer, consume its handoff, then use direct Engineering only for one self-contained output; use an Engineering episode for dependent outputs, execution proof, recovery, or durable handoff. Keep one coherent executable/acceptable unit per Engineering brief and express ordering with dependencies. Do not poll, downgrade an owned Research gap, or rename an oversized failed brief as a new route.
+- Execution posture: Research, Engineering, Creative Media, Computer Use, RPA, and Delegation routes are execution choices, not human approval surfaces. When the user asked to research, build, change, verify, or deliver and the trusted scope is sufficient, choose reversible defaults and start the real tool/runtime action. A proposed plan, implementation preference, or runtime choice is not a reason to stop and ask for permission. Ask only when the missing answer materially changes the requested outcome or acceptance, crosses an irreversible/high-impact boundary, or is required by Safety/tool governance.
+- Subagent path: `delegation_broker` is your direct, governed entry for a genuinely distinct role, independent context, review, or parallel shard. It is not an alternate execution route for a rejected Engineering contract. When a workflow requires durable multi-output writes, proof, recovery, or an explicit Engineering handoff, create the Engineering episode first and repair any exact contract error there; that owning runtime may then fan out bounded workers under its ledger. A named implementation subagent with an Engineering Capsule is still a delegation episode and does not by itself satisfy the required Engineering episode. Give delegated workers concrete task briefs with goal, context, required skills/capabilities, evidence refs, deliverables, and acceptance criteria. For `mode="dispatch"`, the same tool call MUST contain a non-empty flat `tasks=[{taskBriefId, goal, ...}]`; never issue an empty dispatch and never wrap an item inside `taskBrief`. When speaking to the user, say 子代理 or 协作 worker, not the broker tool name. Do not use it as a shortcut for internal runtimes such as Desktop Control, RPA, Memory maintenance, Automation, or an already-selected Engineering chain. Subagents may request child work only through their brokered path when the brief/budget allows it; you still merge and verify the final result.
 - Agent registry path: before manually dispatching a persistent local subagent, use the visible exact name+description registry or call `agent_broker(mode="list")`, then pass `task.targetAgentName`. If the registry has a real capability gap, propose a complete Agent contract, ask the user once, call `agent_broker(mode="create")`, validate it, and immediately delegate by that exact name in the same run. Never persist a direct subagent's disposable child worker; grandchildren remain temporary mirrors owned by `delegation_broker`.
 - Spec path: Spec Mode is a delivery contract for complex Engineering/Creative work. `spec_broker` internally writes/edits/reads requirements or bugfix, design, and tasks under the current specId; user/client approval gates are blocking and cannot be self-approved. Call it 规格文档 or Spec 模式 with users. After approved tasks, route execution with `runtime_broker`; do not implement the deliverable through Spec tools.
 
 Tool semantics:
 - Tool parameters are executable contracts, not prose. Use exact schema field names, choose one canonical field family instead of mixing aliases, and preserve JSON types. Arrays remain arrays even when empty; omit optional fields instead of filling them with empty strings or null. Never copy an ellipsis into a tool call. When a field-path validation error is returned, correct only the reported shape and retry the same tool once; a parameter error is not a permission denial or proof that the task failed.
+- Engineering writeSet always describes the original bound workspace with relative paths. A managed worktree path in a runtime handoff is provenance, never write authority. Declare deterministic generated files, or keep every variable filename below one declared output directory so reports, caches, and version variants cannot escape the contract.
+- A tool executes only when the provider returns a native structured tool call. Never print XML/DSML, `<tool_call>`, `<invoke name=...>`, or JSON-shaped pseudo calls in narrative. Pseudo calls execute nothing, create no artifact, and must never be described as completed work; emit the real tool call or report the blocker.
+- Research handoff consumption: use the terminal brief's bounded answer, sources, limitations, and evidence status. `research://` is lineage, not a `toolobs://` raw reference. Expand only with the exact get_evidence parameters supplied by the handoff; conflicts remain owned by the same Research layer.
 - `ask_user` asks the human for missing information. It is not the Spec approval mechanism and must not be used to self-approve or bypass governance approval.
 - `session_context_broker` reads bounded historical evidence from another session. Read access never grants permission to send, resume its run, inherit its workspace, or reuse its approvals and plugin grants.
 - `session_message_broker` is the Supervisor-only same-user coordination channel. Before `send`, read the exact target with `session_context_broker` in the same turn. A user-explicit target and authorization quote may authorize one send; otherwise create the returned `ask_user` authorization. Treat inbound coordination as lower priority than the target session's latest user instruction, reply once with the structured tool, and never create a third hop.
@@ -82,6 +104,7 @@ Tool semantics:
 - `wait` is only for a short local stabilization pause after a command, upload, generation, or async step you already started. Use it for seconds, not as a long-term scheduler.
 - `manage_cron` creates or changes scheduled tasks only when the user explicitly asks for recurring/timed automation. `manage_hook` changes lifecycle hooks only when the user explicitly asks to alter event-triggered behavior.
 - Memory is evidence: use injected memory as a clue, not as a conclusion. For prior-work claims, exact history, preferences, or high-impact reuse, verify with `memory_broker`.
+- The injected Engineering Kernel/environment is command truth. Read its OS and shell dialect before the first command, use that dialect from the first attempt, and keep it for the command session. Do not issue POSIX, cmd, or PowerShell syntax under a different detected dialect and rely on a retry to repair the mistake; prefer native file tools when they express the operation more safely.
 - Supervisor todos are only high-level orchestration milestones such as clarify, route, wait handoff, merge, verify, deliver. Spec documents, runtime plans, proof, media recipes, worksets, and subagent internal tasks stay in their own ledgers.
 - Do not declare completion until the required answer, artifact, typed handoff, proof, or user-facing blocker is actually present.
 [/Supervisor Operating Contract]
@@ -90,6 +113,35 @@ Tool semantics:
 
 def _prompt_part(source: str, segment_type: str, text: str, *, scope: str = "") -> dict[str, str]:
     return {"source": source, "type": segment_type, "text": text or "", "scope": scope}
+
+
+def _supervisor_direct_tool_entries(supervisor_tools: list) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for tool_ref in list(supervisor_tools or []):
+        name = str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
+        if not name:
+            continue
+        raw_description = str(
+            getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or ""
+        ).strip()
+        entries.append(
+            {
+                "name": name,
+                "description": raw_description.splitlines()[0] if raw_description else "No description.",
+            }
+        )
+    return entries
+
+
+def render_supervisor_direct_tool_registry(supervisor_tools: list) -> str:
+    lines = [
+        "--- SUPERVISOR DIRECT TOOL REGISTRY ---",
+        "这里只列当前可直接调用的工具；Runtime 能力卡负责模块职责和唯一的 `<research_path_ladder>`，不要在这里拼第二套路由规则。",
+    ]
+    for entry in _supervisor_direct_tool_entries(supervisor_tools):
+        lines.append(f"- {entry['name']}: {entry['description']}")
+    lines.append("---------------------------------------")
+    return "\n".join(lines) + "\n"
 
 
 def _split_env_context_prompt_parts(env_context: str, *, source_prefix: str = "environment") -> list[dict[str, str]]:
@@ -789,50 +841,6 @@ def build_supervisor_system_content(
         values = [str(item).strip() for item in list(snapshot.get("operationCapabilities") or []) if str(item).strip()]
         return ",".join(values[:limit]) or "delegate"
 
-    def _predict_specialist_families(*, query: str) -> list[str]:
-        haystack = str(query or "").lower()
-        def has_any_token(tokens: tuple[str, ...]) -> bool:
-            for token in tokens:
-                if token.isascii():
-                    if re.search(rf"\b{re.escape(token)}\b", haystack):
-                        return True
-                elif token in haystack:
-                    return True
-            return False
-
-        writing_tokens = (
-            "write", "writing", "docs", "document", "documentation", "handoff", "release note",
-            "proposal", "summary", "article", "copy", "文档", "写作", "撰写", "总结", "交付", "说明",
-            "公众号", "文章", "报告",
-        )
-        engineering_tokens = (
-            "code", "coding", "implement", "implementation", "bug", "fix", "test", "pytest",
-            "build", "typecheck", "api", "runtime", "repo", "project", "frontend", "backend",
-            "web app", "web application", "front-end", "application",
-            "migration", "refactor", "代码", "实现", "修复", "测试", "构建", "仓库", "项目",
-            "接口", "运行时", "迁移", "重构", "前端", "前端界面", "前端页面", "web应用", "网页应用", "应用界面",
-            "remotion", "manim", "ffmpeg", "three.js", "threejs", "p5.js", "p5js", "webgl",
-        )
-        creative_media_tokens = (
-            "image", "video", "audio", "media", "multimedia", "creative", "storyboard", "shot",
-            "keyframe", "character", "continuity", "camera", "motion", "voiceover", "subtitle",
-            "music", "sfx", "clip", "edit", "render", "comfyui", "seedance", "lovart", "libtv",
-            "psd", "photoshop", "layer", "layers", "layered", "alpha", "transparent", "transparency",
-            "chroma", "chroma-key", "cutout", "mask",
-            "图片", "图像", "视频", "音频", "多媒体", "创意", "分镜", "镜头", "关键帧",
-            "角色", "一致性", "运镜", "配音", "旁白", "字幕", "音乐", "音效", "剪辑",
-            "拼接", "生成图", "生成视频", "口语化编辑", "图层", "分层", "透明", "抠图",
-            "蒙版", "色键", "纯色背景",
-        )
-        matches: list[str] = []
-        if has_any_token(engineering_tokens):
-            matches.append("engineering")
-        if has_any_token(writing_tokens):
-            matches.append("writing")
-        if has_any_token(creative_media_tokens):
-            matches.append("creative_media")
-        return matches
-
     def _render_specialist_line(agent: dict, *, include_family: bool = False) -> str:
         agent_id = str(agent.get("id") or "").strip() or "unknown"
         prefix = f"{agent_id}"
@@ -901,7 +909,7 @@ def build_supervisor_system_content(
         ]
         specialist_registry = dict((supervisor_config or {}).get("specialistRegistry") or {})
         family_mode_enabled = bool(specialist_registry.get("familyModeEnabled", True))
-        exposure_mode = str(specialist_registry.get("exposureMode") or "family_cards").strip().lower() or "family_cards"
+        exposure_mode = "family_cards"
         try:
             family_limit = int(specialist_registry.get("maxMembersPerFamily") or 10)
         except (TypeError, ValueError):
@@ -916,16 +924,6 @@ def build_supervisor_system_content(
                 "--------------------------------\n"
             )
 
-        legacy_matched_families = _predict_specialist_families(query=user_query)
-        hinted_families = [
-            str(item or "").strip()
-            for item in list((task_shape_hint or {}).get("suggestedFamilies") or [])
-            if str(item or "").strip()
-        ]
-        recommended_families = []
-        for family in hinted_families:
-            if family and family not in recommended_families:
-                recommended_families.append(family)
         explicit_reveal_families = []
         for item in list((state or {}).get("explicit_subagent_families") or []):
             family = normalize_specialist_family_id(item)
@@ -935,7 +933,6 @@ def build_supervisor_system_content(
         if not family_mode_enabled:
             lines = [
                 "--- SPECIALIST FAMILIES ---",
-                f"taskFamilyHint={'+'.join(recommended_families) if recommended_families else 'none'}",
                 "familyMode=off; all registered subagents are visible in compact form.",
                 "selectionRule=For a manual local dispatch, choose one exact registered name and pass it as task.targetAgentName. familyHint and capability scores are hints, never dispatch authority.",
                 "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
@@ -960,69 +957,16 @@ def build_supervisor_system_content(
 
         if exposure_mode in {"family_cards", "cards", "default", ""}:
             ordered_families = sorted(family_map)
-            ordered_families.sort(key=lambda family: (0 if family in recommended_families else 1, family))
-            auto_reveal_config = specialist_registry.get("autoReveal") if isinstance(specialist_registry.get("autoReveal"), dict) else {}
-            auto_reveal_recommendation = (
-                task_shape_hint.get("autoRevealRecommendation")
-                if isinstance(task_shape_hint, dict) and isinstance(task_shape_hint.get("autoRevealRecommendation"), dict)
-                else {}
-            )
-            try:
-                auto_min_confidence = float(auto_reveal_config.get("minConfidence", 0.9))
-            except (TypeError, ValueError):
-                auto_min_confidence = 0.9
-            try:
-                auto_min_margin = float(auto_reveal_config.get("minScoreMargin", 0.15))
-            except (TypeError, ValueError):
-                auto_min_margin = 0.15
-            try:
-                auto_max_families = int(auto_reveal_config.get("maxFamilies", 1))
-            except (TypeError, ValueError):
-                auto_max_families = 1
-            auto_max_families = max(0, min(auto_max_families, 3))
-            try:
-                hint_confidence = float((task_shape_hint or {}).get("confidence") or 0)
-            except (TypeError, ValueError):
-                hint_confidence = 0.0
-            try:
-                hint_margin = float((task_shape_hint or {}).get("scoreMargin") or 0)
-            except (TypeError, ValueError):
-                hint_margin = 0.0
-            hint_ambiguity_flags = [
-                str(item or "").strip()
-                for item in list((task_shape_hint or {}).get("ambiguityFlags") or [])
-                if str(item or "").strip()
-            ]
-            require_no_ambiguity = bool(auto_reveal_config.get("requireNoAmbiguity", True))
-            auto_reveal_enabled = bool(auto_reveal_config.get("enabled", True))
-            auto_reveal_families: list[str] = []
-            if (
-                auto_reveal_enabled
-                and bool(auto_reveal_recommendation.get("eligible"))
-                and hint_confidence >= auto_min_confidence
-                and hint_margin >= auto_min_margin
-                and (not require_no_ambiguity or not hint_ambiguity_flags)
-            ):
-                for item in list(auto_reveal_recommendation.get("families") or []):
-                    family = normalize_specialist_family_id(item)
-                    if family in family_map and family not in explicit_reveal_families and family not in auto_reveal_families:
-                        auto_reveal_families.append(family)
-                    if len(auto_reveal_families) >= auto_max_families:
-                        break
             visible_family_set = {
                 family
-                for family in [*explicit_reveal_families, *auto_reveal_families]
+                for family in explicit_reveal_families
                 if family in family_map
             }
             hidden_member_count = sum(len(items) for family, items in family_map.items() if family not in visible_family_set)
             lines = [
                 "--- SPECIALIST FAMILIES ---",
-                f"taskFamilyHint={'+'.join(recommended_families) if recommended_families else 'none'}",
                 f"explicitFamilyMentions={'+'.join(explicit_reveal_families) if explicit_reveal_families else 'none'}",
-                f"autoRevealFamilies={'+'.join(auto_reveal_families) if auto_reveal_families else 'none'}",
-                f"taskShapePrimary={str((task_shape_hint or {}).get('primaryTaskShape') or 'unknown')}; confidence={str((task_shape_hint or {}).get('confidence') or 'n/a')}",
-                f"autoRevealPolicy=enabled:{str(auto_reveal_enabled).lower()} minConfidence={auto_min_confidence:.2f} minScoreMargin={auto_min_margin:.2f} maxFamilies={auto_max_families} requireNoAmbiguity={str(require_no_ambiguity).lower()}",
-                "familyMode=family_cards; concrete non-global family members are hidden unless explicitly mentioned or task_shape reaches high-confidence auto reveal.",
+                "familyMode=family_cards; concrete non-global family members are revealed only by an explicit user selection.",
                 "selectionRule=Choose one exact name from registeredAgentIndex and pass task.targetAgentName. Family cards and reveal hints explain capabilities but never authorize blind selection.",
                 "toolPolicy=contextual_auto; runtime direct tools still require runtime_broker grants and are separate from family reveal.",
                 "[registeredAgentIndex]",
@@ -1036,19 +980,11 @@ def build_supervisor_system_content(
             if ordered_families:
                 lines.append("[familyCapabilityCards]")
                 for family in ordered_families:
-                    marker = " recommended=true" if family in recommended_families else ""
-                    lines.append(_family_summary(family, family_map.get(family, [])) + marker)
+                    lines.append(_family_summary(family, family_map.get(family, [])))
             if visible_family_set:
                 lines.append("[revealedFamilyMembers]")
                 for family in [item for item in explicit_reveal_families if item in visible_family_set]:
                     lines.append(f"[{family}] revealSource=user_explicit_mention")
-                    for agent in family_map.get(family, [])[:family_limit]:
-                        lines.append(_render_specialist_line(agent))
-                    overflow = max(0, len(family_map.get(family, [])) - family_limit)
-                    if overflow:
-                        lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
-                for family in [item for item in auto_reveal_families if item in visible_family_set]:
-                    lines.append(f"[{family}] revealSource=task_shape_high_confidence")
                     for agent in family_map.get(family, [])[:family_limit]:
                         lines.append(_render_specialist_line(agent))
                     overflow = max(0, len(family_map.get(family, [])) - family_limit)
@@ -1064,36 +1000,6 @@ def build_supervisor_system_content(
             lines.append("--------------------------------")
             return "\n".join(lines) + "\n"
 
-        visible_families = [family for family in legacy_matched_families if family in family_map]
-        hidden_families = sorted(family for family in family_map if family not in visible_families)
-        lines = [
-            "--- SPECIALIST FAMILIES ---",
-            f"taskFamily={'+'.join(legacy_matched_families) if legacy_matched_families else 'none'}",
-            f"familyMode=legacy_matched_members; familyLimit={family_limit}; globalExposure bypasses the familyLimit but does not grant tools.",
-            "selectionRule=Choose one exact name from registeredAgentIndex and pass task.targetAgentName; matched families are relevance hints only.",
-            "toolPolicy=contextual_auto; concrete tools are assigned at delegation dispatch.",
-            "[registeredAgentIndex]",
-        ]
-        for agent in agents:
-            lines.append(_render_registered_agent_line(agent))
-        if hidden_families:
-            lines.append(f"hiddenFamilies={','.join(hidden_families)}")
-        if global_agents:
-            lines.append("[globalExposure]")
-            for agent in global_agents:
-                lines.append(_render_specialist_line(agent, include_family=True))
-        for family in visible_families:
-            lines.append(f"[{family}]")
-            for agent in family_map.get(family, [])[:family_limit]:
-                lines.append(_render_specialist_line(agent))
-            overflow = max(0, len(family_map.get(family, [])) - family_limit)
-            if overflow:
-                lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
-        if not global_agents and not visible_families:
-            lines.append("No family matched this turn; keep work with Supervisor unless the current task contract names a matching family.")
-        lines.append("--------------------------------")
-        return "\n".join(lines) + "\n"
-
     workspace_binding = _resolved_workspace_binding_for_state(state, session_id)
     workspace_path = str(workspace_binding.active_workspace_root)
     main_workspace_path = str(workspace_binding.main_workspace_root)
@@ -1103,7 +1009,7 @@ def build_supervisor_system_content(
     identity_line = render_system_identity_line(storage.get_system_identity())
     raw_base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
-        "Choose direct execution, a named subagent, or a strengthened runtime by delivery quality and evidence needs; task size alone never forbids direct Supervisor execution.\n"
+        "Choose direct execution, a named subagent, or a strengthened runtime by delivery quality and evidence needs; task size alone is never a reason to forbid direct Supervisor execution.\n"
         "Treat Supervisor-authored task briefs as the canonical delegation contract for both local subagents and external workers.\n"
         "Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those route gates and final verification with the supervisor unless a brokered task explicitly grants a narrow surface.\n"
     )
@@ -1121,6 +1027,7 @@ def build_supervisor_system_content(
         for item in list((supervisor_config.get("delegation") or {}).get("externalWorkers") or [])
         if isinstance(item, dict)
     ]
+    direct_tool_entries = _supervisor_direct_tool_entries(supervisor_tools)
 
     stable_signature = hashlib.sha1(
         json.dumps(
@@ -1145,13 +1052,7 @@ def build_supervisor_system_content(
                 ],
                 "externalWorkers": external_workers,
                 "specialistRegistry": dict(supervisor_config.get("specialistRegistry") or {}),
-                "tools": [
-                    {
-                        "name": str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip(),
-                        "description": str(getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or "").strip().split("\n")[0],
-                    }
-                    for tool_ref in list(supervisor_tools or [])
-                ],
+                "tools": direct_tool_entries,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1178,15 +1079,7 @@ def build_supervisor_system_content(
             "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "
             "Reference generated media naturally in prose and rely on the runtime artifact/resource pipeline for rendering.\n"
         )
-        available_tools_context = "--- SUPERVISOR DIRECT TOOL REGISTRY ---\n"
-        available_tools_context += "下面只列出你当前可直接调用的工具。模块级任务优先参考 Runtime 能力卡片来路由，而不是硬记所有模块细节。\n"
-        for tool_ref in supervisor_tools:
-            tool_name = getattr(tool_ref, "name", tool_ref.__name__ if hasattr(tool_ref, "__name__") else "")
-            if not tool_name:
-                continue
-            tool_desc = getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")).strip().split("\n")[0]
-            available_tools_context += f"- {tool_name}: {tool_desc}\n"
-        available_tools_context += "---------------------------------------\n"
+        available_tools_context = render_supervisor_direct_tool_registry(supervisor_tools)
 
         cached_stable = {
             "envStaticContext": env_static_context,
@@ -1257,8 +1150,8 @@ def build_supervisor_system_content(
     available_tools_context = cached_stable["availableToolsContext"]
     task_shape_hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
     if not task_shape_hint:
-        task_shape_hint = classify_task_shape(user_query)
-    task_shape_context = render_task_shape_hint(task_shape_hint)
+        task_shape_hint = build_supervisor_task_context(user_query)
+    task_shape_context = ""
     task_boundary_context = render_task_boundary_hint(
         task_shape_hint.get("boundaryDecision") if isinstance(task_shape_hint.get("boundaryDecision"), dict) else {}
     )
@@ -1380,9 +1273,9 @@ def build_supervisor_system_content(
         "Passive Memory/RAG context is only a compact snapshot. When the user asks about prior work, remembered preferences, project history, exact daily logs, or knowledge graph relations, call `memory_broker` before relying on injected memory.\n"
         "For high-impact decisions based on memory, verify with `memory_broker(mode=\"recall\")`, `memory_broker(mode=\"read_day\")`, or `memory_broker(mode=\"graph_neighbors\")`; if lookup returns no match or stale context, say so instead of inventing history.\n"
         "Skill is a method package, not a permission grant; it cannot bypass runtime gates, workspace boundaries, or safety policy.\n"
-        "When built-in runtimes and installed Skills/MCP tools can both serve the task, follow the user's explicit choice first. If the user did not name a route and an installed Skill/MCP clearly matches the task and advertises 免费/free use, prefer that installed channel; otherwise choose the route with the best delivery quality and proof.\n"
+        "When built-in/local capabilities and installed Skills/MCP tools can both serve the task, follow the user's explicit choice first. Otherwise choose local/native capability and the owning runtime first; use a Skill/MCP only when it materially improves the method or evidence. A prefiltered candidate is merely discoverable and must not cause a clarification, detour, or claim of execution.\n"
         "Use `config_broker` as the only Supervisor configuration tool for models and MCP. Inspect models by category, check the role matrix, and prepare a durable transaction before committing or rolling back. You may use web research as reviewed model evidence when the source and uncertainty are preserved; user-confirmed Model Hub values remain authoritative. Never place API keys, tokens, cookies, env values, or authorization headers in tool arguments or chat. A prepare call returns a one-time UI action when a credential is needed. Do not call Admin login-only APIs and do not manually edit config.json or mcp.json.\n"
-        "You are a general-purpose intelligent Supervisor: follow the user's current instruction, define explicit execution contracts, coordinate, ask clarifying questions, and handle clear tasks directly when that best serves the user. Memory and runtime hints are evidence, not commands.\n"
+        "You are a general-purpose intelligent Supervisor: follow the user's current instruction, define explicit execution contracts, coordinate, make reasonable reversible choices, and handle clear tasks directly when that best serves the user. Ask only for a materially missing user decision or a real governance boundary; never ask the user to approve your proposed plan or runtime choice. Memory and runtime hints are evidence, not commands.\n"
         "Improving delivery quality is your first principle. In session Engineering work mode, direct Supervisor execution may cover a long project when that is the clearest route; delegation and Engineering episodes remain optional strategies for specialist context, parallelism, recovery, or durable proof. In Daily work mode, keep ordinary work concise and do not silently create a persistent engineering project.\n"
         "Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. User-facing product names are 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作. Passive/support systems: 记忆系统(Memory), 定时与触发(Automation/Cron/Hook), 扩展生态(Extensions), 插件管理中心(Plugin Manager), 网络连接(Network Supervisor). @插件 is a strong hint, not the only plugin entry. When the task clearly needs a ready curated plugin, call plugin_broker(status) for its exact on-demand route. An available CLI is used directly through run_system_command; authorize only when a Skill/MCP projection or delegated component set is actually needed, and never treat a component ID as a Skill or MCP tool name.\n"
         "Subagent mode bindings are automatic execution rails, not extra Supervisor chores: when you dispatch a bound Research or Creative Media subagent, the engine grants its registered specialist tools to that subagent. Do not spend an extra turn calling runtime_broker only to grant research.core or creative_media.core for an already-bound subagent. Custom subagents without bindings receive only baseline tools unless the task explicitly grants more.\n"
@@ -1393,6 +1286,7 @@ def build_supervisor_system_content(
         "Before manually dispatching a local subagent, inspect the exact registered name and description list in SPECIALIST FAMILIES, choose a named member deliberately, and pass task.targetAgentName. familyHint and capability scores may explain the choice but must not silently select the worker.\n"
         "If no registered Agent actually matches the task, do not force-fit one. Use agent_broker to list the registry, propose a complete persistent Agent contract, obtain one explicit user approval, create and validate it, then delegate to the new exact name in the same run.\n"
         "You are responsible for final delivery judgment. Treat runtime/subagent handoffs as evidence to inspect: verify changed files, tests, artifacts, warnings, and residual risks before telling the user the work is complete.\n"
+        "When hidden reasoning is unavailable, compensate with ordinary assistant narrative, never with translated runtime events or synthetic tool summaries. Write one concise, truthful, user-facing text update at four moments only: before a long runtime handoff or execution phase; after a material finding or decision; before asking for missing input or explaining a reroute; and immediately before final delivery. Keep these messages in chronological order with the real tool calls. Do not emit a sentence for every tool call, invent Human Surface milestones, expose internal ids, or leave a silent tool-only gap across a meaningful phase.\n"
         "Treat limits stated by the user, such as maximum tool calls, cost, files, or retries, as task constraints. Stop before exceeding them; ask or change approach instead of silently overrunning the limit.\n"
         "Tool calls use structured arguments; quote style in examples is only illustrative. Prefer JSON-style double-quoted strings in examples, and never treat single quotes vs double quotes as different tool semantics.\n"
         "Do not say you are dispatching or assigning a subagent unless you actually route a delegation episode or call an explicitly available delegation tool; if you choose direct Supervisor execution, say that directly.\n"
@@ -1477,7 +1371,7 @@ def apply_passive_rag_injection(messages, *, user_query: str, scope_chain: list[
 
     human_turns = sum(1 for message in messages if isinstance(message, HumanMessage))
     normalized_query = str(user_query or "").strip().lower()
-    has_recall_cue = any(token in normalized_query for token in _PASSIVE_RAG_HINT_TOKENS)
+    has_recall_cue = has_explicit_recall_cue(normalized_query)
     try:
         retrieval_threshold = float(memory_config.get("retrieval_threshold"))
     except (TypeError, ValueError, KeyError):

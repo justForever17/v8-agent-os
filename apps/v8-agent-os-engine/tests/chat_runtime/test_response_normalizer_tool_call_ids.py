@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 
 from core.response_normalizer import extract_text_and_reasoning, sanitize_model_tool_calls
+from graph.compat import sanitize_response_tool_calls
 
 
 class ResponseNormalizerToolCallIdTests(unittest.TestCase):
@@ -133,6 +134,77 @@ class ResponseNormalizerToolCallIdTests(unittest.TestCase):
 
         normalized_again = sanitize_model_tool_calls(normalized)
         self.assertEqual(normalized_again.tool_calls[0]["id"], tool_call["id"])
+
+    def test_native_write_and_shell_consumer_are_split_across_turns(self):
+        message = SimpleNamespace(
+            content=[
+                {"type": "text", "text": "I will write, then verify."},
+                {
+                    "type": "tool_use",
+                    "id": "provider-write-1",
+                    "name": "write_native_file",
+                    "input": {"path": "app.py", "content": "print('ok')"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "provider-run-1",
+                    "name": "run_system_command",
+                    "input": {"command": "python app.py"},
+                },
+            ],
+            tool_calls=[
+                {
+                    "id": "provider-write-1",
+                    "name": "write_native_file",
+                    "args": {"path": "app.py", "content": "print('ok')"},
+                },
+                {
+                    "id": "provider-run-1",
+                    "name": "run_system_command",
+                    "args": {"command": "python app.py"},
+                },
+            ],
+            additional_kwargs={},
+            response_metadata={"providerStandard": "anthropic"},
+        )
+
+        normalized = sanitize_response_tool_calls(message)
+
+        self.assertEqual([call["name"] for call in normalized.tool_calls], ["write_native_file"])
+        self.assertEqual(
+            normalized.additional_kwargs["v8_deferred_dependent_tool_calls"][0]["name"],
+            "run_system_command",
+        )
+        self.assertNotIn(
+            "run_system_command",
+            [
+                block.get("name")
+                for block in normalized.content
+                if isinstance(block, dict)
+            ],
+        )
+
+        normalized_again = sanitize_response_tool_calls(normalized)
+        self.assertEqual([call["name"] for call in normalized_again.tool_calls], ["write_native_file"])
+
+    def test_independent_native_writes_remain_parallel(self):
+        message = SimpleNamespace(
+            content="",
+            tool_calls=[
+                {"id": "write-a", "name": "write_native_file", "args": {"path": "a.txt", "content": "a"}},
+                {"id": "write-b", "name": "write_native_file", "args": {"path": "b.txt", "content": "b"}},
+            ],
+            additional_kwargs={},
+            response_metadata={},
+        )
+
+        normalized = sanitize_response_tool_calls(message)
+
+        self.assertEqual(
+            [call["name"] for call in normalized.tool_calls],
+            ["write_native_file", "write_native_file"],
+        )
+        self.assertNotIn("v8_deferred_dependent_tool_calls", normalized.additional_kwargs)
 
 
 if __name__ == "__main__":

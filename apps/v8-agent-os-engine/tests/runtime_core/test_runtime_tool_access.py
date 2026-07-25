@@ -474,7 +474,10 @@ def test_runtime_broker_grant_does_not_repeat_catalog_by_default():
 def test_runtime_broker_route_creates_episode_and_grants_access():
     command = runtime_broker.func(
         mode="route",
-        need={"kind": "research", "source": "supervisor", "reason": "need multi-source evidence"},
+        routeKind="research",
+        routeReason="need multi-source evidence",
+        researchBriefIds=["source-a", "source-b"],
+        researchBriefGoals=["Verify source A.", "Verify source B."],
         state={"current_route_context": {}},
         tool_call_id="call-runtime-route",
     )
@@ -531,6 +534,69 @@ def test_runtime_route_uses_current_session_workspace_instead_of_model_guess(mon
         "reason": "current_session_binding_is_authoritative",
     }
     assert inputs["routeBriefQuality"]["status"] == "ready"
+
+
+def test_downstream_route_inherits_ready_research_refs_and_explicit_evidence_gaps(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "get_runtime_context",
+        lambda: {"workspace_path": r"E:\Projects\test6"},
+    )
+    state = {
+        "current_route_context": {
+            "effectiveHandoffRefs": [
+                {
+                    "kind": "research",
+                    "status": "degraded",
+                    "researchRefs": ["research://bundle/fts5"],
+                    "coveredTaskBriefIds": ["fts5"],
+                    "missingTaskBriefIds": ["python-win"],
+                    "taskBriefResults": [
+                        {
+                            "taskBriefId": "fts5",
+                            "status": "ready",
+                            "researchRef": "research://bundle/fts5",
+                        },
+                        {
+                            "taskBriefId": "python-win",
+                            "status": "degraded",
+                            "limitations": ["Official Windows support statement was not verified."],
+                            "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                        },
+                    ],
+                    "downstreamAllowed": True,
+                }
+            ]
+        }
+    }
+
+    enriched = native_runtime._enrich_route_need_for_episode(
+        {
+            "kind": "engineering",
+            "reason": "build a locally verified compatibility baseline",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "local-baseline",
+                        "goal": "Implement and locally verify the bounded baseline.",
+                        "readOnly": True,
+                        "writeSet": [],
+                    }
+                ]
+            },
+        },
+        kind="engineering",
+        state=state,
+    )
+
+    research_context = enriched["inputs"]["researchContext"]
+    assert research_context["source"] == "managed_research_handoff"
+    assert research_context["readyTaskBriefIds"] == ["fts5"]
+    assert research_context["researchRefs"] == ["research://bundle/fts5"]
+    assert research_context["downstreamAllowed"] is True
+    assert research_context["evidenceGaps"][0]["taskBriefId"] == "python-win"
+    assert research_context["evidenceGaps"][0]["blocksClaim"] is True
+    assert research_context["evidenceGaps"][0]["blocksDownstream"] is False
 
 
 def _ready_engineering_handoff_state() -> dict:
@@ -768,20 +834,73 @@ def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need(
     assert payload["ok"] is False
     assert payload["error"] == "typed_need_invalid"
     assert payload["routeBriefQuality"]["validationErrors"][0]["field"].endswith("writeSet")
-    assert payload["parameterGuidance"]["canonicalTaskArray"] == "need.inputs.taskBriefs"
+    assert payload["parameterGuidance"]["canonicalTaskArray"] == "taskBriefs"
 
 
-def test_runtime_broker_advertises_one_canonical_task_array_with_typed_descriptions():
+def test_runtime_broker_advertises_provider_safe_research_arrays_and_typed_task_array():
     schema = convert_to_openai_tool(runtime_broker)["function"]["parameters"]
-    need = schema["properties"]["need"]["anyOf"][0]
-    inputs = need["properties"]["inputs"]
+    public_fields = schema["properties"]
 
-    assert set(inputs["properties"]) == {"workspacePath", "taskBriefs", "proofExpectations"}
-    task_properties = inputs["properties"]["taskBriefs"]["items"]["properties"]
-    assert all(str(item.get("description") or "").strip() for item in task_properties.values())
-    assert "dependency" not in task_properties
-    assert task_properties["dependencies"]["type"] == "array"
-    assert "never pass an empty string" in task_properties["dependencies"]["description"]
+    assert "need" not in public_fields
+    assert public_fields["researchBriefIds"]["items"]["type"] == "string"
+    assert public_fields["researchBriefGoals"]["items"]["type"] == "string"
+    assert "complete ordered list" in public_fields["researchBriefIds"]["description"]
+    assert "equal length" in public_fields["researchBriefGoals"]["description"]
+    assert public_fields["taskBriefs"]["items"]["type"] == "object"
+    public_description = public_fields["taskBriefs"]["description"]
+    assert "bounded writeSet" in public_description
+    assert "expectedArtifacts must be covered by writeSet" in public_description
+    assert "Engine performs the strict field/type validation" in public_description
+    strict_task_schema = native_runtime.RuntimeRouteTaskBrief.model_json_schema()["properties"]
+    assert all(str(item.get("description") or "").strip() for item in strict_task_schema.values())
+    assert "dependencies" in strict_task_schema
+
+
+def test_runtime_broker_zips_research_brief_arrays_to_internal_task_briefs():
+    command = runtime_broker.func(
+        mode="route",
+        routeKind="research",
+        routeReason="verify two independent domains",
+        researchBriefIds=["sqlite-fts5", "python-windows"],
+        researchBriefGoals=[
+            "Verify current SQLite FTS5 support.",
+            "Verify current Python support on Windows.",
+        ],
+        researchBriefContexts=["", "Prefer official Python documentation."],
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-research-map",
+    )
+
+    payload = _tool_message_payload(command)
+    assert payload["ok"] is True
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert "researchBriefs" not in episode["inputs"]
+    assert "researchBriefContexts" not in episode["inputs"]
+    task_briefs = episode["inputs"]["taskBriefs"]
+    assert [brief["taskBriefId"] for brief in task_briefs] == ["sqlite-fts5", "python-windows"]
+    assert [brief["goal"] for brief in task_briefs] == [
+        "Verify current SQLite FTS5 support.",
+        "Verify current Python support on Windows.",
+    ]
+    assert all(brief["readOnly"] is True and brief["writeSet"] == [] for brief in task_briefs)
+    assert task_briefs[0]["context"] == {}
+    assert task_briefs[1]["context"] == "Prefer official Python documentation."
+
+
+def test_runtime_broker_rejects_research_arrays_on_non_research_route():
+    command = runtime_broker.func(
+        mode="route",
+        routeKind="engineering",
+        routeReason="invalid provider transport",
+        researchBriefIds=["implementation"],
+        researchBriefGoals=["Implement the change."],
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-invalid-research-map",
+    )
+
+    payload = _tool_message_payload(command)
+    assert payload["ok"] is False
+    assert payload["error"] == "typed_need_invalid"
 
 
 def test_runtime_broker_keeps_legacy_worker_briefs_read_compatible_without_advertising_alias():
@@ -863,6 +982,499 @@ def test_runtime_broker_blocks_incomplete_engineering_write_contract(missing_key
     failures = payload["routeBriefQuality"]["tasks"]
     assert failures[0]["taskBriefId"] == "write-task"
     assert expected_missing in failures[0]["missingFields"]
+
+
+def test_runtime_broker_blocks_explicit_artifact_outside_exhaustive_write_set():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "write_contract_side_effect_test",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "baseline-implementation",
+                        "goal": "Create the baseline and run its probe.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "writeRequired": True,
+                        "writeSet": ["baseline/manifest.json"],
+                        "expectedArtifacts": [
+                            "baseline/manifest.json",
+                            "baseline/.tmp/probe.json",
+                        ],
+                        "expectedOutputs": ["baseline manifest"],
+                        "acceptanceContract": [
+                            "The probe writes `baseline/.tmp/probe.json` with the measured result."
+                        ],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-acceptance-side-effect",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "write_task_contract_incomplete"
+    failure = payload["routeBriefQuality"]["tasks"][0]
+    assert "writeSet(expected_artifact_not_declared)" in failure["missingFields"]
+    assert failure["undeclaredArtifactPaths"] == ["baseline/.tmp/probe.json"]
+
+
+def test_runtime_broker_does_not_guess_write_paths_from_acceptance_prose():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "write_contract_prose_regression",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "baseline-implementation",
+                        "goal": "Create and verify the bounded compatibility baseline.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "writeRequired": True,
+                        "writeSet": ["baseline/manifest.json"],
+                        "expectedArtifacts": ["baseline/manifest.json"],
+                        "expectedOutputs": ["baseline manifest"],
+                        "acceptanceContract": [
+                            "`完成 SQLite FTS5/JSONB/Python-Windows 兼容性核验，并把结果写入已声明产物。`",
+                            "Do not modify `package.json`, `file://input.json`, or workspace inputs.",
+                        ],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-acceptance-prose-regression",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["episode"]["kind"] == "engineering"
+
+
+def _bounded_engineering_route_task(*, task_id: str, write_set: list[str]) -> dict:
+    return {
+        "taskBriefId": task_id,
+        "goal": "Implement and verify the bounded deliverable.",
+        "context": {"source": "supervisor_current_turn"},
+        "writeRequired": True,
+        "writeSet": write_set,
+        "expectedArtifacts": list(write_set),
+        "expectedOutputs": ["verified deliverable"],
+        "acceptanceContract": ["Every declared artifact exists and passes local verification."],
+    }
+
+
+def _terminal_engineering_attempt(*, episode_id: str, state: str, task_id: str, write_set: list[str]) -> dict:
+    task = _bounded_engineering_route_task(task_id=task_id, write_set=write_set)
+    return {
+        "episodeId": episode_id,
+        "kind": "engineering",
+        "state": state,
+        "inputs": {"taskBriefs": [task], "workerBriefs": [task], "tasks": [task]},
+    }
+
+
+def _terminal_research_attempt(*, episode_id: str, state: str, task_ids: list[str]) -> dict:
+    return {
+        "episodeId": episode_id,
+        "kind": "research",
+        "state": state,
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": task_id,
+                    "goal": f"Verify {task_id}.",
+                    "readOnly": True,
+                    "writeRequired": False,
+                    "writeSet": [],
+                    "expectedOutputs": [],
+                }
+                for task_id in task_ids
+            ]
+        },
+    }
+
+
+def test_runtime_broker_allows_one_bounded_engineering_repair_for_same_write_scope():
+    prior = _terminal_engineering_attempt(
+        episode_id="episode-initial-degraded",
+        state="degraded",
+        task_id="implementation-and-proof",
+        write_set=["baseline/app.py", "baseline/evidence.json"],
+    )
+    repair_task = _bounded_engineering_route_task(
+        task_id="renamed-repair-brief",
+        write_set=["baseline/evidence.json", "baseline/app.py"],
+    )
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "repair the degraded bounded delivery",
+            "inputs": {"taskBriefs": [repair_task]},
+        },
+        state={"current_route_context": {"capabilityEpisodes": [prior]}},
+        tool_call_id="call-runtime-bounded-engineering-repair",
+    )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["ok"] is True
+    assert episode["inputs"]["engineeringRepair"] == {
+        "priorFailedAttempts": 1,
+        "repairBudget": 1,
+        "repairAttempt": 1,
+        "exhausted": False,
+        "finalRepairAttempt": True,
+    }
+
+
+def test_runtime_broker_blocks_third_engineering_attempt_for_same_write_scope():
+    write_set = ["baseline/app.py", "baseline/evidence.json"]
+    prior_attempts = [
+        _terminal_engineering_attempt(
+            episode_id="episode-initial-degraded",
+            state="degraded",
+            task_id="initial-split-brief",
+            write_set=write_set,
+        ),
+        _terminal_engineering_attempt(
+            episode_id="episode-repair-failed",
+            state="failed",
+            task_id="renamed-single-repair",
+            write_set=list(reversed(write_set)),
+        ),
+    ]
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "retry the same files again",
+            "inputs": {
+                "taskBriefs": [
+                    _bounded_engineering_route_task(task_id="third-name", write_set=write_set)
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": prior_attempts}},
+        tool_call_id="call-runtime-engineering-retry-exhausted",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "engineering_retry_exhausted"
+    assert payload["routeBriefQuality"]["priorFailedAttempts"] == 2
+    assert command.update["runtime_dispatch_status"]["dispatched"] is False
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 2
+
+
+def test_runtime_broker_allows_one_bounded_research_repair_for_same_briefs():
+    task_ids = ["brief-a", "brief-b"]
+    prior = _terminal_research_attempt(
+        episode_id="episode-research-initial",
+        state="degraded",
+        task_ids=task_ids,
+    )
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "repair missing evidence",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "brief-b",
+                        "goal": "Verify brief-b.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    },
+                    {
+                        "taskBriefId": "brief-a",
+                        "goal": "Verify brief-a.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    },
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": [prior]}},
+        tool_call_id="call-runtime-bounded-research-repair",
+    )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["ok"] is True
+    assert episode["inputs"]["researchRepair"]["priorAttempts"] == 1
+    assert episode["inputs"]["researchRepair"]["finalRepairAttempt"] is True
+
+
+def test_runtime_broker_blocks_third_research_attempt_for_same_briefs():
+    task_ids = ["brief-a", "brief-b"]
+    prior = [
+        _terminal_research_attempt(episode_id="episode-research-initial", state="degraded", task_ids=task_ids),
+        _terminal_research_attempt(episode_id="episode-research-repair", state="failed", task_ids=list(reversed(task_ids))),
+    ]
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "retry the same research branch again",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": task_id,
+                        "goal": f"Verify {task_id}.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    }
+                    for task_id in task_ids
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": prior}},
+        tool_call_id="call-runtime-research-retry-exhausted",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "research_retry_exhausted"
+    assert payload["routeBriefQuality"]["priorAttempts"] == 2
+    assert command.update["runtime_dispatch_status"]["dispatched"] is False
+    assert len(command.update["current_route_context"]["capabilityEpisodes"]) == 2
+
+
+def test_runtime_broker_counts_missing_brief_subset_as_same_research_branch():
+    prior = [
+        _terminal_research_attempt(
+            episode_id="episode-research-full",
+            state="degraded",
+            task_ids=["brief-a", "brief-b", "brief-c"],
+        ),
+        _terminal_research_attempt(
+            episode_id="episode-research-gap-repair",
+            state="degraded",
+            task_ids=["brief-a", "brief-b"],
+        ),
+    ]
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "retry the same missing evidence subset again",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": task_id,
+                        "goal": f"Verify {task_id}.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    }
+                    for task_id in ["brief-a", "brief-b"]
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": prior}},
+        tool_call_id="call-runtime-research-subset-retry-exhausted",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "research_retry_exhausted"
+    assert payload["routeBriefQuality"]["priorAttempts"] == 2
+
+
+def test_runtime_broker_does_not_charge_runner_unavailable_against_research_budget():
+    unavailable = _terminal_research_attempt(
+        episode_id="episode-research-runner-unavailable",
+        state="failed",
+        task_ids=["brief-a", "brief-b"],
+    )
+    unavailable.update({"errorCode": "episode_runner_unavailable", "attemptCount": 0})
+    degraded = _terminal_research_attempt(
+        episode_id="episode-research-first-executed-attempt",
+        state="degraded",
+        task_ids=["brief-a", "brief-b"],
+    )
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "run the one bounded evidence repair",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": task_id,
+                        "goal": f"Verify {task_id}.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": [],
+                    }
+                    for task_id in ["brief-a", "brief-b"]
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": [unavailable, degraded]}},
+        tool_call_id="call-runtime-research-runner-unavailable-does-not-consume-budget",
+    )
+    payload = _tool_message_payload(command)
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+
+    assert payload["ok"] is True
+    assert episode["inputs"]["researchRepair"]["priorAttempts"] == 1
+    assert episode["inputs"]["researchRepair"]["finalRepairAttempt"] is True
+
+
+def test_runtime_broker_retry_budget_does_not_block_disjoint_engineering_scope():
+    prior_attempts = [
+        _terminal_engineering_attempt(
+            episode_id="episode-other-initial",
+            state="degraded",
+            task_id="other-initial",
+            write_set=["old/app.py"],
+        ),
+        _terminal_engineering_attempt(
+            episode_id="episode-other-repair",
+            state="failed",
+            task_id="other-repair",
+            write_set=["old/app.py"],
+        ),
+    ]
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "deliver a separate bounded scope",
+            "inputs": {
+                "taskBriefs": [
+                    _bounded_engineering_route_task(task_id="new-scope", write_set=["new/report.md"])
+                ]
+            },
+        },
+        state={"current_route_context": {"capabilityEpisodes": prior_attempts}},
+        tool_call_id="call-runtime-disjoint-engineering-scope",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["episode"]["kind"] == "engineering"
+
+
+def test_runtime_broker_accepts_declared_file_referenced_by_workspace_relative_suffix():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "write_contract_suffix_test",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "baseline-delivery",
+                        "goal": "Write the bounded baseline report and its human-readable guide.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "writeRequired": True,
+                        "writeSet": [
+                            "data-compat-baseline/README.md",
+                            "data-compat-baseline/reports/evidence.json",
+                        ],
+                        "expectedArtifacts": [
+                            "data-compat-baseline/README.md",
+                            "data-compat-baseline/reports/evidence.json",
+                        ],
+                        "expectedOutputs": ["guide", "machine-readable evidence"],
+                        "acceptanceContract": [
+                            "Write `README.md` with the operator guide.",
+                            "Write `reports/evidence.json` with the measured result.",
+                        ],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-acceptance-suffix",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["episode"]["kind"] == "engineering"
+
+
+def test_runtime_broker_ignores_scheme_less_source_urls_in_acceptance_text():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "write_contract_source_anchor_test",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "source-aware-guide",
+                        "goal": "Write a guide grounded in the supplied source anchors.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "writeRequired": True,
+                        "writeSet": ["data-compat-baseline/README.md"],
+                        "expectedArtifacts": ["data-compat-baseline/README.md"],
+                        "expectedOutputs": ["source-aware guide"],
+                        "acceptanceContract": [
+                            "Write `README.md` and cite sqlite.org/releaselog plus sqlite.org/jsonb.html."
+                        ],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-acceptance-source-anchors",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["episode"]["kind"] == "engineering"
+
+
+def test_runtime_broker_does_not_treat_negative_acceptance_constraint_as_write_grant():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "negative_constraint_test",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "bounded-write",
+                        "goal": "Create one bounded result.",
+                        "context": {"source": "supervisor_current_turn"},
+                        "writeRequired": True,
+                        "writeSet": ["result.md"],
+                        "expectedArtifacts": ["result.md"],
+                        "expectedOutputs": ["result document"],
+                        "acceptanceContract": [
+                            "Write `result.md` and do not write `package.json` or any input file."
+                        ],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-negative-acceptance",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
 
 
 def test_runtime_broker_route_does_not_inherit_legacy_planner_tasks():
@@ -951,15 +1563,15 @@ def test_runtime_broker_route_rejects_untyped_json_need_string():
 @pytest.mark.parametrize(
     "need, expected_field",
     [
-        ({"kind": "engineering"}, "reason"),
-        ({"kind": "unknown", "reason": "route work"}, "kind"),
+        ({"kind": "engineering"}, "routeReason"),
+        ({"kind": "unknown", "reason": "route work"}, "routeKind"),
         (
             {
                 "kind": "engineering",
                 "reason": "route work",
                 "inputs": {"taskBriefs": [{"goal": "Write result.md"}]},
             },
-            "inputs.taskBriefs.0.taskBriefId",
+            "taskBriefs.0.taskBriefId",
         ),
     ],
 )

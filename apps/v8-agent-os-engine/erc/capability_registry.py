@@ -109,6 +109,9 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "visibility": "secondary",
         "promptHints": [
             "用法入口：项目开发、修复、依赖安装、脚手架、验证闭环或已批准 Spec 执行，通过 runtime_broker(mode='route', need={'kind':'engineering', ...}) 创建 Engineering episode。",
+            "职责边界：Engineering episode 持有多输出写入、Proof Ledger、恢复和最终 typed handoff；delegation_broker 只提供独立角色或并行 worker。两者可以组合，但 delegation.recursive 或一个带 Engineering Capsule 的实现子 Agent 不能替代应由 Engineering episode 持有的交付链。route 合同报错时只修提示的字段/路径并重试一次，不要改走 delegation 绕过合同。",
+            "brief 粒度：一个 Engineering taskBrief 是一个相干、可独立执行并可独立验收的工作单元，不是整项工程的文件清单。实现、机器可读结果/文档、最终验证若能分别交付或失败，应拆成多个 taskBrief，用 dependencies 表达先后；紧密耦合且必须一起修改的少量文件可以留在同一 brief。不要把大量互不相干的 writeSet、生成结果和验证工作塞给一个 worker，也不要把同一个过宽 brief 原样改名后当作 repair。",
+            "writeSet 只写原始绑定工作区的相对路径，handoff 里的托管 worktree 绝对路径只是血缘，不能复制为新授权。动态文件名必须改为确定名称，或全部收进一个已声明输出目录；报告、缓存和版本变体不能溢出。",
             "Engineering Runtime 的价值是把需求/Spec 转成受控 writeSet、ContextPack、worker briefs、proof/validation 和 typed handoff；不要把它理解为一个普通聊天助手。",
             "工程任务分发给 subagent/孙 agent 时，必须让它们读到 workspace、allowed workset、Spec/task refs、acceptance、forbidden scopes 与 handoffRequired；缺失时应返回 blocker。",
             "科普、课程、产品介绍、讲解类视频默认优先走可编辑代码视频链路，例如 Remotion、Hyperframes、Manim、HTML video 或 ffmpeg。",
@@ -118,13 +121,13 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
     },
     "research": {
         "displayName": "ResearchRuntime",
-        "summary": "负责多源联网调研、来源权威度排序、冲突记录、引用矩阵和 run-scoped evidence bundle；为 Engineering、Creative Media、Writing 等 runtime 提供压缩证据，不执行写入或系统副作用。",
+        "summary": "第 3 层受管深度调研：接管多个独立事实域，提供进度、恢复和逐 brief 的 terminal evidence handoff；不写工作区。",
         "visibility": "secondary",
         "promptHints": [
-            "用法入口：多源、新鲜、高风险、冲突判断、引用矩阵或经验包复用，通过 runtime_broker(mode='route', need={'kind':'research', ...}) 或受控 research_broker；输入应是 question、sourcePolicy、scope、freshness/detailLevel。",
-            "执行流程：Research 先查 search_experience，再走 Source Router -> Research Loop -> Architect synthesis；snippet、footer、captcha、过程日志不能当最终答案。",
-            "回流要求：ResearchAnswerPack 必须给 answer/sources/score/claimTable/limitations/reuseDecision/detailRef；低质量或冲突输出 refresh_required/degraded evidence；sourceMatrix、provider attempts 和网页噪音只进 Runtime Surface。",
-            "技术设计或 Spec discovery 阶段默认 official_docs_first：优先 Context7/官方文档，再读 GitHub/源码和普通网页；Context7 不可用时必须记录 source gap；Research 不写文件、不执行系统副作用。",
+            "首次 route 先列全当前已知事实域：researchBriefIds 与 researchBriefGoals 按位置一一对应；Engine 会合并为只读内部 brief，宁可省略可选上下文也不能漏掉已知域。",
+            "进入受管 Research 的 brief 由本层持续负责。只对明确 missing brief 做一次有界补查；仍 degraded 就保留 evidenceGaps，禁止降级到 web_broker、research_broker 或本地探测来覆盖结论。",
+            "terminal ResearchAnswerPack 已直接携带每个 brief 的 answer、来源、limitations 和 evidence status；snippet、footer、captcha、过程日志不能当最终答案，过期或冲突经验标记 refresh_required/degraded evidence。research:// 只是血缘，仅按 handoff 明示的 get_evidence 参数展开。Research 不写文件、不执行系统副作用。",
+            "事实要进入多文件实现、执行证明或可恢复交付时，先消费 Research handoff，再建立 Engineering episode；可逆的本地实现可携带非关键 evidenceGaps 继续并用本地 proof 收口。",
         ],
     },
 }
@@ -547,11 +550,9 @@ class CapabilityRegistry:
                 return True
             return True
 
-        recommended = {
-            item.kind: item
-            for item in self.recommend(user_query, limit=6)
-            if _config_enabled(item.kind) and runtime_kind_available(item.kind)
-        }
+        # The registry describes available runtime responsibilities.  It does
+        # not classify the current natural-language request or preselect a
+        # route for the intelligent Supervisor.
         for kind in prioritized_kinds or []:
             descriptor = self.get(kind)
             if descriptor is None:
@@ -574,15 +575,18 @@ class CapabilityRegistry:
 
         lines = [
             "<capability_registry>",
-            "Runtime 能力卡片。常驻工具只覆盖通用面；需要 runtime 级工具时，Supervisor 先用 runtime_broker 按组授予。",
+            "Runtime 责任卡，不是任务分类结果。常驻工具用于边界清楚的当前回合工作；需要完整生命周期、专门上下文、恢复、证明或跨阶段 handoff 时，用 runtime_broker(mode='route') 创建对应 episode。mode='grant' 只授予明确的当前 run 工具组，不能替代 route。",
+            "<research_path_ladder>",
+            "这是唯一的调研选路规则；按工作单元和所需产物选择，不把三层当成同级搜索工具。",
+            "L1 web_broker｜一个已知页面或全新孤立窄事实｜只返回网页材料，不负责多源结论、进度、恢复或跨阶段 handoff｜单次调用。",
+            "L2 research_broker｜一个可独立验真的多源问题｜返回当前回合 evidence pack，但不持有多个事实域的生命周期、恢复或后续交付。",
+            "L3 Research episode｜多个独立事实域、需要进度/恢复，或证据要跨阶段交付｜首次 route 把全部已知域放进等长的 researchBriefIds/researchBriefGoals 数组｜返回逐 brief terminal handoff。",
+            "L3 首次调用纪律：先列出完整 brief ID 数组，再按相同顺序写每个一句 goal；数组完整性高于 reason 与可选 context 的详尽程度。口头说覆盖 N 个域但任一数组少于 N 项，属于未执行完整路线。",
+            "行动语义：用户已要求调研/交付且作用域足够时，L1/L2/L3 是 Supervisor 自主选择的执行路径，不是待用户批准的方案。多个事实域还要形成持久交付时，先真实 route 一个 L3，消费 handoff 后再进入 Engineering；不要停在路线说明或实现偏好提问。",
+            "所有权：brief 进入 L3 后只在 L3 内对明确缺口补查一次；不得降级到 L1/L2。仍 degraded 就保留缺口；L1 只处理后来出现且无关的新窄事实。",
+            "续接：L3 不写文件。先消费 handoff；若还需多文件实现、执行证明或可恢复交付，再转 Engineering episode。research:// 仅是血缘，按 handoff 明示的 get_evidence 参数展开。",
+            "</research_path_ladder>",
         ]
-        if user_query:
-            suggestions = [recommended[kind] for kind in recommended]
-            if suggestions:
-                lines.append("推荐路由:")
-                for item in suggestions[:4]:
-                    labels = "、".join(item.matched_keywords[:3]) or "通用契合"
-                    lines.append(f"- {item.kind}: {item.display_name} | 命中: {labels}")
         for descriptor in ordered:
             policy = self.get_policy(descriptor.kind)
             if not policy.enabled:

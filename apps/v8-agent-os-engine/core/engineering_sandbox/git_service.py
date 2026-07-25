@@ -911,6 +911,168 @@ class ManagedGitService:
             status="integration_candidate",
         )
 
+    def compose_change_set_chain(
+        self,
+        repository: ManagedRepository,
+        *,
+        run_id: str,
+        chain_id: str,
+        change_sets: Sequence[GitChangeSetRef],
+    ) -> GitChangeSetRef:
+        """Compose ordered dependency deltas into one immutable baseline patch.
+
+        Dependency tasks do not necessarily share one base commit: a later task
+        may have executed after an earlier dependency was materialized, while
+        two fan-out tasks may still share the earlier base.  Applying each
+        binary delta to an isolated Git index preserves that ordering without
+        mutating a user checkout or exposing sibling worktrees to an Agent.
+        """
+
+        ordered: list[GitChangeSetRef] = []
+        seen_commits: set[tuple[str, str]] = set()
+        for item in change_sets:
+            if item.repository_id != repository.repository_id:
+                raise ManagedGitError(
+                    "dependency_chain_repository_mismatch",
+                    "Dependency change sets must belong to the target repository.",
+                )
+            key = (item.repository_id, item.commit_id)
+            if key in seen_commits:
+                continue
+            seen_commits.add(key)
+            if item.status == "no_changes" or item.commit_id == item.base_commit:
+                continue
+            ordered.append(item)
+        if not ordered:
+            raise ManagedGitError(
+                "dependency_change_sets_required",
+                "No effective dependency change sets were supplied.",
+            )
+
+        repository_root = Path(repository.topology.repository_root)
+        base_commit = ordered[0].base_commit
+        safe_chain_id = _safe_segment(chain_id, fallback="dependency")
+        descriptor = "\n".join(
+            f"{item.repository_id}:{item.base_commit}:{item.commit_id}"
+            for item in ordered
+        )
+        chain_digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
+        file_descriptor, raw_index_path = tempfile.mkstemp(
+            prefix=f"{safe_chain_id}-",
+            suffix=".index",
+            dir=self.index_root,
+        )
+        os.close(file_descriptor)
+        index_path = Path(raw_index_path)
+        index_path.unlink(missing_ok=True)
+        environment = {"GIT_INDEX_FILE": str(index_path)}
+        current_candidate: GitChangeSetRef | None = None
+        try:
+            self.run(["read-tree", base_commit], cwd=repository_root, env=environment)
+            for current_candidate in ordered:
+                patch_result = self.run(
+                    [
+                        "diff",
+                        "--binary",
+                        current_candidate.base_commit,
+                        current_candidate.commit_id,
+                        "--",
+                    ],
+                    cwd=repository_root,
+                    text=False,
+                )
+                patch_bytes = bytes(patch_result.stdout or b"")
+                if not patch_bytes:
+                    continue
+                self.run(
+                    ["apply", "--cached", "--3way", "--whitespace=nowarn", "-"],
+                    cwd=repository_root,
+                    env=environment,
+                    text=False,
+                    input_text=patch_bytes,
+                )
+            tree = str(
+                self.run(["write-tree"], cwd=repository_root, env=environment).stdout or ""
+            ).strip()
+            base_date = str(
+                self.run(["show", "-s", "--format=%aI", base_commit], cwd=repository_root).stdout
+                or ""
+            ).strip() or "2000-01-01T00:00:00+00:00"
+            commit_id = str(
+                self.run(
+                    ["commit-tree", tree, "-p", base_commit],
+                    cwd=repository_root,
+                    env={
+                        "GIT_AUTHOR_NAME": "V8 Agent OS",
+                        "GIT_AUTHOR_EMAIL": "v8os@local.invalid",
+                        "GIT_COMMITTER_NAME": "V8 Agent OS",
+                        "GIT_COMMITTER_EMAIL": "v8os@local.invalid",
+                        "GIT_AUTHOR_DATE": base_date,
+                        "GIT_COMMITTER_DATE": base_date,
+                    },
+                    input_text=(
+                        "V8OS dependency baseline\n\n"
+                        f"Dependency-Chain: {chain_digest}\n"
+                    ),
+                ).stdout
+                or ""
+            ).strip()
+        except Exception as exc:
+            raise ManagedGitError(
+                "dependency_chain_conflict",
+                "Ordered dependency change sets could not be composed into one baseline.",
+                details={
+                    "failedCommit": current_candidate.commit_id if current_candidate else None,
+                    "chainDigest": chain_digest,
+                    "error": str(exc),
+                },
+            ) from exc
+        finally:
+            index_path.unlink(missing_ok=True)
+
+        if not commit_id:
+            raise ManagedGitError(
+                "dependency_chain_commit_missing",
+                "Git did not return a dependency baseline commit.",
+            )
+        dependency_ref = (
+            f"refs/v8os/dependencies/{_safe_segment(run_id, fallback='run')}/{safe_chain_id}"
+        )
+        self.run(["update-ref", dependency_ref, commit_id], cwd=repository_root)
+        changed_paths = tuple(
+            str(item or "").replace("\\", "/").strip()
+            for item in str(
+                self.run(
+                    ["diff", "--name-only", base_commit, commit_id, "--"],
+                    cwd=repository_root,
+                ).stdout
+                or ""
+            ).splitlines()
+            if str(item or "").strip()
+        )
+        numstat = str(
+            self.run(["diff", "--numstat", base_commit, commit_id, "--"], cwd=repository_root).stdout
+            or ""
+        )
+        insertions = 0
+        deletions = 0
+        for line in numstat.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) >= 2:
+                insertions += int(parts[0]) if parts[0].isdigit() else 0
+                deletions += int(parts[1]) if parts[1].isdigit() else 0
+        return GitChangeSetRef(
+            repository_id=repository.repository_id,
+            worktree_id=chain_id,
+            branch_name=dependency_ref,
+            base_commit=base_commit,
+            commit_id=commit_id,
+            changed_paths=changed_paths,
+            insertions=insertions,
+            deletions=deletions,
+            status="candidate",
+        )
+
     def apply_integration_to_workspace(
         self,
         repository: ManagedRepository,

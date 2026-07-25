@@ -16,6 +16,10 @@ from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_broker import task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
+from core.runtime_continuation import (
+    RuntimeContinuationContractError,
+    normalize_runtime_continuation_request,
+)
 from core.engineering_capsule import (
     derive_grandchild_engineering_task,
     effective_engineering_capsule,
@@ -235,20 +239,56 @@ def _finalize_managed_branch_workspace(branch: dict[str, Any], summary: dict[str
         )
     except Exception as exc:
         error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+        error_details = dict(getattr(exc, "details", None) or {})
+        violations = [
+            str(value).strip()
+            for value in list(error_details.get("violations") or [])
+            if str(value).strip()
+        ][:40]
+        declared_write_set = [
+            str(value).strip()
+            for value in list(error_details.get("writeSet") or [])
+            if str(value).strip()
+        ][:40]
+        worker_reported_summary = str(summary.get("summary") or summary.get("compactTranscript") or "").strip()[:1200]
+        worker_reported_result = str(summary.get("resultText") or "").strip()[:1800]
+        candidate_artifact_refs: list[dict[str, Any]] = []
+        for ref in list(summary.get("artifactRefs") or summary.get("artifacts") or [])[:24]:
+            candidate = dict(ref) if isinstance(ref, dict) else {"ref": str(ref)}
+            candidate.update({"accepted": False, "state": "quarantined_unmerged"})
+            candidate_artifact_refs.append(candidate)
+        violation_summary = f" Undeclared paths: {', '.join(violations)}." if violations else ""
+        authoritative_summary = (
+            f"Managed worktree rejected: {error_code}.{violation_summary} "
+            "The candidate is quarantined and is not delivery evidence."
+        ).strip()
+        repair_action = (
+            "Repair the Engineering task contract/writeSet and route one bounded retry. "
+            "Do not inspect, execute, copy, or manually reconstruct files from the preserved candidate worktree."
+        )
         return {
             **summary,
             "status": "error",
             "error": f"managed_worktree_finalize_failed:{error_code}",
-            "localSelfCheck": (
-                "The Agent returned, but its managed worktree failed write-set, size, or Git finalization checks. "
-                "Supervisor must repair or retry; do not accept the file result."
-            ),
+            "errorMessage": str(exc)[:600],
+            "summary": authoritative_summary,
+            "resultText": authoritative_summary,
+            "localSelfCheck": authoritative_summary,
+            "workerReportedSummary": worker_reported_summary,
+            "workerReportedResultText": worker_reported_result,
+            "artifactRefs": candidate_artifact_refs,
+            "artifactRefsAccepted": False,
+            "repairAction": repair_action,
             "sandboxEvidence": {
                 "worktreeId": worktree_id,
                 "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
                 "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
                 "state": "failed",
+                "candidateState": "quarantined_unmerged",
                 "errorCode": error_code,
+                **({"violations": violations} if violations else {}),
+                **({"writeSet": declared_write_set} if declared_write_set else {}),
+                "repairAction": repair_action,
             },
         }
     change_set_payload = change_set.as_dict()
@@ -459,6 +499,66 @@ def _subagent_result_text(messages: list[Any]) -> str:
         if candidate:
             return candidate
     return ""
+
+
+def _subagent_runtime_input_request(
+    messages: list[Any],
+    *,
+    branch: dict[str, Any],
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Read a typed pause only from the matching broker ToolMessage.
+
+    Prose, final-answer JSON and historical messages are deliberately ignored.
+    The tool call id and branch lineage make the pause part of this execution,
+    rather than an instruction-shaped string emitted by the model.
+    """
+
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    for message in messages:
+        for call in _tool_call_dicts_from_message(message):
+            call_id = str(call.get("id") or "").strip()
+            if call_id:
+                calls_by_id[call_id] = call
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+        call = calls_by_id.get(call_id, {})
+        tool_name = str(getattr(message, "name", "") or call.get("name") or "").strip()
+        if tool_name != "delegation_broker" or not call_id:
+            continue
+        try:
+            payload = json.loads(str(getattr(message, "content", "") or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            continue
+        if str(payload.get("mode") or "").strip() != "request_input":
+            continue
+        request = normalize_runtime_continuation_request(payload.get("continuationRequest"))
+        source = dict(request.get("source") or {})
+        expected = {
+            "runtimeEpisodeId": str(task_context.get("parentRuntimeEpisodeId") or "").strip(),
+            "taskBriefId": str(branch.get("taskBriefId") or "").strip(),
+            "delegationId": str(branch.get("delegationId") or "").strip(),
+            "agentId": str(agent_id or "").strip(),
+            "toolCallId": call_id,
+        }
+        mismatched = [
+            key
+            for key, value in expected.items()
+            if value and str(source.get(key) or "").strip() != value
+        ]
+        if mismatched:
+            raise RuntimeContinuationContractError(
+                "runtime_continuation_lineage_mismatch",
+                f"Continuation request lineage mismatch: {', '.join(mismatched)}",
+            )
+        return request
+    return None
 
 
 def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | None:
@@ -745,6 +845,7 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
         records.append(
             {
                 "toolCallId": call_id,
+                "callMatched": bool(call_id and call_id in calls_by_id),
                 "tool": tool_name,
                 "args": args,
                 "path": path,
@@ -752,10 +853,149 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
                 "returnCode": return_code,
                 "stdout": stdout,
                 "stderr": stderr,
+                "payload": payload,
                 "succeeded": _tool_message_evidence_succeeded(message, tool_name=tool_name),
             }
         )
     return records
+
+
+_CREATIVE_FACADE_BY_TOOL = {
+    "creative_media_capabilities": "capabilities",
+    "creative_media_plan": "plan",
+    "creative_media_assets": "assets",
+    "creative_media_jobs": "jobs",
+    "creative_media_edit": "edit",
+    "creative_media_quality": "quality",
+}
+_CREATIVE_ARTIFACT_ACTIONS = {
+    ("jobs", "artifacts"),
+    ("edit", "get_render"),
+    ("assets", "register_asset"),
+    ("assets", "register_keyframe"),
+    ("assets", "psd_compose_template"),
+    ("quality", "psd_export_preview"),
+}
+_CREATIVE_PROOF_ACTIONS = {
+    ("quality", "get_job"),
+    ("quality", "qa_check"),
+    ("quality", "alpha_inspect"),
+    ("quality", "image_compare"),
+    ("quality", "psd_export_preview"),
+}
+_CREATIVE_INCOMPLETE_STATUSES = {
+    "created",
+    "pending",
+    "queued",
+    "running",
+    "processing",
+    "submitted",
+    "waiting",
+}
+
+
+def _is_creative_runtime_execution_branch(branch: dict[str, Any]) -> bool:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    runtime_access = {
+        str(item or "").strip().lower()
+        for item in list(task_brief.get("runtimeAccess") or [])
+        if str(item or "").strip()
+    }
+    capabilities = {
+        str(item or "").strip().lower()
+        for item in list(task_brief.get("requiredCapabilities") or [])
+        if str(item or "").strip()
+    }
+    return bool(
+        "creative_media.core" in runtime_access
+        and str(context.get("parentRuntimeEpisodeId") or "").strip()
+        and {"artifact_handoff", "quality_assurance"}.issubset(capabilities)
+    )
+
+
+def _creative_tool_evidence(
+    messages: list[Any],
+    *,
+    branch: dict[str, Any],
+) -> dict[str, Any]:
+    """Project only successful, call-matched Creative facade ToolMessages.
+
+    The compact facade payload remains Agent-facing. This projection retains
+    the tool-call lineage needed by the runtime handoff without accepting IDs
+    guessed from prose or recursively scraping unrelated runtime metadata.
+    """
+
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    records: list[dict[str, Any]] = []
+    artifact_refs: list[str] = []
+    proof_refs: list[str] = []
+    for record in _tool_execution_records(messages):
+        tool_name = str(record.get("tool") or "").strip()
+        expected_facade = _CREATIVE_FACADE_BY_TOOL.get(tool_name)
+        if not expected_facade or not record.get("callMatched") or not record.get("succeeded"):
+            continue
+        tool_call_id = str(record.get("toolCallId") or "").strip()
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        args = record.get("args") if isinstance(record.get("args"), dict) else {}
+        facade = str(payload.get("facade") or "").strip()
+        action = str(payload.get("action") or "").strip()
+        requested_action = str(args.get("action") or "").strip()
+        status = str(payload.get("status") or "").strip().lower()
+        if (
+            not tool_call_id
+            or payload.get("ok") is not True
+            or facade != expected_facade
+            or not action
+            or (requested_action and requested_action != action)
+        ):
+            continue
+        refs = list(
+            dict.fromkeys(
+                str(ref).strip()
+                for ref in list(payload.get("refs") or [])
+                if isinstance(ref, (str, int, float)) and str(ref).strip()
+            )
+        )[:24]
+        detail_ref = str(payload.get("detailRef") or "").strip()
+        lineage_record = {
+            "toolCallId": tool_call_id,
+            "tool": tool_name,
+            "facade": facade,
+            "action": action,
+            "status": status or "succeeded",
+            "refs": refs,
+            **({"detailRef": detail_ref} if detail_ref else {}),
+            "summary": str(payload.get("summary") or "").strip()[:600],
+        }
+        records.append(lineage_record)
+        if status in _CREATIVE_INCOMPLETE_STATUSES:
+            continue
+        if (facade, action) in _CREATIVE_ARTIFACT_ACTIONS and refs:
+            artifact_refs.extend(refs)
+        if (facade, action) in _CREATIVE_PROOF_ACTIONS:
+            proof_refs.extend(refs)
+            if detail_ref:
+                proof_refs.append(detail_ref)
+
+    artifact_refs = list(dict.fromkeys(artifact_refs))[:24]
+    proof_refs = list(dict.fromkeys(proof_refs))[:24]
+    missing = [
+        label
+        for label, values in (("artifactRefs", artifact_refs), ("proofRefs", proof_refs))
+        if not values
+    ]
+    return {
+        "schemaVersion": "creative-execution-evidence/v1",
+        "sourceRuntimeEpisodeId": str(context.get("parentRuntimeEpisodeId") or "").strip(),
+        "taskBriefId": str(branch.get("taskBriefId") or task_brief.get("taskBriefId") or "").strip(),
+        "delegationId": str(branch.get("delegationId") or "").strip(),
+        "records": records[-32:],
+        "artifactRefs": artifact_refs,
+        "proofRefs": proof_refs,
+        "missingEvidence": missing,
+    }
 
 
 def _verification_contract_sources(branch: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -1969,6 +2209,7 @@ async def _run_parallel_agent_branch(
     repeat_tool_correction_used = False
     required_child_correction_count = 0
     verification_correction_count = 0
+    creative_evidence_correction_count = 0
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
@@ -2298,6 +2539,59 @@ async def _run_parallel_agent_branch(
         goto = getattr(result, "goto", None)
         if isinstance(goto, str):
             if goto == "supervisor":
+                control_messages = list(local_state.get("messages") or [])[initial_message_count:]
+                continuation_request = _subagent_runtime_input_request(
+                    control_messages,
+                    branch=branch,
+                    agent_id=agent_id,
+                )
+                if continuation_request:
+                    break
+                if _is_creative_runtime_execution_branch(branch):
+                    creative_evidence = _creative_tool_evidence(control_messages, branch=branch)
+                    missing_creative_evidence = list(creative_evidence.get("missingEvidence") or [])
+                    if missing_creative_evidence and creative_evidence_correction_count < 2:
+                        creative_evidence_correction_count += 1
+                        final_retry = creative_evidence_correction_count == 2
+                        missing_text = ", ".join(missing_creative_evidence)
+                        local_state = _merge_state_update(
+                            local_state,
+                            {
+                                "messages": [
+                                    HumanMessage(
+                                        content=(
+                                            "[V8OS Creative delivery evidence correction]\n"
+                                            "This Creative runtime branch has not delivered its governed evidence contract. "
+                                            f"Missing: {missing_text}. "
+                                            + (
+                                                "This is the second and final correction. Call only the real missing Creative facade actions now; "
+                                                "if the provider or QA cannot complete, return a typed blocker or request_input instead of prose success. "
+                                                if final_retry
+                                                else "Continue in this same branch: obtain deliverable refs from the real Creative facade ToolMessages, then run the relevant quality action. "
+                                            )
+                                            + "A plan, provider job id, final-answer JSON, or prose claim is not artifact/proof evidence. "
+                                            "Do not start a replacement runtime and do not repeat completed planning calls."
+                                        ),
+                                        additional_kwargs={
+                                            "v8_governance_type": "creative_delivery_evidence_correction",
+                                            "v8_correction_attempt": creative_evidence_correction_count,
+                                            "v8_missing_evidence": missing_creative_evidence,
+                                        },
+                                    )
+                                ]
+                            },
+                        )
+                        _publish_parallel_progress(
+                            progress_callback,
+                            stage="discipline_corrected",
+                            status="running",
+                            summary=(
+                                f"{branch.get('agentName') or agent_id} 正在补齐多媒体交付证据"
+                                f"（{creative_evidence_correction_count}/2）。"
+                            ),
+                        )
+                        current_node = agent_id
+                        continue
                 if required_child_delegation and required_child_correction_count < 2:
                     required_child_correction_count += 1
                     required_child_contract = _render_required_child_contract(branch)
@@ -2524,6 +2818,73 @@ async def _run_parallel_agent_branch(
 
     delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
     delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+    result_text = _subagent_result_text(delta_messages)
+    continuation_request = _subagent_runtime_input_request(
+        delta_messages,
+        branch=branch,
+        agent_id=agent_id,
+    )
+    if continuation_request:
+        return delta_messages, delta_todos, {
+            "invocationId": branch.get("invocationId"),
+            "taskBriefId": branch.get("taskBriefId"),
+            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+            "taskGoal": branch.get("reason"),
+            "agentId": agent_id,
+            "agentName": branch.get("agentName") or agent_id,
+            "delegationId": branch.get("delegationId"),
+            "lane": branch.get("lane") or "subagent",
+            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+            "targetLabel": branch.get("agentName") or agent_id,
+            "branchIndex": branch.get("branchIndex"),
+            "status": "waiting_input",
+            "error": "runtime_input_required",
+            "resultText": result_text,
+            "requiredInputs": continuation_request["requiredInputs"],
+            "continuationRequest": continuation_request,
+            "completedAt": None,
+            "messageCount": len(delta_messages),
+            "todoDeltaCount": len(delta_todos),
+            "toolMode": agent_data.get("tool_mode"),
+            "toolsUsed": _extract_tool_names(delta_messages),
+            "compactTranscript": _compact_transcript(delta_messages),
+            "localSelfCheck": "The worker paused only for explicit missing input; execution evidence remains attached to the same runtime episode.",
+            "acceptanceHint": "Supply the requested values and resume the same parent runtime episode; do not create a replacement route.",
+        }, []
+    creative_evidence: dict[str, Any] | None = None
+    if _is_creative_runtime_execution_branch(branch):
+        creative_evidence = _creative_tool_evidence(delta_messages, branch=branch)
+        missing_creative_evidence = list(creative_evidence.get("missingEvidence") or [])
+        if missing_creative_evidence:
+            return delta_messages, delta_todos, {
+                "invocationId": branch.get("invocationId"),
+                "taskBriefId": branch.get("taskBriefId"),
+                "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                "taskGoal": branch.get("reason"),
+                "agentId": agent_id,
+                "agentName": branch.get("agentName") or agent_id,
+                "delegationId": branch.get("delegationId"),
+                "lane": branch.get("lane") or "subagent",
+                "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+                "targetLabel": branch.get("agentName") or agent_id,
+                "branchIndex": branch.get("branchIndex"),
+                "status": "failed",
+                "error": "creative_media_delivery_evidence_missing",
+                "completedAt": _now_iso(),
+                "messageCount": len(delta_messages),
+                "todoDeltaCount": len(delta_todos),
+                "toolMode": agent_data.get("tool_mode"),
+                "toolsUsed": _extract_tool_names(delta_messages),
+                "creativeExecutionEvidence": creative_evidence,
+                "artifactRefs": list(creative_evidence.get("artifactRefs") or []),
+                "proofRefs": list(creative_evidence.get("proofRefs") or []),
+                "compactTranscript": _compact_transcript(delta_messages),
+                "localSelfCheck": (
+                    "The Creative worker exhausted two bounded in-branch corrections without both real artifact "
+                    "and quality ToolMessage evidence."
+                ),
+                "acceptanceHint": "Repair or resume this same Creative runtime branch; do not accept planning prose as delivery.",
+            }, []
     artifact_failure = _validate_required_skill_artifacts(
         branch=branch,
         state=local_state,
@@ -2580,7 +2941,6 @@ async def _run_parallel_agent_branch(
             branch=branch,
             delta_messages=delta_messages,
         )
-    result_text = _subagent_result_text(delta_messages)
     reported_failure = _subagent_reported_terminal_failure(result_text)
     final_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     initial_by_path = {item[0]: item for item in initial_artifact_snapshot}
@@ -2660,6 +3020,15 @@ async def _run_parallel_agent_branch(
         ),
         "supervisorAcceptance": {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]},
         "resultSchemaMatched": True,
+        **(
+            {
+                "creativeExecutionEvidence": creative_evidence,
+                "artifactRefs": list(creative_evidence.get("artifactRefs") or []),
+                "proofRefs": list(creative_evidence.get("proofRefs") or []),
+            }
+            if creative_evidence
+            else {}
+        ),
     }
     _publish_parallel_progress(
         progress_callback,

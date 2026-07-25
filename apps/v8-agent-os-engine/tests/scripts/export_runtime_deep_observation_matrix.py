@@ -496,12 +496,6 @@ def _specialist_registry_stats(agents: list[dict[str, Any]], specialist_context:
 
 def _extract_revealed_families(specialist_context: str) -> dict[str, Any]:
     text = str(specialist_context or "")
-    auto_line = next((line.strip() for line in text.splitlines() if line.strip().startswith("autoRevealFamilies=")), "")
-    auto_families: list[str] = []
-    if auto_line:
-        raw_value = auto_line.split("=", 1)[1].strip()
-        if raw_value and raw_value != "none":
-            auto_families = [item for item in raw_value.split("+") if item]
     revealed: list[dict[str, Any]] = []
     current_family = ""
     current_source = ""
@@ -526,7 +520,6 @@ def _extract_revealed_families(specialist_context: str) -> dict[str, Any]:
             if member_id:
                 revealed[-1]["members"].append(member_id)
     return {
-        "autoRevealFamilies": auto_families,
         "revealedFamilies": revealed,
         "revealedMemberCount": sum(len(item.get("members") or []) for item in revealed),
         "hasRevealedMembersBlock": "[revealedFamilyMembers]" in text,
@@ -1058,9 +1051,9 @@ def _build_markdown(results: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Task shape / family reveal / memory markers",
+            "## Task context / explicit family reveal / memory markers",
             "",
-            "| 场景 | Primary shape | Auto reveal | Revealed members | Supervisor memory map/log | Subagent memory map/log |",
+            "| 场景 | Primary shape | Explicit reveal | Revealed members | Supervisor memory map/log | Subagent memory map/log |",
             "| --- | --- | --- | ---: | --- | --- |",
         ]
     )
@@ -1073,7 +1066,11 @@ def _build_markdown(results: dict[str, Any]) -> str:
             "| {label} | `{shape}` | `{families}` | {members} | `{sup}` | `{sub}` |".format(
                 label=scene["label"],
                 shape=hint.get("primaryTaskShape") or "",
-                families="+".join(reveal.get("autoRevealFamilies") or []) or "none",
+                families="+".join(
+                    str(item.get("family") or "")
+                    for item in list(reveal.get("revealedFamilies") or [])
+                    if isinstance(item, dict) and str(item.get("family") or "")
+                ) or "none",
                 members=int(reveal.get("revealedMemberCount") or 0),
                 sup=json.dumps(
                     {

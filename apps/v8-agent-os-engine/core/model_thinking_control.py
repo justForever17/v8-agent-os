@@ -363,6 +363,77 @@ def reasoning_effort_request_patch(
     return {}
 
 
+def reasoning_summary_request_patch(metadata: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Request a provider-visible reasoning summary without exposing hidden tokens.
+
+    This is deliberately narrower than the effort control plane.  OpenAI
+    Responses models advertise ``reasoning.summary`` in their reasoning
+    surface; Chat Completions, Anthropic and Gemini have different native
+    contracts and must not receive this field by inference.
+    """
+
+    meta = _as_dict(metadata)
+    model_record = _as_dict(meta.get("model_record") or meta.get("modelRecord"))
+    surface = _as_dict(
+        meta.get("reasoning_surface")
+        or meta.get("reasoningSurface")
+        or model_record.get("reasoningSurface")
+        or model_record.get("reasoning_surface")
+    )
+    wire_protocol = _model_wire_protocol(meta, model_record)
+    response_fields = {str(item).strip() for item in list(surface.get("responseFields") or surface.get("response_fields") or [])}
+    request_style = str(surface.get("requestStyle") or surface.get("request_style") or "").strip()
+    if (
+        wire_protocol != "openai.responses"
+        or str(surface.get("mode") or "").strip() != "reasoning_summary"
+        or request_style not in {"", "openai_reasoning"}
+        or "reasoning.summary" not in response_fields
+    ):
+        return {}
+    return {
+        "reasoning": {"summary": "auto"},
+        # ``store=false`` is used by V8OS; encrypted reasoning items are the
+        # provider-supported replay handle for the next turn.
+        "include": ["reasoning.encrypted_content"],
+    }
+
+
+def provider_reasoning_transport_patch(metadata: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Enable a provider's documented reasoning transport when explicitly bound.
+
+    MiniMax-M3 otherwise embeds ``<think>`` in normal Chat Completions content.
+    Its documented ``reasoning_split`` option keeps visible text/JSON parseable
+    while preserving ``reasoning_details`` for interleaved-thinking replay.
+    """
+
+    meta = _as_dict(metadata)
+    model_record = _as_dict(meta.get("model_record") or meta.get("modelRecord"))
+    surface = _as_dict(
+        meta.get("reasoning_surface")
+        or meta.get("reasoningSurface")
+        or model_record.get("reasoningSurface")
+        or model_record.get("reasoning_surface")
+    )
+    wire_protocol = _model_wire_protocol(meta, model_record)
+    api_standard = str(meta.get("api_standard") or meta.get("apiStandard") or "").strip().lower()
+    if (
+        not (
+            wire_protocol == "openai.chat_completions"
+            or (not wire_protocol and api_standard == "openai")
+        )
+        or str(surface.get("trust") or "").strip() != "official"
+        or str(surface.get("requestStyle") or surface.get("request_style") or "").strip()
+        != "minimax_interleaved_thinking"
+        or "reasoning_details"
+        not in {
+            str(item).strip()
+            for item in list(surface.get("responseFields") or surface.get("response_fields") or [])
+        }
+    ):
+        return {}
+    return {"extra_body": {"reasoning_split": True}}
+
+
 def ensure_anthropic_thinking_budget_headroom(kwargs: Mapping[str, Any] | None) -> Dict[str, Any]:
     """Keep Anthropic output tokens above its explicit thinking budget."""
 
@@ -397,6 +468,9 @@ def merge_model_request_patch(kwargs: Dict[str, Any], patch: Mapping[str, Any] |
                 else:
                     next_extra[nested_key] = nested_value
             merged["extra_body"] = next_extra
+        elif key == "include" and isinstance(value, (list, tuple, set)):
+            existing = merged.get(key) if isinstance(merged.get(key), (list, tuple, set)) else []
+            merged[key] = list(dict.fromkeys([*list(existing), *list(value)]))
         elif isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
             merged[key] = {**_as_dict(merged.get(key)), **_as_dict(value)}
         else:

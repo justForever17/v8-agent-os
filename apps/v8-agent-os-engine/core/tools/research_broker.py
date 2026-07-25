@@ -902,6 +902,24 @@ def _build_shards(
     video_research = _is_video_research(base_question, intent, policy)
     seed_domains = [_domain_from_seed(url) for url in seed_urls]
     domains = [domain for domain in [*allowed_domains, *seed_domains] if domain]
+    shards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for seed_url in seed_urls:
+        normalized_seed = _safe_text(seed_url)
+        if not normalized_seed or normalized_seed.lower() in seen:
+            continue
+        seen.add(normalized_seed.lower())
+        shards.append(
+            {
+                "shardId": f"shard_{len(shards) + 1}_{_query_slug(normalized_seed)}",
+                "kind": "seed_url",
+                "query": normalized_seed,
+                "seedUrl": normalized_seed,
+                "reason": "explicit_seed_url",
+            }
+        )
+        if len(shards) >= max_shards:
+            return shards
     queries: list[tuple[str, str]] = []
     queries.append((base_question, "baseline"))
     if policy in {"official", "authoritative", "primary", ""}:
@@ -919,8 +937,6 @@ def _build_shards(
     for domain in domains[: max(0, max_shards - len(queries))]:
         queries.append((f"site:{domain} {base_question}", f"site:{domain}"))
 
-    shards: list[dict[str, Any]] = []
-    seen: set[str] = set()
     for query, shard_kind in queries:
         normalized = _safe_text(query)
         if not normalized:
@@ -1233,6 +1249,29 @@ _REUSE_STOP_WORDS = {
     "如何",
 }
 
+_REUSE_GENERIC_IDENTIFIER_TOKENS = {
+    "api",
+    "check",
+    "cli",
+    "current",
+    "docs",
+    "documentation",
+    "guide",
+    "latest",
+    "official",
+    "reference",
+    "release",
+    "releases",
+    "runtime",
+    "sdk",
+    "support",
+    "supported",
+    "verify",
+    "version",
+    "versions",
+    "windows",
+}
+
 
 def _reuse_tokens(value: str) -> set[str]:
     text = re.sub(r"\s+", " ", _safe_text(value).lower())
@@ -1250,13 +1289,25 @@ def _reuse_tokens(value: str) -> set[str]:
     return tokens
 
 
+def _reuse_identifier_tokens(value: str) -> set[str]:
+    """Return distinctive Latin/technical anchors, excluding generic research vocabulary."""
+
+    text = _safe_text(value).lower()
+    return {
+        token
+        for token in re.findall(r"[a-z][a-z0-9_.+-]{2,}", text)
+        if token not in _REUSE_STOP_WORDS
+        and token not in _REUSE_GENERIC_IDENTIFIER_TOKENS
+        and not re.fullmatch(r"20\d{2}", token)
+    }
+
+
 def _reuse_topic_match(question: str, pack: dict[str, Any]) -> tuple[bool, str]:
     normalized_question = re.sub(r"\s+", " ", _safe_text(question).lower()).strip()
     candidate_text = " ".join(
         [
             _safe_text(pack.get("query")),
             _safe_text(pack.get("title")),
-            _safe_text(pack.get("topicFingerprint")),
         ]
     ).lower()
     if not normalized_question:
@@ -1265,6 +1316,10 @@ def _reuse_topic_match(question: str, pack: dict[str, Any]) -> tuple[bool, str]:
         return True, "topic_fingerprint_match"
     if normalized_question and normalized_question in candidate_text:
         return True, "exact_question_contained_in_candidate"
+    question_identifiers = _reuse_identifier_tokens(question)
+    candidate_identifiers = _reuse_identifier_tokens(candidate_text)
+    if question_identifiers and candidate_identifiers and not question_identifiers.intersection(candidate_identifiers):
+        return False, "distinctive_identifier_mismatch"
     q_tokens = _reuse_tokens(question)
     p_tokens = _reuse_tokens(candidate_text)
     if not q_tokens or not p_tokens:
@@ -1418,6 +1473,15 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
     if not result:
         result = "Reused research experience pack, but no detailed research result was stored."
     claim_table = list(pack.get("claimDigest") or [])
+    experience_pack_id = _safe_text(pack.get("experiencePackId"))
+    evidence_bundle_id = _safe_text(pack.get("createdFromBundleId"))
+    detail_ref = (
+        f"research://bundle/{evidence_bundle_id}"
+        if evidence_bundle_id
+        else f"research://experience/{experience_pack_id}"
+        if experience_pack_id
+        else ""
+    )
     architect_pack = {
         "kind": "research_result_pack",
         "architectAgentId": "web-research-architect",
@@ -1437,6 +1501,9 @@ def _bundle_from_reused_pack(pack: dict[str, Any], *, question: str, reuse: dict
         "kind": "research_evidence_bundle",
         "summary": architect_pack["headline"],
         "question": question,
+        "evidenceBundleId": evidence_bundle_id or None,
+        "experiencePackId": experience_pack_id or None,
+        "detailRef": detail_ref or None,
         "researchIntent": "experience_reuse",
         "sourcePolicy": pack.get("sourcePolicy"),
         "freshness": pack.get("freshnessWindow"),
@@ -2370,6 +2437,107 @@ def _run_context7_source(question: str, *, tool_call_id: str) -> dict[str, Any]:
     }
 
 
+def _run_seed_url_shard(
+    shard: dict[str, Any],
+    *,
+    allowed_domains: list[str],
+    blocked_domains: list[str],
+    source_policy: str,
+    use_agent_browser_profile: bool,
+    tool_call_id: str,
+) -> dict[str, Any]:
+    """Read an explicit seed URL before depending on a search provider."""
+
+    url = _safe_text(shard.get("seedUrl") or shard.get("query"))
+    host = _host(url)
+    if blocked_domains and any(host == domain or host.endswith(f".{domain}") for domain in blocked_domains):
+        return {
+            **shard,
+            "ok": False,
+            "provider": "explicit_seed_url",
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": ["seed_url_blocked_by_domain_policy"],
+        }
+    if allowed_domains and not any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains):
+        return {
+            **shard,
+            "ok": False,
+            "provider": "explicit_seed_url",
+            "resultCount": 0,
+            "results": [],
+            "fetchedTopSources": [],
+            "errors": ["seed_url_outside_allowed_domains"],
+        }
+
+    read_payload = _call_with_deadline(
+        lambda: web_read.func(
+            url=url,
+            mode="auto",
+            headless=True,
+            referer_mode="none",
+            referer_url="",
+            useAgentBrowserProfile=bool(use_agent_browser_profile),
+            tool_call_id=tool_call_id,
+        ),
+        deadline_ms=_RESEARCH_SOURCE_READ_DEADLINE_MS,
+        tool_name="web_read",
+        family="research",
+        recommended_next_action="保留该 seed 为 unavailable，或在同一 Research brief 内补充另一条官方来源。",
+    )
+    text = _safe_text(read_payload.get("text") or read_payload.get("markdown") or read_payload.get("textPreview"))
+    title = _safe_text(read_payload.get("title"))[:300] or url
+    quality_domains = list(dict.fromkeys([*allowed_domains, host] if host else allowed_domains))
+    quality = _source_quality(
+        url,
+        allowed_domains=quality_domains,
+        source_policy=source_policy,
+        title=title,
+        snippet=text[:600],
+    )
+    result = {
+        "resultRank": 1,
+        "title": title,
+        "url": url,
+        "finalUrl": _safe_text(read_payload.get("finalUrl")) or url,
+        "snippet": text[:600],
+        "sourceQualityHints": quality,
+    }
+    fetched = {
+        "url": url,
+        "ok": bool(read_payload.get("ok") and text),
+        "title": title,
+        "status": read_payload.get("status"),
+        "text": text[:6000],
+        "textPreview": text[:1200],
+        "contentChars": len(text),
+        "omittedChars": max(0, len(text) - 6000),
+        "extractionQuality": read_payload.get("extractionQuality") or ("readable" if text else "unreadable"),
+        "sourceCapability": read_payload.get("sourceCapability"),
+        "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders") or [],
+        "rawRef": read_payload.get("rawRef") or read_payload.get("detailRawRef"),
+        "missingContentReason": read_payload.get("missingContentReason"),
+        "warnings": read_payload.get("warnings") if isinstance(read_payload.get("warnings"), list) else [],
+        "failureClass": read_payload.get("failureClass") or (read_payload.get("toolExecution") or {}).get("failureClass"),
+        "toolExecution": read_payload.get("toolExecution"),
+    }
+    ok = bool(read_payload.get("ok") and text)
+    return {
+        **shard,
+        "ok": ok,
+        "provider": "explicit_seed_url",
+        "networkRoute": "direct_read",
+        "sourceCapability": read_payload.get("sourceCapability") or "seed_url_read",
+        "sourceRouter": {"selectedProvider": "explicit_seed_url", "networkRoute": "direct_read", "sourcePolicy": source_policy},
+        "providerAttemptMatrix": read_payload.get("providerAttemptMatrix") or read_payload.get("attemptedProviders") or [],
+        "resultCount": 1,
+        "results": [result],
+        "fetchedTopSources": [fetched],
+        "errors": [] if ok else [_safe_text(read_payload.get("error")) or "seed_url_unreadable"],
+    }
+
+
 def _run_search_shard(
     shard: dict[str, Any],
     *,
@@ -2380,6 +2548,16 @@ def _run_search_shard(
     use_agent_browser_profile: bool,
     tool_call_id: str,
 ) -> dict[str, Any]:
+    seed_url = _safe_text(shard.get("seedUrl"))
+    if str(shard.get("kind") or "").strip() == "seed_url" and seed_url:
+        return _run_seed_url_shard(
+            shard,
+            allowed_domains=allowed_domains,
+            blocked_domains=blocked_domains,
+            source_policy=source_policy,
+            use_agent_browser_profile=use_agent_browser_profile,
+            tool_call_id=tool_call_id,
+        )
     query = _safe_text(shard.get("query"))
     video_research = _is_video_research(query, source_policy, shard.get("kind"))
     search_payload = _call_with_deadline(
@@ -2987,20 +3165,14 @@ def research_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> str:
-    """Run 深度调研 and return source-backed evidence or an answer pack.
+    """L2 聚焦证据工具：一个可独立验真的多源问题；返回当前回合 evidence pack，不提供受管进度、恢复或跨阶段 handoff。
 
-    Use this when quick web reading is not enough: current provider/API facts, freshness-sensitive questions,
-    multi-source comparison, source confidence, conflicting claims, reusable experience packs, or research that
-    benefits from parallel query decomposition. Use it when another runtime needs a research handoff, or when a
-    user-facing answer needs sources and limitations. For a single known URL or one small lookup, use `web_broker`.
-
-    Search experience packs first for repeat topics; run new research only when prior packs are missing, stale,
-    low confidence, or conflict with the current need.
-
-    When Admin enables systemBase.webFetch.useAgentBrowserProfile and a target source domain matches
-    systemBase.webFetch.agentBrowserProfileAllowlist, browser-backed web/research reads automatically reuse the
-    Agent dedicated browser profile. Set useAgentBrowserProfile=true only when research should skip public/static
-    attempts and directly use that login-backed profile.
+    Use this for exactly one focused question needing source comparison, freshness/conflict checks, or a compact
+    answer/evidence pack. Use `web_broker` for one URL or narrow lookup. Use one Research episode when there are several
+    independent fact domains, managed recovery/progress, or downstream evidence handoff; put every known domain in its
+    initial researchBriefIds/researchBriefGoals arrays. A brief already owned by that episode must be repaired there, not through this direct tool.
+    Reuse a suitable current experience pack; refresh stale, low-confidence, or conflicting evidence.
+    useAgentBrowserProfile=true directly uses the allowlisted login-backed Agent browser profile.
     """
     config = _research_config()
     normalized_mode = _safe_text(mode).lower() or "plan"

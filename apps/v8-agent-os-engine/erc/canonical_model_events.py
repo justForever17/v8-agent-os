@@ -313,7 +313,14 @@ class LangChainCanonicalModelEventAdapter:
                 )
 
         if terminal and raw_text:
-            suppress_reasoning = True
+            # A terminal payload can be the first and only provider response.
+            # Suppress reasoning only when this model run already emitted a
+            # reasoning snapshot; otherwise a legitimate final
+            # ``summary[].text`` would disappear merely because the answer
+            # text arrived in the same payload.
+            run_key = normalized_model_run_id(model_run_id)
+            if reasoning_snapshots.get(run_key):
+                suppress_reasoning = True
 
         if raw_reasoning and not suppress_reasoning:
             reasoning_decision = self._reasoning_payload_decision(event, payload, reasoning_surface)

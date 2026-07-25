@@ -9,6 +9,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -17,6 +18,10 @@ from core.delegation_broker import normalize_task_briefs, task_brief_query_text
 from core.delegation_result_contract import build_delegation_result_contract
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from core.runtime_continuation import (
+    RuntimeContinuationContractError,
+    normalize_runtime_continuation_request,
+)
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
 from core.engineering_capsule import (
@@ -29,6 +34,22 @@ from erc.runtime_context import bind_runtime_context
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_typed_continuation_request(
+    value: Any,
+    *,
+    expected_runtime_episode_id: str = "",
+) -> dict[str, Any]:
+    request = normalize_runtime_continuation_request(value)
+    expected_episode_id = str(expected_runtime_episode_id or "").strip()
+    source_episode_id = str((request.get("source") or {}).get("runtimeEpisodeId") or "").strip()
+    if expected_episode_id and source_episode_id != expected_episode_id:
+        raise RuntimeContinuationContractError(
+            "runtime_continuation_episode_mismatch",
+            "The continuation request does not belong to the runtime episode being paused.",
+        )
+    return request
 
 _EPISODE_REF_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:episode_[A-Za-z0-9]+|subagent::[A-Za-z0-9:_-]+)(?![A-Za-z0-9_])"
@@ -150,6 +171,290 @@ def _schedule_runtime_episode_handoff_resume(episode: dict[str, Any]) -> dict[st
             "resume_scheduled": False,
             "resume_error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _research_seed_urls(*values: Any) -> list[str]:
+    urls: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            for match in re.findall(r"https?://[^\s<>'\"\]\[()]+", value):
+                cleaned = match.rstrip(".,;:!?，。；：！？")
+                if cleaned and cleaned not in urls:
+                    urls.append(cleaned)
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key) in {"url", "href", "ref", "detailRef", "detailRefs", "seedUrl", "seedUrls"}:
+                    visit(item)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item)
+
+    for value in values:
+        visit(value)
+    return urls[:12]
+
+
+def _research_brief_option(
+    brief: dict[str, Any],
+    inputs: dict[str, Any],
+    need: dict[str, Any],
+    *keys: str,
+) -> Any:
+    nested_brief_contexts = [
+        value
+        for value in (brief.get("context"), brief.get("constraints"))
+        if isinstance(value, dict)
+    ]
+    for source in (brief, *nested_brief_contexts, inputs, need):
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, "", [], {}):
+                return value
+    return None
+
+
+def _research_freshness(
+    *,
+    brief: dict[str, Any],
+    inputs: dict[str, Any],
+    need: dict[str, Any],
+    query: str,
+) -> str:
+    explicit = str(
+        _research_brief_option(brief, inputs, need, "freshness", "freshnessWindow") or "auto"
+    ).strip()
+    if explicit and explicit.lower() != "auto":
+        return explicit
+    current_year = utc_now_iso()[:4]
+    lowered = str(query or "").lower()
+    if current_year in lowered or re.search(r"\b(?:current|latest|recent|today|now)\b", lowered):
+        return "current"
+    if any(marker in lowered for marker in ("当前", "最新", "现状", "目前", "截至", "今年")):
+        return "current"
+    return "auto"
+
+
+_RESEARCH_CRITICAL_GAP_MARKERS = (
+    "无法回答",
+    "无法全面回答",
+    "无法完整回答",
+    "未能完整回答",
+    "无法核实",
+    "无法确认",
+    "未能核实",
+    "未能确认",
+    "证据不足",
+    "缺少证据",
+    "无可用证据",
+    "没有可用证据",
+    "来源不足",
+    "无法获取官方",
+    "未能获取官方",
+    "没有获取到官方",
+    "缺少来自官方",
+    "缺少官方来源",
+    "缺少官方文档",
+    "unable to answer",
+    "cannot be answered",
+    "cannot answer",
+    "could not answer",
+    "unable to verify",
+    "could not verify",
+    "unable to confirm",
+    "could not confirm",
+    "insufficient evidence",
+    "missing evidence",
+    "no usable source",
+    "no supporting evidence",
+    "evidence unavailable",
+    "均无 sources 可佐证",
+    "未经验证的待补查项",
+)
+
+_RESEARCH_CRITICAL_GAP_PATTERNS = (
+    re.compile(r"(?:无法|不能|未能).{0,120}?(?:给出|得出|形成|提供).{0,40}?(?:任何)?(?:实质性|有效|可验证|可信|可靠|完整)?(?:的)?(?:结论|回答|判断|结果)"),
+    re.compile(r"(?:无法|不能|未能)(?:给出|得出).{0,80}?可靠(?:的)?结论"),
+    re.compile(r"(?:无法|不能|未能).{0,40}?(?:基于|依据).{0,160}?(?:给出|提供|形成|作出|得出).{0,100}?(?:结论|回答|判断|结果|证据)"),
+    re.compile(r"(?:无法|不能)(?:据此|据其|基于(?:现有|这些|上述)?(?:来源|材料|证据)).{0,80}?(?:形成|给出|作出).{0,80}?(?:可信|可靠|完整)(?:回答|结论|判断)"),
+    re.compile(r"(?:无法|未能|没有|未)(?:获取|找到|检索到).{0,100}?(?:官方|权威|一手|所需|相关)(?:信息|来源|文档|资料|说明|证据)"),
+    re.compile(r"(?:现有|这些|上述|所列|当前)?(?:来源|sources?|材料|证据).{0,80}?(?:未|没有)(?:直接)?(?:给出|提供|覆盖|包含|提及|支撑).{0,120}?(?:所需|请求|目标|最新|当前|官方|完整|关键)"),
+    re.compile(r"(?:当前|现有|上述|这些)?(?:来源|官方来源|证据|材料).{0,80}?(?:仅|只)(?:覆盖|支持|能确认).{0,60}?(?:部分|一部分|有限)"),
+    re.compile(r"缺少(?:来自)?[^。；;\n]{0,100}?(?:官方|权威|一手)[^。；;\n]{0,60}?(?:信息|来源|文档|资料|说明|证据)"),
+    re.compile(r"(?:unable|cannot|could not)\s+(?:provide|reach|draw).{0,80}?reliable conclusion"),
+    re.compile(r"(?:unable|cannot|could not)\s+(?:form|provide|produce|reach).{0,80}?(?:credible|reliable|complete).{0,40}?(?:answer|conclusion|assessment)"),
+    re.compile(r"(?:unable|cannot|could not|failed to)\s+(?:obtain|find|retrieve).{0,100}?(?:official|authoritative|primary).{0,60}?(?:information|source|documentation|evidence)"),
+    re.compile(r"(?:current|available|listed)?\s*(?:sources?|evidence|materials?).{0,80}?(?:do not|does not|did not|fail(?:ed)? to).{0,80}?(?:provide|cover|include|mention|support).{0,120}?(?:requested|required|current|latest|official|complete|key)"),
+    re.compile(r"(?:current|available|listed)?\s*(?:sources?|evidence|materials?).{0,80}?(?:only|merely).{0,20}?(?:cover|support|confirm).{0,60}?(?:part|partial|limited)"),
+    re.compile(r"(?:missing|no)\s+(?:official|authoritative|primary).{0,60}?(?:information|source|documentation|evidence)"),
+)
+
+
+def _research_source_host(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(urlparse(text).hostname or "").strip().lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _research_domain_matches(host: str, expected: str) -> bool:
+    normalized_host = str(host or "").strip().lower().removeprefix("www.")
+    normalized_expected = str(expected or "").strip().lower().removeprefix("www.")
+    return bool(
+        normalized_host
+        and normalized_expected
+        and (normalized_host == normalized_expected or normalized_host.endswith(f".{normalized_expected}"))
+    )
+
+
+def _research_expected_source_floor(brief: dict[str, Any], source_policy: str) -> int:
+    policy = str(source_policy or "").strip().lower()
+    if "multi_source" in policy or "multiple_source" in policy:
+        return 2
+    contract_text = json.dumps(
+        {
+            "expectedOutputs": brief.get("expectedOutputs") or brief.get("expected_outputs"),
+            "acceptanceContract": brief.get("acceptanceContract") or brief.get("acceptance_contract"),
+            "proofExpectations": brief.get("proofExpectations") or brief.get("proof_expectations"),
+        },
+        ensure_ascii=False,
+        default=str,
+    ).lower()
+    match = re.search(r"(?:at\s+least|minimum(?:\s+of)?)\s*(\d+)\s+(?:independent\s+|official\s+|readable\s+)?sources?", contract_text)
+    if match:
+        return max(1, min(int(match.group(1)), 8))
+    match = re.search(r"至少\s*([2-8二两三四五六七八])\s*(?:个|条|份)?(?:独立|官方|可读)?(?:来源|信源|资料)", contract_text)
+    if match:
+        chinese_counts = {"二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
+        raw_count = match.group(1)
+        return int(raw_count) if raw_count.isdigit() else chinese_counts[raw_count]
+    return 1
+
+
+def _research_evidence_status(
+    *,
+    brief: dict[str, Any],
+    run_payload: dict[str, Any],
+    answer_pack: dict[str, Any],
+    source_items: list[dict[str, Any]],
+    claim_items: list[dict[str, Any]],
+    answer: str,
+    research_ref: str | None,
+    freshness: str,
+    source_policy: str,
+    seed_urls: list[str],
+    allowed_domains: list[str],
+) -> tuple[bool, list[str]]:
+    """Validate one Research brief without asking a classifier to judge the topic."""
+
+    reasons: list[str] = []
+    if not bool(run_payload.get("ok")):
+        reasons.append("research_broker_failed")
+    if not research_ref:
+        reasons.append("research_ref_missing")
+    if not answer:
+        reasons.append("answer_missing")
+    if not source_items:
+        reasons.append("source_evidence_missing")
+    if not claim_items:
+        reasons.append("claim_table_missing")
+
+    score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
+    quality_status = str(score.get("qualityStatus") or "").strip().lower()
+    if quality_status in {"refresh_required", "evidence_missing", "missing"}:
+        reasons.append("answer_quality_requires_refresh")
+    missing_reasons = [
+        str(item or "").strip()
+        for item in list(answer_pack.get("missingOrStaleReasons") or [])
+        if str(item or "").strip()
+    ]
+    if missing_reasons:
+        reasons.append("answer_pack_reports_missing_evidence")
+
+    limitations = [
+        str(item or "").strip()
+        for item in list(answer_pack.get("limitations") or run_payload.get("limitations") or [])
+        if str(item or "").strip()
+    ]
+    limitation_text = "\n".join(limitations).lower()
+    normalized_answer = answer.lower()
+    # Research providers often put the decisive evidence caveat in a long
+    # answer rather than the structured limitations field.  The old <=600
+    # shortcut discarded the entire answer in that common case, so an answer
+    # could explicitly say that official sources did not cover the request and
+    # still be promoted as ready.  Scan a bounded head+tail window: enough to
+    # retain the provider's own conclusion without asking a classifier to
+    # reinterpret the topic or moving an unbounded payload into the gate.
+    bounded_answer_text = (
+        normalized_answer
+        if len(normalized_answer) <= 3200
+        else f"{normalized_answer[:2000]}\n{normalized_answer[-1200:]}"
+    )
+    evidence_gap_text = "\n".join(part for part in (limitation_text, bounded_answer_text) if part)
+    if any(marker in evidence_gap_text for marker in _RESEARCH_CRITICAL_GAP_MARKERS) or any(
+        pattern.search(evidence_gap_text) for pattern in _RESEARCH_CRITICAL_GAP_PATTERNS
+    ):
+        reasons.append("explicit_critical_evidence_gap")
+
+    # A current/freshness request must not be accepted merely because a
+    # provider returned an answer and a few URLs.  Some search providers can
+    # synthesize an old release as the latest one while still reporting a
+    # high confidence score.  Keep this deliberately narrow: only reject an
+    # explicit "latest/current" claim whose stated year is older than the
+    # current calendar year, so historical answers remain valid.
+    if str(freshness or "").strip().lower() in {
+        "current",
+        "latest",
+        "recent",
+    }:
+        current_year = int(utc_now_iso()[:4])
+        current_claim = re.search(
+            r"(?:最新稳定|最新|当前|目前|current|latest|most recent|stable version)",
+            answer,
+            flags=re.IGNORECASE,
+        )
+        if current_claim:
+            claim_window = answer[current_claim.start() : current_claim.start() + 240].split("\n", 1)[0]
+            years = [int(value) for value in re.findall(r"\b(20\d{2})\b", claim_window)]
+            if years and max(years) < current_year - 1:
+                reasons.append("freshness_claim_stale")
+
+    source_urls = [
+        str(item.get("url") or item.get("sourceUrl") or "").strip()
+        for item in source_items
+        if str(item.get("url") or item.get("sourceUrl") or "").strip()
+    ]
+    unique_source_urls = list(dict.fromkeys(source_urls))
+    expected_source_floor = _research_expected_source_floor(brief, source_policy)
+    if len(unique_source_urls) < expected_source_floor:
+        reasons.append(f"source_floor_not_met:{expected_source_floor}")
+
+    normalized_policy = str(source_policy or "").strip().lower()
+    expected_hosts = list(
+        dict.fromkeys(
+            host
+            for host in (
+                *(_research_source_host(url) for url in seed_urls),
+                *(str(domain or "").strip().lower().removeprefix("www.") for domain in allowed_domains),
+            )
+            if host
+        )
+    )
+    if normalized_policy in {"official", "authoritative", "primary", "official_docs_first"} and expected_hosts:
+        source_hosts = [_research_source_host(url) for url in unique_source_urls]
+        if not any(
+            _research_domain_matches(source_host, expected_host)
+            for source_host in source_hosts
+            for expected_host in expected_hosts
+        ):
+            reasons.append("authoritative_source_scope_missing")
+
+    return not reasons, list(dict.fromkeys(reasons))
 
 
 def _runtime_surface_id_for_episode(episode: dict[str, Any]) -> str:
@@ -350,7 +655,31 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._emit(
+                "handoff.ref.created",
+                episode=episode,
+                handoff=persisted_handoff,
+                session_id=session_id,
+                run_id=run_id,
+            )
             handoff_status = str(handoff.get("status") or "ready").strip().lower()
+            if handoff_status in {"waiting_input", "awaiting_input", "needs_input"}:
+                waiting = db.complete_runtime_episode(
+                    episode_id,
+                    state="waiting_input",
+                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                    error_code="runtime_input_required",
+                    error_message=str(handoff.get("compactSummary") or handoff.get("summary") or "Runtime input is required before execution can continue."),
+                    metadata={"handoff": persisted_handoff, "continuationRequest": handoff.get("continuationRequest") or {}},
+                ) or {**episode, "state": "waiting_input"}
+                self._emit(
+                    "runtime.episode.waiting_input",
+                    episode=waiting,
+                    handoff=persisted_handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                return
             if handoff_status in {"running", "waiting", "pending"}:
                 waiting_state = "waiting_external" if target_kind in {"network_peer", "external_worker"} else "waiting"
                 if self._handoff_has_child_episodes(handoff):
@@ -870,31 +1199,64 @@ class RuntimeEpisodeRunner:
         self._heartbeat(str(episode.get("episodeId")), "research: experience lookup")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
+        research_repair = inputs.get("researchRepair") if isinstance(inputs.get("researchRepair"), dict) else {}
+        final_repair_attempt = bool(research_repair.get("finalRepairAttempt"))
         task_briefs = [dict(item) for item in list(inputs.get("taskBriefs") or inputs.get("tasks") or []) if isinstance(item, dict)]
-        brief_query = ""
+        brief_queries: list[tuple[str, str]] = []
         for brief in task_briefs:
+            task_brief_id = str(brief.get("taskBriefId") or brief.get("id") or "").strip()
             for key in ("routeQuery", "query", "question", "goal", "title"):
                 value = str(brief.get(key) or "").strip()
                 if value:
-                    brief_query = value
+                    brief_queries.append((task_brief_id, value))
                     break
-            if brief_query:
-                break
-        query = str(inputs.get("query") or inputs.get("question") or need.get("query") or brief_query or need.get("reason") or "research request").strip()
+        explicit_query = str(inputs.get("query") or inputs.get("question") or need.get("query") or "").strip()
+        unique_queries: list[tuple[str, str]] = []
+        seen_queries: set[str] = set()
+        for task_brief_id, value in brief_queries:
+            dedupe_key = value.casefold()
+            if dedupe_key in seen_queries:
+                continue
+            seen_queries.add(dedupe_key)
+            unique_queries.append((task_brief_id, value))
+        if len(unique_queries) > 1:
+            query_lines = [
+                "Research every item below as one evidence bundle. Cover each item explicitly with sources, findings, and limitations; do not stop after the first item."
+            ]
+            if explicit_query:
+                query_lines.append(f"Overall request: {explicit_query}")
+            query_lines.extend(
+                f"{index}. [{task_brief_id or f'brief-{index}'}] {value}"
+                for index, (task_brief_id, value) in enumerate(unique_queries, start=1)
+            )
+            query = "\n".join(query_lines)
+        elif explicit_query:
+            query = explicit_query
+        elif unique_queries:
+            query = unique_queries[0][1]
+        else:
+            query = str(need.get("reason") or "research request").strip()
+        task_brief_ids = [
+            str(item.get("taskBriefId") or item.get("id") or "").strip()
+            for item in task_briefs
+            if str(item.get("taskBriefId") or item.get("id") or "").strip()
+        ]
+        terminal_metadata = {
+            "taskBriefIds": task_brief_ids,
+            "taskBriefCount": len(task_briefs),
+            "remainingHandoffsExpected": 0,
+            "terminalEpisode": True,
+        }
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip()
         state = {
             "current_route_context": {
                 "runtimeToolGrants": [{"group": "research.core", "runtimeKind": "research"}],
-            }
+            },
+            **({"run_id": run_id, "runId": run_id} if run_id else {}),
+            **({"session_id": session_id, "sessionId": session_id} if session_id else {}),
         }
         from core.native_tools import research_broker
-
-        search_result = research_broker.func(
-            mode="search_experience",
-            query=query,
-            state=state,
-            tool_call_id=f"episode:{episode.get('episodeId')}:search_experience",
-        )
-        search_visible = _first_tool_message_content(search_result)
         run_mode = str(inputs.get("mode") or need.get("mode") or "").strip().lower()
         research_blob = json.dumps(
             {
@@ -921,18 +1283,14 @@ class RuntimeEpisodeRunner:
             )
         ):
             run_mode = "run"
-        if run_mode == "run":
-            self._heartbeat(str(episode.get("episodeId")), "research: live run")
-            run_result = research_broker.func(
-                mode="run",
-                question=query,
+        if run_mode != "run":
+            search_result = research_broker.func(
+                mode="search_experience",
                 query=query,
                 state=state,
-                tool_call_id=f"episode:{episode.get('episodeId')}:research_run",
+                tool_call_id=f"episode:{episode.get('episodeId')}:search_experience",
             )
-            run_payload = _tool_result_payload(run_result)
-            visible = _first_tool_message_content(run_result) or search_visible
-        else:
+            search_visible = _first_tool_message_content(search_result)
             self._heartbeat(str(episode.get("episodeId")), "research: plan")
             plan_result = research_broker.func(
                 mode="plan",
@@ -950,6 +1308,7 @@ class RuntimeEpisodeRunner:
                 confidence="low",
                 consumer_hint="This is a research plan, not source-backed evidence. Route a research run before using it as evidence.",
                 extra={
+                    **terminal_metadata,
                     "query": query,
                     "researchRefs": [],
                     "runMode": "plan",
@@ -958,69 +1317,312 @@ class RuntimeEpisodeRunner:
                     "recommendedNextAction": "route_research_run",
                 },
             )
-        evidence_id = str(run_payload.get("evidenceBundleId") or "").strip()
-        answer_pack = dict(run_payload.get("researchAnswerPack") or {}) if isinstance(run_payload.get("researchAnswerPack"), dict) else {}
-        source_items = [
-            dict(item)
-            for item in list(answer_pack.get("sources") or run_payload.get("sourceMatrix") or [])
-            if isinstance(item, dict)
-        ]
-        claim_items = [
-            dict(item)
-            for item in list(answer_pack.get("claimTable") or run_payload.get("claimTable") or [])
-            if isinstance(item, dict)
-        ]
-        answer = str(answer_pack.get("answer") or run_payload.get("summary") or "").strip()
-        research_ready = bool(run_payload.get("ok") and evidence_id and source_items and answer)
-        if not research_ready:
-            return build_handoff_ref(
-                producer_episode_id=str(episode.get("episodeId") or ""),
-                kind="research",
-                compact_summary=_preview(
-                    answer
-                    or str(run_payload.get("summary") or "")
-                    or visible
-                    or "Research run ended without a source-backed evidence bundle."
-                ),
-                status="degraded",
-                confidence="low",
-                consumer_hint="Retry Research Runtime with a narrower question or repair the research provider before downstream use.",
-                extra={
-                    "query": query,
-                    "researchRefs": [],
-                    "runMode": "run",
-                    "researchState": "evidence_missing",
-                    "degradedReason": "research_run_missing_evidence",
+
+        # One managed Research episode may contain several independent briefs,
+        # but a single giant broker query lets a provider stop after the first
+        # topic while still producing a superficially plausible answer. Execute
+        # each brief as a bounded evidence unit and aggregate the units into one
+        # terminal handoff. The Supervisor still sees one episode, one progress
+        # chain, and one typed result.
+        run_units = list(unique_queries) if len(unique_queries) > 1 else []
+        if not run_units:
+            unit_id = task_brief_ids[0] if task_brief_ids else "research-1"
+            run_units = [(unit_id, query)]
+
+        unit_results: list[dict[str, Any]] = []
+        episode_id = str(episode.get("episodeId") or "")
+        briefs_by_id = {
+            str(item.get("taskBriefId") or item.get("id") or "").strip(): item
+            for item in task_briefs
+            if str(item.get("taskBriefId") or item.get("id") or "").strip()
+        }
+        for index, (raw_task_brief_id, unit_query) in enumerate(run_units, start=1):
+            task_brief_id = str(raw_task_brief_id or f"research-{index}").strip() or f"research-{index}"
+            brief = dict(briefs_by_id.get(task_brief_id) or {})
+            freshness = _research_freshness(brief=brief, inputs=inputs, need=need, query=unit_query)
+            source_policy = str(
+                _research_brief_option(brief, inputs, need, "sourcePolicy", "source_policy")
+                or "authoritative"
+            ).strip()
+            seed_urls = _research_seed_urls(
+                brief.get("seedUrls"),
+                brief.get("detailRefs"),
+                inputs.get("seedUrls"),
+                inputs.get("detailRefs"),
+                need.get("seedUrls"),
+                need.get("detailRefs"),
+            )
+            allowed_domains_value = _research_brief_option(
+                brief,
+                inputs,
+                need,
+                "allowedDomains",
+                "allowed_domains",
+            )
+            allowed_domain_items = (
+                re.split(r"[,\s]+", allowed_domains_value)
+                if isinstance(allowed_domains_value, str)
+                else list(allowed_domains_value or [])
+            )
+            allowed_domains = [str(item).strip() for item in allowed_domain_items if str(item).strip()]
+            self._heartbeat(episode_id, f"research: brief {index}/{len(run_units)}")
+            search_result = research_broker.func(
+                mode="search_experience",
+                query=unit_query,
+                freshness=freshness,
+                sourcePolicy=source_policy,
+                seedUrls=seed_urls,
+                allowedDomains=allowed_domains,
+                state=state,
+                tool_call_id=f"episode:{episode_id}:brief:{index}:search_experience",
+            )
+            search_visible = _first_tool_message_content(search_result)
+            search_payload = _tool_result_payload(search_result)
+            run_result = research_broker.func(
+                mode="run",
+                question=unit_query,
+                query=unit_query,
+                freshness=freshness,
+                sourcePolicy=source_policy,
+                seedUrls=seed_urls,
+                allowedDomains=allowed_domains,
+                state=state,
+                tool_call_id=f"episode:{episode_id}:brief:{index}:research_run",
+            )
+            run_payload = _tool_result_payload(run_result)
+            answer_pack = (
+                dict(run_payload.get("researchAnswerPack") or {})
+                if isinstance(run_payload.get("researchAnswerPack"), dict)
+                else {}
+            )
+            source_items = [
+                dict(item)
+                for item in list(answer_pack.get("sources") or run_payload.get("sourceMatrix") or [])
+                if isinstance(item, dict)
+            ]
+            claim_items = [
+                dict(item)
+                for item in list(answer_pack.get("claimTable") or run_payload.get("claimTable") or [])
+                if isinstance(item, dict)
+            ]
+            answer = str(answer_pack.get("answer") or run_payload.get("summary") or "").strip()
+            evidence_id = str(run_payload.get("evidenceBundleId") or "").strip()
+            experience_pack_id = str(run_payload.get("experiencePackId") or "").strip()
+            research_ref = (
+                f"research://bundle/{evidence_id}"
+                if evidence_id
+                else f"research://experience/{experience_pack_id}"
+                if experience_pack_id
+                else None
+            )
+            source_urls = [
+                str(item.get("url") or item.get("sourceUrl") or "").strip()
+                for item in source_items
+                if str(item.get("url") or item.get("sourceUrl") or "").strip()
+            ]
+            ready, evidence_status_reasons = _research_evidence_status(
+                brief=brief,
+                run_payload=run_payload,
+                answer_pack=answer_pack,
+                source_items=source_items,
+                claim_items=claim_items,
+                answer=answer,
+                research_ref=research_ref,
+                freshness=freshness,
+                source_policy=source_policy,
+                seed_urls=seed_urls,
+                allowed_domains=allowed_domains,
+            )
+            unit_results.append(
+                {
+                    "taskBriefId": task_brief_id,
+                    "status": "ready" if ready else "degraded",
+                    "query": unit_query,
+                    "answer": _preview(
+                        answer or _first_tool_message_content(run_result) or search_visible,
+                        limit=1400,
+                    ),
+                    "evidenceBundleId": evidence_id or None,
+                    "experiencePackId": experience_pack_id or None,
+                    "researchRef": research_ref,
+                    "detailTool": (
+                        f"research_broker(mode='get_evidence', evidenceBundleId='{evidence_id}')"
+                        if evidence_id
+                        else None
+                    ),
+                    "freshness": freshness,
+                    "sourcePolicy": source_policy,
+                    "seedUrls": seed_urls,
+                    "experienceReuse": run_payload.get("experienceReuse") or search_payload.get("reuseDecision") or {},
                     "sourceCount": len(source_items),
                     "claimCount": len(claim_items),
-                    "recommendedNextAction": "retry_research_run",
+                    "sourceUrls": source_urls[:6],
+                    "limitations": list(answer_pack.get("limitations") or run_payload.get("limitations") or [])[:6],
+                    "evidenceStatusReasons": evidence_status_reasons,
+                }
+            )
+
+        ready_units = [item for item in unit_results if item["status"] == "ready"]
+        missing_task_brief_ids = [item["taskBriefId"] for item in unit_results if item["status"] != "ready"]
+        covered_task_brief_ids = [item["taskBriefId"] for item in ready_units]
+        research_refs = list(dict.fromkeys(str(item["researchRef"]) for item in ready_units if item.get("researchRef")))
+        ready_evidence_ids = list(
+            dict.fromkeys(
+                str(item.get("evidenceBundleId") or "").strip()
+                for item in ready_units
+                if str(item.get("evidenceBundleId") or "").strip()
+            )
+        )
+        source_urls = list(dict.fromkeys(
+            str(url)
+            for item in ready_units
+            for url in list(item.get("sourceUrls") or [])
+            if str(url).strip()
+        ))
+        source_count = sum(int(item.get("sourceCount") or 0) for item in unit_results)
+        claim_count = sum(int(item.get("claimCount") or 0) for item in unit_results)
+        compact_answers = [
+            f"[{item['taskBriefId']}] {_preview(item.get('answer') or 'No source-backed answer.', limit=240)}"
+            for item in unit_results
+        ]
+        coverage_extra = {
+            **terminal_metadata,
+            "query": query,
+            "runMode": "run",
+            "taskBriefResults": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "taskBriefId",
+                        "status",
+                        "answer",
+                        "evidenceBundleId",
+                        "researchRef",
+                        "detailTool",
+                        "sourceUrls",
+                        "freshness",
+                        "sourcePolicy",
+                        "sourceCount",
+                        "claimCount",
+                        "limitations",
+                        "evidenceStatusReasons",
+                    )
+                }
+                for item in unit_results
+            ],
+            "coveredTaskBriefIds": covered_task_brief_ids,
+            "missingTaskBriefIds": missing_task_brief_ids,
+            "coverageComplete": not missing_task_brief_ids,
+            "researchRefs": research_refs,
+            "sourceCount": source_count,
+            "claimCount": claim_count,
+        }
+        if missing_task_brief_ids:
+            evidence_gaps = [
+                {
+                    "taskBriefId": str(item.get("taskBriefId") or "").strip(),
+                    "status": "unverified",
+                    "blocksClaim": True,
+                    # A missing source-backed claim is not automatically a
+                    # blocker for a reversible/local-verifiable implementation.
+                    # The downstream runtime must carry this record and keep
+                    # the claim out of its user-facing assertions.
+                    "blocksDownstream": False,
+                    "limitations": list(item.get("limitations") or [])[:6],
+                    "evidenceStatusReasons": list(item.get("evidenceStatusReasons") or [])[:6],
+                }
+                for item in unit_results
+                if str(item.get("status") or "").strip().lower() != "ready"
+                and str(item.get("taskBriefId") or "").strip()
+            ]
+            retry_exhausted = final_repair_attempt
+            has_downstream_evidence = bool(ready_units)
+            if retry_exhausted:
+                consumer_hint = (
+                    "The bounded Research repair is exhausted. Carry the typed evidenceGaps into a downstream "
+                    "task only for reversible, locally verifiable work when safe; otherwise report the blocker. "
+                    "Do not retry this branch or replace it with ad-hoc web calls."
+                )
+                recommended_next_action = (
+                    "carry_evidence_gaps_or_report_blocker"
+                    if has_downstream_evidence
+                    else "report_blocker"
+                )
+            else:
+                consumer_hint = (
+                    "Retry only the missing Research briefs once inside a managed Research episode. "
+                    "If the retry is exhausted and ready evidence remains, carry evidenceGaps into the next "
+                    "Engineering/Creative route for reversible, locally verifiable work; keep the unverified claim "
+                    "out of the answer. Do not replace the missing branch with an ad-hoc chain of web calls."
+                )
+                recommended_next_action = "retry_missing_research_briefs"
+            return build_handoff_ref(
+                producer_episode_id=episode_id,
+                kind="research",
+                compact_summary=_preview("\n".join(compact_answers)),
+                status="degraded",
+                confidence="low",
+                consumer_hint=consumer_hint,
+                extra={
+                    **coverage_extra,
+                    "researchState": "partial_evidence" if ready_units else "evidence_missing",
+                    "degradedReason": "research_run_missing_evidence",
+                    "recommendedNextAction": recommended_next_action,
+                    "retryExhausted": retry_exhausted,
+                    "evidenceGaps": evidence_gaps,
+                    "claimBlockers": [
+                        str(item.get("taskBriefId") or "").strip()
+                        for item in evidence_gaps
+                        if str(item.get("taskBriefId") or "").strip()
+                    ],
+                    "downstreamAllowed": bool(ready_units),
+                    "continuationPolicy": {
+                        "retryLimit": 1,
+                        "retryExhausted": retry_exhausted,
+                        "retryExhaustedAction": (
+                            "continue_with_explicit_evidence_gaps"
+                            if ready_units
+                            else "report_blocker"
+                        ),
+                        "requiresLocalValidation": bool(ready_units),
+                        "neverClaimUnverifiedFacts": True,
+                    },
                 },
             )
-        research_ref = f"research://bundle/{evidence_id}"
-        source_urls = [
-            str(item.get("url") or item.get("sourceUrl") or "").strip()
-            for item in source_items
-            if str(item.get("url") or item.get("sourceUrl") or "").strip()
-        ]
         return build_handoff_ref(
-            producer_episode_id=str(episode.get("episodeId") or ""),
+            producer_episode_id=episode_id,
             kind="research",
-            compact_summary=_preview(answer),
+            compact_summary=_preview("\n".join(compact_answers)),
             status="ready",
             confidence="medium",
             consumer_hint="Use this research handoff as evidence refs input for Engineering/Creative episodes.",
             extra={
-                "query": query,
-                "researchRefs": [research_ref],
-                "refs": [research_ref, *source_urls[:6]],
-                "proofRefs": [research_ref],
-                "evidenceBundleId": evidence_id,
-                "runMode": "run",
+                **coverage_extra,
+                "refs": [*research_refs, *source_urls[:6]],
+                "proofRefs": research_refs,
+                "evidenceBundleId": ready_evidence_ids[0] if len(ready_evidence_ids) == 1 else "",
+                "evidenceBundleIds": ready_evidence_ids,
                 "researchState": "evidence_ready",
-                "sourceCount": len(source_items),
-                "claimCount": len(claim_items),
-                "limitations": list(answer_pack.get("limitations") or run_payload.get("limitations") or [])[:6],
-                "detailRef": research_ref,
+                "limitations": [
+                    str(limit)
+                    for item in ready_units
+                    for limit in list(item.get("limitations") or [])
+                    if str(limit).strip()
+                ][:8],
+                # `research://...` is an evidence identity, not a
+                # tool_observation_detail rawRef.  Each brief carries its
+                # exact research_broker(get_evidence) read shape when a
+                # larger bundle is needed.
+                **(
+                    {
+                        "detailTool": (
+                            "research_broker(mode='get_evidence', "
+                            f"evidenceBundleId='{ready_evidence_ids[0]}')"
+                        )
+                    }
+                    if len(ready_evidence_ids) == 1
+                    else {}
+                ),
             },
         )
 
@@ -1226,6 +1828,7 @@ class RuntimeEpisodeRunner:
                 },
             }
             delegation_handoff = await self._execute_delegation(delegation_episode)
+            delivery_projection = self._delegation_handoff_delivery_projection(delegation_handoff)
             visible_evidence_summary = self._delegation_handoff_visible_evidence_summary(delegation_handoff)
             skill_validation = self._validate_skill_artifact_if_requested(episode, need=need, inputs=inputs)
             if skill_validation and not skill_validation.get("ok"):
@@ -1250,6 +1853,69 @@ class RuntimeEpisodeRunner:
             status = "waiting" if delegation_status in {"waiting", "pending", "running"} else delegation_status
             if status not in {"failed", "blocked", "waiting", "degraded"}:
                 status = "ready"
+            missing_expected_artifacts = self._engineering_missing_expected_artifacts(
+                workspace_path=str(workspace_path or ""),
+                worker_briefs=worker_briefs,
+            )
+            blocking_task_results = self._delegation_handoff_blocking_results(delegation_handoff)
+            if status != "waiting" and blocking_task_results:
+                failed_task_ids = list(
+                    dict.fromkeys(
+                        str(item.get("taskBriefId") or "").strip()
+                        for item in blocking_task_results
+                        if str(item.get("taskBriefId") or "").strip()
+                    )
+                )
+                repair_task_ids = list(
+                    dict.fromkeys(
+                        str(item.get("taskBriefId") or "").strip()
+                        for item in blocking_task_results
+                        if str(item.get("taskBriefId") or "").strip()
+                        and str(item.get("error") or "").strip().lower() not in {
+                            "dependency_failed",
+                            "dependency_blocked",
+                        }
+                    )
+                ) or failed_task_ids
+                first_error = _preview(
+                    next(
+                        (
+                            item.get("error") or item.get("errorCode")
+                            for item in blocking_task_results
+                            if item.get("error") or item.get("errorCode")
+                        ),
+                        "delegated_task_failed",
+                    ),
+                    limit=240,
+                )
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary=(
+                        "Engineering requires a bounded repair: "
+                        f"{len(blocking_task_results)} delegated task result(s) were rejected or blocked"
+                        f" ({first_error})."
+                    ),
+                    status="degraded",
+                    confidence="high",
+                    consumer_hint=(
+                        "Repair the typed Engineering task contract and route one bounded retry for repairTaskBriefIds. "
+                        "Do not inspect, execute, copy, or manually reconstruct preserved candidate worktrees; "
+                        "do not poll the finished episode with local commands."
+                    ),
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "errorCode": "engineering_delegated_tasks_blocked",
+                        "recoverable": True,
+                        "degraded": True,
+                        "degradedReason": "engineering_delegated_tasks_blocked",
+                        "failedTaskBriefs": blocking_task_results,
+                        "repairTaskBriefIds": repair_task_ids,
+                        "failedTaskBriefIds": failed_task_ids,
+                        "missingExpectedArtifacts": missing_expected_artifacts,
+                        "delegationHandoff": delegation_handoff,
+                    },
+                )
             if (
                 status in {"ready", "degraded"}
                 and self._engineering_requires_write_evidence(need=need, inputs=inputs, worker_briefs=worker_briefs)
@@ -1278,10 +1944,6 @@ class RuntimeEpisodeRunner:
                         "writeEvidenceRequired": True,
                     },
                 )
-            missing_expected_artifacts = self._engineering_missing_expected_artifacts(
-                workspace_path=str(workspace_path or ""),
-                worker_briefs=worker_briefs,
-            )
             if status in {"ready", "degraded"} and missing_expected_artifacts:
                 return build_handoff_ref(
                     producer_episode_id=str(episode.get("episodeId") or ""),
@@ -1293,7 +1955,7 @@ class RuntimeEpisodeRunner:
                     status="degraded",
                     confidence="low",
                     consumer_hint=(
-                        "Retry only the missing Spec tasks or repair the expected outputs; "
+                        "Repair or retry only the declared missing Engineering task briefs and expected outputs; "
                         "do not accept the project as complete while required artifacts are absent."
                     ),
                     extra={
@@ -1306,28 +1968,36 @@ class RuntimeEpisodeRunner:
                         "delegationHandoff": delegation_handoff,
                     },
                 )
+            delivery_merged = delivery_projection.get("state") == "merged_to_parent"
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
                 compact_summary=(
                     (
-                        f"Engineering work_plan_started through {len(worker_briefs)} delegated worker(s).\n"
+                        f"Engineering work_plan_ready through {len(worker_briefs)} delegated worker(s).\n"
                         if plan_only
-                        else f"Engineering execution_started through {len(worker_briefs)} delegated worker(s).\n"
+                        else f"Engineering handoff_ready after {len(worker_briefs)} delegated worker(s).\n"
                     )
                     +
                     f"{visible_evidence_summary or _preview(delegation_handoff.get('compactSummary') or delegation_handoff.get('summary') or context_summary, limit=700)}"
                 ),
                 status=status,
                 confidence=str(delegation_handoff.get("confidence") or "medium"),
-                consumer_hint="Merge this engineering handoff into Supervisor route context before continuing.",
+                consumer_hint=(
+                    "The accepted change set is already merged into the current Active Workspace Root. "
+                    "Review the typed proof and continue delivery; do not inspect/copy the managed child worktree "
+                    "or reroute the same acceptance criteria."
+                    if delivery_merged
+                    else "Consume this engineering handoff in Supervisor route context and decide acceptance from its typed proof. "
+                    "A managed worktree path alone does not mean the result is quarantined."
+                ),
                 extra={
                     "engineeringState": (
                         "skill_artifact_ready"
                         if skill_validation and skill_validation.get("ok")
-                        else "work_plan_started"
+                        else "work_plan_ready"
                         if plan_only
-                        else "execution_started"
+                        else "handoff_ready"
                     ),
                     "deliverableKind": "plan_only" if plan_only else inputs.get("deliverableKind") or need.get("deliverableKind"),
                     "writeRequired": False if plan_only else inputs.get("writeRequired") if "writeRequired" in inputs else need.get("writeRequired"),
@@ -1336,6 +2006,7 @@ class RuntimeEpisodeRunner:
                     "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
                     "consumedRefs": inputs.get("handoffRefs") or need.get("handoffRefs") or [],
                     "visibleEvidenceSummary": visible_evidence_summary,
+                    "deliveryProjection": delivery_projection,
                     **({"skillArtifactValidation": skill_validation} if skill_validation else {}),
                 },
             )
@@ -1566,14 +2237,202 @@ class RuntimeEpisodeRunner:
         _walk(value)
         return found
 
+    @staticmethod
+    def _creative_evidence_from_delegation_handoff(
+        handoff: dict[str, Any],
+        *,
+        parent_episode_id: str,
+    ) -> dict[str, Any]:
+        """Accept Creative proof only from typed child-result evidence.
+
+        This intentionally does not recurse through the full runtime handoff:
+        recipe ids, provider job ids and unrelated metadata are not delivery.
+        """
+
+        records: list[dict[str, Any]] = []
+        artifact_refs: list[str] = []
+        proof_refs: list[str] = []
+        result_items = [item for item in list(handoff.get("results") or []) if isinstance(item, dict)]
+        for result in result_items:
+            evidence = (
+                dict(result.get("creativeExecutionEvidence") or {})
+                if isinstance(result.get("creativeExecutionEvidence"), dict)
+                else {}
+            )
+            if str(evidence.get("schemaVersion") or "") != "creative-execution-evidence/v1":
+                continue
+            if str(evidence.get("sourceRuntimeEpisodeId") or "").strip() != str(parent_episode_id or "").strip():
+                continue
+            task_brief_id = str(evidence.get("taskBriefId") or "").strip()
+            delegation_id = str(evidence.get("delegationId") or "").strip()
+            if not task_brief_id or not delegation_id:
+                continue
+            evidence_records = [
+                dict(item)
+                for item in list(evidence.get("records") or [])
+                if isinstance(item, dict)
+                and str(item.get("toolCallId") or "").strip()
+                and str(item.get("tool") or "").startswith("creative_media_")
+            ]
+            if not evidence_records:
+                continue
+            records.extend(evidence_records)
+            artifact_refs.extend(
+                str(item).strip()
+                for item in list(evidence.get("artifactRefs") or [])
+                if str(item).strip()
+            )
+            proof_refs.extend(
+                str(item).strip()
+                for item in list(evidence.get("proofRefs") or [])
+                if str(item).strip()
+            )
+        artifact_refs = list(dict.fromkeys(artifact_refs))[:24]
+        proof_refs = list(dict.fromkeys(proof_refs))[:24]
+        return {
+            "schemaVersion": "creative-execution-evidence/v1",
+            "sourceRuntimeEpisodeId": str(parent_episode_id or "").strip(),
+            "records": records[-32:],
+            "artifactRefs": artifact_refs,
+            "proofRefs": proof_refs,
+            "missingEvidence": [
+                key
+                for key, values in (("artifactRefs", artifact_refs), ("proofRefs", proof_refs))
+                if not values
+            ],
+        }
+
+    @classmethod
+    def _delegation_handoff_delivery_projection(cls, handoff: dict[str, Any]) -> dict[str, Any]:
+        """Project managed-worktree delivery truth without exposing checkout paths.
+
+        A child artifact path is provenance, not delivery state.  The authoritative
+        signal is the sandbox/merge result emitted by the managed Engineering
+        workspace.  This compact projection lets the Supervisor distinguish a
+        successful parent merge from a quarantined failed candidate.
+        """
+
+        changed_paths: list[str] = []
+        task_brief_ids: list[str] = []
+        merged_count = 0
+        integration_ready_count = 0
+        validated_count = 0
+        blocked_count = 0
+        visited: set[int] = set()
+
+        def _add_relative_path(value: Any) -> None:
+            rendered = str(value or "").strip().replace("\\", "/")
+            if not rendered or re.match(r"^[A-Za-z]:/", rendered) or rendered.startswith("/"):
+                return
+            rendered = rendered.removeprefix("./")
+            if rendered and rendered not in changed_paths:
+                changed_paths.append(rendered)
+
+        def _inspect(item: dict[str, Any]) -> None:
+            nonlocal merged_count, integration_ready_count, validated_count, blocked_count
+            status = str(item.get("status") or item.get("workerStatus") or "").strip().lower()
+            sandbox = dict(item.get("sandboxEvidence") or {}) if isinstance(item.get("sandboxEvidence"), dict) else {}
+            sandbox_state = str(sandbox.get("state") or "").strip().lower()
+            parent_merge = (
+                dict(item.get("parentWorktreeMerge") or {})
+                if isinstance(item.get("parentWorktreeMerge"), dict)
+                else {}
+            )
+            parent_merge_status = str(parent_merge.get("status") or "").strip().lower()
+            error = str(item.get("error") or item.get("errorCode") or sandbox.get("errorCode") or "").strip()
+            if (
+                status in {"error", "failed", "blocked", "dependency_failed", "degraded", "cancelled"}
+                or error
+                or sandbox_state in {"failed", "merge_failed"}
+                or item.get("artifactRefsAccepted") is False
+            ):
+                blocked_count += 1
+                return
+            has_delivery_evidence = bool(
+                sandbox_state
+                or parent_merge_status
+                or item.get("integrationWorktreeId")
+                or isinstance(item.get("gitChangeSet"), dict)
+            )
+            if not has_delivery_evidence:
+                return
+            task_brief_id = str(item.get("taskBriefId") or item.get("taskId") or "").strip()
+            if task_brief_id and task_brief_id not in task_brief_ids:
+                task_brief_ids.append(task_brief_id)
+            change_set = dict(item.get("gitChangeSet") or {}) if isinstance(item.get("gitChangeSet"), dict) else {}
+            for path in list(change_set.get("changedPaths") or parent_merge.get("changedPaths") or []):
+                _add_relative_path(path)
+            if parent_merge_status == "merged_to_parent":
+                merged_count += 1
+            elif item.get("integrationWorktreeId"):
+                integration_ready_count += 1
+            elif sandbox_state == "completed":
+                validated_count += 1
+
+        def _walk(value: Any, *, depth: int = 0) -> None:
+            if depth > 8:
+                return
+            if isinstance(value, dict):
+                identity = id(value)
+                if identity in visited:
+                    return
+                visited.add(identity)
+                _inspect(value)
+                for key in ("results", "taskBriefResults", "childHandoffs"):
+                    for child in list(value.get(key) or []):
+                        _walk(child, depth=depth + 1)
+                nested = value.get("delegationHandoff")
+                if isinstance(nested, dict):
+                    _walk(nested, depth=depth + 1)
+            elif isinstance(value, list):
+                for child in value:
+                    _walk(child, depth=depth + 1)
+
+        _walk(handoff)
+        if blocked_count:
+            state = "quarantined"
+            accepted = False
+        elif merged_count:
+            state = "merged_to_parent"
+            accepted = True
+        elif integration_ready_count:
+            state = "integration_ready"
+            accepted = False
+        elif validated_count:
+            state = "validated_candidate"
+            accepted = False
+        else:
+            state = "unknown"
+            accepted = False
+        return {
+            "state": state,
+            "accepted": accepted,
+            "workspaceScope": "current_active_workspace_root" if accepted else "managed_candidate",
+            "changedPaths": changed_paths[:40],
+            "taskBriefIds": task_brief_ids[:24],
+            "mergedResultCount": merged_count,
+            "blockedResultCount": blocked_count,
+        }
+
     @classmethod
     def _delegation_handoff_visible_evidence_summary(cls, handoff: dict[str, Any]) -> str:
         if not isinstance(handoff, dict):
             return ""
         lines: list[str] = []
+        delivery = cls._delegation_handoff_delivery_projection(handoff)
         summary = _preview(handoff.get("compactSummary") or handoff.get("summary") or "", limit=360)
         if summary:
             lines.append(f"- Summary: {summary}")
+        projected_changed = [str(item) for item in list(delivery.get("changedPaths") or []) if str(item).strip()]
+        if delivery.get("state") == "merged_to_parent":
+            lines.append(
+                "- Delivery: accepted change set already merged into the current Active Workspace Root; "
+                "the managed child worktree is audit provenance, not a quarantined failure."
+            )
+        elif delivery.get("state") == "integration_ready":
+            lines.append("- Delivery: validated integration candidate is ready for the owning runtime to merge.")
+        elif delivery.get("state") == "quarantined":
+            lines.append("- Delivery: failed candidate remains quarantined and unmerged.")
         changed = cls._collect_handoff_values(
             handoff,
             {
@@ -1587,6 +2446,14 @@ class RuntimeEpisodeRunner:
             },
             limit=8,
         )
+        changed = [
+            item
+            for item in [*projected_changed, *changed]
+            if item
+            and ".v8os-worktrees" not in item.lower()
+            and not re.match(r"^[A-Za-z]:[\\/]", item)
+        ]
+        changed = list(dict.fromkeys(changed))[:8]
         if changed:
             lines.append(f"- Changed files / patches: {'; '.join(changed)}")
         commands = cls._collect_handoff_values(
@@ -1614,6 +2481,13 @@ class RuntimeEpisodeRunner:
             },
             limit=8,
         )
+        if delivery.get("accepted"):
+            artifacts = [
+                item
+                for item in artifacts
+                if ".v8os-worktrees" not in item.lower()
+                and not re.match(r"^[A-Za-z]:[\\/]", item)
+            ]
         if artifacts:
             lines.append(f"- Artifacts: {'; '.join(artifacts)}")
         proof = cls._collect_handoff_values(
@@ -1643,6 +2517,86 @@ class RuntimeEpisodeRunner:
             lines.append(f"- Blockers / risks: {'; '.join(blockers)}")
         return _preview("\n".join(lines), limit=1200)
 
+    @classmethod
+    def _delegation_handoff_blocking_results(cls, handoff: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return compact authoritative failures from a nested delegation handoff.
+
+        Worker prose and candidate artifact refs are intentionally excluded from
+        the decision fields.  A failed managed worktree is a quarantined
+        candidate, not partial delivery evidence.
+        """
+
+        failures: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        blocking_statuses = {
+            "error",
+            "failed",
+            "blocked",
+            "dependency_failed",
+            "degraded",
+            "cancelled",
+        }
+
+        def _inspect(item: dict[str, Any]) -> None:
+            status = str(item.get("status") or item.get("workerStatus") or "").strip().lower()
+            sandbox = dict(item.get("sandboxEvidence") or {}) if isinstance(item.get("sandboxEvidence"), dict) else {}
+            sandbox_state = str(sandbox.get("state") or "").strip().lower()
+            error = str(item.get("error") or item.get("errorCode") or sandbox.get("errorCode") or "").strip()
+            blocked = bool(
+                status in blocking_statuses
+                or error
+                or sandbox_state in {"failed", "merge_failed"}
+                or item.get("artifactRefsAccepted") is False
+            )
+            if not blocked:
+                return
+            task_brief_id = str(item.get("taskBriefId") or item.get("taskId") or "").strip()
+            delegation_id = str(item.get("delegationId") or item.get("invocationId") or "").strip()
+            key = (task_brief_id, delegation_id, error or status)
+            if key in seen:
+                return
+            seen.add(key)
+            repair_action = str(item.get("repairAction") or sandbox.get("repairAction") or "").strip()
+            failures.append(
+                {
+                    "taskBriefId": task_brief_id,
+                    "delegationId": delegation_id,
+                    "status": status or "failed",
+                    "error": error or status or "delegated_task_failed",
+                    "errorCode": str(item.get("errorCode") or sandbox.get("errorCode") or "").strip(),
+                    "violations": [
+                        str(value).strip()
+                        for value in list(sandbox.get("violations") or [])[:24]
+                        if str(value).strip()
+                    ],
+                    "missingExpectedArtifacts": [
+                        str(value).strip()
+                        for value in list(item.get("missingArtifactEvidence") or item.get("missingExpectedArtifacts") or [])[:24]
+                        if str(value).strip()
+                    ],
+                    "repairAction": repair_action,
+                    "artifactRefsAccepted": False,
+                }
+            )
+
+        def _walk(value: Any, *, depth: int = 0) -> None:
+            if depth > 8 or not isinstance(value, dict):
+                return
+            for key in ("results", "taskBriefResults"):
+                for item in list(value.get(key) or []):
+                    if isinstance(item, dict):
+                        _inspect(item)
+                        _walk(item, depth=depth + 1)
+            nested = value.get("delegationHandoff")
+            if isinstance(nested, dict):
+                _walk(nested, depth=depth + 1)
+            for child in list(value.get("childHandoffs") or []):
+                if isinstance(child, dict):
+                    _walk(child, depth=depth + 1)
+
+        _walk(handoff)
+        return failures[:24]
+
     @staticmethod
     def _delegation_handoff_has_write_evidence(handoff: dict[str, Any]) -> bool:
         evidence_keys = {
@@ -1663,10 +2617,20 @@ class RuntimeEpisodeRunner:
             "artifacts",
         }
 
+        blocking_statuses = {"error", "failed", "blocked", "dependency_failed", "degraded", "cancelled"}
+
         def _has_non_empty_evidence(value: Any) -> bool:
             if isinstance(value, dict):
+                status = str(value.get("status") or value.get("workerStatus") or "").strip().lower()
+                sandbox = value.get("sandboxEvidence") if isinstance(value.get("sandboxEvidence"), dict) else {}
+                rejected = bool(
+                    status in blocking_statuses
+                    or value.get("error")
+                    or str(sandbox.get("state") or "").strip().lower() in {"failed", "merge_failed"}
+                    or value.get("artifactRefsAccepted") is False
+                )
                 for key, item in value.items():
-                    if key in evidence_keys:
+                    if key in evidence_keys and not rejected:
                         if isinstance(item, (list, tuple, set, dict)):
                             return bool(item)
                         if isinstance(item, str):
@@ -2185,7 +3149,139 @@ class RuntimeEpisodeRunner:
         return task_ids
 
     @staticmethod
+    def _workspace_dependency_change_set(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        item = dict(value)
+        repository_id = str(item.get("repositoryId") or item.get("repository_id") or "").strip()
+        base_commit = str(item.get("baseCommit") or item.get("base_commit") or "").strip()
+        commit_id = str(item.get("commitId") or item.get("commit_id") or "").strip()
+        status = str(item.get("status") or "candidate").strip().lower()
+        if (
+            not repository_id
+            or not base_commit
+            or not commit_id
+            or status == "no_changes"
+            or commit_id == base_commit
+        ):
+            return None
+        return item
+
+    @classmethod
+    def _workspace_dependency_chain_from_summary(cls, summary: Any) -> list[dict[str, Any]]:
+        if not isinstance(summary, dict):
+            return []
+        raw_chain = summary.get("workspaceDependencyChain")
+        chain = raw_chain if isinstance(raw_chain, list) else []
+        if not chain:
+            direct = cls._workspace_dependency_change_set(summary.get("gitChangeSet"))
+            chain = [direct] if direct else []
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw in chain:
+            item = cls._workspace_dependency_change_set(raw)
+            if not item:
+                continue
+            key = (
+                str(item.get("repositoryId") or item.get("repository_id") or "").strip(),
+                str(item.get("commitId") or item.get("commit_id") or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    @classmethod
+    def _workspace_dependency_chain_for_tasks(
+        cls,
+        task_ids: list[str],
+        completed_by_task_id: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        chain: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for task_id in task_ids:
+            for item in cls._workspace_dependency_chain_from_summary(completed_by_task_id.get(task_id)):
+                key = (
+                    str(item.get("repositoryId") or item.get("repository_id") or "").strip(),
+                    str(item.get("commitId") or item.get("commit_id") or "").strip(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                chain.append(item)
+        return chain
+
+    @classmethod
+    def _attach_workspace_dependency_lineage(
+        cls,
+        summary: dict[str, Any],
+        *,
+        task_id: str,
+        dependencies: list[str],
+        completed_by_task_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not cls._delegation_summary_succeeded(summary):
+            return dict(summary)
+        chain = cls._workspace_dependency_chain_for_tasks(dependencies, completed_by_task_id)
+        direct = cls._workspace_dependency_change_set(summary.get("gitChangeSet"))
+        if direct:
+            direct_key = (
+                str(direct.get("repositoryId") or direct.get("repository_id") or "").strip(),
+                str(direct.get("commitId") or direct.get("commit_id") or "").strip(),
+            )
+            existing_keys = {
+                (
+                    str(item.get("repositoryId") or item.get("repository_id") or "").strip(),
+                    str(item.get("commitId") or item.get("commit_id") or "").strip(),
+                )
+                for item in chain
+            }
+            if direct_key not in existing_keys:
+                chain.append(direct)
+        if not chain:
+            return dict(summary)
+        task_lineage: list[str] = []
+        for dependency in dependencies:
+            upstream = completed_by_task_id.get(dependency) or {}
+            for value in [*list(upstream.get("workspaceDependencyTaskIds") or []), dependency]:
+                normalized = str(value or "").strip()
+                if normalized and normalized not in task_lineage:
+                    task_lineage.append(normalized)
+        if task_id and task_id not in task_lineage:
+            task_lineage.append(task_id)
+        return {
+            **dict(summary),
+            "workspaceDependencyChain": chain,
+            "workspaceDependencyTaskIds": task_lineage,
+        }
+
+    @staticmethod
+    def _agent_visible_cross_episode_result(result: dict[str, Any]) -> dict[str, Any]:
+        allowed = (
+            "taskBriefId",
+            "status",
+            "summary",
+            "agentId",
+            "agentName",
+            "artifacts",
+            "proofRefs",
+            "blockers",
+            "error",
+            "canContinueParent",
+            "degradedReason",
+            "producerEpisodeId",
+            "handoffRefId",
+        )
+        return {
+            key: result.get(key)
+            for key in allowed
+            if result.get(key) not in (None, "", [], {})
+        }
+
+    @classmethod
     def _compact_cross_episode_result(
+        cls,
         *,
         task_id: str,
         episode: dict[str, Any],
@@ -2206,6 +3302,11 @@ class RuntimeEpisodeRunner:
         source = matching or payload
         metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
         recovery = metadata.get("recovery") if isinstance(metadata.get("recovery"), dict) else {}
+        dependency_state = (
+            metadata.get("workspaceDependencyState")
+            if isinstance(metadata.get("workspaceDependencyState"), dict)
+            else {}
+        )
         can_continue_parent = bool(recovery.get("canContinueParent"))
         status = str(forced_status or source.get("status") or payload.get("status") or episode.get("state") or "").strip().lower()
         if status in {"completed", "merged"}:
@@ -2237,6 +3338,22 @@ class RuntimeEpisodeRunner:
                             return values
             return values
 
+        dependency_chain = cls._workspace_dependency_chain_from_summary(dependency_state)
+        if not dependency_chain:
+            dependency_chain = cls._workspace_dependency_chain_from_summary(source)
+        if not dependency_chain:
+            dependency_chain = cls._workspace_dependency_chain_from_summary(payload)
+        dependency_task_ids = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in [
+                    *list(dependency_state.get("workspaceDependencyTaskIds") or []),
+                    *list(source.get("workspaceDependencyTaskIds") or []),
+                    *list(payload.get("workspaceDependencyTaskIds") or []),
+                ]
+                if str(item or "").strip()
+            )
+        )
         return {
             "taskBriefId": task_id,
             "status": status or "failed",
@@ -2251,6 +3368,8 @@ class RuntimeEpisodeRunner:
             "degradedReason": payload.get("degradedReason") if status == "degraded" else None,
             "producerEpisodeId": episode.get("episodeId") or episode.get("id"),
             "handoffRefId": handoff.get("handoffId") or handoff.get("handoffRefId") or payload.get("handoffRefId"),
+            **({"workspaceDependencyChain": dependency_chain} if dependency_chain else {}),
+            **({"workspaceDependencyTaskIds": dependency_task_ids} if dependency_task_ids else {}),
         }
 
     @classmethod
@@ -2286,12 +3405,20 @@ class RuntimeEpisodeRunner:
             else:
                 forced_status = "failed" if state in {"degraded", "failed", "cancelled", "canceled"} else ""
             for task_id in task_ids:
-                completed[task_id] = cls._compact_cross_episode_result(
+                candidate = cls._compact_cross_episode_result(
                     task_id=task_id,
                     episode=sibling,
                     handoff=latest_handoff,
                     forced_status=forced_status,
                 )
+                existing = completed.get(task_id)
+                if (
+                    existing
+                    and cls._workspace_dependency_chain_from_summary(existing)
+                    and not cls._workspace_dependency_chain_from_summary(candidate)
+                ):
+                    continue
+                completed[task_id] = candidate
         return completed, active_task_to_episode
 
     @classmethod
@@ -2329,7 +3456,11 @@ class RuntimeEpisodeRunner:
         """
         if not results:
             return dict(episode)
-        compact_results = [dict(item) for item in results[:24] if isinstance(item, dict)]
+        compact_results = [
+            cls._agent_visible_cross_episode_result(dict(item))
+            for item in results[:24]
+            if isinstance(item, dict)
+        ]
         updated = dict(episode)
         inputs = dict(updated.get("inputs") or {}) if isinstance(updated.get("inputs"), dict) else {}
         existing = [dict(item) for item in list(inputs.get("dependencyResults") or []) if isinstance(item, dict)]
@@ -2606,6 +3737,60 @@ class RuntimeEpisodeRunner:
         updated["current_route_context"] = route_context
         return updated
 
+    @classmethod
+    def _materialize_workspace_dependencies_for_send(
+        cls,
+        arg: dict[str, Any],
+        *,
+        dependencies: list[str],
+        completed_by_task_id: dict[str, dict[str, Any]],
+        run_id: str | None,
+    ) -> dict[str, Any]:
+        chain = cls._workspace_dependency_chain_for_tasks(dependencies, completed_by_task_id)
+        if not chain:
+            return dict(arg)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise RuntimeError("dependency_runtime_run_required")
+        updated = dict(arg)
+        branch = dict(updated.get("parallel_branch") or {})
+        managed_workspace = (
+            dict(branch.get("engineeringWorkspace") or {})
+            if isinstance(branch.get("engineeringWorkspace"), dict)
+            else {}
+        )
+        worktree_id = str(
+            managed_workspace.get("worktree_id")
+            or managed_workspace.get("worktreeId")
+            or ""
+        ).strip()
+        if not worktree_id:
+            from core.engineering_sandbox.git_service import ManagedGitError
+
+            raise ManagedGitError(
+                "dependency_workspace_required",
+                "A task that consumes managed file changes must run in its own managed Engineering workspace.",
+            )
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        prepared, _baseline = get_engineering_sandbox_service().materialize_task_dependencies(
+            worktree_id=worktree_id,
+            run_id=normalized_run_id,
+            change_sets=chain,
+        )
+        runtime_context = prepared.runtime_context()
+        branch["engineeringWorkspace"] = runtime_context
+        updated["parallel_branch"] = branch
+        updated.update(runtime_context)
+        updated["workspace_path"] = prepared.execution_workspace_root
+        updated["workspacePath"] = prepared.execution_workspace_root
+        route_context = dict(updated.get("current_route_context") or {})
+        route_context.update(runtime_context)
+        route_context["workspace_path"] = prepared.execution_workspace_root
+        route_context["workspacePath"] = prepared.execution_workspace_root
+        updated["current_route_context"] = route_context
+        return updated
+
     def _validate_skill_artifact_if_requested(
         self,
         episode: dict[str, Any],
@@ -2747,88 +3932,242 @@ class RuntimeEpisodeRunner:
         return deduped
 
     async def _execute_creative_media(self, episode: dict[str, Any]) -> dict[str, Any]:
-        self._heartbeat(str(episode.get("episodeId")), "creative_media: compile")
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+        self._heartbeat(episode_id, "creative_media: prepare execution")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
         request = dict(inputs.get("request") or {})
         request.setdefault("modality", inputs.get("modality") or need.get("modality") or "image")
         request.setdefault("prompt", inputs.get("prompt") or need.get("reason") or "Create supporting visual asset.")
+        resume_token = dict(episode.get("resumeToken") or episode.get("resume_token") or {})
+        continuation_inputs = (
+            dict(resume_token.get("continuationInputs") or {})
+            if isinstance(resume_token.get("continuationInputs"), dict)
+            else {}
+        )
+        previous_handoff = (
+            dict(resume_token.get("previousHandoff") or {})
+            if isinstance(resume_token.get("previousHandoff"), dict)
+            else {}
+        )
         try:
             from runtimes.creative_media.runtime import creative_media_runtime
 
-            should_compile_work_order = bool(
-                request.get("workOrderKind")
-                or request.get("work_order_kind")
-                or request.get("assetRole")
-                or request.get("asset_role")
-                or request.get("requestingRuntime")
-                or request.get("referenceAssetIds")
-                or str(request.get("intent") or "").strip() in {"simple_asset", "storyboard_to_video"}
-            )
-            if should_compile_work_order:
-                work_order = creative_media_runtime.compile_work_order(
-                    {
-                        **request,
-                        "requestingRuntime": request.get("requestingRuntime") or need.get("requestingRuntime") or "runtime_episode",
-                    }
+            plan_context: dict[str, Any]
+            if previous_handoff:
+                plan_context = {
+                    "workOrderId": previous_handoff.get("workOrderId"),
+                    "workOrderKind": previous_handoff.get("workOrderKind"),
+                    "recipeRefs": list(previous_handoff.get("recipeRefs") or []),
+                    "providerPlan": previous_handoff.get("providerPlan"),
+                    "qualityChecks": list(previous_handoff.get("qualityChecks") or []),
+                }
+            else:
+                should_compile_work_order = bool(
+                    request.get("workOrderKind")
+                    or request.get("work_order_kind")
+                    or request.get("assetRole")
+                    or request.get("asset_role")
+                    or request.get("requestingRuntime")
+                    or request.get("referenceAssetIds")
+                    or str(request.get("intent") or "").strip() in {"simple_asset", "storyboard_to_video"}
                 )
-                work_order_id = str(work_order.get("workOrderId") or "")
-                summary = f"Creative Media work order planned: {work_order.get('workOrderKind') or work_order_id}"
-                return build_handoff_ref(
-                    producer_episode_id=str(episode.get("episodeId") or ""),
-                    kind="creative_media",
-                    compact_summary=summary,
-                    status="ready",
-                    confidence="medium",
-                    consumer_hint="Use workOrderId/artifactRefs/providerPlan to request or reference generated media.",
-                    extra={
-                        "workOrderId": work_order_id,
+                if should_compile_work_order:
+                    work_order = creative_media_runtime.compile_work_order(
+                        {
+                            **request,
+                            "requestingRuntime": request.get("requestingRuntime") or need.get("requestingRuntime") or "runtime_episode",
+                        }
+                    )
+                    plan_context = {
+                        "workOrderId": str(work_order.get("workOrderId") or ""),
                         "workOrderKind": work_order.get("workOrderKind"),
-                        "recipeRefs": work_order.get("recipeRefs") or [],
-                        "artifactRefs": work_order.get("artifactRefs") or [],
-                        "handoffStage": "planned",
-                        "requiresContinuation": not bool(work_order.get("artifactRefs")),
-                        "recommendedNextAction": (
-                            "Create the required provider jobs with creative_media_jobs(action='create'), poll with "
-                            "creative_media_jobs(action='get'), then pass artifact refs from action='artifacts' to Engineering."
-                        ),
+                        "recipeRefs": list(work_order.get("recipeRefs") or []),
                         "providerPlan": work_order.get("providerPlan"),
-                        "qualityChecks": work_order.get("qualityChecks") or [],
+                        "qualityChecks": list(work_order.get("qualityChecks") or []),
                         "costEstimate": work_order.get("costEstimate") or {},
                         "safetyStatus": work_order.get("safetyStatus") or {},
+                    }
+                else:
+                    recipe = creative_media_runtime.compile_recipe(request)
+                    recipe_id = str(recipe.get("recipeId") or recipe.get("id") or "")
+                    plan_context = {
+                        "recipeRefs": [recipe_id] if recipe_id else [],
+                        "providerStatus": recipe.get("providerStatus"),
+                    }
+
+            goal = str(
+                inputs.get("brief")
+                or need.get("reason")
+                or episode.get("reason")
+                or request.get("prompt")
+                or "Create and deliver the requested media artifact."
+            ).strip()
+            task_brief = {
+                "taskBriefId": f"{episode_id or 'creative'}:execute",
+                "title": "Execute the Creative Media delivery end to end",
+                "goal": (
+                    f"{goal}\n\n"
+                    "This is an execution handoff from the Creative Media runtime. Own provider jobs, edits, QA, and final artifact handoff. "
+                    "A recipe, storyboard, work order, provider task ID, or prose plan is intermediate evidence, never completion. "
+                    "Return concrete artifact refs plus QA/proof. If an irreversible user choice is genuinely missing, call "
+                    "delegation_broker(mode='request_input', required_inputs=[...], continuation_summary='...') with typed fields; "
+                    "do not encode the pause in prose, claim success, or create a replacement route."
+                ),
+                "context": {
+                    "request": request,
+                    "creativePlan": plan_context,
+                    "continuationInputs": continuation_inputs,
+                    "parentRuntimeEpisodeId": episode_id,
+                    "resumePolicy": "same_episode",
+                },
+                "readOnly": False,
+                "writeRequired": False,
+                "writeSet": [],
+                "expectedOutputs": ["Final media artifact references", "Creative QA/proof evidence"],
+                "acceptanceContract": (
+                    "The requested deliverable exists and the handoff contains real artifact refs and QA/proof evidence. "
+                    "Planning-only output and provider task IDs do not pass."
+                ),
+                "requiredCapabilities": ["creative_media", "provider_job_execution", "artifact_handoff", "quality_assurance"],
+                "runtimeAccess": ["creative_media.core"],
+                "familyHint": "creative_media",
+                "targetAgentName": "Creative Media Director",
+                "preferredAgentId": "creative-media-director",
+                "executionLaneHint": "creative_media",
+                "allowChildDelegation": False,
+            }
+            delegated_episode = {
+                **episode,
+                "kind": "delegation",
+                "inputs": {
+                    **inputs,
+                    "workerBriefs": [task_brief],
+                    "targetCount": 1,
+                    "maxChildren": 1,
+                    "allowChildDelegation": False,
+                },
+                "need": {
+                    **need,
+                    "kind": "delegation",
+                    "reason": "Creative Media runtime-owned execution",
+                },
+            }
+            self._heartbeat(episode_id, "creative_media: execute delivery")
+            delegation_handoff = await self._execute_delegation(delegated_episode)
+            delegation_status = str(delegation_handoff.get("status") or "failed").strip().lower()
+            creative_evidence = self._creative_evidence_from_delegation_handoff(
+                delegation_handoff,
+                parent_episode_id=episode_id,
+            )
+            artifact_refs = list(creative_evidence.get("artifactRefs") or [])
+            proof_refs = list(creative_evidence.get("proofRefs") or [])
+            required_inputs = [
+                dict(item)
+                for item in list(delegation_handoff.get("requiredInputs") or [])
+                if isinstance(item, dict)
+            ][:12]
+            has_continuation_signal = bool(
+                delegation_status in {"waiting_input", "awaiting_input", "needs_input"}
+                or required_inputs
+                or delegation_handoff.get("continuationRequest")
+            )
+            if has_continuation_signal:
+                try:
+                    continuation_request = _normalize_typed_continuation_request(
+                        delegation_handoff.get("continuationRequest"),
+                        expected_runtime_episode_id=episode_id,
+                    )
+                except RuntimeContinuationContractError as exc:
+                    return build_handoff_ref(
+                        producer_episode_id=episode_id,
+                        kind="creative_media",
+                        compact_summary="Creative Media requested more input without a valid resumable continuation contract.",
+                        status="failed",
+                        confidence="high",
+                        consumer_hint="Repair the same Creative Media branch so it emits a typed continuation request; do not invent resume fields in the Supervisor.",
+                        extra={
+                            **plan_context,
+                            "delegationHandoff": delegation_handoff,
+                            "errorCode": exc.code,
+                            "errorMessage": str(exc),
+                            "handoffStage": "continuation_contract_failed",
+                        },
+                    )
+                required_inputs = list(continuation_request.get("requiredInputs") or [])
+                return build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind="creative_media",
+                    compact_summary=str(continuation_request.get("summary") or "Creative Media execution is paused for required input."),
+                    status="waiting_input",
+                    confidence="high",
+                    consumer_hint="Ask only for the listed missing values, then resume this same Creative Media episode.",
+                    extra={
+                        **plan_context,
+                        "requiredInputs": required_inputs,
+                        "continuationRequest": continuation_request,
+                        "delegationHandoff": delegation_handoff,
+                        "handoffStage": "waiting_input",
                     },
                 )
-
-            recipe = creative_media_runtime.compile_recipe(request)
-            recipe_id = str(recipe.get("recipeId") or recipe.get("id") or "")
-            summary = f"Creative Media recipe compiled: {recipe_id or request.get('modality')}"
+            if delegation_status not in {"ready", "ok", "success", "completed", "done"}:
+                return build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind="creative_media",
+                    compact_summary=str(delegation_handoff.get("compactSummary") or "Creative Media execution did not complete."),
+                    status="failed" if delegation_status in {"failed", "error", "blocked"} else "degraded",
+                    confidence="high",
+                    consumer_hint="Keep repair/retry ownership inside the Creative Media episode; do not replace it with direct Supervisor facade calls.",
+                    extra={
+                        **plan_context,
+                        "delegationHandoff": delegation_handoff,
+                        "errorCode": str(delegation_handoff.get("errorCode") or "creative_media_execution_failed"),
+                        "errorMessage": str(delegation_handoff.get("errorMessage") or delegation_handoff.get("compactSummary") or ""),
+                    },
+                )
+            if not artifact_refs or not proof_refs:
+                return build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind="creative_media",
+                    compact_summary="Creative Media worker returned without complete artifact and QA evidence.",
+                    status="failed",
+                    confidence="high",
+                    consumer_hint="Retry this same Creative Media episode and require concrete artifact refs plus QA/proof; planning text is not delivery.",
+                    extra={
+                        **plan_context,
+                        "delegationHandoff": delegation_handoff,
+                        "creativeExecutionEvidence": creative_evidence,
+                        "artifactRefs": artifact_refs,
+                        "proofRefs": proof_refs,
+                        "errorCode": "creative_media_delivery_evidence_missing",
+                        "errorMessage": "Both artifact refs and QA/proof refs are required for Creative Media completion.",
+                    },
+                )
             return build_handoff_ref(
-                producer_episode_id=str(episode.get("episodeId") or ""),
+                producer_episode_id=episode_id,
                 kind="creative_media",
-                compact_summary=summary,
+                compact_summary=str(delegation_handoff.get("compactSummary") or "Creative Media delivery completed with governed evidence."),
                 status="ready",
-                confidence="medium",
-                consumer_hint="Pass recipeRefs/assetRefs back to Engineering or Supervisor for UI/media integration.",
+                confidence="high",
+                consumer_hint="Consume the delivered artifact and QA refs; no direct Supervisor media execution is required.",
                 extra={
-                    "recipeRefs": [recipe_id] if recipe_id else [],
-                    "providerStatus": recipe.get("providerStatus"),
-                    "handoffStage": "compiled",
-                    "requiresContinuation": True,
-                    "recommendedNextAction": (
-                        "Create the required provider jobs with creative_media_jobs(action='create'), poll with "
-                        "creative_media_jobs(action='get'), then pass artifact refs from action='artifacts' to Engineering."
-                    ),
+                    **plan_context,
+                    "artifactRefs": artifact_refs,
+                    "proofRefs": proof_refs,
+                    "creativeExecutionEvidence": creative_evidence,
+                    "delegationHandoff": delegation_handoff,
+                    "handoffStage": "delivered",
                 },
             )
         except Exception as exc:
             return build_handoff_ref(
-                producer_episode_id=str(episode.get("episodeId") or ""),
+                producer_episode_id=episode_id,
                 kind="creative_media",
-                compact_summary=f"Creative Media episode failed during recipe compile: {type(exc).__name__}: {exc}",
+                compact_summary=f"Creative Media episode failed during governed execution: {type(exc).__name__}: {exc}",
                 status="failed",
                 confidence="low",
-                consumer_hint="Check Creative Media config/provider availability before retry.",
-                extra={"errorCode": "creative_media_compile_failed", "errorMessage": str(exc)},
+                consumer_hint="Repair or retry the same Creative Media episode; do not fall back to direct Supervisor provider calls.",
+                extra={"errorCode": "creative_media_execution_failed", "errorMessage": str(exc)},
             )
 
     async def _execute_computer_use(self, episode: dict[str, Any]) -> dict[str, Any]:
@@ -3527,13 +4866,61 @@ class RuntimeEpisodeRunner:
                     "waiting",
                 }
             ]
+            waiting_input = [
+                item
+                for item in results
+                if str(item.get("status") or "").lower() in {"waiting_input", "awaiting_input", "needs_input"}
+            ]
+            continuation_request: dict[str, Any] | None = None
+            if waiting_input:
+                continuation_requests: list[dict[str, Any]] = []
+                try:
+                    for item in waiting_input:
+                        continuation_requests.append(
+                            _normalize_typed_continuation_request(item.get("continuationRequest"))
+                        )
+                except RuntimeContinuationContractError as exc:
+                    return build_handoff_ref(
+                        producer_episode_id=str(episode.get("episodeId") or ""),
+                        kind="delegation",
+                        compact_summary="A delegated worker requested input without a valid continuation contract.",
+                        status="failed",
+                        confidence="high",
+                        consumer_hint="Repair the delegated branch so the worker returns one typed continuation request; do not infer missing fields from prose.",
+                        extra={
+                            "delegationState": "continuation_contract_failed",
+                            "errorCode": exc.code,
+                            "errorMessage": str(exc),
+                        },
+                    )
+                requests_by_id = {
+                    str(item.get("requestId") or ""): item
+                    for item in continuation_requests
+                }
+                if len(requests_by_id) != 1:
+                    return build_handoff_ref(
+                        producer_episode_id=str(episode.get("episodeId") or ""),
+                        kind="delegation",
+                        compact_summary="Multiple delegated workers requested unrelated continuation inputs at the same boundary.",
+                        status="failed",
+                        confidence="high",
+                        consumer_hint="Resume or repair one typed continuation request at a time so request lineage remains unambiguous.",
+                        extra={
+                            "delegationState": "continuation_contract_failed",
+                            "errorCode": "runtime_continuation_request_ambiguous",
+                            "continuationRequestIds": list(requests_by_id)[:12],
+                        },
+                    )
+                continuation_request = next(iter(requests_by_id.values()))
             ready_results = [
                 item
                 for item in results
                 if str(item.get("status") or "").lower() in {"ok", "ready", "completed", "success"}
             ]
-            budget_boundary_only = bool(failed) and bool(budget_blocked) and len(budget_blocked) == len(failed) and not ready_results and not waiting_child
-            if waiting_child:
+            budget_boundary_only = bool(failed) and bool(budget_blocked) and len(budget_blocked) == len(failed) and not ready_results and not waiting_child and not waiting_input
+            if waiting_input:
+                status = "waiting_input"
+            elif waiting_child:
                 status = "waiting"
             elif budget_boundary_only:
                 status = "degraded"
@@ -3561,6 +4948,7 @@ class RuntimeEpisodeRunner:
                     status in {"failed", "degraded"}
                     and bool(results)
                     and not waiting_child
+                    and not waiting_input
                 )
             )
             degraded_reason = "child_delegation_budget_boundary" if budget_boundary_only else (
@@ -3577,6 +4965,8 @@ class RuntimeEpisodeRunner:
                 summary += f" child_budget_blocked={len(budget_blocked)}"
             if waiting_child:
                 summary += f" waiting_child={len(waiting_child)}"
+            if waiting_input:
+                summary += f" waiting_input={len(waiting_input)}"
             if not results:
                 status = "degraded"
                 summary = "Delegation dispatch did not produce confirmed worker tasks."
@@ -3670,6 +5060,14 @@ class RuntimeEpisodeRunner:
                         for item in results[:8]
                         if isinstance(item, dict)
                     ],
+                    **(
+                        {
+                            "requiredInputs": list((continuation_request or {}).get("requiredInputs") or []),
+                            "continuationRequest": continuation_request,
+                        }
+                        if waiting_input
+                        else {}
+                    ),
                 },
             )
         except Exception as exc:
@@ -4002,7 +5400,30 @@ class RuntimeEpisodeRunner:
                 return
             children = [str(value).strip() for value in list(child_ids or []) if str(value).strip()]
             raw_status = str(summary.get("status") or "").strip().lower()
-            if children or raw_status in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}:
+            has_continuation_signal = bool(
+                raw_status in {"waiting_input", "awaiting_input", "needs_input"}
+                or summary.get("requiredInputs")
+                or summary.get("continuationRequest")
+            )
+            continuation_request: dict[str, Any] | None = None
+            if has_continuation_signal:
+                try:
+                    continuation_request = _normalize_typed_continuation_request(
+                        summary.get("continuationRequest")
+                    )
+                except RuntimeContinuationContractError as exc:
+                    summary = {
+                        **summary,
+                        "status": "failed",
+                        "error": str(exc),
+                        "errorCode": exc.code,
+                    }
+                    raw_status = "failed"
+            if continuation_request is not None:
+                handoff_status = "waiting_input"
+                final_state = "waiting_input"
+                event_topic = "runtime.episode.waiting_input"
+            elif children or raw_status in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}:
                 handoff_status = "waiting"
                 final_state = "waiting_child" if children or "child" in raw_status else "waiting"
                 event_topic = "runtime.episode.waiting"
@@ -4030,10 +5451,18 @@ class RuntimeEpisodeRunner:
                 confidence="medium" if handoff_status in {"ready", "waiting"} else "low",
                 consumer_hint="Parent runtime must merge this delegated result before continuing.",
                 extra={
-                    "delegationState": "waiting_child" if final_state == "waiting_child" else "handoff_ready" if final_state == "completed" else final_state,
+                    "delegationState": "waiting_input" if final_state == "waiting_input" else "waiting_child" if final_state == "waiting_child" else "handoff_ready" if final_state == "completed" else final_state,
                     "results": [build_delegation_result_contract(summary)],
                     "childEpisodeIds": children,
                     "parentEpisodeId": direct_episode.get("parentEpisodeId") or direct_episode.get("parent_episode_id"),
+                    **(
+                        {
+                            "requiredInputs": list(continuation_request.get("requiredInputs") or []),
+                            "continuationRequest": continuation_request,
+                        }
+                        if final_state == "waiting_input"
+                        else {}
+                    ),
                 },
             )
             persisted_handoff = db.add_runtime_episode_handoff(
@@ -4042,16 +5471,43 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._emit(
+                "handoff.ref.created",
+                episode=direct_episode,
+                handoff=persisted_handoff,
+                session_id=session_id,
+                run_id=run_id,
+            )
             updated = db.complete_runtime_episode(
                 delegation_id,
                 state=final_state,
                 result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
-                error_code=("delegation_worker_failed" if final_state == "failed" else None),
+                error_code=(
+                    "runtime_input_required"
+                    if final_state == "waiting_input"
+                    else str(summary.get("errorCode") or "delegation_worker_failed")
+                    if final_state == "failed"
+                    else None
+                ),
                 error_message=(str(summary.get("error") or compact_summary) if final_state == "failed" else None),
                 metadata={
                     "handoff": persisted_handoff,
                     "childEpisodeIds": children,
                     "executionSource": "runtime_episode_runner.local_delegation",
+                    **(
+                        {
+                            "workspaceDependencyState": {
+                                "workspaceDependencyChain": list(
+                                    summary.get("workspaceDependencyChain") or []
+                                ),
+                                "workspaceDependencyTaskIds": list(
+                                    summary.get("workspaceDependencyTaskIds") or []
+                                ),
+                            }
+                        }
+                        if summary.get("workspaceDependencyChain")
+                        else {}
+                    ),
                 },
             ) or {**direct_episode, "state": final_state}
             self._emit(
@@ -4208,6 +5664,13 @@ class RuntimeEpisodeRunner:
                     completed_by_task_id[task_id] = summary
                 return
             try:
+                arg = self._materialize_workspace_dependencies_for_send(
+                    arg,
+                    dependencies=deps,
+                    completed_by_task_id=completed_by_task_id,
+                    run_id=run_id,
+                )
+                branch = dict(arg.get("parallel_branch") or branch)
                 try:
                     _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
                         str(episode.get("episodeId") or ""),
@@ -4216,10 +5679,23 @@ class RuntimeEpisodeRunner:
                         interval_seconds=8.0,
                     )
                 except ModelGovernanceInterventionRequired as exc:
+                    retry_managed_workspace = (
+                        dict(branch.get("engineeringWorkspace") or {})
+                        if isinstance(branch.get("engineeringWorkspace"), dict)
+                        else {}
+                    )
+                    retry_workspace_path = str(
+                        retry_managed_workspace.get("workspace_path")
+                        or retry_managed_workspace.get("workspacePath")
+                        or arg.get("workspace_path")
+                        or arg.get("workspacePath")
+                        or workspace_path
+                        or ""
+                    ).strip()
                     retry_arg = self._governance_safe_verification_retry_arg(
                         arg,
                         exc,
-                        workspace_path=workspace_path,
+                        workspace_path=retry_workspace_path,
                     )
                     if retry_arg is None:
                         raise
@@ -4263,10 +5739,26 @@ class RuntimeEpisodeRunner:
                             ),
                         }
                 summary = dict(summary or {})
+                managed_branch_workspace = (
+                    dict(branch.get("engineeringWorkspace") or {})
+                    if isinstance(branch.get("engineeringWorkspace"), dict)
+                    else {}
+                )
+                artifact_validation_workspace = str(
+                    managed_branch_workspace.get("workspace_path")
+                    or managed_branch_workspace.get("workspacePath")
+                    or workspace_path
+                    or ""
+                ).strip()
                 summary = self._delegation_summary_with_expected_artifact_guard(
                     summary,
                     branch=branch,
-                    workspace_path=workspace_path,
+                    # A managed worker writes in its own child worktree. Check
+                    # the declared artifact there before finalizing/merging;
+                    # checking the parent root first makes every valid child
+                    # look empty and prevents the change set from ever being
+                    # promoted back to the Engineering episode.
+                    workspace_path=artifact_validation_workspace,
                 )
                 summary.setdefault("taskBriefId", task_id or branch.get("taskBriefId"))
                 direct_parent = direct_episode or episode
@@ -4287,6 +5779,12 @@ class RuntimeEpisodeRunner:
                     summary["childEpisodeIds"] = branch_child_ids
                     summary["status"] = "waiting_child_delegation"
                 summary = _finalize_managed_branch_workspace(branch, summary)
+                summary = self._attach_workspace_dependency_lineage(
+                    summary,
+                    task_id=task_id,
+                    dependencies=deps,
+                    completed_by_task_id=completed_by_task_id,
+                )
                 if (
                     _delegation_summary_allows_changeset_promotion(summary)
                     and isinstance(summary.get("gitChangeSet"), dict)
@@ -4300,7 +5798,10 @@ class RuntimeEpisodeRunner:
                             get_engineering_sandbox_service().build_run_integration(
                                 run_id=run_id,
                                 invocation_id=str(branch.get("invocationId") or episode.get("episodeId") or "delegation"),
-                                change_sets=[dict(summary.get("gitChangeSet") or {})],
+                                change_sets=(
+                                    list(summary.get("workspaceDependencyChain") or [])
+                                    or [dict(summary.get("gitChangeSet") or {})]
+                                ),
                             )
                         )
                         summary["integrationChangeSet"] = integration_change_set.as_dict()
@@ -4318,8 +5819,8 @@ class RuntimeEpisodeRunner:
                 results.append(summary)
                 _progress(
                     {
-                        "stage": "handoff_ready" if self._delegation_summary_succeeded(summary) else "blocked",
-                        "status": "completed" if self._delegation_summary_succeeded(summary) else str(summary.get("status") or "blocked"),
+                        "stage": "waiting_input" if str(summary.get("status") or "").strip().lower() in {"waiting_input", "awaiting_input", "needs_input"} else "handoff_ready" if self._delegation_summary_succeeded(summary) else "blocked",
+                        "status": str(summary.get("status") or "blocked"),
                         "summary": self._delegation_handoff_visible_evidence_summary(summary),
                     }
                 )

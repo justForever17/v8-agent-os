@@ -3,12 +3,14 @@ import json
 import re
 import time
 from types import SimpleNamespace
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .supervisor_context import (
     apply_passive_rag_injection,
     build_supervisor_system_content,
+    has_explicit_recall_cue,
     resolve_supervisor_request_context,
 )
 from .no_progress_breaker import apply_no_progress_breaker
@@ -247,27 +249,10 @@ def _should_force_memory_broker_first(
         return False
     if _spec_mode_active(state) and _spec_runtime_execution_allowed(state):
         return False
-    if passive_rag_diagnostics.get("has_recall_cue") is True:
-        return True
-    normalized = str(user_query or "").lower()
-    recall_terms = (
-        "上一轮",
-        "上一次",
-        "上次",
-        "之前",
-        "前面",
-        "刚才",
-        "历史",
-        "记忆",
-        "记得",
-        "继续上下文",
-        "队列消息",
-        "同一个 session",
-        "same session",
-        "previous context",
-        "prior context",
-    )
-    return any(term.lower() in normalized for term in recall_terms)
+    # Passive RAG diagnostics are advisory. Re-evaluate the actual user text
+    # here so domain work about a memory/history system cannot be mistaken for
+    # a request to recover previous conversation state.
+    return has_explicit_recall_cue(user_query)
 
 
 def _memory_broker_first_guidance(user_query: str) -> SystemMessage:
@@ -624,6 +609,16 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
     prefix = "[Explicit Runtime Orchestration Correction]" if correction else "[Explicit Runtime Orchestration]"
     first_kind = kinds[0] if kinds else "engineering"
     contract_example = render_runtime_route_contract(first_kind)
+    downstream_task_contract = (
+        '\nFor each non-Research downstream route, use the same route envelope with a typed task array such as:\n'
+        '{\n  "taskBriefs": [\n    {\n      "taskBriefId": "<stable task id>",\n'
+        '      "goal": "<one coherent work unit>",\n      "writeRequired": false,\n'
+        '      "readOnly": true,\n      "writeSet": [],\n'
+        '      "expectedOutputs": ["<human-readable output>"],\n'
+        '      "acceptanceContract": ["<observable acceptance>"]\n    }\n  ]\n}'
+        if any(kind != "research" for kind in kinds[1:])
+        else ""
+    )
     correction_line = (
         "Your previous response replaced execution with planning or clarification. This is the single correction attempt. "
         if correction
@@ -638,7 +633,7 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
             "Use the user's explicit read-only/no-side-effect boundary as the contract. Your first durable action MUST be one "
             "runtime_broker route call for the first runtime in the chain. Copy the complete JSON shape below, replace placeholder "
             "values, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
-            f"{contract_example}\n"
+            f"{contract_example}{downstream_task_contract}\n"
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "For a read-only task brief, use readOnly=true, writeRequired=false, writeSet=[], "
             "expectedOutputs=[\"<human-readable output>\"], and a non-empty acceptance or acceptanceContract. "
@@ -760,7 +755,13 @@ def _response_runtime_route_kinds(response) -> list[str]:
         if name != "runtime_broker" or not isinstance(args, dict):
             continue
         need = _coerce_json_mapping(args.get("need"))
-        kind = str(need.get("kind") or args.get("runtime_kind") or args.get("runtimeKind") or "").strip().lower()
+        kind = str(
+            args.get("routeKind")
+            or need.get("kind")
+            or args.get("runtime_kind")
+            or args.get("runtimeKind")
+            or ""
+        ).strip().lower()
         if kind:
             routed.append(kind)
     return routed
@@ -1191,7 +1192,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "[Spec Runtime Execution Gate]\n"
                 f"Spec Mode is active for specId={spec_id}, and the user has approved requirements, design, and tasks. "
                 "The next durable action MUST route the approved Spec into execution with runtime_broker route mode unless you must ask the user for a missing permission/scope. "
-                "Use the canonical typed need contract: put specId/task refs in need.inputs.taskBriefs[].context, and keep expected artifacts and proof expectations in their typed arrays. "
+                "Use the canonical typed route contract: put specId/task refs in taskBriefs[].context, and keep expected artifacts and proof expectations in their typed arrays. "
                 "Use Engineering/Research/Delegation/Creative runtimes as appropriate; if the Spec or selected skill calls for broad research or subagent swarms, express that as Research Runtime and/or top-level Delegation episodes, not hidden Supervisor-only work. "
                 "`runtime_execution` is not a Spec document stage; do not call `spec_broker(stage='runtime_execution')` or try to write another Spec stage. "
                 "Do not call memory_broker, fetch_skill_instructions, research_broker, web_broker, delegation_broker, or write_native_file directly in this stage; route those needs through runtime_broker. "
@@ -1218,7 +1219,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "use `spec_broker(mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update', stage='requirements|bugfix|design|tasks', content='<markdown>')` to write or revise it; "
                 "do not call `spec_broker(mode='approve')` yourself. Approval is a user/client governance event; wait for the resumed turn carrying the approved nextStage. "
                 "Keep the Spec Markdown user-facing: omit absolute workspace paths, internal IDs, literal tool-call syntax, approval mechanics, system instructions, and Agent progress narration; use relative project paths only when materially required by the contract. "
-                "Spec documents are not final project deliverables; after approval, use runtime_broker route mode with the canonical need.inputs.taskBriefs contract so approved tasks become runtime episodes with proof/artifact handoff. "
+                "Spec documents are not final project deliverables; after approval, use runtime_broker route mode with the canonical root taskBriefs transport so approved tasks become runtime episodes with proof/artifact handoff. "
                 "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, translate that into Research Runtime evidence or explicit top-level delegation after the relevant Spec stage is approved; do not assume subagents can spawn grandchildren implicitly. "
                 "Do not route Engineering/Research/Delegation runtime work until the Spec brief says runtimeExecutionAllowed=true."
                 f"{tasks_guidance}"
@@ -1423,6 +1424,37 @@ def _runtime_episode_handoff_ready(state) -> bool:
         return False
 
 
+def _runtime_handoff_final_advisory_pending(state) -> bool:
+    """Inject the delivery advisory once for each newly persisted handoff summary.
+
+    The runtime wait node persists a governance-tagged summary whenever a new
+    terminal handoff reaches the Supervisor.  The advisory itself is prompt-only,
+    so keying solely off ``runtime_dispatch_status`` would append it again after
+    every subsequent local tool result.  Treat the persisted summary as an edge:
+    it is pending only while no later conversation message has recorded the
+    Supervisor's reaction.  A later runtime summary naturally opens a new edge.
+
+    Synthetic/unit states may omit the persisted message; keep the historical
+    behaviour for those states so recovery guidance is not lost.
+    """
+
+    if not isinstance(state, dict):
+        return True
+    messages = list(state.get("messages") or [])
+    latest_handoff_index = -1
+    for index, message in enumerate(messages):
+        additional_kwargs = {}
+        if isinstance(message, dict):
+            additional_kwargs = dict(message.get("additional_kwargs") or message.get("additionalKwargs") or {})
+        else:
+            additional_kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+        if str(additional_kwargs.get("v8_governance_type") or "").strip() == "runtime_handoff":
+            latest_handoff_index = index
+    if latest_handoff_index < 0:
+        return True
+    return latest_handoff_index == len(messages) - 1
+
+
 def _runtime_episode_recoverable_failure(state) -> bool:
     if not isinstance(state, dict):
         return False
@@ -1489,15 +1521,262 @@ def _pending_runtime_continuation_kinds(state) -> list[str]:
     return [kind for kind in _pending_runtime_milestone_kinds(state) if kind not in observed]
 
 
+def _runtime_research_gap_state(state) -> dict:
+    """Project the latest per-brief Research truth from typed handoffs.
+
+    The route receipt is intentionally excluded: only terminal Research
+    handoffs can establish coverage or a gap.  Repeated degraded results for
+    the same stable brief ID count as the one allowed managed retry.
+    """
+
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    handoffs = [
+        dict(item)
+        for item in list(route_context.get("effectiveHandoffRefs") or route_context.get("handoffRefs") or [])
+        if isinstance(item, dict)
+    ]
+    latest: dict[str, dict] = {}
+    attempts: dict[str, int] = {}
+    producer_by_brief: dict[str, str] = {}
+    ready_task_brief_ids: list[str] = []
+    research_refs: list[str] = []
+    downstream_allowed = False
+    continuation_policy: dict[str, Any] = {}
+
+    def _append_unique(target: list[str], value: Any, limit: int = 24) -> None:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in target and len(target) < limit:
+            target.append(normalized)
+
+    for handoff in handoffs:
+        kind = str(handoff.get("kind") or "").strip().lower()
+        if "research" not in kind:
+            continue
+        producer_id = str(handoff.get("producerEpisodeId") or handoff.get("episodeId") or "").strip()
+        downstream_allowed = downstream_allowed or bool(handoff.get("downstreamAllowed"))
+        if isinstance(handoff.get("continuationPolicy"), dict):
+            continuation_policy = dict(handoff.get("continuationPolicy") or {})
+        for ref in list(handoff.get("researchRefs") or handoff.get("proofRefs") or []):
+            _append_unique(research_refs, ref, limit=12)
+        results = [dict(item) for item in list(handoff.get("taskBriefResults") or []) if isinstance(item, dict)]
+        covered_ids = [str(item).strip() for item in list(handoff.get("coveredTaskBriefIds") or []) if str(item).strip()]
+        missing_ids = [str(item).strip() for item in list(handoff.get("missingTaskBriefIds") or []) if str(item).strip()]
+        for result in results:
+            brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+            if not brief_id:
+                continue
+            status = str(result.get("status") or "").strip().lower()
+            if status in {"ready", "completed", "success", "ok"}:
+                _append_unique(ready_task_brief_ids, brief_id)
+                _append_unique(research_refs, result.get("researchRef"), limit=12)
+            if status not in {"ready", "completed", "success", "ok"}:
+                attempts[brief_id] = attempts.get(brief_id, 0) + 1
+            latest[brief_id] = {
+                "status": status or "degraded",
+                "limitations": [str(value) for value in list(result.get("limitations") or []) if str(value).strip()][:6],
+                "evidenceStatusReasons": [
+                    str(value)
+                    for value in list(result.get("evidenceStatusReasons") or [])
+                    if str(value).strip()
+                ][:6],
+                "researchRef": str(result.get("researchRef") or "").strip(),
+            }
+            producer_by_brief[brief_id] = producer_id
+        for brief_id in covered_ids:
+            latest.setdefault(brief_id, {})
+            latest[brief_id]["status"] = "ready"
+            producer_by_brief[brief_id] = producer_id
+        for brief_id in missing_ids:
+            if not any(str(item.get("taskBriefId") or item.get("taskId") or "").strip() == brief_id for item in results):
+                attempts[brief_id] = attempts.get(brief_id, 0) + 1
+                latest[brief_id] = {"status": "degraded", "limitations": [], "evidenceStatusReasons": []}
+            producer_by_brief[brief_id] = producer_id
+
+    episode_briefs: dict[str, dict] = {}
+    for episode in list(route_context.get("capabilityEpisodes") or []):
+        if not isinstance(episode, dict):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("needId") or "").strip()
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        for brief in list(inputs.get("taskBriefs") or inputs.get("workerBriefs") or inputs.get("tasks") or []):
+            if not isinstance(brief, dict):
+                continue
+            brief_id = str(brief.get("taskBriefId") or brief.get("taskId") or brief.get("id") or "").strip()
+            if brief_id and (not episode_id or producer_by_brief.get(brief_id) in {"", episode_id, None}):
+                episode_briefs[brief_id] = dict(brief)
+
+    missing = [brief_id for brief_id, item in latest.items() if str(item.get("status") or "") not in {"ready", "completed", "success", "ok"}]
+    current_ready_ids = [
+        brief_id
+        for brief_id, item in latest.items()
+        if str(item.get("status") or "") in {"ready", "completed", "success", "ok"}
+    ]
+    return {
+        "missingTaskBriefIds": missing,
+        "attempts": {brief_id: max(1, int(attempts.get(brief_id) or 0)) for brief_id in missing},
+        "details": {brief_id: latest.get(brief_id, {}) for brief_id in missing},
+        "briefs": {brief_id: episode_briefs.get(brief_id, {}) for brief_id in missing},
+        "readyTaskBriefIds": current_ready_ids[:24],
+        "researchRefs": research_refs[:12],
+        "downstreamAllowed": downstream_allowed and bool(current_ready_ids),
+        "continuationPolicy": continuation_policy,
+        "retryAvailable": bool(missing) and all(int(attempts.get(brief_id) or 1) < 2 for brief_id in missing),
+    }
+
+
+def _managed_research_retry_need(gap: dict[str, Any]) -> dict[str, Any]:
+    """Build the one bounded Research continuation as a typed need.
+
+    The first implementation only mentioned missing IDs in prose. That left
+    a provider free to acknowledge the instruction without emitting the
+    required ``runtime_broker`` call. Keep the continuation small and
+    deterministic: copy only the original brief contract fields, force the
+    retry to read-only, and attach the previous evidence gap as bounded
+    context. Raw provider answers/tool payloads never cross this boundary.
+    """
+
+    missing_ids = [
+        str(item).strip()
+        for item in list(gap.get("missingTaskBriefIds") or [])
+        if str(item).strip()
+    ]
+    briefs = gap.get("briefs") if isinstance(gap.get("briefs"), dict) else {}
+    details = gap.get("details") if isinstance(gap.get("details"), dict) else {}
+    task_briefs: list[dict[str, Any]] = []
+    allowed_keys = (
+        "taskBriefId",
+        "goal",
+        "context",
+        "expectedOutputs",
+        "acceptanceContract",
+        "constraints",
+        "detailRefs",
+        "freshness",
+        "sourcePolicy",
+        "seedUrls",
+        "allowedDomains",
+    )
+    for brief_id in missing_ids[:8]:
+        original = dict(briefs.get(brief_id) or {})
+        detail = dict(details.get(brief_id) or {})
+        goal = str(
+            original.get("goal")
+            or original.get("question")
+            or "repeat the original evidence goal"
+        ).strip()
+        retry_brief: dict[str, Any] = {
+            "taskBriefId": brief_id,
+            "goal": goal[:500],
+            "readOnly": True,
+            "writeSet": [],
+        }
+        for key in allowed_keys:
+            if key in {"taskBriefId", "goal"} or key not in original:
+                continue
+            value = original.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if key == "context":
+                if isinstance(value, dict):
+                    # Context is a hint, not a second prompt. Preserve only
+                    # short scalar/list fields so a large provider payload
+                    # cannot be smuggled into the retry contract.
+                    compact_context: dict[str, Any] = {}
+                    for context_key in (
+                        "question",
+                        "sourcePolicy",
+                        "freshness",
+                        "focus",
+                        "constraints",
+                    ):
+                        context_value = value.get(context_key)
+                        if context_value not in (None, "", [], {}):
+                            compact_context[context_key] = context_value
+                    if compact_context:
+                        retry_brief[key] = compact_context
+                else:
+                    retry_brief[key] = str(value)[:900]
+            elif isinstance(value, list):
+                retry_brief[key] = [
+                    str(item)[:300]
+                    for item in value[:8]
+                    if str(item).strip()
+                ]
+            else:
+                retry_brief[key] = str(value)[:500]
+        retry_brief["context"] = {
+            **(
+                retry_brief.get("context")
+                if isinstance(retry_brief.get("context"), dict)
+                else {}
+            ),
+            "priorEvidenceStatus": str(detail.get("status") or "degraded")[:80],
+            "priorEvidenceReasons": [
+                str(item)[:240]
+                for item in list(detail.get("evidenceStatusReasons") or [])[:6]
+                if str(item).strip()
+            ],
+            "priorLimitations": [
+                str(item)[:300]
+                for item in list(detail.get("limitations") or [])[:4]
+                if str(item).strip()
+            ],
+        }
+        task_briefs.append(retry_brief)
+
+    research_ids = [str(item.get("taskBriefId") or "").strip() for item in task_briefs]
+    research_goals = [str(item.get("goal") or "").strip() for item in task_briefs]
+    research_contexts = [
+        json.dumps(item.get("context") or {}, ensure_ascii=False, separators=(",", ":"))[:1200]
+        if item.get("context")
+        else ""
+        for item in task_briefs
+    ]
+    route_args = {
+        "mode": "route",
+        "routeKind": "research",
+        "routeReason": "补齐上一轮 Research handoff 明确缺失的证据",
+        "researchBriefIds": research_ids,
+        "researchBriefGoals": research_goals,
+    }
+    if any(research_contexts):
+        route_args["researchBriefContexts"] = research_contexts
+    return route_args
+
+
 def _runtime_handoff_requires_continuation(state) -> bool:
     if not isinstance(state, dict):
         return False
+    dispatch_status = state.get("runtime_dispatch_status")
+    if isinstance(dispatch_status, dict):
+        next_action = str(dispatch_status.get("nextAction") or "").strip().lower()
+        dispatch_state = str(dispatch_status.get("state") or "").strip().lower()
+        if next_action == "request_runtime_input" or dispatch_state == "waiting_input":
+            return True
     route_context = state.get("current_route_context")
     if not isinstance(route_context, dict):
-        return False
+        return bool(_pending_runtime_continuation_kinds(state))
+    research_gap = _runtime_research_gap_state(state)
+    if research_gap.get("missingTaskBriefIds"):
+        # The managed Research owner gets one focused retry.  If that retry
+        # also degrades, never create a third Research route.  Do not return
+        # False early, though: an unfinished, reversible Engineering/Creative
+        # milestone may continue with the explicit evidence gap attached.
+        if research_gap.get("retryAvailable"):
+            return True
     for handoff in list(route_context.get("handoffRefs") or []):
         if not isinstance(handoff, dict):
             continue
+        status = str(handoff.get("status") or "").strip().lower()
+        if status in {"waiting_input", "awaiting_input", "needs_input"}:
+            return True
+        if isinstance(handoff.get("requiredInputs"), list) and handoff.get("requiredInputs"):
+            return True
+        if isinstance(handoff.get("continuationRequest"), dict) and handoff.get("continuationRequest"):
+            return True
+        # A compiled/planned handoff is an intermediate runtime result, not a
+        # completed user deliverable.  Continue through the next typed
+        # runtime route; never poll the prior episode from Supervisor code.
         if bool(handoff.get("requiresContinuation")):
             return True
         stage = str(handoff.get("handoffStage") or "").strip().lower()
@@ -1510,54 +1789,166 @@ def _runtime_handoff_requires_continuation(state) -> bool:
 def _runtime_handoff_continuation_message(state) -> HumanMessage:
     route_context = dict((state or {}).get("current_route_context") or {})
     handoffs = [dict(item) for item in list(route_context.get("handoffRefs") or []) if isinstance(item, dict)]
-    next_actions = [
-        str(item.get("recommendedNextAction") or "").strip()
-        for item in handoffs
-        if str(item.get("recommendedNextAction") or "").strip()
-    ]
-    pending_kinds = _pending_runtime_continuation_kinds(state)
-    next_action = next_actions[0] if next_actions else "Route the next unfinished Supervisor milestone."
-    if not pending_kinds:
+    dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
+    waiting_for_input = str(dispatch_status.get("nextAction") or "").strip().lower() == "request_runtime_input" or str(dispatch_status.get("state") or "").strip().lower() == "waiting_input"
+    required_inputs = dispatch_status.get("requiredInputs")
+    if not isinstance(required_inputs, list):
+        required_inputs = []
+    if not required_inputs:
+        for item in reversed(handoffs):
+            candidate = item.get("requiredInputs")
+            if isinstance(candidate, list) and candidate:
+                required_inputs = candidate
+                break
+    episode_id = str(dispatch_status.get("episodeId") or "").strip()
+    if not waiting_for_input:
+        research_gap = _runtime_research_gap_state(state)
+        missing_research_ids = list(research_gap.get("missingTaskBriefIds") or [])
+        if missing_research_ids and research_gap.get("retryAvailable"):
+            retry_need = _managed_research_retry_need(research_gap)
+            retry_need_json = json.dumps(retry_need, ensure_ascii=False, separators=(",", ":"))
+            return HumanMessage(
+                content=(
+                    "[Managed Research Gap — One Bounded Retry]\n"
+                    "The terminal Research handoff below is the execution truth. It reports explicit missing brief coverage, "
+                    "so the user task is not complete and this is not a detail-inspection step. Exactly one managed retry remains.\n"
+                    "Emit exactly one `runtime_broker` call and copy these typed route arguments without changing their shape:\n"
+                    "```json\n"
+                    + retry_need_json
+                    + "\n```\n"
+                    "The two Research arrays contain only the missing stable IDs and matching goals; preserve their complete order and equal length. "
+                    "The Engine expands it into read-only internal briefs. Prior evidence status and limitations are bounded context for correction, "
+                    "not a request to inspect the old payload. Do not answer with an acknowledgement or a prose promise before the call. "
+                    "Do not call tool_observation_detail on a runtime_broker route receipt: that receipt proves only that an episode was queued, "
+                    "not what the terminal Research handoff found. Do not substitute web_broker, research_broker, local probes, or a third Research route. "
+                    "If this one retry still lacks evidence, report the unresolved gap honestly instead of claiming downstream artifacts or completion."
+                )
+            )
+        exhausted_research_context = ""
+        if missing_research_ids and not research_gap.get("retryAvailable"):
+            ready_ids = list(research_gap.get("readyTaskBriefIds") or [])
+            exhausted_research_context = (
+                "\nThe one managed Research retry is exhausted for: "
+                + ", ".join(missing_research_ids)
+                + ". These IDs block only the corresponding unsupported claims; do not create a third Research route "
+                "or replace it with direct web calls. "
+            )
+            if research_gap.get("downstreamAllowed") and ready_ids:
+                exhausted_research_context += (
+                    "Other evidence is ready for: "
+                    + ", ".join(ready_ids)
+                    + ". If the unfinished milestone is reversible and can be verified locally, route that downstream "
+                    "runtime now. The Engine will attach researchContext.evidenceGaps automatically; require local proof "
+                    "and keep the unverified claim out of the final answer. Ask the user only when the missing fact controls "
+                    "an irreversible/high-impact choice or makes acceptance objectively impossible."
+                )
+            else:
+                exhausted_research_context += (
+                    "No usable evidence remains for the dependent decision, so report the precise blocker or ask one "
+                    "necessary user question instead of claiming completion."
+                )
+        next_actions = [
+            str(item.get("recommendedNextAction") or "").strip()
+            for item in handoffs
+            if str(item.get("recommendedNextAction") or "").strip()
+        ]
+        pending_kinds = _pending_runtime_continuation_kinds(state)
+        next_action = next_actions[0] if next_actions else "Route the next unfinished Supervisor milestone."
+        if not pending_kinds:
+            return HumanMessage(
+                content=(
+                    "[Runtime Intermediate Handoff]\n"
+                    "The runtime returned an intermediate recipe/work order, not the user's final deliverable. "
+                    "Do not stop or claim completion yet. Continue with the currently granted runtime tools.\n"
+                    f"Next action: {next_action}\n"
+                    f"{exhausted_research_context}\n"
+                    "Do not manually poll the runtime episode itself. For provider jobs explicitly created by the handoff, "
+                    "use their governed job-status tools and return real artifact/proof refs; a provider task ID alone is not delivery evidence."
+                )
+            )
         return HumanMessage(
             content=(
                 "[Runtime Intermediate Handoff]\n"
-                "The runtime returned an intermediate recipe/work order, not the user's final deliverable. "
-                "Do not stop or claim completion yet. Continue with the currently granted runtime tools.\n"
+                "A typed handoff returned, but the original user task still has unfinished runtime milestones. "
+                "Keep the original user request as the governing instruction; consume the compact handoff directly. "
+                "do not inspect the successful route's raw observation, call wait/observe/status, or manually poll.\n"
+                f"Pending runtime kinds: {', '.join(pending_kinds)}\n"
                 f"Next action: {next_action}\n"
-                "Do not manually poll the runtime episode itself. For provider jobs explicitly created by the handoff, "
-                "use their governed job-status tools and return real artifact/proof refs; a provider task ID alone is not delivery evidence."
+                f"{exhausted_research_context}\n"
+                "Update the completed high-level milestone, then call runtime_broker route mode with the canonical typed need contract "
+                "for the next required runtime. Do not replace execution with Todo updates or a prose-only plan."
             )
         )
     return HumanMessage(
         content=(
-            "[Runtime Intermediate Handoff]\n"
-            "A typed handoff returned, but the original user task still has unfinished runtime milestones. "
-            "Keep the original user request as the governing instruction. Consume the compact handoff directly; "
-            "do not inspect the successful route's raw observation, call wait/observe/status, or manually poll.\n"
-            f"Pending runtime kinds: {', '.join(pending_kinds) if pending_kinds else 'current runtime continuation'}\n"
-            f"Next action: {next_action}\n"
-            "Update the completed high-level milestone, then call runtime_broker route mode with the canonical typed need contract "
-            "for the next required runtime. Do not replace execution with Todo updates or a prose-only plan."
+            "[Runtime input required]\n"
+            "Ask the user one concise ordinary question for the missing runtime input below. "
+            "Do not translate a runtime event into a progress message, create a replacement route, call provider tools directly, "
+            "or claim that the task is complete. After the user answers, resume the same episode exactly once with "
+            "runtime_broker(mode='resume', episode_id=..., continuation_request_id=..., continuation_inputs=...).\n"
+            f"episodeId: {episode_id or 'the waiting episode'}\n"
+            f"requiredInputs: {json.dumps(required_inputs, ensure_ascii=False)}"
         )
     )
 
 
-def _runtime_handoff_final_message() -> HumanMessage:
+def _runtime_handoff_final_message(state=None) -> HumanMessage:
+    research_gap = _runtime_research_gap_state(state)
+    exhausted_gap = ""
+    if research_gap.get("missingTaskBriefIds") and not research_gap.get("retryAvailable"):
+        exhausted_gap = (
+            " The managed Research retry is exhausted for these unresolved brief IDs: "
+            + ", ".join(list(research_gap.get("missingTaskBriefIds") or []))
+            + ". Treat each as a blocker for that unsupported claim, not automatically as a blocker for the whole task. "
+            "Do not create a third Research route, inspect an old route receipt, or substitute direct web calls. "
+        )
+        if research_gap.get("downstreamAllowed") and research_gap.get("readyTaskBriefIds"):
+            exhausted_gap += (
+                "Other ready evidence may support reversible downstream work. If the remaining implementation can be proven "
+                "locally, route Engineering/Creative now with explicit evidenceGaps (the route tool also preserves them), "
+                "require local verification, and omit the unverified claim from the final answer. Ask the user only when the "
+                "missing fact controls an irreversible/high-impact choice or makes acceptance objectively impossible."
+            )
+        else:
+            exhausted_gap += (
+                "No usable evidence remains for the dependent decision; report the exact blocker or ask one necessary user "
+                "question, and never claim that requested files or proof exist."
+            )
     return HumanMessage(
         content=(
             "[Runtime Handoff Review Advisory]\n"
             "Runtime episodes are terminal and their typed handoffs are available as execution evidence. "
+            "This advisory is a single review edge for the newest handoff; repeated state projection creates no new obligation. "
+            "A terminal handoff is the last result from that episode: no additional handoff will arrive unless you create a new, justified route. "
             "You are the delivery owner: inspect the returned artifacts, proof, warnings, and acceptance results, "
             "then decide whether the user's request is ready to deliver. "
+            "Ready/degraded validates only the declared taskBriefIds shown in that handoff, not the whole user request. "
+            "Compare that declared coverage with the original request, expected outputs, and unfinished orchestration milestones now. "
             "A handoff result with status=ok/ready, evidence=complete, concrete artifact refs, and verification values "
             "is sufficient governed evidence for that acceptance step. Consume it directly; do not re-read the same "
             "artifact or route another verification episode for the same criteria. "
-            "If the evidence is sufficient, give the user a concise verified result. If it is incomplete or inconsistent, "
-            "use the available detail, verification, repair, or runtime tools before delivering. "
+            "If the evidence is sufficient and every requested deliverable is covered, give the user a concise verified result. "
+            "If the handoff covers only research for a research-plus-implementation request, consume its refs and continue now; never wait for phantom handoffs. "
+            "Choose the continuation by the unfinished delivery contract, not merely by which tools are locally visible. A genuinely small, single-output follow-through "
+            "with no dependency, durable proof, or recovery need may use bound local tools. If the remaining work has multiple dependent outputs, a machine-readable baseline, "
+            "execution verification, or recovery/proof requirements, route one typed Engineering episode before the first implementation command. A Skill may improve the method "
+            "inside that path but does not replace the required execution/proof handoff. "
+            "If evidence is incomplete or inconsistent, use the available detail, verification, repair, or runtime tools before delivering. "
+            "A managed child worktree path is execution provenance, not evidence of quarantine. Only the typed failure signals "
+            "sandboxEvidence.state=failed, artifactRefsAccepted=false, or a write-set violation mean that a candidate is quarantined. "
+            "When sandboxEvidence.state=completed and parentWorktreeMerge.status=merged_to_parent, the accepted change set is already "
+            "present in the current Active Workspace Root. Consume its relative changed paths and proof directly; do not inspect or copy "
+            "the child worktree and do not route the same acceptance criteria again. The current Active Workspace Root may itself be the "
+            "Supervisor's managed workspace, so an absolute child artifact path does not prove that delivery is absent. "
+            "A failed/degraded Engineering handoff with sandboxEvidence.state=failed, artifactRefsAccepted=false, or a write-set violation is a quarantined candidate, "
+            "not a workspace to salvage. Repair the typed task contract and create one bounded Engineering retry for the named repairTaskBriefIds. "
+            "Do not inspect, execute, copy, or manually reconstruct the preserved candidate worktree, and do not poll the terminal episode with local shell commands. "
             "For delegated results whose supervisorAcceptance is still pending, include exactly one explicit line in the "
             "user-facing conclusion: `验收决定：ACCEPT`, `验收决定：RETRY`, or `验收决定：IGNORE`, followed by the evidence basis. "
             "A provider task ID or a bare worker success sentence is not proof by itself; only explicit missing evidence, "
-            "a blocker, or contradictory values justify a repair/verification route."
+            "a blocker, or contradictory values justify a repair/verification route. Once the declared acceptance is covered and one bounded "
+            "verification pass is clean, finalize instead of expanding self-authored test scope."
+            + exhausted_gap
         )
     )
 
@@ -1586,11 +1977,47 @@ def _runtime_handoff_final_text(state) -> str:
             summary = f"已生成 {len(refs)} 个引用。" if refs else "已生成 typed handoff。"
         label = kind if not status else f"{kind} / {status}"
         lines.append(f"- {label}: {summary[:900]}")
+        covered_ids = [str(item).strip() for item in list(handoff.get("coveredTaskBriefIds") or []) if str(item).strip()]
+        missing_ids = [str(item).strip() for item in list(handoff.get("missingTaskBriefIds") or []) if str(item).strip()]
+        if covered_ids or missing_ids:
+            lines.append(
+                "  覆盖："
+                f"已具备证据 {', '.join(covered_ids) or '无'}；"
+                f"仍缺证据 {', '.join(missing_ids) or '无'}。"
+            )
+        for result in list(handoff.get("taskBriefResults") or [])[:6]:
+            if not isinstance(result, dict):
+                continue
+            brief_id = str(result.get("taskBriefId") or "").strip()
+            result_status = str(result.get("status") or "").strip()
+            reasons = [str(item) for item in list(result.get("evidenceStatusReasons") or []) if str(item).strip()]
+            limitations = [str(item) for item in list(result.get("limitations") or []) if str(item).strip()]
+            if brief_id:
+                lines.append(
+                    f"  - {brief_id} / {result_status or 'unknown'}"
+                    + (f"：{', '.join(reasons)}" if reasons else "")
+                    + (f"；限制：{' | '.join(limitations[:2])}" if limitations else "")
+                )
+        detail_ref = str(handoff.get("detailRef") or "").strip()
+        if detail_ref:
+            lines.append(f"  终态证据详情：{detail_ref}")
     if len(handoffs) > 8:
         lines.append(f"- 另有 {len(handoffs) - 8} 个 handoff 已进入执行图/诊断面板。")
     if not handoffs:
         episode_count = int(dispatch_status.get("episodeCount") or 0)
         lines.append(f"- runtime_episode: {episode_count} 个 episode 已进入终态，但没有可展示 handoff 引用。")
+    research_gap = _runtime_research_gap_state(state)
+    if research_gap.get("missingTaskBriefIds"):
+        if research_gap.get("retryAvailable"):
+            lines.append(
+                "Research 仍有明确缺项，只允许通过受管 Research 对上述缺失 brief 做一次补查；"
+                "不要展开旧的入队回执，也不要声称下游文件已经生成。"
+            )
+        else:
+            lines.append(
+                "Research 的一次受管补查已经用尽，缺项仍未解决；本轮必须诚实报告阻塞，"
+                "不得继续依赖这些缺失证据或声称任务完成。"
+            )
     lines.append("这些 handoff 是验收证据，不是自动交付结论；Supervisor 仍需决定继续验证、修复或向用户交付。")
     return "\n".join(lines)
 
@@ -1671,6 +2098,90 @@ def _response_text_content(response) -> str:
                     parts.append(str(text))
         return "\n".join(parts)
     return str(content or "")
+
+
+def _response_has_visible_narrative(response) -> bool:
+    """Return whether the model supplied ordinary user-facing text.
+
+    Provider reasoning blocks and tool-use blocks are intentionally excluded.
+    This is a model contract check, not a renderer/projection: we never invent
+    a translated progress event when the model omitted its narrative.
+    """
+
+    content = getattr(response, "content", "")
+    if isinstance(content, str):
+        text = re.sub(r"<think>.*?</think>", "", content, flags=re.IGNORECASE | re.DOTALL)
+        return bool(text.strip())
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str) and block.strip():
+                return True
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type in {"reasoning", "thinking", "tool_use", "tool_call", "server_tool_use"}:
+                continue
+            text = block.get("text") or block.get("content")
+            if text and str(text).strip():
+                return True
+    return False
+
+def _model_narrative_correction_message(*, terminal: bool) -> SystemMessage:
+    if terminal:
+        content = (
+            "[V8OS visibility contract correction]\n"
+            "Your previous turn ended without ordinary assistant text and without a tool call. "
+            "Return a concise, truthful final user-facing answer now. Do not emit reasoning, JSON, or a tool call. "
+            "Do not claim work that has no evidence."
+        )
+    else:
+        content = (
+            "[V8OS visibility contract correction]\n"
+            "Your previous response selected a long execution phase but contained no ordinary assistant text. "
+            "Write exactly one concise, truthful sentence explaining the next intended phase to the user; do not claim it has completed. "
+            "Do not emit reasoning or a translated runtime event. The already selected tool call will be preserved unchanged."
+        )
+    return SystemMessage(content=content, additional_kwargs={"v8_internal": True, "v8_visibility_contract": True})
+
+
+def _ensure_supervisor_narrative_contract(
+    response,
+    *,
+    prepared_messages,
+    invoke_llm,
+    robust_invoke,
+    preferred_model_id: str,
+    build_model,
+    sanitize_response_tool_calls,
+):
+    """Repair a genuinely silent terminal response without duplicating tools.
+
+    A response that already contains a tool call is an executable Supervisor
+    decision, even when its narrative is empty. Re-invoking the model merely
+    to add prose can duplicate a route or side effect (especially on a
+    recoverable failure), so only an empty terminal response receives the
+    no-tool visibility correction.
+    """
+
+    has_tools = _response_has_tool_calls(response)
+    has_text = _response_has_visible_narrative(response)
+    if has_text or has_tools:
+        return response
+    corrected = robust_invoke(
+        invoke_llm,
+        [*prepared_messages, _model_narrative_correction_message(terminal=True)],
+        [],
+        role="supervisor",
+        preferred_model_id=preferred_model_id,
+        build_model=build_model,
+    )
+    corrected = sanitize_response_tool_calls(corrected)
+    if _response_has_visible_narrative(corrected):
+        return corrected
+    return AIMessage(
+        content="模型未返回可见的最终答复，本轮未被宣称完成；请重试或检查模型响应。",
+        additional_kwargs={"v8_visibility_contract_error": "empty_terminal_response"},
+    )
 
 
 def _response_has_delegation_acceptance(response) -> bool:
@@ -1783,6 +2294,94 @@ def _coerce_recoverable_failure_response(response, state):
         "或根据失败原因补齐验收要求后重试。"
     )
     return response
+
+
+def _retry_missing_research_briefs_once(
+    response,
+    *,
+    state,
+    prepared_messages,
+    invoke_llm,
+    filtered_tools,
+    robust_invoke,
+    preferred_model_id: str,
+    build_model,
+    sanitize_response_tool_calls,
+):
+    """Give one model correction when a typed Research gap was ignored.
+
+    This is a handoff self-consistency check, not task classification: the
+    runtime itself named the missing brief IDs and its bounded next action.
+    """
+
+    gap = _runtime_research_gap_state(state)
+    missing_ids = list(gap.get("missingTaskBriefIds") or [])
+    if not missing_ids or not gap.get("retryAvailable"):
+        return response
+    if "research" in _response_runtime_route_kinds(response):
+        return response
+    if not _has_tool(filtered_tools, "runtime_broker"):
+        return AIMessage(
+            content=(
+                "这次任务还不能完成：深度调研回流明确缺少 "
+                + ", ".join(missing_ids)
+                + " 的证据，但当前 Supervisor 工具面没有可用的受管运行入口。"
+                "我没有改用普通网页工具绕过，也没有声称下游产物已生成。"
+            )
+        )
+
+    retry_need = _managed_research_retry_need(gap)
+    retry_need_json = json.dumps(retry_need, ensure_ascii=False, separators=(",", ":"))
+
+    correction_messages = [
+        *prepared_messages,
+        response,
+        HumanMessage(
+            content=(
+                "[Research Handoff Discipline Correction]\n"
+                "Your prior response did not follow the typed terminal handoff: it promised a retry but emitted no governed tool call. "
+                "Replace the prior response with exactly one runtime_broker call using these exact typed route arguments. "
+                "Copy the object without changing its keys or array types; do not emit prose before the call:\n"
+                "```json\n"
+                + retry_need_json
+                + "\n```\n"
+                "The Research ID/goal arrays contain only the unresolved stable briefs; the Engine zips them into read-only briefs. "
+                "Do not call tool_observation_detail, web_broker, research_broker, local probes, or downstream implementation first."
+            )
+        ),
+    ]
+    # The terminal handoff already made the route decision and supplied the
+    # exact typed need.  Rebinding the whole Supervisor surface here makes a
+    # weak tool-calling provider re-read dozens of irrelevant schemas during
+    # the one bounded correction.  Keep the model in control of emitting the
+    # native call, but expose only the tool that can satisfy this contract.
+    retry_tools = [
+        tool_ref
+        for tool_ref in list(filtered_tools or [])
+        if _tool_ref_name(tool_ref) == "runtime_broker"
+    ]
+    corrected = robust_invoke(
+        invoke_llm,
+        correction_messages,
+        retry_tools,
+        role="supervisor",
+        preferred_model_id=preferred_model_id,
+        build_model=build_model,
+        tool_choice="runtime_broker",
+    )
+    corrected = _normalize_runtime_broker_response_arguments(
+        sanitize_response_tool_calls(corrected)
+    )
+    if "research" in _response_runtime_route_kinds(corrected):
+        return corrected
+    return AIMessage(
+        content=(
+            "这次任务还不能完成：深度调研仍缺少 "
+            + ", ".join(missing_ids)
+            + " 的证据，且 Supervisor 在一次纪律纠正后仍未创建正确的受管补查。"
+            "本轮已停止，未把旧入队回执当作证据，也未虚构任何下游产物。"
+        )
+    )
 
 
 def _retry_spec_revision_once(
@@ -2117,8 +2716,8 @@ def execute_supervisor_turn(
             prepared_messages.append(spec_guidance)
         if runtime_handoff_ready and runtime_handoff_needs_continuation:
             prepared_messages.append(_runtime_handoff_continuation_message(state))
-        elif runtime_handoff_ready:
-            prepared_messages.append(_runtime_handoff_final_message())
+        elif runtime_handoff_ready and _runtime_handoff_final_advisory_pending(state):
+            prepared_messages.append(_runtime_handoff_final_message(state))
         elif _runtime_episode_recoverable_failure(state):
             dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
             failure_reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
@@ -2222,6 +2821,22 @@ def execute_supervisor_turn(
         )
         response = _normalize_runtime_broker_response_arguments(
             sanitize_response_tool_calls(response)
+        )
+        response = _retry_missing_research_briefs_once(
+            response,
+            state=state,
+            prepared_messages=prepared_messages,
+            invoke_llm=invoke_llm,
+            filtered_tools=filtered_supervisor_tools,
+            robust_invoke=robust_invoke,
+            preferred_model_id=sup_model_name,
+            build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                candidate_model_id,
+                streaming=False,
+                _role="supervisor",
+                **invoke_caller_kwargs,
+            ),
+            sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
         response = _retry_spec_revision_once(
             response,
@@ -2337,6 +2952,20 @@ def execute_supervisor_turn(
                         "已标记为失败并通知来源任务；没有执行或伪造任何跨会话结果。"
                     )
                 )
+        response = _ensure_supervisor_narrative_contract(
+            response,
+            prepared_messages=prepared_messages,
+            invoke_llm=invoke_llm,
+            robust_invoke=robust_invoke,
+            preferred_model_id=sup_model_name,
+            build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                candidate_model_id,
+                streaming=False,
+                _role="supervisor",
+                **invoke_caller_kwargs,
+            ),
+            sanitize_response_tool_calls=sanitize_response_tool_calls,
+        )
         response = _coerce_recoverable_failure_response(response, state)
         _attach_route_context_to_response(
             response,

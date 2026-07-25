@@ -91,7 +91,7 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertNotIn("eng-0 | class=", rendered)
         self.assertIn("hiddenMembers=14; revealRequired=true", rendered)
 
-    def test_legacy_matched_members_mode_still_supports_limited_expansion(self):
+    def test_legacy_matched_members_mode_falls_back_to_family_cards(self):
         agents = [_agent("global-writer", "writing", global_exposure=True)]
         agents.extend(_agent(f"eng-{index}", "engineering") for index in range(12))
 
@@ -101,12 +101,13 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
             agents=agents,
         )
 
-        self.assertIn("familyMode=legacy_matched_members; familyLimit=10", rendered)
-        self.assertIn("[engineering]", rendered)
-        self.assertIn("eng-9", rendered)
-        self.assertNotIn("- eng-10 | class=", rendered)
+        self.assertIn("familyMode=family_cards", rendered)
+        self.assertIn("[registeredAgentIndex]", rendered)
         self.assertIn("- name=eng-10 | id=eng-10", rendered)
-        self.assertIn("2 more hidden by familyLimit=10", rendered)
+        self.assertIn("[familyCapabilityCards]", rendered)
+        self.assertIn("- engineering | members=12", rendered)
+        self.assertNotIn("[revealedFamilyMembers]", rendered)
+        self.assertNotIn("eng-0 | class=", rendered)
 
     def test_family_mode_off_exposes_all_subagents_in_compact_form(self):
         agents = [_agent(f"eng-{index}", "engineering") for index in range(12)]
@@ -134,8 +135,9 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertFalse(normalized["familyModeEnabled"])
         self.assertEqual(normalized["maxMembersPerFamily"], 50)
         self.assertEqual(normalized["exposureMode"], "family_cards")
+        self.assertNotIn("autoReveal", normalized)
 
-    def test_remotion_task_shape_high_confidence_auto_reveals_engineering_only(self):
+    def test_remotion_text_does_not_auto_reveal_engineering(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),
             _agent("media-motion", "creative_media", ops=["video", "storyboard"]),
@@ -147,16 +149,15 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         )
 
         rendered = str(bundle["specialist_agents_context"])
-        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "project_coding")
-        self.assertIn("primary=project_coding", bundle["task_shape_context"])
-        self.assertIn("autoReveal=eligible", bundle["task_shape_context"])
+        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "unknown")
+        self.assertEqual(bundle["task_shape_context"], "")
         self.assertIn("- engineering | members=1", rendered)
-        self.assertIn("recommended=true", rendered)
-        self.assertIn("[engineering] revealSource=task_shape_high_confidence", rendered)
-        self.assertIn("eng-impl | class=", rendered)
+        self.assertNotIn("recommended=true", rendered)
+        self.assertNotIn("[engineering] revealSource=task_shape_high_confidence", rendered)
+        self.assertNotIn("eng-impl | class=", rendered)
         self.assertNotIn("media-motion | class=", rendered)
 
-    def test_seedance_high_confidence_auto_reveals_only_creative_media(self):
+    def test_seedance_text_does_not_auto_reveal_creative_media(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),
             _agent("media-motion", "creative_media", ops=["video", "storyboard"]),
@@ -168,14 +169,14 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         )
 
         rendered = str(bundle["specialist_agents_context"])
-        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "creative_media")
-        self.assertIn("autoReveal=eligible", bundle["task_shape_context"])
-        self.assertIn("autoRevealFamilies=creative_media", rendered)
-        self.assertIn("[creative_media] revealSource=task_shape_high_confidence", rendered)
-        self.assertIn("media-motion | class=", rendered)
+        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "unknown")
+        self.assertEqual(bundle["task_shape_context"], "")
+        self.assertIn("explicitFamilyMentions=none", rendered)
+        self.assertNotIn("[creative_media] revealSource=task_shape_high_confidence", rendered)
+        self.assertNotIn("media-motion | class=", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
 
-    def test_psd_layered_asset_high_confidence_auto_reveals_creative_media(self):
+    def test_psd_text_does_not_auto_reveal_creative_media(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),
             _agent("psd-layer-compositor", "creative_media", ops=["plan_layers", "compose_psd"]),
@@ -187,14 +188,14 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         )
 
         rendered = str(bundle["specialist_agents_context"])
-        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "creative_media")
-        self.assertIn("autoReveal=eligible", bundle["task_shape_context"])
-        self.assertIn("autoRevealFamilies=creative_media", rendered)
-        self.assertIn("[creative_media] revealSource=task_shape_high_confidence", rendered)
-        self.assertIn("psd-layer-compositor | class=", rendered)
+        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "unknown")
+        self.assertEqual(bundle["task_shape_context"], "")
+        self.assertIn("explicitFamilyMentions=none", rendered)
+        self.assertNotIn("[creative_media] revealSource=task_shape_high_confidence", rendered)
+        self.assertNotIn("psd-layer-compositor | class=", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
 
-    def test_output_modality_only_keeps_family_cards_without_member_reveal(self):
+    def test_output_modality_text_keeps_neutral_family_cards_without_member_reveal(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),
             _agent("media-motion", "creative_media", ops=["video", "storyboard"]),
@@ -206,16 +207,16 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         )
 
         rendered = str(bundle["specialist_agents_context"])
-        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "creative_media")
-        self.assertFalse(bundle["task_shape_hint"]["autoRevealRecommendation"]["eligible"])
-        self.assertIn("autoRevealFamilies=none", rendered)
+        self.assertEqual(bundle["task_shape_hint"]["primaryTaskShape"], "unknown")
+        self.assertEqual(bundle["task_shape_context"], "")
+        self.assertIn("explicitFamilyMentions=none", rendered)
         self.assertIn("- creative_media | members=1", rendered)
-        self.assertIn("recommended=true", rendered)
+        self.assertNotIn("recommended=true", rendered)
         self.assertNotIn("[revealedFamilyMembers]", rendered)
         self.assertNotIn("media-motion | class=", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
 
-    def test_high_confidence_auto_reveal_can_be_disabled(self):
+    def test_obsolete_auto_reveal_config_is_ignored(self):
         agents = [
             _agent("eng-impl", "engineering", ops=["implement", "code"]),
             _agent("media-motion", "creative_media", ops=["video", "storyboard"]),
@@ -231,7 +232,8 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         )
 
         rendered = str(bundle["specialist_agents_context"])
-        self.assertIn("autoRevealFamilies=none", rendered)
+        self.assertIn("explicitFamilyMentions=none", rendered)
+        self.assertNotIn("autoRevealFamilies", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
         self.assertNotIn("media-motion | class=", rendered)
 

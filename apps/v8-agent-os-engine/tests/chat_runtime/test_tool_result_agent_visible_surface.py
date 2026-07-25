@@ -89,7 +89,7 @@ def test_runtime_broker_invalid_contract_surface_teaches_parameter_shape():
         "error": "typed_need_invalid",
         "routeBriefQuality": {
             "validationErrors": [
-                    {"field": "need.inputs.taskBriefs.0.dependencies", "type": "list_type"}
+                    {"field": "taskBriefs.0.dependencies", "type": "list_type"}
             ]
         },
         "parameterGuidance": runtime_route_parameter_guidance("engineering"),
@@ -103,9 +103,39 @@ def test_runtime_broker_invalid_contract_surface_teaches_parameter_shape():
     )
 
     assert visible.startswith("Runtime route repair")
-    assert "need.inputs.taskBriefs.0.dependencies" in visible
-    assert "Canonical task array: need.inputs.taskBriefs" in visible
+    assert "taskBriefs.0.dependencies" in visible
+    assert "Canonical task array: taskBriefs" in visible
     assert '"dependency":' not in visible
     assert "dependencies" in visible
     assert "Omit optional arrays when empty" in visible
     assert "Repair the same route call once" in visible
+
+
+def test_runtime_broker_write_contract_surface_reports_exact_task_failure():
+    payload = {
+        "ok": False,
+        "mode": "route",
+        "summary": "The write contract conflicts with its explicit expected artifacts.",
+        "error": "write_task_contract_incomplete",
+        "routeBriefQuality": {
+            "tasks": [
+                {
+                    "taskBriefId": "baseline-delivery",
+                    "missingFields": ["writeSet(expected_artifact_not_declared)"],
+                    "undeclaredArtifactPaths": ["reports/evidence.json"],
+                }
+            ],
+            "requiredFields": ["writeSet", "expectedOutputs", "acceptance"],
+        },
+        "recommendedNextAction": "Repair only the exact reported path and retry the same route once.",
+    }
+
+    visible = ChatRuntime._agent_visible_tool_result_for_event(
+        "runtime_broker",
+        json.dumps(payload, ensure_ascii=False),
+        payload,
+    )
+
+    assert "Task baseline-delivery needs repair: writeSet(expected_artifact_not_declared)" in visible
+    assert "Declared artifacts outside writeSet: reports/evidence.json" in visible
+    assert "Missing contract fields: writeSet, expectedOutputs, acceptance" not in visible

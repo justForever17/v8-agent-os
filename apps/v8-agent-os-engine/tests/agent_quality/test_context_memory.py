@@ -15,6 +15,7 @@ from graph.supervisor_turn import (
     _memory_no_match_since_latest_human,
     _should_force_memory_broker_first,
 )
+from graph.supervisor_context import has_explicit_recall_cue
 
 
 class _Tool:
@@ -144,6 +145,17 @@ def test_recall_cue_does_not_force_memory_when_tool_is_not_available() -> None:
         user_query="继续上一轮上下文",
         passive_rag_diagnostics={"has_recall_cue": True},
         selected_tools=[_Tool("read_native_file")],
+    )
+
+
+def test_memory_domain_work_is_not_mistaken_for_prior_context_recall() -> None:
+    query = "重新评估本地记忆索引、知识图谱和数据库的技术基线。"
+
+    assert not has_explicit_recall_cue(query)
+    assert not _should_force_memory_broker_first(
+        user_query=query,
+        passive_rag_diagnostics={"has_recall_cue": True},
+        selected_tools=[_Tool("memory_broker"), _Tool("read_native_file")],
     )
 
 

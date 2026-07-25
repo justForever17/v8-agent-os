@@ -278,9 +278,43 @@ def build_runtime_episode_wait_node():
             results.append(item)
         compact_results: list[dict] = []
         for item in results[:8]:
-            artifact_refs = list(item.get("artifactRefs") or item.get("artifacts") or [])[:8]
+            raw_artifact_refs = list(item.get("artifactRefs") or item.get("artifacts") or [])[:8]
             proof_refs = list(item.get("proofRefs") or [])[:8]
             status = _string_value(item.get("status"))
+            status_lower = status.lower()
+            sandbox_evidence = (
+                dict(item.get("sandboxEvidence"))
+                if isinstance(item.get("sandboxEvidence"), dict)
+                else {}
+            )
+            blocking_statuses = {
+                "error",
+                "failed",
+                "blocked",
+                "dependency_failed",
+                "cancelled",
+            }
+            research_result = bool(
+                item.get("answer")
+                or item.get("researchRef")
+                or item.get("evidenceBundleId")
+                or item.get("sourceUrls")
+            )
+            blocking_result = bool(
+                status_lower in blocking_statuses
+                or (status_lower == "degraded" and not research_result)
+                or item.get("error")
+                or str(sandbox_evidence.get("state") or "").strip().lower() in {"failed", "merge_failed"}
+                or item.get("artifactRefsAccepted") is False
+            )
+            artifact_refs: list[dict | str] = []
+            for ref in raw_artifact_refs:
+                if not blocking_result:
+                    artifact_refs.append(ref)
+                    continue
+                candidate = dict(ref) if isinstance(ref, dict) else {"ref": str(ref)}
+                candidate.update({"accepted": False, "state": "quarantined_unmerged"})
+                artifact_refs.append(candidate)
             verification_results = [
                 dict(result)
                 for result in list(item.get("verificationResults") or [])
@@ -293,14 +327,14 @@ def build_runtime_episode_wait_node():
                 if isinstance(item.get("verification"), dict)
                 else {}
             )
-            verification_passed = bool(verification_evidence.get("passed")) or any(
+            verification_passed = (not blocking_result) and (bool(verification_evidence.get("passed")) or any(
                 result.get("passed") is True
                 or str(result.get("status") or "").strip().lower() in {"verified", "passed", "success", "completed"}
                 for result in verification_results
-            )
+            ))
             verification_lines: list[str] = []
             evidence_source = verification_evidence or (verification_results[0] if verification_results else {})
-            for observation in list(evidence_source.get("observations") or [])[:4]:
+            for observation in ([] if blocking_result else list(evidence_source.get("observations") or [])[:4]):
                 if not isinstance(observation, dict):
                     continue
                 if observation.get("path"):
@@ -311,17 +345,39 @@ def build_runtime_episode_wait_node():
                         f"stdout={str(observation.get('stdout') or '')!r}; stderr={str(observation.get('stderr') or '')!r}"
                     )
             evidence_complete = bool(
-                status in {"ok", "completed", "ready", "success"}
+                not blocking_result
+                and status_lower in {"ok", "completed", "ready", "success"}
                 and (artifact_refs or verification_passed)
                 and not item.get("error")
                 and not item.get("missingArtifactEvidence")
                 and not item.get("blockers")
             )
-            result_text = _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1800]
+            # Research results use `answer` rather than delegation's
+            # resultText/localSelfCheck.  Keep the bounded answer in the
+            # agent-facing projection; the full evidence bundle remains in
+            # the Research ledger.
+            if blocking_result:
+                result_text = _string_value(
+                    item.get("error"),
+                    item.get("errorMessage"),
+                    item.get("localSelfCheck"),
+                    item.get("repairAction"),
+                )[:1800]
+                if not result_text:
+                    result_text = "Delegated result was not accepted because its execution contract or evidence failed."
+            else:
+                result_text = _string_value(
+                    item.get("answer"),
+                    item.get("resultText"),
+                    item.get("summary"),
+                    item.get("localSelfCheck"),
+                )[:1800]
             if verification_lines:
                 result_text = ("; ".join(verification_lines) + (f"; {result_text}" if result_text else ""))[:1800]
             verification_summary: list[str] = []
-            if evidence_source:
+            if blocking_result:
+                verification_summary.append("accepted=false; candidate evidence is quarantined and unmerged")
+            elif evidence_source:
                 verification_summary.append(f"passed={bool(evidence_source.get('passed'))}")
                 for file_item in list(evidence_source.get("files") or [])[:3]:
                     if not isinstance(file_item, dict):
@@ -357,29 +413,162 @@ def build_runtime_episode_wait_node():
                     "status": status,
                     "result": result_text,
                     "artifactRefs": artifact_refs,
-                    "proofRefs": proof_refs,
+                    "artifactRefsAccepted": (
+                        False if blocking_result else item.get("artifactRefsAccepted", True)
+                    ),
+                    "proofRefs": [] if blocking_result else proof_refs,
+                    "missingArtifactEvidence": [
+                        str(value).strip()
+                        for value in list(item.get("missingArtifactEvidence") or item.get("missingExpectedArtifacts") or [])[:12]
+                        if str(value).strip()
+                    ],
+                    "error": _string_value(item.get("error"), item.get("errorMessage")) if blocking_result else "",
+                    "repairAction": _string_value(
+                        item.get("repairAction"), sandbox_evidence.get("repairAction")
+                    )[:900],
+                    "sandboxEvidence": {
+                        key: sandbox_evidence.get(key)
+                        for key in (
+                            "state",
+                            "candidateState",
+                            "errorCode",
+                            "violations",
+                            "writeSet",
+                            "repairAction",
+                        )
+                        if sandbox_evidence.get(key) not in (None, "", [], {})
+                    },
+                    "workerReport": (
+                        _string_value(item.get("workerReportedSummary"), item.get("workerReportedResultText"))[:900]
+                        if blocking_result
+                        else ""
+                    ),
                     "toolsUsed": list(item.get("toolsUsed") or [])[:12],
                     "verificationResults": verification_results,
                     "verificationSummary": "; ".join(verification_summary)[:1200],
                     "verificationPassed": verification_passed,
                     "blockers": list(item.get("blockers") or item.get("residualRisks") or [])[:6],
                     "evidenceComplete": evidence_complete,
+                    "researchRef": _string_value(item.get("researchRef"), item.get("evidenceBundleId")),
+                    "evidenceBundleId": _string_value(item.get("evidenceBundleId")),
+                    "detailTool": _string_value(item.get("detailTool")),
+                    "sourceUrls": [
+                        str(value).strip()
+                        for value in list(item.get("sourceUrls") or [])[:6]
+                        if str(value).strip()
+                    ],
+                    "sourceCount": int(item.get("sourceCount") or 0),
+                    "claimCount": int(item.get("claimCount") or 0),
+                    "limitations": [str(value)[:500] for value in list(item.get("limitations") or [])[:6]],
+                    "evidenceStatusReasons": [
+                        str(value)[:160]
+                        for value in list(item.get("evidenceStatusReasons") or [])[:6]
+                    ],
                 }
             )
+        blocking_results_present = any(
+            str(item.get("status") or "").strip().lower()
+            in {"error", "failed", "blocked", "dependency_failed", "cancelled", "degraded"}
+            or bool(item.get("error"))
+            or item.get("artifactRefsAccepted") is False
+            or str((item.get("sandboxEvidence") or {}).get("state") or "").strip().lower()
+            in {"failed", "merge_failed"}
+            for item in compact_results
+        )
         nested_handoff = handoff.get("delegationHandoff")
         nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
         nested_refs = list(nested_handoff.get("refs") or nested_handoff.get("artifactRefs") or [])
         nested_proof_refs = list(nested_handoff.get("proofRefs") or nested_handoff.get("verificationRefs") or [])
         return {
             "handoffRefId": _string_value(handoff.get("handoffRefId"), handoff.get("handoffId")),
+            # Only a real tool observation rawRef is legal for
+            # tool_observation_detail.  Research evidence identities use
+            # `researchRefs` and an explicit research_broker(get_evidence)
+            # detailTool instead; never project research:// as rawRef.
+            "detailRef": (
+                _string_value(handoff.get("detailRef"), handoff.get("rawRef"))
+                if _string_value(handoff.get("detailRef"), handoff.get("rawRef")).startswith("toolobs://")
+                else ""
+            ),
+            "detailTool": _string_value(handoff.get("detailTool")),
             "producerEpisodeId": _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId")),
             "kind": _string_value(handoff.get("kind"), "runtime_handoff"),
             "status": _string_value(handoff.get("status")),
-            "summary": _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:1200],
+            "summary": (
+                "Delegated execution was not accepted. Its candidate workspace is quarantined and unmerged; "
+                "repair the typed task contract and route only the affected briefs once."
+                if blocking_results_present
+                else _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:1200]
+            ),
             "refs": list(handoff.get("refs") or handoff.get("artifactRefs") or nested_refs)[:10],
             "proofRefs": list(handoff.get("proofRefs") or handoff.get("verificationRefs") or nested_proof_refs)[:10],
+            "researchRefs": list(handoff.get("researchRefs") or [])[:10],
             "results": compact_results,
             "consumerHint": _string_value(handoff.get("consumerHint"), handoff.get("recommendedNextAction"))[:600],
+            "recommendedNextAction": _string_value(handoff.get("recommendedNextAction"))[:160],
+            "taskBriefIds": [
+                str(item).strip()
+                for item in list(handoff.get("taskBriefIds") or [])
+                if str(item).strip()
+            ][:24],
+            "coveredTaskBriefIds": [
+                str(item).strip()
+                for item in list(handoff.get("coveredTaskBriefIds") or [])
+                if str(item).strip()
+            ][:24],
+            "missingTaskBriefIds": [
+                str(item).strip()
+                for item in list(handoff.get("missingTaskBriefIds") or [])
+                if str(item).strip()
+            ][:24],
+            "claimBlockers": [
+                str(item).strip()
+                for item in list(handoff.get("claimBlockers") or [])
+                if str(item).strip()
+            ][:24],
+            "evidenceGaps": [
+                {
+                    "taskBriefId": _string_value(item.get("taskBriefId"), item.get("taskId")),
+                    "status": _string_value(item.get("status"), "unverified"),
+                    "blocksClaim": bool(item.get("blocksClaim", True)),
+                    "blocksDownstream": bool(item.get("blocksDownstream", False)),
+                    "limitations": [
+                        str(value)[:500]
+                        for value in list(item.get("limitations") or [])[:6]
+                        if str(value).strip()
+                    ],
+                    "evidenceStatusReasons": [
+                        str(value)[:160]
+                        for value in list(item.get("evidenceStatusReasons") or [])[:6]
+                        if str(value).strip()
+                    ],
+                }
+                for item in list(handoff.get("evidenceGaps") or [])
+                if isinstance(item, dict)
+                and _string_value(item.get("taskBriefId"), item.get("taskId"))
+            ][:24],
+            "downstreamAllowed": bool(handoff.get("downstreamAllowed")),
+            "continuationPolicy": (
+                dict(handoff.get("continuationPolicy"))
+                if isinstance(handoff.get("continuationPolicy"), dict)
+                else {}
+            ),
+            "coverageComplete": bool(handoff.get("coverageComplete")),
+            "taskBriefCount": int(handoff.get("taskBriefCount") or 0),
+            "sourceCount": int(handoff.get("sourceCount") or 0),
+            "limitations": [str(item)[:500] for item in list(handoff.get("limitations") or [])[:6]],
+            "terminalEpisode": bool(handoff.get("terminalEpisode")),
+            "remainingHandoffsExpected": int(handoff.get("remainingHandoffsExpected") or 0),
+            "requiredInputs": [
+                dict(item)
+                for item in list(handoff.get("requiredInputs") or [])
+                if isinstance(item, dict)
+            ][:12],
+            "continuationRequest": (
+                dict(handoff.get("continuationRequest"))
+                if isinstance(handoff.get("continuationRequest"), dict)
+                else None
+            ),
         }
 
     def _summary_message(*, episodes: list[dict], handoffs: list[dict], status: str, reason: str = "") -> HumanMessage:
@@ -394,6 +583,41 @@ def build_runtime_episode_wait_node():
                 summary = _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:800]
                 status_label = _string_value(handoff.get("status"))
                 lines.append(f"- {kind}{f' / {status_label}' if status_label else ''}: {summary}")
+                task_brief_ids = list(handoff.get("taskBriefIds") or [])
+                if handoff.get("terminalEpisode"):
+                    coverage = ", ".join(str(item) for item in task_brief_ids) or "no declared task brief ids"
+                    lines.append(
+                        "  terminal episode: no further handoffs will arrive from this episode; "
+                        f"declared brief coverage={coverage}; remainingHandoffsExpected={handoff.get('remainingHandoffsExpected', 0)}"
+                    )
+                if handoff.get("sourceCount") or handoff.get("limitations"):
+                    lines.append(
+                        f"  research evidence: sources={handoff.get('sourceCount', 0)}; "
+                        f"limitations={len(list(handoff.get('limitations') or []))}"
+                    )
+                covered_ids = list(handoff.get("coveredTaskBriefIds") or [])
+                missing_ids = list(handoff.get("missingTaskBriefIds") or [])
+                if covered_ids or missing_ids:
+                    lines.append(
+                        "  brief coverage: "
+                        f"covered={', '.join(covered_ids) or 'none'}; "
+                        f"missing={', '.join(missing_ids) or 'none'}; "
+                        f"complete={bool(handoff.get('coverageComplete'))}"
+                    )
+                if missing_ids:
+                    lines.append(
+                        "  next action: retry only the missing brief IDs once through a new managed Research episode; "
+                        "do not inspect the earlier runtime route receipt or replace the gap with direct web tools."
+                    )
+                if handoff.get("researchRefs") or any(
+                    result.get("researchRef") for result in list(handoff.get("results") or [])
+                ):
+                    lines.append(
+                        "  research reference contract: research:// is evidence lineage, not a toolobs:// rawRef. "
+                        "Consume the bounded answers/sources below. If more detail is genuinely required, use only "
+                        "the exact per-brief research_broker(mode='get_evidence', evidenceBundleId=...) call shown "
+                        "below; never pass research:// to tool_observation_detail."
+                    )
                 for result in list(handoff.get("results") or [])[:4]:
                     task_id = _string_value(result.get("taskBriefId"), "task")
                     target = _string_value(result.get("targetLabel"), "worker")
@@ -426,10 +650,34 @@ def build_runtime_episode_wait_node():
                         if label:
                             artifact_labels.append(label)
                     if artifact_labels:
-                        lines.append("    artifacts: " + ", ".join(artifact_labels))
+                        artifact_label = (
+                            "quarantined candidates (unmerged): "
+                            if result.get("artifactRefsAccepted") is False
+                            else "artifacts: "
+                        )
+                        lines.append("    " + artifact_label + ", ".join(artifact_labels))
                     verification_summary = _string_value(result.get("verificationSummary"))
                     if verification_summary:
                         lines.append("    verification: " + verification_summary)
+                    if result.get("researchRef") or result.get("sourceCount") or result.get("evidenceStatusReasons"):
+                        lines.append(
+                            "    research: "
+                            f"evidenceRef={_string_value(result.get('researchRef')) or 'none'}; "
+                            f"sources={int(result.get('sourceCount') or 0)}; "
+                            f"claims={int(result.get('claimCount') or 0)}; "
+                            f"evidenceStatus={','.join(list(result.get('evidenceStatusReasons') or [])) or 'ready'}"
+                        )
+                        source_urls = [str(value).strip() for value in list(result.get("sourceUrls") or []) if str(value).strip()]
+                        if source_urls:
+                            lines.append("    sources: " + ", ".join(source_urls[:4]))
+                        detail_tool = _string_value(result.get("detailTool"))
+                        if detail_tool:
+                            lines.append("    detail: " + detail_tool)
+                    if result.get("limitations"):
+                        lines.append(
+                            "    limitations: "
+                            + " | ".join(str(value) for value in list(result.get("limitations") or [])[:3])
+                        )
         else:
             lines.append("Episodes:")
             for episode in episodes[:8]:
@@ -568,6 +816,88 @@ def build_runtime_episode_wait_node():
             route_context, handoffs = _merge_handoffs(route_context, episodes)
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
+            waiting_input_episodes = [
+                episode
+                for episode in active
+                if str(episode.get("state") or "").strip().lower() == "waiting_input"
+            ]
+            if waiting_input_episodes:
+                waiting_ids = {
+                    _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+                    for episode in waiting_input_episodes
+                }
+                input_handoffs = [
+                    handoff
+                    for handoff in handoffs
+                    if _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId")) in waiting_ids
+                    and (
+                        str(handoff.get("status") or "").strip().lower()
+                        in {"waiting_input", "awaiting_input", "needs_input"}
+                        or handoff.get("requiredInputs")
+                        or handoff.get("continuationRequest")
+                    )
+                ]
+                selected_handoff = input_handoffs[-1] if input_handoffs else {}
+                required_inputs = [
+                    dict(item)
+                    for item in list(selected_handoff.get("requiredInputs") or [])
+                    if isinstance(item, dict)
+                ][:12]
+                continuation_request = (
+                    dict(selected_handoff.get("continuationRequest") or {})
+                    if isinstance(selected_handoff.get("continuationRequest"), dict)
+                    else {"requiredInputs": required_inputs, "resumePolicy": "same_episode"}
+                )
+                continuation_request.setdefault("requiredInputs", required_inputs)
+                continuation_request["resumePolicy"] = "same_episode"
+                continuation_request_id = str(continuation_request.get("requestId") or "").strip()
+                waiting_episode = waiting_input_episodes[-1]
+                waiting_episode_id = _string_value(
+                    waiting_episode.get("episodeId"), waiting_episode.get("id"), waiting_episode.get("needId")
+                )
+                notification_key = f"{waiting_episode_id}:{_string_value(selected_handoff.get('handoffRefId'), selected_handoff.get('handoffId'), waiting_episode.get('updatedAt'))}"
+                notified_keys = {
+                    str(item).strip()
+                    for item in list(route_context.get("runtimeInputRequestKeys") or [])
+                    if str(item).strip()
+                }
+                first_notification = notification_key not in notified_keys
+                route_context["runtimeInputRequestKeys"] = list(dict.fromkeys([*notified_keys, notification_key]))[-50:]
+                input_guidance = HumanMessage(
+                    content=(
+                        "[Runtime input required]\n"
+                        "A runtime episode is paused for an explicit missing choice. Keep the same episode active. "
+                        "Ask the user one concise, ordinary question using the requiredInputs below. After the answer, "
+                        "call runtime_broker(mode='resume', episode_id=..., continuation_request_id=..., continuation_inputs=...) exactly once; do not create a new route, "
+                        "call provider tools directly, or mark the task complete.\n"
+                        f"episodeId: {waiting_episode_id}\n"
+                        f"continuationRequestId: {continuation_request_id}\n"
+                        f"requiredInputs: {json.dumps(required_inputs, ensure_ascii=False)}"
+                    ),
+                    additional_kwargs={
+                        "v8_governance_type": "runtime_input_required",
+                        "v8_runtime_episode_id": waiting_episode_id,
+                        "v8_continuation_request": continuation_request,
+                    },
+                )
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "current_route_context": route_context,
+                        **identity_update,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_episode",
+                            "nextAction": "request_runtime_input",
+                            "state": "waiting_input",
+                            "episodeId": waiting_episode_id,
+                            "episodeKind": _string_value(waiting_episode.get("kind"), "runtime"),
+                            "requiredInputs": required_inputs,
+                            "continuationRequest": continuation_request,
+                            "inputRequestInjected": first_notification,
+                        },
+                        "messages": [input_guidance] if first_notification else [],
+                    },
+                )
             if episodes and not active:
                 handoffs_by_episode: dict[str, list[dict]] = {}
                 for handoff in handoffs:

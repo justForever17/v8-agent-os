@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -55,6 +56,44 @@ class ChatMessage(BaseModel):
     name: Optional[str] = Field(default=None, description="Name of the tool or user")
     tool_call_id: Optional[str] = Field(default=None, description="ID of the tool call if this is a tool response")
     tool_calls: Optional[List[ChatToolCall]] = Field(default=None, alias="toolCalls", description="Assistant tool calls")
+    # Provider continuation blocks are reconstructed by the Engine from
+    # trusted persisted metadata.  PrivateAttr keeps them out of request
+    # schemas/API responses and prevents renderer/client injection.
+    _provider_continuation: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @classmethod
+    def from_persisted_record(cls, record: Dict[str, Any]) -> "ChatMessage":
+        """Rehydrate trusted history, including opaque provider replay state."""
+
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        tool_calls: List[ChatToolCall] = []
+        for item in list(record.get("tool_calls") or []):
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+            name = str(item.get("toolName") or item.get("name") or function.get("name") or "").strip()
+            if not name:
+                continue
+            arguments = item.get("args", function.get("arguments", {}))
+            arguments_text = arguments if isinstance(arguments, str) else json.dumps(arguments or {}, ensure_ascii=False)
+            tool_calls.append(
+                ChatToolCall(
+                    id=str(item.get("toolCallId") or item.get("id") or "").strip() or None,
+                    type=str(item.get("type") or "function"),
+                    function=ChatToolFunction(name=name, arguments=arguments_text),
+                )
+            )
+        message = cls(
+            role=str(record.get("role") or "user"),
+            content=str(record.get("content") or ""),
+            name=metadata.get("tool_name") if str(record.get("role") or "") == "tool" else None,
+            tool_call_id=metadata.get("tool_call_id") if str(record.get("role") or "") == "tool" else None,
+            toolCalls=tool_calls or None,
+        )
+        from core.provider_continuation import provider_continuation_from_metadata
+
+        message._provider_continuation = provider_continuation_from_metadata(metadata)
+        return message
 
 
 class ToolOutput(BaseModel):

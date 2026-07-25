@@ -1057,9 +1057,53 @@ def _context_governance_summary(payload: Dict[str, Any]) -> str:
     return "上下文治理：" + "，".join(parts) if parts else "上下文治理已更新"
 
 
-def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
-    metadata = dict(payload)
+def _compact_runtime_handoff_ref(value: Any) -> Dict[str, Any]:
+    record = _runtime_record(value)
+    compact: Dict[str, Any] = {}
     for source_key, target_key in [
+        ("handoffRefId", "handoffRefId"),
+        ("handoff_ref_id", "handoffRefId"),
+        ("handoffId", "handoffId"),
+        ("handoff_id", "handoffId"),
+        ("artifactId", "artifactId"),
+        ("artifact_id", "artifactId"),
+        ("producerEpisodeId", "producerEpisodeId"),
+        ("producer_episode_id", "producerEpisodeId"),
+        ("kind", "kind"),
+        ("status", "status"),
+        ("compactSummary", "compactSummary"),
+        ("compact_summary", "compactSummary"),
+        ("handoffStage", "handoffStage"),
+        ("handoff_stage", "handoffStage"),
+        ("requiresContinuation", "requiresContinuation"),
+        ("requires_continuation", "requiresContinuation"),
+        ("recommendedNextAction", "recommendedNextAction"),
+        ("recommended_next_action", "recommendedNextAction"),
+        ("createdAt", "createdAt"),
+        ("created_at", "createdAt"),
+    ]:
+        item = record.get(source_key)
+        if item not in (None, "", [], {}):
+            compact[target_key] = item
+    for source_key, target_key in [
+        ("artifactRefs", "artifactRefs"),
+        ("artifact_refs", "artifactRefs"),
+        ("evidenceRefs", "evidenceRefs"),
+        ("evidence_refs", "evidenceRefs"),
+        ("recipeRefs", "recipeRefs"),
+        ("recipe_refs", "recipeRefs"),
+    ]:
+        items = record.get(source_key)
+        if isinstance(items, list):
+            compact[target_key] = [str(item) for item in items[:24] if str(item).strip()]
+    return compact
+
+
+def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {}
+    for source_key, target_key in [
+        ("runtimeId", "runtimeId"),
+        ("runtime_id", "runtimeId"),
         ("episodeId", "episodeId"),
         ("episode_id", "episodeId"),
         ("needId", "episodeId"),
@@ -1077,13 +1121,28 @@ def _runtime_episode_metadata(payload: Dict[str, Any], record: Dict[str, Any]) -
         ("evidence_bundle_id", "evidenceBundleId"),
         ("dispatchStatus", "dispatchStatus"),
         ("dispatch_status", "dispatchStatus"),
+        ("ownerRuntimeId", "ownerRuntimeId"),
+        ("owner_runtime_id", "ownerRuntimeId"),
+        ("ownerAgentKind", "ownerAgentKind"),
+        ("owner_agent_kind", "ownerAgentKind"),
+        ("ownerAgentId", "ownerAgentId"),
+        ("owner_agent_id", "ownerAgentId"),
     ]:
-        value = record.get(source_key)
+        value = record.get(source_key, payload.get(source_key))
         if value not in (None, ""):
             metadata[target_key] = value
     handoff_refs = record.get("handoffRefs") or record.get("handoff_refs") or payload.get("handoffRefs") or payload.get("handoff_refs")
     if handoff_refs:
-        metadata["handoffRefs"] = handoff_refs
+        values = handoff_refs if isinstance(handoff_refs, list) else [handoff_refs]
+        compact_handoffs = [item for item in (_compact_runtime_handoff_ref(value) for value in values) if item]
+        if compact_handoffs:
+            metadata["handoffRefs"] = compact_handoffs
+            metadata["handoff"] = compact_handoffs[0]
+            if compact_handoffs[0].get("requiresContinuation") is not None:
+                metadata["requiresContinuation"] = bool(compact_handoffs[0]["requiresContinuation"])
+            recommended_next_action = compact_handoffs[0].get("recommendedNextAction")
+            if isinstance(recommended_next_action, str) and recommended_next_action.strip():
+                metadata["recommendedNextAction"] = recommended_next_action.strip()
     producer_episode_id = metadata.get("producerEpisodeId")
     if producer_episode_id and not metadata.get("episodeId"):
         metadata["episodeId"] = producer_episode_id
@@ -1138,12 +1197,59 @@ def _runtime_id_for_tool_name(tool_name: str) -> str:
     return "chat"
 
 
+def _creative_media_tool_entry(
+    event: Dict[str, Any],
+    topic: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    tool = _runtime_nested_record(payload, "tool")
+    result = _runtime_record(tool.get("result"))
+    lifecycle = topic.rsplit(".", 1)[-1]
+    result_status = _read_string(result, ["status", "state"]).lower()
+    failed = (
+        lifecycle == "failed"
+        or result.get("ok") is False
+        or bool(result.get("error"))
+        or result_status in {"failed", "error", "blocked", "cancelled"}
+    )
+    status = "failed" if failed else ("active" if lifecycle == "started" else "completed")
+    tool_name = _runtime_tool_name(payload) or "creative_media"
+    summary = f"{tool_name} · {status}"
+    metadata: Dict[str, Any] = {
+        "runtimeId": "creative_media",
+        "ownerRuntimeId": _read_string(payload, ["ownerRuntimeId", "owner_runtime_id"]) or "creative_media",
+        "ownerAgentKind": _read_string(payload, ["ownerAgentKind", "owner_agent_kind"]),
+        "ownerAgentId": _read_string(payload, ["ownerAgentId", "owner_agent_id"]),
+        "toolName": tool_name,
+        "toolInvocationId": _runtime_tool_call_id(payload),
+        "status": _read_string(result, ["status", "state"]) or status,
+        "ok": False if failed else result.get("ok"),
+    }
+    source = _runtime_record(event.get("source"))
+    if not metadata["ownerAgentId"] and source.get("agent_id"):
+        metadata["ownerAgentId"] = source.get("agent_id")
+    return _runtime_timeline_entry(
+        event,
+        runtime_id="creative_media",
+        kind="tool",
+        summary=summary,
+        status=status,
+        actor_label=_runtime_actor_label("creative_media"),
+        metadata={key: value for key, value in metadata.items() if value not in (None, "")},
+    )
+
+
 def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     record: Dict[str, Any] = payload
     kind = "progress"
     summary = ""
     runtime_id = ""
 
+    if topic == "runtime.episode.progress":
+        # Fine-grained worker progress remains available in the Runtime Surface. It is
+        # not authoritative user-facing narration and must not become a synthetic
+        # progress message in Web/Phone.
+        return None
     if topic.startswith("capability.need."):
         record = _runtime_nested_record(payload, "need") or payload
         runtime_id = _runtime_kind_from_payload({**payload, **record}, topic=topic)
@@ -1168,6 +1274,8 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
         reason = _read_string(record, ["reason", "summary", "message"])
         summary = reason or "子代理请求孙 agent / child delegation"
         kind = "progress"
+    elif topic.startswith("creative_media.tool."):
+        return _creative_media_tool_entry(event, topic, payload)
     elif topic.startswith("research.") or topic.startswith("research_broker."):
         runtime_id = "research"
         summary = _read_string(payload, ["summary", "message", "question"]) or "Research Runtime 已更新"
@@ -1234,6 +1342,51 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
     )
 
 
+RUNTIME_TIMELINE_MILESTONE_TOPICS = {
+    "handoff.ref.created",
+    "runtime.episode.active",
+    "runtime.episode.cancelled",
+    "runtime.episode.completed",
+    "runtime.episode.degraded",
+    "runtime.episode.failed",
+    "runtime.episode.queued",
+    "runtime.episode.resumed",
+    "runtime.episode.retry_scheduled",
+    "runtime.episode.started",
+    "runtime.episode.waiting",
+    "runtime.episode.waiting_input",
+}
+
+
+def select_runtime_timeline_window(
+    timeline: List[Dict[str, Any]],
+    *,
+    recent_limit: int = 160,
+    milestone_limit: int = 32,
+) -> List[Dict[str, Any]]:
+    recent_count = max(1, int(recent_limit or 160))
+    milestone_count = max(0, int(milestone_limit or 0))
+    recent = list(timeline[-recent_count:])
+    if len(timeline) <= recent_count or milestone_count <= 0:
+        return recent
+    recent_ids = {
+        (str(entry.get("id") or ""), int(entry.get("seq") or 0))
+        for entry in recent
+    }
+    historical: List[Dict[str, Any]] = []
+    for entry in reversed(timeline[:-recent_count]):
+        if str(entry.get("topic") or "").strip().lower() not in RUNTIME_TIMELINE_MILESTONE_TOPICS:
+            continue
+        key = (str(entry.get("id") or ""), int(entry.get("seq") or 0))
+        if key in recent_ids:
+            continue
+        historical.append(entry)
+        if len(historical) >= milestone_count:
+            break
+    historical.reverse()
+    return [*historical, *recent]
+
+
 def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     projected: List[Dict[str, Any]] = []
     seen: set[tuple[int, str]] = set()
@@ -1274,6 +1427,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="progress",
                 summary=f"已筛出 {skill_count} 个 Skills，{mcp_count} 个 MCP 工具",
                 status="selected",
+                metadata={"skillCount": skill_count, "mcpToolCount": mcp_count},
             )
         elif topic == "extension.skill.loaded":
             skill_name = str(payload.get("skillName") or "未知 Skill")
@@ -1283,6 +1437,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="tool",
                 summary=f"已读取 Skill：{skill_name}",
                 status="loaded",
+                metadata={"skillName": skill_name},
             )
         elif topic in {"extension.skill.blocked", "safety.skill_blocked"}:
             skill_name = str(payload.get("skillName") or "未知 Skill")
@@ -1293,6 +1448,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="governance",
                 summary=f"Safety Guardian 已阻断 Skill：{skill_name}（{verdict}）",
                 status="blocked",
+                metadata={"skillName": skill_name, "verdict": verdict},
             )
         elif topic == "extension.mcp.candidate_exposed":
             count = int(payload.get("count") or len(list(payload.get("toolNames") or [])) or 0)
@@ -1302,6 +1458,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="progress",
                 summary=f"已暴露 {count} 个 MCP 工具",
                 status="ready",
+                metadata={"count": count},
             )
         elif topic == "extension.mcp.invoked":
             tool_names = [str(item).strip() for item in list(payload.get("toolNames") or []) if str(item).strip()]
@@ -1312,6 +1469,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="tool",
                 summary=_truncate_runtime_summary(summary, 96),
                 status="invoked",
+                metadata={"toolNames": tool_names[:12]},
             )
         elif topic == "extension.execution.completed":
             tool_names = [str(item).strip() for item in list(payload.get("toolNames") or []) if str(item).strip()]
@@ -1325,6 +1483,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                 kind="progress",
                 summary=summary,
                 status="completed",
+                metadata={"toolNames": tool_names[:12], "hasToolCalls": bool(tool_names)},
             )
         elif topic == "chat.command_preset.applied":
             preset_name = str(payload.get("name") or "未命名命令").strip() or "未命名命令"

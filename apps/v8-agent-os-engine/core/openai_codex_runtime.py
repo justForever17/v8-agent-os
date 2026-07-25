@@ -11,6 +11,8 @@ from typing import Any, AsyncIterator, Iterator, Mapping, Sequence
 import requests
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from core.provider_continuation import extract_provider_continuation, replay_content_blocks
+
 
 CODEX_RESPONSES_ENDPOINT = "/codex/responses"
 JWT_CLAIM_PATH = "https://api.openai.com/auth"
@@ -66,16 +68,22 @@ def _resolve_codex_url(base_url: str) -> str:
     return f"{raw}{CODEX_RESPONSES_ENDPOINT}"
 
 
-def _message_to_responses_item(message: BaseMessage) -> dict[str, Any] | None:
+def _message_to_responses_items(message: BaseMessage) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(message, AIMessage):
+        # Responses store=false conversations must replay encrypted reasoning
+        # items as top-level input items, before the visible assistant output.
+        items.extend(replay_content_blocks(extract_provider_continuation(message)))
     content = _stringify_content(getattr(message, "content", "")).strip()
     if not content:
-        return None
+        return items
     if isinstance(message, ToolMessage):
         tool_name = str(getattr(message, "name", "") or getattr(message, "tool_call_id", "") or "tool")
         content = f"[Tool Result: {tool_name}]\n{content}"
     role = "assistant" if isinstance(message, AIMessage) else "user"
     content_type = "output_text" if role == "assistant" else "input_text"
-    return {"role": role, "content": [{"type": content_type, "text": content}]}
+    items.append({"role": role, "content": [{"type": content_type, "text": content}]})
+    return items
 
 
 def _build_messages(messages: Sequence[BaseMessage]) -> tuple[str, list[dict[str, Any]]]:
@@ -87,10 +95,41 @@ def _build_messages(messages: Sequence[BaseMessage]) -> tuple[str, list[dict[str
             if rendered:
                 system_parts.append(rendered)
             continue
-        item = _message_to_responses_item(message)
-        if item:
-            input_items.append(item)
+        input_items.extend(_message_to_responses_items(message))
     return "\n\n".join(system_parts), input_items
+
+
+def _response_output_items(response_payload: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    output = dict(response_payload or {}).get("output") or []
+    return [dict(item) for item in output if isinstance(item, Mapping)]
+
+
+def _reasoning_output_items(response_payload: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    return [item for item in _response_output_items(response_payload) if str(item.get("type") or "") == "reasoning"]
+
+
+def _completed_output_text(response_payload: Mapping[str, Any] | None) -> str:
+    parts: list[str] = []
+    for item in _response_output_items(response_payload):
+        if str(item.get("type") or "") != "message":
+            continue
+        for block in list(item.get("content") or []):
+            if not isinstance(block, Mapping) or str(block.get("type") or "") not in {"output_text", "text"}:
+                continue
+            text_value = str(block.get("text") or "")
+            if text_value:
+                parts.append(text_value)
+    return "".join(parts)
+
+
+def _reasoning_summary_block(summary_text: str) -> dict[str, Any] | None:
+    text_value = str(summary_text or "")
+    if not text_value:
+        return None
+    return {
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": text_value}],
+    }
 
 
 def _truncate_with_stop(text: str, stop: Sequence[str] | None) -> tuple[str, bool]:
@@ -188,7 +227,14 @@ class OpenAICodexResponsesRuntimeModel:
             "instructions": instructions,
             "input": input_items,
             "text": {"verbosity": str(merged.get("textVerbosity") or merged.get("text_verbosity") or "medium")},
-            "include": ["reasoning.encrypted_content"],
+            "include": list(
+                dict.fromkeys(
+                    [
+                        *list(merged.get("include") or []),
+                        "reasoning.encrypted_content",
+                    ]
+                )
+            ),
             "prompt_cache_key": str(merged.get("prompt_cache_key") or self._session_id),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
@@ -230,6 +276,8 @@ class OpenAICodexResponsesRuntimeModel:
     def invoke(self, messages: Sequence[BaseMessage], stop: Sequence[str] | None = None, **kwargs: Any) -> AIMessage:
         body = self._build_body(messages, stop=stop, kwargs=kwargs)
         text_parts: list[str] = []
+        summary_parts: list[str] = []
+        streamed_reasoning_items: list[dict[str, Any]] = []
         response_payload: dict[str, Any] = {}
         response_id = ""
         status = ""
@@ -237,6 +285,12 @@ class OpenAICodexResponsesRuntimeModel:
             event_type = str(event.get("type") or "")
             if event_type == "response.output_text.delta":
                 text_parts.append(str(event.get("delta") or ""))
+            elif event_type == "response.reasoning_summary_text.delta":
+                summary_parts.append(str(event.get("delta") or ""))
+            elif event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = event.get("item")
+                if isinstance(item, Mapping) and str(item.get("type") or "") == "reasoning":
+                    streamed_reasoning_items.append(dict(item))
             elif event_type == "response.completed":
                 response_payload = dict(event.get("response") or {})
                 response_id = str(response_payload.get("id") or response_id)
@@ -245,15 +299,28 @@ class OpenAICodexResponsesRuntimeModel:
                 response_payload = dict(event.get("response") or {})
                 error = response_payload.get("error") or {}
                 raise RuntimeError(str(error.get("message") if isinstance(error, dict) else error))
-        text, _reached_stop = _truncate_with_stop("".join(text_parts), stop)
+        completed_text = _completed_output_text(response_payload)
+        text, _reached_stop = _truncate_with_stop("".join(text_parts) or completed_text, stop)
+        reasoning_items = _reasoning_output_items(response_payload) or streamed_reasoning_items
+        content: str | list[dict[str, Any]] = text
+        if reasoning_items or summary_parts:
+            content_blocks = [dict(item) for item in reasoning_items]
+            if not content_blocks:
+                summary_block = _reasoning_summary_block("".join(summary_parts))
+                if summary_block:
+                    content_blocks.append(summary_block)
+            if text:
+                content_blocks.append({"type": "text", "text": text})
+            content = content_blocks
         return AIMessage(
-            content=text,
+            content=content,
             response_metadata={
                 "codexResponsesRuntime": True,
                 "codexResponseId": response_id,
                 "codexResponseStatus": status,
                 "codexSessionId": self._session_id,
                 "model": self.model_id,
+                "v8_provider_standard": "openai",
             },
             usage_metadata=_usage_metadata(response_payload),
         )
@@ -274,12 +341,47 @@ class OpenAICodexResponsesRuntimeModel:
                 text, _reached_stop = _truncate_with_stop(emitted, stop)
                 yield AIMessageChunk(
                     content=text[-len(str(event.get("delta") or "")):],
-                    response_metadata={"codexResponsesRuntime": True, "model": self.model_id},
+                    response_metadata={
+                        "codexResponsesRuntime": True,
+                        "model": self.model_id,
+                        "v8_provider_standard": "openai",
+                    },
                 )
+            elif event_type == "response.reasoning_summary_text.delta":
+                summary_block = _reasoning_summary_block(str(event.get("delta") or ""))
+                if summary_block:
+                    yield AIMessageChunk(
+                        content=[summary_block],
+                        response_metadata={
+                            "codexResponsesRuntime": True,
+                            "model": self.model_id,
+                            "v8_provider_standard": "openai",
+                        },
+                    )
+            elif event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = event.get("item")
+                if isinstance(item, Mapping) and str(item.get("type") or "") == "reasoning":
+                    yield AIMessageChunk(
+                        content=[dict(item)],
+                        response_metadata={
+                            "codexResponsesRuntime": True,
+                            "model": self.model_id,
+                            "v8_provider_standard": "openai",
+                        },
+                    )
             elif event_type == "response.completed":
                 final_payload = dict(event.get("response") or {})
                 response_id = str(final_payload.get("id") or response_id)
                 status = str(final_payload.get("status") or status)
+                for reasoning_item in _reasoning_output_items(final_payload):
+                    yield AIMessageChunk(
+                        content=[reasoning_item],
+                        response_metadata={
+                            "codexResponsesRuntime": True,
+                            "model": self.model_id,
+                            "v8_provider_standard": "openai",
+                        },
+                    )
             elif event_type == "response.failed":
                 final_payload = dict(event.get("response") or {})
                 error = final_payload.get("error") or {}
@@ -293,6 +395,7 @@ class OpenAICodexResponsesRuntimeModel:
                     "codexResponseStatus": status,
                     "codexSessionId": self._session_id,
                     "model": self.model_id,
+                    "v8_provider_standard": "openai",
                 },
                 usage_metadata=_usage_metadata(final_payload),
             )

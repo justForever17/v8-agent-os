@@ -477,6 +477,53 @@ def test_research_broker_uses_source_router_by_default(monkeypatch):
     assert payload["providerAttemptMatrix"][0]["provider"] == "router"
 
 
+def test_research_broker_reads_explicit_seed_before_search_provider(monkeypatch):
+    monkeypatch.setattr(
+        research_module.storage,
+        "get_supervisor_config",
+        lambda: {"research": {"enabled": True, "defaultShardCount": 2, "maxShardCount": 3, "maxRounds": 2}},
+    )
+    search_calls: list[str] = []
+    read_calls: list[str] = []
+
+    def fake_search(**kwargs):
+        search_calls.append(str(kwargs.get("query") or ""))
+        return json.dumps({"ok": False, "results": [], "error": "search provider unavailable"})
+
+    def fake_read(**kwargs):
+        read_calls.append(str(kwargs.get("url") or ""))
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "title": "SQLite FTS5 Extension",
+                "text": "Official SQLite FTS5 documentation. " * 80,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="run",
+            question="What is the current SQLite FTS5 support contract?",
+            sourcePolicy="authoritative",
+            seedUrls=["https://sqlite.org/fts5.html"],
+            maxShards=2,
+            maxRounds=2,
+            state={"run_id": "run-seed-first"},
+        )
+    )
+
+    assert read_calls[0] == "https://sqlite.org/fts5.html"
+    assert search_calls
+    seed_source = next(item for item in payload["sourceMatrix"] if item["url"] == "https://sqlite.org/fts5.html")
+    assert seed_source["selectedForEvidence"] is True
+    assert seed_source["provider"] == "explicit_seed_url"
+    assert payload["researchAnswerPack"]["sources"][0]["url"] == "https://sqlite.org/fts5.html"
+
+
 def test_research_broker_uses_web_research_architect_agent_when_available(monkeypatch):
     monkeypatch.setattr(
         research_module.storage,
@@ -928,6 +975,61 @@ def test_reuse_decision_ignores_generic_stopword_overlap():
     )
 
     assert decision["reuseDecision"] == "ignore"
+
+
+def test_reuse_topic_match_rejects_adjacent_technical_topics_but_keeps_exact_topic():
+    fts5_pack = {
+        "experiencePackId": "rxp-fts5",
+        "title": "SQLite FTS5 current official support",
+        "query": "Check current SQLite FTS5 support in 2026",
+        "topicFingerprint": research_module._topic_fingerprint(
+            "Check current SQLite FTS5 support in 2026"
+        ),
+    }
+
+    jsonb_match, jsonb_reason = research_module._reuse_topic_match(
+        "Check current PostgreSQL JSONB support in 2026",
+        fts5_pack,
+    )
+    python_match, python_reason = research_module._reuse_topic_match(
+        "Check current Python support on Windows in 2026",
+        fts5_pack,
+    )
+    exact_match, exact_reason = research_module._reuse_topic_match(
+        "Check current SQLite FTS5 support in 2026",
+        fts5_pack,
+    )
+
+    assert jsonb_match is False
+    assert jsonb_reason == "distinctive_identifier_mismatch"
+    assert python_match is False
+    assert python_reason == "distinctive_identifier_mismatch"
+    assert exact_match is True
+    assert exact_reason == "topic_fingerprint_match"
+
+
+def test_reused_experience_bundle_preserves_evidence_lineage():
+    payload = research_module._bundle_from_reused_pack(
+        {
+            "experiencePackId": "rxp-lineage",
+            "createdFromBundleId": "research-source-bundle",
+            "title": "SQLite FTS5 support",
+            "researchResult": "FTS5 support is documented by the cited sources.",
+            "sourceMatrixDigest": [
+                {"title": "SQLite FTS5", "url": "https://sqlite.org/fts5.html"}
+            ],
+            "claimDigest": [{"claim": "FTS5 is documented."}],
+            "confidence": "high",
+            "authorityScore": 90,
+        },
+        question="Check SQLite FTS5 support",
+        reuse={"reuseDecision": "reuse"},
+        deliverable="evidence_bundle",
+    )
+
+    assert payload["evidenceBundleId"] == "research-source-bundle"
+    assert payload["experiencePackId"] == "rxp-lineage"
+    assert payload["detailRef"] == "research://bundle/research-source-bundle"
 
 
 def test_research_architect_jsonish_field_extraction():

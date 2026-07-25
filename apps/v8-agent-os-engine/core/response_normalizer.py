@@ -187,6 +187,7 @@ def _extract_from_content_blocks(blocks: Iterable[Any]) -> Tuple[str, str]:
             continue
 
         if block_type in REASONING_BLOCK_TYPES:
+            _append_unique(reasoning_parts, _extract_reasoning_summary_text(_read_field(block, "summary")))
             _append_unique(reasoning_parts, _first_string(block, ("reasoning", "thinking", "text", "content", "value")))
             continue
 
@@ -238,22 +239,36 @@ def _stringify_reasoning_value(value: Any) -> str:
         return "\n".join(parts)
 
     if isinstance(value, Mapping):
-        # Prefer human-readable text-bearing keys before falling back to JSON.
-        for key in ("text", "content", "value", "summary", "output", "reasoning"):
+        # Only provider-declared, human-readable fields may reach the canonical
+        # reasoning surface.  Opaque continuation fields such as
+        # encrypted_content/signature/thoughtSignature must never be flattened.
+        for key in ("text", "content", "value", "summary", "reasoning", "thinking"):
             candidate = value.get(key)
-            rendered = _stringify_reasoning_value(candidate)
+            rendered = (
+                _extract_reasoning_summary_text(candidate)
+                if key == "summary"
+                else _stringify_reasoning_value(candidate)
+            )
             if rendered:
                 return rendered
-        flattened: list[str] = []
-        for nested in value.values():
-            _append_unique(flattened, _stringify_reasoning_value(nested))
-        if flattened:
-            return "\n".join(flattened)
-        try:
-            return json.dumps(value, ensure_ascii=False)
-        except Exception:
-            return ""
+        return ""
 
+    return ""
+
+
+def _extract_reasoning_summary_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value if value.strip() else ""
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                _append_unique(parts, _first_string(item, ("text", "content", "value")))
+            elif isinstance(item, str):
+                _append_unique(parts, item)
+        return "".join(parts)
+    if isinstance(value, Mapping):
+        return _first_string(value, ("text", "content", "value"))
     return ""
 
 

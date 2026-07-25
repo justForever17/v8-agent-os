@@ -240,6 +240,38 @@ def test_grandchild_fallback_projects_evidence_without_parent_topology_acceptanc
     }
 
 
+def test_task_brief_query_keeps_peer_scope_and_dependency_evidence_out_of_user_like_instruction():
+    task = normalize_task_brief(
+        {
+            "taskBriefId": "skeleton",
+            "goal": "Create only the package skeleton.",
+            "writeSet": ["src/package.py"],
+            "context": {
+                "notes": "Use the existing project conventions.",
+                "activeCollaborators": [
+                    {
+                        "taskBriefId": "reports",
+                        "name": "Implementation Engineer",
+                        "workSummary": "Generate reports/result.json.",
+                    }
+                ],
+                "collaborationBoundary": "Do not absorb peer work.",
+                "dependencyResults": [{"taskBriefId": "research", "summary": "Evidence ready."}],
+            },
+            "expectedOutputs": ["Package skeleton"],
+            "acceptanceContract": ["src/package.py exists"],
+        }
+    )
+
+    query_text = task_brief_query_text(task)
+
+    assert "Create only the package skeleton." in query_text
+    assert "Use the existing project conventions." in query_text
+    assert "Generate reports/result.json" not in query_text
+    assert "Do not absorb peer work" not in query_text
+    assert "Evidence ready" not in query_text
+
+
 def test_explicit_terminal_child_requirement_overrides_inherited_grandchild_words():
     task = normalize_task_brief(
         {

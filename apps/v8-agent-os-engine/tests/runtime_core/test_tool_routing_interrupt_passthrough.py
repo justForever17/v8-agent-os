@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from langchain_core.messages import ToolMessage
 
-from graph.tool_routing import _route_intent_for_blocked_tool, _supervisor_direct_pressure_count, async_tool_call_wrapper
+from graph.tool_routing import _route_intent_for_blocked_tool, async_tool_call_wrapper
 from erc.runtime_context import bind_runtime_context
 
 
@@ -70,28 +70,6 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._native_tools_patch.stop()
 
-    def test_supervisor_direct_pressure_count_ignores_spec_flow_tools(self):
-        flow_tools = [
-            {"name": "memory_broker"},
-            {"name": "fetch_skill_instructions"},
-            {"name": "fetch_skill_instructions"},
-            {"name": "spec_broker"},
-            {"name": "spec_broker"},
-            {"name": "spec_broker"},
-            {"name": "spec_broker"},
-            {"name": "write_todos"},
-            {"name": "update_todo"},
-            {"name": "research_broker"},
-            {"name": "runtime_broker"},
-            {"name": "ask_user"},
-            {"name": "web_broker"},
-            {"name": "run_system_command", "args": {"command": "git status --short"}},
-        ]
-
-        self.assertEqual(_supervisor_direct_pressure_count(flow_tools), 1)
-        self.assertEqual(_supervisor_direct_pressure_count(["web_broker"] * 11), 11)
-        self.assertEqual(_supervisor_direct_pressure_count([{"name": "run_system_command", "args": {"command": "mkdir demo"}}]), 1)
-
     async def test_regular_tool_exception_returns_error_tool_message(self):
         request = _DummyRequest("demo_tool")
 
@@ -140,7 +118,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[route required]", str(result.content))
         self.assertIn("wrote after supervisor judgment", str(result.content))
 
-    async def test_limited_write_native_file_executes_before_route_gate_limit(self):
+    async def test_direct_write_executes_without_numeric_route_gate(self):
         request = _DummyRequest(
             "write_native_file",
             "tool_call_write",
@@ -198,7 +176,7 @@ class ToolRoutingInterruptPassthroughTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, ToolMessage)
         self.assertEqual(str(result.content), "continued")
 
-    async def test_spec_runtime_execution_blocks_limited_direct_write(self):
+    async def test_spec_runtime_execution_still_blocks_direct_write(self):
         request = _DummyRequest(
             "write_native_file",
             "tool_call_write",

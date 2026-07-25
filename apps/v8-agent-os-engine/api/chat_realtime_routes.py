@@ -320,7 +320,7 @@ def _legacy_messages_for_request(session_id: str) -> list[ChatMessage]:
         content = str(item.get("content") or "")
         if not content and role not in {"assistant", "tool"}:
             continue
-        messages.append(ChatMessage(role=role, content=content))
+        messages.append(ChatMessage.from_persisted_record(item))
     return messages
 
 

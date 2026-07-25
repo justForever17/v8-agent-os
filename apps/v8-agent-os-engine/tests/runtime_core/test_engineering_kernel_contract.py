@@ -64,6 +64,8 @@ def test_engineering_kernel_publishes_workspace_and_detected_shell(tmp_path: Pat
     assert "[ENGINEERING KERNEL]" in text
     assert str(tmp_path) in text
     assert f"shellDialect={command_environment['shellDialect']}" in text
+    assert "parallel calls must be independent" in text
+    assert "never verify a write in the same tool batch" in text
     assert "read_only_no_capsule" in text
     assert "workspace_broker" not in text
     assert diagnostics[0]["executionMode"] == "none"
@@ -98,6 +100,8 @@ def test_engineering_kernel_projects_session_work_mode_without_forcing_runtime(t
     assert engineering_diagnostics[0]["supervisorWorkMode"] == "engineering"
     assert engineering_diagnostics[0]["executionPosture"] == "supervisor_engineering"
     assert "independently execute long-running project work" in engineering_text
+    assert "does not erase an unfinished managed runtime chain" in engineering_text
+    assert "typed Engineering episode before the first implementation command" in engineering_text
 
 
 def test_valid_write_contract_derives_capsule_and_invalid_contract_is_blocked(tmp_path: Path) -> None:

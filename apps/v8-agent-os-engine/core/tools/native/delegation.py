@@ -52,6 +52,10 @@ from core.runtime_episodes import (
     persist_runtime_episode,
     upsert_runtime_episode,
 )
+from core.runtime_continuation import (
+    RuntimeContinuationContractError,
+    build_runtime_continuation_request,
+)
 from core.storage import StorageManager
 from core.time_truth import utc_now_iso
 from erc.runtime_context import bind_runtime_context, get_runtime_context
@@ -434,6 +438,14 @@ class DelegationTaskInput(TypedDict, total=False):
     allowChildDelegation: bool
     requireChildDelegation: bool
     childDelegationBudget: dict[str, Any]
+
+
+class RuntimeContinuationInput(TypedDict, total=False):
+    id: Required[str]
+    question: Required[str]
+    kind: str
+    reason: str
+    options: list[str]
 
 
 def _compat_native_attr(name: str, fallback: Any) -> Any:
@@ -1246,7 +1258,7 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
                         ),
                         recommended_next_action=(
                             "Route through runtime_broker using its canonical engineering need contract, placing the current "
-                            "specId and approved task refs in need.inputs.taskBriefs[].context; or dispatch explicit tasks "
+                            "specId and approved task refs in taskBriefs[].context; or dispatch explicit tasks "
                             "copied from the approved tasks.md."
                         ),
                         error="spec_delegation_missing_tasks",
@@ -1313,15 +1325,24 @@ def delegation_broker(
     write_set_partitions: Any = None,
     delegation_id: str = "",
     followup: str = "",
+    required_inputs: Annotated[
+        list[RuntimeContinuationInput] | None,
+        "Only for mode=request_input. Typed missing inputs discovered during this direct subagent execution.",
+    ] = None,
+    continuation_summary: Annotated[
+        str,
+        "Only for mode=request_input. Concise reason the current runtime episode must pause.",
+    ] = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
+    """Dispatch or control real collaboration work, including a typed direct-subagent input pause.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
     Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only for injected-evidence reasoning with no tool work, and use an allowlist only when the task is intentionally closed-world or explicitly restricted; an acceptance contract is not itself a reason to narrow tools.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
+    A direct subagent that discovers a genuinely missing irreversible choice must call `mode='request_input'` with typed `required_inputs`; never encode a pause marker in prose. The same runtime episode will resume after strict answer validation.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
@@ -1365,7 +1386,7 @@ def delegation_broker(
                 ]
             }
         )
-    if caller.is_direct_subagent and normalized_mode != "dispatch":
+    if caller.is_direct_subagent and normalized_mode not in {"dispatch", "request_input"}:
         return Command(
             update={
                 "messages": [
@@ -1383,7 +1404,7 @@ def delegation_broker(
                 ]
             }
         )
-    if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
+    if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt", "request_input"}:
         return Command(
             goto="supervisor",
             update={
@@ -1413,6 +1434,84 @@ def delegation_broker(
     worker_briefs_list = _coerce_delegation_list(worker_briefs, nested_keys=("workerBriefs", "worker_briefs", "workers"))
     child_delegation_budget = _coerce_delegation_dict(child_delegation_budget)
     write_set_partitions_list = _coerce_delegation_list(write_set_partitions, nested_keys=("writeSetPartitions", "write_set_partitions"))
+
+    if normalized_mode == "request_input":
+        if not caller.is_direct_subagent:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="Only the executing direct subagent may create a runtime continuation request.",
+                                recommended_next_action="ask_user_or_route_runtime",
+                                error="runtime_continuation_actor_invalid",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
+        branch = dict(base_state.get("parallel_branch") or {})
+        task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+        task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        try:
+            continuation_request = build_runtime_continuation_request(
+                required_inputs=list(required_inputs or []),
+                summary=continuation_summary,
+                source={
+                    "sessionId": runtime_context.get("session_id") or runtime_context.get("sessionId"),
+                    "runId": runtime_context.get("run_id") or runtime_context.get("runId"),
+                    "runtimeEpisodeId": (
+                        task_context.get("parentRuntimeEpisodeId")
+                        or runtime_context.get("runtime_episode_id")
+                        or runtime_context.get("runtimeEpisodeId")
+                    ),
+                    "taskBriefId": branch.get("taskBriefId") or task_brief.get("taskBriefId"),
+                    "delegationId": branch.get("delegationId"),
+                    "agentId": caller.agent_id,
+                    "toolCallId": tool_call_id,
+                },
+            )
+        except RuntimeContinuationContractError as exc:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=str(exc),
+                                recommended_next_action="repair_typed_required_inputs",
+                                error=exc.code,
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode,
+                            ok=True,
+                            summary=str(continuation_request.get("summary") or "Runtime input is required."),
+                            recommended_next_action="pause_same_runtime_episode",
+                            kind=continuation_request["kind"],
+                            requestId=continuation_request["requestId"],
+                            requiredInputs=continuation_request["requiredInputs"],
+                            continuationRequest=continuation_request,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            },
+        )
 
     if normalized_mode == "reveal":
         loaded_agents = _delegation_storage().get_all_agents()

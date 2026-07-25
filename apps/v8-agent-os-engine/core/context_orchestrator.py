@@ -19,6 +19,11 @@ from core.context_durable_flush import flush_before_context_compaction
 from core.context_window_guard import context_window_guard
 from core.llm_factory import llm_factory
 from core.observability_db import observability_db
+from core.provider_continuation import (
+    estimate_provider_continuation_tokens,
+    has_provider_continuation,
+    is_provider_continuation_block,
+)
 from core.storage import storage
 from erc.runtime_context import get_runtime_context
 
@@ -450,6 +455,7 @@ class ContextOrchestrator:
         keep_from = max(0, len(messages) - keep_recent_messages)
         if last_human_idx >= 0:
             keep_from = min(keep_from, last_human_idx)
+        keep_from = self._protect_latest_provider_continuation(messages, keep_from)
         if keep_from <= 0:
             return messages, None, "none"
 
@@ -481,13 +487,37 @@ class ContextOrchestrator:
         human_indexes = [index for index, message in enumerate(message_list) if isinstance(message, HumanMessage)]
         if not human_indexes:
             keep_from = max(0, len(message_list) - keep_recent_messages)
+            keep_from = self._protect_latest_provider_continuation(message_list, keep_from)
             return message_list[:keep_from], message_list[keep_from:], 0
         recent_humans = human_indexes[-max(1, keep_recent_turns):]
         keep_from = recent_humans[0]
         keep_from = min(keep_from, max(0, len(message_list) - keep_recent_messages))
+        keep_from = self._protect_latest_provider_continuation(message_list, keep_from)
         if keep_from <= 0:
             return [], message_list, len(recent_humans)
         return message_list[:keep_from], message_list[keep_from:], len(recent_humans)
+
+    @staticmethod
+    def _protect_latest_provider_continuation(messages: Sequence[BaseMessage], keep_from: int) -> int:
+        """Keep the last opaque provider state immediately before a compacted tail.
+
+        Compaction may intentionally summarize old turns, but it must not split
+        the active provider continuation chain from the user/tool message that
+        follows it.  Retaining the newest preceding block is bounded while
+        covering OpenAI encrypted reasoning, Claude signed thinking and Gemini
+        thought signatures.
+        """
+
+        boundary = max(0, min(int(keep_from), len(messages)))
+        if boundary <= 0:
+            return boundary
+        search_floor = max(0, boundary - 16)
+        for index in range(boundary - 1, search_floor - 1, -1):
+            if isinstance(messages[index], AIMessage) and has_provider_continuation(messages[index]):
+                return index
+            if isinstance(messages[index], HumanMessage):
+                break
+        return boundary
 
     def _build_baseline_block_from_snapshot(self, snapshot: Dict[str, Any]) -> ContextBlock | None:
         content = str(snapshot.get("baselineText") or "").strip()
@@ -980,6 +1010,7 @@ class ContextOrchestrator:
 
     def _estimate_message_tokens(self, message: BaseMessage) -> int:
         total = self._estimate_text_tokens(self._message_text(message))
+        total += estimate_provider_continuation_tokens(message)
         if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
             total += self._estimate_text_tokens(json.dumps(message.tool_calls, ensure_ascii=False))
         return total
@@ -1055,10 +1086,12 @@ class ContextOrchestrator:
             parts: List[str] = []
             for item in content:
                 if isinstance(item, dict):
-                    if item.get("type") == "text":
+                    if is_provider_continuation_block(item):
+                        continue
+                    if item.get("type") in {"text", "input_text", "output_text"}:
                         parts.append(str(item.get("text") or ""))
-                    else:
-                        parts.append(json.dumps(item, ensure_ascii=False))
+                    elif not item.get("type"):
+                        parts.append(str(item.get("text") or item.get("content") or ""))
                 else:
                     parts.append(str(item))
             return "\n".join(part for part in parts if part)

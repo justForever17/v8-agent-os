@@ -443,6 +443,68 @@ def test_non_spec_required_write_degraded_cannot_complete(tmp_path) -> None:
     assert decision.details["nextAction"] == "repair_or_retry_required_write_episode"
 
 
+def test_non_spec_completed_repair_supersedes_degraded_same_task_contract(tmp_path) -> None:
+    (tmp_path / "result.md").write_text("done", encoding="utf-8")
+    failed = _required_write_episode(str(tmp_path), state="degraded")
+    failed["episodeId"] = "episode-write-failed"
+    failed["inputs"]["taskBriefs"][0]["writeSet"] = ["drafts/"]
+
+    repaired = _required_write_episode(str(tmp_path), state="completed")
+    repaired["episodeId"] = "episode-write-repaired"
+
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, repaired],
+        handoffs_by_episode={
+            "episode-write-failed": [{"status": "degraded", "compactSummary": "The first contract was invalid."}],
+            "episode-write-repaired": [
+                {
+                    "status": "ready",
+                    "changedPaths": ["result.md"],
+                    "acceptanceCheck": {"must": {"passed": True, "items": ["result.md exists"]}},
+                }
+            ],
+        },
+        final_text="验收决定：ACCEPT — repaired task contract is verified.",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_non_spec_completed_other_task_does_not_hide_degraded_write(tmp_path) -> None:
+    (tmp_path / "new.md").write_text("done", encoding="utf-8")
+    failed = _required_write_episode(str(tmp_path), state="degraded")
+    failed["episodeId"] = "episode-old-task"
+    failed["inputs"]["taskBriefs"][0]["taskBriefId"] = "TASK-OLD"
+    failed["inputs"]["taskBriefs"][0]["writeSet"] = ["old.md"]
+
+    unrelated = _required_write_episode(str(tmp_path), state="completed")
+    unrelated["episodeId"] = "episode-new-task"
+    unrelated["inputs"]["taskBriefs"][0]["taskBriefId"] = "TASK-NEW"
+    unrelated["inputs"]["taskBriefs"][0]["writeSet"] = ["new.md"]
+    unrelated["inputs"]["taskBriefs"][0]["expectedOutputs"] = ["new.md"]
+
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, unrelated],
+        handoffs_by_episode={
+            "episode-old-task": [{"status": "degraded", "compactSummary": "old task failed"}],
+            "episode-new-task": [
+                {
+                    "status": "ready",
+                    "changedPaths": ["new.md"],
+                    "acceptanceCheck": {"must": {"passed": True, "items": ["new.md exists"]}},
+                }
+            ],
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_runtime_degraded"
+    assert decision.details["episodeId"] == "episode-old-task"
+
+
 def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
     decision = evaluate_supervisor_completion(
         episodes=[_required_write_episode(str(tmp_path))],

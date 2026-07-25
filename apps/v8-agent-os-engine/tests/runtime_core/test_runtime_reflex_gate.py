@@ -133,6 +133,48 @@ def test_read_only_multi_runtime_plan_does_not_ask_user_because_workspace_is_dir
     assert "engineering_workset_risk" not in decision.reasons
 
 
+def test_other_project_scope_boundary_does_not_become_global_read_only_intent():
+    query = (
+        "查清当前兼容性现状，再在当前工作区留下可运行、机器可读的最小基线，"
+        "不要改别的项目。"
+    )
+    state = {
+        "engineering_context": {
+            "triggerDecision": {"active": True},
+            "worksetSoftGateDecision": {
+                "risk": "unknown_write_set",
+                "warning": True,
+            },
+        },
+        "task_shape_hint": {
+            "writingRoute": {"present": False, "requiresArtifact": False},
+            "boundaryDecision": {"executionMode": "supervisor_decides"},
+        },
+    }
+
+    reflex = RuntimeReflexService().evaluate(
+        user_query=query,
+        scope="workspace:test",
+        scope_chain=["global", "workspace:test"],
+        session_id="s1",
+        route_bundle=_route_bundle(),
+        state=state,
+    )
+    gate = RuntimePreflightGate().evaluate(
+        user_query=query,
+        scope="workspace:test",
+        scope_chain=["global", "workspace:test"],
+        session_id="s1",
+        route_bundle=_route_bundle(),
+        state=state,
+    )
+
+    assert "engineering_read_only_contract" not in reflex.matchedReflexes
+    assert "engineering_read_before_write" in reflex.matchedReflexes
+    assert gate.diagnostics["readOnlyExecutionIntent"] is False
+    assert "engineering_workset_risk" in gate.reasons
+
+
 def test_evidence_feedback_emits_only_signal_events(monkeypatch):
     class FakeDb:
         def __init__(self):

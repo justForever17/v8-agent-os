@@ -247,7 +247,7 @@ def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_sur
 
 def test_facade_normalizes_internal_failure(monkeypatch) -> None:
     class FakeHandler:
-        def invoke(self, _payload):
+        async def ainvoke(self, _payload):
             return json.dumps(
                 {
                     "ok": False,

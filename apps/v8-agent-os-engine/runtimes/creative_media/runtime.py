@@ -157,6 +157,29 @@ PREFERRED_SEEDANCE2_MODEL_IDS = (
     "doubao-seed-2-0-lite-260428",
 )
 LOWER_TIER_EXECUTABLE_VIDEO_MODELS = {"doubao-seed-2-0-lite-260428"}
+MINIMAX_VIDEO_MODELS_BY_OPERATION = {
+    "video.text_to_video": {
+        "MiniMax-Hailuo-2.3",
+        "MiniMax-Hailuo-02",
+        "T2V-01-Director",
+        "T2V-01",
+    },
+    "video.image_to_video": {
+        "MiniMax-Hailuo-2.3",
+        "MiniMax-Hailuo-2.3-Fast",
+        "MiniMax-Hailuo-02",
+        "I2V-01-Director",
+        "I2V-01-live",
+        "I2V-01",
+    },
+    "video.first_last_frame": {"MiniMax-Hailuo-02"},
+    "video.reference_to_video": {"S2V-01"},
+}
+MINIMAX_HAILUO_VIDEO_MODELS = {
+    "MiniMax-Hailuo-2.3",
+    "MiniMax-Hailuo-2.3-Fast",
+    "MiniMax-Hailuo-02",
+}
 
 
 def utc_now_iso() -> str:
@@ -398,8 +421,91 @@ def _build_volcengine_video_payload(
     }
 
 
+def _build_minimax_video_payload(
+    *,
+    model: str,
+    prompt: str,
+    operation_kind: str,
+    image_references: Optional[list[str]] = None,
+    duration_seconds: Any = None,
+    resolution: Any = None,
+    prompt_optimizer: bool = True,
+    fast_pretreatment: Any = None,
+    aigc_watermark: bool = False,
+) -> dict[str, Any]:
+    normalized_model = str(model or "").strip()
+    supported_models = MINIMAX_VIDEO_MODELS_BY_OPERATION.get(operation_kind)
+    if not supported_models:
+        raise ValueError(f"MiniMax video adapter does not support operationKind={operation_kind}")
+    if normalized_model not in supported_models:
+        raise ValueError(
+            f"MiniMax model {normalized_model or 'missing'} does not officially support operationKind={operation_kind}"
+        )
+
+    normalized_prompt = str(prompt or "").strip()
+    if operation_kind == "video.text_to_video" and not normalized_prompt:
+        raise ValueError("MiniMax video.text_to_video requires prompt")
+    if len(normalized_prompt) > 2000:
+        raise ValueError("MiniMax video prompt must not exceed 2000 characters")
+
+    references = [str(item or "").strip() for item in list(image_references or []) if str(item or "").strip()]
+    payload: dict[str, Any] = {
+        "model": normalized_model,
+        "prompt_optimizer": _truthy(prompt_optimizer),
+        "aigc_watermark": _truthy(aigc_watermark),
+    }
+    if normalized_prompt:
+        payload["prompt"] = normalized_prompt
+
+    if operation_kind == "video.image_to_video":
+        if len(references) != 1:
+            raise ValueError("MiniMax video.image_to_video requires exactly one first-frame image")
+        payload["first_frame_image"] = references[0]
+    elif operation_kind == "video.first_last_frame":
+        if len(references) != 2:
+            raise ValueError("MiniMax video.first_last_frame requires exactly two images in first/last order")
+        payload["first_frame_image"] = references[0]
+        payload["last_frame_image"] = references[1]
+    elif operation_kind == "video.reference_to_video":
+        if len(references) != 1:
+            raise ValueError("MiniMax video.reference_to_video requires exactly one character reference image")
+        payload["subject_reference"] = [{"type": "character", "image": [references[0]]}]
+        return payload
+    elif references:
+        raise ValueError("MiniMax video.text_to_video does not accept image references")
+
+    duration = int(duration_seconds) if duration_seconds not in (None, "") else 6
+    if normalized_model in MINIMAX_HAILUO_VIDEO_MODELS:
+        if duration not in {6, 10}:
+            raise ValueError("MiniMax Hailuo duration must be 6 or 10 seconds")
+        normalized_resolution = str(resolution or "768P").strip().upper()
+        if normalized_resolution not in {"768P", "1080P"}:
+            raise ValueError("MiniMax Hailuo resolution must be 768P or 1080P")
+        if duration == 10 and normalized_resolution != "768P":
+            raise ValueError("MiniMax Hailuo 10-second video only supports 768P")
+        if fast_pretreatment not in (None, ""):
+            payload["fast_pretreatment"] = _truthy(fast_pretreatment)
+    else:
+        if duration != 6:
+            raise ValueError("MiniMax legacy T2V/I2V models support a 6-second request")
+        normalized_resolution = str(resolution or "720P").strip().upper()
+        if normalized_resolution != "720P":
+            raise ValueError("MiniMax legacy T2V/I2V models require 720P")
+        if fast_pretreatment not in (None, ""):
+            raise ValueError(f"MiniMax model {normalized_model} does not support fast_pretreatment")
+    payload["duration"] = duration
+    payload["resolution"] = normalized_resolution
+    return payload
+
+
 class CreativeMediaRuntime:
     kind = "creative_media"
+
+    def __init__(self) -> None:
+        # Provider result URLs may be short-lived or signed. Keep them inside the
+        # current Engine process so a follow-up media job can transport the
+        # artifact without exposing the provider URL on Human Surface.
+        self._provider_transport_urls: dict[str, str] = {}
 
     def runtime_descriptor(self) -> dict[str, Any]:
         try:
@@ -465,6 +571,7 @@ class CreativeMediaRuntime:
                 {"id": "openai_images", "modalities": ["image"], "executable": True},
                 {"id": "agnes_images", "modalities": ["image"], "executable": True},
                 {"id": "agnes_video", "modalities": ["video"], "executable": True},
+                {"id": "minimax_video", "modalities": ["video"], "executable": True},
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
                 {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
@@ -497,14 +604,20 @@ class CreativeMediaRuntime:
         media_limits = dict(model_data.get("mediaLimits") or {})
         endpoint_binding = dict(model_data.get("endpointBinding") or {})
         media_adapter = str(media_limits.get("adapter") or "").strip()
-        explicit_adapter = str(
-            endpoint_binding.get("adapter")
-            or model_data.get("adapter")
-            or (media_adapter if media_adapter and media_adapter != "catalog_only" else "")
-            or media_limits.get("adapterProviderId")
-            or media_adapter
-            or ""
-        ).strip()
+        adapter_candidates = (
+            endpoint_binding.get("adapter"),
+            model_data.get("adapter"),
+            media_limits.get("adapterProviderId"),
+            media_adapter,
+        )
+        explicit_adapter = next(
+            (
+                str(value).strip()
+                for value in adapter_candidates
+                if str(value or "").strip() and str(value or "").strip() != "catalog_only"
+            ),
+            "",
+        )
         if explicit_adapter:
             return explicit_adapter
         haystack = " ".join(
@@ -524,6 +637,8 @@ class CreativeMediaRuntime:
             return "agnes_images"
         if modality == "video" and "agnes" in haystack:
             return "agnes_video"
+        if modality == "video" and ("minimax" in haystack or "mini max" in haystack):
+            return "minimax_video"
         if modality == "music":
             if "mureka" in haystack:
                 return "mureka_music"
@@ -2771,6 +2886,8 @@ class CreativeMediaRuntime:
             return await self._poll_volcengine_video_job(job)
         if job.get("adapter") == "agnes_video" and job.get("providerTaskId"):
             return await self._poll_agnes_video_job(job)
+        if job.get("adapter") == "minimax_video" and job.get("providerTaskId"):
+            return await self._poll_minimax_video_job(job)
         if job.get("adapter") == "dashscope" and job.get("providerTaskId"):
             return await self._poll_dashscope_task(job)
         if job.get("adapter") == "mureka_music" and job.get("providerTaskId"):
@@ -2998,18 +3115,51 @@ class CreativeMediaRuntime:
             job["error"] = f"Creative Media P4 has not implemented executable video operationKind={operation_kind}; keep it as recipe/catalog planning until an adapter is added."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
+        endpoint_binding: dict[str, Any] = {}
+        binding_error = ""
+        if any(str(request.get(key) or "").strip() for key in ("providerId", "provider_id", "model", "modelId", "model_id", "modelRef", "model_ref")):
+            try:
+                endpoint_binding = self._configured_endpoint_binding(request, default_model="")
+            except ValueError as exc:
+                if not str(request.get("adapter") or "").strip():
+                    binding_error = str(exc)
+        if endpoint_binding.get("operationKind") and not str(request.get("operationKind") or request.get("operation_kind") or "").strip():
+            operation_kind = str(endpoint_binding["operationKind"])
         requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
-        adapter = str(request.get("adapter") or ("agnes_video" if "agnes" in requested_provider_id else "volcengine_ark")).strip().lower()
+        adapter = str(request.get("adapter") or "").strip().lower()
+        if not adapter:
+            if endpoint_binding:
+                adapter = self._adapter_for_model_candidate(
+                    modality="video",
+                    provider_id=str(endpoint_binding.get("providerId") or requested_provider_id),
+                    provider_meta=dict(endpoint_binding.get("providerMeta") or {}),
+                    model_data=dict(endpoint_binding.get("modelData") or {}),
+                )
+            elif "agnes" in requested_provider_id:
+                adapter = "agnes_video"
+            elif "minimax" in requested_provider_id:
+                adapter = "minimax_video"
+            else:
+                adapter = "volcengine_ark"
         if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
             adapter = "dashscope"
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="video")
         prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
+        if endpoint_binding:
+            prepared_request["endpointBinding"] = {
+                key: value
+                for key, value in endpoint_binding.items()
+                if key not in {"providerMeta", "modelData"}
+            }
+            prepared_request["providerId"] = endpoint_binding.get("providerId") or prepared_request.get("providerId")
         if prompt_policy:
             prepared_request["promptPolicy"] = prompt_policy
         job = self._new_job(modality="video", adapter=adapter, request=prepared_request)
         self._record_safety_event(source="job_create", job=job, transform=dict(prompt_policy.get("safetyTransform") or {}) if prompt_policy else {})
         self._save_job(job)
         try:
+            if binding_error:
+                raise ValueError(binding_error)
             if adapter == "volcengine_ark":
                 if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}:
                     raise ValueError(f"Volcengine adapter does not support operationKind={operation_kind}")
@@ -3018,6 +3168,8 @@ class CreativeMediaRuntime:
                 job = await self._submit_dashscope_video_job(job, prepared_request)
             elif adapter == "agnes_video":
                 job = await self._submit_agnes_video_job(job, prepared_request)
+            elif adapter == "minimax_video":
+                job = await self._submit_minimax_video_job(job, prepared_request)
             else:
                 raise ValueError(f"Unsupported video adapter: {adapter}")
             if bool(request.get("wait", False)):
@@ -3668,6 +3820,76 @@ class CreativeMediaRuntime:
                 unique.append(url)
         return unique
 
+    def _artifact_provider_transport_url(self, artifact_id: str) -> str:
+        normalized = str(artifact_id or "").strip()
+        if not normalized:
+            return ""
+        transient = str(self._provider_transport_urls.get(normalized) or "").strip()
+        if transient:
+            return transient
+        record = db.get_runtime_artifact(normalized) or {}
+        external_url = str(record.get("external_url") or record.get("externalUrl") or "").strip()
+        return self._public_url_or_error(external_url, field_name="artifact externalUrl") if external_url else ""
+
+    def _local_image_data_url(self, artifact_id: str) -> str:
+        source_path = self._artifact_source_path(artifact_id)
+        if not source_path:
+            raise ValueError(f"Image artifact {artifact_id} has no local source file")
+        path = Path(source_path).expanduser()
+        if not path.is_file():
+            raise ValueError(f"Image artifact {artifact_id} source file is unavailable")
+        size_bytes = path.stat().st_size
+        if size_bytes >= 20 * 1024 * 1024:
+            raise ValueError(f"MiniMax image input {path.name} must be smaller than 20 MB")
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image_format = str(image.format or "").upper()
+                width, height = image.size
+        except Exception as exc:
+            raise ValueError(f"MiniMax image input {path.name} could not be decoded: {_exception_summary(exc)}") from exc
+        mime_type = {
+            "JPEG": "image/jpeg",
+            "PNG": "image/png",
+            "WEBP": "image/webp",
+        }.get(image_format)
+        if not mime_type:
+            raise ValueError("MiniMax image input must be JPG, JPEG, PNG, or WebP")
+        if min(width, height) <= 300:
+            raise ValueError("MiniMax image input short edge must be greater than 300 pixels")
+        ratio = width / height
+        if ratio < 0.4 or ratio > 2.5:
+            raise ValueError("MiniMax image input aspect ratio must be between 2:5 and 5:2")
+        return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+    def _minimax_image_references_from_request(
+        self,
+        request: dict[str, Any],
+        *,
+        operation_kind: str,
+    ) -> list[str]:
+        references = self._image_urls_from_request(request)
+        artifact_ids = request.get("referenceAssetIds") or request.get("reference_asset_ids") or []
+        if isinstance(artifact_ids, str):
+            artifact_ids = [artifact_ids]
+        for artifact_id in list(artifact_ids or []):
+            normalized_id = str(artifact_id or "").strip()
+            if not normalized_id:
+                continue
+            provider_url = self._artifact_provider_transport_url(normalized_id)
+            if provider_url:
+                references.append(provider_url)
+                continue
+            if operation_kind == "video.reference_to_video":
+                raise ValueError(
+                    "MiniMax S2V requires a provider-accessible character image URL; "
+                    "regenerate the source image through a URL-returning V8 image provider in the current Engine process "
+                    "or provide a public imageUrls value"
+                )
+            references.append(self._local_image_data_url(normalized_id))
+        return list(dict.fromkeys(references))
+
     def _video_url_from_request(self, request: dict[str, Any], *keys: str) -> str:
         for key in keys or ("videoUrl", "video_url"):
             url = self._public_url_or_error(request.get(key), field_name=key)
@@ -3756,12 +3978,6 @@ class CreativeMediaRuntime:
             target.append((provider_id, {**dict(provider_data or {}), "_selectedModelKey": model_key}))
         selected = (preferred or fallback)
         if not selected:
-            if requested_provider:
-                provider_data = dict(providers[requested_provider] or {})
-                provider_meta = dict(provider_data.get("provider") or {})
-                model_data = dict((provider_data.get("models") or {}).get(requested_model) or {})
-                binding = build_model_endpoint_binding(requested_provider, requested_model, provider_meta, model_data)
-                return requested_provider, provider_meta, binding.get("providerModelId") or requested_model, model_data, binding
             raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
         selected_model_key = str(provider_data.get("_selectedModelKey") or requested_model)
@@ -4213,6 +4429,172 @@ class CreativeMediaRuntime:
             job["completedAt"] = utc_now_iso()
         return self._save_job(job)
 
+    @staticmethod
+    def _validate_minimax_business_response(response: dict[str, Any], *, action: str) -> str:
+        base_resp = dict(response.get("base_resp") or {})
+        raw_status_code = base_resp.get("status_code", 0)
+        try:
+            status_code = int(raw_status_code or 0)
+        except (TypeError, ValueError):
+            status_code = -1
+        trace_id = str(response.get("trace_id") or response.get("traceId") or "").strip()
+        if status_code != 0:
+            status_message = str(base_resp.get("status_msg") or base_resp.get("message") or "MiniMax request failed").strip()
+            trace_suffix = f"; trace_id={trace_id}" if trace_id else ""
+            raise RuntimeError(f"MiniMax {action} failed: code={status_code}; {status_message}{trace_suffix}")
+        return trace_id
+
+    async def _submit_minimax_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
+        default_model = "S2V-01" if operation_kind == "video.reference_to_video" else "MiniMax-Hailuo-2.3"
+        binding = self._configured_endpoint_binding(request, default_model=default_model)
+        provider_id = str(binding.get("providerId") or "")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or default_model))
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
+        image_references = self._minimax_image_references_from_request(
+            request,
+            operation_kind=operation_kind,
+        )
+        payload = _build_minimax_video_payload(
+            model=model,
+            prompt=str(request.get("prompt") or ""),
+            operation_kind=operation_kind,
+            image_references=image_references,
+            duration_seconds=request.get("durationSeconds", request.get("duration_seconds", request.get("duration"))),
+            resolution=request.get("resolution"),
+            prompt_optimizer=request.get("promptOptimizer", request.get("prompt_optimizer", True)),
+            fast_pretreatment=request.get("fastPretreatment", request.get("fast_pretreatment")),
+            aigc_watermark=_truthy(request.get("aigcWatermark", request.get("aigc_watermark", False))),
+        )
+        job["providerRequestHash"] = self._provider_request_hash(payload)
+        endpoint_path = str(binding.get("endpointPath") or "video_generation").strip() or "video_generation"
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, endpoint_path),
+            headers=self._bearer_headers(api_key),
+            json=payload,
+            timeout=180,
+        )
+        trace_id = self._validate_minimax_business_response(response, action="video submit")
+        task_id = str(response.get("task_id") or response.get("taskId") or "").strip()
+        if not task_id:
+            raise RuntimeError("MiniMax video submit succeeded without task_id")
+        job["status"] = "queued"
+        job["providerTaskId"] = task_id
+        job["providerResponse"] = {
+            "providerId": provider_id,
+            "taskId": task_id,
+            "traceId": trace_id,
+            "model": model,
+            "operationKind": operation_kind,
+        }
+        return self._save_job(job)
+
+    async def _poll_minimax_video_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            job["status"] = "failed"
+            job["error"] = "Missing providerTaskId"
+            return self._save_job(job)
+        request = dict(job.get("request") or {})
+        provider_response = dict(job.get("providerResponse") or {})
+        binding = self._configured_endpoint_binding(
+            request,
+            default_model=str(provider_response.get("model") or "S2V-01"),
+        )
+        provider_id = str(binding.get("providerId") or provider_response.get("providerId") or "")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or provider_response.get("model") or ""))
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
+        response = await self._request_json(
+            "GET",
+            self._join_api_path(base_url, f"/v1/query/video_generation?task_id={quote(task_id)}"),
+            headers=self._bearer_headers(api_key),
+            timeout=60,
+        )
+        trace_id = self._validate_minimax_business_response(response, action="video query")
+        raw_status = str(response.get("status") or "").strip()
+        normalized_status = raw_status.lower()
+        status = {
+            "preparing": "running",
+            "queueing": "queued",
+            "processing": "running",
+            "success": "succeeded",
+            "fail": "failed",
+        }.get(normalized_status, "running")
+        job["status"] = status
+        job["providerResponse"] = {
+            **provider_response,
+            "lastStatus": raw_status,
+            "traceId": trace_id or provider_response.get("traceId") or "",
+            "taskId": task_id,
+        }
+        if status == "succeeded":
+            raw_file_id = response.get("file_id")
+            file_id_text = str(raw_file_id or "").strip()
+            if not file_id_text.isdigit():
+                job["status"] = "failed"
+                job["error"] = "MiniMax video task succeeded without a valid integer file_id"
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
+            file_id = int(file_id_text)
+            file_response = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, f"/v1/files/retrieve?file_id={file_id}"),
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+            file_trace_id = self._validate_minimax_business_response(file_response, action="video download lookup")
+            file_data = dict(file_response.get("file") or {})
+            download_url = str(file_data.get("download_url") or file_data.get("downloadUrl") or "").strip()
+            if not download_url:
+                job["status"] = "failed"
+                job["error"] = "MiniMax file lookup succeeded without file.download_url"
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
+            artifact = await self._artifact_from_url(
+                download_url,
+                job=job,
+                kind="video",
+                provider=provider_id,
+                mime_hint="video/mp4",
+                metadata={
+                    "model": model,
+                    "taskId": task_id,
+                    "fileId": file_id,
+                    "width": response.get("video_width"),
+                    "height": response.get("video_height"),
+                    "nativeAudio": False,
+                    "audioMode": "silent_or_external_audio",
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"].update(
+                {
+                    "fileId": file_id,
+                    "fileTraceId": file_trace_id,
+                    "width": response.get("video_width"),
+                    "height": response.get("video_height"),
+                }
+            )
+            job["completedAt"] = utc_now_iso()
+        elif status == "failed":
+            base_resp = dict(response.get("base_resp") or {})
+            job["error"] = str(response.get("message") or response.get("error") or base_resp.get("status_msg") or "MiniMax video task failed")
+            job["completedAt"] = utc_now_iso()
+        return self._save_job(job)
+
     async def _submit_volcengine_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         creds = self._volc_credentials()
         if not creds["apiKey"]:
@@ -4467,24 +4849,41 @@ class CreativeMediaRuntime:
         return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
 
     async def _artifact_from_url(self, url: str, *, job: dict[str, Any], kind: str, provider: str, mime_hint: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        headers = {"User-Agent": "V8-Agent-OS-CreativeMedia/1.0"}
+        headers = {
+            "User-Agent": "V8-Agent-OS-CreativeMedia/1.0",
+            "Accept-Encoding": "identity",
+        }
         timeout = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            request = client.build_request("GET", url, headers=headers)
-            response = await client.send(request, stream=True)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or mime_hint
-            extension = self._extension_for_url(url, content_type, kind)
-            path = self._output_path(job, kind, extension)
+        path: Path | None = None
+        content_type = mime_hint
+        last_error: Exception | None = None
+        for attempt in range(3):
             try:
-                with open(path, "wb") as file:
-                    async for chunk in response.aiter_bytes():
-                        if chunk:
-                            file.write(chunk)
-            finally:
-                await response.aclose()
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    async with client.stream("GET", url, headers=headers) as response:
+                        response.raise_for_status()
+                        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or mime_hint
+                        if path is None:
+                            extension = self._extension_for_url(url, content_type, kind)
+                            path = self._output_path(job, kind, extension)
+                        with open(path, "wb") as file:
+                            async for chunk in response.aiter_bytes():
+                                if chunk:
+                                    file.write(chunk)
+                last_error = None
+                break
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                last_error = exc
+                if path and path.exists():
+                    path.unlink()
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+        if last_error is not None:
+            raise last_error
+        if path is None or not path.is_file() or path.stat().st_size <= 0:
+            raise RuntimeError("Provider artifact download completed without a local file")
         parsed = urlparse(url)
-        return self._record_local_artifact(
+        artifact = self._record_local_artifact(
             file_path=path,
             job=job,
             kind=kind,
@@ -4497,6 +4896,13 @@ class CreativeMediaRuntime:
                 **dict(metadata or {}),
             },
         )
+        if kind == "image" and parsed.scheme in {"http", "https"}:
+            artifact_id = str(artifact.get("artifactId") or "").strip()
+            if artifact_id:
+                self._provider_transport_urls[artifact_id] = url
+                while len(self._provider_transport_urls) > 128:
+                    self._provider_transport_urls.pop(next(iter(self._provider_transport_urls)))
+        return artifact
 
     def _record_local_artifact(self, *, file_path: Path, job: dict[str, Any], kind: str, mime_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
         artifact = artifact_store.record_artifact(
@@ -4687,5 +5093,6 @@ __all__ = [
     "_build_openai_image_payload",
     "_build_volcengine_image_payload",
     "_build_volcengine_video_payload",
+    "_build_minimax_video_payload",
     "normalize_provider_status",
 ]

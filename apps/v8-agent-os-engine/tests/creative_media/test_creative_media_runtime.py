@@ -24,6 +24,7 @@ from runtimes.creative_media.runtime import (
     JOB_STORE_FILE,
     _build_agnes_image_payload,
     _build_agnes_video_payload,
+    _build_minimax_video_payload,
     _build_openai_image_payload,
     _build_volcengine_image_payload,
     _build_volcengine_video_payload,
@@ -220,6 +221,90 @@ def test_media_payload_rendering_keeps_provider_specific_fields_separate():
     )
     assert {"ratio", "resolution", "duration", "content"}.issubset(volc_video_payload)
     assert "size" not in volc_video_payload
+
+
+def test_minimax_video_payloads_match_official_four_operation_contracts():
+    t2v = _build_minimax_video_payload(
+        model="MiniMax-Hailuo-2.3",
+        prompt="A gentle camera orbit.",
+        operation_kind="video.text_to_video",
+        duration_seconds=6,
+        resolution="1080P",
+        fast_pretreatment=True,
+        aigc_watermark=True,
+    )
+    assert t2v == {
+        "model": "MiniMax-Hailuo-2.3",
+        "prompt": "A gentle camera orbit.",
+        "prompt_optimizer": True,
+        "aigc_watermark": True,
+        "fast_pretreatment": True,
+        "duration": 6,
+        "resolution": "1080P",
+    }
+
+    i2v = _build_minimax_video_payload(
+        model="MiniMax-Hailuo-02",
+        prompt="The character turns toward the light.",
+        operation_kind="video.image_to_video",
+        image_references=["data:image/png;base64,AAAA"],
+    )
+    assert i2v["first_frame_image"] == "data:image/png;base64,AAAA"
+    assert "last_frame_image" not in i2v
+
+    first_last = _build_minimax_video_payload(
+        model="MiniMax-Hailuo-02",
+        prompt="Move smoothly between frames.",
+        operation_kind="video.first_last_frame",
+        image_references=["https://example.com/first.png", "https://example.com/last.png"],
+        duration_seconds=10,
+        resolution="768P",
+    )
+    assert first_last["first_frame_image"].endswith("first.png")
+    assert first_last["last_frame_image"].endswith("last.png")
+
+    s2v = _build_minimax_video_payload(
+        model="S2V-01",
+        prompt="She gives a small confident wave.",
+        operation_kind="video.reference_to_video",
+        image_references=["https://example.com/character.png"],
+    )
+    assert s2v == {
+        "model": "S2V-01",
+        "prompt": "She gives a small confident wave.",
+        "prompt_optimizer": True,
+        "aigc_watermark": False,
+        "subject_reference": [
+            {"type": "character", "image": ["https://example.com/character.png"]}
+        ],
+    }
+    assert not {"duration", "resolution", "fast_pretreatment"} & set(s2v)
+
+
+def test_minimax_video_payload_rejects_model_operation_mismatch_and_invalid_frames():
+    with pytest.raises(ValueError, match="does not officially support"):
+        _build_minimax_video_payload(
+            model="MiniMax-Hailuo-2.3",
+            prompt="reference motion",
+            operation_kind="video.reference_to_video",
+            image_references=["https://example.com/character.png"],
+        )
+    with pytest.raises(ValueError, match="exactly two"):
+        _build_minimax_video_payload(
+            model="MiniMax-Hailuo-02",
+            prompt="transition",
+            operation_kind="video.first_last_frame",
+            image_references=["https://example.com/only.png"],
+        )
+    with pytest.raises(ValueError, match="10-second"):
+        _build_minimax_video_payload(
+            model="MiniMax-Hailuo-02",
+            prompt="transition",
+            operation_kind="video.first_last_frame",
+            image_references=["https://example.com/first.png", "https://example.com/last.png"],
+            duration_seconds=10,
+            resolution="1080P",
+        )
 
 
 def test_simple_asset_work_order_prefers_gpt_image_2(monkeypatch):
@@ -463,6 +548,110 @@ def test_agnes_video_adapter_maps_submit_and_poll_contract(monkeypatch):
     assert requested_urls == [
         "https://apihub.agnes-ai.com/v1/videos",
         "https://apihub.agnes-ai.com/agnesapi?video_id=video_123",
+    ]
+
+
+def test_minimax_s2v_adapter_submits_queries_and_downloads_through_v8_job_surface(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax-cn": {
+                    "provider": {
+                        "name": "MiniMax 中国站",
+                        "api_standard": "minimax",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "video_generation/S2V-01": {
+                            "type": "VIDEO",
+                            "operationKinds": ["video.reference_to_video"],
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_video",
+                                "providerModelId": "S2V-01",
+                                "operationKinds": ["video.reference_to_video"],
+                                "capabilityModes": ["video.image_reference"],
+                            },
+                            "endpointBinding": {
+                                "adapter": "catalog_only",
+                                "endpointPath": "video_generation",
+                                "providerModelId": "S2V-01",
+                                "provenance": {"source": "manual"},
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+    requests = []
+
+    async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
+        requests.append((method, url, json))
+        if method == "POST":
+            assert json == {
+                "model": "S2V-01",
+                "prompt": "The character gives a small wave.",
+                "prompt_optimizer": True,
+                "aigc_watermark": False,
+                "subject_reference": [
+                    {"type": "character", "image": ["https://cdn.example.test/character.png"]}
+                ],
+            }
+            return {"task_id": "task_s2v", "trace_id": "trace_submit", "base_resp": {"status_code": 0}}
+        if "/query/video_generation" in url:
+            return {
+                "task_id": "task_s2v",
+                "status": "Success",
+                "file_id": 123456,
+                "video_width": 768,
+                "video_height": 1280,
+                "trace_id": "trace_query",
+                "base_resp": {"status_code": 0},
+            }
+        return {
+            "file": {"file_id": 123456, "download_url": "https://cdn.example.test/result.mp4"},
+            "trace_id": "trace_file",
+            "base_resp": {"status_code": 0},
+        }
+
+    async def fake_artifact_from_url(url, *, job, kind, provider, mime_hint, metadata=None):
+        return {
+            "artifactId": "artifact_s2v",
+            "kind": kind,
+            "sourcePath": "C:/tmp/result.mp4",
+            "metadata": metadata or {},
+        }
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request_json)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact_from_url)
+
+    submitted = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "video",
+                "operationKind": "video.reference_to_video",
+                "providerId": "minimax-cn",
+                "modelId": "video_generation/S2V-01",
+                "prompt": "The character gives a small wave.",
+                "imageUrls": ["https://cdn.example.test/character.png"],
+            }
+        )
+    )
+    assert submitted["adapter"] == "minimax_video"
+    assert submitted["status"] == "queued"
+    completed = asyncio.run(creative_media_runtime.refresh_job(submitted["jobId"]))
+    assert completed["status"] == "succeeded"
+    assert completed["providerResponse"]["fileId"] == 123456
+    assert completed["providerResponse"]["traceId"] == "trace_query"
+    assert completed["artifacts"][0]["metadata"]["nativeAudio"] is False
+    assert [item[1] for item in requests] == [
+        "https://api.minimaxi.com/v1/video_generation",
+        "https://api.minimaxi.com/v1/query/video_generation?task_id=task_s2v",
+        "https://api.minimaxi.com/v1/files/retrieve?file_id=123456",
     ]
 
 
@@ -863,8 +1052,31 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
                             "operationKinds": [
                                 "video.text_to_video",
                                 "video.image_to_video",
+                            ],
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_video",
+                                "capabilityModes": [
+                                    "video.text_to_video",
+                                    "video.image_to_video",
+                                ],
+                                "operationKinds": [
+                                    "video.text_to_video",
+                                    "video.image_to_video",
+                                ],
+                            },
+                            "endpointBinding": {
+                                "adapter": "catalog_only",
+                                "endpointPath": "video_generation",
+                                "providerModelId": "MiniMax-Hailuo-2.3",
+                                "provenance": {"source": "manual"},
+                            },
+                        },
+                        "video_generation/MiniMax-Hailuo-02": {
+                            "type": "VIDEO",
+                            "operationKinds": [
+                                "video.text_to_video",
+                                "video.image_to_video",
                                 "video.first_last_frame",
-                                "video.reference_to_video",
                             ],
                             "mediaLimits": {
                                 "adapterProviderId": "minimax_video",
@@ -872,19 +1084,32 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
                                     "video.text_to_video",
                                     "video.image_to_video",
                                     "video.first_last_frame",
-                                    "video.image_reference",
                                 ],
                                 "operationKinds": [
                                     "video.text_to_video",
                                     "video.image_to_video",
                                     "video.first_last_frame",
-                                    "video.reference_to_video",
                                 ],
                             },
                             "endpointBinding": {
                                 "adapter": "catalog_only",
                                 "endpointPath": "video_generation",
-                                "providerModelId": "MiniMax-Hailuo-2.3",
+                                "providerModelId": "MiniMax-Hailuo-02",
+                                "provenance": {"source": "manual"},
+                            },
+                        },
+                        "video_generation/S2V-01": {
+                            "type": "VIDEO",
+                            "operationKinds": ["video.reference_to_video"],
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_video",
+                                "capabilityModes": ["video.image_reference"],
+                                "operationKinds": ["video.reference_to_video"],
+                            },
+                            "endpointBinding": {
+                                "adapter": "catalog_only",
+                                "endpointPath": "video_generation",
+                                "providerModelId": "S2V-01",
                                 "provenance": {"source": "manual"},
                             },
                         },
@@ -944,8 +1169,8 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     expected_model_hub_candidates = {
         ("video.text_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
         ("video.image_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
-        ("video.first_last_frame", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
-        ("video.reference_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
+        ("video.first_last_frame", "minimax-cn::video_generation/MiniMax-Hailuo-02"),
+        ("video.reference_to_video", "minimax-cn::video_generation/S2V-01"),
         ("music.generate", "minimax-cn::music_generation/custom-music"),
         ("voice.tts", "minimax-cn::voice/custom-voice"),
         ("model3d.generate", "minimax-cn::model3d/custom-3d"),
@@ -956,6 +1181,11 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     }
     assert expected_model_hub_candidates.issubset(connected_pairs)
     assert all(
+        options[pair]["adapter"] == "minimax_video"
+        for pair in expected_model_hub_candidates
+        if pair[0].startswith("video.")
+    )
+    assert all(
         item.get("modelRef") not in {model_ref for _, model_ref in expected_model_hub_candidates}
         for item in prefs["diagnosticCandidates"]
     )
@@ -963,13 +1193,13 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     for operation_kind, model_ref in expected_model_hub_candidates:
         assert model_ref in rows[operation_kind]["selectedModelRefs"]
 
-    hailuo_ref = "minimax-cn::video_generation/MiniMax-Hailuo-2.3"
+    s2v_ref = "minimax-cn::video_generation/S2V-01"
     saved = creative_media_runtime.save_model_preferences(
         {
             "selections": [
                 {
                     "operationKind": "video.reference_to_video",
-                    "modelRefs": [hailuo_ref],
+                    "modelRefs": [s2v_ref],
                     "enabled": True,
                     "priority": 3,
                 }
@@ -980,11 +1210,11 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
         item for item in saved["operationRows"]
         if item["operationKind"] == "video.reference_to_video"
     )
-    assert saved_row["selectedModelRefs"] == [hailuo_ref]
-    assert creative_media_runtime._preferred_model_candidates("video.reference_to_video")[0]["modelRef"] == hailuo_ref
+    assert saved_row["selectedModelRefs"] == [s2v_ref]
+    assert creative_media_runtime._preferred_model_candidates("video.reference_to_video")[0]["modelRef"] == s2v_ref
 
 
-def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):
+def test_explicit_provider_rejects_unregistered_media_model(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",
         lambda: {
@@ -1001,14 +1231,11 @@ def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):
         },
     )
 
-    provider_id, provider_meta, model_id = creative_media_runtime._configured_provider_for_model(
-        {"providerId": "agnes", "modelId": "agnes-image-2.1-flash"},
-        default_model="agnes-image-2.1-flash",
-    )
-
-    assert provider_id == "agnes"
-    assert provider_meta["base_url"] == "https://apihub.agnes-ai.com/v1"
-    assert model_id == "agnes-image-2.1-flash"
+    with pytest.raises(ValueError, match="No configured provider exposes model"):
+        creative_media_runtime._configured_provider_for_model(
+            {"providerId": "agnes", "modelId": "agnes-image-2.1-flash"},
+            default_model="agnes-image-2.1-flash",
+        )
 
 
 def test_provider_model_id_separates_known_media_route_from_wire_model_id():

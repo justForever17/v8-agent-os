@@ -52,6 +52,8 @@ _BOOL_FIELDS = {
     "dryRun",
     "execute",
     "generateAudio",
+    "promptOptimizer",
+    "fastPretreatment",
     "isInstrumental",
     "preserveNativeAudio",
     "refresh",
@@ -115,6 +117,7 @@ _GENERATION_FIELDS = frozenset(
         "maskUrl",
         "modality",
         "modelId",
+        "modelRef",
         "motionReferenceUrl",
         "n",
         "negativePrompt",
@@ -125,6 +128,8 @@ _GENERATION_FIELDS = frozenset(
         "preserveNativeAudio",
         "previewText",
         "prompt",
+        "promptOptimizer",
+        "fastPretreatment",
         "pronunciationDict",
         "providerId",
         "providerAdapterId",
@@ -417,6 +422,7 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "get": _spec(
             "jobs", "get", "creative", "creative_media_get_job",
             required={"jobId"}, allowed={"jobId", "refresh"}, output_kind="job",
+            async_handler=True,
             args=(("job_id", "jobId", _MISSING), ("refresh", "refresh", True)),
         ),
         "list": _spec(

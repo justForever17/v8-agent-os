@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-24T01:00:48.216483+00:00",
+  "generatedAt": "2026-07-25T20:16:07.407426+00:00",
   "notes": [
     "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
     "Provider/API wire format remains in media_provider_format_matrix.json.",
@@ -37,7 +37,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://agnes-ai.com/doc/agnes-image-21-flash"
+          "url": "https://agnes-ai.com/en/docs/agnes-image-21-flash"
         }
       ],
       "confidence": "verified_official",
@@ -53,7 +53,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://agnes-ai.com/doc/agnes-video-v20"
+          "url": "https://agnes-ai.com/en/docs/agnes-video-v20"
         }
       ],
       "confidence": "verified_official",
@@ -89,7 +89,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api"
+          "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api"
         }
       ],
       "confidence": "provider_docs",
@@ -105,7 +105,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+          "url": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference"
         },
         {
           "source": "multimedia_doc",
@@ -125,7 +125,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -789,7 +789,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+          "url": "https://developers.openai.com/api/docs/guides/image-generation"
         }
       ],
       "confidence": "verified_official",
@@ -1013,7 +1013,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
         },
         {
           "source": "multimedia_doc",
@@ -1121,7 +1121,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -1137,7 +1137,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         },
         {
           "source": "multimedia_doc",
@@ -1306,7 +1306,7 @@
               "data_uri"
             ]
           },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+          "sourceUrl": "https://agnes-ai.com/en/docs/agnes-image-21-flash",
           "confidence": "verified_official"
         },
         "image.edit": {
@@ -1335,18 +1335,18 @@
               "data_uri"
             ]
           },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+          "sourceUrl": "https://agnes-ai.com/en/docs/agnes-image-21-flash",
           "confidence": "verified_official"
         }
       },
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://agnes-ai.com/doc/agnes-image-21-flash"
+          "url": "https://agnes-ai.com/en/docs/agnes-image-21-flash"
         },
         {
           "source": "media_model_capability_overrides",
-          "url": "https://agnes-ai.com/doc/agnes-image-21-flash"
+          "url": "https://agnes-ai.com/en/docs/agnes-image-21-flash"
         }
       ],
       "confidence": "verified_official",
@@ -1386,7 +1386,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+          "url": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -1427,7 +1427,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+          "url": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference"
         },
         {
           "source": "multimedia_doc",
@@ -1475,7 +1475,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+          "url": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -1515,7 +1515,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/image-generation/"
+          "url": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -2005,7 +2005,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+          "url": "https://developers.openai.com/api/docs/guides/image-generation"
         }
       ],
       "confidence": "verified_official",
@@ -2044,7 +2044,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://platform.openai.com/docs/guides/images/image-generation"
+          "url": "https://developers.openai.com/api/docs/guides/image-generation"
         }
       ],
       "confidence": "verified_official",
@@ -3152,11 +3152,7 @@
       ],
       "modality": "model3d",
       "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
+        "model3d.generate"
       ],
       "inputModalities": [
         "text",
@@ -3177,7 +3173,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
         },
         {
           "source": "multimedia_doc",
@@ -3192,92 +3188,6 @@
       }
     },
     {
-      "canonicalModelId": "hunyuan-3d-format-convert",
-      "displayName": "hunyuan-3d-format-convert",
-      "creator": "Tencent Hunyuan 3D",
-      "providerIds": [
-        "tencent_hunyuan_3d"
-      ],
-      "aliases": [
-        "hunyuan-3d-format-convert"
-      ],
-      "modality": "model3d",
-      "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
-      ],
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "outputStreams": [
-        "model3d"
-      ],
-      "referenceInputs": {},
-      "nativeAudio": false,
-      "audioModes": [],
-      "audioPreservationPolicy": "",
-      "resolution": {},
-      "duration": {},
-      "formats": {},
-      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
-      "operationCapabilityProfiles": {},
-      "sourceRefs": [
-        {
-          "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
-        }
-      ],
-      "confidence": "provider_docs",
-      "missingFields": []
-    },
-    {
-      "canonicalModelId": "hunyuan-3d-part",
-      "displayName": "hunyuan-3d-part",
-      "creator": "Tencent Hunyuan 3D",
-      "providerIds": [
-        "tencent_hunyuan_3d"
-      ],
-      "aliases": [
-        "hunyuan-3d-part"
-      ],
-      "modality": "model3d",
-      "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
-      ],
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "outputStreams": [
-        "model3d"
-      ],
-      "referenceInputs": {},
-      "nativeAudio": false,
-      "audioModes": [],
-      "audioPreservationPolicy": "",
-      "resolution": {},
-      "duration": {},
-      "formats": {},
-      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
-      "operationCapabilityProfiles": {},
-      "sourceRefs": [
-        {
-          "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
-        }
-      ],
-      "confidence": "provider_docs",
-      "missingFields": []
-    },
-    {
       "canonicalModelId": "hunyuan-3d-pro",
       "displayName": "hunyuan-3d-pro",
       "creator": "Tencent Hunyuan 3D",
@@ -3289,11 +3199,7 @@
       ],
       "modality": "model3d",
       "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
+        "model3d.generate"
       ],
       "inputModalities": [
         "text",
@@ -3314,50 +3220,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
-        }
-      ],
-      "confidence": "provider_docs",
-      "missingFields": []
-    },
-    {
-      "canonicalModelId": "hunyuan-3d-profile",
-      "displayName": "hunyuan-3d-profile",
-      "creator": "Tencent Hunyuan 3D",
-      "providerIds": [
-        "tencent_hunyuan_3d"
-      ],
-      "aliases": [
-        "hunyuan-3d-profile"
-      ],
-      "modality": "model3d",
-      "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
-      ],
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "outputStreams": [
-        "model3d"
-      ],
-      "referenceInputs": {},
-      "nativeAudio": false,
-      "audioModes": [],
-      "audioPreservationPolicy": "",
-      "resolution": {},
-      "duration": {},
-      "formats": {},
-      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
-      "operationCapabilityProfiles": {},
-      "sourceRefs": [
-        {
-          "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
         }
       ],
       "confidence": "provider_docs",
@@ -3375,11 +3238,7 @@
       ],
       "modality": "model3d",
       "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
+        "model3d.generate"
       ],
       "inputModalities": [
         "text",
@@ -3400,29 +3259,25 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
         }
       ],
       "confidence": "provider_docs",
       "missingFields": []
     },
     {
-      "canonicalModelId": "hunyuan-3d-texture",
-      "displayName": "hunyuan-3d-texture",
+      "canonicalModelId": "hy-3d-3.0",
+      "displayName": "hy-3d-3.0",
       "creator": "Tencent Hunyuan 3D",
       "providerIds": [
         "tencent_hunyuan_3d"
       ],
       "aliases": [
-        "hunyuan-3d-texture"
+        "hy-3d-3.0"
       ],
       "modality": "model3d",
       "operationKinds": [
-        "model3d.generate",
-        "model3d.texture",
-        "model3d.part",
-        "model3d.profile",
-        "model3d.convert"
+        "model3d.generate"
       ],
       "inputModalities": [
         "text",
@@ -3443,7 +3298,85 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://cloud.tencent.com.cn/document/product/1804/120838"
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hy-3d-3.1",
+      "displayName": "hy-3d-3.1",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hy-3d-3.1"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "hy-3d-express",
+      "displayName": "hy-3d-express",
+      "creator": "Tencent Hunyuan 3D",
+      "providerIds": [
+        "tencent_hunyuan_3d"
+      ],
+      "aliases": [
+        "hy-3d-express"
+      ],
+      "modality": "model3d",
+      "operationKinds": [
+        "model3d.generate"
+      ],
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "outputStreams": [
+        "model3d"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/hunyuan-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://cloud.tencent.com/document/product/1823/130082"
         }
       ],
       "confidence": "provider_docs",
@@ -4198,6 +4131,46 @@
       "missingFields": []
     },
     {
+      "canonicalModelId": "auto",
+      "displayName": "auto",
+      "creator": "Mureka Music API",
+      "providerIds": [
+        "mureka_music"
+      ],
+      "aliases": [
+        "auto"
+      ],
+      "modality": "music",
+      "operationKinds": [
+        "music.generate",
+        "music.brief"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/providers/mureka.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://platform.mureka.ai/docs/en/quickstart.html"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
       "canonicalModelId": "mureka-o1",
       "displayName": "mureka-o1",
       "creator": "Mureka Music API",
@@ -4209,6 +4182,7 @@
       ],
       "modality": "music",
       "operationKinds": [
+        "music.generate",
         "music.brief"
       ],
       "inputModalities": [
@@ -4376,8 +4350,7 @@
       "operationKinds": [
         "video.text_to_video",
         "video.image_to_video",
-        "video.first_last_frame",
-        "video.reference_to_video"
+        "video.first_last_frame"
       ],
       "inputModalities": [
         "text",
@@ -4391,8 +4364,7 @@
           "roles": [
             "first_frame",
             "last_frame",
-            "keyframe",
-            "visual_reference"
+            "keyframe"
           ]
         }
       },
@@ -4433,8 +4405,7 @@
               "roles": [
                 "first_frame",
                 "last_frame",
-                "keyframe",
-                "visual_reference"
+                "keyframe"
               ]
             }
           },
@@ -4453,7 +4424,7 @@
             ],
             "providerMayNormalize": true
           },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+          "sourceUrl": "https://agnes-ai.com/en/docs/agnes-video-v20",
           "confidence": "verified_official"
         },
         "video.image_to_video": {
@@ -4472,8 +4443,7 @@
               "roles": [
                 "first_frame",
                 "last_frame",
-                "keyframe",
-                "visual_reference"
+                "keyframe"
               ]
             }
           },
@@ -4492,7 +4462,7 @@
             ],
             "providerMayNormalize": true
           },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+          "sourceUrl": "https://agnes-ai.com/en/docs/agnes-video-v20",
           "confidence": "verified_official"
         },
         "video.first_last_frame": {
@@ -4511,8 +4481,7 @@
               "roles": [
                 "first_frame",
                 "last_frame",
-                "keyframe",
-                "visual_reference"
+                "keyframe"
               ]
             }
           },
@@ -4531,57 +4500,18 @@
             ],
             "providerMayNormalize": true
           },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
-          "confidence": "verified_official"
-        },
-        "video.reference_to_video": {
-          "nativeAudio": false,
-          "audioModes": [],
-          "audioPreservationPolicy": "silent_or_external_audio",
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "outputStreams": [
-            "video"
-          ],
-          "referenceInputs": {
-            "image": {
-              "roles": [
-                "first_frame",
-                "last_frame",
-                "keyframe",
-                "visual_reference"
-              ]
-            }
-          },
-          "duration": {
-            "control": "num_frames_divided_by_frame_rate",
-            "numFramesMax": 441,
-            "numFramesRule": "8n+1",
-            "frameRateMin": 1,
-            "frameRateMax": 60
-          },
-          "resolution": {
-            "presets": [
-              "480p",
-              "720p",
-              "1080p"
-            ],
-            "providerMayNormalize": true
-          },
-          "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+          "sourceUrl": "https://agnes-ai.com/en/docs/agnes-video-v20",
           "confidence": "verified_official"
         }
       },
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://agnes-ai.com/doc/agnes-video-v20"
+          "url": "https://agnes-ai.com/en/docs/agnes-video-v20"
         },
         {
           "source": "media_model_capability_overrides",
-          "url": "https://agnes-ai.com/doc/agnes-video-v20"
+          "url": "https://agnes-ai.com/en/docs/agnes-video-v20"
         }
       ],
       "confidence": "verified_official",
@@ -4630,7 +4560,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4679,7 +4609,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4728,7 +4658,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4777,7 +4707,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4826,7 +4756,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4875,7 +4805,56 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "wan2.7-r2v-2026-06-12",
+      "displayName": "wan2.7-r2v-2026-06-12",
+      "creator": "Alibaba Cloud Bailian Video",
+      "providerIds": [
+        "aliyun_bailian_video"
+      ],
+      "aliases": [
+        "wan2.7-r2v-2026-06-12"
+      ],
+      "modality": "video",
+      "operationKinds": [
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+        "video.video_edit",
+        "video.lipsync",
+        "video.action_transfer",
+        "video.avatar",
+        "video.replacement",
+        "video.style_repaint"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputStreams": [
+        "video"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -4924,21 +4903,21 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
       "missingFields": []
     },
     {
-      "canonicalModelId": "wan2.7-t2v-2026-04-25",
-      "displayName": "wan2.7-t2v-2026-04-25",
+      "canonicalModelId": "wan2.7-t2v-2026-06-12",
+      "displayName": "wan2.7-t2v-2026-06-12",
       "creator": "Alibaba Cloud Bailian Video",
       "providerIds": [
         "aliyun_bailian_video"
       ],
       "aliases": [
-        "wan2.7-t2v-2026-04-25"
+        "wan2.7-t2v-2026-06-12"
       ],
       "modality": "video",
       "operationKinds": [
@@ -4973,7 +4952,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -5022,7 +5001,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/use-video-generation"
+          "url": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference"
         }
       ],
       "confidence": "provider_docs",
@@ -7255,7 +7234,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         },
         {
           "source": "media_model_capability_overrides",
@@ -7351,7 +7330,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         },
         {
           "source": "media_model_capability_overrides",
@@ -7398,7 +7377,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "provider_docs",
@@ -7725,7 +7704,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         },
         {
           "source": "media_model_capability_overrides",
@@ -8062,7 +8041,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         },
         {
           "source": "media_model_capability_overrides",
@@ -8269,7 +8248,46 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api"
+          "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api"
+        }
+      ],
+      "confidence": "provider_docs",
+      "missingFields": []
+    },
+    {
+      "canonicalModelId": "cosyvoice-v3.5-plus",
+      "displayName": "cosyvoice-v3.5-plus",
+      "creator": "Alibaba Cloud Bailian CosyVoice",
+      "providerIds": [
+        "aliyun_bailian_cosyvoice"
+      ],
+      "aliases": [
+        "cosyvoice-v3.5-plus"
+      ],
+      "modality": "voice",
+      "operationKinds": [
+        "voice.tts"
+      ],
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "outputStreams": [
+        "audio"
+      ],
+      "referenceInputs": {},
+      "nativeAudio": false,
+      "audioModes": [],
+      "audioPreservationPolicy": "",
+      "resolution": {},
+      "duration": {},
+      "formats": {},
+      "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
+      "operationCapabilityProfiles": {},
+      "sourceRefs": [
+        {
+          "source": "media_provider_format_matrix",
+          "url": "https://help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api"
         }
       ],
       "confidence": "provider_docs",
@@ -8904,7 +8922,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -8951,7 +8970,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -8990,7 +9010,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -9029,7 +9050,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -9068,7 +9090,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -9107,7 +9130,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -9146,7 +9170,8 @@
       ],
       "modality": "voice",
       "operationKinds": [
-        "voice.tts"
+        "voice.tts",
+        "voice.design"
       ],
       "inputModalities": [
         "text",
@@ -9326,7 +9351,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -9368,7 +9393,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -9410,7 +9435,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -9452,7 +9477,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -9494,7 +9519,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",
@@ -9536,7 +9561,7 @@
       "sourceRefs": [
         {
           "source": "media_provider_format_matrix",
-          "url": "https://www.volcengine.com/docs/82379"
+          "url": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01"
         }
       ],
       "confidence": "community_or_inferred",

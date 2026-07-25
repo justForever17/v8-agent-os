@@ -228,6 +228,42 @@ def test_media_matrix_contains_requested_generation_providers():
     assert {"meshy_3d", "hitem3d", "hyper3d_rodin", "csm_3d", "3d_ai_studio"}.issubset(modality_ids["model3d"])
 
 
+def test_executable_media_wire_contracts_do_not_override_model_hub_truth():
+    payload = json.loads(MEDIA_MATRIX.read_text(encoding="utf-8"))
+    notes = " ".join(payload["notes"])
+    assert "Model Hub are authoritative" in notes
+
+    entries = {
+        item["id"]: item
+        for items in payload["modalities"].values()
+        for item in items
+    }
+
+    openai = entries["openai_images"]
+    assert openai["request"]["bodyFields"] == ["model", "prompt", "size"]
+    assert openai["request"]["responseFormats"] == ["b64_json"]
+
+    dashscope_image = entries["aliyun_bailian_image"]
+    assert "input.prompt" not in dashscope_image["request"]["bodyFields"]
+    assert "input.messages[].content[].text" in dashscope_image["request"]["bodyFields"]
+    assert dashscope_image["request"]["sizeFormat"] == "WIDTH*HEIGHT"
+
+    dashscope_video = entries["aliyun_bailian_video"]
+    assert "imageToVideoPath" not in dashscope_video["request"]
+    assert "input.media[].reference_voice" in dashscope_video["request"]["bodyFields"]
+    assert "wan2.7-r2v-2026-06-12" in dashscope_video["modelIds"]
+
+    agnes_video = entries["agnes_video"]
+    assert "video.reference_to_video" not in agnes_video["operationKinds"]
+
+    minimax_video = entries["minimax_video"]
+    assert minimax_video["adapter"] == "minimax_video"
+    assert minimax_video["probeStrategy"] == "task_poll"
+
+    mureka = entries["mureka_music"]
+    assert mureka["request"]["bodyFields"] == ["prompt", "lyrics", "model"]
+
+
 def test_new_local_provider_assets_match_manifest_hashes():
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     providers = manifest["providers"]

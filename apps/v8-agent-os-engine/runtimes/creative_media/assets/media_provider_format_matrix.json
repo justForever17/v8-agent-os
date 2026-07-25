@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-06-23",
+  "updatedAt": "2026-07-26",
   "statusLevels": [
     "verified_official",
     "provider_docs",
@@ -10,7 +10,8 @@
   "notes": [
     "This file stores public provider metadata only. Never store API keys here.",
     "Only verified_official and provider_docs entries should be considered adapter candidates.",
-    "music and model3d are catalog/stub layers in P1/P2; they intentionally do not imply runtime support.",
+    "Explicit connected models and capability selections from Model Hub are authoritative; this matrix documents public wire contracts and must never override user configuration.",
+    "Catalog-only entries are discovery hints and do not imply runtime support; executable support requires a named adapter and intercepted request tests.",
     "Creative Media music is cue/brief/reference planning. It must not be interpreted as legacy MusicTrack URL player configuration."
   ],
   "modalities": {
@@ -44,13 +45,11 @@
           "bodyFields": [
             "model",
             "prompt",
-            "size",
-            "response_format"
+            "size"
           ],
           "sizeField": "size",
           "sizeFormat": "WIDTHxHEIGHT",
           "responseFormats": [
-            "url",
             "b64_json"
           ]
         },
@@ -59,7 +58,6 @@
         },
         "result": {
           "paths": [
-            "data[].url",
             "data[].b64_json"
           ]
         },
@@ -67,7 +65,7 @@
           "http_2xx": "succeeded",
           "http_error": "failed"
         },
-        "sourceUrl": "https://platform.openai.com/docs/guides/images/image-generation",
+        "sourceUrl": "https://developers.openai.com/api/docs/guides/image-generation",
         "confidence": "verified_official"
       },
       {
@@ -218,11 +216,14 @@
           "editPath": "/services/aigc/multimodal-generation/generation",
           "bodyFields": [
             "model",
-            "input.prompt",
             "input.messages[].content[].image",
             "input.messages[].content[].text",
             "parameters.size",
-            "parameters.n"
+            "parameters.n",
+            "parameters.negative_prompt",
+            "parameters.prompt_extend",
+            "parameters.watermark",
+            "parameters.seed"
           ],
           "sizeField": "parameters.size",
           "sizeFormat": "WIDTH*HEIGHT"
@@ -245,7 +246,7 @@
           "FAILED": "failed",
           "CANCELED": "cancelled"
         },
-        "sourceUrl": "https://help.aliyun.com/zh/model-studio/image-generation/",
+        "sourceUrl": "https://help.aliyun.com/en/model-studio/qwen-image-api-reference",
         "confidence": "provider_docs"
       },
       {
@@ -303,7 +304,7 @@
           "http_2xx": "succeeded",
           "http_error": "failed"
         },
-        "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+        "sourceUrl": "https://agnes-ai.com/en/docs/agnes-image-21-flash",
         "confidence": "verified_official"
       },
       {
@@ -726,7 +727,10 @@
           "submitPath": "/contents/generations/tasks",
           "bodyFields": [
             "model",
-            "content",
+            "content[].type",
+            "content[].text",
+            "content[].image_url.url",
+            "content[].role",
             "ratio",
             "resolution",
             "duration",
@@ -755,7 +759,7 @@
           "succeeded": "succeeded",
           "failed": "failed"
         },
-        "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "sourceUrl": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01",
         "confidence": "provider_docs",
         "credentialRealm": "volcengine_ark"
       },
@@ -828,10 +832,11 @@
         "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
         "modelIds": [
           "wan2.7-t2v",
-          "wan2.7-t2v-2026-04-25",
+          "wan2.7-t2v-2026-06-12",
           "wan2.7-i2v",
           "wan2.7-i2v-2026-04-25",
           "wan2.7-r2v",
+          "wan2.7-r2v-2026-06-12",
           "wan2.7-videoedit",
           "wan2.2-s2v",
           "wan2.2-animate-move",
@@ -864,13 +869,15 @@
         "request": {
           "method": "POST",
           "submitPath": "/services/aigc/video-generation/video-synthesis",
-          "imageToVideoPath": "/services/aigc/image2video/video-synthesis",
           "bodyFields": [
             "model",
             "input.prompt",
             "input.image_url",
-            "input.audio_url",
-            "input.video_url",
+            "input.first_frame_url",
+            "input.last_frame_url",
+            "input.media[].type",
+            "input.media[].url",
+            "input.media[].reference_voice",
             "parameters.resolution",
             "parameters.duration",
             "parameters.ratio"
@@ -898,7 +905,7 @@
           "FAILED": "failed",
           "CANCELED": "cancelled"
         },
-        "sourceUrl": "https://help.aliyun.com/zh/model-studio/use-video-generation",
+        "sourceUrl": "https://help.aliyun.com/en/model-studio/wan-video-to-video-api-reference",
         "confidence": "provider_docs"
       },
       {
@@ -1090,8 +1097,7 @@
         "operationKinds": [
           "video.text_to_video",
           "video.image_to_video",
-          "video.first_last_frame",
-          "video.reference_to_video"
+          "video.first_last_frame"
         ],
         "baseUrlDefault": "https://apihub.agnes-ai.com",
         "credentialHelp": {
@@ -1143,7 +1149,7 @@
           "completed": "succeeded",
           "failed": "failed"
         },
-        "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+        "sourceUrl": "https://agnes-ai.com/en/docs/agnes-video-v20",
         "confidence": "verified_official"
       },
       {
@@ -1162,8 +1168,8 @@
           "S2V-01"
         ],
         "apiStandard": "minimax_task",
-        "adapter": "catalog_only",
-        "probeStrategy": "catalog_only",
+        "adapter": "minimax_video",
+        "probeStrategy": "task_poll",
         "operationKinds": [
           "video.text_to_video",
           "video.image_to_video",
@@ -2169,7 +2175,7 @@
             "text"
           ]
         },
-        "sourceUrl": "https://www.volcengine.com/docs/82379",
+        "sourceUrl": "https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01",
         "confidence": "community_or_inferred",
         "credentialRealm": "volcengine_ark"
       },
@@ -2687,10 +2693,8 @@
           "bodyFields": [
             "prompt",
             "lyrics",
-            "model",
-            "duration"
-          ],
-          "sizeFormat": "AUDIO_DURATION"
+            "model"
+          ]
         },
         "polling": {
           "mode": "task",
@@ -2705,7 +2709,7 @@
             "url"
           ]
         },
-        "sourceUrl": "https://platform.mureka.ai/docs/api/operations/post-v1-song-generate.html",
+        "sourceUrl": "https://platform.mureka.ai/docs/en/quickstart.html",
         "confidence": "provider_docs",
         "probeStrategy": "task_poll",
         "operationKinds": [
@@ -3070,7 +3074,8 @@
         },
         "sourceUrl": "https://cloud.tencent.com/document/product/1823/130082",
         "confidence": "provider_docs",
-        "probeStrategy": "task_poll"
+        "probeStrategy": "task_poll",
+        "integrationNote": "This entry documents the Tencent TokenHub adapter contract used by V8OS; it is not the native Tencent Cloud public endpoint."
       },
       {
         "id": "volcengine_3d_generation",

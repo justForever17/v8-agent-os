@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-06-23",
+  "updatedAt": "2026-07-26",
   "matchPolicy": "exact providerId + exact modelId + operationKind; no provider-level inheritance",
   "notes": [
     "This file stores model-version media capability overlays that are too specific for provider-level metadata.",
@@ -128,13 +128,13 @@
           "imageInput": ["public_url", "data_uri"]
         }
       },
-      "sourceUrl": "https://agnes-ai.com/doc/agnes-image-21-flash",
+      "sourceUrl": "https://agnes-ai.com/en/docs/agnes-image-21-flash",
       "confidence": "verified_official"
     },
     {
       "providerId": "agnes_video",
       "modelId": "agnes-video-v2.0",
-      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame"],
       "capabilityProfile": {
         "nativeAudio": false,
         "audioModes": [],
@@ -143,7 +143,7 @@
         "outputStreams": ["video"],
         "referenceInputs": {
           "image": {
-            "roles": ["first_frame", "last_frame", "keyframe", "visual_reference"]
+            "roles": ["first_frame", "last_frame", "keyframe"]
           }
         },
         "duration": {
@@ -158,7 +158,7 @@
           "providerMayNormalize": true
         }
       },
-      "sourceUrl": "https://agnes-ai.com/doc/agnes-video-v20",
+      "sourceUrl": "https://agnes-ai.com/en/docs/agnes-video-v20",
       "confidence": "verified_official"
     },
     {

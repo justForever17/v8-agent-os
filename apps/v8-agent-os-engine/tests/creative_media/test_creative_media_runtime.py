@@ -24,6 +24,8 @@ from runtimes.creative_media.runtime import (
     JOB_STORE_FILE,
     _build_agnes_image_payload,
     _build_agnes_video_payload,
+    _build_dashscope_image_payload,
+    _build_dashscope_video_payload,
     _build_minimax_video_payload,
     _build_openai_image_payload,
     _build_volcengine_image_payload,
@@ -167,14 +169,19 @@ def test_media_payload_rendering_keeps_provider_specific_fields_separate():
         model="gpt-image-2",
         prompt="a small red house",
         size="1024x1024",
-        response_format="b64_json",
     )
     assert openai_payload == {
         "model": "gpt-image-2",
         "prompt": "a small red house",
         "size": "1024x1024",
-        "response_format": "b64_json",
     }
+    with pytest.raises(ValueError, match="does not accept legacy response_format"):
+        _build_openai_image_payload(
+            model="gpt-image-2",
+            prompt="a small red house",
+            size="1024x1024",
+            response_format="b64_json",
+        )
 
     agnes_image_payload = _build_agnes_image_payload(
         model="agnes-image-2.1-flash",
@@ -215,12 +222,187 @@ def test_media_payload_rendering_keeps_provider_specific_fields_separate():
     volc_video_payload = _build_volcengine_video_payload(
         model="doubao-seedance-1-0-pro-fast-251015",
         prompt="a 5 second establishing shot",
+        operation_kind="video.text_to_video",
         ratio="16:9",
         resolution="720p",
         duration=5,
     )
     assert {"ratio", "resolution", "duration", "content"}.issubset(volc_video_payload)
     assert "size" not in volc_video_payload
+
+
+def test_dashscope_payloads_match_wan_and_qwen_multimodal_contracts():
+    image_generate = _build_dashscope_image_payload(
+        model="qwen-image-2.0-pro",
+        prompt="a clean product photo",
+        operation_kind="image.generate",
+        size="2048x2048",
+        n=2,
+        negative_prompt="text",
+        seed=7,
+    )
+    assert image_generate == {
+        "model": "qwen-image-2.0-pro",
+        "input": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"text": "a clean product photo"}],
+                }
+            ]
+        },
+        "parameters": {
+            "n": 2,
+            "prompt_extend": True,
+            "watermark": False,
+            "size": "2048*2048",
+            "negative_prompt": "text",
+            "seed": 7,
+        },
+    }
+    image_edit = _build_dashscope_image_payload(
+        model="qwen-image-2.0",
+        prompt="remove the label",
+        operation_kind="image.edit",
+        image_urls=["https://example.com/a.png", "https://example.com/b.png"],
+    )
+    assert image_edit["input"]["messages"][0]["content"] == [
+        {"image": "https://example.com/a.png"},
+        {"image": "https://example.com/b.png"},
+        {"text": "remove the label"},
+    ]
+
+    t2v = _build_dashscope_video_payload(
+        model="wan2.7-t2v-2026-06-12",
+        prompt="camera slowly pushes in",
+        operation_kind="video.text_to_video",
+        resolution="1080P",
+        ratio="9:16",
+        duration=12,
+        negative_prompt="subtitle",
+    )
+    assert t2v == {
+        "model": "wan2.7-t2v-2026-06-12",
+        "input": {"prompt": "camera slowly pushes in", "negative_prompt": "subtitle"},
+        "parameters": {
+            "resolution": "1080P",
+            "duration": 12,
+            "prompt_extend": True,
+            "watermark": False,
+            "ratio": "9:16",
+        },
+    }
+    i2v = _build_dashscope_video_payload(
+        model="wan2.7-i2v-2026-04-25",
+        prompt="subject turns toward camera",
+        operation_kind="video.image_to_video",
+        image_urls=["https://example.com/first.png"],
+        audio_url="https://example.com/driving.wav",
+    )
+    assert i2v["input"]["media"] == [
+        {"type": "first_frame", "url": "https://example.com/first.png"},
+        {"type": "driving_audio", "url": "https://example.com/driving.wav"},
+    ]
+    assert "ratio" not in i2v["parameters"]
+    first_last = _build_dashscope_video_payload(
+        model="wan2.7-i2v",
+        prompt="connect the two poses",
+        operation_kind="video.first_last_frame",
+        image_urls=["https://example.com/first.png", "https://example.com/last.png"],
+    )
+    assert first_last["input"]["media"] == [
+        {"type": "first_frame", "url": "https://example.com/first.png"},
+        {"type": "last_frame", "url": "https://example.com/last.png"},
+    ]
+    r2v = _build_dashscope_video_payload(
+        model="wan2.7-r2v-2026-06-12",
+        prompt="preserve this character",
+        operation_kind="video.reference_to_video",
+        reference_image_urls=["https://example.com/reference.png"],
+        reference_video_urls=["https://example.com/reference.mp4"],
+        audio_url="https://example.com/voice.mp3",
+        duration=15,
+    )
+    assert r2v["input"]["media"] == [
+        {
+            "type": "reference_image",
+            "url": "https://example.com/reference.png",
+            "reference_voice": "https://example.com/voice.mp3",
+        },
+        {
+            "type": "reference_video",
+            "url": "https://example.com/reference.mp4",
+            "reference_voice": "https://example.com/voice.mp3",
+        },
+    ]
+    assert r2v["parameters"]["duration"] == 10
+
+    volc_reference = _build_volcengine_video_payload(
+        model="doubao-seedance-2-0-pro-260624",
+        prompt="preserve the two subjects",
+        operation_kind="video.reference_to_video",
+        ratio="16:9",
+        resolution="720p",
+        duration=5,
+        image_urls=["https://example.com/a.png", "https://example.com/b.png"],
+    )
+    assert volc_reference["content"][1:] == [
+        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}, "role": "reference_image"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/b.png"}, "role": "reference_image"},
+    ]
+
+
+def test_provider_payload_builders_reject_cross_operation_inputs():
+    with pytest.raises(ValueError, match="at most three"):
+        _build_dashscope_image_payload(
+            model="qwen-image-2.0",
+            prompt="edit",
+            operation_kind="image.edit",
+            image_urls=["https://example.com/1.png"] * 4,
+        )
+    with pytest.raises(ValueError, match="exactly one first-frame"):
+        _build_dashscope_video_payload(
+            model="wan2.7-i2v",
+            prompt="move",
+            operation_kind="video.image_to_video",
+            image_urls=[],
+        )
+    with pytest.raises(ValueError, match="one to five"):
+        _build_dashscope_video_payload(
+            model="wan2.7-r2v",
+            prompt="preserve",
+            operation_kind="video.reference_to_video",
+            reference_image_urls=[f"https://example.com/{index}.png" for index in range(6)],
+        )
+    with pytest.raises(ValueError, match="does not support"):
+        _build_agnes_video_payload(
+            model="agnes-video-v2.0",
+            prompt="preserve",
+            operation_kind="video.reference_to_video",
+            image_urls=["https://example.com/a.png"],
+            num_frames=81,
+            frame_rate=24,
+        )
+    with pytest.raises(ValueError, match="requires exactly 0"):
+        _build_volcengine_video_payload(
+            model="doubao-seedance-1-0-pro-fast-251015",
+            prompt="move",
+            operation_kind="video.text_to_video",
+            ratio="16:9",
+            resolution="720p",
+            duration=5,
+            image_urls=["https://example.com/a.png"],
+        )
+    with pytest.raises(ValueError, match="one to five reference images"):
+        _build_volcengine_video_payload(
+            model="doubao-seedance-2-0-pro-260624",
+            prompt="preserve",
+            operation_kind="video.reference_to_video",
+            ratio="16:9",
+            resolution="720p",
+            duration=5,
+            image_urls=[],
+        )
 
 
 def test_minimax_video_payloads_match_official_four_operation_contracts():
@@ -1661,10 +1843,12 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
         },
     )
     requested_urls = []
+    submitted_payload = {}
 
     async def fake_request_json(method, url, *, headers=None, json=None, timeout=120.0):
         requested_urls.append((method, url))
         if url.endswith("/v1/song/generate"):
+            submitted_payload.update(json)
             assert json["model"] == "mureka-o1"
             return {"task_id": "task_1", "status": "queued"}
         return {"status": "completed", "data": {"audio_url": "https://cdn.example.test/song.mp3"}}
@@ -1687,6 +1871,7 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
                 "providerId": "mureka_music",
                 "modelId": "auto",
                 "prompt": "short cheerful loop",
+                "duration": 60,
                 "wait": True,
                 "workspacePath": str(tmp_path),
             }
@@ -1701,6 +1886,7 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
         ("POST", "https://api.mureka.ai/v1/song/generate"),
         ("GET", "https://api.mureka.ai/v1/song/query/task_1"),
     ]
+    assert submitted_payload == {"model": "mureka-o1", "prompt": "short cheerful loop"}
 
 
 def test_tencent_hunyuan_3d_uses_tokenhub_and_downloads_model(monkeypatch, tmp_path: Path):

@@ -127,10 +127,10 @@ DASHSCOPE_VIDEO_OPERATION_KINDS = {
 DASHSCOPE_BUILTIN_MODELS = {
     "image.generate": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro"],
     "image.edit": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro"],
-    "video.text_to_video": ["wan2.7-t2v", "wan2.7-t2v-2026-04-25"],
+    "video.text_to_video": ["wan2.7-t2v", "wan2.7-t2v-2026-06-12"],
     "video.image_to_video": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
     "video.first_last_frame": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
-    "video.reference_to_video": ["wan2.7-r2v"],
+    "video.reference_to_video": ["wan2.7-r2v", "wan2.7-r2v-2026-06-12"],
 }
 PLUGIN_ONLY_OPERATION_KINDS = {
     "video.action_transfer",
@@ -301,13 +301,159 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
-def _build_openai_image_payload(*, model: str, prompt: str, size: str, response_format: str = "b64_json") -> dict[str, Any]:
-    return {
+def _build_openai_image_payload(
+    *,
+    model: str,
+    prompt: str,
+    size: str,
+    response_format: str | None = None,
+) -> dict[str, Any]:
+    payload = {
         "model": model,
         "prompt": prompt,
         "size": size,
-        "response_format": response_format,
     }
+    normalized_format = str(response_format or "").strip()
+    if normalized_format:
+        if str(model or "").strip().lower().startswith("gpt-image-"):
+            raise ValueError("GPT Image returns base64 image data and does not accept legacy response_format")
+        payload["response_format"] = normalized_format
+    return payload
+
+
+def _build_dashscope_image_payload(
+    *,
+    model: str,
+    prompt: str,
+    operation_kind: str,
+    image_urls: Optional[list[str]] = None,
+    size: str | None = None,
+    n: int = 1,
+    negative_prompt: str = "",
+    prompt_extend: bool = True,
+    watermark: bool = False,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    normalized_prompt = str(prompt or "").strip()
+    if not normalized_prompt:
+        raise ValueError("DashScope image request requires prompt")
+    if operation_kind not in {"image.generate", "image.edit"}:
+        raise ValueError(f"DashScope image adapter does not support operationKind={operation_kind}")
+    references = [str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()]
+    if operation_kind == "image.edit" and not references:
+        raise ValueError("DashScope image.edit requires at least one image URL")
+    if len(references) > 3:
+        raise ValueError("DashScope image.edit supports at most three image inputs")
+    content = [{"image": url} for url in references]
+    content.append({"text": normalized_prompt})
+    parameters: dict[str, Any] = {
+        "n": max(1, int(n)),
+        "prompt_extend": _truthy(prompt_extend),
+        "watermark": _truthy(watermark),
+    }
+    if size:
+        parameters["size"] = str(size).replace("x", "*")
+    if negative_prompt:
+        parameters["negative_prompt"] = str(negative_prompt)
+    if seed is not None:
+        parameters["seed"] = int(seed)
+    return {
+        "model": str(model or "").strip(),
+        "input": {"messages": [{"role": "user", "content": content}]},
+        "parameters": parameters,
+    }
+
+
+def _build_dashscope_video_payload(
+    *,
+    model: str,
+    prompt: str,
+    operation_kind: str,
+    image_urls: Optional[list[str]] = None,
+    reference_image_url: str = "",
+    reference_video_url: str = "",
+    reference_image_urls: Optional[list[str]] = None,
+    reference_video_urls: Optional[list[str]] = None,
+    audio_url: str = "",
+    resolution: str = "720P",
+    ratio: str = "16:9",
+    duration: int = 5,
+    negative_prompt: str = "",
+    prompt_extend: bool = True,
+    watermark: bool = False,
+) -> dict[str, Any]:
+    if operation_kind not in DASHSCOPE_VIDEO_OPERATION_KINDS:
+        raise ValueError(f"DashScope Wan 2.7 adapter does not support operationKind={operation_kind}")
+    normalized_prompt = str(prompt or "").strip()
+    if not normalized_prompt:
+        raise ValueError(f"DashScope {operation_kind} requires prompt")
+    references = [str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()]
+    input_payload: dict[str, Any] = {"prompt": normalized_prompt}
+    media: list[dict[str, Any]] = []
+    ref_videos: list[str] = []
+    if operation_kind == "video.text_to_video":
+        if references or reference_image_url or reference_video_url:
+            raise ValueError("DashScope video.text_to_video does not accept image or video references")
+        if audio_url:
+            input_payload["audio_url"] = str(audio_url)
+    elif operation_kind == "video.image_to_video":
+        if len(references) != 1:
+            raise ValueError("DashScope video.image_to_video requires exactly one first-frame image")
+        media.append({"type": "first_frame", "url": references[0]})
+        if audio_url:
+            media.append({"type": "driving_audio", "url": str(audio_url)})
+    elif operation_kind == "video.first_last_frame":
+        if len(references) != 2:
+            raise ValueError("DashScope video.first_last_frame requires exactly two images")
+        media.extend(
+            [
+                {"type": "first_frame", "url": references[0]},
+                {"type": "last_frame", "url": references[1]},
+            ]
+        )
+        if audio_url:
+            media.append({"type": "driving_audio", "url": str(audio_url)})
+    elif operation_kind == "video.reference_to_video":
+        ref_images = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in [reference_image_url, *list(reference_image_urls or [])]
+                if str(item or "").strip()
+            )
+        )
+        ref_videos = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in [reference_video_url, *list(reference_video_urls or [])]
+                if str(item or "").strip()
+            )
+        )
+        references_total = len(ref_images) + len(ref_videos)
+        if references_total < 1 or references_total > 5:
+            raise ValueError("DashScope video.reference_to_video requires one to five reference images or videos")
+        for reference_url in ref_images:
+            item: dict[str, Any] = {"type": "reference_image", "url": reference_url}
+            if audio_url:
+                item["reference_voice"] = str(audio_url)
+            media.append(item)
+        for reference_url in ref_videos:
+            item = {"type": "reference_video", "url": reference_url}
+            if audio_url:
+                item["reference_voice"] = str(audio_url)
+            media.append(item)
+    if media:
+        input_payload["media"] = media
+    if negative_prompt:
+        input_payload["negative_prompt"] = str(negative_prompt)
+    parameters: dict[str, Any] = {
+        "resolution": str(resolution or "720P").upper(),
+        "duration": max(2, min(int(duration), 10 if operation_kind == "video.reference_to_video" and ref_videos else 15)),
+        "prompt_extend": _truthy(prompt_extend),
+        "watermark": _truthy(watermark),
+    }
+    if operation_kind in {"video.text_to_video", "video.reference_to_video"}:
+        parameters["ratio"] = str(ratio or "16:9")
+    return {"model": str(model or "").strip(), "input": input_payload, "parameters": parameters}
 
 
 def _build_agnes_image_payload(
@@ -343,6 +489,9 @@ def _build_agnes_video_payload(
     negative_prompt: str = "",
     num_inference_steps: int | None = None,
 ) -> dict[str, Any]:
+    supported_operations = {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}
+    if operation_kind not in supported_operations:
+        raise ValueError(f"Agnes video adapter does not support operationKind={operation_kind}")
     safe_frames = max(1, min(int(num_frames), 441))
     if (safe_frames - 1) % 8:
         safe_frames = max(1, min(441, ((safe_frames - 1) // 8) * 8 + 1))
@@ -355,12 +504,17 @@ def _build_agnes_video_payload(
         "frame_rate": max(1, min(int(frame_rate), 60)),
     }
     references = [str(item).strip() for item in list(image_urls or []) if str(item).strip()]
-    if operation_kind == "video.image_to_video" and references:
+    if operation_kind == "video.text_to_video" and references:
+        raise ValueError("Agnes video.text_to_video does not accept image inputs")
+    if operation_kind == "video.image_to_video":
+        if len(references) != 1:
+            raise ValueError("Agnes video.image_to_video requires exactly one image")
         payload["image"] = references[0]
-    elif references:
+    elif operation_kind == "video.first_last_frame":
+        if len(references) != 2:
+            raise ValueError("Agnes video.first_last_frame requires exactly two images")
         payload["extra_body"] = {"image": references}
-        if operation_kind == "video.first_last_frame":
-            payload["extra_body"]["mode"] = "keyframes"
+        payload["extra_body"]["mode"] = "keyframes"
     if seed is not None:
         payload["seed"] = int(seed)
     if negative_prompt:
@@ -395,6 +549,7 @@ def _build_volcengine_video_payload(
     *,
     model: str,
     prompt: str,
+    operation_kind: str,
     ratio: str,
     resolution: str,
     duration: int,
@@ -403,11 +558,28 @@ def _build_volcengine_video_payload(
     generate_audio: bool = True,
     watermark: bool = False,
 ) -> dict[str, Any]:
+    supported_operations = {
+        "video.text_to_video",
+        "video.image_to_video",
+        "video.first_last_frame",
+        "video.reference_to_video",
+    }
+    if operation_kind not in supported_operations:
+        raise ValueError(f"Volcengine Seedance adapter does not support operationKind={operation_kind}")
     content: list[dict[str, Any]] = []
     if prompt:
         content.append({"type": "text", "text": prompt})
-    for index, url in enumerate(image_urls or []):
-        role = "first_frame" if index == 0 else "last_frame" if index == 1 else "reference_image"
+    references = [str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()]
+    if operation_kind == "video.reference_to_video":
+        if not references or len(references) > 5:
+            raise ValueError("Volcengine video.reference_to_video requires one to five reference images")
+        required_count = None
+    else:
+        required_count = {"video.text_to_video": 0, "video.image_to_video": 1, "video.first_last_frame": 2}[operation_kind]
+        if len(references) != required_count:
+            raise ValueError(f"Volcengine {operation_kind} requires exactly {required_count} image inputs")
+    for index, url in enumerate(references):
+        role = "reference_image" if operation_kind == "video.reference_to_video" else "first_frame" if index == 0 else "last_frame"
         content.append({"type": "image_url", "image_url": {"url": url}, "role": role})
     return {
         "model": model,
@@ -3618,9 +3790,6 @@ class CreativeMediaRuntime:
             payload["prompt"] = prompt
         if lyrics:
             payload["lyrics"] = lyrics
-        duration = request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds")
-        if duration:
-            payload["duration"] = int(duration)
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
@@ -3910,8 +4079,8 @@ class CreativeMediaRuntime:
             return "/services/aigc/video-generation/video-synthesis"
         if operation_kind in {"video.video_edit", "video.style_repaint", "video.replacement"}:
             return "/services/aigc/video-generation/video-synthesis"
-        if operation_kind in {"video.image_to_video", "video.first_last_frame", "video.reference_to_video"}:
-            return "/services/aigc/image2video/video-synthesis"
+        if operation_kind in DASHSCOPE_VIDEO_OPERATION_KINDS:
+            return "/services/aigc/video-generation/video-synthesis"
         return "/services/aigc/video-generation/video-synthesis"
 
     def _dashscope_result_url(self, response: dict[str, Any]) -> str:
@@ -4065,7 +4234,7 @@ class CreativeMediaRuntime:
             adapter="openai_images",
             explicit_size=request.get("size"),
         )
-        response_format = str(request.get("responseFormat") or request.get("response_format") or "b64_json")
+        response_format = str(request.get("responseFormat") or request.get("response_format") or "").strip()
         payload = _build_openai_image_payload(model=model, prompt=prompt, size=size, response_format=response_format)
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
@@ -4206,21 +4375,25 @@ class CreativeMediaRuntime:
         prompt = str(request.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("DashScope image job requires prompt")
-        if operation_kind == "image.edit":
-            content: list[dict[str, Any]] = []
-            for url in self._image_urls_from_request(request)[:3]:
-                content.append({"image": url})
-            if not content:
-                raise ValueError("DashScope image.edit requires at least one public image URL")
-            content.append({"text": prompt})
-            payload = {"model": model, "input": {"messages": [{"role": "user", "content": content}]}, "parameters": {"n": int(request.get("n") or 1)}}
-        else:
-            size = str(request.get("size") or resolve_image_size(ratio=str(request.get("ratio") or "1:1"), preset=str(request.get("preset") or "2K"))).replace("x", "*")
-            payload = {
-                "model": model,
-                "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
-                "parameters": {"size": size, "n": int(request.get("n") or 1), "watermark": bool(request.get("watermark", False))},
-            }
+        size = str(
+            request.get("size")
+            or resolve_image_size(
+                ratio=str(request.get("ratio") or "1:1"),
+                preset=str(request.get("preset") or "2K"),
+            )
+        )
+        payload = _build_dashscope_image_payload(
+            model=model,
+            prompt=prompt,
+            operation_kind=operation_kind,
+            image_urls=self._image_urls_from_request(request) if operation_kind == "image.edit" else None,
+            size=size,
+            n=int(request.get("n") or 1),
+            negative_prompt=str(request.get("negativePrompt") or request.get("negative_prompt") or ""),
+            prompt_extend=request.get("promptExtend", request.get("prompt_extend", True)),
+            watermark=request.get("watermark", False),
+            seed=int(request["seed"]) if request.get("seed") is not None else None,
+        )
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
@@ -4278,7 +4451,7 @@ class CreativeMediaRuntime:
             size=size,
             response_format=str(request.get("responseFormat") or request.get("response_format") or "url"),
             seed=int(request.get("seed", -1)),
-            image_urls=request.get("imageUrls") or request.get("image_urls"),
+            image_urls=self._image_urls_from_request(request),
         )
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
@@ -4311,8 +4484,6 @@ class CreativeMediaRuntime:
             raise ValueError("Agnes video.image_to_video requires an image URL")
         if operation_kind == "video.first_last_frame" and len(image_urls) < 2:
             raise ValueError("Agnes video.first_last_frame requires at least two image URLs")
-        if operation_kind == "video.reference_to_video" and not image_urls:
-            raise ValueError("Agnes video.reference_to_video requires one or more image URLs")
         duration = float(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5)
         frame_rate = max(1, min(int(request.get("frameRate") or request.get("frame_rate") or 24), 60))
         requested_frames = request.get("numFrames") or request.get("num_frames")
@@ -4615,6 +4786,7 @@ class CreativeMediaRuntime:
         payload = _build_volcengine_video_payload(
             model=model,
             prompt=prompt,
+            operation_kind=operation_kind,
             ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "16:9"),
             resolution=resolve_video_resolution(preset=request.get("resolutionPreset"), explicit_resolution=request.get("resolution") or "720p"),
             duration=duration,
@@ -4698,29 +4870,55 @@ class CreativeMediaRuntime:
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
         model = str(request.get("model") or request.get("modelId") or (DASHSCOPE_BUILTIN_MODELS.get(operation_kind) or ["wan2.7-t2v"])[0])
         prompt = str(request.get("prompt") or "").strip()
-        duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
+        duration = int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5)
         input_payload: dict[str, Any] = {}
         if prompt:
             input_payload["prompt"] = prompt
         image_urls = self._image_urls_from_request(request)
         video_url = self._video_url_from_request(request, "videoUrl", "video_url", "sourceVideoUrl", "source_video_url")
         audio_url = self._public_url_or_error(request.get("audioUrl") or request.get("audio_url"), field_name="audioUrl")
-        if operation_kind in {"video.image_to_video", "video.first_last_frame"}:
-            if not image_urls:
-                raise ValueError(f"DashScope {operation_kind} requires public imageUrls")
-            input_payload["img_url"] = image_urls[0]
-            input_payload["image_url"] = image_urls[0]
-            if len(image_urls) > 1:
-                input_payload["end_image_url"] = image_urls[1]
-        elif operation_kind == "video.reference_to_video":
+        if operation_kind == "video.reference_to_video":
             ref_image = self._public_url_or_error(request.get("referenceImageUrl") or request.get("reference_image_url"), field_name="referenceImageUrl")
             ref_video = self._public_url_or_error(request.get("referenceVideoUrl") or request.get("reference_video_url"), field_name="referenceVideoUrl")
-            if ref_image:
-                input_payload["image_url"] = ref_image
-            if ref_video:
-                input_payload["video_url"] = ref_video
-            if not (ref_image or ref_video):
-                raise ValueError("DashScope video.reference_to_video requires referenceImageUrl or referenceVideoUrl")
+            raw_ref_images = request.get("referenceImageUrls") or request.get("reference_image_urls") or []
+            raw_ref_videos = request.get("referenceVideoUrls") or request.get("reference_video_urls") or []
+            if isinstance(raw_ref_images, str):
+                raw_ref_images = [raw_ref_images]
+            if isinstance(raw_ref_videos, str):
+                raw_ref_videos = [raw_ref_videos]
+            ref_images = [
+                self._public_url_or_error(item, field_name="referenceImageUrls")
+                for item in list(raw_ref_images)
+                if str(item or "").strip()
+            ]
+            ref_videos = [
+                self._public_url_or_error(item, field_name="referenceVideoUrls")
+                for item in list(raw_ref_videos)
+                if str(item or "").strip()
+            ]
+        else:
+            ref_image = ""
+            ref_video = ""
+            ref_images = []
+            ref_videos = []
+        if operation_kind in DASHSCOPE_VIDEO_OPERATION_KINDS:
+            payload = _build_dashscope_video_payload(
+                model=model,
+                prompt=prompt,
+                operation_kind=operation_kind,
+                image_urls=image_urls,
+                reference_image_url=ref_image,
+                reference_video_url=ref_video,
+                reference_image_urls=ref_images,
+                reference_video_urls=ref_videos,
+                audio_url=audio_url,
+                resolution=str(request.get("resolution") or "720P"),
+                ratio=str(request.get("ratio") or request.get("aspectRatio") or "16:9"),
+                duration=duration,
+                negative_prompt=str(request.get("negativePrompt") or request.get("negative_prompt") or ""),
+                prompt_extend=request.get("promptExtend", request.get("prompt_extend", True)),
+                watermark=request.get("watermark", False),
+            )
         elif operation_kind == "video.action_transfer":
             target_image = image_urls[0] if image_urls else self._public_url_or_error(request.get("targetImageUrl") or request.get("target_image_url"), field_name="targetImageUrl")
             reference_video = self._public_url_or_error(
@@ -4743,14 +4941,15 @@ class CreativeMediaRuntime:
             input_payload["video_url"] = video_url
             if image_urls:
                 input_payload["image_url"] = image_urls[0]
-        parameters = {
-            "resolution": str(request.get("resolution") or "720P"),
-            "duration": duration,
-            "ratio": str(request.get("ratio") or request.get("aspectRatio") or "16:9"),
-        }
-        if operation_kind == "video.action_transfer":
-            parameters = {"mode": str(request.get("mode") or "wan-std")}
-        payload = {"model": model, "input": input_payload, "parameters": parameters}
+        if operation_kind not in DASHSCOPE_VIDEO_OPERATION_KINDS:
+            parameters = {
+                "resolution": str(request.get("resolution") or "720P"),
+                "duration": max(1, min(duration, 30)),
+                "ratio": str(request.get("ratio") or request.get("aspectRatio") or "16:9"),
+            }
+            if operation_kind == "video.action_transfer":
+                parameters = {"mode": str(request.get("mode") or "wan-std")}
+            payload = {"model": model, "input": input_payload, "parameters": parameters}
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",

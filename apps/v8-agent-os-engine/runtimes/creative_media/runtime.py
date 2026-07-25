@@ -661,29 +661,6 @@ class CreativeMediaRuntime:
             return "model3d.generate"
         return f"{modality}.generate"
 
-    def _is_operation_executable(self, *, adapter: str, operation_kind: str) -> bool:
-        if operation_kind == "image.generate" and adapter in {"openai_images", "agnes_images", "volcengine_ark", "dashscope"}:
-            return True
-        if operation_kind == "image.edit" and adapter in {"openai_images", "agnes_images", "dashscope"}:
-            return True
-        if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
-            return True
-        if operation_kind in DASHSCOPE_VIDEO_OPERATION_KINDS and adapter == "dashscope":
-            return True
-        if operation_kind in {"video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"} and adapter == "agnes_video":
-            return True
-        if operation_kind == "voice.tts" and adapter in {"v8_audio_tts", "minimax_tts"}:
-            return True
-        if operation_kind == "voice.design" and adapter == "minimax_tts":
-            return True
-        if operation_kind == "music.generate" and adapter in {"minimax_music", "mureka_music"}:
-            return True
-        if operation_kind == "music.cover" and adapter == "minimax_music":
-            return True
-        if operation_kind == "model3d.generate" and adapter == "tencent_hunyuan_3d":
-            return True
-        return False
-
     def _is_brief_only_operation(self, *, adapter: str, operation_kind: str) -> bool:
         return operation_kind == "music.brief"
 
@@ -770,7 +747,11 @@ class CreativeMediaRuntime:
                             "capabilityProfile": capability_profile,
                             "nativeAudio": bool(capability_profile.get("nativeAudio")),
                             "source": "model_control_plane",
-                            "available": self._is_operation_executable(adapter=adapter, operation_kind=operation_kind),
+                            # Model Hub is the authoritative source for connected media models and
+                            # their declared operation kinds. Runtime adapter dispatch may still
+                            # fail honestly at execution time, but it must not hide or de-prioritize
+                            # a model the user explicitly configured.
+                            "available": True,
                             "briefOnly": self._is_brief_only_operation(adapter=adapter, operation_kind=operation_kind),
                         }
                     )
@@ -899,13 +880,7 @@ class CreativeMediaRuntime:
         return str(candidate.get("source") or "") in MODEL_PREFERENCE_CONFIG_SOURCES
 
     def _is_model_preference_visible_candidate(self, candidate: dict[str, Any]) -> bool:
-        if not self._is_configured_model_candidate(candidate):
-            return False
-        if bool(candidate.get("available", True)) or bool(candidate.get("briefOnly", False)):
-            return True
-        # Image providers often expose generation/edit endpoints before V8OS has a dedicated adapter.
-        # Keep them selectable with a risk marker instead of hiding the user's connected model.
-        return str(candidate.get("modality") or "") == "image"
+        return self._is_configured_model_candidate(candidate)
 
     def _candidate_source_rank(self, candidate: dict[str, Any]) -> int:
         source = str(candidate.get("source") or "")
@@ -1163,7 +1138,7 @@ class CreativeMediaRuntime:
         candidates = [
             dict(item)
             for item in list((prefs.get("policies") or {}).get(operation_kind, {}).get("models") or [])
-            if bool(item.get("enabled", True)) and bool(item.get("available", True))
+            if bool(item.get("enabled", True))
         ]
         candidates.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("providerName") or "")))
         return candidates

@@ -724,7 +724,7 @@ def test_music_brief_can_bind_connected_catalog_model(monkeypatch):
 
     assert music_options
     assert music_options[0]["modelRef"] == "mureka_music::auto"
-    assert music_options[0]["available"] is False
+    assert music_options[0]["available"] is True
     assert music_options[0]["briefOnly"] is True
     assert music_row["optionCount"] == 1
 
@@ -824,7 +824,7 @@ def test_agnes_media_candidates_require_models_saved_in_model_hub(monkeypatch):
     assert options == {}
 
 
-def test_image_candidates_stay_selectable_even_when_adapter_is_not_executable(monkeypatch):
+def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr(
@@ -858,6 +858,63 @@ def test_image_candidates_stay_selectable_even_when_adapter_is_not_executable(mo
                                 "operationKinds": ["image.generate"],
                             },
                         },
+                        "video_generation/MiniMax-Hailuo-2.3": {
+                            "type": "VIDEO",
+                            "operationKinds": [
+                                "video.text_to_video",
+                                "video.image_to_video",
+                                "video.first_last_frame",
+                                "video.reference_to_video",
+                            ],
+                            "mediaLimits": {
+                                "adapterProviderId": "minimax_video",
+                                "capabilityModes": [
+                                    "video.text_to_video",
+                                    "video.image_to_video",
+                                    "video.first_last_frame",
+                                    "video.image_reference",
+                                ],
+                                "operationKinds": [
+                                    "video.text_to_video",
+                                    "video.image_to_video",
+                                    "video.first_last_frame",
+                                    "video.reference_to_video",
+                                ],
+                            },
+                            "endpointBinding": {
+                                "adapter": "catalog_only",
+                                "endpointPath": "video_generation",
+                                "providerModelId": "MiniMax-Hailuo-2.3",
+                                "provenance": {"source": "manual"},
+                            },
+                        },
+                        "music_generation/custom-music": {
+                            "type": "MUSIC",
+                            "operationKinds": ["music.generate"],
+                            "mediaLimits": {
+                                "adapterProviderId": "custom_music",
+                                "capabilityModes": ["music.generate"],
+                                "operationKinds": ["music.generate"],
+                            },
+                        },
+                        "voice/custom-voice": {
+                            "type": "VOICE",
+                            "operationKinds": ["voice.tts"],
+                            "mediaLimits": {
+                                "adapterProviderId": "custom_voice",
+                                "capabilityModes": ["voice.tts"],
+                                "operationKinds": ["voice.tts"],
+                            },
+                        },
+                        "model3d/custom-3d": {
+                            "type": "MODEL3D",
+                            "operationKinds": ["model3d.generate"],
+                            "mediaLimits": {
+                                "adapterProviderId": "custom_3d",
+                                "capabilityModes": ["model3d.text_to_3d"],
+                                "operationKinds": ["model3d.generate"],
+                            },
+                        },
                     },
                 },
             }
@@ -877,12 +934,54 @@ def test_image_candidates_stay_selectable_even_when_adapter_is_not_executable(mo
     minimax_ref = "minimax-cn::image_generation/image-01"
     assert options[("image.generate", agnes_ref)]["available"] is True
     assert options[("image.edit", agnes_ref)]["available"] is True
-    assert options[("image.generate", minimax_ref)]["available"] is False
-    assert options[("image.edit", minimax_ref)]["available"] is False
+    assert options[("image.generate", minimax_ref)]["available"] is True
+    assert options[("image.edit", minimax_ref)]["available"] is True
     assert (("image.generate", minimax_ref)) not in {
         (item.get("operationKind"), item.get("modelRef"))
         for item in prefs["diagnosticCandidates"]
     }
+
+    expected_model_hub_candidates = {
+        ("video.text_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
+        ("video.image_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
+        ("video.first_last_frame", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
+        ("video.reference_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
+        ("music.generate", "minimax-cn::music_generation/custom-music"),
+        ("voice.tts", "minimax-cn::voice/custom-voice"),
+        ("model3d.generate", "minimax-cn::model3d/custom-3d"),
+    }
+    connected_pairs = {
+        (item.get("operationKind"), item.get("modelRef"))
+        for item in prefs["connectedOptions"]
+    }
+    assert expected_model_hub_candidates.issubset(connected_pairs)
+    assert all(
+        item.get("modelRef") not in {model_ref for _, model_ref in expected_model_hub_candidates}
+        for item in prefs["diagnosticCandidates"]
+    )
+    rows = {item["operationKind"]: item for item in prefs["operationRows"]}
+    for operation_kind, model_ref in expected_model_hub_candidates:
+        assert model_ref in rows[operation_kind]["selectedModelRefs"]
+
+    hailuo_ref = "minimax-cn::video_generation/MiniMax-Hailuo-2.3"
+    saved = creative_media_runtime.save_model_preferences(
+        {
+            "selections": [
+                {
+                    "operationKind": "video.reference_to_video",
+                    "modelRefs": [hailuo_ref],
+                    "enabled": True,
+                    "priority": 3,
+                }
+            ]
+        }
+    )
+    saved_row = next(
+        item for item in saved["operationRows"]
+        if item["operationKind"] == "video.reference_to_video"
+    )
+    assert saved_row["selectedModelRefs"] == [hailuo_ref]
+    assert creative_media_runtime._preferred_model_candidates("video.reference_to_video")[0]["modelRef"] == hailuo_ref
 
 
 def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):

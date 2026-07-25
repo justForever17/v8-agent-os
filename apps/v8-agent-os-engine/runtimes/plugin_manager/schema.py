@@ -50,6 +50,8 @@ class CommandSpec(StrictModel):
     downloadUrl: str | None = None
     downloadTarget: str | None = None
     downloadSha256: str | None = None
+    archiveFormat: Literal["zip"] | None = None
+    archiveEntry: str | None = None
 
     @model_validator(mode="after")
     def validate_managed_download(self) -> "CommandSpec":
@@ -61,6 +63,16 @@ class CommandSpec(StrictModel):
             if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
                 raise ValueError("download SHA-256 must be lowercase hexadecimal")
             self.downloadSha256 = digest
+        archive_fields = (self.archiveFormat, self.archiveEntry)
+        if any(archive_fields) and not all(archive_fields):
+            raise ValueError("managed archive downloads require format and exact entry")
+        if self.archiveFormat and not all(fields):
+            raise ValueError("managed archive extraction requires a verified download contract")
+        if self.archiveEntry:
+            archive_entry = PurePosixPath(str(self.archiveEntry).replace("\\", "/"))
+            if archive_entry.is_absolute() or ".." in archive_entry.parts or not archive_entry.parts:
+                raise ValueError("managed archive entry must be a safe relative path")
+            self.archiveEntry = archive_entry.as_posix()
         return self
 
 
@@ -100,6 +112,7 @@ class CliProfile(StrictModel):
     id: str
     commands: list[str] = Field(min_length=1)
     platforms: list[Literal["windows", "macos", "linux"]] = Field(min_length=1)
+    architectures: list[Literal["amd64", "arm64"]] = Field(default_factory=list)
     ownership: Literal["managed", "external"] = "managed"
     install: CommandSpec
     detect: CommandSpec
@@ -113,6 +126,7 @@ class CliProfile(StrictModel):
     actions: list[CliAction] = Field(default_factory=list)
     configRequirements: list[PluginConfigRequirement] = Field(default_factory=list)
     outputProtocol: Literal["text", "json", "ndjson"] = "text"
+    environment: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_install_contract(self) -> "CliProfile":
@@ -125,6 +139,11 @@ class CliProfile(StrictModel):
         action_ids = [item.id for item in self.actions]
         if len(action_ids) != len(set(action_ids)):
             raise ValueError("CLI action ids must be unique within a profile")
+        for name, value in self.environment.items():
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", str(name)):
+                raise ValueError("CLI environment names must use uppercase ASCII identifiers")
+            if not isinstance(value, str) or len(value) > 1024:
+                raise ValueError("CLI environment values must be short strings")
         return self
 
 
@@ -138,11 +157,20 @@ class SkillComponent(StrictModel):
     officialOrganization: str
     targetDirectory: str
     skillNames: list[str] = Field(default_factory=list)
+    sourceTrust: Literal["official", "reviewed_community"] = "official"
+    sourceLicense: str | None = None
+    reviewNote: str | None = None
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "SkillComponent":
-        source_path = PurePosixPath(str(self.path or "").replace("\\", "/"))
-        if source_path.is_absolute() or ".." in source_path.parts or not source_path.parts:
+        source_text = str(self.path or "").replace("\\", "/").strip()
+        source_path = PurePosixPath(source_text)
+        if (
+            not source_text
+            or source_path.is_absolute()
+            or ".." in source_path.parts
+            or (not source_path.parts and source_text != ".")
+        ):
             raise ValueError("skill path must be a safe relative path")
         target_path = PurePosixPath(str(self.targetDirectory or "").replace("\\", "/"))
         if target_path.is_absolute() or ".." in target_path.parts or len(target_path.parts) != 1:
@@ -154,6 +182,11 @@ class SkillComponent(StrictModel):
         normalized_names = [str(item or "").strip() for item in self.skillNames]
         if any(not item for item in normalized_names) or len(normalized_names) != len(set(normalized_names)):
             raise ValueError("skillNames must contain unique non-empty names")
+        if self.sourceTrust == "reviewed_community":
+            if not re.fullmatch(r"[0-9a-f]{40}", str(self.revision or "").lower()):
+                raise ValueError("reviewed community Skill revisions must be pinned full commit SHAs")
+            if not str(self.sourceLicense or "").strip() or not str(self.reviewNote or "").strip():
+                raise ValueError("reviewed community Skills require license and review note provenance")
         self.skillNames = normalized_names
         return self
 
@@ -225,6 +258,7 @@ class PluginManifest(StrictModel):
     description: str
     officialDomains: list[str] = Field(min_length=1)
     officialOrganizations: list[str] = Field(default_factory=list)
+    reviewedOrganizations: list[str] = Field(default_factory=list)
     officialLinks: OfficialLinks
     brand: BrandAsset
     cliProfiles: list[CliProfile] = Field(default_factory=list)
@@ -248,6 +282,7 @@ class PluginManifest(StrictModel):
     def verify_official_components(self) -> "PluginManifest":
         domains = {item.lower().lstrip(".") for item in self.officialDomains}
         organizations = {item.lower() for item in self.officialOrganizations}
+        reviewed_organizations = {item.lower() for item in self.reviewedOrganizations}
         cli_profiles = {item.id: item for item in self.cliProfiles}
 
         def official_url(value: str) -> bool:
@@ -259,8 +294,20 @@ class PluginManifest(StrictModel):
             return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
         for skill in self.skills:
-            if skill.officialOrganization.lower() not in organizations or not official_url(skill.repository):
-                raise ValueError(f"skill {skill.id} is not proven to come from an official organization")
+            if skill.sourceTrust == "official":
+                if skill.officialOrganization.lower() not in organizations or not official_url(skill.repository):
+                    raise ValueError(f"skill {skill.id} is not proven to come from an official organization")
+            else:
+                parsed = urlparse(skill.repository)
+                path_parts = [part for part in parsed.path.split("/") if part]
+                source_organization = skill.officialOrganization.lower()
+                if (
+                    (parsed.hostname or "").lower() != "github.com"
+                    or len(path_parts) < 2
+                    or path_parts[0].lower() != source_organization
+                    or source_organization not in reviewed_organizations
+                ):
+                    raise ValueError(f"skill {skill.id} is not declared as a reviewed community source")
             if skill.sourceKind == "managed_cli":
                 source_profile = cli_profiles.get(str(skill.sourceComponentId or ""))
                 if source_profile is None or source_profile.ownership != "managed":

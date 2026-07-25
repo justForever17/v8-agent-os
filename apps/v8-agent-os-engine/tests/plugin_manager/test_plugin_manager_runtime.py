@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import io
 import json
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -167,21 +169,33 @@ def test_skills_cli_runs_without_a_console_window_on_windows(
     assert captured["kwargs"]["capture_output"] is True
 
 
-def test_builtin_catalog_has_17_signed_curated_plugins(runtime) -> None:
+def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
     service, _, _ = runtime
     catalog = plugin_catalog_service.load()
     assert catalog.revision >= 1
-    assert len(catalog.plugins) == 17
-    assert len({plugin.id for plugin in catalog.plugins}) == 17
+    assert len(catalog.plugins) == 18
+    assert len({plugin.id for plugin in catalog.plugins}) == 18
     assert {plugin.id for plugin in catalog.plugins} == {
-        "aliyun-bailian", "volcengine", "lark", "cloudflare", "supabase",
+        "aliyun-bailian", "volcengine-mediakit", "volcengine", "lark", "cloudflare", "supabase",
         "vercel", "google-workspace", "github", "aws", "wordpress",
         "azure", "figma", "hyperframes", "stripe", "docker", "amap", "office-suite",
     }
+    assert [plugin.id for plugin in catalog.plugins[:3]] == [
+        "aliyun-bailian",
+        "volcengine-mediakit",
+        "volcengine",
+    ]
     assert all(plugin.artifacts for plugin in catalog.plugins)
     assert all(service.verify_brand_asset(plugin)["ok"] for plugin in catalog.plugins)
     assert all(
-        skill.officialOrganization.lower() in {item.lower() for item in plugin.officialOrganizations}
+        (
+            skill.sourceTrust == "official"
+            and skill.officialOrganization.lower() in {item.lower() for item in plugin.officialOrganizations}
+        )
+        or (
+            skill.sourceTrust == "reviewed_community"
+            and skill.officialOrganization.lower() in {item.lower() for item in plugin.reviewedOrganizations}
+        )
         for plugin in catalog.plugins
         for skill in plugin.skills
     )
@@ -465,6 +479,97 @@ def test_amap_cli_contract_is_pinned_typed_and_openclaw_free(runtime) -> None:
     manifest_text = manifest.model_dump_json().lower()
     assert "openclaw" not in manifest_text
     assert "clawhub" not in manifest_text
+
+
+def test_mediakit_cli_contract_is_pinned_typed_and_architecture_scoped(runtime) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("volcengine-mediakit")
+    profile = manifest.cliProfiles[0]
+
+    assert profile.architectures == ["amd64"]
+    assert profile.install.downloadSha256 == "d69a22ce1e28f69db5f0048f6bbe6a4186f32412a4bdbc00bf0e8f8ab2caf14d"
+    assert profile.install.archiveFormat == "zip"
+    assert profile.install.archiveEntry == "mediakit-cli.exe"
+    assert profile.environment == {
+        "MEDIAKIT_SURFACE": "plugin",
+        "MEDIAKIT_RUNTIME": "v8os",
+    }
+    assert service._component_policy(
+        manifest,
+        platform_name="windows",
+        architecture_name="amd64",
+    )["installable"] is True
+    unsupported = service._component_policy(
+        manifest,
+        platform_name="windows",
+        architecture_name="arm64",
+    )
+    assert unsupported["installable"] is False
+    assert unsupported["architecture"] == "arm64"
+
+    actions = {item.id: item for item in profile.actions}
+    assert set(actions) == {
+        "doctor",
+        "list-domains",
+        "video-asr",
+        "audio-asr",
+        "video-ocr",
+        "image-ocr",
+        "probe-video-metadata",
+        "probe-audio-metadata",
+        "extract-audio",
+        "query-task",
+    }
+    audio_asr = service._build_cli_action_spec(
+        manifest,
+        profile,
+        actions["audio-asr"],
+        {
+            "audioUrl": "https://example.com/sample.mp3",
+            "contentType": "speech",
+            "language": "cmn-Hans-CN",
+            "enableSpeakerInfo": True,
+        },
+    )
+    assert audio_asr.argv[-10:] == [
+        "--cloud",
+        "video",
+        "asr-subtitles",
+        "--audio-url",
+        "https://example.com/sample.mp3",
+        "--content-type",
+        "speech",
+        "--language",
+        "cmn-Hans-CN",
+        "--enable-speaker-info",
+    ]
+    with pytest.raises(PluginManagerError) as missing_url:
+        service._build_cli_action_spec(manifest, profile, actions["video-ocr"], {})
+    assert missing_url.value.code == "plugin_cli_parameter_missing"
+    with pytest.raises(PluginManagerError) as invalid_mode:
+        service._build_cli_action_spec(
+            manifest,
+            profile,
+            actions["video-ocr"],
+            {"videoUrl": "https://example.com/sample.mp4", "mode": "raw"},
+        )
+    assert invalid_mode.value.code == "plugin_cli_parameter_invalid"
+
+    assert [item.skillNames for item in manifest.skills] == [
+        [
+            "byted-mediakit-shared",
+            "byted-mediakit-editing",
+            "byted-mediakit-audio",
+            "byted-mediakit-image",
+            "byted-mediakit-video",
+        ],
+        ["cinema-dna-21x9x3"],
+        ["video-hyperframes"],
+    ]
+    assert manifest.skills[0].revision == "279e5bb97e97c6875ae2c6891c2c3fa9a43f39c0"
+    assert manifest.skills[1].sourceTrust == "reviewed_community"
+    assert manifest.skills[2].sourceLicense == "Apache-2.0"
+    assert service._cli_credential_env(manifest, profile) == profile.environment
 
 
 def test_catalog_projection_cache_keeps_installation_state_live(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -927,6 +1032,50 @@ def test_managed_download_verifies_hash_before_commit(runtime, monkeypatch: pyte
     result = service._execute_spec(manifest, invalid)
     assert result["returnCode"] == 1
     assert "mismatch" in result["stderrTail"]
+    assert not target.exists()
+
+
+def test_managed_archive_download_extracts_only_the_declared_entry(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("volcengine-mediakit")
+    target = service._plugin_root(manifest.id) / "bin" / "mediakit-cli.exe"
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("mediakit-cli.exe", b"verified executable")
+        archive.writestr("unrelated.txt", b"must not be installed")
+    content = archive_bytes.getvalue()
+
+    class _Response:
+        def __init__(self, body: bytes) -> None:
+            self.content = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr("httpx.get", lambda *_args, **_kwargs: _Response(content))
+    spec = CommandSpec(
+        argv=["v8-managed-download"],
+        downloadUrl="https://github.com/volcengine/mediakit-cli/releases/download/v0.2.0/fixture.zip",
+        downloadTarget="{pluginRoot}/bin/mediakit-cli.exe",
+        downloadSha256=hashlib.sha256(content).hexdigest(),
+        archiveFormat="zip",
+        archiveEntry="mediakit-cli.exe",
+    )
+
+    result = service._execute_spec(manifest, spec)
+
+    assert result["returnCode"] == 0
+    assert target.read_bytes() == b"verified executable"
+    assert not (target.parent / "unrelated.txt").exists()
+
+    target.unlink()
+    missing_entry = spec.model_copy(update={"archiveEntry": "missing.exe"})
+    failed = service._execute_spec(manifest, missing_entry)
+    assert failed["returnCode"] == 1
+    assert "archive entry not found" in failed["stderrTail"]
     assert not target.exists()
 
 

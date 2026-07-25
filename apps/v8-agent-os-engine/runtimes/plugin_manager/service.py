@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -101,6 +104,13 @@ def _platform_name() -> str:
     if system == "windows":
         return "windows"
     return "linux"
+
+
+def _architecture_name() -> str:
+    machine = platform.machine().strip().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    return "amd64"
 
 
 def _background_process_creation_flags() -> int:
@@ -700,7 +710,12 @@ class PluginManagerService:
         return manifest
 
     @staticmethod
-    def _component_policy(manifest: PluginManifest, *, platform_name: str | None = None) -> dict[str, Any]:
+    def _component_policy(
+        manifest: PluginManifest,
+        *,
+        platform_name: str | None = None,
+        architecture_name: str | None = None,
+    ) -> dict[str, Any]:
         """Resolve the one installable transport without loading every integration.
 
         Curated plugins prefer an official CLI on the current platform. An
@@ -709,7 +724,13 @@ class PluginManagerService:
         """
 
         current_platform = str(platform_name or _platform_name()).strip().lower()
-        selected_cli = [profile for profile in manifest.cliProfiles if current_platform in profile.platforms]
+        current_architecture = str(architecture_name or _architecture_name()).strip().lower()
+        selected_cli = [
+            profile
+            for profile in manifest.cliProfiles
+            if current_platform in profile.platforms
+            and (not profile.architectures or current_architecture in profile.architectures)
+        ]
         if selected_cli:
             selected_mcp = []
             transport = "cli"
@@ -732,7 +753,9 @@ class PluginManagerService:
 
         blocking_reasons: list[str] = []
         if manifest.cliProfiles and not selected_cli and not selected_mcp:
-            blocking_reasons.append(f"no supported official CLI or MCP transport for {current_platform}")
+            blocking_reasons.append(
+                f"no supported official CLI or MCP transport for {current_platform}/{current_architecture}"
+            )
         if blocked_skills:
             blocking_reasons.append(
                 "required companion Skills depend on an unavailable managed CLI: " + ", ".join(sorted(blocked_skills))
@@ -747,6 +770,7 @@ class PluginManagerService:
         }
         return {
             "platform": current_platform,
+            "architecture": current_architecture,
             "transport": transport,
             "installable": not blocking_reasons,
             "blockingReasons": blocking_reasons,
@@ -2329,8 +2353,25 @@ class PluginManagerService:
                 actual = hashlib.sha256(response.content).hexdigest()
                 if actual != spec.downloadSha256:
                     raise ValueError(f"download SHA-256 mismatch: expected {spec.downloadSha256}, got {actual}")
+                payload = response.content
+                if spec.archiveFormat == "zip" and spec.archiveEntry:
+                    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                        normalized_entries = {
+                            str(item.filename).replace("\\", "/"): item
+                            for item in archive.infolist()
+                            if not item.is_dir()
+                        }
+                        archive_info = normalized_entries.get(spec.archiveEntry)
+                        if archive_info is None:
+                            raise ValueError(f"archive entry not found: {spec.archiveEntry}")
+                        unix_mode = (archive_info.external_attr >> 16) & 0xFFFF
+                        if unix_mode and stat.S_ISLNK(unix_mode):
+                            raise ValueError("managed archive entry must not be a symbolic link")
+                        if archive_info.file_size > 512 * 1024 * 1024:
+                            raise ValueError("managed archive entry exceeds the 512 MiB safety limit")
+                        payload = archive.read(archive_info)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                partial.write_bytes(response.content)
+                partial.write_bytes(payload)
                 partial.replace(target)
                 return {
                     "argv": ["managed-download", spec.downloadUrl, str(target)],
@@ -2567,22 +2608,22 @@ class PluginManagerService:
                 if str(verified.get("stdoutTail") or "").strip().lower() != revision.lower():
                     raise PluginManagerError("Skill Git 提交校验失败", code="skill_revision_mismatch")
                 source_root = (repo_root / str(skill["path"])).resolve()
-                if repo_root.resolve() not in source_root.parents:
-                    raise PluginManagerError("官方 Skill 路径越界", code="skill_path_invalid")
+                if source_root != repo_root.resolve() and repo_root.resolve() not in source_root.parents:
+                    raise PluginManagerError("受审 Skill 路径越界", code="skill_path_invalid")
             except Exception:
                 shutil.rmtree(temp_root, ignore_errors=True)
                 raise
 
         try:
             if not source_root.exists():
-                raise PluginManagerError("官方 Skill 路径不存在", code="skill_path_invalid")
+                raise PluginManagerError("受审 Skill 路径不存在", code="skill_path_invalid")
             source_names = self._skill_names_from_source(source_root)
             declared_names = [str(item) for item in list(skill.get("skillNames") or []) if str(item).strip()]
             if declared_names and not set(declared_names).issubset(source_names):
-                raise PluginManagerError("签名目录中的 Skill 名称与官方来源不一致", code="skill_name_mismatch")
+                raise PluginManagerError("签名目录中的 Skill 名称与受审来源不一致", code="skill_name_mismatch")
             selected_names = declared_names or source_names
             if not selected_names:
-                raise PluginManagerError("官方来源中没有可安装的 SKILL.md", code="skill_source_empty")
+                raise PluginManagerError("受审来源中没有可安装的 SKILL.md", code="skill_source_empty")
 
             before = self._skills_cli_inventory(force=True)
             if not before.get("ok"):
@@ -2669,6 +2710,9 @@ class PluginManagerService:
                         "sourceKind": source_kind,
                         "sourceComponentId": str(skill.get("sourceComponentId") or ""),
                         "sourcePath": skill["path"],
+                        "sourceTrust": str(skill.get("sourceTrust") or "official"),
+                        "sourceLicense": str(skill.get("sourceLicense") or ""),
+                        "reviewNote": str(skill.get("reviewNote") or ""),
                         "installer": SKILLS_CLI_PACKAGE,
                         "skillNames": selected_names,
                         "skillPaths": skill_paths,
@@ -4229,7 +4273,7 @@ class PluginManagerService:
     def _cli_credential_env(self, manifest: PluginManifest, profile: CliProfile) -> dict[str, str]:
         requirements = [item for item in compile_plugin_requirements(manifest) if item.componentId == profile.id]
         bindings = self._credential_bindings(manifest.id)
-        result: dict[str, str] = {}
+        result: dict[str, str] = dict(profile.environment)
         for requirement in requirements:
             if requirement.target != "env" or not requirement.targetName:
                 continue

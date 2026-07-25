@@ -1,9 +1,9 @@
 {
   "schemaVersion": "v8.plugin.catalog.v1",
-  "revision": 8,
-  "sequence": 8,
+  "revision": 9,
+  "sequence": 9,
   "keyId": "v8os-plugin-catalog-2026-07-r5",
-  "generatedAt": "2026-07-21T12:56:22Z",
+  "generatedAt": "2026-07-26T12:00:00Z",
   "expiresAt": "2027-07-11T00:00:00Z",
   "revocations": [],
   "plugins": [
@@ -211,6 +211,535 @@
       "artifacts": [
         "模型与应用配置结果",
         "媒体生成任务与产物引用"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "volcengine-mediakit",
+      "displayName": "火山引擎 MediaKit CLI",
+      "version": "0.2.0",
+      "publisher": "火山引擎",
+      "category": "媒体处理",
+      "description": "火山引擎官方 MediaKit CLI：本地 FFmpeg 媒体处理与云端 ASR、OCR、元信息和视频 AI 能力。",
+      "officialDomains": [
+        "volcengine.com"
+      ],
+      "officialOrganizations": [
+        "volcengine"
+      ],
+      "reviewedOrganizations": [
+        "dacnay816y62-hub",
+        "nexu-io"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.volcengine.com/",
+        "documentation": "https://github.com/volcengine/mediakit-cli",
+        "repository": "https://github.com/volcengine/mediakit-cli"
+      },
+      "brand": {
+        "file": "logos/volcengine.ico",
+        "source": "https://www.volcengine.com/favicon.ico",
+        "license": "Volcengine brand asset; use subject to Volcengine brand rules",
+        "sha256": "1002d42cbaac2f8ee97e8a7ba96acd47982cf9ec7d342c431ee587ddd07a5cc8"
+      },
+      "cliProfiles": [
+        {
+          "id": "mediakit-cli",
+          "commands": [
+            "mediakit-cli"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "architectures": [
+            "amd64"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "v8-managed-download"
+            ],
+            "timeoutSeconds": 900,
+            "estimatedDownloadMb": 7,
+            "downloadUrl": "https://github.com/volcengine/mediakit-cli/releases/download/v0.2.0/mediakit-cli_0.2.0_windows_amd64.zip",
+            "downloadTarget": "{pluginRoot}/bin/mediakit-cli.exe",
+            "downloadSha256": "d69a22ce1e28f69db5f0048f6bbe6a4186f32412a4bdbc00bf0e8f8ab2caf14d",
+            "archiveFormat": "zip",
+            "archiveEntry": "mediakit-cli.exe"
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "mediakit-cli"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginRoot}/bin/mediakit-cli.exe",
+              "version"
+            ]
+          },
+          "shimCommand": [
+            "{pluginRoot}/bin/mediakit-cli.exe"
+          ],
+          "configRequirements": [
+            {
+              "id": "mediakit-cli.env.media_kit_api_key",
+              "kind": "secret",
+              "required": false,
+              "source": "manifest",
+              "confidence": "authoritative",
+              "labelKey": "plugins.config.MEDIAKIT_API_KEY",
+              "helpKey": "plugins.configHelp.MEDIAKIT_API_KEY",
+              "target": "env",
+              "targetName": "MEDIAKIT_API_KEY",
+              "componentId": "mediakit-cli",
+              "importSources": [
+                "env:MEDIAKIT_API_KEY"
+              ]
+            },
+            {
+              "id": "mediakit-cli.env.media_kit_output_path",
+              "kind": "file",
+              "required": false,
+              "source": "manifest",
+              "confidence": "authoritative",
+              "labelKey": "plugins.config.MEDIAKIT_OUTPUT_PATH",
+              "helpKey": "plugins.configHelp.MEDIAKIT_OUTPUT_PATH",
+              "target": "env",
+              "targetName": "MEDIAKIT_OUTPUT_PATH",
+              "componentId": "mediakit-cli"
+            }
+          ],
+          "outputProtocol": "json",
+          "environment": {
+            "MEDIAKIT_SURFACE": "plugin",
+            "MEDIAKIT_RUNTIME": "v8os"
+          },
+          "actions": [
+            {
+              "id": "doctor",
+              "argv": [
+                "mediakit-cli",
+                "doctor"
+              ],
+              "timeoutSeconds": 60,
+              "mutating": false
+            },
+            {
+              "id": "list-domains",
+              "argv": [
+                "mediakit-cli",
+                "--domains"
+              ],
+              "timeoutSeconds": 30,
+              "mutating": false
+            },
+            {
+              "id": "video-asr",
+              "argv": [
+                "mediakit-cli",
+                "--cloud",
+                "video",
+                "asr-subtitles"
+              ],
+              "parameters": [
+                {
+                  "name": "videoUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--video-url"
+                },
+                {
+                  "name": "contentType",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--content-type",
+                  "options": [
+                    "speech",
+                    "singing"
+                  ]
+                },
+                {
+                  "name": "language",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--language",
+                  "options": [
+                    "cmn-Hans-CN",
+                    "eng-US"
+                  ]
+                },
+                {
+                  "name": "enableSpeakerInfo",
+                  "kind": "boolean",
+                  "flag": "--enable-speaker-info"
+                },
+                {
+                  "name": "enableConfidence",
+                  "kind": "boolean",
+                  "flag": "--enable-confidence"
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 600,
+              "mutating": true
+            },
+            {
+              "id": "audio-asr",
+              "argv": [
+                "mediakit-cli",
+                "--cloud",
+                "video",
+                "asr-subtitles"
+              ],
+              "parameters": [
+                {
+                  "name": "audioUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--audio-url"
+                },
+                {
+                  "name": "contentType",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--content-type",
+                  "options": [
+                    "speech",
+                    "singing"
+                  ]
+                },
+                {
+                  "name": "language",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--language",
+                  "options": [
+                    "cmn-Hans-CN",
+                    "eng-US"
+                  ]
+                },
+                {
+                  "name": "enableSpeakerInfo",
+                  "kind": "boolean",
+                  "flag": "--enable-speaker-info"
+                },
+                {
+                  "name": "enableConfidence",
+                  "kind": "boolean",
+                  "flag": "--enable-confidence"
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 600,
+              "mutating": true
+            },
+            {
+              "id": "video-ocr",
+              "argv": [
+                "mediakit-cli",
+                "--cloud",
+                "video",
+                "video-ocr"
+              ],
+              "parameters": [
+                {
+                  "name": "videoUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--video-url"
+                },
+                {
+                  "name": "mode",
+                  "kind": "enum",
+                  "flag": "--mode",
+                  "options": [
+                    "Subtitle",
+                    "Detailed"
+                  ]
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 600,
+              "mutating": true
+            },
+            {
+              "id": "image-ocr",
+              "argv": [
+                "mediakit-cli",
+                "--cloud",
+                "image",
+                "image-ocr"
+              ],
+              "parameters": [
+                {
+                  "name": "imageUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--image-url"
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 600,
+              "mutating": true
+            },
+            {
+              "id": "probe-video-metadata",
+              "argv": [
+                "mediakit-cli",
+                "video",
+                "probe-video-metadata"
+              ],
+              "parameters": [
+                {
+                  "name": "videoUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--video-url"
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 180,
+              "mutating": false
+            },
+            {
+              "id": "probe-audio-metadata",
+              "argv": [
+                "mediakit-cli",
+                "audio",
+                "probe-audio-metadata"
+              ],
+              "parameters": [
+                {
+                  "name": "audioUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--audio-url"
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 180,
+              "mutating": false
+            },
+            {
+              "id": "extract-audio",
+              "argv": [
+                "mediakit-cli",
+                "editing",
+                "extract-audio"
+              ],
+              "parameters": [
+                {
+                  "name": "videoUrl",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--video-url"
+                },
+                {
+                  "name": "format",
+                  "kind": "enum",
+                  "flag": "--format",
+                  "options": [
+                    "mp3",
+                    "m4a"
+                  ]
+                },
+                {
+                  "name": "callbackArgs",
+                  "kind": "text",
+                  "flag": "--callback-args"
+                },
+                {
+                  "name": "clientToken",
+                  "kind": "text",
+                  "flag": "--client-token"
+                }
+              ],
+              "timeoutSeconds": 600,
+              "mutating": true
+            },
+            {
+              "id": "query-task",
+              "argv": [
+                "mediakit-cli",
+                "shared",
+                "query-task"
+              ],
+              "parameters": [
+                {
+                  "name": "taskId",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--task-id"
+                },
+                {
+                  "name": "pollIntervalSeconds",
+                  "kind": "text",
+                  "flag": "--poll-interval-seconds"
+                },
+                {
+                  "name": "maxPollAttempts",
+                  "kind": "text",
+                  "flag": "--max-poll-attempts"
+                },
+                {
+                  "name": "pollComplete",
+                  "kind": "boolean",
+                  "flag": "--poll-complete"
+                }
+              ],
+              "timeoutSeconds": 900,
+              "mutating": false
+            }
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "id": "mediakit-official-skills",
+          "repository": "https://github.com/volcengine/mediakit-cli",
+          "path": "skills",
+          "revision": "279e5bb97e97c6875ae2c6891c2c3fa9a43f39c0",
+          "officialOrganization": "volcengine",
+          "targetDirectory": "volcengine-mediakit",
+          "skillNames": [
+            "byted-mediakit-shared",
+            "byted-mediakit-editing",
+            "byted-mediakit-audio",
+            "byted-mediakit-image",
+            "byted-mediakit-video"
+          ]
+        },
+        {
+          "id": "cinema-dna-21x9x3",
+          "repository": "https://github.com/dacnay816y62-hub/cinema-dna-21x9x3",
+          "path": ".",
+          "revision": "4e3ec03b0a2ac5ebf5ceb9f4bfac12ec60f54ef1",
+          "officialOrganization": "dacnay816y62-hub",
+          "targetDirectory": "cinema-dna-21x9x3",
+          "skillNames": [
+            "cinema-dna-21x9x3"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "NOASSERTION",
+          "reviewNote": "用户指定的社区 Skill；固定提交并审阅根 SKILL.md，仓库未声明标准开源许可证。"
+        },
+        {
+          "id": "video-hyperframes",
+          "repository": "https://github.com/nexu-io/open-design",
+          "path": "skills/video-hyperframes",
+          "revision": "99c13e083e070f44aaa0009b2fc96589118c2a9a",
+          "officialOrganization": "nexu-io",
+          "targetDirectory": "video-hyperframes",
+          "skillNames": [
+            "video-hyperframes"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "Apache-2.0",
+          "reviewNote": "固定高星开源仓库提交并审阅 Skill 文件；仅安装明确的 video-hyperframes 子目录。"
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "providerAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "process-control",
+          "workspace-read",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "cloud-media-processing",
+          "local-media-write",
+          "install-global-skills"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "paid",
+          "cloud-write",
+          "process-control"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "cli-doctor",
+          "configuration"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "视频与音频本地剪辑",
+        "云端 ASR 与视频 OCR",
+        "图像文字识别",
+        "视频与音频元信息探测",
+        "异步媒体任务查询",
+        "电影镜头与连续帧创作 Skill"
+      ],
+      "artifacts": [
+        "媒体处理结果与任务引用",
+        "字幕、OCR 与元信息结果",
+        "受审媒体创作 Skill"
       ]
     },
     {

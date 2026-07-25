@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
@@ -509,7 +510,17 @@ class ChatRuntime:
         }
 
     def _get_agent_profile(self, agent_id: str) -> dict[str, str]:
-        return storage.get_agent_runtime_profile(agent_id)
+        profile = storage.get_agent_runtime_profile(agent_id)
+        if str(agent_id or "").strip().lower() not in {"supervisor", "system_supervisor"}:
+            return profile
+
+        from core.memory_store import memory_store
+        from core.supervisor_identity import apply_supervisor_identity_to_profile
+
+        return apply_supervisor_identity_to_profile(
+            profile,
+            memory_store.load_preferences(scope="global"),
+        )
 
     def _extract_interrupt_request(self, chunk: dict | None) -> dict | None:
         if not isinstance(chunk, dict):
@@ -982,11 +993,17 @@ class ChatRuntime:
             return declared
         mime = cls._attachment_mime(attachment)
         suffix = cls._attachment_extension(attachment)
-        if mime.startswith("audio/") or suffix in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".webm"}:
+        if mime.startswith("audio/"):
             return "audio"
-        if mime.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic", ".heif"}:
+        if mime.startswith("image/"):
             return "image"
-        if mime.startswith("video/") or suffix in {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}:
+        if mime.startswith("video/"):
+            return "video"
+        if suffix in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac"}:
+            return "audio"
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic", ".heif"}:
+            return "image"
+        if suffix in {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}:
             return "video"
         return "file"
 
@@ -994,23 +1011,12 @@ class ChatRuntime:
     def _attachment_is_readable_file(cls, attachment: dict[str, Any]) -> bool:
         if cls._attachment_media_kind(attachment) != "file":
             return False
-        mime = cls._attachment_mime(attachment)
-        suffix = cls._attachment_extension(attachment)
-        if mime.startswith("text/") or mime in {
-            "application/json",
-            "application/xml",
-            "application/x-yaml",
-            "application/yaml",
-            "text/markdown",
-        }:
-            return True
-        return suffix in {
-            ".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml", ".xml",
-            ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx", ".css",
-            ".html", ".htm", ".vue", ".svelte", ".java", ".kt", ".go", ".rs", ".c",
-            ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".sh", ".ps1", ".toml",
-            ".ini", ".env", ".sql",
-        }
+        from core.tools.native.workspace_file import is_readable_native_file
+
+        return is_readable_native_file(
+            cls._attachment_name(attachment) or cls._attachment_url(attachment),
+            cls._attachment_mime(attachment),
+        )
 
     @classmethod
     def _attachment_uses_opening_tool(cls, attachment: dict[str, Any]) -> bool:
@@ -1058,11 +1064,20 @@ class ChatRuntime:
 
     @staticmethod
     def _attachment_public_ref(attachment: dict[str, Any]) -> str:
+        resource_ref = attachment.get("resourceRef") or attachment.get("resource_ref")
+        resource_url = ""
+        if isinstance(resource_ref, dict):
+            resource_url = str(
+                resource_ref.get("adminPath")
+                or resource_ref.get("previewUrl")
+                or resource_ref.get("contentUrl")
+                or ""
+            ).strip()
         return str(
             attachment.get("url")
             or attachment.get("publicUrl")
             or attachment.get("public_url")
-            or attachment.get("resourceRef")
+            or resource_url
             or attachment.get("workspacePath")
             or attachment.get("path")
             or ""
@@ -1119,21 +1134,28 @@ class ChatRuntime:
                 return
         chat_run.lc_messages.append(HumanMessage(content=block))
 
-    async def _run_attachment_preflight(
+    @staticmethod
+    def _attachment_tool_output_failed(output: Any) -> bool:
+        if isinstance(output, dict):
+            if output.get("ok") is False or output.get("error"):
+                return True
+            return str(output.get("status") or "").strip().lower() in {"error", "failed"}
+        status = str(getattr(output, "status", "") or "").strip().lower()
+        if status in {"error", "failed"}:
+            return True
+        if isinstance(output, str):
+            normalized = output.lstrip().lower()
+            return normalized.startswith(("error:", "error reading file", "error parsing document"))
+        return False
+
+    def _build_attachment_preflight_work_items(
         self,
         chat_run: ChatRunContext,
-        stream_state: ChatStreamState,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if chat_run.is_resume_request:
-            return
+            return []
         attachments = [dict(item) for item in list(chat_run.request.attachments or []) if isinstance(item, dict)]
-        if not attachments:
-            return
-
-        from core.tools.native.workspace_file import read_native_file
-        from core.tools.vision_media_analyzer import vision_media_analyzer
-
-        summaries: list[dict[str, str]] = []
+        work_items: list[dict[str, Any]] = []
         for index, attachment in enumerate(attachments):
             kind = self._attachment_media_kind(attachment)
             if kind in {"audio", "image", "video"}:
@@ -1143,11 +1165,22 @@ class ChatRuntime:
             else:
                 continue
 
-            tool_call_id = f"call_v8_attachment_preflight_{uuid.uuid4().hex}"
             name = self._attachment_name(attachment)
             ref = self._attachment_public_ref(attachment)
             prompt = self._attachment_preflight_prompt(chat_run, attachment)
             local_path = self._resolve_attachment_local_path(chat_run, attachment)
+            source_identity = str(
+                attachment.get("sourceId")
+                or attachment.get("source_id")
+                or attachment.get("id")
+                or ref
+                or local_path
+                or name
+            ).strip()
+            digest = hashlib.sha256(
+                f"{chat_run.active_run_id}|{index}|{tool_name}|{source_identity}".encode("utf-8", errors="ignore")
+            ).hexdigest()[:20]
+            tool_call_id = f"call_v8_attachment_preflight_{digest}"
             display_args = {
                 "attachment": name,
                 "mediaKind": kind,
@@ -1155,7 +1188,31 @@ class ChatRuntime:
                 "ref": ref,
             }
             display_args = {key: value for key, value in display_args.items() if value not in (None, "", [], {})}
-            start_payload = {
+            work_items.append({
+                "attachment": attachment,
+                "kind": kind,
+                "toolName": tool_name,
+                "toolCallId": tool_call_id,
+                "name": name,
+                "ref": ref,
+                "prompt": prompt,
+                "localPath": local_path,
+                "displayArgs": display_args,
+            })
+            if len(work_items) >= 8:
+                break
+        return work_items
+
+    def _attachment_preflight_start_surface(
+        self,
+        item: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        tool_call_id = str(item["toolCallId"])
+        tool_name = str(item["toolName"])
+        display_args = dict(item.get("displayArgs") or {})
+        timestamp = self._now_timestamp_ms()
+        return (
+            {
                 "type": "tool_start",
                 "tool": {
                     "toolCallId": tool_call_id,
@@ -1164,9 +1221,9 @@ class ChatRuntime:
                     "args": display_args,
                     "status": "running",
                 },
-                "timestamp": self._now_timestamp_ms(),
-            }
-            start_node = {
+                "timestamp": timestamp,
+            },
+            {
                 "id": f"attachment-preflight:{tool_call_id}:start",
                 "kind": "execution",
                 "executionType": "tool_call",
@@ -1175,12 +1232,37 @@ class ChatRuntime:
                 "args": display_args,
                 "status": "running",
                 "topic": "tool.started",
-                "timestamp": self._now_timestamp_ms(),
-            }
-            stream_state.active_tool_call_ids.add(tool_call_id)
-            stream_state.watchdog.note_tool_start(tool_call_id)
-            stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": tool_name, "args": display_args})
-            yield self._emit_message_targeted_runtime_event(
+                "timestamp": timestamp,
+            },
+        )
+
+    def preannounce_attachment_preflight(self, chat_run: ChatRunContext) -> list[dict[str, Any]]:
+        """Publish honest tool-start cards before the background graph starts.
+
+        The actual tools still execute in ``_run_attachment_preflight``.  The
+        request-private call-id set only prevents a duplicate start event in
+        that same in-process submit flow; it never grants a tool or stores a
+        synthetic result.
+        """
+        decision = getattr(chat_run, "preflight_decision", None)
+        is_allow = getattr(decision, "is_allow", None)
+        if callable(is_allow) and not bool(is_allow()):
+            # The submit path runs before the background graph handles safety
+            # review/blocking.  Do not leave a synthetic "running" card behind
+            # for a tool that the gate may prevent from ever executing.  If a
+            # reviewed run is later allowed, the normal preflight executor emits
+            # the real start event immediately before invocation.
+            return []
+        work_items = self._build_attachment_preflight_work_items(chat_run)
+        if not work_items:
+            return []
+        stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
+        emitted: list[dict[str, Any]] = []
+        preannounced_ids = chat_run.request._attachment_preflight_preannounced_call_ids
+        for item in work_items:
+            tool_call_id = str(item["toolCallId"])
+            start_payload, start_node = self._attachment_preflight_start_surface(item)
+            runtime_event = self._emit_message_targeted_runtime_event(
                 chat_run,
                 stream_state,
                 topic="tool.started",
@@ -1189,43 +1271,105 @@ class ChatRuntime:
                 agent_id="supervisor",
                 runtime_node="attachment_preflight",
             )
+            preannounced_ids.add(tool_call_id)
+            emitted.append(runtime_event)
+        return emitted
 
-            try:
-                if tool_name == "read_native_file":
-                    if not local_path:
-                        raise ValueError("无法定位这个附件的本地工作区路径，不能安全读取。")
-                    invoke_payload = {"path": local_path}
-                    with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
-                        output = await asyncio.to_thread(read_native_file.invoke, invoke_payload)
-                else:
-                    invoke_payload = {
-                        "file_path": local_path or None,
-                        "source_url": ref if not local_path else None,
-                        "prompt": prompt,
-                    }
-                    invoke_payload = {key: value for key, value in invoke_payload.items() if value not in (None, "", [], {})}
-                    attachment_runtime_context = {
-                        **self._runtime_context_kwargs(chat_run),
-                        "source_id": str(attachment.get("sourceId") or attachment.get("source_id") or attachment.get("id") or "").strip() or None,
-                    }
-                    with bind_runtime_context(**attachment_runtime_context):
-                        output = await asyncio.to_thread(
-                            vision_media_analyzer.invoke,
-                            {
-                                "name": tool_name,
-                                "args": invoke_payload,
-                                "id": tool_call_id,
-                                "type": "tool_call",
-                            },
-                        )
-                status = "failed" if str(getattr(output, "status", "")).strip().lower() == "error" else "completed"
-            except Exception as exc:
-                output = (
-                    "结果：附件预读失败\n"
-                    f"原因：{str(exc).strip() or '工具执行异常'}\n"
-                    "下一步：请检查附件是否可访问，或切换到兼容的读取/多模态模型后重试。"
+    async def _run_attachment_preflight(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> AsyncIterator[dict[str, Any]]:
+        from core.tools.native.workspace_file import read_native_file
+        from core.tools.vision_media_analyzer import vision_media_analyzer
+
+        work_items = self._build_attachment_preflight_work_items(chat_run)
+        if not work_items:
+            return
+        preannounced_ids = set(chat_run.request._attachment_preflight_preannounced_call_ids)
+        for item in work_items:
+            tool_call_id = str(item["toolCallId"])
+            tool_name = str(item["toolName"])
+            display_args = dict(item.get("displayArgs") or {})
+            stream_state.active_tool_call_ids.add(tool_call_id)
+            stream_state.watchdog.note_tool_start(tool_call_id)
+            stream_state.tool_calls_buffer.append({"id": tool_call_id, "name": tool_name, "args": display_args})
+            if tool_call_id not in preannounced_ids:
+                start_payload, start_node = self._attachment_preflight_start_surface(item)
+                yield self._emit_message_targeted_runtime_event(
+                    chat_run,
+                    stream_state,
+                    topic="tool.started",
+                    payload=start_payload,
+                    node=start_node,
+                    agent_id="supervisor",
+                    runtime_node="attachment_preflight",
                 )
-                status = "failed"
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def _execute(item: dict[str, Any]) -> tuple[Any, str]:
+            tool_name = str(item["toolName"])
+            local_path = str(item.get("localPath") or "")
+            ref = str(item.get("ref") or "")
+            prompt = str(item.get("prompt") or "")
+            attachment = dict(item.get("attachment") or {})
+            tool_call_id = str(item["toolCallId"])
+            async with semaphore:
+                try:
+                    if tool_name == "read_native_file":
+                        if not local_path:
+                            raise ValueError("无法定位这个附件的本地工作区路径，不能安全读取。")
+                        with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                            output = await asyncio.to_thread(read_native_file.invoke, {"path": local_path})
+                    else:
+                        invoke_payload = {
+                            "file_path": local_path or None,
+                            "source_url": ref if not local_path else None,
+                            "prompt": prompt,
+                        }
+                        invoke_payload = {
+                            key: value
+                            for key, value in invoke_payload.items()
+                            if value not in (None, "", [], {})
+                        }
+                        attachment_runtime_context = {
+                            **self._runtime_context_kwargs(chat_run),
+                            "source_id": str(
+                                attachment.get("sourceId")
+                                or attachment.get("source_id")
+                                or attachment.get("id")
+                                or ""
+                            ).strip() or None,
+                        }
+                        with bind_runtime_context(**attachment_runtime_context):
+                            output = await asyncio.to_thread(
+                                vision_media_analyzer.invoke,
+                                {
+                                    "name": tool_name,
+                                    "args": invoke_payload,
+                                    "id": tool_call_id,
+                                    "type": "tool_call",
+                                },
+                            )
+                    status = "failed" if self._attachment_tool_output_failed(output) else "completed"
+                    return output, status
+                except Exception as exc:
+                    return (
+                        "结果：附件预读失败\n"
+                        f"原因：{str(exc).strip() or '工具执行异常'}\n"
+                        "下一步：请检查附件是否可访问，或切换到兼容的读取/多模态模型后重试。",
+                        "failed",
+                    )
+
+        results = await asyncio.gather(*(_execute(item) for item in work_items))
+        summaries: list[dict[str, str]] = []
+        for item, (output, status) in zip(work_items, results):
+            tool_name = str(item["toolName"])
+            tool_call_id = str(item["toolCallId"])
+            display_args = dict(item.get("displayArgs") or {})
+            name = str(item.get("name") or "attachment")
+            ref = str(item.get("ref") or "")
 
             compact_result = self._compact_tool_result_value(tool_name, output)
             agent_visible_result = self._agent_visible_tool_result_for_event(tool_name, output, compact_result)
@@ -1273,10 +1417,20 @@ class ChatRuntime:
                 "summary": agent_visible_result,
                 "ref": ref,
             })
-            if index >= 4:
-                break
 
         self._append_attachment_preflight_context(chat_run, summaries)
+
+    async def _run_attachment_preflight_then_start_agent(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Open attachments before exposing the Supervisor as the active actor."""
+
+        async for attachment_event in self._run_attachment_preflight(chat_run, stream_state):
+            yield attachment_event
+        for startup_event in self.emit_stream_start_events(chat_run, stream_state):
+            yield startup_event
 
     def _latest_user_content(self, request: ChatRequest) -> str:
         for candidate in reversed(request.messages):
@@ -9437,17 +9591,26 @@ class ChatRuntime:
         stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
 
         try:
-            for startup_event in self.emit_stream_start_events(chat_run, stream_state):
-                yield startup_event
+            attachment_preflight_pending = bool(self._build_attachment_preflight_work_items(chat_run))
+            if not attachment_preflight_pending:
+                for startup_event in self.emit_stream_start_events(chat_run, stream_state):
+                    yield startup_event
 
             preflight_events = self.handle_preflight_gate(chat_run)
             if preflight_events:
+                if attachment_preflight_pending:
+                    for startup_event in self.emit_stream_start_events(chat_run, stream_state):
+                        yield startup_event
                 for preflight_event in preflight_events:
                     yield preflight_event
                 return
 
-            async for attachment_event in self._run_attachment_preflight(chat_run, stream_state):
-                yield attachment_event
+            if attachment_preflight_pending:
+                async for startup_event in self._run_attachment_preflight_then_start_agent(chat_run, stream_state):
+                    yield startup_event
+            else:
+                async for attachment_event in self._run_attachment_preflight(chat_run, stream_state):
+                    yield attachment_event
 
             writing_route = (
                 chat_run.prepared.task_shape_hint.get("writingRoute")

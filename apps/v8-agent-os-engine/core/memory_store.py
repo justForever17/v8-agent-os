@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 
 from core.memory_canonicalization import canonicalize_preference_key
+from core.supervisor_identity import non_identity_preferences, render_supervisor_identity_context
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 logger = logging.getLogger("v8_agent_os.memory")
@@ -3080,7 +3081,10 @@ class MemoryStore:
         # --- Layer 1: 用户画像 ---
         normalized_chain = self._normalize_scope_chain(scope=scope, scope_chain=scope_chain)
         active_preferences = self.load_preferences(scope, scope_chain=normalized_chain)
-        prefs_text = "\n".join(f"- {key}: {value}" for key, value in active_preferences.items())
+        if target_role_normalized == "supervisor":
+            parts.append(render_supervisor_identity_context(active_preferences))
+        profile_preferences = non_identity_preferences(active_preferences)
+        prefs_text = "\n".join(f"- {key}: {value}" for key, value in profile_preferences.items())
         if prefs_text:
             parts.append(
                 "[USER PROFILE]\n"

@@ -31,6 +31,8 @@ from erc.safety_guardian import safety_guardian
 
 __all__ = [
     "TEXT_EXTENSIONS",
+    "DOCUMENT_EXTENSIONS",
+    "is_readable_native_file",
     "is_binary",
     "read_native_file",
     "share_workspace_file",
@@ -120,11 +122,60 @@ def _task_write_scope_block_payload(runtime_context: dict[str, Any], target_path
     }
 
 
-TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
+TEXT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".mdx", ".rst",
+    ".json", ".jsonl", ".ipynb", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf", ".env",
+    ".csv", ".tsv", ".log", ".sql", ".graphql", ".gql", ".proto", ".properties", ".lock", ".diff", ".patch",
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+    ".java", ".kt", ".kts", ".go", ".rs", ".c", ".cc", ".cpp", ".cxx",
+    ".h", ".hh", ".hpp", ".hxx", ".cs", ".fs", ".fsx", ".vb", ".php", ".rb", ".swift", ".scala",
+    ".r", ".rmd", ".lua", ".dart", ".groovy", ".gradle", ".clj", ".cljs", ".ex", ".exs", ".erl", ".hrl",
+    ".sol", ".asm", ".s", ".tex", ".tf", ".tfvars",
+    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
+}
+DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xlsx", ".xls"}
+_TEXT_FILENAMES = {
+    "dockerfile", "makefile", "rakefile", "gemfile", "procfile",
+    ".gitignore", ".gitattributes", ".editorconfig",
+}
+_READ_MAX_LINES = 2000
+_READ_MAX_CHARS = 240_000
 _READ_BEFORE_WRITE_TTL_SECONDS = 30 * 60
 _READ_BEFORE_WRITE_MAX_RECEIPTS = 4096
 _READ_BEFORE_WRITE_LOCK = threading.RLock()
 _READ_BEFORE_WRITE_RECEIPTS: dict[str, dict[str, Any]] = {}
+
+
+def is_readable_native_file(path_or_name: str, mime_type: str = "") -> bool:
+    candidate = str(path_or_name or "").split("?", 1)[0].split("#", 1)[0]
+    path = Path(candidate)
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    normalized_mime = str(mime_type or "").strip().lower().split(";", 1)[0]
+    if normalized_mime.startswith("text/") or normalized_mime in {
+        "application/json",
+        "application/ld+json",
+        "application/x-ipynb+json",
+        "application/xml",
+        "application/yaml",
+        "application/x-yaml",
+        "application/javascript",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+    }:
+        return True
+    return (
+        suffix in TEXT_EXTENSIONS
+        or suffix in DOCUMENT_EXTENSIONS
+        or name in _TEXT_FILENAMES
+        or name.startswith(".env.")
+    )
 
 
 def is_binary(file_path: str) -> bool:
@@ -134,8 +185,7 @@ def is_binary(file_path: str) -> bool:
         if mime_type.startswith('text/') or mime_type == 'application/json':
             return False
 
-    ext = Path(file_path).suffix.lower()
-    if ext in TEXT_EXTENSIONS:
+    if is_readable_native_file(file_path):
         return False
 
     try:
@@ -298,13 +348,15 @@ def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str
 
 @tool
 def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
-    """Read contents of a text file on the host filesystem.
+    """Read a code, text, Markdown, PDF, DOCX, PPTX, or spreadsheet file.
 
     Use this for known text, JSON, Markdown, source, task brief, Spec, or config paths in the active workspace.
     Do not use shell commands, Python one-liners, `type`, `Get-Content`, or `cat` just to read a known file.
     Reading a file also creates the same-run receipt required before modifying an existing file with `write_native_file`.
 
-    If the file is binary, it will refuse to read it to protect context.
+    Supported office documents are converted to bounded Markdown/text with the
+    same document-ingestion parser used by Memory. Other binary files are
+    refused to protect context.
     If the file is very large (> 2000 lines), specify start_line and end_line and continue reading the same file as needed.
 
     Arguments:
@@ -333,29 +385,47 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         if not target_path.exists() or not target_path.is_file():
             return f"Error: File '{target_path}' does not exist or is not a file."
 
-        if is_binary(str(target_path)):
+        suffix = target_path.suffix.lower()
+        if suffix in DOCUMENT_EXTENSIONS:
+            from core.document_parser import DocumentParser
+
+            DocumentParser.ensure_document_ingestion_dependencies(target_path)
+            document_content = DocumentParser.parse_file(target_path)
+            if document_content.startswith("Error parsing document "):
+                return document_content
+            lines = document_content.splitlines(keepends=True)
+        elif is_binary(str(target_path)):
             return (
                 f"Error: '{path}' appears to be a binary file. "
                 "如果这是图片，请优先用 `vision_media_analyzer`；如果是分享页或视频，请优先用 "
                 "`download_media_for_vision`。"
             )
 
-        with open(target_path, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
+        else:
+            with open(target_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
 
         total_lines = len(lines)
         start_idx = max(0, start_line - 1) if start_line else 0
         end_idx = min(total_lines, end_line) if end_line else total_lines
 
-        if end_idx - start_idx > 2000:
-            end_idx = start_idx + 2000
+        if end_idx - start_idx > _READ_MAX_LINES:
+            end_idx = start_idx + _READ_MAX_LINES
             truncated = True
         else:
             truncated = False
 
         content = "".join(lines[start_idx:end_idx])
+        if len(content) > _READ_MAX_CHARS:
+            content = content[:_READ_MAX_CHARS]
+            truncated = True
         header = f"--- File: {target_path} (Lines {start_idx + 1} to {end_idx} of {total_lines}) ---\n"
-        footer = "\n--- [TRUNCATED] Read exceeded 2000 lines limit. Use start_line/end_line to read more. ---" if truncated else ""
+        footer = (
+            "\n--- [TRUNCATED] Read exceeded the 2000-line or 240000-character context limit. "
+            "Use start_line/end_line to read more. ---"
+            if truncated
+            else ""
+        )
         _record_file_read(runtime_context, target_path)
 
         return header + content + footer

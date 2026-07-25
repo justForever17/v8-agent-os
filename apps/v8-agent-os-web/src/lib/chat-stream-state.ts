@@ -88,9 +88,9 @@ function resolveAgentAvatar(value: unknown): string | undefined {
 export const WEB_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
     createId: createClientId,
     defaultAgentProfile: {
-        agentName: '智能主管',
+        agentName: 'Supervisor',
         agentAvatar: DEFAULT_AVATAR,
-        agentRoleLabel: '主理人',
+        agentRoleLabel: 'Supervisor',
     },
     resolveAgentProfile: (event, fallback, defaultAgentProfile) => {
         const eventData = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
@@ -487,7 +487,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                 ? currentMergedMsg.nodes[currentMergedMsg.nodes.length - 1]
                 : undefined;
             const prevAgentName = prevAgentNode?.agentName || currentMergedMsg.agentName;
-            const thisAgentName = msg.agentName || '智能主管';
+            const thisAgentName = msg.agentName || 'Supervisor';
 
             if (prevAgentName && thisAgentName !== prevAgentName) {
                 currentMergedMsg.nodes.push({
@@ -557,7 +557,7 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
         }
 
         if (isAssistant) {
-            const agentName = msg.agentName || '智能主管';
+            const agentName = msg.agentName || 'Supervisor';
             const nodes: UiTimelineNode[] = [];
             if (msg.reasoningContent) {
                 nodes.push({
@@ -610,7 +610,11 @@ export function convertLegacyMessagesToChatMessages(rawMessages: Array<{
                 agentName,
                 agentAvatar: resolveAgentAvatar(msg.agentAvatar),
                 agentRoleLabel: msg.agentRoleLabel,
-                agentType: msg.agentId === 'SYSTEM_SUPERVISOR' || msg.agentName === '智能主管' ? 'supervisor' : (msg.agentId ? 'agent' : 'user'),
+                agentType: msg.agentId === 'SYSTEM_SUPERVISOR'
+                    || msg.agentName === 'Supervisor'
+                    || msg.agentName === '智能主管'
+                    ? 'supervisor'
+                    : (msg.agentId ? 'agent' : 'user'),
                 timestamp: new Date(msg.createdAt).getTime(),
                 images: msg.images || [],
                 artifacts: [],

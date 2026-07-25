@@ -259,6 +259,8 @@ class ChatRequestData(BaseModel):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    _attachment_preflight_preannounced_call_ids: set[str] = PrivateAttr(default_factory=set)
+
     messages: List[ChatMessage]
     config: EngineConfig = Field(default_factory=EngineConfig, description="Configuration for the execution")
     stream: Optional[bool] = Field(default=True, description="Whether to stream the response via SSE")

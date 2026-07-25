@@ -416,6 +416,63 @@ def test_write_native_file_blocks_global_skill_root_even_with_extra_root(tmp_pat
     assert skill_file.read_text(encoding="utf-8") == "# Demo Skill\n"
 
 
+def test_read_native_file_supports_broad_code_suffixes_and_special_filenames(tmp_path, monkeypatch):
+    from core import native_tools
+    from core.tools.native.workspace_file import is_binary, is_readable_native_file
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    java_file = active_root / "src" / "Example.java"
+    dockerfile = active_root / "Dockerfile"
+    java_file.parent.mkdir(parents=True)
+    java_file.write_text("class Example {}\n", encoding="utf-8")
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        java_result = native_tools.read_native_file.func("src/Example.java")
+        docker_result = native_tools.read_native_file.func("Dockerfile")
+
+    assert is_readable_native_file("Example.java", "text/x-java") is True
+    assert is_readable_native_file("Dockerfile") is True
+    assert is_binary(str(java_file)) is False
+    assert "class Example" in java_result
+    assert "FROM scratch" in docker_result
+
+
+def test_read_native_file_reuses_document_parser_for_office_documents(tmp_path, monkeypatch):
+    from core import native_tools
+    from core.document_parser import DocumentParser
+    from core.tools.native.workspace_file import is_readable_native_file
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    document = active_root / "brief.docx"
+    document.write_bytes(b"test fixture")
+    monkeypatch.setattr(
+        DocumentParser,
+        "ensure_document_ingestion_dependencies",
+        classmethod(lambda cls, file_path: None),
+    )
+    monkeypatch.setattr(
+        DocumentParser,
+        "parse_file",
+        classmethod(lambda cls, file_path: "# Brief\n\nParsed body\n"),
+    )
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        result = native_tools.read_native_file.func("brief.docx")
+
+    assert is_readable_native_file("brief.docx") is True
+    assert "# Brief" in result
+    assert "Parsed body" in result
+
+
 def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):
     from core import native_tools
 

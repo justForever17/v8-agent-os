@@ -991,6 +991,22 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         self.assertIn("用户说：测试语音", final_user_content)
         self.assertNotIn("这是一段", final_user_content)
 
+    def test_webm_attachment_kind_prefers_declared_mime_type(self):
+        runtime = chat_runtime_module.ChatRuntime()
+
+        self.assertEqual(
+            runtime._attachment_media_kind({"name": "clip.webm", "mimeType": "video/webm"}),
+            "video",
+        )
+        self.assertEqual(
+            runtime._attachment_media_kind({"name": "voice.webm", "mimeType": "audio/webm"}),
+            "audio",
+        )
+        self.assertEqual(
+            runtime._attachment_media_kind({"name": "unknown.webm"}),
+            "video",
+        )
+
     def test_readable_file_attachment_preflight_reads_file_before_supervisor(self):
         import asyncio
         import tempfile
@@ -1090,6 +1106,191 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         self.assertEqual(tool_call["type"], "tool_call")
         self.assertEqual(tool_call["args"]["file_path"], str(image_path))
         self.assertEqual(tool_call["args"]["prompt"], "看看这张图")
+
+    def test_attachment_preflight_finishes_before_initial_agent_start(self):
+        import asyncio
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+        chat_run = mock.Mock()
+
+        async def attachment_events(_chat_run, _stream_state):
+            yield {"topic": "tool.started"}
+            yield {"topic": "tool.finished"}
+
+        with mock.patch.object(runtime, "_run_attachment_preflight", side_effect=attachment_events), mock.patch.object(
+            runtime,
+            "emit_stream_start_events",
+            return_value=[{"type": "agent_start"}],
+        ):
+            async def collect_events():
+                return [
+                    event
+                    async for event in runtime._run_attachment_preflight_then_start_agent(chat_run, stream_state)
+                ]
+
+            events = asyncio.run(collect_events())
+
+        self.assertEqual(
+            events,
+            [
+                {"topic": "tool.started"},
+                {"topic": "tool.finished"},
+                {"type": "agent_start"},
+            ],
+        )
+
+    def test_submit_preannounce_reuses_call_id_without_duplicate_start(self):
+        import asyncio
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "sample.png"
+            image_path.write_bytes(b"fake-png")
+            chat_run = self._chat_run(
+                tmp_path=Path(tmp),
+                latest_user_content="看看这张图",
+                attachments=[
+                    {
+                        "id": "source-image",
+                        "name": "sample.png",
+                        "workspacePath": str(image_path),
+                        "mimeType": "image/png",
+                        "mediaKind": "image",
+                    }
+                ],
+            )
+            emitted: list[dict] = []
+
+            def capture_event(_chat_run, _state, **kwargs):
+                event = {"topic": kwargs["topic"], "payload": kwargs["payload"], "node": kwargs.get("node")}
+                emitted.append(event)
+                return event
+
+            fake_tool = SimpleNamespace(invoke=mock.Mock(return_value="图片内容：测试图像"))
+            with mock.patch.object(runtime, "create_stream_state", return_value=chat_runtime_module.ChatStreamState()), mock.patch.object(
+                runtime,
+                "_emit_message_targeted_runtime_event",
+                side_effect=capture_event,
+            ), mock.patch(
+                "core.tools.vision_media_analyzer.vision_media_analyzer",
+                fake_tool,
+            ):
+                preannounced = runtime.preannounce_attachment_preflight(chat_run)
+
+                async def collect_events():
+                    return [event async for event in runtime._run_attachment_preflight(chat_run, stream_state)]
+
+                background_events = asyncio.run(collect_events())
+
+        self.assertEqual([event["topic"] for event in preannounced], ["tool.started"])
+        self.assertEqual([event["topic"] for event in background_events], ["tool.finished"])
+        self.assertEqual([event["topic"] for event in emitted], ["tool.started", "tool.finished"])
+        start_id = emitted[0]["payload"]["tool"]["toolCallId"]
+        finish_id = emitted[1]["payload"]["tool"]["toolCallId"]
+        self.assertEqual(start_id, finish_id)
+        self.assertTrue(start_id.startswith("call_v8_attachment_preflight_"))
+        fake_tool.invoke.assert_called_once()
+
+    def test_submit_does_not_preannounce_attachment_before_safety_gate_allows(self):
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "sample.png"
+            image_path.write_bytes(b"fake-png")
+            chat_run = self._chat_run(
+                tmp_path=Path(tmp),
+                latest_user_content="看看这张图",
+                attachments=[
+                    {
+                        "id": "source-image",
+                        "name": "sample.png",
+                        "workspacePath": str(image_path),
+                        "mimeType": "image/png",
+                        "mediaKind": "image",
+                    }
+                ],
+            )
+            chat_run.preflight_decision = SimpleNamespace(is_allow=lambda: False)
+
+            with mock.patch.object(runtime, "_emit_message_targeted_runtime_event") as emit_event:
+                preannounced = runtime.preannounce_attachment_preflight(chat_run)
+
+        self.assertEqual(preannounced, [])
+        self.assertEqual(chat_run.request._attachment_preflight_preannounced_call_ids, set())
+        emit_event.assert_not_called()
+
+    def test_attachment_preflight_opens_mixed_attachments_concurrently_in_stable_order(self):
+        import asyncio
+        import tempfile
+        import threading
+        import time
+
+        runtime = chat_runtime_module.ChatRuntime()
+        stream_state = chat_runtime_module.ChatStreamState()
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def invoke(payload):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return f"opened:{payload}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "sample.png"
+            audio_path = root / "voice.mp3"
+            note_path = root / "Example.java"
+            image_path.write_bytes(b"fake-png")
+            audio_path.write_bytes(b"fake-mp3")
+            note_path.write_text("class Example {}\n", encoding="utf-8")
+            chat_run = self._chat_run(
+                tmp_path=root,
+                latest_user_content="一起看一下",
+                attachments=[
+                    {"name": image_path.name, "workspacePath": str(image_path), "mimeType": "image/png"},
+                    {"name": audio_path.name, "workspacePath": str(audio_path), "mimeType": "audio/mpeg"},
+                    {"name": note_path.name, "workspacePath": str(note_path), "mimeType": "text/x-java"},
+                ],
+            )
+            fake_vision_tool = SimpleNamespace(invoke=mock.Mock(side_effect=invoke))
+            fake_read_tool = SimpleNamespace(invoke=mock.Mock(side_effect=invoke))
+            with mock.patch.object(
+                runtime,
+                "_emit_message_targeted_runtime_event",
+                side_effect=lambda _chat_run, _state, **kwargs: {"topic": kwargs["topic"], "payload": kwargs["payload"]},
+            ), mock.patch(
+                "core.tools.vision_media_analyzer.vision_media_analyzer",
+                fake_vision_tool,
+            ), mock.patch(
+                "core.tools.native.workspace_file.read_native_file",
+                fake_read_tool,
+            ):
+                async def collect_events():
+                    return [event async for event in runtime._run_attachment_preflight(chat_run, stream_state)]
+
+                events = asyncio.run(collect_events())
+
+        self.assertEqual(
+            [event["topic"] for event in events],
+            ["tool.started", "tool.started", "tool.started", "tool.finished", "tool.finished", "tool.finished"],
+        )
+        self.assertGreaterEqual(max_active, 2)
+        self.assertEqual(fake_vision_tool.invoke.call_count, 2)
+        fake_read_tool.invoke.assert_called_once_with({"path": str(note_path)})
+        result_names = [event["payload"]["tool"]["args"]["attachment"] for event in events[3:]]
+        self.assertEqual(result_names, ["sample.png", "voice.mp3", "Example.java"])
 
     def test_supported_attachments_do_not_inject_raw_file_notice_before_preflight(self):
         import tempfile

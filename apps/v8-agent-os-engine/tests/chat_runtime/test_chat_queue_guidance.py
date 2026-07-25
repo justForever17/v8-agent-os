@@ -166,6 +166,39 @@ def test_chat_submit_defers_graph_thread_until_acceptance_response_is_sent(monke
     assert scheduled and scheduled[0][1:] == ("submit", response["runId"])
 
 
+def test_chat_submit_preannounces_attachment_before_background_graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_db(monkeypatch, tmp_path)
+    order: list[str] = []
+    fake_chat_run = SimpleNamespace(session_id="session-attachment", active_run_id="run-attachment")
+    background_tasks = BackgroundTasks()
+    request = _chat_request(session_id="session-attachment", client_message_id="client-attachment", content="看看附件")
+    request.attachments = [  # type: ignore[assignment]
+        {
+            "id": "source-image",
+            "name": "sample.png",
+            "workspacePath": str(tmp_path / "sample.png"),
+            "mimeType": "image/png",
+            "mediaKind": "image",
+        }
+    ]
+
+    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
+    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-attachment", "role": "user"})
+    monkeypatch.setattr(routes.chat_runtime, "preannounce_attachment_preflight", lambda _chat_run: order.append("preannounce") or [])
+    monkeypatch.setattr(
+        routes,
+        "_schedule_chat_run",
+        lambda *_args, **_kwargs: order.append("schedule"),
+    )
+
+    response = asyncio.run(routes.chat_submit(request, background_tasks))
+
+    assert response["accepted"] is True
+    assert order == ["preannounce"]
+    asyncio.run(background_tasks())
+    assert order == ["preannounce", "schedule"]
+
+
 def test_completed_run_consumes_next_pending_message_in_same_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     test_db = _install_db(monkeypatch, tmp_path)
     test_db.create_or_update_session("session-drain", "Queue Drain")

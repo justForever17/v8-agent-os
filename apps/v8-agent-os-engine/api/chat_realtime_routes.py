@@ -1016,6 +1016,19 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
                 run_id=chat_run.active_run_id,
                 role="user",
             )
+        # Publish attachment opening cards while the submit request is still
+        # in the acceptance path.  The graph remains background work; its
+        # preflight executor reuses these deterministic call ids and does not
+        # emit duplicate starts.
+        if request.attachments:
+            try:
+                chat_runtime.preannounce_attachment_preflight(chat_run)
+            except Exception:
+                logger.warning(
+                    "Attachment preflight preannounce failed for run %s; background execution will retry",
+                    run_id,
+                    exc_info=True,
+                )
     # Start the graph only after FastAPI has flushed the acceptance response.
     # Graph preparation performs synchronous work in its worker thread; starting
     # it here can contend for the GIL and delay the run-id response until the

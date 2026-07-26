@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.tools import InjectedToolCallId, tool
 
@@ -11,7 +11,7 @@ async def plugin_cli(
     plugin_id: str,
     profile_id: str,
     action_id: str,
-    parameters: dict[str, str | bool] | None = None,
+    parameters: dict[str, Any] | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run a task-authorized plugin CLI through its signed manifest.

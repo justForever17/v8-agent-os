@@ -30,6 +30,13 @@ from core.v8_agent_os_paths import (
 )
 
 from .catalog import RESOURCE_ROOT, plugin_catalog_service
+from .cli_capability_sync import (
+    CliCapabilitySyncError,
+    actions_from_snapshot,
+    merge_discovered_actions,
+    read_snapshot,
+    sync_mediakit_capabilities,
+)
 from .cli_auth import CliBrowserAuthAdapter, browser_auth_adapter, open_system_browser
 from .requirements import (
     compile_plugin_requirements,
@@ -150,6 +157,7 @@ class PluginManagerService:
         self._catalog_installation_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
         self._skills_inventory_cache: tuple[float, dict[str, Any]] | None = None
         self._cli_auth_states: dict[tuple[str, str], dict[str, Any]] = {}
+        self._cli_capability_profile_cache: dict[tuple[str, str, int, int], CliProfile] = {}
         self._credential_store = credential_store or credential_ref_store
         self._ensure_plugin_schema()
         self.reconcile_install_jobs()
@@ -805,6 +813,112 @@ class PluginManagerService:
         root = Path(configured).expanduser() if configured else PLUGIN_MANAGER_ROOT
         return root / plugin_id
 
+    def _cli_capability_snapshot_path(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        *,
+        plugin_root: Path | None = None,
+    ) -> Path | None:
+        if profile.capabilitySync is None:
+            return None
+        root = plugin_root or self._plugin_root(manifest.id)
+        return root / profile.capabilitySync.snapshotPath
+
+    def _effective_cli_profile(self, manifest: PluginManifest, profile: CliProfile) -> CliProfile:
+        snapshot_path = self._cli_capability_snapshot_path(manifest, profile)
+        if snapshot_path is None:
+            return profile
+        try:
+            stat = snapshot_path.stat()
+        except OSError:
+            return profile
+        cache_key = (manifest.id, profile.id, stat.st_mtime_ns, stat.st_size)
+        cached = self._cli_capability_profile_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        snapshot = read_snapshot(snapshot_path)
+        if (
+            not snapshot
+            or str(snapshot.get("pluginId") or "") != manifest.id
+            or str(snapshot.get("profileId") or "") != profile.id
+        ):
+            return profile
+        discovered = actions_from_snapshot(snapshot)
+        effective = profile.model_copy(
+            update={"actions": merge_discovered_actions(profile.actions, discovered)}
+        )
+        self._cli_capability_profile_cache = {
+            key: value
+            for key, value in self._cli_capability_profile_cache.items()
+            if key[:2] != (manifest.id, profile.id)
+        }
+        self._cli_capability_profile_cache[cache_key] = effective
+        return effective
+
+    def _sync_cli_profile_capabilities(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        *,
+        plugin_root: Path | None = None,
+        previous_root: Path | None = None,
+        force_refresh: bool = False,
+    ) -> dict[str, Any] | None:
+        contract = profile.capabilitySync
+        target_path = self._cli_capability_snapshot_path(manifest, profile, plugin_root=plugin_root)
+        if contract is None or target_path is None:
+            return None
+        if contract.adapter != "mediakit_cli_v1":
+            raise PluginManagerError(
+                f"不支持 CLI capability adapter：{contract.adapter}",
+                code="plugin_cli_capability_adapter_unsupported",
+            )
+        version_spec = profile.version
+        if plugin_root is None:
+            version_spec = self._effective_cli_spec(manifest, profile, version_spec)
+        expanded = self._expand_argv(manifest, version_spec, plugin_root=plugin_root)
+        if not expanded:
+            raise PluginManagerError("CLI capability sync 缺少可执行文件", code="plugin_cli_capability_executable_missing")
+        previous_path = (
+            self._cli_capability_snapshot_path(manifest, profile, plugin_root=previous_root)
+            if previous_root is not None
+            else target_path
+        )
+        try:
+            result = sync_mediakit_capabilities(
+                executable=expanded[0],
+                plugin_id=manifest.id,
+                profile_id=profile.id,
+                target_path=target_path,
+                previous_path=previous_path,
+                block_breaking_upgrade=contract.blockBreakingUpgrade,
+                force_refresh=force_refresh,
+            )
+        except CliCapabilitySyncError as exc:
+            raise PluginManagerError(
+                str(exc),
+                code="plugin_cli_capability_sync_failed",
+            ) from exc
+        self._cli_capability_profile_cache.clear()
+        if not result.get("accepted"):
+            issue_count = len(list(result.get("issues") or []))
+            raise PluginManagerError(
+                f"CLI 升级包含 {issue_count} 项破坏性 schema 变化；已保留上一个可用能力快照",
+                code="plugin_cli_capability_breaking_upgrade",
+            )
+        return result
+
+    def sync_cli_capabilities(self, plugin_id: str, profile_id: str) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        profile = next((item for item in manifest.cliProfiles if item.id == profile_id), None)
+        if profile is None:
+            raise PluginManagerError("CLI profile 不存在", code="plugin_cli_profile_not_found", status_code=404)
+        result = self._sync_cli_profile_capabilities(manifest, profile, force_refresh=True)
+        if result is None:
+            raise PluginManagerError("CLI profile 未声明 schema 同步合同", code="plugin_cli_capability_sync_unavailable")
+        return result
+
     def _bin_root(self) -> Path:
         configured = str(storage.get_plugin_manager_config().get("binRoot") or "").strip()
         return Path(configured).expanduser() if configured else PLUGIN_MANAGER_BIN_ROOT
@@ -939,7 +1053,7 @@ class PluginManagerService:
             {
                 "id": item.id,
                 "type": "cli",
-                "actions": [action.id for action in item.actions],
+                "actions": [action.id for action in self._effective_cli_profile(manifest, item).actions],
             }
             for item in manifest.cliProfiles
             if item.id in active_ids
@@ -2131,6 +2245,7 @@ class PluginManagerService:
                     external=any(profile.ownership == "external" for profile in selected_cli_profiles),
                 )
                 profile_results: list[tuple[CliProfile, dict[str, Any], str, dict[str, str]]] = []
+                capability_sync_results: list[dict[str, Any]] = []
                 for profile in selected_cli_profiles:
                     step = dict(cli_plan_steps.get(profile.id) or {})
                     action = str(step.get("action") or "install")
@@ -2178,6 +2293,35 @@ class PluginManagerService:
                     profile_results.append((profile, result, action, detected_commands))
 
                 self._set_job_state(job_id, "validating", step_type="pre_commit_validation")
+                for profile, _, action, _ in profile_results:
+                    if profile.capabilitySync is None:
+                        continue
+                    target_root = (
+                        staging
+                        if profile.ownership == "managed" and action == "install"
+                        else root
+                    )
+                    sync_result = await asyncio.to_thread(
+                        self._sync_cli_profile_capabilities,
+                        manifest,
+                        profile,
+                        plugin_root=target_root,
+                        previous_root=root if target_root != root else None,
+                    )
+                    if sync_result:
+                        capability_sync_results.append({"profileId": profile.id, **sync_result})
+                        self._append_job_step(
+                            job_id,
+                            "capability_sync",
+                            "validated",
+                            {
+                                "componentId": profile.id,
+                                "version": sync_result.get("candidateVersion"),
+                                "actionCount": sync_result.get("actionCount"),
+                                "classification": sync_result.get("classification"),
+                                "digest": sync_result.get("candidateDigest"),
+                            },
+                        )
                 self._set_job_state(job_id, "committing", step_type="atomic_commit")
                 if any(
                     profile.ownership == "managed" and action == "install"
@@ -2234,7 +2378,7 @@ class PluginManagerService:
                         )
                     )
 
-                health = await self.doctor(manifest.id, persist=False)
+                health = await self.doctor(manifest.id, persist=False, sync_capabilities=False)
                 external = any(
                     profile.ownership == "external" or action in {"adopt", "keep"}
                     for profile, _, action, _ in profile_results
@@ -2244,6 +2388,16 @@ class PluginManagerService:
                     "manifestDigest": self._manifest_digest(manifest),
                     "catalogRevision": plugin_catalog_service.load().revision,
                     "components": created_components,
+                    "capabilitySnapshots": [
+                        {
+                            "profileId": result.get("profileId"),
+                            "version": result.get("candidateVersion"),
+                            "digest": result.get("candidateDigest"),
+                            "actionCount": result.get("actionCount"),
+                            "classification": result.get("classification"),
+                        }
+                        for result in capability_sync_results
+                    ],
                     "committedAt": utc_now_iso(),
                 }
                 self._upsert_installation(manifest, state=install_state, health=health, external=external, receipt=receipt)
@@ -3204,13 +3358,49 @@ class PluginManagerService:
             "configuration": config_state,
         }
 
-    async def doctor(self, plugin_id: str, *, persist: bool = True) -> dict[str, Any]:
+    async def doctor(
+        self,
+        plugin_id: str,
+        *,
+        persist: bool = True,
+        sync_capabilities: bool = True,
+    ) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
         active_component_ids = self._active_installed_component_ids(manifest)
         checks = []
         for profile in manifest.cliProfiles:
             if profile.id not in active_component_ids:
                 continue
+            if sync_capabilities and profile.capabilitySync is not None:
+                try:
+                    capability_result = await asyncio.to_thread(
+                        self._sync_cli_profile_capabilities,
+                        manifest,
+                        profile,
+                    )
+                    checks.append(
+                        {
+                            "componentId": profile.id,
+                            "kind": "cli-capability-schema",
+                            "ok": bool((capability_result or {}).get("accepted")),
+                            "summary": (
+                                f"{(capability_result or {}).get('actionCount', 0)} actions; "
+                                f"{(capability_result or {}).get('classification', 'unknown')}"
+                            ),
+                            "version": (capability_result or {}).get("candidateVersion"),
+                            "digest": (capability_result or {}).get("candidateDigest"),
+                        }
+                    )
+                except PluginManagerError as exc:
+                    checks.append(
+                        {
+                            "componentId": profile.id,
+                            "kind": "cli-capability-schema",
+                            "ok": False,
+                            "summary": str(exc),
+                            "errorCode": exc.code,
+                        }
+                    )
             version_spec = self._effective_cli_spec(manifest, profile, profile.version)
             result = await asyncio.to_thread(self._execute_spec, manifest, version_spec)
             checks.append(
@@ -4049,7 +4239,8 @@ class PluginManagerService:
                     )
             for profile in manifest.cliProfiles:
                 if profile.id in components:
-                    cli_entries.append({"pluginId": manifest.id, "pluginName": manifest.displayName, "grantId": grant["grantId"], **profile.model_dump(mode="json")})
+                    effective_profile = self._effective_cli_profile(manifest, profile)
+                    cli_entries.append({"pluginId": manifest.id, "pluginName": manifest.displayName, "grantId": grant["grantId"], **effective_profile.model_dump(mode="json")})
             for adapter in manifest.uiAdapters:
                 if adapter.id in components:
                     adapters.append({"pluginId": manifest.id, "grantId": grant["grantId"], **adapter.model_dump(mode="json")})
@@ -4124,7 +4315,8 @@ class PluginManagerService:
         if not profile_payload:
             raise PluginManagerError("当前任务未授权该 CLI", code="plugin_cli_not_granted", status_code=403)
         manifest = self._manifest(plugin_id)
-        profile = next(item for item in manifest.cliProfiles if item.id == profile_id)
+        declared_profile = next(item for item in manifest.cliProfiles if item.id == profile_id)
+        profile = self._effective_cli_profile(manifest, declared_profile)
         self.validate_grant_for_invocation(
             grant_id=str(profile_payload.get("grantId") or ""),
             plugin_id=manifest.id,
@@ -4247,7 +4439,7 @@ class PluginManagerService:
                 value = parameters.get(name)
                 if value in (None, ""):
                     raise PluginManagerError(f"CLI 参数 {name} 不能为空", code="plugin_cli_parameter_missing")
-                rendered = rendered.replace(marker, str(value))
+                rendered = rendered.replace(marker, self._serialize_cli_parameter(name, definition, value))
                 consumed.add(name)
             argv.append(rendered)
         for name, definition in definitions.items():
@@ -4261,14 +4453,43 @@ class PluginManagerService:
                     raise PluginManagerError(f"CLI 参数 {name} 必须是布尔值", code="plugin_cli_parameter_invalid")
                 if value and definition.flag:
                     argv.append(definition.flag)
+                elif value is False and definition.defaultValue is True and definition.flag:
+                    argv.append(f"{definition.flag}=false")
                 continue
+            rendered_value = self._serialize_cli_parameter(name, definition, value)
             if definition.flag:
-                argv.extend([definition.flag, str(value)])
+                argv.extend([definition.flag, rendered_value])
             elif definition.positional:
-                argv.append(str(value))
+                argv.append(rendered_value)
             else:
                 raise PluginManagerError(f"CLI 参数 {name} 缺少安全投影规则", code="plugin_cli_parameter_contract_invalid")
         return CommandSpec(argv=argv, timeoutSeconds=action.timeoutSeconds)
+
+    @staticmethod
+    def _serialize_cli_parameter(name: str, definition: Any, value: Any) -> str:
+        if definition.kind in {"text", "enum", "file"}:
+            if not isinstance(value, str):
+                raise PluginManagerError(f"CLI 参数 {name} 必须是字符串", code="plugin_cli_parameter_invalid")
+            if definition.kind == "enum" and value not in set(definition.options):
+                raise PluginManagerError(f"CLI 参数 {name} 不在允许值中", code="plugin_cli_parameter_invalid")
+            return value
+        if definition.kind == "integer":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise PluginManagerError(f"CLI 参数 {name} 必须是整数", code="plugin_cli_parameter_invalid")
+            return str(value)
+        if definition.kind == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise PluginManagerError(f"CLI 参数 {name} 必须是数值", code="plugin_cli_parameter_invalid")
+            return str(value)
+        if definition.kind == "json":
+            if not isinstance(value, (list, dict)):
+                raise PluginManagerError(f"CLI 参数 {name} 必须是数组或对象", code="plugin_cli_parameter_invalid")
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if definition.kind == "boolean":
+            if not isinstance(value, bool):
+                raise PluginManagerError(f"CLI 参数 {name} 必须是布尔值", code="plugin_cli_parameter_invalid")
+            return "true" if value else "false"
+        raise PluginManagerError(f"CLI 参数 {name} 类型不受支持", code="plugin_cli_parameter_contract_invalid")
 
     def _cli_credential_env(self, manifest: PluginManifest, profile: CliProfile) -> dict[str, str]:
         requirements = [item for item in compile_plugin_requirements(manifest) if item.componentId == profile.id]

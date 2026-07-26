@@ -93,11 +93,14 @@ class PluginConfigRequirement(StrictModel):
 
 class CliActionParameter(StrictModel):
     name: str
-    kind: Literal["text", "enum", "boolean", "file"] = "text"
+    sourceName: str | None = None
+    kind: Literal["text", "enum", "boolean", "file", "integer", "number", "json"] = "text"
     required: bool = False
     flag: str | None = None
     positional: bool = False
     options: list[str] = Field(default_factory=list)
+    description: str | None = None
+    defaultValue: Any = None
 
 
 class CliAction(StrictModel):
@@ -106,6 +109,26 @@ class CliAction(StrictModel):
     parameters: list[CliActionParameter] = Field(default_factory=list)
     timeoutSeconds: int = Field(default=600, ge=1, le=3600)
     mutating: bool = False
+    description: str | None = None
+    source: Literal["manifest", "discovered_schema"] = "manifest"
+    inputSchema: dict[str, Any] = Field(default_factory=dict)
+    outputSchema: dict[str, Any] = Field(default_factory=dict)
+    deprecated: bool = False
+    replacementActionId: str | None = None
+
+
+class CliCapabilitySync(StrictModel):
+    adapter: Literal["mediakit_cli_v1"]
+    snapshotPath: str = "capabilities/cli-schema.json"
+    blockBreakingUpgrade: bool = True
+
+    @field_validator("snapshotPath")
+    @classmethod
+    def validate_snapshot_path(cls, value: str) -> str:
+        normalized = PurePosixPath(str(value or "").replace("\\", "/"))
+        if normalized.is_absolute() or ".." in normalized.parts or not normalized.parts:
+            raise ValueError("CLI capability snapshot path must be a safe relative path")
+        return normalized.as_posix()
 
 
 class CliProfile(StrictModel):
@@ -124,6 +147,7 @@ class CliProfile(StrictModel):
     shimCommand: list[str] = Field(default_factory=list)
     allowedArguments: list[str] = Field(default_factory=list)
     actions: list[CliAction] = Field(default_factory=list)
+    capabilitySync: CliCapabilitySync | None = None
     configRequirements: list[PluginConfigRequirement] = Field(default_factory=list)
     outputProtocol: Literal["text", "json", "ndjson"] = "text"
     environment: dict[str, str] = Field(default_factory=dict)

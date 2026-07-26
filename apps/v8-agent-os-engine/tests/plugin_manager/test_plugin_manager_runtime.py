@@ -572,6 +572,44 @@ def test_mediakit_cli_contract_is_pinned_typed_and_architecture_scoped(runtime) 
     assert service._cli_credential_env(manifest, profile) == profile.environment
 
 
+def test_cli_schema_parameters_serialize_json_numbers_and_default_true_booleans(runtime) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("volcengine-mediakit")
+    profile = manifest.cliProfiles[0]
+    action = CliAction(
+        id="schema-action",
+        argv=["mediakit-cli", "editing", "concat-video"],
+        parameters=[
+            CliActionParameter(name="videoUrls", kind="json", required=True, flag="--video-urls"),
+            CliActionParameter(name="sampleCount", kind="integer", flag="--sample-count"),
+            CliActionParameter(
+                name="keepAudio",
+                kind="boolean",
+                flag="--keep-audio",
+                defaultValue=True,
+            ),
+        ],
+    )
+    spec = service._build_cli_action_spec(
+        manifest,
+        profile,
+        action,
+        {
+            "videoUrls": ["a.mp4", "b.mp4"],
+            "sampleCount": 2,
+            "keepAudio": False,
+        },
+    )
+    assert spec.argv[-6:] == [
+        "concat-video",
+        "--video-urls",
+        '["a.mp4","b.mp4"]',
+        "--sample-count",
+        "2",
+        "--keep-audio=false",
+    ]
+
+
 def test_catalog_projection_cache_keeps_installation_state_live(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
     service._catalog_projection_cache = None

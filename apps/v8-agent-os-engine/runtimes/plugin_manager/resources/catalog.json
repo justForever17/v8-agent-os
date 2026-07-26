@@ -1,9 +1,9 @@
 {
   "schemaVersion": "v8.plugin.catalog.v1",
-  "revision": 9,
-  "sequence": 9,
+  "revision": 10,
+  "sequence": 10,
   "keyId": "v8os-plugin-catalog-2026-07-r5",
-  "generatedAt": "2026-07-26T12:00:00Z",
+  "generatedAt": "2026-07-26T16:00:00Z",
   "expiresAt": "2027-07-11T00:00:00Z",
   "revocations": [],
   "plugins": [
@@ -312,6 +312,11 @@
             }
           ],
           "outputProtocol": "json",
+          "capabilitySync": {
+            "adapter": "mediakit_cli_v1",
+            "snapshotPath": "capabilities/mediakit-cli.json",
+            "blockBreakingUpgrade": true
+          },
           "environment": {
             "MEDIAKIT_SURFACE": "plugin",
             "MEDIAKIT_RUNTIME": "v8os"
@@ -392,7 +397,9 @@
                 }
               ],
               "timeoutSeconds": 600,
-              "mutating": true
+              "mutating": true,
+              "deprecated": true,
+              "replacementActionId": "asr-subtitles"
             },
             {
               "id": "audio-asr",
@@ -451,7 +458,9 @@
                 }
               ],
               "timeoutSeconds": 600,
-              "mutating": true
+              "mutating": true,
+              "deprecated": true,
+              "replacementActionId": "asr-subtitles"
             },
             {
               "id": "video-ocr",

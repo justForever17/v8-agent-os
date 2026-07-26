@@ -2378,6 +2378,17 @@ def test_p4_quality_cost_and_safety_stores_are_written(monkeypatch, tmp_path: Pa
     fake.base_dir = tmp_path
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr("runtimes.creative_media.runtime.db.get_runtime_artifact", lambda artifact_id: {})
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.analyze_image",
+        lambda path: {
+            "status": "review_required",
+            "analyzerVersion": "test",
+            "sourceFingerprint": "fixture",
+            "alpha": {"status": "opaque"},
+            "subject": {"areaRatio": 0.0},
+            "requiredFeaturePackId": "creative_media_image_analysis",
+        },
+    )
     image_path = tmp_path / "quality.png"
     from PIL import Image
 

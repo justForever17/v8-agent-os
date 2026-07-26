@@ -52,6 +52,12 @@ from .image_analysis import (
     create_transparent_derivative,
     evaluate_quality_profile,
 )
+from .media_quality import (
+    consistency_observation,
+    evaluate_cross_shot_consistency,
+    image_visual_signature,
+    inspect_media_quality,
+)
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
@@ -2470,6 +2476,16 @@ class CreativeMediaRuntime:
             or "storyboard_frame"
         ).strip()
         reference_report = self._quality_reference_report(payload)
+        cross_shot_setting = payload.get(
+            "crossShotConsistency",
+            request_payload.get("crossShotConsistency", request_payload.get("cross_shot_consistency")),
+        )
+        cross_shot_config = dict(cross_shot_setting) if isinstance(cross_shot_setting, dict) else {}
+        cross_shot_enabled_by_request = (
+            bool(cross_shot_config.get("enabled", True))
+            if isinstance(cross_shot_setting, dict)
+            else cross_shot_setting is not False
+        )
         required_kinds = {
             str(item or "").strip().lower()
             for item in list(payload.get("requiredKinds") or [])
@@ -2480,18 +2496,56 @@ class CreativeMediaRuntime:
             next_checks: list[dict[str, Any]] = []
             next_warnings: list[str] = []
             next_failures: list[str] = []
+            visual_ref_count = 0
             for artifact in refs:
                 if not isinstance(artifact, dict):
                     continue
-                next_checks.extend(
-                    self._quality_checks_for_artifact(
-                        artifact,
-                        owner,
-                        warnings=next_warnings,
-                        failures=next_failures,
-                        quality_profile=quality_profile,
-                        reference_report=reference_report,
-                    )
+                explicit_kind = str(artifact.get("kind") or artifact.get("modality") or "").strip().lower()
+                source_path = str(
+                    artifact.get("sourcePath")
+                    or artifact.get("source_path")
+                    or artifact.get("path")
+                    or ""
+                )
+                suffix = Path(source_path).suffix.lower()
+                if explicit_kind in {"image", "video"} or suffix in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".webp",
+                    ".psd",
+                    *VIDEO_EXTENSIONS,
+                }:
+                    visual_ref_count += 1
+            cross_shot_enabled = cross_shot_enabled_by_request and visual_ref_count >= 2
+            consistency_observations: list[dict[str, Any]] = []
+            for artifact in refs:
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_checks = self._quality_checks_for_artifact(
+                    artifact,
+                    owner,
+                    warnings=next_warnings,
+                    failures=next_failures,
+                    quality_profile=quality_profile,
+                    reference_report=reference_report,
+                    analyze_visual=cross_shot_enabled,
+                )
+                next_checks.extend(artifact_checks)
+                observation = consistency_observation(artifact, artifact_checks)
+                if observation:
+                    consistency_observations.append(observation)
+            if cross_shot_enabled:
+                consistency = evaluate_cross_shot_consistency(
+                    consistency_observations,
+                    config=cross_shot_config,
+                )
+                next_checks.extend(list(consistency.get("checks") or []))
+                next_warnings.extend(
+                    item for item in list(consistency.get("warnings") or []) if item not in next_warnings
+                )
+                next_failures.extend(
+                    item for item in list(consistency.get("failures") or []) if item not in next_failures
                 )
             if required_kinds:
                 present_kinds: set[str] = set()
@@ -2674,12 +2728,24 @@ class CreativeMediaRuntime:
         warnings: list[str],
     ) -> str:
         image_check = next((item for item in checks if item.get("name") == "image_subject_analysis"), {})
+        video_check = next((item for item in checks if item.get("name") == "video_decode_integrity"), {})
+        audio_check = next((item for item in checks if item.get("name") == "audio_decode_integrity"), {})
+        cross_shot_check = next(
+            (item for item in checks if item.get("name") == "cross_shot_semantic_identity_review"),
+            {},
+        )
         subject = dict(image_check.get("subject") or {})
         if status == "passed":
+            if video_check:
+                return "视频已通过解码完整性、画面连续性、音轨与技术参数门禁。"
+            if audio_check:
+                return "音频已通过解码完整性、音轨参数、响度与静音门禁。"
             return f"图像已通过 {quality_profile} 质量门禁；主体占比 {subject.get('areaRatio', '—')}，未发现需要处理的裁切或透明度问题。"
         if status == "repairable":
             return "检测到可安全修复的透明度问题；可生成非破坏性 PNG 衍生文件，原文件保持不变。"
         if status == "review_required":
+            if cross_shot_check:
+                return "跨镜头技术一致性已经检查；角色或主体身份一致性仍需结合样片人工确认。"
             return "复杂背景无法由基础规则可靠分离，需要安装图像分析增强包或交由用户复核。"
         reasons = [*failures, *warnings]
         return f"质量门禁未通过：{', '.join(reasons[:4]) or '需要人工复核'}。"
@@ -2703,6 +2769,7 @@ class CreativeMediaRuntime:
         failures: list[str],
         quality_profile: str = "storyboard_frame",
         reference_report: dict[str, Any] | None = None,
+        analyze_visual: bool = False,
     ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
@@ -2718,6 +2785,8 @@ class CreativeMediaRuntime:
         if size_bytes <= 0:
             failures.append("artifact_empty")
         kind = str(artifact.get("kind") or owner.get("modality") or "").lower()
+        if kind in {"voice", "music", "speech", "tts"}:
+            kind = "audio"
         suffix = Path(path).suffix.lower()
         if kind == "image" or suffix in {".png", ".jpg", ".jpeg", ".webp", ".psd"}:
             checks.extend(
@@ -2728,10 +2797,21 @@ class CreativeMediaRuntime:
                     failures=failures,
                     quality_profile=quality_profile,
                     reference_report=reference_report,
+                    analyze_visual=analyze_visual,
                 )
             )
         elif kind in {"video", "audio"} or suffix in VIDEO_EXTENSIONS or suffix in AUDIO_EXTENSIONS:
-            checks.extend(self._quality_media_probe_checks(path, owner, warnings=warnings, failures=failures, kind=kind or ("video" if suffix in VIDEO_EXTENSIONS else "audio")))
+            media_kind = "video" if kind == "video" or suffix in VIDEO_EXTENSIONS else "audio"
+            checks.extend(
+                self._quality_media_probe_checks(
+                    path,
+                    owner,
+                    warnings=warnings,
+                    failures=failures,
+                    kind=media_kind,
+                    analyze_visual=analyze_visual,
+                )
+            )
         elif suffix == ".srt":
             text = Path(path).read_text(encoding="utf-8", errors="ignore")
             ok = "-->" in text and bool(text.strip())
@@ -2749,6 +2829,7 @@ class CreativeMediaRuntime:
         failures: list[str],
         quality_profile: str = "storyboard_frame",
         reference_report: dict[str, Any] | None = None,
+        analyze_visual: bool = False,
     ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         try:
@@ -2767,6 +2848,7 @@ class CreativeMediaRuntime:
                 if not ok:
                     warnings.append("image_aspect_ratio_mismatch")
             analysis = analyze_image(path)
+            visual_signature = image_visual_signature(path) if analyze_visual else None
             comparison = compare_image_analyses(reference_report, analysis) if reference_report else None
             evaluation = evaluate_quality_profile(analysis, quality_profile, comparison=comparison)
             checks.append(
@@ -2783,6 +2865,7 @@ class CreativeMediaRuntime:
                     "requiredFeaturePackId": evaluation.get("requiredFeaturePackId"),
                     "analysisVersion": analysis.get("analyzerVersion"),
                     "sourceFingerprint": analysis.get("sourceFingerprint"),
+                    "visualSignature": visual_signature,
                 }
             )
             if evaluation.get("status") == "failed":
@@ -2794,56 +2877,38 @@ class CreativeMediaRuntime:
             warnings.append("image_metadata_unavailable")
         return checks
 
-    def _quality_media_probe_checks(self, path: str, owner: dict[str, Any], *, warnings: list[str], failures: list[str], kind: str) -> list[dict[str, Any]]:
-        checks: list[dict[str, Any]] = []
-        ffprobe = shutil.which("ffprobe")
-        if not ffprobe:
-            checks.append({"name": "ffprobe_available", "ok": False})
-            warnings.append("ffprobe_unavailable")
-            return checks
-        try:
-            result = subprocess.run(
-                [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            ok = result.returncode == 0
-            checks.append({"name": "ffprobe_readable", "ok": ok})
-            if not ok:
-                failures.append("ffprobe_failed")
-                return checks
-            payload = json.loads(result.stdout or "{}")
-            duration = float(((payload.get("format") or {}).get("duration") or 0) or 0)
-            checks.append({"name": "media_duration_positive", "ok": duration > 0, "durationSeconds": round(duration, 3)})
-            if duration <= 0:
-                failures.append("duration_missing")
-            request = dict(owner.get("request") or owner)
-            expected_duration = request.get("duration") or request.get("durationSeconds")
-            if expected_duration:
-                expected = float(expected_duration)
-                tolerance = max(1.0, expected * 0.35)
-                duration_ok = abs(duration - expected) <= tolerance
-                checks.append({"name": "media_duration_close_to_request", "ok": duration_ok, "expected": expected, "actual": round(duration, 3)})
-                if not duration_ok:
-                    warnings.append("duration_mismatch")
-            streams = list(payload.get("streams") or [])
-            if kind == "video":
-                video_stream = next((item for item in streams if item.get("codec_type") == "video"), {})
-                width = int(video_stream.get("width") or 0)
-                height = int(video_stream.get("height") or 0)
-                checks.append({"name": "video_dimensions", "ok": width > 0 and height > 0, "width": width, "height": height})
-                if width <= 0 or height <= 0:
-                    failures.append("video_dimensions_missing")
-            if kind == "audio":
-                audio_stream = next((item for item in streams if item.get("codec_type") == "audio"), {})
-                checks.append({"name": "audio_stream_present", "ok": bool(audio_stream)})
-                if not audio_stream:
-                    failures.append("audio_stream_missing")
-        except Exception as exc:
-            checks.append({"name": "ffprobe_exception", "ok": False, "error": _exception_summary(exc)})
-            warnings.append("ffprobe_exception")
+    def _quality_media_probe_checks(
+        self,
+        path: str,
+        owner: dict[str, Any],
+        *,
+        warnings: list[str],
+        failures: list[str],
+        kind: str,
+        analyze_visual: bool = False,
+    ) -> list[dict[str, Any]]:
+        result = inspect_media_quality(
+            path=path,
+            kind=kind,
+            request=dict(owner.get("request") or owner),
+            runner=subprocess.run,
+            which=shutil.which,
+            analyze_visual=analyze_visual,
+        )
+        for warning in list(result.get("warnings") or []):
+            if warning not in warnings:
+                warnings.append(str(warning))
+        for failure in list(result.get("failures") or []):
+            if failure not in failures:
+                failures.append(str(failure))
+        checks = list(result.get("checks") or [])
+        checks.append(
+            {
+                "name": "media_technical_signature",
+                "ok": not bool(result.get("failures")),
+                "signature": dict(result.get("signature") or {}),
+            }
+        )
         return checks
 
     def _retry_recommendation(self, *, status: str, failures: list[str], warnings: list[str], job: dict[str, Any]) -> dict[str, Any]:
@@ -2855,6 +2920,21 @@ class CreativeMediaRuntime:
             return {"action": "manual_review", "reason": "the local analyzer cannot make a reliable determination"}
         if "artifact_not_openable" in failures or "ffprobe_failed" in failures:
             return {"action": "retry_same_operation", "reason": "artifact fetch or media probe failed"}
+        if any(
+            item in failures
+            for item in {
+                "video_decode_failed",
+                "audio_decode_failed",
+                "audio_effectively_silent",
+                "video_mostly_black",
+                "video_mostly_frozen",
+            }
+        ):
+            return {"action": "regenerate_or_reencode", "reason": "the media payload failed a decode or content integrity gate"}
+        if "cross_shot_technical_mismatch" in failures:
+            return {"action": "normalize_shot_exports", "reason": "shots use incompatible resolution, frame-rate, or audio profiles"}
+        if "cross_shot_visual_drift" in warnings:
+            return {"action": "review_or_regenerate_shots", "reason": "subject scale, position, or palette drifted across shots"}
         if "duration_mismatch" in warnings:
             return {"action": "adjust_parameters", "reason": "requested duration differs from output"}
         return {"action": "manual_review" if status == "warning" else "retry_same_operation", "reason": ",".join([*failures, *warnings])}

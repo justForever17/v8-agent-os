@@ -62,7 +62,18 @@ _BOOL_FIELDS = {
     "watermark",
 }
 _INT_FIELDS = {"fps", "height", "limit", "maxLayers", "maxRepairAttempts", "n", "sampleRate", "seed", "width"}
-_DICT_FIELDS = {"canvas", "metadata", "pronunciationDict", "providerLock", "qa", "retryRequest", "sampleApproval", "stages", "voiceSetting"}
+_DICT_FIELDS = {
+    "canvas",
+    "crossShotConsistency",
+    "metadata",
+    "pronunciationDict",
+    "providerLock",
+    "qa",
+    "retryRequest",
+    "sampleApproval",
+    "stages",
+    "voiceSetting",
+}
 _FLOAT_FIELDS = {
     "costLimit",
     "defaultClipDurationSeconds",
@@ -240,6 +251,7 @@ _QUALITY_FIELDS = frozenset(
         "artifactIds",
         "artifacts",
         "autoRepair",
+        "crossShotConsistency",
         "jobId",
         "maxRepairAttempts",
         "qualityProfile",

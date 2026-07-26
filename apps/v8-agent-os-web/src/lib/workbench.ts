@@ -22,8 +22,26 @@ export type WorkbenchDocumentCapability = SharedWorkbenchDocumentCapability;
 export type SessionOverviewWorkbenchDocument = SessionOverviewWorkbenchDocumentRef;
 export type SubagentActivityWorkbenchDocument = SubagentActivityWorkbenchDocumentRef;
 export type WorkspaceFileWorkbenchDocument = WorkspaceFileWorkbenchDocumentRef;
-export type ArtifactWorkbenchDocument = ArtifactWorkbenchDocumentRef;
-export type UiAppWorkbenchDocument = UiAppWorkbenchDocumentRef;
+export type ArtifactWorkbenchDocument = Omit<ArtifactWorkbenchDocumentRef, "subjectRef"> & {
+    subjectRef: ArtifactWorkbenchDocumentRef["subjectRef"] & { sessionId: string };
+};
+export type UiAppWorkbenchDocument = Omit<UiAppWorkbenchDocumentRef, "subjectRef"> & {
+    subjectRef: UiAppWorkbenchDocumentRef["subjectRef"] & { sessionId: string };
+};
+
+export type CreativeCanvasWorkbenchDocument = {
+    kind: "creative_canvas";
+    documentId: string;
+    title: string;
+    renderer: "creative_canvas";
+    lifecycle: WorkbenchDocumentLifecycle;
+    status: WorkbenchDocumentStatus;
+    capabilities: WorkbenchDocumentCapability[];
+    subjectRef: { sessionId: string };
+    createdAt?: string;
+    updatedAt?: string;
+    unavailableReason?: string;
+};
 
 export type WorkbenchDocumentPayload = {
     artifact?: RuntimeArtifact;
@@ -47,7 +65,10 @@ export function clearWorkbenchDocumentPayload(documentId: string) {
     documentPayloads.delete(documentId);
 }
 
-export type WorkbenchDocument = WorkbenchDocumentRef;
+export type WorkbenchDocument = Exclude<WorkbenchDocumentRef, UiAppWorkbenchDocumentRef | ArtifactWorkbenchDocumentRef>
+    | ArtifactWorkbenchDocument
+    | UiAppWorkbenchDocument
+    | CreativeCanvasWorkbenchDocument;
 
 export type WorkbenchTab = {
     document: WorkbenchDocument;
@@ -63,6 +84,7 @@ const DOCUMENT_KINDS = new Set<WorkbenchDocument["kind"]>([
     "artifact",
     "ui_app",
     "browser",
+    "creative_canvas",
 ]);
 
 const DOCUMENT_STATUSES = new Set<WorkbenchDocumentStatus>([
@@ -151,14 +173,15 @@ export function normalizeWorkbenchDocument(value: unknown): WorkbenchDocument | 
     }
     if (kind === "artifact") {
         const artifactId = stringOf(subjectRef.artifactId || subjectRef.artifact_id || subjectRef.id);
-        if (!artifactId || !["image", "video", "audio", "code", "text", "markdown", "html", "pdf", "model_3d", "download"].includes(renderer)) return null;
+        const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
+        if (!artifactId || !sessionId || !["image", "video", "audio", "code", "text", "markdown", "html", "pdf", "model_3d", "download"].includes(renderer)) return null;
         return {
             ...base,
             kind,
             renderer: renderer as ArtifactWorkbenchDocument["renderer"],
             subjectRef: {
                 artifactId,
-                sessionId: stringOf(subjectRef.sessionId || subjectRef.session_id) || undefined,
+                sessionId,
             },
         };
     }
@@ -166,12 +189,24 @@ export function normalizeWorkbenchDocument(value: unknown): WorkbenchDocument | 
         const appRecord = recordOf(subjectRef.app);
         const appInstanceId = stringOf(appRecord.appInstanceId || appRecord.app_instance_id);
         const resourceUri = stringOf(appRecord.resourceUri || appRecord.resource_uri);
-        if (!appInstanceId || !resourceUri || !["mcp_app", "figma_canvas"].includes(renderer)) return null;
+        const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
+        if (!appInstanceId || !resourceUri || !sessionId || !["mcp_app", "figma_canvas"].includes(renderer)) return null;
         return {
             ...base,
             kind,
             renderer: renderer as UiAppWorkbenchDocument["renderer"],
-            subjectRef: { app: appRecord as unknown as McpAppViewRef },
+            subjectRef: { app: appRecord as unknown as McpAppViewRef, sessionId },
+        };
+    }
+
+    if (kind === "creative_canvas") {
+        const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
+        if (!sessionId || renderer !== "creative_canvas") return null;
+        return {
+            ...base,
+            kind,
+            renderer: "creative_canvas",
+            subjectRef: { sessionId },
         };
     }
 
@@ -230,10 +265,12 @@ function artifactRenderer(artifact: RuntimeArtifact): ArtifactWorkbenchDocument[
     return cardType === "code" ? "code" : cardType;
 }
 
-export function createArtifactDocument(artifact: RuntimeArtifact): ArtifactWorkbenchDocument {
+export function createArtifactDocument(artifact: RuntimeArtifact, sessionId: string): ArtifactWorkbenchDocument {
+    const ownerSessionId = String(artifact.sessionId || sessionId || "").trim();
+    if (!ownerSessionId) throw new Error("A session id is required to open an artifact in Workbench.");
     const document: ArtifactWorkbenchDocument = {
         kind: "artifact",
-        documentId: `artifact:${artifact.id}`,
+        documentId: `artifact:${ownerSessionId}:${artifact.id}`,
         title: artifact.displayLabel || artifact.title || artifact.id,
         renderer: artifactRenderer(artifact),
         lifecycle: "session",
@@ -241,7 +278,7 @@ export function createArtifactDocument(artifact: RuntimeArtifact): ArtifactWorkb
         capabilities: ["read", "copy", "download", "focus"],
         subjectRef: {
             artifactId: artifact.id,
-            sessionId: artifact.sessionId,
+            sessionId: ownerSessionId,
         },
         createdAt: artifact.createdAt,
     };
@@ -250,6 +287,7 @@ export function createArtifactDocument(artifact: RuntimeArtifact): ArtifactWorkb
 }
 
 export function createInlineArtifactDocument(input: {
+    sessionId: string;
     id: string;
     title: string;
     content: string;
@@ -266,7 +304,7 @@ export function createInlineArtifactDocument(input: {
                 : "text";
     const document: ArtifactWorkbenchDocument = {
         kind: "artifact",
-        documentId: `inline-artifact:${input.id}`,
+        documentId: `inline-artifact:${input.sessionId}:${input.id}`,
         title: input.title,
         renderer,
         lifecycle: "runtime",
@@ -274,6 +312,7 @@ export function createInlineArtifactDocument(input: {
         capabilities: ["read", "search", "copy", "download", "focus"],
         subjectRef: {
             artifactId: input.id,
+            sessionId: input.sessionId,
         },
     };
     setWorkbenchDocumentPayload(document.documentId, {
@@ -285,6 +324,7 @@ export function createInlineArtifactDocument(input: {
 }
 
 export function createExternalArtifactDocument(input: {
+    sessionId: string;
     id: string;
     title: string;
     url: string;
@@ -293,13 +333,13 @@ export function createExternalArtifactDocument(input: {
 }): ArtifactWorkbenchDocument {
     const document: ArtifactWorkbenchDocument = {
         kind: "artifact",
-        documentId: `external-artifact:${input.id}`,
+        documentId: `external-artifact:${input.sessionId}:${input.id}`,
         title: input.title,
         renderer: input.renderer,
         lifecycle: "runtime",
         status: "available",
         capabilities: ["read", "download", "focus"],
-        subjectRef: { artifactId: input.id },
+        subjectRef: { artifactId: input.id, sessionId: input.sessionId },
     };
     setWorkbenchDocumentPayload(document.documentId, {
         resourceUrl: input.url,
@@ -308,18 +348,41 @@ export function createExternalArtifactDocument(input: {
     return document;
 }
 
-export function createUiAppDocument(app: McpAppViewRef): UiAppWorkbenchDocument {
+export function createUiAppDocument(sessionId: string, app: McpAppViewRef): UiAppWorkbenchDocument {
     const isFigma = app.renderer === "figma";
     return {
         kind: "ui_app",
-        documentId: `ui-app:${app.appInstanceId}`,
+        documentId: `ui-app:${sessionId}:${app.appInstanceId}`,
         title: app.title || (isFigma ? "Figma Canvas" : "UI App"),
         renderer: isFigma ? "figma_canvas" : "mcp_app",
         lifecycle: "runtime",
         status: "available",
         capabilities: ["interact", "focus"],
-        subjectRef: { app },
+        subjectRef: { app, sessionId },
     };
+}
+
+export function createCreativeCanvasDocument(sessionId: string): CreativeCanvasWorkbenchDocument {
+    return {
+        kind: "creative_canvas",
+        documentId: `creative-canvas:${sessionId}`,
+        title: "web.workbench.canvas.title",
+        renderer: "creative_canvas",
+        lifecycle: "session",
+        status: "ready",
+        capabilities: ["read", "interact", "focus"],
+        subjectRef: { sessionId },
+    };
+}
+
+export function getWorkbenchDocumentSessionId(document: WorkbenchDocument): string {
+    if (document.kind === "ui_app") return String(document.subjectRef.sessionId || "").trim();
+    return String((document.subjectRef as { sessionId?: string }).sessionId || "").trim();
+}
+
+export function isWorkbenchDocumentOwnedBySession(document: WorkbenchDocument, sessionId: string): boolean {
+    const normalizedSessionId = String(sessionId || "").trim();
+    return Boolean(normalizedSessionId) && getWorkbenchDocumentSessionId(document) === normalizedSessionId;
 }
 
 export function createWorkspaceFileDocument(input: {

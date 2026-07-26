@@ -108,6 +108,33 @@ test("Workbench file reading reuses Markdown rendering, locates search matches, 
   assert.match(chat, /delete optionData\.messageOverride/);
 });
 
+test("Workbench add menu, files, and creative canvas remain session-scoped", () => {
+  const shell = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
+  const picker = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchFilePicker.tsx");
+  const canvas = readText("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const actions = readText("apps/v8-agent-os-web/src/lib/workbench-actions.ts");
+  const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
+  const store = readText("apps/v8-agent-os-web/src/store/workbench-store.ts");
+  const route = readText("apps/v8-agent-os-engine/api/session_workflow_routes.py");
+  const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  assert.ok(shell.indexOf("{tabs.map") < shell.indexOf("<DropdownMenu>"));
+  assert.match(shell, /web\.workbench\.add\.file/);
+  assert.match(shell, /web\.workbench\.add\.canvas/);
+  assert.match(picker, /listWorkspaceFiles\(sessionId/);
+  assert.match(picker, /resolveAndOpenWorkspaceFile\(item\.workspacePath, \{ sessionId/);
+  assert.match(actions, /payload\.sessionId !== normalizedSessionId/);
+  assert.match(workbench, /creative-canvas:\$\{sessionId\}/);
+  assert.match(store, /isWorkbenchDocumentOwnedBySession/);
+  assert.match(canvas, /v8-web-creative-canvas:v1:\$\{sessionId\}/);
+  assert.match(canvas, /\/api\/artifacts/);
+  assert.match(canvas, /\/api\/sources/);
+  assert.match(route, /inline: bool = Query\(False\)/);
+  assert.match(route, /content_disposition_type="attachment" if download else "inline"/);
+  assert.match(chat, /handleCanvasTask/);
+  assert.match(chat, /messageOverride: message/);
+  assert.doesNotMatch(canvas, /dangerouslySetInnerHTML/);
+});
+
 test("Collapsed Web task sidebar removes its rail, keeps hidden controls inert, and avoids duplicate workspace controls", () => {
   const sidebar = readText("apps/v8-agent-os-web/src/components/layout/Sidebar.tsx");
   const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");

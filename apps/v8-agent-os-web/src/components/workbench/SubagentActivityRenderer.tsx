@@ -47,7 +47,7 @@ function statusTone(status: string) {
     return "bg-violet-500";
 }
 
-function SubagentEventStream({ item, processes }: { item: SubagentReturnProjection; processes: AdminProcessRef[] }) {
+function SubagentEventStream({ item, processes, sessionId }: { item: SubagentReturnProjection; processes: AdminProcessRef[]; sessionId: string }) {
     const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const resultByToolCall = useMemo(() => {
@@ -87,7 +87,7 @@ function SubagentEventStream({ item, processes }: { item: SubagentReturnProjecti
                             title={artifact.displayLabel}
                             type={type}
                             subtitle={artifact.displaySubtitle || t("web.workbench.subagent.artifact")}
-                            onClick={() => openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
+                            onClick={() => openDocument(createArtifactDocument(artifact, sessionId), { activate: true, mode: "split" })}
                             onDownload={url ? () => window.open(url, "_blank", "noopener,noreferrer") : undefined}
                         />
                     );
@@ -114,7 +114,7 @@ function SubagentEventStream({ item, processes }: { item: SubagentReturnProjecti
     );
 }
 
-function SubagentSection({ item, processes, nested = false }: { item: SubagentReturnProjection; processes: AdminProcessRef[]; nested?: boolean }) {
+function SubagentSection({ item, processes, sessionId, nested = false }: { item: SubagentReturnProjection; processes: AdminProcessRef[]; sessionId: string; nested?: boolean }) {
     const t = useT();
     const failureDetail = isFailedStatus(item.status) ? item.summary || item.selfCheck : null;
     return (
@@ -126,14 +126,14 @@ function SubagentSection({ item, processes, nested = false }: { item: SubagentRe
                     <span className="text-[10px] font-normal text-muted-foreground">{t("web.workbench.subagent.child")}</span>
                 </div>
             ) : null}
-            <SubagentEventStream item={item} processes={processes} />
+            <SubagentEventStream item={item} processes={processes} sessionId={sessionId} />
             {failureDetail ? (
                 <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/5 p-3">
                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-rose-700 dark:text-rose-300"><AlertTriangle className="h-3.5 w-3.5" />{t("web.workbench.subagent.failureTitle")}</div>
                     <ContentDispatcher node={{ id: `${item.id}:failure`, kind: "narrative", role: "assistant", content: failureDetail, timestamp: item.timestamp }} isExecuting={false} isStreaming={false} />
                 </div>
             ) : null}
-            {item.children.map((child) => <SubagentSection key={child.id} item={child} processes={processes} nested />)}
+            {item.children.map((child) => <SubagentSection key={child.id} item={child} processes={processes} sessionId={sessionId} nested />)}
         </section>
     );
 }
@@ -179,7 +179,7 @@ export function SubagentActivityRenderer({
                         {!item.completedEventSeq ? <CircleDot className="h-4 w-4 animate-pulse text-primary" /> : null}
                     </div>
                 </header>
-                <SubagentSection item={item} processes={processes} />
+                <SubagentSection item={item} processes={processes} sessionId={document.subjectRef.sessionId} />
             </div>
         </div>
     );

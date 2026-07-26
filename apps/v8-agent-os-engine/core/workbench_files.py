@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import mimetypes
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,10 @@ from core.workspace_authority import workspace_authority_service
 DEFAULT_LINE_COUNT = 500
 MAX_LINE_COUNT = 2000
 MAX_FRAGMENT_BYTES = 512 * 1024
+DEFAULT_CATALOG_LIMIT = 80
+MAX_CATALOG_LIMIT = 200
+MAX_CATALOG_SCAN = 10_000
+MAX_CATALOG_DEPTH = 12
 
 _LANGUAGE_BY_SUFFIX = {
     ".c": "c",
@@ -62,6 +67,67 @@ _TEXT_SUFFIXES = frozenset(_LANGUAGE_BY_SUFFIX) | {
     ".svg",
 }
 
+_PREVIEWABLE_BINARY_SUFFIXES = {
+    ".aac",
+    ".avif",
+    ".bmp",
+    ".flac",
+    ".gif",
+    ".glb",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".m4a",
+    ".m4v",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".wav",
+    ".webm",
+    ".webp",
+}
+
+_CATALOG_SUFFIXES = _TEXT_SUFFIXES | _PREVIEWABLE_BINARY_SUFFIXES | {".gltf"}
+
+_CATALOG_IGNORED_DIRECTORIES = {
+    ".cache",
+    ".expo",
+    ".git",
+    ".gradle",
+    ".idea",
+    ".next",
+    ".nuxt",
+    ".parcel-cache",
+    ".pytest_cache",
+    ".python",
+    ".turbo",
+    ".venv",
+    ".yarn",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "venv",
+}
+
+_CATALOG_SENSITIVE_NAMES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "id_dsa",
+    "id_ed25519",
+    "id_rsa",
+    "service-account.json",
+}
+
+_CATALOG_SENSITIVE_SUFFIXES = {".key", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3", ".db", ".log"}
+
 
 @dataclass(frozen=True)
 class ResolvedWorkbenchFile:
@@ -90,7 +156,7 @@ class ResolvedWorkbenchFile:
             "language": self.language or None,
             "encoding": self.encoding,
             "binary": self.binary,
-            "previewable": not self.binary,
+            "previewable": (not self.binary) or self.absolute_path.suffix.lower() in _PREVIEWABLE_BINARY_SUFFIXES,
             "downloadable": True,
             "size": self.size,
             "mtime": self.mtime,
@@ -162,17 +228,58 @@ def _mime_type(path: Path) -> str:
     return guessed or "application/octet-stream"
 
 
+def _is_catalog_sensitive(path: Path) -> bool:
+    name = path.name.lower()
+    if name in _CATALOG_SENSITIVE_NAMES or name.startswith(".env."):
+        return True
+    return path.suffix.lower() in _CATALOG_SENSITIVE_SUFFIXES
+
+
+def _is_catalog_ignored_directory(name: str) -> bool:
+    normalized = name.lower()
+    return (
+        normalized in _CATALOG_IGNORED_DIRECTORIES
+        or normalized.startswith((".next-", ".venv-", "node_modules-"))
+    )
+
+
+def _catalog_kind(path: Path, mime_type: str, language: str) -> str:
+    if language == "markdown":
+        return "markdown"
+    if language == "html":
+        return "html"
+    if language and language != "text":
+        return "code"
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("video/"):
+        return "video"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type == "application/pdf":
+        return "pdf"
+    if "gltf" in mime_type:
+        return "model_3d"
+    return "text"
+
+
 class WorkbenchFileService:
-    def resolve(self, *, session_id: str, requested_path: str) -> ResolvedWorkbenchFile:
+    @staticmethod
+    def _workspace_root(*, session_id: str) -> tuple[Path, Any]:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             raise ValueError("sessionId is required")
-        raw = _normalize_requested_path(requested_path)
         authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=normalized_session_id)
         try:
             root = Path(authority.workspace_root).expanduser().resolve(strict=True)
         except OSError as exc:
             raise FileNotFoundError("Active workspace is unavailable") from exc
+        return root, authority
+
+    def resolve(self, *, session_id: str, requested_path: str) -> ResolvedWorkbenchFile:
+        normalized_session_id = str(session_id or "").strip()
+        raw = _normalize_requested_path(requested_path)
+        root, authority = self._workspace_root(session_id=normalized_session_id)
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             candidate = root / candidate
@@ -205,6 +312,90 @@ class WorkbenchFileService:
             mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
             etag=etag,
         )
+
+    def list_files(
+        self,
+        *,
+        session_id: str,
+        query: str = "",
+        cursor: int = 0,
+        limit: int = DEFAULT_CATALOG_LIMIT,
+    ) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip()
+        root, authority = self._workspace_root(session_id=normalized_session_id)
+        normalized_query = str(query or "").strip().casefold()
+        normalized_cursor = max(0, int(cursor or 0))
+        normalized_limit = min(MAX_CATALOG_LIMIT, max(1, int(limit or DEFAULT_CATALOG_LIMIT)))
+
+        candidates: list[dict[str, Any]] = []
+        scanned = 0
+        for current_root, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current_root)
+            try:
+                relative_root = current_path.relative_to(root)
+            except ValueError:
+                directory_names[:] = []
+                continue
+            if len(relative_root.parts) >= MAX_CATALOG_DEPTH:
+                directory_names[:] = []
+            else:
+                directory_names[:] = sorted(
+                    name
+                    for name in directory_names
+                    if not _is_catalog_ignored_directory(name)
+                    and not (current_path / name).is_symlink()
+                )
+
+            for file_name in sorted(file_names):
+                if scanned >= MAX_CATALOG_SCAN:
+                    break
+                scanned += 1
+                candidate = current_path / file_name
+                suffix = candidate.suffix.lower()
+                if suffix not in _CATALOG_SUFFIXES or _is_catalog_sensitive(candidate) or candidate.is_symlink():
+                    continue
+                try:
+                    resolved = candidate.resolve(strict=True)
+                    if not _is_within(resolved, root) or not resolved.is_file():
+                        continue
+                    workspace_path = resolved.relative_to(root).as_posix()
+                    if normalized_query and normalized_query not in workspace_path.casefold():
+                        continue
+                    stat = resolved.stat()
+                except OSError:
+                    continue
+                mime_type = _mime_type(resolved)
+                language = _LANGUAGE_BY_SUFFIX.get(suffix, "text" if mime_type.startswith("text/") else "")
+                candidates.append(
+                    {
+                        "sessionId": normalized_session_id,
+                        "workspacePath": workspace_path,
+                        "name": resolved.name,
+                        "mimeType": mime_type,
+                        "language": language or None,
+                        "kind": _catalog_kind(resolved, mime_type, language),
+                        "previewable": True,
+                        "size": stat.st_size,
+                        "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    }
+                )
+            if scanned >= MAX_CATALOG_SCAN:
+                break
+
+        candidates.sort(key=lambda item: (str(item["workspacePath"]).casefold(), str(item["workspacePath"])))
+        page = candidates[normalized_cursor : normalized_cursor + normalized_limit]
+        next_cursor = normalized_cursor + len(page)
+        has_more = next_cursor < len(candidates)
+        return {
+            "sessionId": normalized_session_id,
+            "workspaceId": str(authority.workspace_id or "") or None,
+            "projectId": str(authority.project_id or "") or None,
+            "items": page,
+            "nextCursor": str(next_cursor) if has_more else None,
+            "hasMore": has_more,
+            "scanned": scanned,
+            "truncated": scanned >= MAX_CATALOG_SCAN,
+        }
 
     @staticmethod
     def _iter_lines(path: Path, encoding: str) -> Iterator[str]:

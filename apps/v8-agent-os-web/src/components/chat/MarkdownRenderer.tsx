@@ -196,15 +196,17 @@ function DocumentLinkCard({
     type: "pdf" | "model3d";
 }) {
     const t = useT();
+    const sessionId = useWorkbenchStore((state) => state.sessionId);
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const filename = decodeFilenameFromUrl(href, label || (type === "pdf" ? "document.pdf" : "model.glb"));
-    const document = createExternalArtifactDocument({
+    const document = sessionId ? createExternalArtifactDocument({
+        sessionId,
         id: `${type}:${href}`,
         title: filename,
         url: href,
         renderer: type === "model3d" ? "model_3d" : "pdf",
         mimeType: type === "model3d" ? "model/gltf-binary" : "application/pdf",
-    });
+    }) : null;
     const icon = type === "model3d" ? <Box className="h-5 w-5" /> : <FileText className="h-5 w-5" />;
     return (
         <div data-v8-context-resource className="my-2 flex w-full max-w-sm items-center gap-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
@@ -228,7 +230,8 @@ function DocumentLinkCard({
                 <button
                     data-v8-context-open-workbench
                     type="button"
-                    onClick={() => openDocument(document, { activate: true, mode: "split" })}
+                    onClick={() => document && openDocument(document, { activate: true, mode: "split" })}
+                    disabled={!document}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     title={t("web.artifactCard.openWorkbench")}
                 >

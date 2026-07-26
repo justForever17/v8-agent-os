@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, X } from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, Palette, Plus, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
@@ -18,6 +18,10 @@ import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./Workspac
 import { SubagentActivityRenderer } from "./SubagentActivityRenderer";
 import type { WorkbenchTab } from "@/lib/workbench";
 import { isTranslationKey } from "@/lib/locale";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { WorkbenchFilePicker } from "./WorkbenchFilePicker";
+import { CreativeArtifactCanvas, type CanvasTaskRequest } from "./CreativeArtifactCanvas";
+import { createCreativeCanvasDocument } from "@/lib/workbench";
 
 type WorkbenchShellProps = {
     sessionId: string;
@@ -29,6 +33,7 @@ type WorkbenchShellProps = {
     runtimeModel: RuntimeStageModel;
     workspacePath?: string;
     onSendFileLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
+    onSubmitCanvasTask?: (request: CanvasTaskRequest) => Promise<boolean> | boolean;
     pendingConfirmation?: boolean;
     onOpenPendingConfirmation?: () => void;
 };
@@ -45,9 +50,11 @@ type WorkbenchTabStripProps = {
     activeDocumentId: string | null;
     activateDocument: (documentId: string) => void;
     closeDocument: (documentId: string) => void;
+    onAddFile: () => void;
+    onAddCanvas: () => void;
 };
 
-function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocument }: WorkbenchTabStripProps) {
+function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocument, onAddFile, onAddCanvas }: WorkbenchTabStripProps) {
     const t = useT();
     const scrollerRef = useRef<HTMLDivElement | null>(null);
     const autoScrollFrameRef = useRef<number | null>(null);
@@ -172,6 +179,17 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
                             </div>
                         );
                     })}
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/55 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.workbench.add")}>
+                                <Plus className="h-4 w-4" />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" sideOffset={5} className="z-[110] w-36">
+                            <DropdownMenuItem onSelect={onAddFile} className="gap-2 text-xs"><FileCode2 className="h-3.5 w-3.5" />{t("web.workbench.add.file")}</DropdownMenuItem>
+                            <DropdownMenuItem onSelect={onAddCanvas} className="gap-2 text-xs"><Palette className="h-3.5 w-3.5" />{t("web.workbench.add.canvas")}</DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 </div>
             </div>
             {edgeButton(1)}
@@ -188,12 +206,14 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const activeDocumentId = useWorkbenchStore((state) => state.activeDocumentId);
     const activateDocument = useWorkbenchStore((state) => state.activateDocument);
     const closeDocument = useWorkbenchStore((state) => state.closeDocument);
+    const openDocument = useWorkbenchStore((state) => state.openDocument);
     const setMode = useWorkbenchStore((state) => state.setMode);
     const setWidth = useWorkbenchStore((state) => state.setWidth);
     const shouldReduceMotion = useReducedMotion();
     const panelRef = useRef<HTMLElement | null>(null);
     const [containerWidth, setContainerWidth] = useState(() => typeof window === "undefined" ? 1200 : window.innerWidth);
     const [isResizing, setIsResizing] = useState(false);
+    const [filePickerOpen, setFilePickerOpen] = useState(false);
 
     useEffect(() => {
         const immediateParent = panelRef.current?.parentElement;
@@ -236,6 +256,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
+        if (document.kind === "creative_canvas") return <CreativeArtifactCanvas document={document} onSubmitTask={props.onSubmitCanvasTask} />;
         return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.browserExternal")}</div>;
     })();
 
@@ -255,6 +276,8 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                     activeDocumentId={document.documentId}
                     activateDocument={activateDocument}
                     closeDocument={closeDocument}
+                    onAddFile={() => setFilePickerOpen(true)}
+                    onAddCanvas={() => openDocument(createCreativeCanvasDocument(props.sessionId), { activate: true, mode: "split" })}
                 />
                 <button
                     type="button"
@@ -270,6 +293,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     );
 
     return (
+        <>
         <AnimatePresence initial={false} mode="sync">
             {shouldShow ? effectiveMode === "focus" ? (
                 <motion.div
@@ -327,5 +351,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                 </motion.div>
             ) : null}
         </AnimatePresence>
+        <WorkbenchFilePicker sessionId={props.sessionId} open={filePickerOpen} onOpenChange={setFilePickerOpen} />
+        </>
     );
 }

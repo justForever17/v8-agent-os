@@ -923,6 +923,31 @@ async def resolve_workbench_file(session_id: str, body: dict = Body(...)):
         raise HTTPException(status_code=404, detail="Workspace file could not be resolved") from exc
 
 
+@router.get("/sessions/{session_id}/workbench/files")
+async def list_workbench_files(
+    session_id: str,
+    q: str = Query(""),
+    cursor: int = Query(0, ge=0),
+    limit: int = Query(80, ge=1, le=200),
+):
+    try:
+        return await asyncio.to_thread(
+            workbench_file_service.list_files,
+            session_id=session_id,
+            query=q,
+            cursor=cursor,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Active workspace is unavailable") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Workspace files could not be listed") from exc
+
+
 @router.get("/sessions/{session_id}/workbench/files/read")
 async def read_workbench_file(
     session_id: str,
@@ -930,9 +955,10 @@ async def read_workbench_file(
     start_line: int = Query(1, alias="startLine"),
     line_count: int = Query(500, alias="lineCount"),
     download: bool = Query(False),
+    inline: bool = Query(False),
 ):
     try:
-        if download:
+        if download or inline:
             resolved = await asyncio.to_thread(
                 workbench_file_service.resolve,
                 session_id=session_id,
@@ -942,6 +968,7 @@ async def read_workbench_file(
                 str(resolved.absolute_path),
                 filename=resolved.absolute_path.name,
                 media_type=resolved.mime_type,
+                content_disposition_type="attachment" if download else "inline",
             )
             response.headers["ETag"] = resolved.etag
             response.headers["X-V8-Workspace-Path"] = resolved.workspace_relative_path

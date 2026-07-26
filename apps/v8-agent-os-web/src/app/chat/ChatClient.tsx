@@ -61,6 +61,7 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkbenchShell } from "@/components/workbench/WorkbenchShell";
+import type { CanvasTaskRequest } from "@/components/workbench/CreativeArtifactCanvas";
 import { createSessionOverviewDocument } from "@/lib/workbench";
 import { ingestWorkbenchRuntimeEvent, useWorkbenchStore } from "@/store/workbench-store";
 import {
@@ -3411,6 +3412,22 @@ export default function ChatClient() {
         return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
     };
 
+    const handleCanvasTask = async ({ text: instruction, refs }: CanvasTaskRequest) => {
+        const references = refs.slice(0, 100).map((reference, index) => {
+            const kind = reference.origin === "source" ? t("web.workbench.canvas.reference.source") : t("web.workbench.canvas.reference.artifact");
+            const details = [
+                `${index + 1}. ${kind}: ${reference.name}`,
+                `id=${reference.id}`,
+                reference.url ? `url=${reference.url}` : "",
+                reference.caption ? `caption=${reference.caption.replace(/\r?\n/g, " ").slice(0, 240)}` : "",
+            ].filter(Boolean);
+            return details.join(" | ");
+        });
+        const message = [instruction.trim(), "", t("web.workbench.canvas.reference.heading"), ...references].join("\n");
+        const syntheticEvent = { preventDefault() {} } as React.FormEvent<HTMLFormElement>;
+        return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
+    };
+
     const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
         const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
         if (status !== 'authenticated' || !hasFiles) return;
@@ -4015,6 +4032,7 @@ export default function ChatClient() {
                 runtimeModel={runtimeStageModel}
                 workspacePath={scopeBinding?.workspacePath || mainWorkspacePath || ""}
                 onSendFileLineComment={handleFileLineComment}
+                onSubmitCanvasTask={handleCanvasTask}
                 pendingConfirmation={effectivePendingApproval}
                 onOpenPendingConfirmation={openPendingConfirmation}
             />

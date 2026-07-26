@@ -36,6 +36,7 @@ interface MessageBlockItemProps {
 
 export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
     const t = useT();
+    const sessionId = useWorkbenchStore((state) => state.sessionId);
     const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const textLayoutEngine = resolveTextLayoutEngine();
     if (block.type === 'file-ppt') {
@@ -57,7 +58,7 @@ export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
         return (
             <div className="flex flex-col gap-2 my-2">
                 <CodeBlock language={type} value={block.content} isStreaming={Boolean(block.isStreaming)} />
-                {!block.isStreaming && <ArtifactCard id={block.id} title={title} type={type} onClick={() => openWorkbenchDocument(createInlineArtifactDocument({ id: block.id, title, content: block.content, type, language: block.data?.language }), { activate: true, mode: "split" })} onDownload={block.content ? handleDownload : undefined} />}
+                {!block.isStreaming && <ArtifactCard id={block.id} title={title} type={type} onClick={sessionId ? () => openWorkbenchDocument(createInlineArtifactDocument({ sessionId, id: block.id, title, content: block.content, type, language: block.data?.language }), { activate: true, mode: "split" }) : undefined} onDownload={block.content ? handleDownload : undefined} />}
             </div>
         );
     }

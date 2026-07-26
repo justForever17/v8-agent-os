@@ -187,7 +187,7 @@ export function WorkspaceWorkbenchPanel({
             return;
         }
         const artifact = output.rawArtifact ? normalizeRuntimeArtifact(output.rawArtifact) : null;
-        if (artifact) openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" });
+        if (artifact) openDocument(createArtifactDocument(artifact, sessionId), { activate: true, mode: "split" });
     }, [openDocument, sessionId]);
 
     const openSource = useCallback((source: SessionSourceProjection) => {
@@ -215,6 +215,7 @@ export function WorkspaceWorkbenchPanel({
                                 ? "text"
                                 : "download";
         openDocument(createExternalArtifactDocument({
+            sessionId,
             id: `source:${source.id}`,
             title: source.name,
             url: resourceUrl,

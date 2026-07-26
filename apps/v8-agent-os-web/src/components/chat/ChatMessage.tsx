@@ -438,6 +438,7 @@ function AssistantActivityDots({ label }: { label: string }) {
 function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [], executionActive = false, animateEntrance = false }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
+    const workbenchSessionId = useWorkbenchStore((state) => state.sessionId);
     const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const specModeEnabled = useMemo(() => hasSpecMode(message), [message]);
@@ -1045,7 +1046,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             title={artifact.displayLabel || artifact.title || artifact.id}
                                             subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || t("web.chat.artifact.noPath")}
                                             type={inferArtifactCardType(artifact)}
-                                            onClick={() => openWorkbenchDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
+                                            onClick={workbenchSessionId ? () => openWorkbenchDocument(createArtifactDocument(artifact, workbenchSessionId), { activate: true, mode: "split" }) : undefined}
                                             onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}
                                         />
                                     );

@@ -219,6 +219,10 @@ export function WorkspaceFileRenderer({
         const params = new URLSearchParams({ path: workspacePath, download: "true" });
         return `/api/workbench/sessions/${encodeURIComponent(sessionId)}/files/read?${params.toString()}`;
     }, [sessionId, workspacePath]);
+    const inlineUrl = useMemo(() => {
+        const params = new URLSearchParams({ path: workspacePath, inline: "true" });
+        return `/api/workbench/sessions/${encodeURIComponent(sessionId)}/files/read?${params.toString()}`;
+    }, [sessionId, workspacePath]);
     const uiPatchUrl = useMemo(() => {
         if (document.renderer !== "html") return "";
         const params = new URLSearchParams({
@@ -324,12 +328,16 @@ export function WorkspaceFileRenderer({
                 <a href={downloadUrl} download={payload.name} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.workbench.file.download")}><Download className="h-3.5 w-3.5" /></a>
             </div>
             {payload.binary ? (
-                <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
-                    <FileWarning className="h-7 w-7" />
-                    <div className="font-medium text-foreground">{t("web.workbench.file.binaryNoPreview")}</div>
-                    <div>{payload.mimeType || "application/octet-stream"} · {formatBytes(payload.size)}</div>
-                    <a href={downloadUrl} download={payload.name} className="mt-2 rounded border border-border px-3 py-1.5 text-xs text-foreground hover:bg-muted">{t("web.workbench.file.download")}</a>
-                </div>
+                payload.previewable && payload.mimeType.startsWith("image/") ? <div className="flex min-h-0 flex-1 items-center justify-center bg-muted/20 p-4"><img src={inlineUrl} alt={payload.name} className="max-h-full max-w-full object-contain" /></div>
+                    : payload.previewable && payload.mimeType.startsWith("video/") ? <div className="flex min-h-0 flex-1 items-center justify-center bg-black/90 p-4"><video src={inlineUrl} controls preload="metadata" className="max-h-full max-w-full object-contain" /></div>
+                        : payload.previewable && payload.mimeType.startsWith("audio/") ? <div className="flex flex-1 items-center justify-center px-8"><audio src={inlineUrl} controls preload="metadata" className="w-full max-w-xl" /></div>
+                            : payload.previewable && payload.mimeType === "application/pdf" ? <iframe src={inlineUrl} title={payload.name} className="min-h-0 flex-1 border-0 bg-white" />
+                                : <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
+                                    <FileWarning className="h-7 w-7" />
+                                    <div className="font-medium text-foreground">{t("web.workbench.file.binaryNoPreview")}</div>
+                                    <div>{payload.mimeType || "application/octet-stream"} · {formatBytes(payload.size)}</div>
+                                    <a href={downloadUrl} download={payload.name} className="mt-2 rounded border border-border px-3 py-1.5 text-xs text-foreground hover:bg-muted">{t("web.workbench.file.download")}</a>
+                                </div>
             ) : (
                 <>
                     <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">

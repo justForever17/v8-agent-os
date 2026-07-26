@@ -111,3 +111,75 @@ def test_line_and_byte_limits_are_enforced(scoped_service):
     assert payload["startLine"] == 2
     assert payload["endLine"] == 2001
     assert payload["totalLines"] == 2505
+
+
+def test_catalog_is_session_scoped_searchable_and_paginated(scoped_service):
+    service, workspace = scoped_service
+    (workspace / "src").mkdir()
+    (workspace / "src" / "alpha.ts").write_text("export const alpha = true;", encoding="utf-8")
+    (workspace / "src" / "beta.ts").write_text("export const beta = true;", encoding="utf-8")
+    (workspace / "README.md").write_text("# Project", encoding="utf-8")
+
+    first = service.list_files(session_id="session-1", limit=2)
+    filtered = service.list_files(session_id="session-1", query="beta")
+    second = service.list_files(session_id="session-1", cursor=int(first["nextCursor"]), limit=2)
+
+    assert first["sessionId"] == "session-1"
+    assert len(first["items"]) == 2
+    assert first["hasMore"] is True
+    assert filtered["items"][0]["workspacePath"] == "src/beta.ts"
+    assert len(second["items"]) == 1
+    assert second["hasMore"] is False
+    assert str(workspace) not in repr(first)
+
+
+def test_catalog_omits_dependencies_secrets_and_unsupported_files(scoped_service):
+    service, workspace = scoped_service
+    (workspace / ".env").write_text("TOKEN=secret", encoding="utf-8")
+    (workspace / "credentials.json").write_text("{}", encoding="utf-8")
+    (workspace / "cache.db").write_bytes(b"sqlite")
+    (workspace / "archive.zip").write_bytes(b"zip")
+    dependencies = workspace / "node_modules" / "pkg"
+    dependencies.mkdir(parents=True)
+    (dependencies / "index.js").write_text("module.exports = {};", encoding="utf-8")
+    generated = workspace / ".next-codex-validation" / "server"
+    generated.mkdir(parents=True)
+    (generated / "bundle.js").write_text("generated", encoding="utf-8")
+    packaged_python = workspace / ".python" / "Lib"
+    packaged_python.mkdir(parents=True)
+    (packaged_python / "vendor.py").write_text("generated", encoding="utf-8")
+    (workspace / "preview.png").write_bytes(b"not-a-real-png")
+
+    payload = service.list_files(session_id="session-1")
+    paths = {item["workspacePath"] for item in payload["items"]}
+
+    assert paths == {"preview.png"}
+
+
+def test_catalog_does_not_follow_symlink_escape(scoped_service, tmp_path: Path):
+    service, workspace = scoped_service
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret", encoding="utf-8")
+    link = workspace / "linked.md"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    payload = service.list_files(session_id="session-1")
+
+    assert payload["items"] == []
+
+
+def test_binary_preview_resolve_reuses_session_authority(scoped_service):
+    service, workspace = scoped_service
+    media = workspace / "preview.png"
+    media.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    resolved = service.resolve(session_id="session-1", requested_path="preview.png")
+
+    assert resolved.binary is True
+    assert resolved.mime_type == "image/png"
+    assert resolved.metadata()["previewable"] is True
+    assert resolved.workspace_relative_path == "preview.png"
+    assert str(workspace) not in repr(resolved.metadata())

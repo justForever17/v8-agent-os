@@ -309,17 +309,19 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
 
 function McpAppWorkbenchButton({ mcpApp }: { mcpApp: McpAppViewRef }) {
     const t = useT();
+    const sessionId = useWorkbenchStore((state) => state.sessionId);
     const openDocument = useWorkbenchStore((state) => state.openDocument);
-    const document = useMemo(() => createUiAppDocument(mcpApp), [mcpApp]);
+    const document = useMemo(() => sessionId ? createUiAppDocument(sessionId, mcpApp) : null, [mcpApp, sessionId]);
     return (
         <button
             data-v8-context-open-workbench
             type="button"
-            onClick={() => openDocument(document, { activate: true, mode: "split" })}
+            onClick={() => document && openDocument(document, { activate: true, mode: "split" })}
+            disabled={!document}
             className="mt-1 flex h-9 w-full max-w-md items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5 text-left text-xs transition-colors hover:border-primary/35 hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-primary"
         >
             <LayoutPanelTop className="h-3.5 w-3.5 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 truncate font-medium">{document.title}</span>
+            <span className="min-w-0 flex-1 truncate font-medium">{document?.title || mcpApp.title || t("web.mcpApp.openWorkbench")}</span>
             <span className="text-[10px] text-muted-foreground">{t("web.mcpApp.openWorkbench")}</span>
             <Maximize2 className="h-3.5 w-3.5 text-muted-foreground" />
         </button>

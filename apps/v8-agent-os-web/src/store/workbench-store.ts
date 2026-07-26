@@ -5,13 +5,14 @@ import { create } from "zustand";
 import {
     createSessionOverviewDocument,
     clearWorkbenchDocumentPayload,
+    isWorkbenchDocumentOwnedBySession,
     normalizeWorkbenchDocument,
     type WorkbenchDocument,
     type WorkbenchMode,
     type WorkbenchTab,
 } from "@/lib/workbench";
 
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 const STORAGE_PREFIX = "v8-web-workbench";
 const MIN_STORED_WIDTH = 200;
 const MAX_STORED_WIDTH = 960;
@@ -71,11 +72,11 @@ function canUseStorage() {
     return typeof window !== "undefined" && Boolean(window.localStorage);
 }
 
-function normalizePersistedTab(value: unknown): WorkbenchTab | null {
+function normalizePersistedTab(value: unknown, sessionId: string): WorkbenchTab | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     const document = normalizeWorkbenchDocument(record.document);
-    if (!document || document.lifecycle === "runtime") return null;
+    if (!document || document.lifecycle === "runtime" || !isWorkbenchDocumentOwnedBySession(document, sessionId)) return null;
     const openedAt = Number(record.openedAt);
     const lastActivatedAt = Number(record.lastActivatedAt);
     return {
@@ -94,7 +95,7 @@ function readPersistedState(sessionId: string): PersistedWorkbenchState | null {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         if (Number(parsed.version) !== STORAGE_VERSION) return null;
         const tabs = Array.isArray(parsed.tabs)
-            ? parsed.tabs.map(normalizePersistedTab).filter((tab): tab is WorkbenchTab => Boolean(tab)).slice(-MAX_TABS)
+            ? parsed.tabs.map((tab) => normalizePersistedTab(tab, sessionId)).filter((tab): tab is WorkbenchTab => Boolean(tab)).slice(-MAX_TABS)
             : [];
         const requestedMode = String(parsed.mode || "closed") as WorkbenchMode;
         const mode: WorkbenchMode = ["closed", "split", "focus"].includes(requestedMode) ? requestedMode : "closed";
@@ -120,7 +121,9 @@ function persistState(state: Pick<WorkbenchStoreState, "sessionId" | "mode" | "w
         version: STORAGE_VERSION,
         mode: state.mode,
         width: clampStoredWidth(state.width),
-        tabs: state.tabs.filter((tab) => tab.document.lifecycle === "session").slice(-MAX_TABS),
+        tabs: state.tabs
+            .filter((tab) => tab.document.lifecycle === "session" && isWorkbenchDocumentOwnedBySession(tab.document, state.sessionId!))
+            .slice(-MAX_TABS),
         activeDocumentId: state.activeDocumentId,
     };
     try {
@@ -208,7 +211,11 @@ export const useWorkbenchStore = create<WorkbenchStoreState>((set, get) => {
 
         openDocument: (document, options = {}) => {
             const normalized = normalizeWorkbenchDocument(document);
-            if (!normalized) return;
+            const currentSessionId = get().sessionId;
+            if (!normalized || !currentSessionId || !isWorkbenchDocumentOwnedBySession(normalized, currentSessionId)) {
+                if (normalized) clearWorkbenchDocumentPayload(normalized.documentId);
+                return;
+            }
             const activate = options.activate !== false;
             const now = Date.now();
             commit((state) => {
@@ -337,7 +344,24 @@ export function ingestWorkbenchRuntimeEvent(value: unknown) {
     ];
     const source = candidates.find((candidate) => candidate.document || candidate.workbenchDocument || candidate.workbench_document);
     if (!source) return false;
-    const normalizedDocument = normalizeWorkbenchDocument(source.document || source.workbenchDocument || source.workbench_document);
+    const rawDocument = recordOf(source.document || source.workbenchDocument || source.workbench_document);
+    const rawSubjectRef = recordOf(rawDocument.subjectRef || rawDocument.subject_ref);
+    const eventSessionId = String(
+        source.sessionId
+        || source.session_id
+        || root.sessionId
+        || root.session_id
+        || raw.sessionId
+        || raw.session_id
+        || "",
+    ).trim();
+    const normalizedDocument = normalizeWorkbenchDocument({
+        ...rawDocument,
+        subjectRef: {
+            ...rawSubjectRef,
+            ...(rawSubjectRef.sessionId || rawSubjectRef.session_id || !eventSessionId ? {} : { sessionId: eventSessionId }),
+        },
+    });
     if (!normalizedDocument) return false;
     // Agent Browser owns a real external system-browser window. Workbench consumes
     // documents and governed app/canvas surfaces only; it must not turn the
@@ -348,16 +372,7 @@ export function ingestWorkbenchRuntimeEvent(value: unknown) {
     const focusRequested = Boolean(source.focusRequested ?? source.focus_requested);
     const userInitiated = Boolean(source.userInitiated ?? source.user_initiated);
     const store = useWorkbenchStore.getState();
-    const subjectRef = recordOf(document.subjectRef);
-    const appRef = recordOf(subjectRef.app);
-    const documentSessionId = String(
-        subjectRef.sessionId
-        || subjectRef.session_id
-        || appRef.sessionId
-        || appRef.session_id
-        || "",
-    ).trim();
-    if (store.sessionId && documentSessionId && documentSessionId !== store.sessionId) {
+    if (!store.sessionId || !isWorkbenchDocumentOwnedBySession(document, store.sessionId)) {
         return false;
     }
     const alreadyOpen = store.tabs.some((tab) => tab.document.documentId === document.documentId);

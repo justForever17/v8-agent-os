@@ -8,6 +8,57 @@ type ResolveWorkspaceFileOptions = {
     activate?: boolean;
 };
 
+export type WorkbenchFileCatalogItem = {
+    sessionId: string;
+    workspacePath: string;
+    name: string;
+    mimeType: string;
+    language?: string | null;
+    kind: string;
+    previewable: boolean;
+    size: number;
+    mtime: string;
+};
+
+export type WorkbenchFileCatalogPage = {
+    sessionId: string;
+    workspaceId?: string | null;
+    projectId?: string | null;
+    items: WorkbenchFileCatalogItem[];
+    nextCursor?: string | null;
+    hasMore: boolean;
+    truncated: boolean;
+};
+
+export async function listWorkspaceFiles(
+    sessionId: string,
+    options: { query?: string; cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
+): Promise<WorkbenchFileCatalogPage> {
+    const normalizedSessionId = String(sessionId || "").trim();
+    if (!normalizedSessionId) throw new Error("缺少会话。");
+    const params = new URLSearchParams({
+        q: String(options.query || "").trim(),
+        cursor: String(options.cursor || "0"),
+        limit: String(options.limit || 60),
+    });
+    const response = await fetch(
+        `/api/workbench/sessions/${encodeURIComponent(normalizedSessionId)}/files?${params.toString()}`,
+        { cache: "no-store", signal: options.signal },
+    );
+    const payload = await response.json().catch(() => ({})) as Partial<WorkbenchFileCatalogPage> & { detail?: unknown; error?: unknown };
+    if (!response.ok) throw new Error(String(payload.detail || payload.error || `HTTP ${response.status}`));
+    if (payload.sessionId !== normalizedSessionId) throw new Error("文件目录已不属于当前任务。");
+    return {
+        sessionId: normalizedSessionId,
+        workspaceId: payload.workspaceId,
+        projectId: payload.projectId,
+        items: Array.isArray(payload.items) ? payload.items : [],
+        nextCursor: payload.nextCursor,
+        hasMore: Boolean(payload.hasMore),
+        truncated: Boolean(payload.truncated),
+    };
+}
+
 function workspaceRenderer(payload: Record<string, unknown>): WorkspaceFileWorkbenchDocument["renderer"] {
     const language = String(payload.language || "").toLowerCase();
     const mimeType = String(payload.mimeType || "").toLowerCase();

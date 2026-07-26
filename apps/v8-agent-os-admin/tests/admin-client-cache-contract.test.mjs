@@ -13,7 +13,9 @@ function read(...segments) {
 test("admin JSON cache preserves stale data while a refresh is in flight", () => {
     const source = read("src", "lib", "admin-client-cache.ts");
 
-    assert.match(source, /if \(existing\?\.promise\) \{\s*return existing\.promise/);
+    assert.match(source, /if \(!options\.force && existing\?\.promise\) \{\s*return existing\.promise/);
+    assert.match(source, /const requestId = \+\+nextRequestId/);
+    assert.match(source, /current\?\.requestId === requestId/);
     assert.match(source, /data: existing\?\.data/);
     assert.match(source, /data: current\.data/);
     assert.match(source, /publish\(key/);

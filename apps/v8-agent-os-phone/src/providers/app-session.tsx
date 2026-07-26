@@ -22,6 +22,7 @@ import {
 import { ENGINE_NOW_HEADER, getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
 import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import { cacheProfileAvatar } from "@/src/lib/profile-avatar-cache";
+import { cacheProfileBackground } from "@/src/lib/profile-background-cache";
 import { pairDevice as consumeDevicePairing, parseDevicePairingUri } from "@/src/lib/phone-api";
 import type { ConnectionSummary, DeviceConnectionEndpoint, DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
@@ -44,6 +45,8 @@ type SessionContextValue = {
     status: SessionStatus;
     user: PhoneUser | null;
     userAvatarUri: string;
+    userBackgroundUri: string;
+    userBackgroundMediaType: "image" | "video";
     adminBaseUrl: string;
     accessToken: string;
     activeConversationId: string | null;
@@ -82,7 +85,12 @@ function phoneUsersMatch(left?: PhoneUser | null, right?: PhoneUser | null) {
         && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
         && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
         && normalizeProfileValue(left?.image) === normalizeProfileValue(right?.image)
-        && normalizeProfileValue(left?.role) === normalizeProfileValue(right?.role);
+        && normalizeProfileValue(left?.role) === normalizeProfileValue(right?.role)
+        && normalizeProfileValue(left?.appearance?.lightBackgroundMedia || left?.appearance?.lightBackgroundImage)
+            === normalizeProfileValue(right?.appearance?.lightBackgroundMedia || right?.appearance?.lightBackgroundImage)
+        && normalizeProfileValue(left?.appearance?.lightBackgroundMediaType)
+            === normalizeProfileValue(right?.appearance?.lightBackgroundMediaType)
+        && Boolean(left?.appearance?.lightBackgroundEnabled) === Boolean(right?.appearance?.lightBackgroundEnabled);
 }
 
 function getBrowserAdminFallbackBaseUrls(currentBaseUrl: string) {
@@ -226,6 +234,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [refreshToken, setRefreshToken] = React.useState("");
     const [user, setUser] = React.useState<PhoneUser | null>(null);
     const [userAvatarUri, setUserAvatarUri] = React.useState("");
+    const [userBackgroundUri, setUserBackgroundUri] = React.useState("");
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
     const [sessionActivityVersion, setSessionActivityVersion] = React.useState(0);
     const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
@@ -268,6 +277,29 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         });
         return () => { cancelled = true; };
     }, [adminBaseUrl, user?.image]);
+
+    const userBackgroundMediaType = user?.appearance?.lightBackgroundMediaType === "video"
+        || String(user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "").toLowerCase().endsWith(".mp4")
+        ? "video"
+        : "image";
+    React.useEffect(() => {
+        const media = user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "";
+        const source = user?.appearance?.lightBackgroundEnabled ? resolveAdminAssetUrl(adminBaseUrl, media) : "";
+        let cancelled = false;
+        if (!source) {
+            setUserBackgroundUri("");
+            return () => { cancelled = true; };
+        }
+        if (Platform.OS === "web") {
+            setUserBackgroundUri(source);
+            return () => { cancelled = true; };
+        }
+        setUserBackgroundUri("");
+        void cacheProfileBackground(source, userBackgroundMediaType).then((cachedUri) => {
+            if (!cancelled) setUserBackgroundUri(cachedUri);
+        });
+        return () => { cancelled = true; };
+    }, [adminBaseUrl, user?.appearance?.lightBackgroundEnabled, user?.appearance?.lightBackgroundImage, user?.appearance?.lightBackgroundMedia, userBackgroundMediaType]);
 
     const awaitMinimumBootScreen = React.useCallback(async () => {
         if (statusRef.current !== "booting") {
@@ -499,6 +531,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setRefreshToken("");
         setUser(null);
         setUserAvatarUri("");
+        setUserBackgroundUri("");
         setActiveConversationIdState(null);
         setEngineClockOffsetMs(0);
         adminBaseUrlRef.current = "";
@@ -847,6 +880,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         status,
         user,
         userAvatarUri,
+        userBackgroundUri,
+        userBackgroundMediaType,
         adminBaseUrl,
         accessToken,
         activeConversationId,
@@ -861,7 +896,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         authorizedRealtimeStream,
         engineClockOffsetMs,
         getEngineNowMs,
-    }), [status, user, userAvatarUri, adminBaseUrl, accessToken, activeConversationId, sessionActivityVersion, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
+    }), [status, user, userAvatarUri, userBackgroundUri, userBackgroundMediaType, adminBaseUrl, accessToken, activeConversationId, sessionActivityVersion, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

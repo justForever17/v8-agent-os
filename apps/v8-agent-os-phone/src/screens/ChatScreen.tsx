@@ -51,6 +51,7 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { ProfileMenuOverlay } from "@/src/components/chat/ProfileMenuOverlay";
+import { PhoneBackgroundMedia } from "@/src/components/personalization/PhoneBackgroundMedia";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
 import {
@@ -2038,6 +2039,8 @@ export default function ChatScreen() {
         status,
         user,
         userAvatarUri,
+        userBackgroundUri,
+        userBackgroundMediaType,
         adminBaseUrl,
         accessToken,
         activeConversationId,
@@ -7161,8 +7164,14 @@ export default function ChatScreen() {
     );
 
     return (
+        <View style={styles.gradient}>
+        <PhoneBackgroundMedia uri={userBackgroundUri} mediaType={userBackgroundMediaType} />
         <LinearGradient
-            colors={themeMode === "dark" ? [palette.backgroundDeep, palette.background] : [palette.background, palette.backgroundDeep]}
+            colors={userBackgroundUri
+                ? (themeMode === "dark"
+                    ? ["rgba(9, 9, 11, 0.42)", "rgba(9, 9, 11, 0.56)"]
+                    : ["rgba(248, 250, 252, 0.26)", "rgba(248, 250, 252, 0.44)"])
+                : (themeMode === "dark" ? [palette.backgroundDeep, palette.background] : [palette.background, palette.backgroundDeep])}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.gradient}
@@ -7690,6 +7699,7 @@ export default function ChatScreen() {
 
             <ProfileMenuOverlay visible={profileMenuVisible} onClose={() => setProfileMenuVisible(false)} />
         </LinearGradient>
+        </View>
     );
 }
 

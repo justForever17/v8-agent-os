@@ -24,7 +24,16 @@ export type PhoneUser = {
     login: string;
     name?: string | null;
     image?: string;
+    appearance?: PhoneAppearancePreferences;
     role: string;
+};
+
+export type PhoneAppearancePreferences = {
+    lightBackgroundMedia?: string;
+    lightBackgroundMediaType?: "image" | "video";
+    /** @deprecated Compatibility with image-only clients. */
+    lightBackgroundImage?: string;
+    lightBackgroundEnabled?: boolean;
 };
 
 export type AuthSessionPayload = {
@@ -793,6 +802,7 @@ export type ProfileUpdatePayload = {
     name?: string;
     image?: string;
     email?: string;
+    appearance?: PhoneAppearancePreferences;
 };
 
 export type ChatStreamEvent = {

@@ -38,6 +38,8 @@ test("MP4 backgrounds are validated, stored atomically, and served with byte ran
 
   assert.match(upload, /VIDEO_TYPES = new Set\(\["video\/mp4"\]\)/);
   assert.match(upload, /MAX_VIDEO_SIZE_BYTES = 500 \* 1024 \* 1024/);
+  assert.match(upload, /MAX_PHONE_BACKGROUND_SIZE_BYTES = \(50 \* 1024 \* 1024\) - 1/);
+  assert.match(upload, /req\.headers\.get\("x-v8-client-surface"\) === "phone"/);
   assert.match(upload, /const reader = req\.body\.getReader\(\)/);
   assert.match(upload, /await reader\.read\(\)/);
   assert.match(upload, /subarray\(4, 8\)\.toString\("ascii"\) === "ftyp"/);

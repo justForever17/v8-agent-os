@@ -291,13 +291,14 @@ export async function getConnectionSummary(authorizedFetch: AuthorizedFetch) {
     });
 }
 
-export async function getCurrentProfile(authorizedFetch: AuthorizedFetch) {
-    const payload = await authorizedJson<{ user?: PhoneUser }>(
+export async function getCurrentProfile(authorizedFetch: AuthorizedFetch): Promise<PhoneUser | null> {
+    const payload = await authorizedJson<PhoneUser | { user?: PhoneUser }>(
         authorizedFetch,
         "/api/client/auth/profile",
         translateCurrent("src.lib.phone_api.text_3"),
         { cache: "no-store" },
     );
+    if ("id" in payload) return payload;
     return payload.user || null;
 }
 
@@ -574,6 +575,29 @@ export async function createConversation(
         body: JSON.stringify(requestBody),
     });
     return normalizeSessionHistoryItem(payload);
+}
+
+export async function uploadUserBackground(
+    authorizedFetch: AuthorizedFetch,
+    file: { uri: string; name?: string; type?: string },
+) {
+    const form = new FormData();
+    form.append("file", {
+        uri: file.uri,
+        name: file.name || `background-${Date.now()}`,
+        type: file.type || "image/jpeg",
+    } as unknown as Blob);
+    const response = await authorizedFetch("/api/client/user-background-upload", {
+        method: "POST",
+        headers: { "x-v8-client-surface": "phone" },
+        body: form,
+    });
+    return readJsonOrThrow<{
+        url?: string;
+        path?: string;
+        mediaType?: "image" | "video";
+        user?: PhoneUser;
+    }>(response, translateCurrent("src.lib.phone_api.text_6"));
 }
 
 export async function updateConversationPresentation(

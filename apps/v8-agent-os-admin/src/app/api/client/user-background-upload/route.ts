@@ -20,12 +20,15 @@ const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const VIDEO_TYPES = new Set(["video/mp4"]);
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_VIDEO_SIZE_BYTES = 500 * 1024 * 1024;
+// Phone keeps a local copy for responsive rendering. Keep its payload strictly below 50 MiB.
+const MAX_PHONE_BACKGROUND_SIZE_BYTES = (50 * 1024 * 1024) - 1;
 
 function hasMp4Signature(buffer: Buffer) {
     return buffer.length >= 12 && buffer.subarray(4, 8).toString("ascii") === "ftyp";
 }
 
-function uploadTooLargeMessage(isVideo: boolean) {
+function uploadTooLargeMessage(isVideo: boolean, isPhoneUpload = false) {
+    if (isPhoneUpload) return "Phone 背景文件需小于 50MB";
     return isVideo
         ? "背景视频过大，请选择 500MB 以内的 MP4"
         : "背景图过大，请选择 20MB 以内的图片";
@@ -81,10 +84,16 @@ export async function POST(req: NextRequest) {
         if (!IMAGE_TYPES.has(mediaType) && !isVideo) {
             return NextResponse.json({ error: "自定义背景仅支持 JPG、PNG、WEBP 和 MP4" }, { status: 400 });
         }
-        const maxSize = isVideo ? MAX_VIDEO_SIZE_BYTES : MAX_IMAGE_SIZE_BYTES;
+        const isPhoneUpload = req.headers.get("x-v8-client-surface") === "phone";
+        const maxSize = isPhoneUpload
+            ? MAX_PHONE_BACKGROUND_SIZE_BYTES
+            : (isVideo ? MAX_VIDEO_SIZE_BYTES : MAX_IMAGE_SIZE_BYTES);
         const declaredSize = Number(req.headers.get("content-length") || 0);
-        if ((declaredSize > 0 && declaredSize > maxSize) || (!rawUpload && (file as File).size > maxSize)) {
-            return NextResponse.json({ error: uploadTooLargeMessage(isVideo) }, { status: 413 });
+        if (
+            (rawUpload && declaredSize > 0 && declaredSize > maxSize) ||
+            (!rawUpload && (file as File).size > maxSize)
+        ) {
+            return NextResponse.json({ error: uploadTooLargeMessage(isVideo, isPhoneUpload) }, { status: 413 });
         }
 
         const directory = ensureUserMediaDirectory("background");
@@ -120,7 +129,7 @@ export async function POST(req: NextRequest) {
             }
         } catch (error) {
             if (error instanceof Error && error.message === "UPLOAD_TOO_LARGE") {
-                return NextResponse.json({ error: uploadTooLargeMessage(isVideo) }, { status: 413 });
+                return NextResponse.json({ error: uploadTooLargeMessage(isVideo, isPhoneUpload) }, { status: 413 });
             }
             throw error;
         } finally {

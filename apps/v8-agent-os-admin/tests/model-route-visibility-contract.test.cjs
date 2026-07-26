@@ -89,10 +89,12 @@ test("Quick connect exposes an explicit entry selector only for multi-channel pr
   const en = JSON.parse(readText("src/i18n/locales/en.json"));
 
   assert.match(form, /selectedCatalogChannels\.length > 1/);
-  assert.match(form, /if \(isLoading\) return;\s*if \(apiCatalogProviders\.some/);
-  assert.match(form, /\[apiCatalogProviders, isLoading, selectedCatalogProviderId\]/);
+  assert.match(form, /if \(isLoading \|\| isCatalogBusy \|\| pendingCatalogProviderIdRef\.current\) return;/);
+  assert.match(form, /\[apiCatalogProviders, isCatalogBusy, isLoading, selectedCatalogProviderId\]/);
   assert.match(form, /selectedCatalogProviderId, setSelectedCatalogProviderId\] = useState\(""\)/);
   assert.match(form, /data-testid="quick-connect-provider-trigger"/);
+  assert.match(form, /setCatalogProviders\(\(current\) => \[/);
+  assert.match(form, /setCatalogApiKey\(""\)/);
   assert.match(form, /data-testid="quick-connect-entry-trigger"/);
   assert.match(form, /Select value=\{selectedCatalogRuntime\.channelId\}/);
   assert.match(form, /setCatalogRuntimeProtocol\(value\)/);

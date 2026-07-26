@@ -745,6 +745,7 @@ export default function ModelHubPage() {
     } | null>(null);
     const [manualModelEntryEnabled, setManualModelEntryEnabled] = useState(false);
     const [isCatalogBusy, setIsCatalogBusy] = useState(false);
+    const pendingCatalogProviderIdRef = useRef("");
     const [audioConfig, setAudioConfig] = useState<AudioRuntimeConfig>(() => mergeAudioConfig(cachedBootstrap?.audioConfig || null));
     const [isAudioSaving, setIsAudioSaving] = useState(false);
     const [customTtsRemoteVoices, setCustomTtsRemoteVoices] = useState<AudioVoiceOption[]>([]);
@@ -937,9 +938,12 @@ export default function ModelHubPage() {
     const customTtsVoicePresets = useMemo(() => voicePresetsForCustomTtsProtocol(customTtsProtocol, t), [customTtsProtocol, t]);
     const customTtsVoiceOptions = customTtsRemoteVoices.length > 0 ? customTtsRemoteVoices : customTtsVoicePresets;
     useEffect(() => {
-        if (isLoading) return;
+        if (isLoading || isCatalogBusy || pendingCatalogProviderIdRef.current) return;
         if (apiCatalogProviders.some((item) => item.id === selectedCatalogProviderId) || selectedCatalogProviderId === "__custom__") return;
         setSelectedCatalogProviderId(apiCatalogProviders[0]?.id || "__custom__");
+        setCatalogApiKey("");
+        setCatalogVoiceAppId("");
+        setCatalogVoiceResourceId("");
         setCatalogProbeModels([]);
         setSelectedCatalogModelId("");
         setCatalogModelFilter("");
@@ -947,7 +951,7 @@ export default function ModelHubPage() {
         setCatalogProbeStatus(null);
         setManualModelEntryEnabled(false);
         setCatalogRuntimeProtocol("default");
-    }, [apiCatalogProviders, isLoading, selectedCatalogProviderId]);
+    }, [apiCatalogProviders, isCatalogBusy, isLoading, selectedCatalogProviderId]);
     useEffect(() => {
         setModelRefTtsVoices([]);
         setModelRefTtsVoiceInfo(null);
@@ -1474,11 +1478,23 @@ export default function ModelHubPage() {
                 usedStoredCredential: Boolean(data.usedStoredCredential),
             });
             if (isCustomProvider) {
+                const persistedProvider = data.provider && typeof data.provider === "object"
+                    ? data.provider as CatalogProvider
+                    : null;
+                pendingCatalogProviderIdRef.current = providerId;
+                if (persistedProvider?.id) {
+                    setCatalogProviders((current) => [
+                        persistedProvider,
+                        ...current.filter((item) => item.id !== persistedProvider.id),
+                    ]);
+                }
                 setSelectedCatalogProviderId(providerId);
                 await fetchData(true);
+                pendingCatalogProviderIdRef.current = "";
             }
         }
         finally {
+            pendingCatalogProviderIdRef.current = "";
             setIsCatalogBusy(false);
         }
     };
@@ -2689,6 +2705,10 @@ export default function ModelHubPage() {
                                     className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white dark:border-border/60 dark:bg-muted dark:text-slate-950" : "bg-background hover:bg-muted"}`}
                                     onClick={() => {
                                         setCatalogPurpose(purpose.id);
+                                        pendingCatalogProviderIdRef.current = "";
+                                        setCatalogApiKey("");
+                                        setCatalogVoiceAppId("");
+                                        setCatalogVoiceResourceId("");
                                         setCatalogProbeModels([]);
                                         setSelectedCatalogModelId("");
                                         setCatalogModelFilter("");
@@ -2706,7 +2726,11 @@ export default function ModelHubPage() {
                         <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.2fr_auto]">
                             <HydrationSafeClientOnly fallback={<div className="h-10 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">{selectedCatalogProvider?.name || t("app.admin.dashboard.model.hub.catalog.selectProvider")}</div>}>
                                 <Select value={selectedCatalogProviderId} disabled={isLoading} onValueChange={(value) => {
+                                    pendingCatalogProviderIdRef.current = "";
                                     setSelectedCatalogProviderId(value);
+                                    setCatalogApiKey("");
+                                    setCatalogVoiceAppId("");
+                                    setCatalogVoiceResourceId("");
                                     setCatalogProbeModels([]);
                                     setSelectedCatalogModelId("");
                                     setCatalogModelFilter("");

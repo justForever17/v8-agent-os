@@ -17,7 +17,7 @@ import * as ImagePicker from "expo-image-picker";
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { AvatarCropModal, type AvatarCropSource } from "@/src/components/ui/AvatarCropModal";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getCurrentProfile, updateProfile, uploadUserAvatar } from "@/src/lib/phone-api";
+import { getCurrentProfile, updateProfile, uploadUserAvatar, uploadUserBackground } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
@@ -39,6 +39,7 @@ export function ProfileMenuOverlay({
     const [avatarCropSource, setAvatarCropSource] = useState<AvatarCropSource | null>(null);
     const [profileMessage, setProfileMessage] = useState("");
     const [loadingProfile, setLoadingProfile] = useState(false);
+    const [backgroundBusy, setBackgroundBusy] = useState(false);
 
     useEffect(() => {
         setName(user?.name || "");
@@ -78,6 +79,11 @@ export function ProfileMenuOverlay({
     const avatarUri = image
         ? (image === user?.image && userAvatarUri ? userAvatarUri : resolveAdminAssetUrl(adminBaseUrl, image))
         : "";
+    const backgroundMedia = user?.appearance?.lightBackgroundMedia || user?.appearance?.lightBackgroundImage || "";
+    const backgroundUri = backgroundMedia ? resolveAdminAssetUrl(adminBaseUrl, backgroundMedia) : "";
+    const backgroundEnabled = Boolean(user?.appearance?.lightBackgroundEnabled && backgroundMedia);
+    const backgroundMediaType = user?.appearance?.lightBackgroundMediaType === "video"
+        || backgroundMedia.toLowerCase().endsWith(".mp4") ? "video" : "image";
 
     const saveProfile = async () => {
         setProfileBusy(true);
@@ -157,6 +163,59 @@ export function ProfileMenuOverlay({
             Alert.alert(t("src.screens.settingsscreen.avatar_update_failed"), error instanceof Error ? error.message : t("src.screens.settingsscreen.unable_to_update_the_avatar"));
         } finally {
             setAvatarBusy(false);
+        }
+    };
+
+    const pickBackground = async () => {
+        setBackgroundBusy(true);
+        setProfileMessage("");
+        try {
+            const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (!permission.granted) throw new Error(t("src.components.chat.profilemenuoverlay.background_permission_required"));
+            const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ["images", "videos"],
+                quality: 1,
+                allowsEditing: false,
+            });
+            if (result.canceled || !result.assets[0]) return;
+            const asset = result.assets[0];
+            const size = Number(asset.fileSize || 0);
+            if (size >= 50 * 1024 * 1024) throw new Error(t("src.components.chat.profilemenuoverlay.background_too_large"));
+            const mediaType = asset.type === "video" || asset.mimeType === "video/mp4" ? "video" : "image";
+            if (mediaType === "video" && asset.mimeType && asset.mimeType !== "video/mp4") {
+                throw new Error(t("src.components.chat.profilemenuoverlay.background_format_hint"));
+            }
+            const uploaded = await uploadUserBackground(authorizedFetch, {
+                uri: asset.uri,
+                name: asset.fileName || `phone-background-${Date.now()}.${mediaType === "video" ? "mp4" : "jpg"}`,
+                type: asset.mimeType || (mediaType === "video" ? "video/mp4" : "image/jpeg"),
+            });
+            if (!uploaded.user) await refreshUser();
+            else await updateCurrentUser(uploaded.user);
+            setProfileMessage(t("src.components.chat.profilemenuoverlay.background_updated"));
+        } catch (error) {
+            Alert.alert(t("src.components.chat.profilemenuoverlay.background_update_failed"), error instanceof Error ? error.message : t("src.components.chat.profilemenuoverlay.background_update_failed"));
+        } finally {
+            setBackgroundBusy(false);
+        }
+    };
+
+    const toggleBackground = async () => {
+        if (!backgroundMedia) return;
+        setBackgroundBusy(true);
+        try {
+            const updated = await updateProfile(authorizedFetch, {
+                appearance: {
+                    ...(user?.appearance || {}),
+                    lightBackgroundEnabled: !backgroundEnabled,
+                },
+            });
+            if (updated) await updateCurrentUser(updated);
+            else await refreshUser();
+        } catch (error) {
+            Alert.alert(t("src.components.chat.profilemenuoverlay.background_update_failed"), error instanceof Error ? error.message : t("src.components.chat.profilemenuoverlay.background_update_failed"));
+        } finally {
+            setBackgroundBusy(false);
         }
     };
 
@@ -261,6 +320,31 @@ export function ProfileMenuOverlay({
                             </Pressable>
                         </View>
 
+                        <View style={styles.section}>
+                            <View style={styles.sectionTitleRow}>
+                                <Text style={styles.sectionTitle}>{t("src.components.chat.profilemenuoverlay.personalized_background")}</Text>
+                                <Text style={styles.backgroundLimit}>{t("src.components.chat.profilemenuoverlay.background_limit")}</Text>
+                            </View>
+                            <View style={styles.backgroundPreview}>
+                                {backgroundUri && backgroundMediaType === "image" ? (
+                                    <Image source={{ uri: backgroundUri }} resizeMode="cover" style={StyleSheet.absoluteFillObject} />
+                                ) : (
+                                    <MaterialCommunityIcons name={backgroundMediaType === "video" && backgroundUri ? "movie-play" : "image-outline"} size={30} color={colors.textSoft} />
+                                )}
+                                {backgroundUri ? <Text style={styles.backgroundKind}>{backgroundMediaType === "video" ? "MP4" : "IMAGE"}</Text> : null}
+                            </View>
+                            <View style={styles.backgroundActions}>
+                                <Pressable style={[styles.secondaryButton, backgroundBusy && styles.disabled]} disabled={backgroundBusy} onPress={() => void pickBackground()}>
+                                    {backgroundBusy ? <ActivityIndicator color={colors.primary} size="small" /> : <MaterialCommunityIcons name="image-plus" size={16} color={colors.primaryDeep} />}
+                                    <Text style={styles.secondaryButtonText}>{t("src.components.chat.profilemenuoverlay.choose_background")}</Text>
+                                </Pressable>
+                                <Pressable style={[styles.secondaryButton, (!backgroundMedia || backgroundBusy) && styles.disabled]} disabled={!backgroundMedia || backgroundBusy} onPress={() => void toggleBackground()}>
+                                    <MaterialCommunityIcons name={backgroundEnabled ? "eye-off-outline" : "eye-outline"} size={16} color={colors.primaryDeep} />
+                                    <Text style={styles.secondaryButtonText}>{t(backgroundEnabled ? "src.components.chat.profilemenuoverlay.disable_background" : "src.components.chat.profilemenuoverlay.enable_background")}</Text>
+                                </Pressable>
+                            </View>
+                        </View>
+
                         {/* Sign-out button */}
                         <Pressable style={styles.logoutButton} onPress={() => void handleSignOut()}>
                             <MaterialCommunityIcons name="power" size={16} color={colors.danger} />
@@ -325,6 +409,50 @@ const styles = StyleSheet.create({
     scrollContent: {
         paddingBottom: 24,
         gap: 16,
+    },
+    backgroundLimit: {
+        color: colors.textSoft,
+        fontSize: 11,
+    },
+    backgroundPreview: {
+        height: 112,
+        overflow: "hidden",
+        borderRadius: radii.lg,
+        backgroundColor: "rgba(148, 163, 184, 0.10)",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    backgroundKind: {
+        position: "absolute",
+        right: 8,
+        bottom: 8,
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        backgroundColor: "rgba(15, 23, 42, 0.68)",
+        color: "#FFFFFF",
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    backgroundActions: {
+        flexDirection: "row",
+        gap: spacing.sm,
+    },
+    secondaryButton: {
+        minHeight: 40,
+        flex: 1,
+        borderWidth: 1,
+        borderColor: "rgba(109, 40, 217, 0.24)",
+        borderRadius: radii.md,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+    },
+    secondaryButtonText: {
+        color: colors.primaryDeep,
+        fontSize: 12,
+        fontWeight: "700",
     },
     userRow: {
         flexDirection: "row",

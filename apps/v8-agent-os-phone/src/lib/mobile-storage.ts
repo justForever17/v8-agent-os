@@ -13,6 +13,7 @@ const KEYS = {
     themeMode: "v8.phone.themeMode",
     voiceEnabled: "v8.phone.voiceEnabled",
     userAvatarCache: "v8.phone.userAvatarCache",
+    userBackgroundCache: "v8.phone.userBackgroundCache",
     safetyApprovalMode: "v8.phone.safetyApprovalMode",
 } as const;
 
@@ -71,5 +72,6 @@ export async function clearSessionStorage() {
         removeStoredValue("user"),
         removeStoredValue("activeConversationId"),
         removeStoredValue("userAvatarCache"),
+        removeStoredValue("userBackgroundCache"),
     ]);
 }

@@ -13,6 +13,7 @@ export type AdminJsonSnapshot<T = unknown> = {
 
 type AdminCacheEntry = AdminJsonSnapshot & {
   promise?: Promise<unknown>;
+  requestId?: number;
 };
 
 type RoutePrefetchTarget = string | [string, number];
@@ -26,6 +27,7 @@ const EMPTY_SNAPSHOT: AdminJsonSnapshot = Object.freeze({
 });
 const cache = new Map<string, AdminCacheEntry>();
 const listeners = new Map<string, Set<() => void>>();
+let nextRequestId = 0;
 
 const ROUTE_DATA_PREFETCH: Record<string, RoutePrefetchTarget[]> = {
   "/admin": [["/api/stats?days=7", 10_000]],
@@ -186,10 +188,11 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   if (!options.force && existing?.data !== undefined && existing.expiresAt > now) {
     return existing.data as T;
   }
-  if (existing?.promise) {
+  if (!options.force && existing?.promise) {
     return existing.promise as Promise<T>;
   }
 
+  const requestId = ++nextRequestId;
   let request: Promise<T>;
   request = fetch(key, { cache: "no-store" })
     .then(async (response) => {
@@ -198,18 +201,21 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
         const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
         throw new Error(String(record.detail || record.error || `HTTP ${response.status}`));
       }
-      publish(key, {
-        data: payload,
-        expiresAt: Date.now() + ttlMs,
-        updatedAt: Date.now(),
-        isFetching: false,
-        error: null,
-      });
+      const current = cache.get(key);
+      if (current?.requestId === requestId) {
+        publish(key, {
+          data: payload,
+          expiresAt: Date.now() + ttlMs,
+          updatedAt: Date.now(),
+          isFetching: false,
+          error: null,
+        });
+      }
       return payload as T;
     })
     .catch((error) => {
       const current = cache.get(key);
-      if (current?.promise === request) {
+      if (current?.requestId === requestId) {
         publish(key, {
           data: current.data,
           expiresAt: current.expiresAt,
@@ -228,6 +234,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
     isFetching: true,
     error: null,
     promise: request,
+    requestId,
   });
   return request;
 }

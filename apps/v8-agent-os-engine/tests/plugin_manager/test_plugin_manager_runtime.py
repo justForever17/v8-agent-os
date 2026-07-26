@@ -304,6 +304,46 @@ def test_machine_discovery_adopts_existing_cli_and_official_skill_without_claimi
     assert "x-v8-plugin-owner" not in test_storage.mcp_config["mcpServers"]["github"]
 
 
+def test_machine_discovery_uses_cached_startup_snapshot_until_explicit_refresh(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    detected = False
+
+    def discover(profile):
+        if detected and profile.id == "gh":
+            return {"gh": "C:/Program Files/GitHub CLI/gh.exe"}
+        return {}
+
+    monkeypatch.setattr(service, "_discover_cli_commands", discover)
+
+    initial = service.discover_machine_components("github", force=True)
+    assert initial["cli"][0]["state"] == "missing"
+
+    detected = True
+    cached = service.discover_machine_components("github")
+    assert cached["cli"][0]["state"] == "missing"
+
+    refreshed = service.discover_machine_components("github", force=True)
+    assert refreshed["cli"][0]["state"] == "detected"
+    assert refreshed["summary"]["presentUnits"] == 1
+    assert refreshed["summary"]["totalUnits"] == 2
+    assert refreshed["summary"]["missingUnits"] == 1
+    assert refreshed["summary"]["coverage"] == "partial"
+
+
+def test_machine_discovery_trusts_registered_skill_receipt_when_public_lock_is_missing(runtime) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "office-suite")
+
+    discovery = service.discover_machine_components("office-suite", force=True)
+
+    assert discovery["skills"][0]["state"] == "registered"
+    assert discovery["summary"]["coverage"] == "complete"
+    assert discovery["summary"]["presentUnits"] == discovery["summary"]["totalUnits"]
+
+
 def test_machine_discovery_surfaces_skill_name_conflict_instead_of_overwriting(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
     monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
@@ -1130,6 +1170,38 @@ def test_managed_download_verifies_hash_before_commit(runtime, monkeypatch: pyte
     assert not target.exists()
 
 
+def test_execute_spec_resolves_batch_launcher_without_shell(
+    runtime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("cloudflare")
+    launcher = tmp_path / "npm.cmd"
+    launcher.write_text("@echo off\r\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(service, "_refresh_process_cli_path", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        service_module.shutil,
+        "which",
+        lambda command, path=None: str(launcher) if command == "npm" else None,
+    )
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["kwargs"] = kwargs
+        return type("Completed", (), {"returncode": 0, "stdout": "11.10.0", "stderr": ""})()
+
+    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+
+    result = service._execute_spec(manifest, CommandSpec(argv=["npm", "--version"]))
+
+    assert result["returnCode"] == 0
+    assert captured["argv"] == [str(launcher.resolve()), "--version"]
+    assert captured["kwargs"]["shell"] is False
+
+
 def test_managed_archive_download_extracts_only_the_declared_entry(
     runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -1381,6 +1453,13 @@ def test_install_journal_uses_declared_state_order(runtime, monkeypatch: pytest.
     expected = ["awaiting_approval", "staging", "verifying", "installing", "validating", "committing", "ready"]
     positions = [states.index(state) for state in expected]
     assert positions == sorted(positions)
+    component_steps = [step for step in result["steps"] if step["type"] == "component"]
+    assert component_steps
+    assert {step["state"] for step in component_steps} == {"running", "completed"}
+    assert result["progress"]["totalComponents"] > 0
+    assert result["progress"]["completedComponents"] == result["progress"]["totalComponents"]
+    assert result["progress"]["currentComponent"] is None
+    assert result["progress"]["lastCompletedComponent"]["componentId"]
 
 
 def test_restart_does_not_reconcile_a_job_that_has_not_started(runtime) -> None:

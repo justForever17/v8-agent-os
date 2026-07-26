@@ -7,15 +7,16 @@ import {
     Check,
     ChevronRight,
     CircleAlert,
+    Cloud,
     Download,
     ExternalLink,
+    HardDrive,
     KeyRound,
     Loader2,
     RefreshCw,
     Search,
     Settings2,
     ShieldCheck,
-    SquareTerminal,
     Trash2,
 } from "lucide-react";
 
@@ -63,7 +64,16 @@ type MachineDiscovery = {
     cli: MachineComponent[];
     skills: MachineComponent[];
     ordinaryMcp: Array<{ componentId: string; serverName: string; enabled: boolean; managedBy: "extensions_runtime" }>;
-    summary: { detected: number; needsCompletion: number; conflicts: number; ordinaryMcp: number };
+    summary: {
+        detected: number;
+        needsCompletion: number;
+        conflicts: number;
+        ordinaryMcp: number;
+        presentUnits?: number;
+        totalUnits?: number;
+        missingUnits?: number;
+        coverage?: "none" | "partial" | "complete" | "blocked";
+    };
 };
 
 type RequirementKind = "secret" | "text" | "url" | "enum" | "boolean" | "oauth" | "cli_login" | "file";
@@ -104,6 +114,21 @@ type Job = {
     };
     error?: string;
     createdAt?: string;
+    steps?: Array<{
+        ordinal: number;
+        type: string;
+        state: string;
+        details?: { componentType?: string; componentId?: string; action?: string };
+        createdAt?: string;
+        finishedAt?: string;
+    }>;
+    progress?: {
+        phase: string;
+        completedComponents: number;
+        totalComponents: number;
+        currentComponent?: { componentType?: string; componentId?: string; action?: string };
+        lastCompletedComponent?: { componentType?: string; componentId?: string; action?: string };
+    };
 };
 type Grant = { grantId: string; pluginId: string; scope: "task" | "session"; sessionId: string; runId?: string; componentIds: string[]; granteeType: string; granteeId: string };
 type PluginEvent = { id: string; plugin_id?: string; event_type: string; status: string; created_at: string };
@@ -166,6 +191,7 @@ export function PluginManagerWorkbench() {
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [previewJob, setPreviewJob] = useState<Job | null>(null);
+    const [installJob, setInstallJob] = useState<Job | null>(null);
     const [machineDiscovery, setMachineDiscovery] = useState<MachineDiscovery | null>(null);
 
     const load = useCallback(async (refreshCatalog = false, force = false) => {
@@ -187,6 +213,11 @@ export function PluginManagerWorkbench() {
             setGrants(grantsData.items || []);
             setJobs(jobsData.items || []);
             setEvents(eventsData.items || []);
+            setInstallJob((current) => {
+                const active = (jobsData.items || []).find((job) => !job.dryRun && !TERMINAL_JOBS.has(job.state));
+                if (active) return active;
+                return current;
+            });
             const initialPlugin = (catalogData.plugins || []).find((item) => item.id === requestedPluginId)
                 || FEATURED_PLUGIN_ORDER.map((id) => (catalogData.plugins || []).find((item) => item.id === id)).find(Boolean)
                 || catalogData.plugins?.[0];
@@ -225,10 +256,42 @@ export function PluginManagerWorkbench() {
         void loadRequirements(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
     }, [loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled]);
     useEffect(() => {
-        if (!jobs.some((job) => !TERMINAL_JOBS.has(job.state))) return;
-        const timer = window.setInterval(() => void load(false, true), 1500);
-        return () => window.clearInterval(timer);
-    }, [jobs, load]);
+        if (!installJob || TERMINAL_JOBS.has(installJob.state)) return;
+        let cancelled = false;
+        let polling = false;
+        const poll = async () => {
+            if (polling) return;
+            polling = true;
+            try {
+                const nextJob = await jsonRequest<Job>(`${PLUGIN_JOBS_URL}/${installJob.jobId}`);
+                if (cancelled) return;
+                setInstallJob(nextJob);
+                setJobs((current) => [nextJob, ...current.filter((item) => item.jobId !== nextJob.jobId)]);
+                if (TERMINAL_JOBS.has(nextJob.state)) {
+                    if (nextJob.state === "ready") {
+                        setNotice(t("components.plugins.PluginManagerWorkbench.notice.installCompleted"));
+                    } else if (nextJob.state === "external_reconciliation_required") {
+                        setNotice(t("components.plugins.PluginManagerWorkbench.notice.installNeedsAttention"));
+                    } else {
+                        setError(t("components.plugins.PluginManagerWorkbench.error.installFailed"));
+                    }
+                    await load(false, true);
+                    await loadMachineDiscovery(nextJob.pluginId, true);
+                    if (nextJob.state === "ready") await loadRequirements(nextJob.pluginId);
+                }
+            } catch (nextError) {
+                if (!cancelled) setError(nextError instanceof Error ? nextError.message : t("components.plugins.PluginManagerWorkbench.error.action"));
+            } finally {
+                polling = false;
+            }
+        };
+        void poll();
+        const timer = window.setInterval(() => void poll(), 900);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [installJob?.jobId, installJob?.state, load, loadMachineDiscovery, loadRequirements, t]);
     useEffect(() => {
         if (!authorization || !ACTIVE_AUTHORIZATION.has(authorization.status) || !selectedId) return;
         const timer = window.setInterval(async () => {
@@ -262,6 +325,13 @@ export function PluginManagerWorkbench() {
         });
     }, [plugins, query, tab]);
     const selected = plugins.find((plugin) => plugin.id === selectedId) || visiblePlugins[0];
+    const selectedDiscovery = machineDiscovery?.pluginId === selected?.id ? machineDiscovery : null;
+    const selectedMissingUnits = selectedDiscovery?.summary.missingUnits ?? selectedDiscovery?.summary.needsCompletion ?? 0;
+    const selectedPresentUnits = selectedDiscovery?.summary.presentUnits ?? selectedDiscovery?.summary.detected ?? 0;
+    const selectedNeedsInstall = Boolean(selected && (!selected.installation.installed || selectedMissingUnits > 0));
+    const selectedNeedsCompletion = selectedPresentUnits > 0 && selectedMissingUnits > 0;
+    const selectedInstallJob = installJob?.pluginId === selected?.id ? installJob : null;
+    const selectedInstallActive = Boolean(selectedInstallJob && !TERMINAL_JOBS.has(selectedInstallJob.state));
 
     const runAction = async (key: string, action: () => Promise<void>) => {
         setBusy(key);
@@ -298,8 +368,9 @@ export function PluginManagerWorkbench() {
             body: JSON.stringify({ dryRun: false, approved: true, planDigest: planJob.planDigest, idempotencyKey: crypto.randomUUID() }),
         });
         setPreviewJob(job);
+        setInstallJob(job);
+        setJobs((current) => [job, ...current.filter((item) => item.jobId !== job.jobId)]);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.installQueued"));
-        await load(false, true);
     });
 
     const detect = (plugin: Plugin) => runAction(`detect:${plugin.id}`, async () => {
@@ -365,7 +436,6 @@ export function PluginManagerWorkbench() {
         <AdminPageShell className="max-w-[1500px] gap-4">
             <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border/70 pb-4">
                 <div>
-                    <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground"><SquareTerminal className="size-3.5" /> plugin_manager runtime</div>
                     <h1 className="text-2xl font-semibold tracking-[-0.025em]">{t("components.plugins.PluginManagerWorkbench.title")}</h1>
                     <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.description")}</p>
                 </div>
@@ -379,10 +449,10 @@ export function PluginManagerWorkbench() {
             {error || notice ? <div role={error ? "alert" : "status"} className={cn("flex items-start gap-2 border px-3 py-2 text-sm", error ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-emerald-500/25 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300")}>{error ? <CircleAlert className="mt-0.5 size-4 shrink-0" /> : <Check className="mt-0.5 size-4 shrink-0" />}<span>{error || notice}</span></div> : null}
 
             {(tab === "store" || tab === "installed") ? (
-                <div className="grid min-h-[620px] grid-cols-1 border border-border/70 lg:grid-cols-[minmax(500px,1fr)_460px]">
-                    <section className="border-b border-border/70 lg:border-b-0 lg:border-r">
+                <div className="grid grid-cols-1 border border-border/70 lg:h-[calc(100vh-230px)] lg:min-h-[620px] lg:max-h-[820px] lg:grid-cols-[minmax(500px,1fr)_460px] lg:overflow-hidden">
+                    <section className="flex min-h-0 flex-col border-b border-border/70 lg:border-b-0 lg:border-r">
                         <div className="flex items-center gap-2 border-b border-border/60 p-2.5"><Search className="size-4 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("components.plugins.PluginManagerWorkbench.searchPlaceholder")} className="h-10 rounded-md border-0 bg-transparent px-1 shadow-none focus-visible:ring-0" /></div>
-                        <div className="divide-y divide-border/55">
+                        <div className="max-h-[420px] divide-y divide-border/55 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] lg:max-h-none lg:min-h-0 lg:flex-1">
                             {visiblePlugins.map((plugin) => {
                                 const state = stateLabel(plugin.installation);
                                 return <button key={plugin.id} onClick={() => setSelectedId(plugin.id)} className={cn("grid min-h-16 w-full grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected?.id === plugin.id && "bg-muted/55")}>
@@ -394,35 +464,24 @@ export function PluginManagerWorkbench() {
                         </div>
                     </section>
 
-                    <aside className="bg-muted/[0.14] p-4">
+                    <aside className="bg-muted/[0.14] p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:[scrollbar-gutter:stable]">
                         {selected ? <div className="space-y-5">
                             <div className="flex items-start gap-3"><Image src={`/api/plugins/${selected.id}/logo`} alt="" width={40} height={40} unoptimized className="size-10 object-contain" /><div className="min-w-0 flex-1"><h2 className="text-base font-semibold">{selected.displayName}</h2><p className="mt-1 text-sm leading-5 text-muted-foreground">{selected.description}</p></div></div>
                             <div className="flex border-y border-border/60 py-3 text-center">{[["CLI", selected.componentCounts.cli], ["Skill", selected.componentCounts.skills], ["MCP", selected.componentCounts.mcp], ["UI", selected.componentCounts.uiAdapters], ["Adapter", selected.componentCounts.providerAdapters || 0]].filter(([, count]) => Number(count) > 0).map(([label, count]) => <div key={String(label)} className="min-w-0 flex-1 border-r border-border/50 last:border-0"><div className="text-sm font-medium">{count}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>)}</div>
-                            {machineDiscovery?.pluginId === selected.id ? <div className="space-y-2 border border-border/70 bg-background p-3">
-                                <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.machine.title")}</h3><p className="mt-0.5 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.description")}</p></div><Button type="button" variant="ghost" size="sm" className="min-h-9 rounded-md" onClick={() => void loadMachineDiscovery(selected.id, true)} disabled={Boolean(busy)}><RefreshCw className="mr-1.5 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button></div>
-                                <div className="divide-y divide-border/55 border-y border-border/55">
-                                    {[...machineDiscovery.cli.map((item) => ({ kind: "CLI", item })), ...machineDiscovery.skills.map((item) => ({ kind: "Skill", item }))].map(({ kind, item }) => {
-                                        const names = kind === "CLI"
-                                            ? item.commands || []
-                                            : [...new Set([...(item.detectedNames || []), ...(item.missingNames || []), ...(item.conflicts || [])])];
-                                        return <div key={`${kind}-${item.componentId}`} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 truncate"><span className="font-medium">{kind}</span>{names.length ? <span className="text-muted-foreground"> · {names.join("、")}</span> : null}</span><span className={cn("shrink-0", item.state === "conflict" ? "text-destructive" : item.state === "detected" || item.state === "registered" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>{t(`components.plugins.PluginManagerWorkbench.machine.state.${item.state}`)}</span></div>;
-                                    })}
-                                    {machineDiscovery.ordinaryMcp.map((item) => <div key={item.componentId} className="py-2 text-xs"><div className="flex items-center justify-between gap-3"><span className="font-medium">MCP · {item.serverName}</span><span className="text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcp")}</span></div><p className="mt-1 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcpHelp")}</p></div>)}
-                                </div>
-                                {!machineDiscovery.skillsCli.available ? <p className="text-xs text-destructive">{t("components.plugins.PluginManagerWorkbench.machine.skillsUnavailable")}</p> : null}
-                            </div> : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
+                            {selectedDiscovery ? <MachineDiscoveryPanel discovery={selectedDiscovery} pluginId={selected.id} requirements={requirements} busy={busy} onRefresh={() => void loadMachineDiscovery(selected.id, true)} t={t} /> : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
                             <div><h3 className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.capabilities")}</h3><div className="flex flex-wrap gap-1.5">{selected.capabilities.map((item) => <span key={item} className="border border-border/70 bg-background px-2 py-1 text-xs">{item}</span>)}</div></div>
 
                             {selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">
-                                <div className="flex items-center justify-between gap-2"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.configuration.title")}</h3><p className="text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.description")}</p></div><Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void detect(selected)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.detect")}</Button></div>
-                                {requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} authorization={authorization} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCliLogin={() => void startCliLogin(selected, requirement)} onCancelAuthorization={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
+                                <div className="flex items-center justify-between gap-2"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.configuration.title")}</h3><p className="text-xs text-muted-foreground">{t(selected.id === "volcengine-mediakit" ? "components.plugins.PluginManagerWorkbench.mediaKit.configurationSummary" : "components.plugins.PluginManagerWorkbench.configuration.description")}</p></div><Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void detect(selected)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.detect")}</Button></div>
+                                {selected.id === "volcengine-mediakit" ? <MediaKitConfigurationPanel requirements={requirements.requirements} values={values} localEnabled={Boolean(selectedDiscovery?.cli.some((item) => item.state === "registered" || item.state === "detected"))} onChange={(requirementId, value) => setValues((current) => ({ ...current, [requirementId]: value }))} t={t} /> : requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} authorization={authorization} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCliLogin={() => void startCliLogin(selected, requirement)} onCancelAuthorization={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
                                 {!requirements.requirements.length ? <div className="border border-border/70 bg-background p-3 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.none")} <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">{t("components.plugins.PluginManagerWorkbench.officialDocs")}</a></div> : null}
                             </div> : null}
 
-                            {previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div><div className="divide-y divide-border/50 border-y border-border/50">{(previewJob.plan.steps?.cli || []).map((step) => <div key={step.componentId} className="flex items-center justify-between gap-3 py-2"><span>CLI</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.skills || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>Skill</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}</div><div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
+                            {selectedInstallJob ? <InstallProgressCard job={selectedInstallJob} t={t} /> : previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div><div className="divide-y divide-border/50 border-y border-border/50">{(previewJob.plan.steps?.cli || []).map((step) => <div key={step.componentId} className="flex items-center justify-between gap-3 py-2"><span>CLI</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.skills || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>Skill</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}</div><div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
 
                             <div className="flex flex-wrap gap-2 border-t border-border/60 pt-4">
-                                {!selected.installation.installed ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy)}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || Boolean(machineDiscovery?.summary.conflicts)}>{busy === `install:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.complete")}</Button></> : <><Button size="sm" className="min-h-10 rounded-md" onClick={() => void configure(selected)} disabled={Boolean(busy) || !Object.keys(values).length}><Settings2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configure")}</Button><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void doctor(selected)} disabled={Boolean(busy)}><Activity className="mr-2 size-3.5" />Doctor</Button><Button size="sm" variant="ghost" className="min-h-10 rounded-md text-destructive hover:text-destructive" onClick={() => void uninstall(selected)} disabled={Boolean(busy)}><Trash2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.uninstall")}</Button></>}
+                                {selectedNeedsInstall ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy) || selectedInstallActive}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || selectedInstallActive || Boolean(selectedDiscovery?.summary.conflicts)}>{busy === `install:${selected.id}` || selectedInstallActive ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t(selectedNeedsCompletion ? "components.plugins.PluginManagerWorkbench.complete" : "components.plugins.PluginManagerWorkbench.install")}</Button></> : null}
+                                {selected.installation.installed ? <><Button size="sm" className="min-h-10 rounded-md" onClick={() => void configure(selected)} disabled={Boolean(busy) || !Object.keys(values).length}><Settings2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configure")}</Button><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void doctor(selected)} disabled={Boolean(busy)}><Activity className="mr-2 size-3.5" />Doctor</Button><Button size="sm" variant="ghost" className="min-h-10 rounded-md text-destructive hover:text-destructive" onClick={() => void uninstall(selected)} disabled={Boolean(busy)}><Trash2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.uninstall")}</Button></> : null}
                                 <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="ml-auto inline-flex min-h-10 items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground">{t("components.plugins.PluginManagerWorkbench.officialDocs")}<ExternalLink className="size-3" /></a>
                             </div>
                         </div> : null}
@@ -439,6 +498,87 @@ export function PluginManagerWorkbench() {
             {tab === "logs" ? <DataTable empty={t("components.plugins.PluginManagerWorkbench.empty.logs")} rows={events.map((event) => ({ primary: `${event.plugin_id || "system"} · ${event.event_type}`, secondary: event.status, detail: event.created_at }))} /> : null}
         </AdminPageShell>
     );
+}
+
+function MachineDiscoveryPanel({ discovery, pluginId, requirements, busy, onRefresh, t }: { discovery: MachineDiscovery; pluginId: string; requirements: RequirementResponse | null; busy: string; onRefresh: () => void; t: ReturnType<typeof useT> }) {
+    const rows = [
+        ...discovery.cli.map((item) => ({ kind: "CLI", item })),
+        ...discovery.skills.map((item) => ({ kind: "Skill", item })),
+    ];
+    const localEnabled = discovery.cli.some((item) => item.state === "registered" || item.state === "detected");
+    const mediaKitRequirements = requirements?.pluginId === pluginId ? requirements.requirements : [];
+    const cloudConfigured = Boolean(mediaKitRequirements.find((item) => item.targetName === "MEDIAKIT_API_KEY")?.configured);
+    const details = <div className="divide-y divide-border/55 border-y border-border/55">
+        {rows.map(({ kind, item }) => {
+            const names = kind === "CLI"
+                ? item.commands || []
+                : [...new Set([...(item.detectedNames || []), ...(item.missingNames || []), ...(item.conflicts || [])])];
+            return <div key={`${kind}-${item.componentId}`} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 truncate"><span className="font-medium">{kind}</span>{names.length ? <span className="text-muted-foreground"> · {names.join("、")}</span> : null}</span><span className={cn("shrink-0", item.state === "conflict" ? "text-destructive" : item.state === "detected" || item.state === "registered" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>{t(`components.plugins.PluginManagerWorkbench.machine.state.${item.state}`)}</span></div>;
+        })}
+        {discovery.ordinaryMcp.map((item) => <div key={item.componentId} className="py-2 text-xs"><div className="flex items-center justify-between gap-3"><span className="font-medium">MCP · {item.serverName}</span><span className="text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcp")}</span></div></div>)}
+    </div>;
+
+    if (pluginId === "volcengine-mediakit") {
+        return <section className="space-y-3 border border-border/70 bg-background p-3">
+            <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.mediaKit.modeTitle")}</h3><Button type="button" variant="ghost" size="sm" className="min-h-9 rounded-md" onClick={onRefresh} disabled={Boolean(busy)}><RefreshCw className="mr-1.5 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button></div>
+            <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-md border border-border/70 bg-muted/20 p-3"><div className="flex items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-medium"><HardDrive className="size-4" />{t("components.plugins.PluginManagerWorkbench.mediaKit.localTitle")}</span><CompactState active={localEnabled} activeLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.enabled")} inactiveLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.disabled")} /></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.mediaKit.localSummary")}</p></div>
+                <div className="rounded-md border border-border/70 bg-muted/20 p-3"><div className="flex items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-medium"><Cloud className="size-4" />{t("components.plugins.PluginManagerWorkbench.mediaKit.cloudTitle")}</span><CompactState active={cloudConfigured} activeLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.configured")} inactiveLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.notConfigured")} /></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.mediaKit.cloudSummary")}</p></div>
+            </div>
+            <details className="text-xs"><summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">{t("components.plugins.PluginManagerWorkbench.machine.technicalDetails")}</summary><div className="mt-2">{details}</div></details>
+        </section>;
+    }
+
+    return <section className="space-y-2 border border-border/70 bg-background p-3">
+        <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.machine.title")}</h3><p className="mt-0.5 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.description")}</p></div><Button type="button" variant="ghost" size="sm" className="min-h-9 rounded-md" onClick={onRefresh} disabled={Boolean(busy)}><RefreshCw className="mr-1.5 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button></div>
+        {details}
+        {!discovery.skillsCli.available ? <p className="text-xs text-destructive">{t("components.plugins.PluginManagerWorkbench.machine.skillsUnavailable")}</p> : null}
+    </section>;
+}
+
+function CompactState({ active, activeLabel, inactiveLabel }: { active: boolean; activeLabel: string; inactiveLabel: string }) {
+    return <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium", active ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground")}><span className={cn("size-1.5 rounded-full", active ? "bg-emerald-500" : "bg-muted-foreground/40")} />{active ? activeLabel : inactiveLabel}</span>;
+}
+
+function MediaKitConfigurationPanel({ requirements, values, localEnabled, onChange, t }: { requirements: Requirement[]; values: Record<string, string | boolean>; localEnabled: boolean; onChange: (requirementId: string, value: string) => void; t: ReturnType<typeof useT> }) {
+    const apiKey = requirements.find((item) => item.targetName === "MEDIAKIT_API_KEY");
+    const outputPath = requirements.find((item) => item.targetName === "MEDIAKIT_OUTPUT_PATH");
+    const cloudConfigured = Boolean(apiKey?.configured || (apiKey && values[apiKey.id]));
+    return <div className="grid gap-3">
+        <section className="rounded-md border border-border/70 bg-background p-3">
+            <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-sm font-medium"><HardDrive className="size-4" />{t("components.plugins.PluginManagerWorkbench.mediaKit.localTitle")}</div><CompactState active={localEnabled} activeLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.enabled")} inactiveLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.disabled")} /></div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.mediaKit.localConfigHelp")}</p>
+            {outputPath ? <div className="mt-3"><label htmlFor="mediakit-output-path" className="mb-1.5 block text-xs font-medium">{t("components.plugins.PluginManagerWorkbench.mediaKit.outputPath")}</label><Input id="mediakit-output-path" value={String(values[outputPath.id] ?? "")} onChange={(event) => onChange(outputPath.id, event.target.value)} placeholder="~/.mediakit/temp" className="h-10 rounded-md" /></div> : null}
+        </section>
+        <section className="rounded-md border border-border/70 bg-background p-3">
+            <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-sm font-medium"><Cloud className="size-4" />{t("components.plugins.PluginManagerWorkbench.mediaKit.cloudTitle")}</div><CompactState active={cloudConfigured} activeLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.configured")} inactiveLabel={t("components.plugins.PluginManagerWorkbench.mediaKit.notConfigured")} /></div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.mediaKit.cloudConfigHelp")}</p>
+            {apiKey ? <div className="mt-3"><div className="mb-1.5 flex items-center justify-between gap-3"><label htmlFor="mediakit-api-key" className="text-xs font-medium">{t("components.plugins.PluginManagerWorkbench.mediaKit.apiKey")}</label><a href="https://console.volcengine.com/imp/ai-mediakit/settings" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">{t("components.plugins.PluginManagerWorkbench.mediaKit.getKey")}<ExternalLink className="size-3" /></a></div><Input id="mediakit-api-key" type="password" autoComplete="new-password" value={String(values[apiKey.id] ?? "")} onChange={(event) => onChange(apiKey.id, event.target.value)} placeholder={apiKey.configured ? t("components.plugins.PluginManagerWorkbench.configuration.secretConfigured") : ""} className="h-10 rounded-md" /></div> : null}
+        </section>
+    </div>;
+}
+
+function InstallProgressCard({ job, t }: { job: Job; t: ReturnType<typeof useT> }) {
+    const progress = job.progress;
+    const active = !TERMINAL_JOBS.has(job.state);
+    const failed = ["failed", "rolled_back", "rollback_failed"].includes(job.state);
+    const total = progress?.totalComponents || 0;
+    const completed = progress?.completedComponents || 0;
+    const percent = job.state === "ready" ? 100 : total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+    const current = progress?.currentComponent;
+    const componentSteps = (job.steps || []).filter((step) => step.type === "component").slice(-4);
+    return <section aria-live="polite" className={cn("space-y-3 rounded-md border p-3", failed ? "border-destructive/30 bg-destructive/5" : "border-primary/20 bg-primary/[0.035]")}>
+        <div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2 text-sm font-medium">{active ? <Loader2 className="size-4 animate-spin text-primary" /> : failed ? <CircleAlert className="size-4 text-destructive" /> : <Check className="size-4 text-emerald-600" />}{t("components.plugins.PluginManagerWorkbench.installProgress.title")}</div><p className="mt-1 text-xs text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.installProgress.phase.${job.state}`)}</p></div>{total > 0 ? <span className="text-xs tabular-nums text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.installProgress.count", { completed, total })}</span> : null}</div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full rounded-full transition-[width] duration-300", failed ? "bg-destructive" : "bg-primary")} style={{ width: `${percent}%` }} /></div>
+        {current?.componentId ? <div className="flex min-w-0 items-center gap-2 rounded-md bg-background/80 px-2.5 py-2 text-xs"><Loader2 className="size-3.5 shrink-0 animate-spin text-primary" /><span className="shrink-0 font-medium">{formatComponentType(current.componentType)}</span><span className="truncate text-muted-foreground">{current.componentId}</span></div> : null}
+        {componentSteps.length ? <div className="space-y-1">{componentSteps.map((step) => <div key={`${step.ordinal}-${step.state}`} className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">{step.state === "completed" ? <Check className="size-3.5 shrink-0 text-emerald-600" /> : step.state === "failed" ? <CircleAlert className="size-3.5 shrink-0 text-destructive" /> : <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />}<span className="shrink-0">{formatComponentType(step.details?.componentType)}</span><span className="truncate">{step.details?.componentId}</span></div>)}</div> : null}
+        {failed ? <p className="text-xs text-destructive">{t("components.plugins.PluginManagerWorkbench.installProgress.failedHelp")}</p> : null}
+    </section>;
+}
+
+function formatComponentType(value?: string) {
+    const labels: Record<string, string> = { cli: "CLI", skill: "Skill", mcp: "MCP", ui_adapter: "UI", provider_adapter: "Adapter" };
+    return labels[value || ""] || value || "";
 }
 
 function RequirementField({ requirement, value, authorization, busy, onChange, onImport, onOAuth, onCliLogin, onCancelAuthorization, t }: { requirement: Requirement; value?: string | boolean; authorization: AuthorizationFlowState | null; busy: string; onChange: (value: string | boolean) => void; onImport: (sourceId: string) => void; onOAuth: () => void; onCliLogin: () => void; onCancelAuthorization: () => void; t: ReturnType<typeof useT> }) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import io
 import json
@@ -156,6 +157,7 @@ class PluginManagerService:
         ] | None = None
         self._catalog_installation_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
         self._skills_inventory_cache: tuple[float, dict[str, Any]] | None = None
+        self._machine_discovery_cache: dict[str, dict[str, Any]] = {}
         self._cli_auth_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._cli_capability_profile_cache: dict[tuple[str, str, int, int], CliProfile] = {}
         self._credential_store = credential_store or credential_ref_store
@@ -282,6 +284,14 @@ class PluginManagerService:
     def _invalidate_skills_inventory_cache(self) -> None:
         with self._cache_lock:
             self._skills_inventory_cache = None
+            self._machine_discovery_cache.clear()
+
+    def _invalidate_machine_discovery_cache(self, plugin_id: str | None = None) -> None:
+        with self._cache_lock:
+            if plugin_id:
+                self._machine_discovery_cache.pop(str(plugin_id).strip().lower(), None)
+            else:
+                self._machine_discovery_cache.clear()
 
     @staticmethod
     def _run_skills_cli(
@@ -451,6 +461,12 @@ class PluginManagerService:
 
     def discover_machine_components(self, plugin_id: str, *, force: bool = False) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
+        cache_key = manifest.id.lower()
+        if not force:
+            with self._cache_lock:
+                cached = self._machine_discovery_cache.get(cache_key)
+            if cached is not None:
+                return copy.deepcopy(cached)
         policy = self._component_policy(manifest)
         component_rows = {
             str(item.get("component_id") or ""): item
@@ -461,16 +477,26 @@ class PluginManagerService:
         cli_items: list[dict[str, Any]] = []
         for profile in policy["cliProfiles"]:
             detected_commands = self._discover_cli_commands(profile)
-            registered = profile.id in component_rows
-            state = "registered" if registered else "detected" if detected_commands else "missing"
+            registered_row = component_rows.get(profile.id)
+            registered = registered_row is not None
+            version_argv = self._expand_argv(manifest, profile.version)
+            version_executable = Path(version_argv[0]).expanduser() if version_argv else None
+            registered_present = bool(
+                registered
+                and (
+                    detected_commands
+                    or (version_executable is not None and version_executable.exists())
+                )
+            )
+            state = "registered" if registered_present else "detected" if detected_commands else "missing"
             cli_items.append(
                 {
                     "componentId": profile.id,
                     "state": state,
-                    "action": "keep" if registered else "adopt" if detected_commands else "install",
+                    "action": "keep" if registered_present else "adopt" if detected_commands else "install",
                     "commands": list(profile.commands),
                     "detectedCommands": detected_commands,
-                    "ownership": "plugin" if registered else "external" if detected_commands else profile.ownership,
+                    "ownership": "plugin" if registered_present else "external" if detected_commands else profile.ownership,
                 }
             )
 
@@ -513,8 +539,34 @@ class PluginManagerService:
                 elif name in expected_names:
                     conflicts.append(name)
             missing_names = [name for name in expected_names if name not in detected_names and name not in conflicts]
-            registered = skill.id in component_rows
-            if registered:
+            registered_row = component_rows.get(skill.id)
+            registered = registered_row is not None
+            registered_metadata = _loads((registered_row or {}).get("metadata_json"), {})
+            registered_names = {
+                str(name).strip()
+                for name in list(registered_metadata.get("skillNames") or [])
+                if str(name).strip()
+            }
+            registered_paths = [
+                Path(str(path)).expanduser()
+                for path in list(registered_metadata.get("skillPaths") or [])
+                if str(path).strip()
+            ]
+            if not registered_paths and str((registered_row or {}).get("owned_path") or "").strip():
+                registered_paths = [Path(str(registered_row["owned_path"])).expanduser()]
+            registered_present = bool(
+                registered
+                and (
+                    (
+                        expected_names
+                        and set(expected_names).issubset(registered_names)
+                        and len(registered_paths) >= len(expected_names)
+                        and all(path.exists() for path in registered_paths)
+                    )
+                    or (not expected_names and registered_paths and all(path.exists() for path in registered_paths))
+                )
+            )
+            if registered_present:
                 state = "registered"
                 action = "keep"
             elif conflicts:
@@ -562,7 +614,27 @@ class PluginManagerService:
         conflicts = sum(1 for item in skill_items if item["state"] == "conflict")
         missing = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"missing", "partial", "unknown"})
         detected = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"registered", "detected"})
-        return {
+        total_units = len(cli_items) + sum(max(1, len(item.get("expectedNames") or [])) for item in skill_items)
+        present_units = sum(1 for item in cli_items if item["state"] in {"registered", "detected"})
+        present_units += sum(
+            len(item.get("expectedNames") or [])
+            if item["state"] == "registered" and item.get("expectedNames")
+            else len(item.get("detectedNames") or [])
+            if item.get("expectedNames")
+            else 1 if item["state"] in {"registered", "detected"} else 0
+            for item in skill_items
+        )
+        missing_units = max(0, total_units - present_units)
+        coverage = (
+            "blocked"
+            if conflicts
+            else "complete"
+            if total_units == present_units
+            else "partial"
+            if present_units
+            else "none"
+        )
+        result = {
             "pluginId": manifest.id,
             "skillsCli": {
                 "available": bool(skills_inventory.get("ok")),
@@ -577,8 +649,15 @@ class PluginManagerService:
                 "needsCompletion": missing,
                 "conflicts": conflicts,
                 "ordinaryMcp": len(ordinary_mcp),
+                "presentUnits": present_units,
+                "totalUnits": total_units,
+                "missingUnits": missing_units,
+                "coverage": coverage,
             },
         }
+        with self._cache_lock:
+            self._machine_discovery_cache[cache_key] = copy.deepcopy(result)
+        return result
 
     def warm_machine_discovery(self) -> dict[str, Any]:
         """Warm local-only component discovery without installing or mutating anything."""
@@ -588,7 +667,7 @@ class PluginManagerService:
         failures: list[dict[str, str]] = []
         for manifest in catalog.plugins:
             try:
-                self.discover_machine_components(manifest.id)
+                self.discover_machine_components(manifest.id, force=True)
                 completed.append(manifest.id)
             except Exception as exc:
                 failures.append(
@@ -2041,6 +2120,26 @@ class PluginManagerService:
             )
             conn.commit()
 
+    def _append_component_job_step(
+        self,
+        job_id: str,
+        *,
+        component_type: str,
+        component_id: str,
+        state: str,
+        action: str = "install",
+    ) -> None:
+        self._append_job_step(
+            job_id,
+            "component",
+            state,
+            {
+                "componentType": component_type,
+                "componentId": component_id,
+                "action": action,
+            },
+        )
+
     def _set_job_state(
         self,
         job_id: str,
@@ -2136,6 +2235,42 @@ class PluginManagerService:
                 "SELECT * FROM plugin_install_steps WHERE job_id=? ORDER BY ordinal",
                 (job_id,),
             ).fetchall()
+        plan = _loads(item.get("plan_json"), {})
+        projected_steps = [
+            {
+                "ordinal": step["ordinal"],
+                "type": step["step_type"],
+                "state": step["state"],
+                "details": _loads(step["details_json"], {}),
+                "createdAt": step["created_at"],
+                "finishedAt": step["finished_at"],
+            }
+            for step in steps
+        ]
+        plan_steps = dict(plan.get("steps") or {})
+        total_components = sum(
+            len(list(plan_steps.get(key) or []))
+            for key in ("cli", "skills", "mcp", "uiAdapters", "providerAdapters")
+        )
+        completed_components: set[str] = set()
+        active_components: dict[str, dict[str, Any]] = {}
+        last_completed_component: dict[str, Any] | None = None
+        for step in projected_steps:
+            if step["type"] != "component":
+                continue
+            details = dict(step.get("details") or {})
+            component_key = f"{details.get('componentType', '')}:{details.get('componentId', '')}"
+            if component_key == ":":
+                continue
+            if step["state"] == "running":
+                active_components[component_key] = details
+            elif step["state"] == "completed":
+                completed_components.add(component_key)
+                active_components.pop(component_key, None)
+                last_completed_component = details
+            elif step["state"] == "failed":
+                active_components[component_key] = details
+        current_component = list(active_components.values())[-1] if active_components else None
         return {
             "jobId": item["id"],
             "pluginId": item["plugin_id"],
@@ -2144,7 +2279,7 @@ class PluginManagerService:
             "dryRun": bool(item["dry_run"]),
             "approvalRequired": bool(item["approval_required"]),
             "approved": bool(item["approved"]),
-            "plan": _loads(item.get("plan_json"), {}),
+            "plan": plan,
             "planDigest": item.get("plan_digest"),
             "idempotencyKey": item.get("idempotency_key"),
             "stagingPath": item.get("staging_path"),
@@ -2155,17 +2290,14 @@ class PluginManagerService:
             "createdAt": item.get("created_at"),
             "startedAt": item.get("started_at"),
             "finishedAt": item.get("finished_at"),
-            "steps": [
-                {
-                    "ordinal": step["ordinal"],
-                    "type": step["step_type"],
-                    "state": step["state"],
-                    "details": _loads(step["details_json"], {}),
-                    "createdAt": step["created_at"],
-                    "finishedAt": step["finished_at"],
-                }
-                for step in steps
-            ],
+            "steps": projected_steps,
+            "progress": {
+                "phase": item["state"],
+                "completedComponents": min(len(completed_components), total_components),
+                "totalComponents": total_components,
+                "currentComponent": current_component,
+                "lastCompletedComponent": last_completed_component,
+            },
         }
 
     def list_install_jobs(self, *, limit: int = 100) -> dict[str, Any]:
@@ -2225,6 +2357,7 @@ class PluginManagerService:
             self._append_job_step(job_id, "staging", "staging", {"path": str(staging)})
             created_components: list[dict[str, Any]] = []
             external_started = False
+            current_component: dict[str, str] | None = None
             try:
                 if staging.exists():
                     shutil.rmtree(staging)
@@ -2250,6 +2383,18 @@ class PluginManagerService:
                 for profile in selected_cli_profiles:
                     step = dict(cli_plan_steps.get(profile.id) or {})
                     action = str(step.get("action") or "install")
+                    current_component = {
+                        "componentType": "cli",
+                        "componentId": profile.id,
+                        "action": action,
+                    }
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="cli",
+                        component_id=profile.id,
+                        state="running",
+                        action=action,
+                    )
                     detected_commands = {
                         str(name): str(path)
                         for name, path in dict(step.get("detectedCommands") or {}).items()
@@ -2292,6 +2437,14 @@ class PluginManagerService:
                                 code="external_cli_reconciliation_required",
                             )
                     profile_results.append((profile, result, action, detected_commands))
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="cli",
+                        component_id=profile.id,
+                        state="completed",
+                        action=action,
+                    )
+                    current_component = None
 
                 self._set_job_state(job_id, "validating", step_type="pre_commit_validation")
                 for profile, _, action, _ in profile_results:
@@ -2349,6 +2502,17 @@ class PluginManagerService:
                     if action == "install":
                         created_components.extend(self._ensure_cli_shims(manifest, profile))
                 for skill in selected_skills:
+                    current_component = {
+                        "componentType": "skill",
+                        "componentId": skill.id,
+                        "action": "install",
+                    }
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="skill",
+                        component_id=skill.id,
+                        state="running",
+                    )
                     created_components.extend(
                         await asyncio.to_thread(
                             self._install_skill_component,
@@ -2356,9 +2520,45 @@ class PluginManagerService:
                             skill.model_dump(mode="json"),
                         )
                     )
-                if selected_mcp_servers:
-                    created_components.extend(self._install_mcp_components(manifest, selected_mcp_servers))
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="skill",
+                        component_id=skill.id,
+                        state="completed",
+                    )
+                    current_component = None
+                for server in selected_mcp_servers:
+                    current_component = {
+                        "componentType": "mcp",
+                        "componentId": server.id,
+                        "action": "install",
+                    }
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="mcp",
+                        component_id=server.id,
+                        state="running",
+                    )
+                    created_components.extend(self._install_mcp_components(manifest, [server]))
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="mcp",
+                        component_id=server.id,
+                        state="completed",
+                    )
+                    current_component = None
                 for adapter in manifest.uiAdapters:
+                    current_component = {
+                        "componentType": "ui_adapter",
+                        "componentId": adapter.id,
+                        "action": "install",
+                    }
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="ui_adapter",
+                        component_id=adapter.id,
+                        state="running",
+                    )
                     created_components.append(
                         self._register_component(
                             manifest.id,
@@ -2368,7 +2568,25 @@ class PluginManagerService:
                             metadata=adapter.model_dump(mode="json"),
                         )
                     )
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="ui_adapter",
+                        component_id=adapter.id,
+                        state="completed",
+                    )
+                    current_component = None
                 for adapter in manifest.providerAdapters:
+                    current_component = {
+                        "componentType": "provider_adapter",
+                        "componentId": adapter.id,
+                        "action": "install",
+                    }
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="provider_adapter",
+                        component_id=adapter.id,
+                        state="running",
+                    )
                     created_components.append(
                         self._register_component(
                             manifest.id,
@@ -2378,6 +2596,13 @@ class PluginManagerService:
                             metadata=adapter.model_dump(mode="json"),
                         )
                     )
+                    self._append_component_job_step(
+                        job_id,
+                        component_type="provider_adapter",
+                        component_id=adapter.id,
+                        state="completed",
+                    )
+                    current_component = None
 
                 health = await self.doctor(manifest.id, persist=False, sync_capabilities=False)
                 external = any(
@@ -2420,6 +2645,14 @@ class PluginManagerService:
                 return self.get_install_job(job_id)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
+                if current_component is not None:
+                    self._append_component_job_step(
+                        job_id,
+                        component_type=current_component["componentType"],
+                        component_id=current_component["componentId"],
+                        state="failed",
+                        action=current_component["action"],
+                    )
                 if external_started:
                     self._finish_job(
                         job_id,
@@ -2545,8 +2778,10 @@ class PluginManagerService:
                     "durationMs": int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
                 }
         try:
+            search_path = self._refresh_process_cli_path()
+            execution_argv = self._resolve_execution_argv(argv, search_path=search_path)
             completed = subprocess.run(
-                argv,
+                execution_argv,
                 cwd=spec.cwd or None,
                 shell=False,
                 capture_output=True,
@@ -2556,7 +2791,7 @@ class PluginManagerService:
                 timeout=spec.timeoutSeconds,
                 env={
                     **os.environ,
-                    "PATH": f"{self._bin_root()}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "PATH": f"{self._bin_root()}{os.pathsep}{search_path}",
                     **dict(env_overlay or {}),
                 },
             )
@@ -2579,6 +2814,34 @@ class PluginManagerService:
                 "stderrTail": "command timed out",
                 "durationMs": spec.timeoutSeconds * 1000,
             }
+
+    @staticmethod
+    def _resolve_execution_argv(argv: list[str], *, search_path: str) -> list[str]:
+        """Resolve allowlisted launchers without invoking a command shell.
+
+        Windows CreateProcess does not expand ``npm``/``npx`` to their ``.cmd``
+        launchers when ``shell=False``.  Resolve only argv[0] through PATH so the
+        governed argument vector and manifest allowlist remain unchanged.
+        """
+
+        resolved_argv = [str(item) for item in argv]
+        if not resolved_argv:
+            return resolved_argv
+        executable = resolved_argv[0]
+        candidate = Path(executable).expanduser()
+        if candidate.is_file():
+            resolved_argv[0] = str(candidate.resolve())
+            return resolved_argv
+
+        resolved = shutil.which(executable, path=search_path)
+        if not resolved and os.name == "nt" and not Path(executable).suffix:
+            for suffix in (".cmd", ".exe", ".bat", ".com"):
+                resolved = shutil.which(f"{executable}{suffix}", path=search_path)
+                if resolved:
+                    break
+        if resolved:
+            resolved_argv[0] = str(Path(resolved).resolve())
+        return resolved_argv
 
     def _register_cli_component(
         self,
@@ -2991,6 +3254,7 @@ class PluginManagerService:
             )
             conn.commit()
         self._invalidate_ownership_cache()
+        self._invalidate_machine_discovery_cache(plugin_id)
         return {
             "id": component_id,
             "type": component_type,
@@ -3069,6 +3333,7 @@ class PluginManagerService:
                 )
             conn.commit()
         self._invalidate_catalog_installation_cache()
+        self._invalidate_machine_discovery_cache(manifest.id)
         if previous_digest and previous_digest != current_digest:
             self._invalidate_grant_cache()
 

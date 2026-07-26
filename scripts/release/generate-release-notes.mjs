@@ -122,7 +122,7 @@ function assetSection(product, version, channel) {
   }
   assets.push(
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
-    "- `RUNTIME_PROBE.json`：本次桌面包内置运行时与功能依赖探针结果；若 Git/ffmpeg 等能力显示 degraded，请按探针结果理解实际可用范围。",
+    "- `RUNTIME_PROBE.json`：本次桌面包内置运行时与功能依赖探针结果；若 Git 或 FFmpeg/FFprobe 7.0+ 显示 degraded，请按探针结果理解实际可用范围。",
     "",
     desktopChannelNote,
   );

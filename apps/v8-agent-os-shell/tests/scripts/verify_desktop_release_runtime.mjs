@@ -10,6 +10,8 @@ const scriptDir = path.dirname(__filename);
 const shellRoot = path.resolve(scriptDir, "..", "..");
 const repoRoot = path.resolve(shellRoot, "..", "..");
 const releaseDir = path.join(shellRoot, "dist", "release");
+const minimumFfmpegVersion = [7, 0];
+const minimumFfmpegVersionText = "7.0";
 
 function exists(filePath) {
   return fs.existsSync(filePath);
@@ -80,6 +82,31 @@ function commandExists(command, args = ["--version"]) {
   return {
     ok: result.status === 0,
     preview: `${result.stdout || result.stderr || ""}`.trim().split(/\r?\n/)[0] || "",
+  };
+}
+
+function mediaToolVersion(command) {
+  const result = spawnSync(command, ["-hide_banner", "-version"], {
+    encoding: "utf8",
+    shell: process.platform === "win32",
+    windowsHide: true,
+    timeout: 15000,
+  });
+  const output = `${result.stdout || result.stderr || ""}`.trim();
+  const preview = output.split(/\r?\n/)[0] || "";
+  const match = preview.match(new RegExp(`^${command}\\s+version\\s+(\\d+)\\.(\\d+)(?:\\.(\\d+))?`, "i"));
+  const versionTuple = match ? [Number(match[1]), Number(match[2]), Number(match[3] || 0)] : null;
+  const meetsMinimum = Boolean(
+    result.status === 0
+    && versionTuple
+    && (versionTuple[0] > minimumFfmpegVersion[0]
+      || (versionTuple[0] === minimumFfmpegVersion[0] && versionTuple[1] >= minimumFfmpegVersion[1])),
+  );
+  return {
+    ok: result.status === 0,
+    meetsMinimum,
+    preview,
+    version: versionTuple ? versionTuple.join(".") : "",
   };
 }
 
@@ -289,10 +316,15 @@ pushCheck(checks, "external.git", gitResult.ok, {
   requiredFor: "managed engineering workspaces",
   preview: gitResult.preview || "Git is required but was not found on PATH",
 });
-const ffmpegResult = commandExists("ffmpeg");
-pushOptionalCheck(checks, degraded, "external.ffmpeg", ffmpegResult.ok, {
+const ffmpegResult = mediaToolVersion("ffmpeg");
+const ffprobeResult = mediaToolVersion("ffprobe");
+const ffmpegReady = ffmpegResult.meetsMinimum && ffprobeResult.meetsMinimum;
+pushOptionalCheck(checks, degraded, "external.ffmpeg", ffmpegReady, {
+  minimumVersion: minimumFfmpegVersionText,
+  ffmpegVersion: ffmpegResult.version,
+  ffprobeVersion: ffprobeResult.version,
   preview: ffmpegResult.preview || "not bundled or not on PATH",
-  reason: "ffmpeg is an optional media capability in the unsigned desktop preview package",
+  reason: `FFmpeg and FFprobe ${minimumFfmpegVersionText}+ are required for V8OS media capabilities`,
 });
 
 const failures = checks.filter((item) => !item.ok);
@@ -304,7 +336,7 @@ const payload = {
   degraded,
   checks,
   notes: [
-    "Git is a required managed-engineering dependency; ffmpeg remains a degraded external capability until bundled by the installer.",
+    `Git is a required managed-engineering dependency; FFmpeg and FFprobe ${minimumFfmpegVersionText}+ remain degraded external capabilities until bundled by the installer.`,
     "Hard checks cover portable Engine Python, the native sandbox host, production bundles, desktop pet bundle, and the slim preview Python runtime.",
     "Agent Browser uses an installed Edge, Chrome, or Chromium through CDP; no browser download is triggered at runtime.",
     "Full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",

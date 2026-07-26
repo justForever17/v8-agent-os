@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-import platform
-import shutil
 import importlib.util
+import platform
+import re
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from core.system_base import detect_desktop_tools_readiness
+
+
+FFMPEG_MINIMUM_VERSION = (7, 0)
+FFMPEG_MINIMUM_VERSION_TEXT = "7.0"
 
 
 DEPENDENCY_REGISTRY: list[dict[str, Any]] = [
@@ -43,7 +50,8 @@ DEPENDENCY_REGISTRY: list[dict[str, Any]] = [
         "category": "media",
         "platforms": ["windows", "macos", "linux"],
         "usedBy": ["tts", "video", "media_tools"],
-        "installHint": "音视频处理、转码和媒体生成时需要。",
+        "minimumVersion": FFMPEG_MINIMUM_VERSION_TEXT,
+        "installHint": "音视频处理、转码和媒体生成需要同一套 FFmpeg/FFprobe 7.0 或更高版本。",
     },
     {
         "id": "tesseract",
@@ -103,6 +111,98 @@ def _detection_detail(*parts: str) -> str:
     return "；".join(part for part in parts if part)
 
 
+def _parse_ffmpeg_version(output: str, *, binary: str) -> tuple[int, int, int] | None:
+    match = re.search(
+        rf"(?im)^\s*{re.escape(binary)}\s+version\s+(\d+)\.(\d+)(?:\.(\d+))?",
+        str(output or ""),
+    )
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _probe_ffmpeg_binary(binary: str) -> dict[str, Any]:
+    executable = shutil.which(binary)
+    if not executable:
+        return {
+            "available": False,
+            "path": "",
+            "version": "",
+            "versionTuple": None,
+            "preview": f"未检测到 {binary}",
+        }
+    try:
+        completed = subprocess.run(
+            [executable, "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "available": False,
+            "path": executable,
+            "version": "",
+            "versionTuple": None,
+            "preview": f"{binary} 无法执行：{type(exc).__name__}",
+        }
+    output = (completed.stdout or completed.stderr or "").strip()
+    version_tuple = _parse_ffmpeg_version(output, binary=binary)
+    version = ".".join(str(part) for part in version_tuple) if version_tuple else ""
+    return {
+        "available": completed.returncode == 0,
+        "path": executable,
+        "version": version,
+        "versionTuple": version_tuple,
+        "preview": output.splitlines()[0] if output else f"{binary} 未返回版本信息",
+    }
+
+
+def _detect_ffmpeg_pair() -> dict[str, Any]:
+    ffmpeg = _probe_ffmpeg_binary("ffmpeg")
+    ffprobe = _probe_ffmpeg_binary("ffprobe")
+    ffmpeg_version = ffmpeg.get("versionTuple")
+    ffprobe_version = ffprobe.get("versionTuple")
+    meets_minimum = bool(
+        ffmpeg.get("available")
+        and ffprobe.get("available")
+        and ffmpeg_version
+        and ffprobe_version
+        and tuple(ffmpeg_version) >= FFMPEG_MINIMUM_VERSION
+        and tuple(ffprobe_version) >= FFMPEG_MINIMUM_VERSION
+    )
+    ffmpeg_path = str(ffmpeg.get("path") or "")
+    ffprobe_path = str(ffprobe.get("path") or "")
+    paired = bool(
+        ffmpeg_path
+        and ffprobe_path
+        and Path(ffmpeg_path).resolve().parent == Path(ffprobe_path).resolve().parent
+    )
+    detected = meets_minimum and paired
+    detail = _detection_detail(
+        str(ffmpeg.get("preview") or ""),
+        str(ffprobe.get("preview") or ""),
+        f"最低要求 {FFMPEG_MINIMUM_VERSION_TEXT}",
+        "FFmpeg 与 FFprobe 来自同一安装目录" if paired else "FFmpeg 与 FFprobe 不属于同一安装目录",
+    )
+    return {
+        "detected": detected,
+        "installed": bool(ffmpeg.get("available") and ffprobe.get("available")),
+        "meetsMinimumVersion": meets_minimum,
+        "pairedInstallation": paired,
+        "minimumVersion": FFMPEG_MINIMUM_VERSION_TEXT,
+        "version": str(ffmpeg.get("version") or ""),
+        "ffprobeVersion": str(ffprobe.get("version") or ""),
+        "path": ffmpeg_path,
+        "ffprobePath": ffprobe_path,
+        "detail": detail,
+    }
+
+
 def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str, Any]) -> dict[str, Any]:
     dep_id = entry["id"]
     if dep_id == "python":
@@ -112,7 +212,7 @@ def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str
     if dep_id == "rg":
         return {"detected": _detect_binary("rg"), "detail": "检测 ripgrep (rg) 命令是否可执行"}
     if dep_id == "ffmpeg":
-        return {"detected": _detect_binary("ffmpeg"), "detail": "检测 ffmpeg 命令是否可执行"}
+        return _detect_ffmpeg_pair()
     if dep_id == "tesseract":
         return {"detected": bool(desktop_readiness.get("ocrReady")), "detail": desktop_readiness.get("tesseractPath") or desktop_readiness.get("reason") or ""}
     if dep_id == "robotframework":

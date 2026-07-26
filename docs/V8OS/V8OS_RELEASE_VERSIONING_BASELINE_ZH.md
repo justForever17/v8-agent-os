@@ -127,7 +127,7 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 6. 退出后清理受管进程。
 7. 产物资源在 Shell/Web 与 Phone 可访问。
 8. `SHA256SUMS.txt` 与发布资产同批生成。
-9. `RUNTIME_PROBE.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和 Playwright Chromium 存在；Git/ffmpeg 等未内置依赖必须明确标为 degraded。
+9. `RUNTIME_PROBE.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和 Playwright Chromium 存在；Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。
 
 最小命令：
 

@@ -343,6 +343,9 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(runtimeProbe, /engine\.importMain/);
   assert.match(runtimeProbe, /V8OS_ENGINE_IMPORT_OK/);
   assert.match(runtimeProbe, /V8OS does not download one at runtime/);
+  assert.match(runtimeProbe, /minimumFfmpegVersion = \[7, 0\]/);
+  assert.match(runtimeProbe, /mediaToolVersion\("ffmpeg"\)/);
+  assert.match(runtimeProbe, /mediaToolVersion\("ffprobe"\)/);
   const requiredModulesBlock = runtimeProbe.slice(
     runtimeProbe.indexOf('const requiredModules'),
     runtimeProbe.indexOf('const optionalModules'),

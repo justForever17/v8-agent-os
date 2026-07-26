@@ -370,9 +370,12 @@ def test_daily_bundle_is_pinned_skill_only_and_advertises_artifacts_on_demand(ru
     prompt = service.supervisor_availability_prompt()
     assert "[Plugin Catalog]" in prompt
     assert "office-suite (ready)" in prompt
+    assert "does not alter ordinary Extensions routing" in prompt
+    assert "current explicit reference" in prompt
     assert "DOCX" in prompt and "XLSX/CSV" in prompt and "PDF" in prompt and "PPTX" in prompt
     assert "plugin_broker(status)" in prompt
-    assert "without creating a plugin grant" in prompt
+    assert "minimal task grant" in prompt
+    assert "plugin_cli" in prompt
     assert "Component IDs are grant identifiers" in prompt
     assert "SKILL.md" not in prompt
     assert "npm install" not in prompt
@@ -783,6 +786,59 @@ def test_supervisor_can_authorize_ready_plugin_without_user_mention_and_delegate
     assert child["parentGrantId"] == result["grant"]["grantId"]
 
 
+def test_privileged_channel_requires_explicit_installed_plugin_and_exact_grant(runtime) -> None:
+    service, _, _ = runtime
+
+    default_route = service.resolve_privileged_channel(
+        plugin_references=[],
+        session_id="s1",
+        run_id="r1",
+    )
+    assert default_route["active"] is False
+    assert default_route["prefilterBypassed"] is False
+
+    missing_route = service.resolve_privileged_channel(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"], "scope": "task"}],
+        session_id="s1",
+        run_id="r1",
+    )
+    assert missing_route["active"] is False
+    assert missing_route["blocked"] == [
+        {"pluginId": "github", "status": "not_installed", "reason": "not_installed"}
+    ]
+
+    _mark_ready(service, "github")
+    ungranted_route = service.resolve_privileged_channel(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"], "scope": "task"}],
+        session_id="s1",
+        run_id="r1",
+    )
+    assert ungranted_route["active"] is True
+    assert ungranted_route["prefilterBypassed"] is True
+    assert ungranted_route["projection"]["cliProfiles"] == []
+    assert ungranted_route["blocked"][0]["reason"] == "grant_missing"
+
+    grant = service.create_grant(
+        plugin_id="github",
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=["gh"],
+        grant_source="user_reference",
+    )
+    resolved_route = service.resolve_privileged_channel(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"], "scope": "task"}],
+        session_id="s1",
+        run_id="r1",
+    )
+    assert resolved_route["active"] is True
+    assert resolved_route["projectedPluginIds"] == ["github"]
+    assert resolved_route["blocked"] == []
+    assert [item["id"] for item in resolved_route["projection"]["cliProfiles"]] == ["gh"]
+    assert resolved_route["projection"]["grants"][0]["grantId"] == grant["grantId"]
+    assert resolved_route["projection"]["grants"][0]["componentIds"] == ["gh"]
+
+
 def test_plugin_broker_authorizes_with_supervisor_and_projects_exact_subagent_grant(
     runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -960,8 +1016,9 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
         }
     ]
     assert usage["mcpTools"] == []
-    assert "run_system_command" in payload["nextAction"]
-    assert "does not need a plugin grant" in payload["nextAction"]
+    assert "plugin_cli" in payload["nextAction"]
+    assert "Never bypass the plugin grant with run_system_command" in payload["nextAction"]
+    assert "does not need a plugin grant" not in payload["nextAction"]
     assert service_module.os.environ["PATH"] == refreshed_path
 
 

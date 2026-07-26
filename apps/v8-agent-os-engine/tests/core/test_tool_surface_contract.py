@@ -79,7 +79,7 @@ def test_plugin_status_surface_keeps_on_demand_cli_help_and_real_extension_summa
                         },
                     }
                 ],
-                "nextAction": "Use run_system_command for the CLI.",
+                "nextAction": "Authorize component gh, then call plugin_cli with an actionId and typed parameters.",
             },
             ensure_ascii=False,
         ),
@@ -91,12 +91,14 @@ def test_plugin_status_surface_keeps_on_demand_cli_help_and_real_extension_summa
     rendered = str(result.content)
 
     assert "Command: gh" in rendered
-    assert "without a plugin grant" in rendered
+    assert "authorize the smallest component scope" in rendered
+    assert "plugin_cli" in rendered
+    assert "without a plugin grant" not in rendered
     assert "Work seamlessly with GitHub" in rendered
     assert "Grant component IDs (not runtime names)" in rendered
     assert "Skill name=gh; grant component=github-cli-skill" in rendered
     assert "Official GitHub CLI usage patterns." in rendered
-    assert "run_system_command" in rendered
+    assert "run_system_command" not in rendered
     assert not rendered.lstrip().startswith("{")
 
 

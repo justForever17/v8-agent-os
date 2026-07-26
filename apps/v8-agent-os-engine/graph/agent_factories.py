@@ -1385,6 +1385,11 @@ def build_agent_node(
                 **dict(inherited_route_context or {}),
                 "taskBrief": delegated_task_brief or {},
             }
+            delegated_plugin_references = list(
+                (delegated_task_brief or {}).get("pluginReferences")
+                or (delegated_task_brief or {}).get("plugin_references")
+                or []
+            )
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
                     _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access)
@@ -1446,6 +1451,7 @@ def build_agent_node(
                 runtime_kind="subagent",
                 delegation_id=inherited_route_context.get("delegationId"),
                 delegation_depth=inherited_route_context.get("delegationDepth"),
+                plugin_references=delegated_plugin_references,
             )
             try:
                 if atomic_delegated_worker:
@@ -1577,6 +1583,7 @@ def build_agent_node(
                 runtime_kind="subagent",
                 delegation_id=inherited_route_context.get("delegationId"),
                 delegation_depth=inherited_route_context.get("delegationDepth"),
+                plugin_references=delegated_plugin_references,
             )
             try:
                 with bind_runtime_context(

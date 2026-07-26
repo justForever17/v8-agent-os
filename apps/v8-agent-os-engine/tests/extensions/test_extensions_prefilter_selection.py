@@ -262,6 +262,191 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         )
         self.assertIn("docx", with_grant.selected_skill_names)
 
+    def test_explicit_plugin_package_bypasses_generic_prefilter_but_keeps_skill_reader(self):
+        service = ExtensionsRuntimeService()
+        plugin_skill_root = str((Path.home() / ".agents" / "skills" / "plugin-docx").resolve())
+        ordinary_skill_root = str((Path.home() / ".agents" / "skills" / "ordinary-writing").resolve())
+        inventory = {
+            "items": [
+                {
+                    "name": "plugin-docx",
+                    "skillName": "plugin-docx",
+                    "skillId": "office-suite:plugin-docx",
+                    "skillRoot": plugin_skill_root,
+                    "path": plugin_skill_root,
+                    "description": "Create DOCX files through the selected plugin package.",
+                },
+                {
+                    "name": "ordinary-writing",
+                    "skillName": "ordinary-writing",
+                    "skillId": "global:ordinary-writing",
+                    "skillRoot": ordinary_skill_root,
+                    "path": ordinary_skill_root,
+                    "description": "Write ordinary reports.",
+                },
+            ],
+            "rootDescriptors": [],
+        }
+        ordinary_mcp = _FakeTool("query-docs", "Documentation lookup", "context7")
+        plugin_mcp = _FakeTool("get_design_context", "Read selected plugin context", "figma")
+        plugin_cli_tool = _FakeTool("plugin_cli", "Run an authorized plugin CLI action", "")
+        policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical",
+            "modelId": None,
+            "role": None,
+            "reason": "disabled",
+            "skills": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+            "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+        }
+        privileged_projection = {
+            "grants": [
+                {
+                    "pluginId": "office-suite",
+                    "grantId": "grant-office",
+                    "scope": "task",
+                    "componentIds": ["plugin-docx", "figma", "office-cli"],
+                }
+            ],
+            "skills": [
+                {
+                    "pluginId": "office-suite",
+                    "grantId": "grant-office",
+                    "id": "plugin-docx",
+                    "installedRoots": [plugin_skill_root],
+                }
+            ],
+            "mcpTools": [plugin_mcp],
+            "cliProfiles": [
+                {
+                    "pluginId": "office-suite",
+                    "grantId": "grant-office",
+                    "id": "office-cli",
+                }
+            ],
+            "uiAdapters": [],
+            "providerAdapters": [],
+        }
+        plugin_channel = {
+            "active": True,
+            "mode": "privileged_bundle",
+            "prefilterBypassed": True,
+            "requestedPluginIds": ["office-suite"],
+            "installedPluginIds": ["office-suite"],
+            "projectedPluginIds": ["office-suite"],
+            "blocked": [],
+            "projection": privileged_projection,
+        }
+
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service, "_resolve_skill_inventory", return_value=inventory
+        ), patch.object(
+            service,
+            "_resolve_event_context",
+            return_value={
+                "session_id": "s1",
+                "run_id": "r1",
+                "runtime_kind": "chat",
+                "agent_id": "supervisor",
+                "plugin_references": [
+                    {
+                        "pluginId": "office-suite",
+                        "componentIds": ["plugin-docx", "figma", "office-cli"],
+                        "scope": "task",
+                    }
+                ],
+            },
+        ), patch.object(
+            plugin_manager_service,
+            "projection_for",
+            return_value=privileged_projection,
+        ), patch.object(
+            plugin_manager_service,
+            "resolve_privileged_channel",
+            return_value=plugin_channel,
+        ), patch.object(
+            plugin_manager_service,
+            "plugin_owned_components",
+            return_value=({plugin_skill_root}, {"figma"}),
+        ):
+            bundle = service.build_contextual_route(
+                user_query="Use the selected office plugin to create a report",
+                available_tools=[ordinary_mcp, plugin_mcp, plugin_cli_tool, fetch_skill_instructions],
+            )
+
+        tool_names = {tool.name for tool in bundle.filtered_tools}
+        self.assertEqual(bundle.candidate_summary.get("pluginChannelMode"), "privileged_bundle")
+        self.assertTrue(bundle.candidate_summary.get("pluginPrefilterBypassed"))
+        self.assertEqual(bundle.selected_skill_names, ["plugin-docx"])
+        self.assertNotIn("query-docs", tool_names)
+        self.assertIn("get_design_context", tool_names)
+        self.assertIn("plugin_cli", tool_names)
+        self.assertIn("fetch_skill_instructions", tool_names)
+        self.assertIn("[Plugin Package]", bundle.prompt_addition)
+        self.assertNotIn("[Extensions Runtime]", bundle.prompt_addition)
+
+    def test_explicit_plugin_package_fails_closed_when_projection_resolution_breaks(self):
+        service = ExtensionsRuntimeService()
+        ordinary_skill_root = str((Path.home() / ".agents" / "skills" / "ordinary-writing").resolve())
+        ordinary_mcp = _FakeTool("query-docs", "Documentation lookup", "context7")
+        policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical",
+            "modelId": None,
+            "role": None,
+            "reason": "disabled",
+            "skills": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+            "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+        }
+        inventory = {
+            "items": [
+                {
+                    "name": "ordinary-writing",
+                    "skillName": "ordinary-writing",
+                    "skillId": "global:ordinary-writing",
+                    "skillRoot": ordinary_skill_root,
+                    "path": ordinary_skill_root,
+                    "description": "Write ordinary reports.",
+                }
+            ],
+            "rootDescriptors": [],
+        }
+
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service, "_resolve_skill_inventory", return_value=inventory
+        ), patch.object(
+            service,
+            "_resolve_event_context",
+            return_value={
+                "session_id": "s1",
+                "run_id": "r1",
+                "runtime_kind": "chat",
+                "agent_id": "supervisor",
+                "plugin_references": [
+                    {"pluginId": "office-suite", "componentIds": ["office-cli"], "scope": "task"}
+                ],
+            },
+        ), patch.object(
+            plugin_manager_service, "plugin_owned_components", return_value=(set(), set())
+        ), patch.object(
+            plugin_manager_service, "projection_for", side_effect=RuntimeError("projection unavailable")
+        ):
+            bundle = service.build_contextual_route(
+                user_query="Use the selected office plugin",
+                available_tools=[ordinary_mcp, fetch_skill_instructions],
+            )
+
+        tool_names = {tool.name for tool in bundle.filtered_tools}
+        self.assertEqual(bundle.candidate_summary.get("pluginChannelMode"), "privileged_bundle_error")
+        self.assertTrue(bundle.candidate_summary.get("pluginPrefilterBypassed"))
+        self.assertEqual(bundle.candidate_summary.get("pluginBlockedCount"), 1)
+        self.assertEqual(bundle.selected_skill_names, [])
+        self.assertNotIn("query-docs", tool_names)
+        self.assertIn("fetch_skill_instructions", tool_names)
+        self.assertIn("plugin_route_unavailable", bundle.prompt_addition)
+
     def test_video_skill_selection_uses_all_skill_name_description_candidates(self):
         service = ExtensionsRuntimeService()
         skills = [
@@ -377,7 +562,7 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
 
         self.assertEqual(bundle.candidate_summary["skillEntries"][0]["description"], skills[0]["description"])
         self.assertIn(
-            "Extension candidates are optional references. Use them only when they materially help the current task.",
+            "Extension candidates are optional discovery references, not a selected route or a reason to ask the user.",
             bundle.prompt_addition,
         )
         self.assertNotIn("候选预筛：当前使用第 1 层 shortlist。", bundle.prompt_addition)

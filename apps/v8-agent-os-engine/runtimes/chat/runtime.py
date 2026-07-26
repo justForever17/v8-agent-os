@@ -9376,6 +9376,10 @@ class ChatRuntime:
             "workspace_path": chat_run.scope_result.binding.workspace_path,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
+            "plugin_references": list(getattr(chat_run.prepared, "plugin_references", None) or []),
+            "pluginReferences": list(getattr(chat_run.prepared, "plugin_references", None) or []),
+            "plugin_authorizations": list(getattr(chat_run.prepared, "plugin_authorizations", None) or []),
+            "pluginAuthorizations": list(getattr(chat_run.prepared, "plugin_authorizations", None) or []),
         }
         safety_approval_mode = self._safety_approval_mode_for_run(chat_run)
         context["safety_approval_mode"] = safety_approval_mode

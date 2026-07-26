@@ -1231,9 +1231,9 @@ class PluginManagerService:
         )
         if named_usage.get("cli"):
             next_action = (
-                "Use the listed CLI command through run_system_command; an available CLI does not need a plugin grant. "
-                "Component IDs are grant identifiers, never Skill or MCP tool names. Only authorize a matching Skill/MCP "
-                "component when its full instructions or tool projection is actually needed, then use the listed runtime name."
+                "Component IDs are grant identifiers, never CLI actions, Skill names, or MCP tool names. Authorize the "
+                "smallest matching component set, then invoke an authorized CLI through plugin_cli using actionId plus "
+                "typed parameters. Never bypass the plugin grant with run_system_command."
             )
         elif normalized_id:
             next_action = (
@@ -1276,10 +1276,11 @@ class PluginManagerService:
         return "\n".join(
             [
                 "[Plugin Catalog]",
-                "Curated plugins are optional, on-demand capabilities. This inventory bypasses generic Skill/MCP prefiltering.",
+                "Curated plugins are optional, on-demand capabilities. This catalog hint does not alter ordinary Extensions routing.",
+                "Only a current explicit reference to a registered, installed plugin activates the privileged package route and bypasses generic Skill/MCP prefiltering for that request.",
                 "Plugin Skills are portable instructions; upstream references to a particular agent host do not make them host-exclusive.",
                 "Call plugin_broker(status) to load the exact on-demand route; no Skill body, MCP schema, or CLI help is loaded by this hint.",
-                "If status reports an available CLI, use that command through run_system_command without creating a plugin grant. Component IDs are grant identifiers, not Skill or MCP tool names; authorize only when full Skill/MCP projection or delegation actually needs it.",
+                "Plugin CLI actions require a minimal task grant and run through plugin_cli(actionId, typed parameters); never route catalog-owned CLI commands through run_system_command. Component IDs are grant identifiers, not CLI actions, Skill names, or MCP tool names.",
                 *lines,
                 "[/Plugin Catalog]",
             ]
@@ -4280,6 +4281,233 @@ class PluginManagerService:
             "cliProfiles": cli_entries,
             "uiAdapters": adapters,
             "providerAdapters": provider_adapters,
+        }
+
+    def resolve_privileged_channel(
+        self,
+        *,
+        plugin_references: Iterable[dict[str, Any]] | None,
+        session_id: str,
+        run_id: str | None,
+        grantee_type: str = "supervisor",
+        grantee_id: str = "supervisor",
+        delegation_id: str | None = None,
+        projection: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the explicit plugin-package lane without replacing Extensions.
+
+        Ordinary Skills and MCP servers remain owned by the Extensions runtime.
+        The privileged package lane is activated only when the current request
+        explicitly references a catalogued, installed plugin.  The returned
+        projection is still grant-backed and component-bounded; installation or
+        selection alone never authorizes an invocation.
+        """
+
+        requested_components: dict[str, set[str]] = {}
+        requested_plugin_ids: list[str] = []
+        requested_scopes: dict[str, set[str]] = {}
+        for raw_reference in list(plugin_references or []):
+            if not isinstance(raw_reference, dict):
+                continue
+            plugin_id = str(raw_reference.get("pluginId") or raw_reference.get("plugin_id") or "").strip().lower()
+            if not plugin_id:
+                continue
+            if plugin_id not in requested_components:
+                requested_plugin_ids.append(plugin_id)
+                requested_components[plugin_id] = set()
+                requested_scopes[plugin_id] = set()
+            requested_components[plugin_id].update(
+                str(item).strip()
+                for item in list(raw_reference.get("componentIds") or raw_reference.get("component_ids") or [])
+                if str(item).strip()
+            )
+            requested_scopes[plugin_id].add(
+                str(raw_reference.get("scope") or "task").strip().lower() or "task"
+            )
+
+        empty_projection = {
+            "grants": [],
+            "skills": [],
+            "mcpTools": [],
+            "cliProfiles": [],
+            "uiAdapters": [],
+            "providerAdapters": [],
+        }
+        if not requested_plugin_ids:
+            return {
+                "active": False,
+                "mode": "extensions_default",
+                "prefilterBypassed": False,
+                "requestedPluginIds": [],
+                "installedPluginIds": [],
+                "projectedPluginIds": [],
+                "blocked": [],
+                "projection": empty_projection,
+            }
+
+        installations = self._installation_rows()
+        installed_plugin_ids: list[str] = []
+        blocked: list[dict[str, Any]] = []
+        active_component_ids: dict[str, set[str]] = {}
+        for plugin_id in requested_plugin_ids:
+            manifest = plugin_catalog_service.get(plugin_id)
+            if manifest is None:
+                blocked.append({"pluginId": plugin_id, "status": "invalid", "reason": "not_registered"})
+                continue
+            installation = self._installation_payload(installations.get(plugin_id))
+            if not installation["installed"]:
+                blocked.append({"pluginId": plugin_id, "status": "not_installed", "reason": "not_installed"})
+                continue
+            installed_plugin_ids.append(plugin_id)
+            installed_components = self._active_installed_component_ids(manifest)
+            active_component_ids[plugin_id] = installed_components
+            requested = requested_components[plugin_id]
+            if not requested:
+                blocked.append(
+                    {
+                        "pluginId": plugin_id,
+                        "status": "invalid",
+                        "reason": "components_required",
+                        "configurationUrl": f"/admin/plugins?plugin={plugin_id}",
+                    }
+                )
+                continue
+            missing_components = sorted(requested - installed_components)
+            if missing_components:
+                blocked.append(
+                    {
+                        "pluginId": plugin_id,
+                        "status": "invalid",
+                        "reason": "component_not_installed",
+                        "componentIds": missing_components,
+                        "configurationUrl": f"/admin/plugins?plugin={plugin_id}",
+                    }
+                )
+
+        active = bool(installed_plugin_ids)
+        if not active:
+            return {
+                "active": False,
+                "mode": "extensions_default",
+                "prefilterBypassed": False,
+                "requestedPluginIds": requested_plugin_ids,
+                "installedPluginIds": [],
+                "projectedPluginIds": [],
+                "blocked": blocked,
+                "projection": empty_projection,
+            }
+
+        readiness_by_plugin: dict[str, dict[str, Any]] = {}
+        ready_plugin_ids: set[str] = set()
+        for plugin_id in installed_plugin_ids:
+            readiness = self.readiness_status(plugin_id)
+            readiness_by_plugin[plugin_id] = readiness
+            if readiness.get("ready"):
+                ready_plugin_ids.add(plugin_id)
+                continue
+            blocked.append(
+                {
+                    "pluginId": plugin_id,
+                    "status": readiness.get("status") or "invalid",
+                    "reason": readiness.get("status") or "plugin_unavailable",
+                    "configurationUrl": readiness.get("configurationUrl"),
+                }
+            )
+
+        full_projection = projection if projection is not None else self.projection_for(
+            session_id=session_id,
+            run_id=run_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            delegation_id=delegation_id,
+        )
+        selected_grants: list[dict[str, Any]] = []
+        selected_grant_ids: set[str] = set()
+        projected_plugin_ids: set[str] = set()
+        for raw_grant in list(full_projection.get("grants") or []):
+            grant = dict(raw_grant or {})
+            plugin_id = str(grant.get("pluginId") or "").strip().lower()
+            if plugin_id not in ready_plugin_ids:
+                continue
+            requested = requested_components.get(plugin_id) or set()
+            allowed = sorted(
+                requested.intersection(active_component_ids.get(plugin_id) or set()).intersection(
+                    set(grant.get("componentIds") or [])
+                )
+            )
+            if not allowed:
+                continue
+            grant_id = str(grant.get("grantId") or "").strip()
+            if not grant_id:
+                continue
+            grant["componentIds"] = allowed
+            selected_grants.append(grant)
+            selected_grant_ids.add(grant_id)
+            projected_plugin_ids.add(plugin_id)
+
+        def _component_projection_items(key: str) -> list[dict[str, Any]]:
+            selected: list[dict[str, Any]] = []
+            for raw_item in list(full_projection.get(key) or []):
+                item = dict(raw_item or {})
+                plugin_id = str(item.get("pluginId") or "").strip().lower()
+                component_id = str(item.get("componentId") or item.get("id") or "").strip()
+                grant_id = str(item.get("grantId") or "").strip()
+                if (
+                    plugin_id in projected_plugin_ids
+                    and grant_id in selected_grant_ids
+                    and component_id in (requested_components.get(plugin_id) or set())
+                ):
+                    selected.append(item)
+            return selected
+
+        selected_mcp_tools: list[Any] = []
+        for tool in list(full_projection.get("mcpTools") or []):
+            metadata = dict(getattr(tool, "metadata", None) or {})
+            plugin_id = str(metadata.get("plugin_id") or "").strip().lower()
+            component_id = str(metadata.get("plugin_component_id") or "").strip()
+            grant_id = str(metadata.get("plugin_grant_id") or "").strip()
+            if (
+                plugin_id in projected_plugin_ids
+                and grant_id in selected_grant_ids
+                and component_id in (requested_components.get(plugin_id) or set())
+            ):
+                selected_mcp_tools.append(tool)
+
+        structurally_blocked_plugin_ids = {
+            str(item.get("pluginId") or "").strip().lower()
+            for item in blocked
+            if str(item.get("reason") or "") in {"components_required", "component_not_installed"}
+        }
+        for plugin_id in sorted(ready_plugin_ids):
+            if plugin_id not in projected_plugin_ids and plugin_id not in structurally_blocked_plugin_ids:
+                readiness = readiness_by_plugin[plugin_id]
+                blocked.append(
+                    {
+                        "pluginId": plugin_id,
+                        "status": "invalid",
+                        "reason": "grant_missing",
+                        "configurationUrl": readiness.get("configurationUrl"),
+                    }
+                )
+
+        privileged_projection = {
+            "grants": selected_grants,
+            "skills": _component_projection_items("skills"),
+            "mcpTools": selected_mcp_tools,
+            "cliProfiles": _component_projection_items("cliProfiles"),
+            "uiAdapters": _component_projection_items("uiAdapters"),
+            "providerAdapters": _component_projection_items("providerAdapters"),
+        }
+        return {
+            "active": True,
+            "mode": "privileged_bundle",
+            "prefilterBypassed": True,
+            "requestedPluginIds": requested_plugin_ids,
+            "installedPluginIds": installed_plugin_ids,
+            "projectedPluginIds": sorted(projected_plugin_ids),
+            "requestedScopes": {key: sorted(values) for key, values in requested_scopes.items()},
+            "blocked": blocked,
+            "projection": privileged_projection,
         }
 
     async def execute_cli(

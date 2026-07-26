@@ -2467,6 +2467,7 @@ def execute_supervisor_turn(
         else ""
     )
     explicit_coordination_send = _looks_like_session_coordination_request(user_query, session_id)
+    current_route_context = dict(state.get("current_route_context") or {})
     route_context_token = extensions_runtime_service.bind_execution_context(
         session_id=session_id,
         conversation_id=session_id,
@@ -2476,6 +2477,20 @@ def execute_supervisor_turn(
         workspace_path=state.get("workspace_path"),
         project_id=state.get("project_id"),
         runtime_kind="chat",
+        plugin_references=(
+            current_route_context.get("pluginReferences")
+            or current_route_context.get("plugin_references")
+            or state.get("pluginReferences")
+            or state.get("plugin_references")
+            or []
+        ),
+        plugin_authorizations=(
+            current_route_context.get("pluginAuthorizations")
+            or current_route_context.get("plugin_authorizations")
+            or state.get("pluginAuthorizations")
+            or state.get("plugin_authorizations")
+            or []
+        ),
     )
     try:
         visible_supervisor_tools = filter_visible_tools_for_actor(

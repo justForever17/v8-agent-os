@@ -743,7 +743,11 @@ def _render_plugin_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
                     if not isinstance(cli_item, dict):
                         continue
                     command = _short_text(cli_item.get("command") or cli_item.get("componentId") or "CLI", 80)
-                    availability = "available; call through run_system_command without a plugin grant" if cli_item.get("available") else "unavailable"
+                    availability = (
+                        "available; authorize the smallest component scope and call plugin_cli with an actionId plus typed parameters"
+                        if cli_item.get("available")
+                        else "unavailable"
+                    )
                     lines.append(f"  - Command: {command} ({availability})")
                     help_text = str(cli_item.get("help") or "").strip()
                     if help_text:

@@ -5,6 +5,7 @@ import concurrent.futures
 import contextvars
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -35,6 +36,9 @@ from erc.runtime_registry import runtime_registry
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.extensions.skills.lexicons import get_extension_lexicon_registry
 from runtimes.extensions.skills.loader import SkillLoader
+
+
+logger = logging.getLogger(__name__)
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.-]+|[\u4e00-\u9fff]{2,}")
@@ -3285,11 +3289,26 @@ class ExtensionsRuntimeService:
         query_tokens, query_profile, query_analysis_cache_hit, lexicon_state, market_enrichment = _analyze_extensions_query(query_text)
         context_payload = self._resolve_event_context()
         plugin_projection: dict[str, Any] = {"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []}
+        plugin_channel: dict[str, Any] = {
+            "active": False,
+            "mode": "extensions_default",
+            "prefilterBypassed": False,
+            "requestedPluginIds": [],
+            "installedPluginIds": [],
+            "projectedPluginIds": [],
+            "blocked": [],
+        }
         plugin_owned_skill_roots: set[str] = set()
         plugin_owned_mcp_servers: set[str] = set()
+        explicit_plugin_references = list(
+            context_payload.get("plugin_references")
+            or context_payload.get("pluginReferences")
+            or []
+        )
         try:
             from runtimes.plugin_manager.service import plugin_manager_service
 
+            plugin_owned_skill_roots, plugin_owned_mcp_servers = plugin_manager_service.plugin_owned_components()
             session_id = str(context_payload.get("session_id") or "").strip()
             run_id = str(context_payload.get("run_id") or "").strip() or None
             runtime_kind = str(context_payload.get("runtime_kind") or "chat").strip()
@@ -3304,9 +3323,53 @@ class ExtensionsRuntimeService:
                     grantee_id=agent_id,
                     delegation_id=delegation_id,
                 )
-            plugin_owned_skill_roots, plugin_owned_mcp_servers = plugin_manager_service.plugin_owned_components()
+            plugin_channel = plugin_manager_service.resolve_privileged_channel(
+                plugin_references=explicit_plugin_references,
+                session_id=session_id,
+                run_id=run_id,
+                grantee_type=grantee_type,
+                grantee_id=agent_id,
+                delegation_id=delegation_id,
+                projection=plugin_projection,
+            )
+            if plugin_channel.get("active"):
+                plugin_projection = dict(plugin_channel.get("projection") or {})
         except Exception:
-            pass
+            logger.exception("Plugin package route resolution failed")
+            if explicit_plugin_references:
+                requested_plugin_ids = []
+                for item in explicit_plugin_references:
+                    if not isinstance(item, dict):
+                        continue
+                    plugin_id = str(item.get("pluginId") or item.get("plugin_id") or "").strip().lower()
+                    if plugin_id and plugin_id not in requested_plugin_ids:
+                        requested_plugin_ids.append(plugin_id)
+                plugin_projection = {
+                    "grants": [],
+                    "skills": [],
+                    "mcpTools": [],
+                    "cliProfiles": [],
+                    "uiAdapters": [],
+                    "providerAdapters": [],
+                }
+                plugin_channel = {
+                    "active": True,
+                    "mode": "privileged_bundle_error",
+                    "prefilterBypassed": True,
+                    "requestedPluginIds": requested_plugin_ids,
+                    "installedPluginIds": [],
+                    "projectedPluginIds": [],
+                    "blocked": [
+                        {
+                            "pluginId": plugin_id,
+                            "status": "invalid",
+                            "reason": "plugin_route_unavailable",
+                        }
+                        for plugin_id in requested_plugin_ids
+                    ],
+                    "projection": plugin_projection,
+                }
+        privileged_plugin_channel_active = bool(plugin_channel.get("active"))
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         prefilter_policy = self._resolve_prefilter_policy()
         skill_policy = dict(prefilter_policy.get("skills") or {})
@@ -3364,6 +3427,8 @@ class ExtensionsRuntimeService:
                 if str(item.get("skillRoot") or item.get("path") or "").strip()
             )
         ]
+        if privileged_plugin_channel_active:
+            skill_entries = []
         skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
         skill_inventory_revision = str(
             skill_inventory.get("revision")
@@ -3479,6 +3544,8 @@ class ExtensionsRuntimeService:
             for tool in available_tools
             if _is_mcp_tool(tool) and _mcp_tool_server_name(tool) not in plugin_owned_mcp_servers
         ]
+        if privileged_plugin_channel_active:
+            mcp_tools = []
         base_tools = [
             tool
             for tool in available_tools
@@ -3865,6 +3932,26 @@ class ExtensionsRuntimeService:
                 if server_name not in selected_mcp_server_keys:
                     selected_mcp_server_keys.append(server_name)
 
+        if privileged_plugin_channel_active:
+            skill_routing_mode = "privileged_plugin_bundle"
+            mcp_routing_mode = "privileged_plugin_bundle"
+            skill_stage2_enabled = False
+            mcp_stage2_enabled = False
+            skill_state = {
+                "mode": skill_routing_mode,
+                "reason": "The current request explicitly selected an installed plugin package; generic Skill prefiltering and injection were bypassed.",
+                "timedOut": False,
+                "cacheHit": False,
+                "bypassed": True,
+            }
+            mcp_state = {
+                "mode": mcp_routing_mode,
+                "reason": "The current request explicitly selected an installed plugin package; generic MCP prefiltering and injection were bypassed.",
+                "timedOut": False,
+                "cacheHit": False,
+                "bypassed": True,
+            }
+
         selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
         skill_stage1_entries = [_skill_entry_payload(item) for item in skill_stage1_shortlist]
@@ -3906,18 +3993,47 @@ class ExtensionsRuntimeService:
         distinct_route_modes = _unique_preserve_order([mode for mode in route_modes if str(mode or "").strip()])
         prefilter_mode = distinct_route_modes[0] if len(distinct_route_modes) == 1 else "mixed"
         prefilter_reason = (
-            prefilter_reason
-            or skill_state.get("reason")
-            or mcp_state.get("reason")
-            or ""
+            str(skill_state.get("reason") or "")
+            if privileged_plugin_channel_active
+            else (
+                prefilter_reason
+                or skill_state.get("reason")
+                or mcp_state.get("reason")
+                or ""
+            )
         )
 
-        lines = [
-            "\n[Extensions Runtime]",
-            "- Extension candidates are optional discovery references, not a selected route or a reason to ask the user. Prefer the owning local/native capability; fetch or invoke a candidate only when the user named it or it materially improves the method or evidence.",
-            f"- Skill candidates: {len(selected_skill_names)} / installed: {len(skill_entries)}",
-            f"- MCP tool candidates: {len(exposed_mcp_tool_names)} / connected tools: {len(mcp_tools)}",
-        ]
+        if privileged_plugin_channel_active:
+            if str(plugin_channel.get("mode") or "") == "privileged_bundle_error":
+                lines = [
+                    "\n[Plugin Package]",
+                    "- The current request explicitly selected a plugin package, but its registered/install/grant projection could not be resolved.",
+                    "- Generic Extensions Skill/MCP prefiltering and injection are disabled for this route so the failure cannot silently fall back to an unrelated capability.",
+                    "- Do not claim the plugin was authorized or invoked. Report the blocked package route and use the plugin status/configuration path to recover.",
+                ]
+            else:
+                lines = [
+                    "\n[Plugin Package]",
+                    "- The current request explicitly selected a registered, installed plugin package.",
+                    "- Generic Extensions Skill/MCP prefiltering and injection are disabled for this route; only the grant-bounded package projection below is exposed.",
+                    "- Installation, selection, and authorization are distinct facts. Only projected components may be invoked, and every invocation is revalidated.",
+                ]
+            blocked_plugins = [
+                dict(item)
+                for item in list(plugin_channel.get("blocked") or [])
+                if isinstance(item, dict)
+            ]
+            for item in blocked_plugins:
+                lines.append(
+                    f"- Blocked plugin component: {item.get('pluginId') or 'unknown'} | status={item.get('status') or 'invalid'} | reason={item.get('reason') or 'unavailable'}"
+                )
+        else:
+            lines = [
+                "\n[Extensions Runtime]",
+                "- Extension candidates are optional discovery references, not a selected route or a reason to ask the user. Prefer the owning local/native capability; fetch or invoke a candidate only when the user named it or it materially improves the method or evidence.",
+                f"- Skill candidates: {len(selected_skill_names)} / installed: {len(skill_entries)}",
+                f"- MCP tool candidates: {len(exposed_mcp_tool_names)} / connected tools: {len(mcp_tools)}",
+            ]
         if cross_runtime_escape:
             lines.append("- Cross-runtime escape is active because the task indicates a blocked or runtime-switching flow.")
         if any(mode.startswith("llm_rerank") for mode in (skill_routing_mode, mcp_routing_mode)):
@@ -3958,7 +4074,7 @@ class ExtensionsRuntimeService:
                 )
             if plugin_projection.get("cliProfiles"):
                 lines.append("- Authorized CLI actions use plugin_cli actionId plus typed parameters; arbitrary argv and shell concatenation are forbidden.")
-        lines.append("[/Extensions Runtime]")
+        lines.append("[/Plugin Package]" if privileged_plugin_channel_active else "[/Extensions Runtime]")
 
         return ExtensionRouteBundle(
             prompt_addition="\n".join(lines),
@@ -4010,6 +4126,12 @@ class ExtensionsRuntimeService:
                 "pluginSkillCount": len(list(plugin_projection.get("skills") or [])),
                 "pluginMcpToolCount": len(plugin_mcp_tools),
                 "pluginCliProfileCount": len(list(plugin_projection.get("cliProfiles") or [])),
+                "pluginChannelMode": str(plugin_channel.get("mode") or "extensions_default"),
+                "pluginPrefilterBypassed": bool(plugin_channel.get("prefilterBypassed")),
+                "pluginRequestedIds": list(plugin_channel.get("requestedPluginIds") or []),
+                "pluginInstalledIds": list(plugin_channel.get("installedPluginIds") or []),
+                "pluginProjectedIds": list(plugin_channel.get("projectedPluginIds") or []),
+                "pluginBlockedCount": len(list(plugin_channel.get("blocked") or [])),
                 "modelId": prefilter_model_id,
                 "role": prefilter_role,
                 "reason": prefilter_reason or None,
@@ -4195,6 +4317,15 @@ class ExtensionsRuntimeService:
         normalized_query = " ".join(_tokenize(user_query)) or str(user_query or "").strip().lower()
         tool_signature = ",".join(sorted(_tool_name(tool) for tool in supervisor_tools if _tool_name(tool)))
         inventory_revision = self._inventory_revision_key(skill_inventory)
+        plugin_reference_signature = json.dumps(
+            context_payload.get("plugin_references")
+            or context_payload.get("pluginReferences")
+            or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
         cache_key = "|".join(
             [
                 session_id,
@@ -4208,6 +4339,7 @@ class ExtensionsRuntimeService:
                 str(mcp_limit),
                 tool_signature,
                 lexicon_signature,
+                plugin_reference_signature,
                 ",".join(
                     str(item.get("grantId") or "")
                     for item in __import__("runtimes.plugin_manager.service", fromlist=["plugin_manager_service"])
@@ -4265,7 +4397,24 @@ class ExtensionsRuntimeService:
     def _resolve_event_context(self) -> dict[str, Any]:
         payload = dict(_EXTENSION_CONTEXT.get() or {})
         runtime_context = get_runtime_context()
-        for key in ("session_id", "conversation_id", "run_id", "agent_id", "workspace_id", "workspace_path", "project_id", "runtime_kind"):
+        for key in (
+            "session_id",
+            "conversation_id",
+            "run_id",
+            "agent_id",
+            "workspace_id",
+            "workspace_path",
+            "project_id",
+            "runtime_kind",
+            "delegation_id",
+            "delegationId",
+            "delegation_depth",
+            "delegationDepth",
+            "plugin_references",
+            "pluginReferences",
+            "plugin_authorizations",
+            "pluginAuthorizations",
+        ):
             if payload.get(key) is None and runtime_context.get(key) is not None:
                 payload[key] = runtime_context.get(key)
         return payload

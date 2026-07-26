@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
+
+from core.process_launch import run_windowless
 
 try:  # pragma: no cover - exercised by fallback tests
     import psutil  # type: ignore
@@ -39,7 +40,7 @@ def _collect_gpu_percent() -> int | None:
     if not shutil.which("nvidia-smi"):
         return None
     try:
-        completed = subprocess.run(
+        completed = run_windowless(
             [
                 "nvidia-smi",
                 "--query-gpu=utilization.gpu",

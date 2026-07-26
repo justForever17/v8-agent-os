@@ -64,6 +64,18 @@ function isFilePath(value: string): boolean {
     || /^(?:Dockerfile|Makefile|Procfile|LICENSE|README|CHANGELOG|NOTICE)$/i.test(name);
 }
 
+function safeRelativeFilePath(value: unknown): string {
+  const path = normalizedPath(value).replace(/[?#].*$/, "");
+  if (
+    !path
+    || path.startsWith("/")
+    || /^[A-Za-z]:\//.test(path)
+    || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(path)
+    || /^(?:artifact|source|creative-media-job|toolobs|research|engineering):\/\//i.test(path)
+  ) return "";
+  return isFilePath(path) ? path : "";
+}
+
 function parseJsonCandidate(value: string): unknown {
   const candidate = value.trim();
   if (!(candidate.startsWith("{") || candidate.startsWith("[")) || candidate.length > 2_000_000) return value;
@@ -109,8 +121,8 @@ function firstPath(value: unknown): string {
       "file",
       "path",
     ]) {
-      const candidate = normalizedPath(record[key]);
-      if (isFilePath(candidate)) {
+      const candidate = safeRelativeFilePath(record[key]);
+      if (candidate) {
         found = candidate;
         return;
       }
@@ -146,7 +158,11 @@ function artifactProjection(
   if (raw.surfaceVisible === false || raw.surface_visible === false || isUserSuppliedArtifact(raw)) return null;
   const kind = text(raw.kind || raw.artifact_kind).toLowerCase();
   if (kind === "directory" || kind === "folder") return null;
-  const path = firstPath(raw) || null;
+  const metadata = recordOf(raw.metadata);
+  const storageClass = text(raw.storageClass || raw.storage_class || metadata.storageClass || metadata.storage_class).toLowerCase();
+  const pathPlane = text(raw.pathPlane || raw.path_plane || metadata.pathPlane || metadata.path_plane).toLowerCase();
+  const runtimePrivate = storageClass === "runtime_artifact" || pathPlane === "runtime" || pathPlane === "runtime_private";
+  const path = runtimePrivate ? null : firstPath(raw) || null;
   const artifactId = text(raw.artifactId || raw.artifact_id || raw.id) || null;
   const title = text(raw.displayLabel || raw.title);
   if (!path && !artifactId) return null;

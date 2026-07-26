@@ -1083,7 +1083,8 @@ class StorageManager:
                     except Exception:
                         existing = None
                     existing_version = getattr(existing, "defaultTemplateVersion", "") if existing else ""
-                    if existing_version != DEFAULT_SUBAGENT_TEMPLATE_VERSION and is_managed_default(agent_path):
+                    desired_version = str(agent_config.defaultTemplateVersion or DEFAULT_SUBAGENT_TEMPLATE_VERSION)
+                    if existing_version != desired_version and is_managed_default(agent_path):
                         backup_once(agent_path)
                         should_write = True
                 if should_write:

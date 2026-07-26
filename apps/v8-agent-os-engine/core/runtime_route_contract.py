@@ -84,6 +84,43 @@ def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
             "changed-file or artifact references per taskBriefId",
             "final verification command/check and machine-readable outcome",
         ]
+    elif normalized_kind == "creative_media":
+        task_briefs = [
+            {
+                "taskBriefId": task_id,
+                "goal": "Execute one exact media operation and return its governed artifact proof.",
+                "context": {
+                    "creativeMediaExecutionContract": {
+                        "schema": "v8.creative_media_execution.v1",
+                        "execution": {
+                            "tool": "creative_media_jobs",
+                            "arguments": {
+                                "action": "create",
+                                "request": {
+                                    "modality": "image",
+                                    "operationKind": "image.generate",
+                                    "prompt": "<exact user-approved media instruction>",
+                                },
+                            },
+                        },
+                    }
+                },
+                "writeRequired": True,
+                "readOnly": False,
+                "writeSet": [".v8/creative-media/"],
+                "expectedOutputs": ["One session-bound media artifact plus job proof"],
+                "acceptanceContract": [
+                    "The persisted job keeps the exact requested operationKind",
+                    "The artifact and proof refs retain current session/run/workspace lineage",
+                ],
+                "constraints": [],
+                "detailRefs": [],
+            }
+        ]
+        proof_expectations = [
+            "session-bound Creative Media artifact reference",
+            "durable job/provider/model proof without raw provider payload",
+        ]
     else:
         task_briefs = [
             {
@@ -162,6 +199,7 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
             "Keep each goal to one sentence. For read-only Research, omit optional context before omitting a known fact domain.",
             "For research, put every currently known independent fact domain in the same initial ID/goal arrays; both arrays must have equal length and order. Do not route only the first domain and defer already-known domains to repair episodes.",
             "For engineering, one taskBrief is one coherent independently executable and acceptable work unit. Split separable implementation, generated results/documentation, and final verification into dependent briefs; do not assign one worker an unrelated project-wide writeSet or rename the same oversized brief as a repair.",
+            "For Creative Media, when operationKind and all required inputs are already known, put the exact job in taskBriefs[].context.creativeMediaExecutionContract using schema v8.creative_media_execution.v1. The runtime executes that contract without re-inferring operationKind. Omit the contract only when the Creative Media Director must genuinely plan unresolved choices.",
             "Engineering writeSet entries are paths relative to the original bound workspace. Never copy an absolute managed-worktree path from a handoff. Declare every generated file deterministically, or confine variable names below one declared output directory; do not let versioned/cache/report variants escape the declared scope.",
             "Omit optional arrays when empty. For task ordering use the plural dependencies array; singular dependency is a read-only legacy alias.",
             "Preserve object and array types; use [] or omit an optional array, never an empty string.",

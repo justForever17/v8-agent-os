@@ -32,6 +32,7 @@ from core.multimodal_payload_adapter import (
     describe_multimodal_payload_shape,
     infer_media_kind,
 )
+from core.process_launch import run_windowless
 from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
@@ -306,7 +307,7 @@ def _transcode_audio_file_to_mp3(source_path: Path, target_path: Path) -> None:
         "64k",
         str(target_path),
     ]
-    result = subprocess.run(
+    result = run_windowless(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

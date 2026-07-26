@@ -178,7 +178,7 @@ class PluginReferenceSelection(BaseModel):
 class ComposerInlineReferenceSelection(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    kind: Literal["command", "skill", "subagent_family", "plugin"]
+    kind: Literal["command", "skill", "subagent_family", "plugin", "canvas_resource"]
     id: str = Field(min_length=1, max_length=240)
     label: str = Field(min_length=1, max_length=240)
 
@@ -239,6 +239,7 @@ class ChatRequestData(BaseModel):
     safety_approval_mode: Optional[str] = Field(default=None, alias="safetyApprovalMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
+    canvas_supervisor_direct: Optional[bool] = Field(default=None, alias="canvasSupervisorDirect")
     plugin_references: Optional[List[PluginReferenceSelection]] = Field(default=None, alias="pluginReferences")
     composer_presentation: Optional[ComposerPresentationSelection] = Field(default=None, alias="composerPresentation")
     context_session_refs: Optional[List[ContextSessionReference]] = Field(

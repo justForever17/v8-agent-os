@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -34,6 +35,31 @@ from erc.runtime_context import bind_runtime_context
 
 
 logger = logging.getLogger(__name__)
+
+
+class RuntimeEpisodeCancelled(asyncio.CancelledError):
+    """Raised when the durable episode or its parent run is cancelled."""
+
+
+class RuntimeEpisodeDeadlineExceeded(TimeoutError):
+    """Raised when a governed runtime episode exceeds its wall-clock budget."""
+
+    def __init__(self, episode_id: str, deadline_seconds: float) -> None:
+        self.episode_id = episode_id
+        self.deadline_seconds = deadline_seconds
+        super().__init__(
+            f"Runtime episode {episode_id or '<unknown>'} exceeded its "
+            f"{deadline_seconds:g}s execution deadline."
+        )
+
+
+class CreativeMediaExecutionContractError(ValueError):
+    """Raised when a typed Creative Media execution loses or changes meaning."""
+
+
+_EPISODE_CANCEL_POLL_SECONDS = 0.25
+_EPISODE_CANCEL_SETTLE_SECONDS = 1.0
+_CREATIVE_MEDIA_EPISODE_DEADLINE_SECONDS = 300.0
 
 
 def _normalize_typed_continuation_request(
@@ -592,6 +618,8 @@ class RuntimeEpisodeRunner:
         target_kind = str(episode.get("targetKind") or episode.get("target_kind") or "local_runtime").strip() or "local_runtime"
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        if self._episode_cancellation_requested(episode_id, run_id=run_id):
+            return
         self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
             self._heartbeat(episode_id, "executor starting")
@@ -631,24 +659,25 @@ class RuntimeEpisodeRunner:
                 self._emit("runtime.episode.waiting", episode=waiting, session_id=session_id, run_id=run_id)
                 return
             elif target_kind == "network_peer":
-                handoff = await self._execute_network_peer_target(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_network_peer_target(episode))
             elif target_kind == "external_worker":
-                handoff = await self._execute_external_worker_target(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_external_worker_target(episode))
             elif kind == "research":
-                handoff = await self._execute_research(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_research(episode))
             elif kind == "engineering":
-                handoff = await self._execute_engineering(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_engineering(episode))
             elif kind == "creative_media":
-                handoff = await self._execute_creative_media(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_creative_media(episode))
             elif kind == "computer_use":
-                handoff = await self._execute_computer_use(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_computer_use(episode))
             elif kind == "rpa":
-                handoff = await self._execute_rpa(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_rpa(episode))
             elif kind == "delegation":
-                handoff = await self._execute_delegation(episode)
+                handoff = await self._await_episode_executor(episode, self._execute_delegation(episode))
             else:
                 handoff = self._generic_handoff(episode, status="failed", summary=f"No executor registered for {kind}.")
 
+            self._raise_if_episode_cancelled(episode_id, run_id=run_id)
             persisted_handoff = db.add_runtime_episode_handoff(
                 episode_id=episode_id,
                 handoff=handoff,
@@ -698,7 +727,11 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            if handoff_status in {"failed", "blocked"} and self._can_retry(episode):
+            if (
+                handoff_status in {"failed", "blocked"}
+                and handoff.get("recoverable") is not False
+                and self._can_retry(episode)
+            ):
                 retry_episode = db.retry_runtime_episode(
                     episode_id,
                     error_message=str(handoff.get("errorMessage") or handoff.get("compactSummary") or "episode failed; retry scheduled"),
@@ -745,6 +778,31 @@ class RuntimeEpisodeRunner:
             self._resume_cross_episode_dependents(completed or {**episode, "state": final_state})
             self._maybe_schedule_chat_handoff_resume(completed or {**episode, "state": final_state})
             self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
+        except RuntimeEpisodeCancelled:
+            return
+        except RuntimeEpisodeDeadlineExceeded as exc:
+            failed = db.complete_runtime_episode(
+                episode_id,
+                state="failed",
+                error_code="episode_deadline_exceeded",
+                error_message=str(exc),
+                metadata={"recoverable": False, "deadlineSeconds": exc.deadline_seconds},
+            )
+            self._emit(
+                "runtime.episode.failed",
+                episode=failed or {**episode, "state": "failed"},
+                error={
+                    "code": "episode_deadline_exceeded",
+                    "message": str(exc),
+                    "recoverable": False,
+                    "deadlineSeconds": exc.deadline_seconds,
+                },
+                session_id=session_id,
+                run_id=run_id,
+            )
+            self._resume_cross_episode_dependents(failed or {**episode, "state": "failed"})
+            self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
+            self._maybe_resume_parent_episode(failed or episode, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             if self._can_retry(episode):
@@ -779,7 +837,126 @@ class RuntimeEpisodeRunner:
             self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
             self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
 
+    def _episode_cancellation_requested(self, episode_id: str, *, run_id: str | None = None) -> bool:
+        persisted_episode: dict[str, Any] = {}
+        if episode_id:
+            try:
+                persisted_episode = db.get_runtime_episode(episode_id) or {}
+            except Exception:
+                persisted_episode = {}
+        if str(persisted_episode.get("state") or "").strip().lower() in {"cancelled", "canceled"}:
+            return True
+        effective_run_id = str(
+            run_id
+            or persisted_episode.get("run_id")
+            or persisted_episode.get("runId")
+            or ""
+        ).strip()
+        if not effective_run_id:
+            return False
+        try:
+            run = db.get_run_record(effective_run_id) or {}
+        except Exception:
+            return False
+        return str(run.get("status") or "").strip().lower() in {"cancelled", "canceled"}
+
+    def _raise_if_episode_cancelled(self, episode_id: str, *, run_id: str | None = None) -> None:
+        if self._episode_cancellation_requested(episode_id, run_id=run_id):
+            raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
+
+    async def _stop_awaitable_task(
+        self,
+        task: asyncio.Task,
+        *,
+        episode_id: str,
+        settle_seconds: float = _EPISODE_CANCEL_SETTLE_SECONDS,
+    ) -> None:
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=max(0.05, settle_seconds))
+        except asyncio.CancelledError:
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Runtime episode %s executor did not settle within %.2fs after cancellation.",
+                episode_id or "<unknown>",
+                settle_seconds,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Runtime episode %s executor stopped with %s during cancellation: %s",
+                episode_id or "<unknown>",
+                type(exc).__name__,
+                exc,
+            )
+
+    async def _await_cancellable_task(
+        self,
+        episode_id: str,
+        awaitable: Any,
+        *,
+        run_id: str | None = None,
+        progress: str | None = None,
+        heartbeat_interval_seconds: float = 20.0,
+        deadline_seconds: float | None = None,
+    ) -> Any:
+        task = asyncio.create_task(awaitable)
+        loop = asyncio.get_running_loop()
+        next_heartbeat_at = loop.time()
+        deadline_at = (
+            loop.time() + max(0.01, float(deadline_seconds))
+            if deadline_seconds is not None
+            else None
+        )
+        try:
+            while True:
+                if self._episode_cancellation_requested(episode_id, run_id=run_id):
+                    await self._stop_awaitable_task(task, episode_id=episode_id)
+                    raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
+                if task.done():
+                    return await task
+                now = loop.time()
+                if deadline_at is not None and now >= deadline_at:
+                    await self._stop_awaitable_task(task, episode_id=episode_id)
+                    raise RuntimeEpisodeDeadlineExceeded(episode_id, float(deadline_seconds or 0.0))
+                if progress and now >= next_heartbeat_at:
+                    self._heartbeat(episode_id, progress)
+                    next_heartbeat_at = now + max(0.1, heartbeat_interval_seconds)
+                timeout = _EPISODE_CANCEL_POLL_SECONDS
+                if progress:
+                    timeout = min(timeout, max(0.01, next_heartbeat_at - now))
+                if deadline_at is not None:
+                    timeout = min(timeout, max(0.01, deadline_at - now))
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+                except asyncio.TimeoutError:
+                    continue
+        except asyncio.CancelledError:
+            await self._stop_awaitable_task(task, episode_id=episode_id)
+            raise
+
+    async def _await_episode_executor(self, episode: dict[str, Any], awaitable: Any) -> Any:
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        return await self._await_cancellable_task(
+            episode_id,
+            awaitable,
+            run_id=run_id,
+            deadline_seconds=self._episode_executor_deadline_seconds(episode),
+        )
+
+    @staticmethod
+    def _episode_executor_deadline_seconds(episode: dict[str, Any]) -> float | None:
+        kind = str(episode.get("kind") or "").strip().lower()
+        if kind == "creative_media":
+            return _CREATIVE_MEDIA_EPISODE_DEADLINE_SECONDS
+        return None
+
     def _heartbeat(self, episode_id: str, progress: str) -> None:
+        if self._episode_cancellation_requested(episode_id):
+            return
         db.heartbeat_runtime_episode(
             episode_id,
             worker_id=self.worker_id,
@@ -788,14 +965,12 @@ class RuntimeEpisodeRunner:
         )
 
     async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
-        task = asyncio.create_task(awaitable)
-        while not task.done():
-            self._heartbeat(episode_id, progress)
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=interval_seconds)
-            except asyncio.TimeoutError:
-                continue
-        return await task
+        return await self._await_cancellable_task(
+            episode_id,
+            awaitable,
+            progress=progress,
+            heartbeat_interval_seconds=interval_seconds,
+        )
 
     def _emit(
         self,
@@ -807,6 +982,8 @@ class RuntimeEpisodeRunner:
         **payload: Any,
     ) -> None:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if topic.endswith(".progress") and self._episode_cancellation_requested(episode_id, run_id=run_id):
+            return
         event_episode = episode
         if topic == "runtime.episode.progress":
             event_episode = {
@@ -3949,6 +4126,565 @@ class RuntimeEpisodeRunner:
             deduped.append(normalized)
         return deduped
 
+    @staticmethod
+    def _typed_creative_media_executions(episode: dict[str, Any]) -> list[dict[str, Any]]:
+        """Read exact Creative Media execution truth without re-inferring it.
+
+        Prose-only task briefs remain on the Creative Media Director path. When
+        a typed execution exists, its operation and resource lineage are already
+        resolved and must survive the durable episode unchanged.
+        """
+
+        inputs = dict(episode.get("inputs") or {})
+        need = dict(episode.get("need") or {})
+        if not inputs and isinstance(need.get("inputs"), dict):
+            inputs = dict(need.get("inputs") or {})
+        executions: list[dict[str, Any]] = []
+        structured_task_ids: set[str] = set()
+        input_level_contract = False
+
+        def append_contract(value: Any, *, source: str, task_brief_id: str = "") -> None:
+            nonlocal input_level_contract
+            if not isinstance(value, dict):
+                raise CreativeMediaExecutionContractError(f"{source} must be an object")
+            contract = dict(value)
+            schema = str(contract.get("schema") or "").strip()
+            canvas_contract: dict[str, Any] = {}
+            if schema == "v8.creative_canvas_task.v1":
+                canvas_contract = contract
+            elif schema != "v8.creative_media_execution.v1":
+                raise CreativeMediaExecutionContractError(
+                    f"{source} has unsupported schema {schema or '<missing>'}"
+                )
+            execution = (
+                dict(contract.get("execution") or {})
+                if isinstance(contract.get("execution"), dict)
+                else {}
+            )
+            tool_name = str(execution.get("tool") or "").strip()
+            arguments = (
+                dict(execution.get("arguments") or {})
+                if isinstance(execution.get("arguments"), dict)
+                else {}
+            )
+            action = str(arguments.get("action") or "").strip()
+            request = (
+                dict(arguments.get("request") or {})
+                if isinstance(arguments.get("request"), dict)
+                else {}
+            )
+            output = (
+                dict(contract.get("output") or {})
+                if isinstance(contract.get("output"), dict)
+                else {}
+            )
+            output_kind = str(output.get("kind") or "").strip()
+            output_slot = str(output.get("slot") or "").strip()
+            if output_kind:
+                request["outputKind"] = output_kind
+            if output_slot:
+                request["outputSlot"] = output_slot
+            if tool_name != "creative_media_jobs" or action != "create":
+                raise CreativeMediaExecutionContractError(
+                    f"{source} must preserve creative_media_jobs(action=create)"
+                )
+            if not str(request.get("modality") or "").strip() or not str(request.get("operationKind") or "").strip():
+                raise CreativeMediaExecutionContractError(
+                    f"{source} must preserve request.modality and request.operationKind"
+                )
+
+            if canvas_contract:
+                operation_id = str(canvas_contract.get("canvasOperationId") or "").strip()
+                if not operation_id or str(request.get("canvasOperationId") or "").strip() != operation_id:
+                    raise CreativeMediaExecutionContractError(
+                        "Canvas execution operation lineage changed inside the runtime episode"
+                    )
+                resources = (
+                    dict(canvas_contract.get("resources") or {})
+                    if isinstance(canvas_contract.get("resources"), dict)
+                    else {}
+                )
+                resource_source_ids = {
+                    str(item).strip()
+                    for item in list(resources.get("sourceIds") or [])
+                    if str(item).strip()
+                }
+                request_source_ids = {
+                    str(item).strip()
+                    for item in [
+                        request.get("sourceId"),
+                        *(
+                            list(request.get("sourceIds") or [])
+                            if isinstance(request.get("sourceIds"), list)
+                            else []
+                        ),
+                    ]
+                    if str(item or "").strip()
+                }
+                if request_source_ids != resource_source_ids:
+                    raise CreativeMediaExecutionContractError(
+                        "Canvas execution source lineage changed inside the runtime episode"
+                    )
+                if str(request.get("maskSourceId") or "").strip() != str(resources.get("maskSourceId") or "").strip():
+                    raise CreativeMediaExecutionContractError(
+                        "Canvas execution mask lineage changed inside the runtime episode"
+                    )
+
+            canonical_contract = json.dumps(
+                contract,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            executions.append(
+                {
+                    "schema": "v8.creative_media_episode_execution.v1",
+                    "sourceSchema": schema,
+                    "source": source,
+                    "taskBriefId": task_brief_id,
+                    "tool": tool_name,
+                    "arguments": {"action": action, "request": request},
+                    "contractDigest": hashlib.sha256(canonical_contract.encode("utf-8")).hexdigest(),
+                    "canvasOperationId": str(request.get("canvasOperationId") or "").strip(),
+                    "outputKind": output_kind,
+                    "outputSlot": output_slot,
+                }
+            )
+            if task_brief_id:
+                structured_task_ids.add(task_brief_id)
+            else:
+                input_level_contract = True
+
+        for key in ("creativeMediaExecutionContract", "creative_media_execution_contract"):
+            if key in inputs:
+                append_contract(inputs.get(key), source=f"inputs.{key}")
+
+        explicit_request = (
+            dict(inputs.get("request") or {})
+            if isinstance(inputs.get("request"), dict)
+            else {}
+        )
+        if (
+            explicit_request
+            and str(explicit_request.get("modality") or "").strip()
+            and str(explicit_request.get("operationKind") or "").strip()
+        ):
+            append_contract(
+                {
+                    "schema": "v8.creative_media_execution.v1",
+                    "execution": {
+                        "tool": "creative_media_jobs",
+                        "arguments": {"action": "create", "request": explicit_request},
+                    },
+                },
+                source="inputs.request",
+            )
+
+        task_briefs = [
+            dict(item)
+            for item in list(inputs.get("taskBriefs") or inputs.get("tasks") or [])
+            if isinstance(item, dict)
+        ]
+        for index, task_brief in enumerate(task_briefs):
+            context = (
+                dict(task_brief.get("context") or {})
+                if isinstance(task_brief.get("context"), dict)
+                else {}
+            )
+            task_brief_id = str(
+                task_brief.get("taskBriefId") or f"creative-task-{index + 1}"
+            ).strip()
+            if "creativeMediaExecutionContract" in context:
+                append_contract(
+                    context.get("creativeMediaExecutionContract"),
+                    source=f"taskBriefs[{index}].context.creativeMediaExecutionContract",
+                    task_brief_id=task_brief_id,
+                )
+            elif "canvasExecutionContract" in context:
+                append_contract(
+                    context.get("canvasExecutionContract"),
+                    source=f"taskBriefs[{index}].context.canvasExecutionContract",
+                    task_brief_id=task_brief_id,
+                )
+
+        if executions and task_briefs and not input_level_contract:
+            uncovered = [
+                str(item.get("taskBriefId") or "").strip()
+                for item in task_briefs
+                if str(item.get("taskBriefId") or "").strip() not in structured_task_ids
+            ]
+            if uncovered:
+                raise CreativeMediaExecutionContractError(
+                    "A Creative Media episode cannot mix exact and re-inferred task semantics: "
+                    + ", ".join(uncovered[:8])
+                )
+
+        deduped: list[dict[str, Any]] = []
+        seen_digests: set[str] = set()
+        for execution in executions:
+            digest = str(execution.get("contractDigest") or "")
+            if digest in seen_digests:
+                continue
+            seen_digests.add(digest)
+            deduped.append(execution)
+        return deduped
+
+    async def _execute_typed_creative_media(
+        self,
+        episode: dict[str, Any],
+        executions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Execute exact job contracts through the existing governed facade."""
+
+        from core.tools.native.creative_media_facade import creative_media_jobs
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip()
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        inputs = dict(episode.get("inputs") or {})
+        scope_binding = dict(db.get_session_scope_binding(session_id) or {}) if session_id else {}
+        workspace_path = str(
+            inputs.get("workspacePath")
+            or inputs.get("workspace_path")
+            or scope_binding.get("workspace_path")
+            or scope_binding.get("workspacePath")
+            or ""
+        ).strip()
+        workspace_id = str(
+            inputs.get("workspaceId")
+            or inputs.get("workspace_id")
+            or episode.get("workspaceId")
+            or episode.get("workspace_id")
+            or scope_binding.get("workspace_id")
+            or scope_binding.get("workspaceId")
+            or ""
+        ).strip()
+        project_id = str(
+            inputs.get("projectId")
+            or inputs.get("project_id")
+            or episode.get("projectId")
+            or episode.get("project_id")
+            or scope_binding.get("project_id")
+            or scope_binding.get("projectId")
+            or ""
+        ).strip()
+        bound_workspace_path = str(
+            scope_binding.get("workspace_path") or scope_binding.get("workspacePath") or ""
+        ).strip()
+        if workspace_path and bound_workspace_path and (
+            os.path.normcase(os.path.abspath(workspace_path))
+            != os.path.normcase(os.path.abspath(bound_workspace_path))
+        ):
+            raise CreativeMediaExecutionContractError(
+                "Creative Media episode workspace conflicts with the current session scope binding"
+            )
+        artifact_refs: list[str] = []
+        proof_refs: list[str] = []
+        records: list[dict[str, Any]] = []
+        job_refs: list[str] = []
+
+        def failed_handoff(
+            *,
+            code: str,
+            message: str,
+            execution: dict[str, Any],
+            job: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return build_handoff_ref(
+                producer_episode_id=episode_id,
+                kind="creative_media",
+                compact_summary=f"Creative Media exact execution failed: {message[:600]}",
+                status="failed",
+                confidence="high",
+                consumer_hint=(
+                    "Report the exact Creative Media failure; do not reinterpret the operation "
+                    "or replace it with another media operation."
+                ),
+                extra={
+                    "errorCode": code,
+                    "errorMessage": message[:1200],
+                    "recoverable": False,
+                    "handoffStage": "typed_execution_failed",
+                    "contractDigest": execution.get("contractDigest"),
+                    "taskBriefId": execution.get("taskBriefId"),
+                    "jobId": (job or {}).get("jobId"),
+                    "artifactRefs": artifact_refs,
+                    "proofRefs": proof_refs,
+                },
+            )
+
+        for index, execution in enumerate(executions):
+            request = dict((execution.get("arguments") or {}).get("request") or {})
+            operation_kind = str(request.get("operationKind") or "").strip()
+            canvas_operation_id = str(request.get("canvasOperationId") or "").strip()
+            job: dict[str, Any] | None = None
+            result: dict[str, Any] = {}
+            if canvas_operation_id:
+                existing_jobs = [
+                    dict(item)
+                    for item in creative_media_runtime.list_jobs()
+                    if str(item.get("canvasOperationId") or "").strip() == canvas_operation_id
+                ]
+                if len(existing_jobs) > 1:
+                    return failed_handoff(
+                        code="creative_media_execution_duplicate_lineage",
+                        message=(
+                            "More than one durable Creative Media job owns the same Canvas operation; "
+                            "refusing to create or select another job."
+                        ),
+                        execution=execution,
+                    )
+                if existing_jobs:
+                    job = existing_jobs[0]
+            self._heartbeat(
+                episode_id,
+                f"creative_media: execute typed {operation_kind or 'job'} ({index + 1}/{len(executions)})",
+            )
+            self._emit(
+                "runtime.episode.progress",
+                episode=episode,
+                session_id=session_id or None,
+                run_id=run_id or None,
+                progress={
+                    "stage": "creative_media_typed_execution",
+                    "operationKind": operation_kind,
+                    "taskBriefId": execution.get("taskBriefId"),
+                    "index": index + 1,
+                    "total": len(executions),
+                },
+            )
+            if job is None:
+                with bind_runtime_context(
+                    runtime_kind="creative_media",
+                    actor_role="runtime",
+                    agent_id="creative-media-runtime",
+                    runtime_episode_id=episode_id,
+                    session_id=session_id or None,
+                    run_id=run_id or None,
+                    project_id=project_id or None,
+                    workspace_id=workspace_id or None,
+                    workspace_path=workspace_path or None,
+                    canvas_operation_id=canvas_operation_id or None,
+                ):
+                    raw_result = await creative_media_jobs.ainvoke(
+                        {
+                            "action": str(
+                                (execution.get("arguments") or {}).get("action") or "create"
+                            ),
+                            "request": request,
+                        }
+                    )
+                try:
+                    result = json.loads(str(raw_result or ""))
+                except (TypeError, ValueError):
+                    return failed_handoff(
+                        code="creative_media_execution_result_invalid",
+                        message="The governed Creative Media facade returned an invalid result envelope.",
+                        execution=execution,
+                    )
+                if not isinstance(result, dict):
+                    return failed_handoff(
+                        code="creative_media_execution_result_invalid",
+                        message="The governed Creative Media facade returned a non-object result envelope.",
+                        execution=execution,
+                    )
+                result_status = str(result.get("status") or "").strip().lower()
+                if result.get("ok") is False or result_status in {
+                    "failed",
+                    "blocked",
+                    "cancelled",
+                    "canceled",
+                }:
+                    error = result.get("error") if isinstance(result.get("error"), dict) else {}
+                    return failed_handoff(
+                        code=str(error.get("code") or "creative_media_exact_job_failed"),
+                        message=str(
+                            error.get("message")
+                            or result.get("summary")
+                            or "Creative Media job failed."
+                        ),
+                        execution=execution,
+                    )
+
+                result_refs = [
+                    str(item).strip()
+                    for item in list(result.get("refs") or [])
+                    if str(item).strip()
+                ]
+                job_id = next((item for item in result_refs if item.startswith("cm_")), "")
+                if not job_id:
+                    return failed_handoff(
+                        code="creative_media_job_lineage_missing",
+                        message="The exact Creative Media execution returned no durable job reference.",
+                        execution=execution,
+                    )
+                job = creative_media_runtime.get_job(job_id, refresh=False)
+            else:
+                job_id = str(job.get("jobId") or "").strip()
+                result = {"ok": True, "status": job.get("status"), "refs": [job_id]}
+            while job and str(job.get("status") or "").strip().lower() not in {
+                "succeeded",
+                "completed",
+                "done",
+                "failed",
+                "cancelled",
+                "canceled",
+            }:
+                await asyncio.sleep(0.75)
+                job = await creative_media_runtime.refresh_job(job_id)
+            if not job:
+                return failed_handoff(
+                    code="creative_media_job_lineage_missing",
+                    message=f"Creative Media job {job_id} is missing from the durable job ledger.",
+                    execution=execution,
+                )
+
+            job_request = dict(job.get("request") or {})
+            lineage_expectations = {
+                "modality": str(request.get("modality") or "").strip(),
+                "operationKind": operation_kind,
+                "canvasOperationId": canvas_operation_id,
+                "sourceId": str(request.get("sourceId") or "").strip(),
+                "maskSourceId": str(request.get("maskSourceId") or "").strip(),
+                "sessionId": session_id,
+                "runId": run_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "outputKind": str(execution.get("outputKind") or "").strip(),
+                "outputSlot": str(execution.get("outputSlot") or "").strip(),
+            }
+            for key, expected in lineage_expectations.items():
+                if not expected:
+                    continue
+                actual = str(job.get(key) or job_request.get(key) or "").strip()
+                if actual != expected:
+                    return failed_handoff(
+                        code="creative_media_execution_lineage_drift",
+                        message=f"Creative Media job changed {key} from {expected!r} to {actual!r}.",
+                        execution=execution,
+                        job=job,
+                    )
+            job_workspace_path = str(
+                job.get("workspacePath") or job_request.get("workspacePath") or ""
+            ).strip()
+            if workspace_path and (
+                not job_workspace_path
+                or os.path.normcase(os.path.abspath(job_workspace_path))
+                != os.path.normcase(os.path.abspath(workspace_path))
+            ):
+                return failed_handoff(
+                    code="creative_media_execution_workspace_drift",
+                    message="Creative Media job workspace lineage no longer matches the runtime episode.",
+                    execution=execution,
+                    job=job,
+                )
+
+            status = str(job.get("status") or "").strip().lower()
+            if status not in {"succeeded", "completed", "done"}:
+                return failed_handoff(
+                    code="creative_media_exact_job_failed",
+                    message=str(
+                        job.get("error")
+                        or f"Creative Media job ended with status={status or 'unknown'}."
+                    ),
+                    execution=execution,
+                    job=job,
+                )
+            artifacts = [
+                dict(item)
+                for item in list(job.get("artifacts") or [])
+                if isinstance(item, dict)
+            ]
+            current_artifact_refs = [
+                str(item.get("artifactId") or item.get("id") or "").strip()
+                for item in artifacts
+                if str(item.get("artifactId") or item.get("id") or "").strip()
+            ]
+            if not current_artifact_refs:
+                return failed_handoff(
+                    code="creative_media_delivery_evidence_missing",
+                    message="Creative Media job succeeded without a registered artifact reference.",
+                    execution=execution,
+                    job=job,
+                )
+            artifact_refs.extend(current_artifact_refs)
+            job_ref = f"creative-media-job://{job_id}"
+            job_refs.append(job_ref)
+            proof_refs.append(job_ref)
+            if str(result.get("detailRef") or "").strip():
+                proof_refs.append(str(result.get("detailRef") or "").strip())
+            records.append(
+                {
+                    "tool": "creative_media_jobs",
+                    "toolCallId": f"{episode_id}:typed:{index + 1}",
+                    "taskBriefId": execution.get("taskBriefId"),
+                    "contractDigest": execution.get("contractDigest"),
+                    "operationKind": operation_kind,
+                    "outputKind": execution.get("outputKind"),
+                    "outputSlot": execution.get("outputSlot"),
+                    "jobId": job_id,
+                    "status": status,
+                    "artifactRefs": current_artifact_refs,
+                }
+            )
+
+        artifact_refs = list(dict.fromkeys(artifact_refs))[:24]
+        proof_refs = list(dict.fromkeys(proof_refs))[:24]
+        evidence = {
+            "schemaVersion": "creative-execution-evidence/v1",
+            "sourceRuntimeEpisodeId": episode_id,
+            "records": records,
+            "artifactRefs": artifact_refs,
+            "proofRefs": proof_refs,
+            "missingEvidence": [],
+        }
+        return build_handoff_ref(
+            producer_episode_id=episode_id,
+            kind="creative_media",
+            compact_summary=(
+                f"Creative Media completed {len(records)} exact typed execution(s) "
+                "with governed artifact proof."
+            ),
+            status="ready",
+            confidence="high",
+            consumer_hint=(
+                "Consume the session-bound artifact and proof refs; the operation was "
+                "executed without semantic re-inference."
+            ),
+            extra={
+                "artifactRefs": artifact_refs,
+                "proofRefs": proof_refs,
+                "jobRefs": job_refs,
+                "creativeExecutionEvidence": evidence,
+                "executionContractDigests": [
+                    item.get("contractDigest") for item in executions
+                ],
+                "taskBriefIds": [
+                    str(item.get("taskBriefId") or "").strip()
+                    for item in executions
+                    if str(item.get("taskBriefId") or "").strip()
+                ],
+                "coveredTaskBriefIds": [
+                    str(item.get("taskBriefId") or "").strip()
+                    for item in executions
+                    if str(item.get("taskBriefId") or "").strip()
+                ],
+                "taskBriefCount": len(
+                    {
+                        str(item.get("taskBriefId") or "").strip()
+                        for item in executions
+                        if str(item.get("taskBriefId") or "").strip()
+                    }
+                ),
+                "coverageComplete": True,
+                "terminalEpisode": True,
+                "remainingHandoffsExpected": 0,
+                "handoffStage": "typed_execution_delivered",
+                "recoverable": False,
+            },
+        )
+
     async def _execute_creative_media(self, episode: dict[str, Any]) -> dict[str, Any]:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "")
         self._heartbeat(episode_id, "creative_media: prepare execution")
@@ -3970,6 +4706,10 @@ class RuntimeEpisodeRunner:
         )
         try:
             from runtimes.creative_media.runtime import creative_media_runtime
+
+            exact_executions = self._typed_creative_media_executions(episode)
+            if exact_executions:
+                return await self._execute_typed_creative_media(episode, exact_executions)
 
             plan_context: dict[str, Any]
             if previous_handoff:
@@ -4175,6 +4915,24 @@ class RuntimeEpisodeRunner:
                     "creativeExecutionEvidence": creative_evidence,
                     "delegationHandoff": delegation_handoff,
                     "handoffStage": "delivered",
+                },
+            )
+        except CreativeMediaExecutionContractError as exc:
+            return build_handoff_ref(
+                producer_episode_id=episode_id,
+                kind="creative_media",
+                compact_summary=f"Creative Media execution contract was not preserved: {exc}",
+                status="failed",
+                confidence="high",
+                consumer_hint=(
+                    "Repair the typed execution at its producer; do not infer a replacement "
+                    "operation from media type or prose."
+                ),
+                extra={
+                    "errorCode": "creative_media_execution_contract_invalid",
+                    "errorMessage": str(exc),
+                    "recoverable": False,
+                    "handoffStage": "execution_contract_failed",
                 },
             )
         except Exception as exc:

@@ -62,6 +62,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { WorkbenchShell } from "@/components/workbench/WorkbenchShell";
 import type { CanvasTaskRequest } from "@/components/workbench/CreativeArtifactCanvas";
+import {
+    buildCreativeCanvasExecutionContract,
+    CREATIVE_CANVAS_CONTRACT_END,
+    CREATIVE_CANVAS_CONTRACT_START,
+} from "@/lib/creative-canvas-task-contract";
 import { createSessionOverviewDocument } from "@/lib/workbench";
 import { ingestWorkbenchRuntimeEvent, useWorkbenchStore } from "@/store/workbench-store";
 import {
@@ -3412,20 +3417,86 @@ export default function ChatClient() {
         return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
     };
 
-    const handleCanvasTask = async ({ text: instruction, refs }: CanvasTaskRequest) => {
-        const references = refs.slice(0, 100).map((reference, index) => {
-            const kind = reference.origin === "source" ? t("web.workbench.canvas.reference.source") : t("web.workbench.canvas.reference.artifact");
-            const details = [
-                `${index + 1}. ${kind}: ${reference.name}`,
-                `id=${reference.id}`,
-                reference.url ? `url=${reference.url}` : "",
-                reference.caption ? `caption=${reference.caption.replace(/\r?\n/g, " ").slice(0, 240)}` : "",
-            ].filter(Boolean);
-            return details.join(" | ");
+    const handleCanvasTask = async ({ text: instruction, refs, operation }: CanvasTaskRequest) => {
+        if (activeConversationRunning) return false;
+        const boundedRefs = refs.slice(0, 100);
+        const normalizedInstruction = instruction.trim() || operation.label;
+        const executionContract = buildCreativeCanvasExecutionContract({
+            instruction: normalizedInstruction,
+            refs: boundedRefs,
+            operation,
         });
-        const message = [instruction.trim(), "", t("web.workbench.canvas.reference.heading"), ...references].join("\n");
+        const canvasHumanMessage = t("web.workbench.canvas.humanMessage");
+        const message = [
+            canvasHumanMessage,
+            "",
+            `用户选择的画布动作：${operation.label}`,
+            `用户要求：${normalizedInstruction}`,
+            "",
+            CREATIVE_CANVAS_CONTRACT_START,
+            JSON.stringify(executionContract),
+            CREATIVE_CANVAS_CONTRACT_END,
+            "按合同执行，并在工具调用、任务与产物 lineage 中透传 canvasOperationId；所有来源必须按当前 session 严格解析，不得使用其他会话或最近产物兜底。",
+        ].join("\n");
+        const sourceRefs = boundedRefs.filter((reference) => (
+            reference.origin === "source"
+            && reference.mediaType !== "mask"
+            && reference.sourceKind !== "canvas_mask"
+        ));
+        const attachments = sourceRefs.map((reference) => ({
+            id: reference.id,
+            sourceId: reference.id,
+            sourceKind: reference.sourceKind || "web_upload",
+            resourceRole: "source",
+            url: reference.url,
+            publicUrl: reference.url,
+            previewUrl: reference.url,
+            name: reference.name,
+            mimeType: reference.mimeType,
+            mediaKind: reference.mediaType,
+            size: reference.size,
+            workspacePath: reference.workspacePath,
+            workspaceRelativePath: reference.workspaceRelativePath,
+            resourceRef: reference.resourceRef,
+            source: "os_web_canvas_source",
+            metadata: {
+                canvasOperationId: operation.operationId,
+                canvasActionId: operation.actionId,
+                resourceRole: "source",
+            },
+        }));
+        const pluginReferences = operation.binding?.kind === "mediakit"
+            ? [{
+                pluginId: operation.binding.pluginId,
+                name: "MediaKit 媒体工具",
+                scope: "task" as const,
+                componentIds: [operation.binding.componentId],
+            }]
+            : undefined;
         const syntheticEvent = { preventDefault() {} } as React.FormEvent<HTMLFormElement>;
-        return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
+        return Boolean(await handleSend(syntheticEvent, {
+            data: {
+                messageOverride: message,
+                composerPresentation: {
+                    text: canvasHumanMessage,
+                    references: [],
+                },
+                contextMentions: [{
+                    kind: "canvas_operation",
+                    id: operation.operationId,
+                    name: operation.label,
+                    label: operation.label,
+                    description: instruction.trim(),
+                    sourceType: operation.actionId,
+                }],
+                canvasSupervisorDirect: true,
+                ...(attachments.length ? {
+                    attachments,
+                    fileUrls: attachments.map((item) => String(item.url || "").trim()).filter(Boolean),
+                } : {}),
+                ...(pluginReferences ? { pluginReferences } : {}),
+            },
+        }));
     };
 
     const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
@@ -4031,6 +4102,7 @@ export default function ChatClient() {
                 todoStale={projectionTodoStale}
                 runtimeModel={runtimeStageModel}
                 workspacePath={scopeBinding?.workspacePath || mainWorkspacePath || ""}
+                sessionRunning={activeConversationRunning}
                 onSendFileLineComment={handleFileLineComment}
                 onSubmitCanvasTask={handleCanvasTask}
                 pendingConfirmation={effectivePendingApproval}

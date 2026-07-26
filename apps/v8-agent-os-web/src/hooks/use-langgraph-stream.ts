@@ -448,7 +448,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             const presentationReferences = Array.isArray(data.composerPresentation.references)
                 ? data.composerPresentation.references.filter((item: unknown) => Boolean(item) && typeof item === "object")
                 : [];
-            if (presentationText && presentationReferences.length > 0) {
+            if (presentationText) {
                 optimisticMetadata.composerPresentation = {
                     text: presentationText,
                     references: presentationReferences,

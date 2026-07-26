@@ -1,4 +1,4 @@
-export type ComposerInlineReferenceKind = "command" | "skill" | "subagent_family" | "plugin";
+export type ComposerInlineReferenceKind = "command" | "skill" | "subagent_family" | "plugin" | "canvas_resource";
 
 export type ComposerInlineReference = {
   kind: ComposerInlineReferenceKind;

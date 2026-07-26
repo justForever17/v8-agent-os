@@ -3,7 +3,7 @@ import sqlite3
 import threading
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
 from core.prompt_cache_gateway import prompt_cache_gateway
@@ -112,6 +112,38 @@ def test_adapter_marks_nested_provider_events_runtime_internal():
         "metadata": {"v8_model_scope": "runtime_internal"},
         "tags": ["v8:provider-internal"],
     }
+
+
+@pytest.mark.parametrize("provider_standard", ["openai", "anthropic"])
+def test_provider_wire_preserves_delegated_charter_as_system_authority(provider_standard):
+    native = _NativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="test-model",
+        provider_standard=provider_standard,
+        role="agent:creative-worker",
+        meta={"api_standard": provider_standard},
+        model_kwargs={},
+        builder=lambda: native,
+    )
+
+    adapter.invoke(
+        [
+            SystemMessage(content="<delegated_agent_operating_charter>runtime facts govern</delegated_agent_operating_charter>"),
+            SystemMessage(content="<system_persona>creative specialist</system_persona>"),
+            HumanMessage(content="Execute the bounded task."),
+        ]
+    )
+
+    assert isinstance(native.last_messages[0], SystemMessage)
+    rendered_system = str(native.last_messages[0].content)
+    if provider_standard == "anthropic":
+        rendered_system = str(native.last_messages[0].content)
+        assert native.last_messages[0].additional_kwargs["v8_system_message_count"] == 2
+    else:
+        assert isinstance(native.last_messages[1], SystemMessage)
+        rendered_system += str(native.last_messages[1].content)
+    assert "delegated_agent_operating_charter" in rendered_system
+    assert "system_persona" in rendered_system
 
 
 def test_responses_hosted_web_search_binds_only_after_explicit_model_opt_in():

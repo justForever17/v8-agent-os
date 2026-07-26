@@ -1,6 +1,12 @@
 import unittest
 
-from core.agents import AgentConfig, default_subagent_configs, dump_agent_md, parse_agent_md
+from core.agents import (
+    DEFAULT_SUBAGENT_TEMPLATE_VERSION,
+    AgentConfig,
+    default_subagent_configs,
+    dump_agent_md,
+    parse_agent_md,
+)
 from core.tools.native.creative_media_facade import (
     CREATIVE_MEDIA_ACTION_REGISTRY,
     creative_media_assets,
@@ -60,6 +66,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertIn("delegated task brief", agent.system_prompt)
             self.assertIn("Keep the solution surgical", agent.system_prompt)
             self.assertIn("Define evidence before claiming completion", agent.system_prompt)
+            self.assertIn("runtime-owned typed facts as executable evidence", agent.system_prompt)
+            self.assertTrue(
+                agent.defaultTemplateVersion.startswith(f"{DEFAULT_SUBAGENT_TEMPLATE_VERSION}:"),
+                agent.defaultTemplateVersion,
+            )
 
     def test_default_creative_media_subagents_are_seeded_safely(self):
         defaults = default_subagent_configs()
@@ -97,7 +108,8 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
                 ],
             )
             self.assertIn("docs/creative-runtime/V8_AGENT_OS_MULTIMEDIA_CREATIVE_RUNTIME_BLUEPRINT_ZH.md", agent.promptSourceRefs)
-            self.assertIn("Provider-facing image/video/music prompts default to English", agent.system_prompt)
+            self.assertIn("preserve the user's complete semantic constraints", agent.system_prompt)
+            self.assertIn("meaning-preserving translation rather than a keyword summary", agent.system_prompt)
             self.assertIn("Seedance 2.0 exact models", agent.system_prompt)
             self.assertIn("native audiovisual video models", agent.system_prompt)
             self.assertIn("creative_media_jobs", agent.system_prompt)
@@ -131,6 +143,11 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         self.assertIn("creative_media_quality(action='alpha_inspect')", psd_agent.system_prompt)
         self.assertIn("creative_media_assets(action='psd_compose_template')", psd_agent.system_prompt)
         self.assertIn("provider raw JSON", psd_agent.system_prompt)
+
+        director = next(agent for agent in creative_agents if agent.id == "creative-media-director")
+        self.assertIn("then execute that plan", director.system_prompt)
+        self.assertIn("runtime-owned `creativeMediaExecutionContract`", director.system_prompt)
+        self.assertIn("Do not compile a replacement recipe", director.system_prompt)
 
     def test_web_research_architect_has_research_runtime_binding(self):
         research_agent = next(agent for agent in default_subagent_configs() if agent.id == "web-research-architect")

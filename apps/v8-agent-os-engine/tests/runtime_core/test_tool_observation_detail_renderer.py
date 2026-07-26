@@ -104,6 +104,73 @@ def test_renderer_formats_generic_json_without_raw_json(tmp_path, monkeypatch) -
     assert '"recommendedNextAction"' not in result
 
 
+def test_runtime_route_receipt_resolves_current_terminal_handoff(tmp_path, monkeypatch) -> None:
+    import core.database as database_module
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-runtime-route",
+            "raw_ref": "toolobs://obs-runtime-route",
+            "tool_name": "runtime_broker",
+            "tool_call_id": "call-runtime-route",
+            "runtime_kind": "chat",
+            "surface": "tool_node",
+            "raw_chars": 120,
+            "visible_chars": 60,
+            "raw_sha256": "sha",
+            "raw_body": json.dumps(
+                {
+                    "ok": True,
+                    "mode": "route",
+                    "state": "queued",
+                    "queuedEpisodeId": "episode-terminal",
+                    "nextAction": "wait_episode",
+                }
+            ),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    class _RuntimeDb:
+        @staticmethod
+        def get_runtime_episode(episode_id: str):
+            assert episode_id == "episode-terminal"
+            return {"episodeId": episode_id, "state": "completed"}
+
+        @staticmethod
+        def list_runtime_episode_handoffs(episode_id: str):
+            assert episode_id == "episode-terminal"
+            return [
+                {
+                    "payload": {
+                        "kind": "creative_media",
+                        "status": "ready",
+                        "compactSummary": "The governed image artifact is ready.",
+                        "artifactRefs": ["art_terminal"],
+                        "proofRefs": ["creative-media-job://cm-terminal"],
+                    }
+                }
+            ]
+
+    monkeypatch.setattr(database_module, "db", _RuntimeDb())
+
+    result = render_tool_observation_detail("toolobs://obs-runtime-route", max_chars=2000)
+
+    assert result.startswith("Runtime episode current state")
+    assert "Status: completed" in result
+    assert "superseded by the durable terminal handoff" in result
+    assert "art_terminal" in result
+    assert "creative-media-job://cm-terminal" in result
+    assert "read_background_output" in result
+    assert "Status: queued" not in result
+
+
 def test_renderer_prefers_research_answer_pack(tmp_path, monkeypatch) -> None:
     import core.observability_db as observability_module
     from core.observability_db import ObservabilityDatabaseManager

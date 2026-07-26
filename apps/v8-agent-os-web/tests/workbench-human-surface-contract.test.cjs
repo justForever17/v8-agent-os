@@ -125,14 +125,36 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   assert.match(actions, /payload\.sessionId !== normalizedSessionId/);
   assert.match(workbench, /creative-canvas:\$\{sessionId\}/);
   assert.match(store, /isWorkbenchDocumentOwnedBySession/);
-  assert.match(canvas, /v8-web-creative-canvas:v1:\$\{sessionId\}/);
+  assert.match(canvas, /v8-web-creative-canvas:v2:\$\{sessionId\}/);
   assert.match(canvas, /\/api\/artifacts/);
   assert.match(canvas, /\/api\/sources/);
   assert.match(route, /inline: bool = Query\(False\)/);
   assert.match(route, /content_disposition_type="attachment" if download else "inline"/);
   assert.match(chat, /handleCanvasTask/);
   assert.match(chat, /messageOverride: message/);
+  assert.match(chat, /t\("web\.workbench\.canvas\.humanMessage"\)/);
+  assert.match(chat, /canvasSupervisorDirect: true/);
+  assert.match(chat, /canvas_operation/);
+  assert.match(chat, /sessionRunning=\{activeConversationRunning\}/);
+  assert.doesNotMatch(canvas, /<aside/);
+  assert.doesNotMatch(canvas, /taskPlaceholder/);
   assert.doesNotMatch(canvas, /dangerouslySetInnerHTML/);
+});
+
+test("Artifact subtitles keep runtime paths on the Runtime Surface", () => {
+  const artifacts = readText("apps/v8-agent-os-web/src/lib/artifacts.ts");
+  const projection = readText("packages/session-realtime/src/session-output-projection.ts");
+  const overview = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  assert.match(artifacts, /function resolveHumanArtifactSubtitle/);
+  assert.match(artifacts, /storageClass === "runtime_artifact"/);
+  assert.match(artifacts, /pathPlane === "runtime"/);
+  assert.match(artifacts, /return mimeType \|\| "application\/octet-stream"/);
+  assert.doesNotMatch(artifacts, /\|\| resolvedUrl\s*\|\| "暂无路径信息"/);
+  assert.match(projection, /const runtimePrivate = storageClass === "runtime_artifact"/);
+  assert.match(projection, /const path = runtimePrivate \? null : firstPath\(raw\) \|\| null/);
+  assert.match(overview, /function humanSafeOutputPath/);
+  assert.match(overview, /\^\[A-Za-z\]:\\\//);
+  assert.match(overview, /const safePath = humanSafeOutputPath\(output\.path \|\| ""\)/);
 });
 
 test("Collapsed Web task sidebar removes its rail, keeps hidden controls inert, and avoids duplicate workspace controls", () => {

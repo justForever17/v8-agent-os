@@ -1444,6 +1444,19 @@ def _repeat_sensitive_tool_call_signature(call: dict[str, Any]) -> tuple[str, st
             ):
                 return "runtime_handoff_lookup", "runtime_handoff_identifier_is_not_a_file"
             return name, "|".join([path.lower(), start_line, end_line])
+    if name in {
+        "creative_media_capabilities",
+        "creative_media_plan",
+        "creative_media_assets",
+        "creative_media_jobs",
+        "creative_media_edit",
+        "creative_media_quality",
+    }:
+        action = str(args.get("action") or "").strip().lower()
+        if name == "creative_media_jobs" and action in {"get", "list", "artifacts", "cancel"}:
+            return None
+        canonical_args = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return name, canonical_args[:2400]
     return None
 
 

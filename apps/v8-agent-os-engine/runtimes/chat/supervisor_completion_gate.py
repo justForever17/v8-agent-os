@@ -450,6 +450,276 @@ def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mappi
     return list(dict.fromkeys(evidence))[:32]
 
 
+def _typed_creative_artifact_requirements(
+    episode: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return typed artifact obligations and whether workspace-file proof remains required.
+
+    Creative Media artifacts and workspace files are different delivery planes.
+    Only a typed Creative contract with ``output.kind=artifact`` may opt a
+    write-required brief into governed artifact proof; prose such as
+    ``expectedOutputs`` is deliberately not classified here.
+    """
+
+    if str(episode.get("kind") or "").strip().lower() != "creative_media":
+        return [], True
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    requirements: list[dict[str, Any]] = []
+    artifact_brief_keys: set[str] = set()
+
+    def _append_contract(value: Any, *, brief_key: str = "") -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        contract = dict(value)
+        schema = str(contract.get("schema") or "").strip()
+        if schema not in {"v8.creative_canvas_task.v1", "v8.creative_media_execution.v1"}:
+            return False
+        output = contract.get("output") if isinstance(contract.get("output"), Mapping) else {}
+        if str(output.get("kind") or "").strip().lower() != "artifact":
+            return False
+        execution = contract.get("execution") if isinstance(contract.get("execution"), Mapping) else {}
+        arguments = execution.get("arguments") if isinstance(execution.get("arguments"), Mapping) else {}
+        request = arguments.get("request") if isinstance(arguments.get("request"), Mapping) else {}
+        if (
+            str(execution.get("tool") or "").strip() != "creative_media_jobs"
+            or str(arguments.get("action") or "").strip() != "create"
+            or not str(request.get("modality") or "").strip()
+            or not str(request.get("operationKind") or "").strip()
+        ):
+            return False
+        requirements.append(
+            {
+                "taskBriefKey": brief_key,
+                "request": dict(request),
+                "outputKind": "artifact",
+                "outputSlot": str(output.get("slot") or "").strip(),
+            }
+        )
+        if brief_key:
+            artifact_brief_keys.add(brief_key)
+        return True
+
+    for key in ("creativeMediaExecutionContract", "creative_media_execution_contract"):
+        if key in inputs:
+            _append_contract(inputs.get(key))
+
+    briefs = _episode_task_briefs(episode)
+    write_brief_keys: list[str] = []
+    for index, brief in enumerate(briefs):
+        brief_key = str(brief.get("taskBriefId") or f"brief:{index}").strip()
+        if _brief_requires_write(brief, episode_kind="creative_media"):
+            write_brief_keys.append(brief_key)
+        context = brief.get("context") if isinstance(brief.get("context"), Mapping) else {}
+        for key in (
+            "creativeMediaExecutionContract",
+            "creative_media_execution_contract",
+            "canvasExecutionContract",
+            "canvas_execution_contract",
+        ):
+            if key in context:
+                _append_contract(context.get(key), brief_key=brief_key)
+                break
+
+    if write_brief_keys:
+        requires_workspace_file = any(key not in artifact_brief_keys for key in write_brief_keys)
+    else:
+        requires_workspace_file = not bool(requirements)
+    return requirements, requires_workspace_file
+
+
+def _same_resolved_path(left: str, right: str) -> bool:
+    if not str(left or "").strip() or not str(right or "").strip():
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return False
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _creative_artifact_id(value: Any) -> str:
+    if isinstance(value, Mapping):
+        text = str(value.get("artifactId") or value.get("artifact_id") or value.get("id") or "").strip()
+    else:
+        text = str(value or "").strip()
+    if text.startswith("artifact://"):
+        text = text[len("artifact://") :].strip("/\\")
+    return text if re.fullmatch(r"art_[A-Za-z0-9_-]+", text) else ""
+
+
+def _creative_artifact_evidence(
+    episode: Mapping[str, Any],
+    handoffs: Iterable[Mapping[str, Any]],
+    requirements: list[dict[str, Any]],
+) -> tuple[list[str], str | None]:
+    """Validate governed Creative artifacts without weakening workspace-file gates."""
+
+    artifact_ids: list[str] = []
+    job_proof_ids: set[str] = set()
+    for handoff in handoffs:
+        payload = _handoff_payload(handoff)
+        for value in _collect_named_values(payload, {"artifactRefs", "artifact_refs"}):
+            artifact_id = _creative_artifact_id(value)
+            if artifact_id and artifact_id not in artifact_ids:
+                artifact_ids.append(artifact_id)
+        for value in _collect_named_values(payload, {"proofRefs", "proof_refs", "jobRefs", "job_refs"}):
+            text = _ref_text(value) or str(value or "").strip()
+            if text.startswith("creative-media-job://"):
+                job_id = text[len("creative-media-job://") :].strip("/\\")
+                if job_id:
+                    job_proof_ids.add(job_id)
+    if not artifact_ids:
+        return [], "required_creative_artifact_missing"
+
+    episode_session_id = str(episode.get("sessionId") or episode.get("session_id") or "").strip()
+    episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+    if not episode_session_id or not episode_run_id:
+        return [], "creative_artifact_lineage_mismatch"
+    binding = db.get_session_scope_binding(episode_session_id)
+    if not isinstance(binding, Mapping):
+        return [], "creative_artifact_lineage_mismatch"
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    expected_workspace_id = str(
+        inputs.get("workspaceId")
+        or inputs.get("workspace_id")
+        or episode.get("workspaceId")
+        or episode.get("workspace_id")
+        or binding.get("workspace_id")
+        or binding.get("workspaceId")
+        or ""
+    ).strip()
+    expected_project_id = str(
+        inputs.get("projectId")
+        or inputs.get("project_id")
+        or episode.get("projectId")
+        or episode.get("project_id")
+        or binding.get("project_id")
+        or binding.get("projectId")
+        or ""
+    ).strip()
+    expected_workspace_path = str(
+        inputs.get("workspacePath")
+        or inputs.get("workspace_path")
+        or binding.get("workspace_path")
+        or binding.get("workspacePath")
+        or ""
+    ).strip()
+    bound_workspace_id = str(binding.get("workspace_id") or binding.get("workspaceId") or "").strip()
+    bound_project_id = str(binding.get("project_id") or binding.get("projectId") or "").strip()
+    bound_workspace_path = str(binding.get("workspace_path") or binding.get("workspacePath") or "").strip()
+    if (
+        not expected_workspace_id
+        or not expected_project_id
+        or not expected_workspace_path
+        or expected_workspace_id != bound_workspace_id
+        or expected_project_id != bound_project_id
+        or not _same_resolved_path(expected_workspace_path, bound_workspace_path)
+    ):
+        return [], "creative_artifact_lineage_mismatch"
+
+    def _source_matches_scope(source_id: str) -> bool:
+        source = db.get_session_source(session_id=episode_session_id, source_id=source_id)
+        if not isinstance(source, Mapping):
+            return False
+        resource_ref = source.get("resourceRef") if isinstance(source.get("resourceRef"), Mapping) else {}
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), Mapping) else {}
+        source_binding = metadata.get("workspaceBinding") if isinstance(metadata.get("workspaceBinding"), Mapping) else {}
+        source_workspace_id = str(resource_ref.get("workspaceId") or source_binding.get("workspaceId") or "").strip()
+        source_project_id = str(resource_ref.get("projectId") or source_binding.get("projectId") or "").strip()
+        source_workspace_root = str(
+            resource_ref.get("workspaceRoot")
+            or source_binding.get("activeWorkspaceRoot")
+            or source_binding.get("authorityWorkspaceRoot")
+            or ""
+        ).strip()
+        return bool(
+            source_workspace_id == expected_workspace_id
+            and source_project_id == expected_project_id
+            and source_workspace_root
+            and _same_resolved_path(source_workspace_root, expected_workspace_path)
+        )
+
+    for requirement in requirements:
+        request = requirement.get("request") if isinstance(requirement.get("request"), Mapping) else {}
+        source_ids = [
+            str(item).strip()
+            for item in [
+                request.get("sourceId"),
+                *(list(request.get("sourceIds") or []) if isinstance(request.get("sourceIds"), list) else []),
+                request.get("maskSourceId"),
+            ]
+            if str(item or "").strip()
+        ]
+        if any(not _source_matches_scope(source_id) for source_id in dict.fromkeys(source_ids)):
+            return [], "creative_artifact_lineage_mismatch"
+
+    matched_requirements: set[int] = set()
+    evidence: list[str] = []
+    for artifact_id in artifact_ids:
+        artifact = db.get_runtime_artifact(artifact_id)
+        if not isinstance(artifact, Mapping):
+            return [], "required_creative_artifact_missing"
+        metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), Mapping) else {}
+        if str(artifact.get("resourceRole") or artifact.get("resource_role") or "artifact").strip() != "artifact":
+            return [], "creative_artifact_lineage_mismatch"
+        if (
+            str(artifact.get("sessionId") or artifact.get("session_id") or "").strip() != episode_session_id
+            or str(artifact.get("runId") or artifact.get("run_id") or "").strip() != episode_run_id
+            or str(metadata.get("storageClass") or metadata.get("storage_class") or "").strip() != "runtime_artifact"
+            or str(metadata.get("workspaceId") or metadata.get("workspace_id") or "").strip() != expected_workspace_id
+            or str(metadata.get("projectId") or metadata.get("project_id") or "").strip() != expected_project_id
+            or not _same_resolved_path(
+                str(metadata.get("workspacePath") or metadata.get("workspace_path") or "").strip(),
+                expected_workspace_path,
+            )
+        ):
+            return [], "creative_artifact_lineage_mismatch"
+        source_path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+        try:
+            resolved_source_path = Path(source_path).resolve()
+        except Exception:
+            return [], "required_creative_artifact_missing"
+        if (
+            not source_path
+            or not resolved_source_path.exists()
+            or not resolved_source_path.is_file()
+            or not _path_is_within(resolved_source_path, Path(expected_workspace_path))
+        ):
+            return [], "required_creative_artifact_missing"
+        job_id = str(metadata.get("creativeMediaJobId") or metadata.get("creative_media_job_id") or "").strip()
+        if not job_id or job_id not in job_proof_ids:
+            return [], "creative_artifact_proof_missing"
+
+        for index, requirement in enumerate(requirements):
+            request = requirement.get("request") if isinstance(requirement.get("request"), Mapping) else {}
+            lineage_keys = ("modality", "operationKind", "canvasOperationId", "sourceId", "maskSourceId")
+            output_kind_matches = str(metadata.get("outputKind") or metadata.get("output_kind") or "").strip() == str(
+                requirement.get("outputKind") or ""
+            ).strip()
+            expected_output_slot = str(requirement.get("outputSlot") or "").strip()
+            output_slot_matches = bool(expected_output_slot) and str(
+                metadata.get("outputSlot") or metadata.get("output_slot") or ""
+            ).strip() == expected_output_slot
+            if output_kind_matches and output_slot_matches and all(
+                not str(request.get(key) or "").strip()
+                or str(metadata.get(key) or "").strip() == str(request.get(key) or "").strip()
+                for key in lineage_keys
+            ):
+                matched_requirements.add(index)
+        evidence.append(str(resolved_source_path))
+
+    if len(matched_requirements) != len(requirements):
+        return [], "creative_artifact_lineage_mismatch"
+    return list(dict.fromkeys(evidence))[:32], None
+
+
 def _handoff_proof_evidence(handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
     keys = {
         "proofRefs",
@@ -516,21 +786,39 @@ def _non_spec_write_delivery_failure(
                 "handoffStatuses": sorted(status for status in statuses if status),
                 "recoverable": True,
             }
-        file_evidence = _existing_file_evidence(episode, handoffs)
-        if not file_evidence:
-            return {
-                "episodeId": episode_id,
-                "reason": "required_write_files_missing",
-                "state": state,
-                "recoverable": True,
-            }
+        creative_requirements, requires_workspace_file = _typed_creative_artifact_requirements(episode)
+        delivery_evidence: list[str] = []
+        if creative_requirements:
+            creative_evidence, creative_failure = _creative_artifact_evidence(
+                episode,
+                handoffs,
+                creative_requirements,
+            )
+            if creative_failure:
+                return {
+                    "episodeId": episode_id,
+                    "reason": creative_failure,
+                    "state": state,
+                    "recoverable": True,
+                }
+            delivery_evidence.extend(creative_evidence)
+        if requires_workspace_file:
+            file_evidence = _existing_file_evidence(episode, handoffs)
+            if not file_evidence:
+                return {
+                    "episodeId": episode_id,
+                    "reason": "required_write_files_missing",
+                    "state": state,
+                    "recoverable": True,
+                }
+            delivery_evidence.extend(file_evidence)
         proof_evidence = _handoff_proof_evidence(handoffs)
         if not proof_evidence:
             return {
                 "episodeId": episode_id,
                 "reason": "required_write_proof_missing",
                 "state": state,
-                "fileEvidence": file_evidence[:8],
+                "deliveryEvidence": delivery_evidence[:8],
                 "recoverable": True,
             }
     return None

@@ -64,11 +64,11 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
     const cached = getWorkbenchDocumentPayload(document.documentId);
     const [artifact, setArtifact] = useState<RuntimeArtifact | null>(cached?.artifact || null);
     const [text, setText] = useState(cached?.inlineContent || "");
-    const [loading, setLoading] = useState(!cached?.artifact && !cached?.inlineContent && !cached?.resourceUrl);
+    const [loading, setLoading] = useState(!cached?.inlineContent && !cached?.resourceUrl);
     const [error, setError] = useState("");
 
     useEffect(() => {
-        if (artifact || cached?.inlineContent || cached?.resourceUrl) return;
+        if (cached?.inlineContent || cached?.resourceUrl) return;
         let cancelled = false;
         void fetch(`/api/artifacts/${encodeURIComponent(document.subjectRef.artifactId)}`, { cache: "no-store" })
             .then(async (response) => {
@@ -76,12 +76,16 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
                 if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
                 const normalized = normalizeRuntimeArtifact(payload);
                 if (!normalized) throw new Error(t("web.workbench.artifact.parseFailed"));
+                const artifactSessionId = String(normalized.sessionId || "").trim();
+                if (!artifactSessionId || artifactSessionId !== document.subjectRef.sessionId) {
+                    throw new Error(t("web.workbench.artifact.sessionMismatch"));
+                }
                 if (!cancelled) setArtifact(normalized);
             })
             .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); })
             .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    }, [artifact, cached?.inlineContent, cached?.resourceUrl, document.subjectRef.artifactId, t]);
+    }, [cached?.inlineContent, cached?.resourceUrl, document.subjectRef.artifactId, document.subjectRef.sessionId, t]);
 
     const resourceUrl = useMemo(
         () => cached?.resourceUrl || (artifact ? resolveRuntimeArtifactUrl(artifact) : undefined) || "",

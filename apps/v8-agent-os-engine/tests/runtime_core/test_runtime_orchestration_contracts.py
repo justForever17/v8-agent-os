@@ -9,6 +9,7 @@ from langgraph.types import Command
 
 import core.runtime_episode_runner as runner_module
 import core.tools.native.command as command_module
+import runtimes.chat.supervisor_completion_gate as completion_gate_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import ACTIVE_EPISODE_STATES
 from core.tools.native.delegation import _inject_inherited_handoffs_into_tasks
@@ -390,6 +391,34 @@ def test_runtime_handoff_file_hunting_uses_one_semantic_repeat_signature() -> No
     )
 
 
+def test_creative_media_repair_loops_use_bounded_repeat_signatures() -> None:
+    create_signature = _repeat_sensitive_tool_call_signature(
+        {
+            "name": "creative_media_jobs",
+            "args": {
+                "action": "create",
+                "request": {"modality": "image", "operationKind": "image.edit", "sourceId": "src-a"},
+            },
+        }
+    )
+    reordered_signature = _repeat_sensitive_tool_call_signature(
+        {
+            "name": "creative_media_jobs",
+            "args": {
+                "request": {"sourceId": "src-a", "operationKind": "image.edit", "modality": "image"},
+                "action": "create",
+            },
+        }
+    )
+    poll_signature = _repeat_sensitive_tool_call_signature(
+        {"name": "creative_media_jobs", "args": {"action": "get", "request": {"jobId": "cm-a"}}}
+    )
+
+    assert create_signature == reordered_signature
+    assert create_signature and create_signature[0] == "creative_media_jobs"
+    assert poll_signature is None
+
+
 def test_parallel_delegation_publishes_denoised_progress_and_terminal_handoff(monkeypatch) -> None:
     events: list[dict] = []
     heartbeats: list[tuple[str, str]] = []
@@ -530,6 +559,67 @@ def _required_write_episode(workspace: str, *, state: str = "completed") -> dict
     }
 
 
+def _creative_artifact_episode(workspace: str) -> dict:
+    contract = {
+        "schema": "v8.creative_canvas_task.v1",
+        "canvasOperationId": "canvas-op-proof",
+        "actionId": "creative_media.edit_image_region",
+        "output": {"kind": "artifact", "slot": "image_derivative"},
+        "resources": {
+            "sourceIds": ["source-proof"],
+            "maskSourceId": "mask-proof",
+        },
+        "execution": {
+            "tool": "creative_media_jobs",
+            "arguments": {
+                "action": "create",
+                "request": {
+                    "modality": "image",
+                    "operationKind": "image.edit",
+                    "canvasOperationId": "canvas-op-proof",
+                    "sourceId": "source-proof",
+                    "maskSourceId": "mask-proof",
+                    "prompt": "Replace only the masked region.",
+                },
+            },
+        },
+    }
+    return {
+        "episodeId": "episode-creative-artifact",
+        "kind": "creative_media",
+        "state": "completed",
+        "sessionId": "session-creative-artifact",
+        "runId": "run-creative-artifact",
+        "inputs": {
+            "workspacePath": workspace,
+            "workspaceId": "workspace-creative-artifact",
+            "projectId": "project-creative-artifact",
+            "taskBriefs": [
+                {
+                    "taskBriefId": "TASK-CREATIVE-ARTIFACT",
+                    "goal": "Execute the exact Canvas edit.",
+                    "writeRequired": True,
+                    "writeSet": [".v8/creative-media/"],
+                    "expectedOutputs": ["One governed Creative Media artifact."],
+                    "context": {"canvasExecutionContract": contract},
+                }
+            ],
+        },
+    }
+
+
+def _creative_source_record(workspace: str) -> dict:
+    return {
+        "sessionId": "session-creative-artifact",
+        "resourceRef": {
+            "workspaceId": "workspace-creative-artifact",
+            "projectId": "project-creative-artifact",
+            "workspaceRoot": workspace,
+        },
+        "metadata": {},
+    }
+
+
 def test_non_spec_required_write_degraded_cannot_complete(tmp_path) -> None:
     decision = evaluate_supervisor_completion(
         episodes=[_required_write_episode(str(tmp_path), state="degraded")],
@@ -619,6 +709,176 @@ def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
             "episode-write": [
                 {
                     "status": "ready",
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_files_missing"
+
+
+def test_non_spec_typed_creative_artifact_satisfies_artifact_delivery_without_workspace_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    artifact_path = tmp_path / "creative_media" / "cm-proof" / "image-proof.png"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"creative-artifact-proof")
+    episode = _creative_artifact_episode(str(tmp_path))
+
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_session_scope_binding",
+        lambda _session_id: {
+            "session_id": "session-creative-artifact",
+            "workspace_id": "workspace-creative-artifact",
+            "project_id": "project-creative-artifact",
+            "workspace_path": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_session_source",
+        lambda *, session_id, source_id: (
+            _creative_source_record(str(tmp_path))
+            if session_id == "session-creative-artifact" and source_id in {"source-proof", "mask-proof"}
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_runtime_artifact",
+        lambda artifact_id: {
+            "artifactId": artifact_id,
+            "sessionId": "session-creative-artifact",
+            "runId": "run-creative-artifact",
+            "resourceRole": "artifact",
+            "sourcePath": str(artifact_path),
+            "metadata": {
+                "storageClass": "runtime_artifact",
+                "creativeMediaJobId": "cm-proof",
+                "workspaceId": "workspace-creative-artifact",
+                "projectId": "project-creative-artifact",
+                "workspacePath": str(tmp_path),
+                "modality": "image",
+                "operationKind": "image.edit",
+                "outputKind": "artifact",
+                "outputSlot": "image_derivative",
+                "canvasOperationId": "canvas-op-proof",
+                "sourceId": "source-proof",
+                "maskSourceId": "mask-proof",
+            },
+        }
+        if artifact_id == "art_proof"
+        else None,
+    )
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-creative-artifact": [
+                {
+                    "status": "ready",
+                    "artifactRefs": ["art_proof"],
+                    "proofRefs": ["creative-media-job://cm-proof"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_non_spec_typed_creative_artifact_rejects_source_lineage_drift(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    artifact_path = tmp_path / "creative_media" / "cm-proof" / "image-proof.png"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"creative-artifact-proof")
+    episode = _creative_artifact_episode(str(tmp_path))
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_session_scope_binding",
+        lambda _session_id: {
+            "session_id": "session-creative-artifact",
+            "workspace_id": "workspace-creative-artifact",
+            "project_id": "project-creative-artifact",
+            "workspace_path": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_session_source",
+        lambda **_kwargs: _creative_source_record(str(tmp_path)),
+    )
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_runtime_artifact",
+        lambda _artifact_id: {
+            "artifactId": "art_proof",
+            "sessionId": "session-creative-artifact",
+            "runId": "run-creative-artifact",
+            "resourceRole": "artifact",
+            "sourcePath": str(artifact_path),
+            "metadata": {
+                "storageClass": "runtime_artifact",
+                "creativeMediaJobId": "cm-proof",
+                "workspaceId": "workspace-creative-artifact",
+                "projectId": "project-creative-artifact",
+                "workspacePath": str(tmp_path),
+                "modality": "image",
+                "operationKind": "image.edit",
+                "outputKind": "artifact",
+                "outputSlot": "image_derivative",
+                "canvasOperationId": "canvas-op-proof",
+                "sourceId": "source-from-another-contract",
+                "maskSourceId": "mask-proof",
+            },
+        },
+    )
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-creative-artifact": [
+                {
+                    "status": "ready",
+                    "artifactRefs": ["art_proof"],
+                    "proofRefs": ["creative-media-job://cm-proof"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "creative_artifact_lineage_mismatch"
+
+
+def test_non_spec_engineering_cannot_use_bare_runtime_artifact_as_workspace_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_runtime_artifact",
+        lambda _artifact_id: (_ for _ in ()).throw(AssertionError("engineering must not resolve bare art refs")),
+    )
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "artifactRefs": ["art_unrelated"],
                     "proofRefs": ["proof://verification"],
                 }
             ]

@@ -47,6 +47,19 @@ function parentPathOf(path: string) {
     return parts.slice(0, -1).join("/");
 }
 
+function humanSafeOutputPath(path: string) {
+    const normalized = normalizedPath(path);
+    if (
+        !normalized
+        || normalized.startsWith("/")
+        || /^[A-Za-z]:\//.test(normalized)
+        || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(normalized)
+    ) {
+        return "";
+    }
+    return normalized;
+}
+
 function activeProcess(process: AdminProcessRef) {
     return !["stopped", "terminated", "completed", "failed"].includes(text(process.status).toLowerCase());
 }
@@ -128,7 +141,8 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
 }
 
 function outputSubtitle(output: SessionOutputProjection): string {
-    if (output.path) return parentPathOf(output.path) || output.source;
+    const safePath = humanSafeOutputPath(output.path || "");
+    if (safePath) return parentPathOf(safePath) || output.source;
     return output.kind || output.mimeType || output.source;
 }
 
@@ -180,14 +194,17 @@ export function WorkspaceWorkbenchPanel({
 
     const openOutput = useCallback((output: SessionOutputProjection) => {
         setFileError("");
+        const artifact = output.rawArtifact ? normalizeRuntimeArtifact(output.rawArtifact) : null;
+        if (artifact) {
+            openDocument(createArtifactDocument(artifact, sessionId), { activate: true, mode: "split" });
+            return;
+        }
         if (output.path) {
             void resolveAndOpenWorkspaceFile(output.path, { sessionId }).catch((reason) => {
                 setFileError(reason instanceof Error ? reason.message : String(reason));
             });
             return;
         }
-        const artifact = output.rawArtifact ? normalizeRuntimeArtifact(output.rawArtifact) : null;
-        if (artifact) openDocument(createArtifactDocument(artifact, sessionId), { activate: true, mode: "split" });
     }, [openDocument, sessionId]);
 
     const openSource = useCallback((source: SessionSourceProjection) => {

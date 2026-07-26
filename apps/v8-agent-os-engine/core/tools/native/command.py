@@ -32,6 +32,7 @@ else:
 
 from langchain_core.tools import InjectedToolCallId, tool
 
+from core.process_launch import windowless_subprocess_kwargs
 from core.tools.native.command_governance import (
     _detect_interactive_command,
     _detect_session_preferred_command,
@@ -242,6 +243,10 @@ def _shell_command_argv(command: str, shell_dialect: str) -> list[str]:
     return [executable, "-c", command]
 
 
+def _windowless_subprocess_kwargs() -> dict[str, int]:
+    return windowless_subprocess_kwargs()
+
+
 def _sandbox_launch(
     runtime_context: dict[str, Any],
     argv: list[str],
@@ -351,6 +356,7 @@ def execute_governed_argv(
                 cwd=resolved_cwd,
                 env=sandbox_env,
                 timeout=timeout_seconds,
+                **_windowless_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired:
             return envelope.failure_payload(
@@ -671,6 +677,7 @@ def execute_system_command(
                     cwd=resolved_cwd,
                     env=command_env,
                     timeout=sync_deadline_ms / 1000,
+                    **_windowless_subprocess_kwargs(),
                 )
             except subprocess.TimeoutExpired:
                 return json.dumps(
@@ -2357,7 +2364,8 @@ class BackgroundProcess:
             child_env.update(self.terminal_env_overrides)
             self.proc = subprocess.Popen(
                 command_argv, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env, cwd=self.cwd
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env,
+                cwd=self.cwd, **_windowless_subprocess_kwargs(),
             )
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)

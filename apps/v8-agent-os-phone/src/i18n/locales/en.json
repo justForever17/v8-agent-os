@@ -1,4 +1,5 @@
 {
+  "src.components.chat.messagebubble.canvasMessage": "This message is from Canvas",
   "app.login.camera_permission_required": "Camera permission is required to scan the pairing QR code",
   "app.login.cancel_scan": "Cancel scan",
   "app.login.check_the_connection_first": "Check the connection first",

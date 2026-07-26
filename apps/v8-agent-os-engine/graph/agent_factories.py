@@ -599,6 +599,10 @@ _RUNTIME_ONLY_CONTEXT_KEYS = {
     "specExecutionBundle",
     "engineeringExecutionContract",
     "handoffContract",
+    "creativeMediaExecutionContract",
+    "creative_media_execution_contract",
+    "canvasExecutionContract",
+    "canvas_execution_contract",
     "assignedTaskDetails",
     "assignedTaskSummaries",
     "parentContext",
@@ -899,6 +903,32 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
                 identity = f"{name} [{task_id}]" if task_id else name
                 lines.append(f"- EXCLUDED — {identity}: {work_summary}" + (f" ({status})" if status else ""))
         lines.extend(_agent_visible_context_lines(context))
+        runtime_owned_execution_contracts = (
+            (
+                "Creative Media Execution Contract",
+                context.get("creativeMediaExecutionContract")
+                or context.get("creative_media_execution_contract"),
+            ),
+            (
+                "Validated Canvas Execution Contract",
+                context.get("canvasExecutionContract")
+                or context.get("canvas_execution_contract"),
+            ),
+        )
+        for label, contract in runtime_owned_execution_contracts:
+            if not isinstance(contract, dict) or not contract:
+                continue
+            lines.append("")
+            lines.append(f"Runtime-Owned {label} (authoritative and immutable):")
+            lines.append(
+                "- Preserve the canonical tool/action/operation, source and output lineage, and "
+                "session/workspace/run provenance exactly. Do not infer a replacement from surrounding prose."
+            )
+            lines.append(
+                "- If the contract cannot be executed as written, return `execution_intent_conflict`; "
+                "do not compile a replacement recipe or substitute another operation."
+            )
+            lines.append(f"- Canonical Contract: {_compact_prompt_value(contract)}")
         writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
         if writing_brief:
             skill = writing_brief.get("skill") if isinstance(writing_brief.get("skill"), dict) else {}
@@ -1088,6 +1118,12 @@ def _build_agent_system_bundle(
 ) -> dict[str, object]:
     parts: list[dict[str, str]] = [
         _agent_prompt_part(
+            "subagent.delegated_agent_operating_charter",
+            "stable_static",
+            DELEGATED_AGENT_OPERATING_CHARTER,
+            scope="delegation_charter",
+        ),
+        _agent_prompt_part(
             "subagent.persona_mission_contracts",
             "stable_static",
             f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n",
@@ -1098,12 +1134,6 @@ def _build_agent_system_bundle(
             "dynamic",
             collaboration_identity_context,
             scope="collaboration_identity",
-        ),
-        _agent_prompt_part(
-            "subagent.delegated_agent_operating_charter",
-            "stable_static",
-            DELEGATED_AGENT_OPERATING_CHARTER,
-            scope="delegation_charter",
         ),
         *_split_agent_env_context_parts(env_context),
         _agent_prompt_part("subagent.active_todos", "dynamic", active_plan_context, scope="todos"),

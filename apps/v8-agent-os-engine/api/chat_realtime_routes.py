@@ -668,6 +668,7 @@ def _normalize_upload_source_kind(value: str) -> str:
         "phone_voice",
         "desktop_pet_upload",
         "desktop_pet_voice",
+        "canvas_mask",
     }
     return normalized if normalized in allowed else "client_upload"
 
@@ -820,6 +821,7 @@ async def chat_upload(request: Request):
     workspace_relative_path = target.relative_to(workspace_root).as_posix()
     content_type = "audio/mpeg" if normalize_voice else original_content_type
     byte_size = int(target.stat().st_size)
+    internal_canvas_mask = source_kind == "canvas_mask"
     resource_ref = build_workspace_resource_ref(
         workspace_relative_path=workspace_relative_path,
         path_plane="workspace_download",
@@ -828,9 +830,9 @@ async def chat_upload(request: Request):
         project_id=binding.project_id or None,
         mime_type=content_type,
         display_label=filename,
-        previewable=content_type.startswith(("image/", "video/", "audio/", "text/")),
-        downloadable=True,
-        surface_visible=True,
+        previewable=(not internal_canvas_mask) and content_type.startswith(("image/", "video/", "audio/", "text/")),
+        downloadable=not internal_canvas_mask,
+        surface_visible=not internal_canvas_mask,
     )
     admin_path = str(resource_ref.get("adminPath") or "")
     source_id = f"src_{uuid.uuid4().hex}"
@@ -1020,7 +1022,10 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
         # in the acceptance path.  The graph remains background work; its
         # preflight executor reuses these deterministic call ids and does not
         # emit duplicate starts.
-        if request.attachments:
+        canvas_supervisor_direct = bool(
+            getattr(getattr(chat_run, "prepared", None), "canvas_supervisor_direct", False)
+        )
+        if request.attachments and not canvas_supervisor_direct:
             try:
                 chat_runtime.preannounce_attachment_preflight(chat_run)
             except Exception:

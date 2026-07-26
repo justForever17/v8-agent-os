@@ -1,4 +1,5 @@
 {
+  "src.components.chat.messagebubble.canvasMessage": "本消息来自画布",
   "app.login.camera_permission_required": "需要相机权限才能扫描配对二维码",
   "app.login.cancel_scan": "取消扫码",
   "app.login.check_the_connection_first": "先检查连接地址",

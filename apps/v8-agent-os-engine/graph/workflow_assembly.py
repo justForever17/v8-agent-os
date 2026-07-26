@@ -503,6 +503,10 @@ def build_runtime_episode_wait_node():
         nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
         nested_refs = list(nested_handoff.get("refs") or nested_handoff.get("artifactRefs") or [])
         nested_proof_refs = list(nested_handoff.get("proofRefs") or nested_handoff.get("verificationRefs") or [])
+        runtime_only_ref_values = bool(
+            isinstance(handoff.get("creativeExecutionEvidence"), dict)
+            or _string_value(handoff.get("kind")).strip().lower() in {"creative_media", "asset_bundle"}
+        )
         return {
             "handoffRefId": _string_value(handoff.get("handoffRefId"), handoff.get("handoffId")),
             # Only a real tool observation rawRef is legal for
@@ -518,10 +522,13 @@ def build_runtime_episode_wait_node():
             "producerEpisodeId": _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId")),
             "kind": _string_value(handoff.get("kind"), "runtime_handoff"),
             "status": _string_value(handoff.get("status")),
+            "runtimeOnlyRefValues": runtime_only_ref_values,
             "summary": (
                 "Delegated execution was not accepted. Its candidate workspace is quarantined and unmerged; "
                 "repair the typed task contract and route only the affected briefs once."
                 if blocking_results_present
+                else "Governed Creative Media execution evidence is available for Supervisor acceptance."
+                if runtime_only_ref_values
                 else _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:1200]
             ),
             "refs": list(handoff.get("refs") or handoff.get("artifactRefs") or nested_refs)[:10],
@@ -596,7 +603,11 @@ def build_runtime_episode_wait_node():
         }
 
     def _summary_message(*, episodes: list[dict], handoffs: list[dict], status: str, reason: str = "") -> HumanMessage:
-        lines = [f"[Runtime Episode {status}]"]
+        lines = [
+            f"[Runtime Episode {status}]",
+            "The following runtime-owned evidence is for verification and routing only. "
+            "Do not copy internal identifiers, proof refs, or absolute paths into the user-facing reply.",
+        ]
         compact_handoffs = [_compact_handoff_projection(handoff) for handoff in handoffs[:8]]
         if reason:
             lines.append(f"Reason: {reason}")
@@ -606,10 +617,55 @@ def build_runtime_episode_wait_node():
                 kind = _string_value(handoff.get("kind"), "runtime_handoff")
                 summary = _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:800]
                 status_label = _string_value(handoff.get("status"))
-                lines.append(f"- {kind}{f' / {status_label}' if status_label else ''}: {summary}")
+                runtime_only_ref_values = bool(handoff.get("runtimeOnlyRefValues"))
+                display_kind = "Creative Media" if runtime_only_ref_values else kind
+                lines.append(f"- {display_kind}{f' / {status_label}' if status_label else ''}: {summary}")
+                direct_artifact_refs = [
+                    label
+                    for item in list(handoff.get("refs") or [])[:8]
+                    for label in [
+                        _string_value(
+                            item.get("ref"),
+                            item.get("artifactId"),
+                            item.get("workspacePath"),
+                            item.get("path"),
+                        )
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    ]
+                    if label
+                ]
+                direct_proof_refs = [
+                    label
+                    for item in list(handoff.get("proofRefs") or [])[:8]
+                    for label in [
+                        _string_value(item.get("ref"), item.get("id"))
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    ]
+                    if label
+                ]
+                if runtime_only_ref_values and (direct_artifact_refs or direct_proof_refs):
+                    lines.append(
+                        "  governed Creative Media evidence is ready: "
+                        f"artifacts={len(direct_artifact_refs)}, proofRefs={len(direct_proof_refs)}. "
+                        "Exact reference values remain in the structured Runtime Surface; do not re-read or echo them."
+                    )
+                else:
+                    if direct_artifact_refs:
+                        lines.append("  artifact refs: " + ", ".join(direct_artifact_refs))
+                    if direct_proof_refs:
+                        lines.append("  proof refs: " + ", ".join(direct_proof_refs))
+                consumer_hint = _string_value(handoff.get("consumerHint"))
+                if consumer_hint and not runtime_only_ref_values:
+                    lines.append("  consumer hint: " + consumer_hint[:600])
                 task_brief_ids = list(handoff.get("taskBriefIds") or [])
                 if handoff.get("terminalEpisode"):
-                    coverage = ", ".join(str(item) for item in task_brief_ids) or "no declared task brief ids"
+                    coverage = (
+                        f"{len(task_brief_ids)} declared brief(s)"
+                        if runtime_only_ref_values
+                        else ", ".join(str(item) for item in task_brief_ids) or "no declared task brief ids"
+                    )
                     lines.append(
                         "  terminal episode: no further handoffs will arrive from this episode; "
                         f"declared brief coverage={coverage}; remainingHandoffsExpected={handoff.get('remainingHandoffsExpected', 0)}"
@@ -622,12 +678,19 @@ def build_runtime_episode_wait_node():
                 covered_ids = list(handoff.get("coveredTaskBriefIds") or [])
                 missing_ids = list(handoff.get("missingTaskBriefIds") or [])
                 if covered_ids or missing_ids:
-                    lines.append(
-                        "  brief coverage: "
-                        f"covered={', '.join(covered_ids) or 'none'}; "
-                        f"missing={', '.join(missing_ids) or 'none'}; "
-                        f"complete={bool(handoff.get('coverageComplete'))}"
-                    )
+                    if runtime_only_ref_values:
+                        lines.append(
+                            "  brief coverage: "
+                            f"covered={len(covered_ids)}; missing={len(missing_ids)}; "
+                            f"complete={bool(handoff.get('coverageComplete'))}"
+                        )
+                    else:
+                        lines.append(
+                            "  brief coverage: "
+                            f"covered={', '.join(covered_ids) or 'none'}; "
+                            f"missing={', '.join(missing_ids) or 'none'}; "
+                            f"complete={bool(handoff.get('coverageComplete'))}"
+                        )
                 if missing_ids:
                     lines.append(
                         "  next action: retry only the missing brief IDs once through a new managed Research episode; "
@@ -642,7 +705,18 @@ def build_runtime_episode_wait_node():
                         "the exact per-brief research_broker(mode='get_evidence', evidenceBundleId=...) call shown "
                         "below; never pass research:// to tool_observation_detail."
                     )
-                for result in list(handoff.get("results") or [])[:4]:
+                if runtime_only_ref_values and handoff.get("results"):
+                    result_count = len(list(handoff.get("results") or []))
+                    verified_count = sum(
+                        1
+                        for result in list(handoff.get("results") or [])
+                        if isinstance(result, dict) and result.get("verificationPassed")
+                    )
+                    lines.append(
+                        "  execution results remain structured Runtime Surface evidence: "
+                        f"results={result_count}; semanticallyVerified={verified_count}."
+                    )
+                for result in ([] if runtime_only_ref_values else list(handoff.get("results") or [])[:4]):
                     task_id = _string_value(result.get("taskBriefId"), "task")
                     target = _string_value(result.get("targetLabel"), "worker")
                     result_status = _string_value(result.get("status"), "unknown")

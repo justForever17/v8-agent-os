@@ -926,7 +926,6 @@ def test_seedance_1_0_fast_uses_exact_registry_operations(monkeypatch):
 
     assert connected == [
         ("video.text_to_video", "model_control_plane", True),
-        ("video.image_to_video", "model_control_plane", True),
     ]
     assert rows["video.reference_to_video"]["optionCount"] == 0
     assert rows["video.reference_to_video"]["selectedModelRefs"] == []
@@ -1006,11 +1005,28 @@ def test_image_recipe_persists_a_named_quality_profile(monkeypatch):
 def test_prompt_policy_defaults_to_english_and_rewrites_protected_ip():
     policy = prepare_provider_prompt_policy("生成钢铁侠海报，标题必须显示「未来战甲」", modality="image")
 
-    assert policy["providerPromptLanguage"] == "en"
+    assert policy["providerPromptLanguage"] == "source"
     assert "钢铁侠" not in policy["translatedPrompt"]
     assert "powered exoskeleton" in policy["translatedPrompt"]
+    assert "标题必须显示" in policy["translatedPrompt"]
     assert "未来战甲" in policy["preservedTextTokens"]
     assert policy["safetyTransform"]["applied"] is True
+
+
+def test_prompt_policy_preserves_exact_multilingual_image_edit_constraints():
+    prompt = (
+        "仅修改蒙版覆盖的头部区域：把人物头部替换为银白色未来感人形机器人头部，"
+        "保留白色西装、领带、身体姿势、背景、构图、光影和原始画面尺寸不变，"
+        "蒙版边缘要自然融合。"
+    )
+
+    policy = prepare_provider_prompt_policy(prompt, modality="image")
+
+    assert policy["providerPromptLanguage"] == "source"
+    assert policy["translatedPrompt"] == prompt
+    assert "银白色未来感人形机器人头部" in policy["translatedPrompt"]
+    assert "原始画面尺寸不变" in policy["translatedPrompt"]
+    assert "蒙版边缘要自然融合" in policy["translatedPrompt"]
 
 
 def test_dashscope_builtin_candidates_are_grouped_by_operation_kind(monkeypatch):
@@ -1158,10 +1174,9 @@ def test_minimax_voice_tts_and_design_are_executable_candidates(monkeypatch):
     }
 
     assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd")]["available"] is True
-    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd")]["available"] is True
-    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd")]["adapter"] == "minimax_tts"
+    assert ("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd") not in options
     assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["adapter"] == "minimax_tts"
-    assert options[("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["available"] is True
+    assert ("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd-legacy") not in options
 
 
 def test_agnes_media_candidates_require_models_saved_in_model_hub(monkeypatch):
@@ -1340,9 +1355,9 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     agnes_ref = "agnes::images/generations/agnes-image-2.1-flash"
     minimax_ref = "minimax-cn::image_generation/image-01"
     assert options[("image.generate", agnes_ref)]["available"] is True
-    assert options[("image.edit", agnes_ref)]["available"] is True
+    assert ("image.edit", agnes_ref) not in options
     assert options[("image.generate", minimax_ref)]["available"] is True
-    assert options[("image.edit", minimax_ref)]["available"] is True
+    assert ("image.edit", minimax_ref) not in options
     assert (("image.generate", minimax_ref)) not in {
         (item.get("operationKind"), item.get("modelRef"))
         for item in prefs["diagnosticCandidates"]
@@ -1350,8 +1365,7 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
 
     expected_model_hub_candidates = {
         ("video.text_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
-        ("video.image_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-2.3"),
-        ("video.first_last_frame", "minimax-cn::video_generation/MiniMax-Hailuo-02"),
+        ("video.text_to_video", "minimax-cn::video_generation/MiniMax-Hailuo-02"),
         ("video.reference_to_video", "minimax-cn::video_generation/S2V-01"),
         ("music.generate", "minimax-cn::music_generation/custom-music"),
         ("voice.tts", "minimax-cn::voice/custom-voice"),
@@ -1779,6 +1793,13 @@ def test_minimax_voice_design_job_returns_voice_id_and_trial_artifact(monkeypatc
                                 "providerModelId": "speech-2.8-hd",
                                 "operationKinds": ["voice.tts", "voice.design"],
                             },
+                            "endpointBinding": {
+                                "adapter": "minimax_tts",
+                                "endpointPath": "voice_design",
+                                "providerModelId": "speech-2.8-hd",
+                                "operationKind": "voice.design",
+                                "provenance": {"source": "manual"},
+                            },
                         }
                     },
                 },
@@ -2147,7 +2168,7 @@ def test_video_recipe_compilation_uses_timed_segments_and_asset_refs(monkeypatch
     assert recipe["providerNeutralRecipe"]["timedSegments"][0]["end"] == 5
     assert "One clear action" in recipe["providerNeutralRecipe"]["timedSegments"][0]["description"]
     assert "@image1 as first_frame" in recipe["providerPrompts"]["volcengine_seedance"]
-    assert "5秒产品视频" not in recipe["providerPrompts"]["volcengine_seedance"]
+    assert "5秒产品视频" in recipe["providerPrompts"]["volcengine_seedance"]
     assert recipe["constraintCheck"]["warnings"]
 
 
@@ -2296,7 +2317,7 @@ def test_p3_render_records_video_srt_and_edl_artifacts(monkeypatch, tmp_path: Pa
     video_path.write_bytes(b"fake-video")
     creative_media_runtime.register_asset({"assetId": "asset-video", "role": "clip", "modality": "video", "sourcePath": str(video_path)})
 
-    def fake_run(command, capture_output=True, text=True, timeout=30, check=False):
+    def fake_run(command, capture_output=True, text=True, timeout=30, check=False, **_kwargs):
         if "ffprobe" in str(command[0]):
             return SimpleNamespace(returncode=0, stdout='{"format":{"duration":"5.0"}}', stderr="")
         Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
@@ -2349,7 +2370,7 @@ def test_native_audio_video_asset_is_preserved_without_extra_mix(monkeypatch, tm
 
     commands = []
 
-    def fake_run(command, capture_output=True, text=True, timeout=30, check=False):
+    def fake_run(command, capture_output=True, text=True, timeout=30, check=False, **_kwargs):
         commands.append(command)
         if "ffprobe" in str(command[0]):
             return SimpleNamespace(returncode=0, stdout='{"format":{"duration":"5.0"}}', stderr="")

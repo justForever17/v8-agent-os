@@ -184,6 +184,70 @@ def test_engineering_continuation_requires_fresh_engineering_route_until_episode
     assert [kind for kind in _authoritative_runtime_route_kinds(state) if kind not in observed] == []
 
 
+def test_validated_canvas_route_is_authoritative_and_keeps_exact_creative_contract() -> None:
+    canvas_route = {
+        "mode": "route",
+        "routeKind": "creative_media",
+        "routeReason": "validated canvas operation",
+        "workspacePath": "E:/workspace",
+        "taskBriefs": [{
+            "taskBriefId": "canvas-creative-a1",
+            "goal": "replace only the masked region",
+            "context": {
+                "canvasOperationId": "canvas-op-1",
+                "canvasExecutionContract": {"schema": "v8.creative_canvas_task.v1"},
+            },
+            "writeRequired": True,
+            "readOnly": False,
+            "writeSet": [".v8/creative-media/"],
+            "expectedOutputs": ["one image artifact"],
+            "acceptanceContract": ["artifact keeps current-session lineage"],
+            "constraints": ["do not expose the internal mask"],
+            "detailRefs": [],
+            "dependencies": [],
+        }],
+        "proofExpectations": ["artifact id and preview reference"],
+    }
+    state = {
+        "current_route_context": {
+            "canvasSupervisorDirect": True,
+            "canvasRuntimeRoute": canvas_route,
+            "engineeringRequired": True,
+        }
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == ["creative_media"]
+    guidance = _authoritative_runtime_route_guidance(["creative_media"], state=state)
+    assert "server-validated Canvas execution contract" in guidance.content
+    assert "do not route it through Engineering" in guidance.content
+    assert "Runtime Surface control facts" in guidance.content
+    assert "Never quote or enumerate" in guidance.content
+    assert '"canvasOperationId": "canvas-op-1"' in guidance.content
+    assert '"workspacePath": "E:/workspace"' in guidance.content
+    assert '"writeSet": [' in guidance.content
+    assert "<stable task id>" not in guidance.content
+
+    correction = _runtime_route_correction_message(
+        ["creative_media"],
+        authoritative=True,
+        state=state,
+    )
+    assert '"canvasOperationId": "canvas-op-1"' in correction.content
+    assert "single correction attempt" in correction.content
+
+
+def test_unvalidated_canvas_route_context_does_not_override_engineering_requirement() -> None:
+    state = {
+        "current_route_context": {
+            "canvasSupervisorDirect": False,
+            "canvasRuntimeRoute": {"routeKind": "creative_media"},
+            "engineeringRequired": True,
+        }
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+
+
 def test_required_runtime_guidance_stays_in_primary_system_message() -> None:
     messages = [
         SystemMessage(content="base supervisor contract"),
@@ -403,6 +467,55 @@ def test_runtime_episode_wait_node_merges_completed_handoff() -> None:
     refs = command.update["current_route_context"]["handoffRefs"]
     assert any(item.get("handoffRefId") == handoff["handoffRefId"] for item in refs)
     assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
+
+
+def test_runtime_episode_wait_node_keeps_direct_creative_refs_in_runtime_surface() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_creative_refs_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "creative_media", "reason": "execute exact Canvas edit"},
+        kind="creative_media",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="creative_media",
+        compact_summary="The exact Canvas edit produced art_creative_ready at E:/private/output.png.",
+        status="ready",
+        consumer_hint="Consume creative-media-job://cm_creative_ready from E:/private/output.png.",
+        extra={
+            "artifactRefs": ["art_creative_ready"],
+            "proofRefs": ["creative-media-job://cm_creative_ready"],
+            "taskBriefResults": [
+                {
+                    "taskBriefId": "task-private-canvas",
+                    "result": "Saved art_creative_ready to E:/private/output.png.",
+                    "artifactRefs": ["art_creative_ready"],
+                    "verificationResults": [{"status": "verified"}],
+                }
+            ],
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    content = str(message.content)
+    assert "governed Creative Media evidence is ready: artifacts=1, proofRefs=1" in content
+    assert "art_creative_ready" not in content
+    assert "creative-media-job://cm_creative_ready" not in content
+    assert "E:/private/output.png" not in content
+    assert "task-private-canvas" not in content
+    assert message.additional_kwargs["v8_runtime_handoffs"][0]["refs"] == ["art_creative_ready"]
+    assert message.additional_kwargs["v8_runtime_handoffs"][0]["proofRefs"] == [
+        "creative-media-job://cm_creative_ready"
+    ]
+    assert "Governed Creative Media execution evidence is available" in content
+    assert "execution results remain structured Runtime Surface evidence: results=1; semanticallyVerified=1" in content
 
 
 def test_runtime_episode_wait_node_preserves_terminal_brief_coverage_for_supervisor() -> None:

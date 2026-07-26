@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, Palette, Plus, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
@@ -20,8 +21,25 @@ import type { WorkbenchTab } from "@/lib/workbench";
 import { isTranslationKey } from "@/lib/locale";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkbenchFilePicker } from "./WorkbenchFilePicker";
-import { CreativeArtifactCanvas, type CanvasTaskRequest } from "./CreativeArtifactCanvas";
+import type { CanvasTaskRequest } from "./CreativeArtifactCanvas";
 import { createCreativeCanvasDocument } from "@/lib/workbench";
+
+const CreativeArtifactCanvas = dynamic(
+    () => import("./CreativeArtifactCanvas").then((module) => module.CreativeArtifactCanvas),
+    {
+        ssr: false,
+        loading: CreativeCanvasLoading,
+    },
+);
+
+function CreativeCanvasLoading() {
+    const t = useT();
+    return (
+        <div className="flex h-full min-h-0 items-center justify-center bg-[#f5f6f8] text-xs text-muted-foreground dark:bg-[#111315]">
+            <Palette className="mr-2 h-4 w-4 animate-pulse" />{t("web.workbench.canvas.loading")}
+        </div>
+    );
+}
 
 type WorkbenchShellProps = {
     sessionId: string;
@@ -32,6 +50,7 @@ type WorkbenchShellProps = {
     todoStale?: boolean;
     runtimeModel: RuntimeStageModel;
     workspacePath?: string;
+    sessionRunning?: boolean;
     onSendFileLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
     onSubmitCanvasTask?: (request: CanvasTaskRequest) => Promise<boolean> | boolean;
     pendingConfirmation?: boolean;
@@ -256,7 +275,14 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
-        if (document.kind === "creative_canvas") return <CreativeArtifactCanvas document={document} onSubmitTask={props.onSubmitCanvasTask} />;
+        if (document.kind === "creative_canvas") return (
+            <CreativeArtifactCanvas
+                document={document}
+                messages={props.messages}
+                sessionRunning={props.sessionRunning}
+                onSubmitTask={props.onSubmitCanvasTask}
+            />
+        );
         return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.browserExternal")}</div>;
     })();
 

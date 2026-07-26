@@ -36,7 +36,7 @@ class HostLoadPromptContextTests(unittest.TestCase):
         )
 
         with patch.object(host_load, "psutil", fake_psutil), patch("core.host_load.shutil.which", return_value="nvidia-smi"), patch(
-            "core.host_load.subprocess.run",
+            "core.host_load.run_windowless",
             return_value=completed,
         ):
             line = host_load.render_host_load_line(use_cache=False)
@@ -58,7 +58,7 @@ class HostLoadPromptContextTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(args=["nvidia-smi"], returncode=0, stdout="3\n", stderr="")
 
         with patch.object(host_load, "psutil", fake_psutil), patch("core.host_load.shutil.which", return_value="nvidia-smi"), patch(
-            "core.host_load.subprocess.run",
+            "core.host_load.run_windowless",
             return_value=completed,
         ) as run:
             first = host_load.render_host_load_line()

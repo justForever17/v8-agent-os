@@ -646,6 +646,14 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
     if not isinstance(state, dict):
         return []
     route_context = dict(state.get("current_route_context") or {})
+    canvas_route = (
+        route_context.get("canvasRuntimeRoute")
+        if isinstance(route_context.get("canvasRuntimeRoute"), dict)
+        else {}
+    )
+    canvas_route_kind = str(canvas_route.get("routeKind") or "").strip()
+    if bool(route_context.get("canvasSupervisorDirect")) and canvas_route_kind == "creative_media":
+        return [canvas_route_kind]
     task_shape = _task_shape_from_state(state)
     continuation = route_context.get("engineeringContinuation")
     if not isinstance(continuation, dict):
@@ -657,28 +665,77 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
     return []
 
 
-def _authoritative_runtime_route_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
+def _authoritative_runtime_route_guidance(
+    kinds: list[str],
+    *,
+    correction: bool = False,
+    state=None,
+) -> SystemMessage:
     required_kind = kinds[0] if kinds else "engineering"
-    contract_example = render_runtime_route_contract(required_kind)
+    route_context = (
+        dict(state.get("current_route_context") or {})
+        if isinstance(state, dict)
+        else {}
+    )
+    canvas_route = (
+        dict(route_context.get("canvasRuntimeRoute") or {})
+        if isinstance(route_context.get("canvasRuntimeRoute"), dict)
+        else {}
+    )
+    validated_canvas_route = bool(
+        route_context.get("canvasSupervisorDirect")
+        and required_kind == "creative_media"
+        and str(canvas_route.get("routeKind") or "").strip() == required_kind
+    )
+    contract_example = (
+        json.dumps(canvas_route, ensure_ascii=False, indent=2)
+        if validated_canvas_route
+        else render_runtime_route_contract(required_kind)
+    )
     prefix = "[Required Runtime Route Correction]" if correction else "[Required Runtime Route]"
     correction_line = (
         "Your previous response did not create the required runtime episode. This is the single correction attempt. "
         if correction
         else ""
     )
+    canvas_discipline = (
+        "This is a server-validated Canvas execution contract. Copy the exact JSON object below into one runtime_broker call without changing its keys, values, paths, source/mask lineage, or array types. "
+        "Do not ask the user to repeat or clarify the action, do not run extension prefiltering, and do not route it through Engineering. "
+        "Its operation, source, mask, job, artifact, proof, provider, and local-path values are Runtime Surface control facts: use them for the tool call and acceptance only. "
+        "Never quote or enumerate those values or the raw contract in the user-facing reply; describe only the visible Canvas result, completion state, and material limitations. "
+        if validated_canvas_route
+        else ""
+    )
+    continuation_discipline = (
+        "After the typed handoff returns, review its artifact proof and complete the current Canvas operation."
+        if validated_canvas_route
+        else (
+            "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
+            "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
+        )
+    )
+    route_copy_instruction = (
+        "Copy the exact JSON object below as the runtime_broker arguments and preserve every key, value, path, and object/array type. "
+        if validated_canvas_route
+        else (
+            "Copy the complete JSON shape below, replace placeholder values with current evidence, "
+            "and preserve every object/array type. "
+        )
+    )
     return SystemMessage(
         content=(
             f"{prefix}\n"
             f"The current turn has an authoritative continuation or explicit route requirement for the {required_kind} runtime in the same session and workspace. "
             f"{correction_line}Do not repair it with Supervisor-local file or shell tools and do not answer with a prose-only diagnosis. "
-            "Your first durable action MUST be one runtime_broker route call. Copy the complete JSON shape below, replace placeholder "
-            "values with current evidence, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
+            f"{canvas_discipline}"
+            "Your first durable action MUST be one runtime_broker route call. "
+            f"{route_copy_instruction}"
+            "never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
             f"{contract_example}\n"
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "When one direct child is required to delegate a grandchild verifier, keep implementation and nested verification in one parent taskBrief; "
             "do not create the intended grandchild as a sibling top-level taskBrief. "
-            "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
-            "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
+            f"{continuation_discipline}"
         )
     )
 
@@ -716,11 +773,12 @@ def _runtime_route_correction_message(
     kinds: list[str],
     *,
     authoritative: bool,
+    state=None,
 ) -> HumanMessage:
     """Return a transient correction turn without creating a late system turn."""
 
     guidance = (
-        _authoritative_runtime_route_guidance(kinds, correction=True)
+        _authoritative_runtime_route_guidance(kinds, correction=True, state=state)
         if authoritative
         else _explicit_runtime_orchestration_guidance(kinds, correction=True)
     )
@@ -1920,6 +1978,8 @@ def _runtime_handoff_final_message(state=None) -> HumanMessage:
             "Runtime episodes are terminal and their typed handoffs are available as execution evidence. "
             "This advisory is a single review edge for the newest handoff; repeated state projection creates no new obligation. "
             "A terminal handoff is the last result from that episode: no additional handoff will arrive unless you create a new, justified route. "
+            "The earlier runtime_broker ToolMessage is only an immutable queued receipt, not a live status handle. Do not call "
+            "tool_observation_detail or read_background_output on that receipt; consume the typed terminal handoff in the current route context. "
             "You are the delivery owner: inspect the returned artifacts, proof, warnings, and acceptance results, "
             "then decide whether the user's request is ready to deliver. "
             "Ready/degraded validates only the declared taskBriefIds shown in that handoff, not the whole user request. "
@@ -2747,7 +2807,7 @@ def execute_supervisor_turn(
             prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
         if pending_required_runtime_kinds:
             route_guidance = (
-                _authoritative_runtime_route_guidance(pending_required_runtime_kinds)
+                _authoritative_runtime_route_guidance(pending_required_runtime_kinds, state=state)
                 if authoritative_runtime_kinds
                 else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds)
             )
@@ -2899,6 +2959,7 @@ def execute_supervisor_turn(
                     _runtime_route_correction_message(
                         pending_required_runtime_kinds,
                         authoritative=bool(authoritative_runtime_kinds),
+                        state=state,
                     ),
                 ]
                 response = robust_invoke(

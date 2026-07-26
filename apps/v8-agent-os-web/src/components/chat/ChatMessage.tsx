@@ -39,6 +39,9 @@ import { parseContentToBlocks } from "@/lib/chat/content-detector";
 import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
 import { DEFAULT_AVATAR } from "@/lib/chat-stream-state";
+import {
+    isCreativeCanvasCanonicalMessage,
+} from "@/lib/creative-canvas-task-contract";
 
 interface ChatMessageProps {
     message: Message;
@@ -304,10 +307,10 @@ function extractComposerPresentation(message: Message): ComposerPresentation | n
         const kind = String(reference.kind || "").trim();
         const id = String(reference.id || "").trim();
         const label = String(reference.label || "").trim();
-        if (!id || !label || !["command", "skill", "subagent_family", "plugin"].includes(kind)) return [];
+        if (!id || !label || !["command", "skill", "subagent_family", "plugin", "canvas_resource"].includes(kind)) return [];
         return [{ kind: kind as ComposerPresentation["references"][number]["kind"], id, label }];
     });
-    return text && references.length > 0 ? { text, references } : null;
+    return text ? { text, references } : null;
 }
 
 const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::9530)?\/workspace\/([^\s)]+)/gi;
@@ -445,12 +448,21 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
     const mentionReferences = useMemo(() => extractMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
-    const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
+    const canvasHumanSurface = useMemo(
+        () => message.role === "user" && isCreativeCanvasCanonicalMessage(message.content, message.metadata),
+        [message.content, message.metadata, message.role],
+    );
+    const composerPresentation = useMemo(
+        () => canvasHumanSurface
+            ? { text: t("web.workbench.canvas.humanMessage"), references: [] }
+            : extractComposerPresentation(message),
+        [canvasHumanSurface, message, t],
+    );
     const composerPresentationSegments = useMemo(
         () => composerPresentation ? buildComposerInlineSegments(composerPresentation.text, composerPresentation.references) : [],
         [composerPresentation],
     );
-    const shouldRenderUserMetadata = Boolean(
+    const shouldRenderUserMetadata = !canvasHumanSurface && Boolean(
         contextSessionRefs.length > 0
         || specModeEnabled
         || (!composerPresentation && (commandPresetName || skillReferences.length > 0 || mentionReferences.length > 0)),
@@ -459,7 +471,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
     const userDisplayName = String(userName || "").trim() || t("web.generated.d2ccadbbf7");
-    const attachmentRecords = useMemo(() => extractMessageAttachments(message), [message]);
+    const attachmentRecords = useMemo(
+        () => canvasHumanSurface ? [] : extractMessageAttachments(message),
+        [canvasHumanSurface, message],
+    );
     const audioAttachments = useMemo(
         () => attachmentRecords.filter(isAudioAttachmentRecord),
         [attachmentRecords],
@@ -485,7 +500,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
 
     // Prepare media items for Lightbox (if message has images)
     const imagesArray = useMemo(
-        () => Array.from(new Set([
+        () => canvasHumanSurface ? [] : Array.from(new Set([
             ...(Array.isArray(message.images) ? message.images : []),
             ...visualAttachmentUrls,
         ]
@@ -497,7 +512,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
             .filter((value) => Boolean(value) && !audioAttachmentUrls.has(value.toLowerCase())))),
-        [audioAttachmentUrls, message.images, visualAttachmentUrls],
+        [audioAttachmentUrls, canvasHumanSurface, message.images, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
         return imagesArray.map((url) => {

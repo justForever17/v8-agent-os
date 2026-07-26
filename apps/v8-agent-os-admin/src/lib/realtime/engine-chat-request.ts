@@ -13,6 +13,16 @@ function toMessageList(value: unknown) {
     return value.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object");
 }
 
+function toRecordList(value: unknown) {
+    return Array.isArray(value)
+        ? value.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object")
+        : undefined;
+}
+
+function toOptionalRecord(value: unknown) {
+    return value && typeof value === "object" ? value as JsonRecord : undefined;
+}
+
 function toAttachmentList(value: unknown, fallbackFileUrls: string[] = []) {
     const attachments = Array.isArray(value)
         ? value.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object")
@@ -91,6 +101,10 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const safetyApprovalMode = typeof data.safetyApprovalMode === "string"
         ? data.safetyApprovalMode
         : undefined;
+    const canvasSupervisorDirect = data.canvasSupervisorDirect === true ? true : undefined;
+    const composerPresentation = toOptionalRecord(data.composerPresentation);
+    const contextMentions = toRecordList(data.contextMentions);
+    const pluginReferences = toRecordList(data.pluginReferences);
 
     return {
         conversationId: String(conversationId),
@@ -136,6 +150,10 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 supervisorReasoningEffort,
                 safetyApprovalMode,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
+                canvasSupervisorDirect,
+                composerPresentation,
+                contextMentions,
+                pluginReferences,
             },
         },
     };

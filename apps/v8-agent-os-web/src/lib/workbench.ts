@@ -254,11 +254,39 @@ export function createSubagentActivityDocument(input: {
     };
 }
 
+function artifactExtension(artifact: RuntimeArtifact) {
+    const value = String(
+        artifact.workspaceRelativePath
+        || artifact.sourcePath
+        || artifact.workspacePath
+        || artifact.displayLabel
+        || artifact.title
+        || "",
+    ).split(/[?#]/, 1)[0].trim().toLowerCase();
+    const name = value.split(/[\\/]/).at(-1) || "";
+    return name.includes(".") ? name.split(".").at(-1) || "" : "";
+}
+
 function artifactRenderer(artifact: RuntimeArtifact): ArtifactWorkbenchDocument["renderer"] {
     const mimeType = String(artifact.mimeType || "").toLowerCase();
     const previewKind = String(artifact.previewKind || "").toLowerCase();
+    const extension = artifactExtension(artifact);
     if (mimeType.includes("pdf")) return "pdf";
     if (mimeType.includes("gltf") || previewKind.includes("model") || previewKind.includes("3d")) return "model_3d";
+    if (mimeType.includes("markdown") || ["md", "markdown", "mdown", "mkd"].includes(extension)) return "markdown";
+    if (mimeType.includes("html") || ["html", "htm"].includes(extension)) return "html";
+    if (
+        mimeType.includes("json")
+        || mimeType.includes("javascript")
+        || mimeType.includes("xml")
+        || mimeType.includes("yaml")
+        || [
+            "json", "jsonc", "jsonl", "ndjson", "txt", "log", "csv", "tsv", "xml", "yaml", "yml",
+            "js", "jsx", "ts", "tsx", "css", "scss", "less", "py", "ps1", "sh", "bash", "zsh",
+            "toml", "ini", "cfg", "conf", "sql", "rs", "go", "java", "kt", "swift", "c", "h", "cpp",
+            "hpp", "cs", "php", "rb", "lua", "r", "diff", "patch",
+        ].includes(extension)
+    ) return "code";
     const cardType = inferArtifactCardType(artifact);
     if (cardType === "music") return "audio";
     if (cardType === "document" || cardType === "file") return "download";
@@ -266,8 +294,11 @@ function artifactRenderer(artifact: RuntimeArtifact): ArtifactWorkbenchDocument[
 }
 
 export function createArtifactDocument(artifact: RuntimeArtifact, sessionId: string): ArtifactWorkbenchDocument {
-    const ownerSessionId = String(artifact.sessionId || sessionId || "").trim();
-    if (!ownerSessionId) throw new Error("A session id is required to open an artifact in Workbench.");
+    const ownerSessionId = String(sessionId || "").trim();
+    const artifactSessionId = String(artifact.sessionId || "").trim();
+    if (!ownerSessionId || !artifactSessionId || artifactSessionId !== ownerSessionId) {
+        throw new Error("The artifact is not bound to the active Workbench session.");
+    }
     const document: ArtifactWorkbenchDocument = {
         kind: "artifact",
         documentId: `artifact:${ownerSessionId}:${artifact.id}`,

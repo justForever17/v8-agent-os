@@ -693,7 +693,14 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
     next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
     if next_action:
         lines.append(f"Next: {_short_text(next_action, 180)}")
-    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    graph_owned_route_receipt = bool(episode_id) and str(state or "").strip().lower() == "queued"
+    if graph_owned_route_receipt:
+        lines.append(
+            "Receipt only: the graph owns waiting and will inject the durable terminal handoff; "
+            "this queued receipt is not execution evidence and has no Agent-side polling step."
+        )
+    else:
+        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
     return "\n".join(line for line in lines if line).strip()
 
 

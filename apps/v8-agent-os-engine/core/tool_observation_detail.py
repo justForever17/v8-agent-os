@@ -129,6 +129,80 @@ def _render_generic_json_observation_detail(
     return rendered
 
 
+def _render_runtime_route_observation_detail(
+    payload: dict[str, Any],
+    *,
+    max_chars: int,
+) -> str | None:
+    """Resolve a route receipt to current durable episode truth.
+
+    A runtime_broker route result is an immutable queue receipt. Re-rendering
+    that old JSON after a graph-owned wait must not project ``queued`` as the
+    current execution state or encourage command-session polling.
+    """
+
+    episode_id = str(
+        payload.get("queuedEpisodeId")
+        or payload.get("episodeId")
+        or payload.get("runtimeEpisodeId")
+        or ""
+    ).strip()
+    if not episode_id:
+        return None
+    try:
+        from core.database import db
+
+        episode = db.get_runtime_episode(episode_id)
+        handoff_rows = db.list_runtime_episode_handoffs(episode_id)
+    except Exception:
+        return None
+    state = str((episode or {}).get("state") or payload.get("state") or "unknown").strip()
+    lines = [
+        "Runtime episode current state",
+        f"Episode: {episode_id}",
+        f"Status: {state}",
+    ]
+    terminal_handoffs: list[dict[str, Any]] = []
+    for row in list(handoff_rows or []):
+        handoff = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        merged = {**dict(row), **dict(handoff)}
+        status = str(merged.get("status") or "").strip().lower()
+        if status in {"ready", "degraded", "failed", "blocked", "cancelled", "canceled"}:
+            terminal_handoffs.append(merged)
+    if terminal_handoffs:
+        lines.append("The earlier queued route receipt is superseded by the durable terminal handoff below.")
+        for handoff in terminal_handoffs[-4:]:
+            status = str(handoff.get("status") or "terminal").strip()
+            kind = str(handoff.get("kind") or "runtime").strip()
+            summary = _tool_observation_short_text(
+                handoff.get("compactSummary")
+                or handoff.get("compact_summary")
+                or handoff.get("summary")
+                or "Terminal handoff recorded.",
+                700,
+            )
+            lines.append(f"- {kind} / {status}: {summary}")
+            artifact_refs = handoff.get("artifactRefs") if isinstance(handoff.get("artifactRefs"), list) else []
+            proof_refs = handoff.get("proofRefs") if isinstance(handoff.get("proofRefs"), list) else []
+            if artifact_refs:
+                lines.append("  Artifact refs: " + ", ".join(str(item) for item in artifact_refs[:8]))
+            if proof_refs:
+                lines.append("  Proof refs: " + ", ".join(str(item) for item in proof_refs[:8]))
+        lines.append(
+            "Consume this terminal handoff directly. Do not pass this toolobs ref to "
+            "read_background_output; runtime episodes are not command sessions."
+        )
+    else:
+        lines.append(
+            "This is only a graph-owned route receipt. The graph owns waiting and will inject a typed handoff; "
+            "do not poll it with tool_observation_detail or read_background_output."
+        )
+    rendered = _redact_tool_observation_preview("\n".join(lines).strip())
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
+    return rendered
+
+
 def _render_delegation_observation_detail(payload: dict[str, Any], *, max_chars: int) -> str:
     mode = _tool_observation_short_text(payload.get("mode") or "observe", 40)
     lines = [f"Delegation result ({mode})"]
@@ -365,6 +439,10 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
 
         raw_body = str(record.get("raw_body_text") or "")
         payload = _parse_tool_observation_json(raw_body)
+        if payload and str(record.get("tool_name") or "") == "runtime_broker":
+            rendered = _render_runtime_route_observation_detail(payload, max_chars=requested_chars)
+            if rendered:
+                return rendered
         if payload and str(record.get("tool_name") or "") == "delegation_broker":
             return _render_delegation_observation_detail(payload, max_chars=requested_chars)
         if payload and (

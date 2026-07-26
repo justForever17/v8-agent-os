@@ -20,6 +20,8 @@ export async function GET(req: NextRequest) {
     }
     query.set("sessionId", sessionId);
     query.set("limit", String(searchParams.get("limit") || "100"));
+    const includeUnbound = String(searchParams.get("includeUnbound") || searchParams.get("include_unbound") || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(includeUnbound)) query.set("includeUnbound", "true");
     try {
         const response = await fetch(`${adminApiBaseUrl}/client/sources?${query.toString()}`, {
             headers: {

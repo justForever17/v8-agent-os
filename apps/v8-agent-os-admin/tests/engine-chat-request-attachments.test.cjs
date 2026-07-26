@@ -52,3 +52,77 @@ test("structured voice attachment wins over legacy fileUrls fallback", () => {
   assert.deepEqual(result.attachments[0].resourceRef, { adminPath: url });
   assert.deepEqual(result.pythonPayload.attachments, result.attachments);
 });
+
+test("canonical Canvas dispatch metadata survives the Admin submit boundary", () => {
+  const result = buildEngineChatRequestPayload({
+    data: {
+      conversationId: "session-canvas",
+      canvasSupervisorDirect: true,
+      composerPresentation: { text: "本消息来自画布", references: [] },
+      contextMentions: [{
+        kind: "canvas_operation",
+        id: "canvas-operation-1",
+        label: "只修改蒙版区域",
+        sourceType: "creative_media.edit_image_region",
+      }],
+      pluginReferences: [{
+        pluginId: "byted-mediakit",
+        scope: "task",
+        componentIds: ["edit-image"],
+      }],
+    },
+    attachments: [{
+      sourceId: "source-image",
+      sourceKind: "web_upload",
+      resourceRole: "source",
+      url: "/api/client/resource/source.png",
+      mimeType: "image/png",
+      mediaKind: "image",
+    }],
+    messages: [{
+      role: "user",
+      content: "本消息来自画布\n[CANVAS EXECUTION CONTRACT v1]\n{}\n[/CANVAS EXECUTION CONTRACT]",
+    }],
+  }, "owner@example.com");
+
+  assert.equal(result.pythonPayload.data.canvasSupervisorDirect, true);
+  assert.deepEqual(result.pythonPayload.data.composerPresentation, {
+    text: "本消息来自画布",
+    references: [],
+  });
+  assert.deepEqual(result.pythonPayload.data.contextMentions, [{
+    kind: "canvas_operation",
+    id: "canvas-operation-1",
+    label: "只修改蒙版区域",
+    sourceType: "creative_media.edit_image_region",
+  }]);
+  assert.deepEqual(result.pythonPayload.data.pluginReferences, [{
+    pluginId: "byted-mediakit",
+    scope: "task",
+    componentIds: ["edit-image"],
+  }]);
+  assert.equal(result.pythonPayload.attachments.length, 1);
+  assert.equal(result.pythonPayload.attachments[0].sourceKind, "web_upload");
+});
+
+test("non-boolean Canvas flags cannot opt a normal attachment into the privileged route", () => {
+  const result = buildEngineChatRequestPayload({
+    data: {
+      conversationId: "session-normal-image",
+      canvasSupervisorDirect: "true",
+    },
+    attachments: [{
+      sourceId: "source-normal",
+      sourceKind: "web_upload",
+      url: "/api/client/resource/source.png",
+      mimeType: "image/png",
+      mediaKind: "image",
+    }],
+    messages: [{ role: "user", content: "请看看这张图片。" }],
+  }, "owner@example.com");
+
+  assert.equal(result.pythonPayload.data.canvasSupervisorDirect, undefined);
+  assert.equal(result.pythonPayload.data.contextMentions, undefined);
+  assert.equal(result.pythonPayload.attachments.length, 1);
+  assert.equal(result.pythonPayload.attachments[0].sourceId, "source-normal");
+});

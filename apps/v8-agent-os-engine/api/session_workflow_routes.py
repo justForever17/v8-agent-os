@@ -1135,9 +1135,25 @@ async def list_runtime_artifacts(session_id: str | None = None, run_id: str | No
 
 
 @router.get("/sources")
-async def list_session_sources(session_id: str, limit: int = 100):
+async def list_session_sources(
+    session_id: str,
+    limit: int = 100,
+    include_unbound: bool = False,
+    include_internal: bool = False,
+):
     try:
-        return {"sources": db.list_session_sources(session_id=session_id, limit=limit)}
+        sources = db.list_session_sources(
+            session_id=session_id,
+            include_unbound=include_unbound,
+            limit=limit,
+        )
+        return {
+            "sources": sources if include_internal else [
+                source
+                for source in sources
+                if str(source.get("sourceKind") or source.get("source_kind") or "").strip() != "canvas_mask"
+            ],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

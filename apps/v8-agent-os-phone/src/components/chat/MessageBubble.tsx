@@ -688,10 +688,42 @@ function extractComposerPresentation(message: ChatMessage): ComposerPresentation
             reference
             && typeof reference.id === "string"
             && typeof reference.label === "string"
-            && ["command", "skill", "subagent_family", "plugin"].includes(reference.kind),
+            && ["command", "skill", "subagent_family", "plugin", "canvas_resource"].includes(reference.kind),
         ))
         : [];
     return text && references.length > 0 ? { text, references } : null;
+}
+
+function hasCanvasUserMessageMetadata(message: ChatMessage): boolean {
+    const content = String(message.content || "");
+    if (
+        content.includes("[CANVAS EXECUTION CONTRACT v1]")
+        || content.includes("[CANVAS OPERATION]")
+    ) {
+        return true;
+    }
+    const metadata = message.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
+    const rawPresentation = metadata.composerPresentation && typeof metadata.composerPresentation === "object"
+        ? metadata.composerPresentation as Record<string, unknown>
+        : null;
+    const presentationReferences = Array.isArray(rawPresentation?.references)
+        ? rawPresentation.references
+        : [];
+    if (presentationReferences.some((item) => (
+        Boolean(item)
+        && typeof item === "object"
+        && String((item as Record<string, unknown>).kind || "").trim().toLowerCase() === "canvas_resource"
+    ))) {
+        return true;
+    }
+    const contextMentions = Array.isArray(metadata.contextMentions) ? metadata.contextMentions : [];
+    return contextMentions.some((item) => (
+        Boolean(item)
+        && typeof item === "object"
+        && String((item as Record<string, unknown>).kind || "").trim().toLowerCase() === "canvas_operation"
+    ));
 }
 
 type UserAttachmentItem = {
@@ -884,6 +916,7 @@ export const MessageBubble = memo(function MessageBubble({
 }) {
     const { width, height } = useWindowDimensions();
     const { colors: palette, t, themeMode, locale } = useUiPrefs();
+    const canvasUserMessageText = t("src.components.chat.messagebubble.canvasMessage");
     const isLandscape = width > height;
     const isUser = message.role === "user";
     const [copied, setCopied] = useState(false);
@@ -915,6 +948,10 @@ export const MessageBubble = memo(function MessageBubble({
     const mentionReferences = useMemo(() => extractUserMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
     const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
+    const isCanvasUserMessage = useMemo(
+        () => isUser && hasCanvasUserMessageMetadata(message),
+        [isUser, message],
+    );
     const composerPresentationSegments = useMemo(
         () => composerPresentation
             ? buildComposerInlineSegments(composerPresentation.text, composerPresentation.references)
@@ -922,8 +959,8 @@ export const MessageBubble = memo(function MessageBubble({
         [composerPresentation],
     );
     const userAttachments = useMemo(
-        () => extractUserAttachments(message, adminBaseUrl),
-        [adminBaseUrl, message],
+        () => isCanvasUserMessage ? [] : extractUserAttachments(message, adminBaseUrl),
+        [adminBaseUrl, isCanvasUserMessage, message],
     );
     const userMediaAttachments = useMemo(
         () => userAttachments.filter((item) => (item.kind === "image" || item.kind === "video") && item.url),
@@ -1233,7 +1270,7 @@ export const MessageBubble = memo(function MessageBubble({
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
         const directContent = isUser
-            ? (composerPresentation?.text || userContentText)
+            ? (isCanvasUserMessage ? canvasUserMessageText : (composerPresentation?.text || userContentText))
             : String(message.content || "").trim();
         if (directContent) {
             return directContent;
@@ -1271,7 +1308,7 @@ export const MessageBubble = memo(function MessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
+    }, [canvasUserMessageText, commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isCanvasUserMessage, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -1368,25 +1405,25 @@ export const MessageBubble = memo(function MessageBubble({
                                     || userContentText
                                     || !hasUserVisualPayload) ? (
                                     <View style={styles.userInlineContent}>
-                                        {!composerPresentation && commandPresetName ? (
+                                        {!isCanvasUserMessage && !composerPresentation && commandPresetName ? (
                                             <View style={styles.userChip}>
                                                 <Text style={[styles.userChipPrefix, styles.userCommandText]}>/</Text>
                                                 <Text style={[styles.userChipText, styles.userCommandText]}>{commandPresetName.replace(/^\/+/, "")}</Text>
                                             </View>
                                         ) : null}
-                                        {!composerPresentation && skillReferences.map((skill) => (
+                                        {!isCanvasUserMessage && !composerPresentation && skillReferences.map((skill) => (
                                             <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
                                                 <MaterialCommunityIcons name="at" size={14} color="#FDBA74" />
                                                 <Text style={[styles.userChipText, styles.userMentionText]}>{skill.name}</Text>
                                             </View>
                                         ))}
-                                        {!composerPresentation && mentionReferences.map((reference) => (
+                                        {!isCanvasUserMessage && !composerPresentation && mentionReferences.map((reference) => (
                                             <View key={reference.key} style={styles.userChip}>
                                                 <MaterialCommunityIcons name={reference.kind === "plugin" ? "puzzle-outline" : "at"} size={14} color="#FDBA74" />
                                                 <Text style={[styles.userChipText, styles.userMentionText]}>{reference.label}</Text>
                                             </View>
                                         ))}
-                                        {contextSessionRefs.map((sessionId) => (
+                                        {!isCanvasUserMessage && contextSessionRefs.map((sessionId) => (
                                             <View key={sessionId} style={styles.userChip}>
                                                 <MaterialCommunityIcons name="message-arrow-right-outline" size={14} color="#FFFFFF" />
                                                 <Text style={styles.userChipText} numberOfLines={1}>
@@ -1394,13 +1431,15 @@ export const MessageBubble = memo(function MessageBubble({
                                                 </Text>
                                             </View>
                                         ))}
-                                        {composerSpecMode ? (
+                                        {!isCanvasUserMessage && composerSpecMode ? (
                                             <View style={styles.userChip}>
                                                 <MaterialCommunityIcons name="file-document-edit-outline" size={14} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>Spec</Text>
                                             </View>
                                         ) : null}
-                                        {composerPresentation ? (
+                                        {isCanvasUserMessage ? (
+                                            <Text selectable style={[styles.userText, styles.userTextInline]}>{canvasUserMessageText}</Text>
+                                        ) : composerPresentation ? (
                                             <Text selectable style={styles.userPresentationText}>
                                                 {composerPresentationSegments.map((segment, index) => (
                                                     <Text

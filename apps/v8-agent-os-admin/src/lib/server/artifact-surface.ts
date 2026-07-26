@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import {
+    buildAdminArtifactContentRef,
     coerceAdminResourceRef,
     deriveAdminResourceRefFromArtifactLike,
     type AdminResourceRef,
@@ -83,7 +84,9 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
     const next = { ...(record as Record<string, unknown>) };
     const artifactId = artifactIdOf(next);
     const derivedResourceRef = attachSignedSurfaceUrl(
-        coerceAdminResourceRef(next.resourceRef) || deriveAdminResourceRefFromArtifactLike(next),
+        coerceAdminResourceRef(next.resourceRef)
+        || buildAdminArtifactContentRef(artifactId)
+        || deriveAdminResourceRefFromArtifactLike(next),
         req,
     );
     if (!derivedResourceRef || (!artifactId && !hasLocalBacking(next))) {

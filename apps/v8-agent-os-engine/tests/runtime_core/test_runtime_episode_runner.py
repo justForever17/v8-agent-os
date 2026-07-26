@@ -8,6 +8,7 @@ import pytest
 from langgraph.types import Send
 
 from erc.runtime_context import bind_runtime_context
+from erc.run_service import RunService
 from core.database import DatabaseManager, db
 from core.agents import default_subagent_configs
 from core.delegation_broker import build_workset_dispatch_decisions, choose_best_local_agent_with_diagnostics
@@ -92,6 +93,151 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
         ).fetchall()]
     assert "handoff.ref.created" in topics
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.failed")
+
+
+def test_run_cancel_stops_creative_media_executor_and_suppresses_late_progress(tmp_path, monkeypatch):
+    manager = DatabaseManager(tmp_path / "cancel-active-episode.db")
+    manager.create_or_update_session("session-cancel-active", "Cancel active episode")
+    manager.create_run_record(
+        run_id="run-cancel-active",
+        session_id="session-cancel-active",
+        run_type="chat",
+        status="running",
+    )
+    episode = build_runtime_episode(
+        need={"kind": "creative_media", "source": "test", "reason": "exercise cancellation"},
+        kind="creative_media",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(
+        episode,
+        session_id="session-cancel-active",
+        run_id="run-cancel-active",
+        enqueue=True,
+        priority=999,
+    )
+    runner = RuntimeEpisodeRunner()
+    claimed = manager.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["creative_media"])
+    assert claimed is not None
+
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    monkeypatch.setattr("erc.run_service.db", manager)
+    monkeypatch.setattr("erc.run_service.run_ledger_service.record_event", lambda **_kwargs: None)
+    monkeypatch.setattr("erc.run_service.emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    cancellation_observed: list[bool] = []
+
+    async def _scenario() -> None:
+        started = asyncio.Event()
+
+        async def _blocking_creative_media(active_episode):
+            async def _shielded_worker():
+                runner._emit(
+                    "runtime.episode.progress",
+                    episode=active_episode,
+                    session_id="session-cancel-active",
+                    run_id="run-cancel-active",
+                    progress={"stage": "model", "status": "running", "summary": "initial-model-progress"},
+                )
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancellation_observed.append(True)
+                    runner._emit(
+                        "runtime.episode.progress",
+                        episode=active_episode,
+                        session_id="session-cancel-active",
+                        run_id="run-cancel-active",
+                        progress={"stage": "tool", "status": "running", "summary": "late-tool-progress"},
+                    )
+                    raise
+
+            return await runner._await_with_heartbeat(
+                active_episode["episodeId"],
+                _shielded_worker(),
+                progress="creative_media: waiting for worker",
+                interval_seconds=30.0,
+            )
+
+        monkeypatch.setattr(runner, "_execute_creative_media", _blocking_creative_media)
+        execution = asyncio.create_task(runner._execute_episode(claimed))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        RunService().transition_run("run-cancel-active", status="cancelled", error_message="user requested cancellation")
+        await asyncio.wait_for(execution, timeout=1.0)
+
+    asyncio.run(_scenario())
+
+    stored = manager.get_runtime_episode(episode["episodeId"])
+    assert stored["state"] == "cancelled"
+    assert stored["errorCode"] == "parent_run_terminal"
+    assert cancellation_observed == [True]
+    assert manager.list_runtime_episode_handoffs(episode["episodeId"]) == []
+    with manager.get_connection() as conn:
+        progress_payloads = [
+            json.loads(row["payload_json"])
+            for row in conn.execute(
+                "SELECT payload_json FROM runtime_episode_events WHERE episode_id = ? AND topic = 'runtime.episode.progress' ORDER BY created_at",
+                (episode["episodeId"],),
+            ).fetchall()
+        ]
+    assert [payload.get("progress", {}).get("summary") for payload in progress_payloads] == ["initial-model-progress"]
+
+
+def test_creative_media_deadline_cancels_executor_and_fails_without_retry(tmp_path, monkeypatch):
+    manager = DatabaseManager(tmp_path / "creative-media-deadline.db")
+    manager.create_or_update_session("session-creative-deadline", "Creative deadline")
+    manager.create_run_record(
+        run_id="run-creative-deadline",
+        session_id="session-creative-deadline",
+        run_type="chat",
+        status="running",
+    )
+    episode = build_runtime_episode(
+        need={"kind": "creative_media", "source": "test", "reason": "exercise deadline"},
+        kind="creative_media",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(
+        episode,
+        session_id="session-creative-deadline",
+        run_id="run-creative-deadline",
+        enqueue=True,
+        priority=999,
+    )
+    runner = RuntimeEpisodeRunner()
+    claimed = manager.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["creative_media"])
+    assert claimed is not None
+
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    monkeypatch.setattr(runner, "_episode_executor_deadline_seconds", lambda _episode: 0.03)
+    cancellation_observed: list[bool] = []
+
+    async def _blocking_creative_media(_active_episode):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_observed.append(True)
+            raise
+
+    monkeypatch.setattr(runner, "_execute_creative_media", _blocking_creative_media)
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = manager.get_runtime_episode(episode["episodeId"])
+    assert stored["state"] == "failed"
+    assert stored["errorCode"] == "episode_deadline_exceeded"
+    assert stored["metadata"]["recoverable"] is False
+    assert cancellation_observed == [True]
+    assert manager.list_runtime_episode_handoffs(episode["episodeId"]) == []
+    with manager.get_connection() as conn:
+        queue_state = conn.execute(
+            "SELECT state FROM runtime_episode_queue WHERE episode_id = ?",
+            (episode["episodeId"],),
+        ).fetchone()["state"]
+    assert queue_state == "failed"
+    assert RuntimeEpisodeRunner._episode_executor_deadline_seconds({"kind": "creative_media"}) == 300.0
+    assert RuntimeEpisodeRunner._episode_executor_deadline_seconds({"kind": "engineering"}) is None
 
 
 def test_runtime_episode_build_inherits_runtime_context_binding():
@@ -4046,8 +4192,14 @@ def test_child_delegation_request_preserves_rich_task_brief_for_grandchild():
     assert worker_brief["workspacePath"] == "E:/Projects/test3"
 
 
-def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_worker():
+def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_worker(
+    tmp_path,
+    monkeypatch,
+):
     from core.delegation_broker import normalize_task_brief
+
+    manager = DatabaseManager(tmp_path / "managed-child.db")
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
 
     parent_brief = normalize_task_brief(
         {
@@ -4060,8 +4212,8 @@ def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_wo
             "acceptanceContract": "The target script runs successfully.",
         }
     )
-    db.create_or_update_session("session-managed-child", "Managed child capsule test", user_id="test")
-    db.create_run_record(
+    manager.create_or_update_session("session-managed-child", "Managed child capsule test", user_id="test")
+    manager.create_run_record(
         run_id="run-managed-child",
         session_id="session-managed-child",
         run_type="chat",
@@ -4081,7 +4233,7 @@ def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_wo
         state="waiting_child",
         continuation_target="runtime_episode_runner",
     )
-    db.upsert_runtime_episode_record(parent, session_id="session-managed-child", run_id="run-managed-child", enqueue=False)
+    manager.upsert_runtime_episode_record(parent, session_id="session-managed-child", run_id="run-managed-child", enqueue=False)
     stale_child = build_runtime_episode(
         need={
             "kind": "delegation",
@@ -4105,7 +4257,7 @@ def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_wo
         parent_episode_id=parent["episodeId"],
         continuation_target="runtime_episode_runner",
     )
-    db.upsert_runtime_episode_record(
+    manager.upsert_runtime_episode_record(
         stale_child,
         session_id="session-managed-child",
         run_id="run-managed-child",
@@ -4133,7 +4285,7 @@ def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_wo
                 "send": {"arg": {"parallel_branch": {"delegationDepth": 2}}},
             }
         ],
-        episode=db.get_runtime_episode(parent["episodeId"]),
+        episode=manager.get_runtime_episode(parent["episodeId"]),
         parent_engineering_workspace={
             "workspace_path": "C:/managed/parent",
             "original_workspace_path": "C:/projects/app",
@@ -4142,7 +4294,7 @@ def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_wo
     )
 
     assert len(child_ids) == 1
-    child = db.get_runtime_episode(child_ids[0])
+    child = manager.get_runtime_episode(child_ids[0])
     assert child is not None
     worker = child["inputs"]["workerBriefs"][0]
     assert worker["engineeringTaskCapsule"]["executionMode"] == "verify"

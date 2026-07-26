@@ -249,6 +249,9 @@ class ChatPreparedRequest:
     task_shape_hint: dict[str, Any] = field(default_factory=dict)
     skill_references: list[dict[str, str]] = field(default_factory=list)
     context_mentions: list[dict[str, str]] = field(default_factory=list)
+    canvas_operation_id: str = ""
+    canvas_supervisor_direct: bool = False
+    canvas_execution_contract: dict[str, Any] = field(default_factory=dict)
     plugin_references: list[dict[str, Any]] = field(default_factory=list)
     composer_presentation: dict[str, Any] = field(default_factory=dict)
     plugin_authorizations: list[dict[str, Any]] = field(default_factory=list)
@@ -1024,6 +1027,8 @@ class ChatRuntime:
         return kind in {"audio", "image", "video"} or cls._attachment_is_readable_file(attachment)
 
     def _resolve_attachment_local_path(self, chat_run: ChatRunContext, attachment: dict[str, Any]) -> str:
+        workspace_root_value = str(chat_run.scope_result.binding.workspace_path or "").strip()
+        workspace_root = Path(workspace_root_value).expanduser() if workspace_root_value else None
         direct = str(
             attachment.get("workspacePath")
             or attachment.get("workspace_path")
@@ -1034,16 +1039,25 @@ class ChatRuntime:
             or ""
         ).strip()
         if direct and not direct.startswith(("http://", "https://", "/api/")):
-            return direct
+            direct_path = Path(direct).expanduser()
+            if direct_path.is_absolute():
+                return str(direct_path.resolve(strict=False))
+            if workspace_root is not None:
+                resolved_root = workspace_root.resolve(strict=False)
+                candidate = (resolved_root / direct_path).resolve(strict=False)
+                try:
+                    candidate.relative_to(resolved_root)
+                except ValueError:
+                    return ""
+                return str(candidate)
 
         url = self._attachment_url(attachment)
-        workspace_root = Path(chat_run.scope_result.binding.workspace_path or "").expanduser()
         if "/api/workspace/files/" in url or "/api/client/workspace/files/" in url:
             marker = "/api/client/workspace/files/" if "/api/client/workspace/files/" in url else "/api/workspace/files/"
             subpath = unquote(url.split(marker)[-1].split("?", 1)[0]).replace("/", os.sep).replace("\\", os.sep)
-            if workspace_root:
+            if workspace_root is not None:
                 return str((workspace_root / subpath).absolute().resolve())
-        if "/workspace/" in url and workspace_root:
+        if "/workspace/" in url and workspace_root is not None:
             parsed = urlparse(url)
             subpath = unquote(parsed.path.split("/workspace/", 1)[-1]).replace("/", os.sep).replace("\\", os.sep)
             return str((workspace_root / subpath).absolute().resolve())
@@ -1090,6 +1104,11 @@ class ChatRuntime:
     def _attachment_preflight_prompt(self, chat_run: ChatRunContext, attachment: dict[str, Any]) -> str:
         user_text = str(chat_run.prepared.latest_user_content or "").strip()
         kind = self._attachment_media_kind(attachment)
+        if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)) and kind == "image":
+            return (
+                "请客观描述这张画布来源图片的主体、构图、光影和应保留区域；"
+                "不要执行编辑，不要推断蒙版之外不存在的内容。"
+            )
         if kind == "audio" and not user_text:
             return self._voice_extract_prompt()
         if user_text:
@@ -1151,8 +1170,16 @@ class ChatRuntime:
     def _build_attachment_preflight_work_items(
         self,
         chat_run: ChatRunContext,
+        *,
+        allow_canvas_direct: bool = False,
     ) -> list[dict[str, Any]]:
         if chat_run.is_resume_request:
+            return []
+        if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)) and not allow_canvas_direct:
+            # A validated Canvas contract already binds the selected sources to
+            # one exact operation. Keep those attachments in Supervisor context,
+            # but do not make the generic opening tool a prerequisite for
+            # dispatching the governed Canvas operation.
             return []
         attachments = [dict(item) for item in list(chat_run.request.attachments or []) if isinstance(item, dict)]
         work_items: list[dict[str, Any]] = []
@@ -1253,7 +1280,10 @@ class ChatRuntime:
             # reviewed run is later allowed, the normal preflight executor emits
             # the real start event immediately before invocation.
             return []
-        work_items = self._build_attachment_preflight_work_items(chat_run)
+        work_items = self._build_attachment_preflight_work_items(
+            chat_run,
+            allow_canvas_direct=bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)),
+        )
         if not work_items:
             return []
         stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
@@ -1279,11 +1309,17 @@ class ChatRuntime:
         self,
         chat_run: ChatRunContext,
         stream_state: ChatStreamState,
+        *,
+        allow_canvas_direct: bool = False,
+        append_context: bool = True,
     ) -> AsyncIterator[dict[str, Any]]:
         from core.tools.native.workspace_file import read_native_file
         from core.tools.vision_media_analyzer import vision_media_analyzer
 
-        work_items = self._build_attachment_preflight_work_items(chat_run)
+        work_items = self._build_attachment_preflight_work_items(
+            chat_run,
+            allow_canvas_direct=allow_canvas_direct,
+        )
         if not work_items:
             return
         preannounced_ids = set(chat_run.request._attachment_preflight_preannounced_call_ids)
@@ -1362,7 +1398,47 @@ class ChatRuntime:
                         "failed",
                     )
 
-        results = await asyncio.gather(*(_execute(item) for item in work_items))
+        try:
+            results = await asyncio.gather(*(_execute(item) for item in work_items))
+        except asyncio.CancelledError:
+            for item in work_items:
+                tool_call_id = str(item["toolCallId"])
+                tool_name = str(item["toolName"])
+                display_args = dict(item.get("displayArgs") or {})
+                stream_state.watchdog.note_tool_end(tool_call_id)
+                stream_state.active_tool_call_ids.discard(tool_call_id)
+                self._emit_message_targeted_runtime_event(
+                    chat_run,
+                    stream_state,
+                    topic="tool.finished",
+                    payload={
+                        "type": "tool_result",
+                        "tool": {
+                            "toolCallId": tool_call_id,
+                            "toolInvocationId": tool_call_id,
+                            "toolName": tool_name,
+                            "args": display_args,
+                            "status": "cancelled",
+                            "result": "画布任务已结束，附件后台识别已收束。",
+                        },
+                        "timestamp": self._now_timestamp_ms(),
+                    },
+                    node={
+                        "id": f"attachment-preflight:{tool_call_id}:cancelled",
+                        "kind": "execution",
+                        "executionType": "tool_result",
+                        "toolCallId": tool_call_id,
+                        "toolName": tool_name,
+                        "args": display_args,
+                        "result": "画布任务已结束，附件后台识别已收束。",
+                        "status": "cancelled",
+                        "topic": "tool.finished",
+                        "timestamp": self._now_timestamp_ms(),
+                    },
+                    agent_id="supervisor",
+                    runtime_node="attachment_preflight",
+                )
+            raise
         summaries: list[dict[str, str]] = []
         for item, (output, status) in zip(work_items, results):
             tool_name = str(item["toolName"])
@@ -1418,7 +1494,8 @@ class ChatRuntime:
                 "ref": ref,
             })
 
-        self._append_attachment_preflight_context(chat_run, summaries)
+        if append_context:
+            self._append_attachment_preflight_context(chat_run, summaries)
 
     async def _run_attachment_preflight_then_start_agent(
         self,
@@ -1431,6 +1508,30 @@ class ChatRuntime:
             yield attachment_event
         for startup_event in self.emit_stream_start_events(chat_run, stream_state):
             yield startup_event
+
+    async def _drain_canvas_attachment_preflight(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> None:
+        try:
+            async for _event in self._run_attachment_preflight(
+                chat_run,
+                stream_state,
+                allow_canvas_direct=True,
+                append_context=False,
+            ):
+                # Runtime events are persisted/published by the canonical event
+                # emitter. The direct request's main stream must not wait for
+                # this background analysis before starting Supervisor.
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Canvas attachment background analysis failed for run '%s'",
+                chat_run.active_run_id,
+            )
 
     def _latest_user_content(self, request: ChatRequest) -> str:
         for candidate in reversed(request.messages):
@@ -1862,6 +1963,242 @@ class ChatRuntime:
                 }
             )
         return normalized
+
+    @staticmethod
+    def _canvas_operation_id_from_context_mentions(context_mentions: list[dict[str, Any]]) -> str:
+        operation_ids: list[str] = []
+        for mention in list(context_mentions or []):
+            if str(mention.get("kind") or "").strip().lower() != "canvas_operation":
+                continue
+            operation_id = str(
+                mention.get("id")
+                or mention.get("canvasOperationId")
+                or mention.get("canvas_operation_id")
+                or ""
+            ).strip()
+            if not operation_id:
+                raise ValueError("canvas_operation context mention requires an id")
+            if operation_id not in operation_ids:
+                operation_ids.append(operation_id)
+        if len(operation_ids) > 1:
+            raise ValueError("a chat run may bind only one canvas_operation context mention")
+        return operation_ids[0] if operation_ids else ""
+
+    def _validate_canvas_supervisor_direct(
+        self,
+        request: ChatRequest,
+        *,
+        canvas_operation_id: str,
+    ) -> bool:
+        requested = bool(
+            request.data
+            and getattr(request.data, "canvas_supervisor_direct", False)
+        )
+        if not requested:
+            return False
+        if not canvas_operation_id:
+            raise ValueError("canvasSupervisorDirect requires one canvas_operation context mention")
+
+        contract = self._parse_canvas_execution_contract(self._latest_user_content(request))
+        if str(contract.get("canvasOperationId") or "").strip() != canvas_operation_id:
+            raise ValueError("canvasSupervisorDirect operation id does not match context mention")
+        if not str(contract.get("actionId") or "").strip():
+            raise ValueError("canvasSupervisorDirect requires one typed Canvas action id")
+
+        attachments = [dict(item) for item in list(request.attachments or []) if isinstance(item, dict)]
+        attachment_source_ids: set[str] = set()
+        for attachment in attachments:
+            metadata = attachment.get("metadata") if isinstance(attachment.get("metadata"), dict) else {}
+            attachment_operation_id = str(
+                metadata.get("canvasOperationId")
+                or metadata.get("canvas_operation_id")
+                or ""
+            ).strip()
+            if attachment_operation_id != canvas_operation_id:
+                raise ValueError("canvasSupervisorDirect attachment lineage does not match operation id")
+            source_id = str(
+                attachment.get("sourceId")
+                or attachment.get("source_id")
+                or attachment.get("id")
+                or ""
+            ).strip()
+            if source_id:
+                attachment_source_ids.add(source_id)
+
+        resources = contract.get("resources") if isinstance(contract.get("resources"), dict) else {}
+        contract_source_ids = {
+            str(item).strip()
+            for item in list(resources.get("sourceIds") or [])
+            if str(item).strip()
+        }
+        if contract_source_ids and not contract_source_ids.issubset(attachment_source_ids):
+            raise ValueError("canvasSupervisorDirect source ids must be backed by Canvas attachments")
+        execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+        if str(execution.get("tool") or "").strip() == "creative_media_jobs":
+            execution_arguments = (
+                execution.get("arguments")
+                if isinstance(execution.get("arguments"), dict)
+                else {}
+            )
+            execution_request = (
+                execution_arguments.get("request")
+                if isinstance(execution_arguments.get("request"), dict)
+                else {}
+            )
+            if str(execution_arguments.get("action") or "").strip() != "create":
+                raise ValueError("canvasSupervisorDirect Creative Media execution must create one governed job")
+            if str(execution_request.get("canvasOperationId") or "").strip() != canvas_operation_id:
+                raise ValueError("canvasSupervisorDirect Creative Media operation lineage does not match")
+            execution_source_ids = (
+                list(execution_request.get("sourceIds") or [])
+                if isinstance(execution_request.get("sourceIds"), list)
+                else []
+            )
+            requested_source_ids = {
+                str(item).strip()
+                for item in [
+                    execution_request.get("sourceId"),
+                    *execution_source_ids,
+                ]
+                if str(item or "").strip()
+            }
+            if requested_source_ids != contract_source_ids:
+                raise ValueError("canvasSupervisorDirect Creative Media sources must match the Canvas resource contract")
+            if str(execution_request.get("maskSourceId") or "").strip() != str(resources.get("maskSourceId") or "").strip():
+                raise ValueError("canvasSupervisorDirect Creative Media mask must match the Canvas resource contract")
+        for source_id in attachment_source_ids:
+            source = db.get_session_source(session_id=request.session_id or "", source_id=source_id)
+            if not source:
+                raise ValueError("canvasSupervisorDirect source is not bound to the current session")
+            if str(source.get("sourceKind") or source.get("source_kind") or "").strip() == "canvas_mask":
+                raise ValueError("canvasSupervisorDirect mask cannot be declared as a visible source")
+
+        mask_source_id = str(resources.get("maskSourceId") or "").strip()
+        if mask_source_id:
+            mask_source = db.get_session_source(session_id=request.session_id or "", source_id=mask_source_id)
+            if not mask_source:
+                raise ValueError("canvasSupervisorDirect mask is not bound to the current session")
+            if str(mask_source.get("sourceKind") or mask_source.get("source_kind") or "").strip() != "canvas_mask":
+                raise ValueError("canvasSupervisorDirect mask must use the internal canvas_mask source kind")
+        return True
+
+    @staticmethod
+    def _parse_canvas_execution_contract(content: str) -> dict[str, Any]:
+        start_marker = "[CANVAS EXECUTION CONTRACT v1]"
+        end_marker = "[/CANVAS EXECUTION CONTRACT]"
+        start = content.find(start_marker)
+        end = content.find(end_marker, start + len(start_marker)) if start >= 0 else -1
+        if start < 0 or end < 0:
+            raise ValueError("canvasSupervisorDirect requires the canonical Canvas execution contract")
+        raw_contract = content[start + len(start_marker):end].strip()
+        try:
+            contract = json.loads(raw_contract)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("canvasSupervisorDirect contract must contain valid JSON") from exc
+        if not isinstance(contract, dict) or contract.get("schema") != "v8.creative_canvas_task.v1":
+            raise ValueError("canvasSupervisorDirect requires schema v8.creative_canvas_task.v1")
+        return dict(contract)
+
+    @staticmethod
+    def _canvas_runtime_route_kind(contract: dict[str, Any]) -> str:
+        execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+        return "creative_media" if str(execution.get("tool") or "").strip() == "creative_media_jobs" else ""
+
+    def _canvas_task_shape_hint(self, prepared: ChatPreparedRequest) -> dict[str, Any]:
+        route_kind = self._canvas_runtime_route_kind(prepared.canvas_execution_contract)
+        return {
+            "schema": "v8.supervisor_task_context.v1",
+            "primaryTaskShape": "creative_media" if route_kind == "creative_media" else "unknown",
+            "secondaryTaskShapes": [],
+            "confidence": 1.0,
+            "reason": "validated_canvas_execution_contract",
+            "suggestedFamilies": [route_kind] if route_kind else [],
+            "optionalRuntimeGrants": [],
+            "familyScores": {route_kind: 1.0} if route_kind else {},
+            "topFamily": route_kind,
+            "scoreMargin": 1.0,
+            "ambiguityFlags": [],
+            "signals": ["canvas_supervisor_direct", f"canvas_action:{prepared.canvas_execution_contract.get('actionId') or ''}"],
+            "source": "validated_canvas_execution_contract",
+            "policy": "supervisor_first_canvas_runtime_route",
+            "boundaryDecision": {
+                "schema": "v8.task_boundary.v1",
+                "primaryRuntime": route_kind,
+                "supportingRuntimes": [],
+                "executionMode": "supervisor_runtime_route" if route_kind else "supervisor_decides",
+                "reason": "validated_canvas_execution_contract",
+                "askUserNeeded": False,
+                "forbiddenRoutes": ["engineering"],
+                "routeCorrections": [],
+                "signals": ["canvas_supervisor_direct"],
+                "source": "validated_canvas_execution_contract",
+                "policy": "typed_canvas_contract_no_lexical_routing",
+            },
+        }
+
+    def _canvas_runtime_route_arguments(self, chat_run: ChatRunContext) -> dict[str, Any]:
+        contract = dict(chat_run.prepared.canvas_execution_contract or {})
+        if self._canvas_runtime_route_kind(contract) != "creative_media":
+            return {}
+        execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
+        execution_arguments = (
+            execution.get("arguments")
+            if isinstance(execution.get("arguments"), dict)
+            else {}
+        )
+        job_request = (
+            execution_arguments.get("request")
+            if isinstance(execution_arguments.get("request"), dict)
+            else {}
+        )
+        operation_id = str(contract.get("canvasOperationId") or chat_run.prepared.canvas_operation_id).strip()
+        action_id = str(contract.get("actionId") or "").strip()
+        goal = str(job_request.get("prompt") or chat_run.prepared.latest_user_content or action_id).strip()
+        task_suffix = hashlib.sha256(operation_id.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        return {
+            "mode": "route",
+            "routeKind": "creative_media",
+            "routeReason": "A validated Canvas action requires governed Creative Media execution in this session.",
+            "workspacePath": str(chat_run.scope_result.binding.workspace_path or ""),
+            "taskBriefs": [{
+                "taskBriefId": f"canvas-creative-{task_suffix}",
+                "goal": goal[:2400],
+                "context": {
+                    "canvasOperationId": operation_id,
+                    "canvasActionId": action_id,
+                    "canvasExecutionContract": contract,
+                },
+                "writeRequired": True,
+                "readOnly": False,
+                "writeSet": [".v8/creative-media/"],
+                "expectedOutputs": ["One session-bound Creative Media artifact for the Canvas output slot"],
+                "acceptanceContract": [
+                    "The artifact lineage contains this exact canvasOperationId and current sessionId",
+                    "The artifact is renderable in the requested Canvas output slot",
+                ],
+                "constraints": [
+                    "Resolve sourceId and maskSourceId only from the current session source ledger",
+                    "Do not register the internal canvas_mask source as a user-visible source or attachment",
+                ],
+                "detailRefs": [],
+                "dependencies": [],
+            }],
+            "proofExpectations": [
+                "A terminal Creative Media handoff with artifact id and preview reference",
+                "Provider/model binding and source/mask lineage for this Canvas operation",
+            ],
+        }
+
+    @staticmethod
+    def _session_title_source(prepared: ChatPreparedRequest) -> str:
+        if str(prepared.canvas_operation_id or "").strip():
+            presentation_text = str(prepared.composer_presentation.get("text") or "").strip()
+            return presentation_text or "本消息来自画布"
+        if prepared.latest_user_content:
+            return prepared.latest_user_content
+        if prepared.request.messages:
+            return str(prepared.request.messages[0].content or "")
+        return "New Chat"
 
     @staticmethod
     def _normalize_plugin_references(request: ChatRequest) -> list[dict[str, Any]]:
@@ -2490,6 +2827,16 @@ class ChatRuntime:
             explicit_subagent_families,
             spec_mode,
         ) = self._resolve_request_context(request, session_id=session_id)
+        canvas_operation_id = self._canvas_operation_id_from_context_mentions(context_mentions)
+        canvas_supervisor_direct = self._validate_canvas_supervisor_direct(
+            request,
+            canvas_operation_id=canvas_operation_id,
+        )
+        canvas_execution_contract = (
+            self._parse_canvas_execution_contract(self._latest_user_content(request))
+            if canvas_supervisor_direct
+            else {}
+        )
         resume_spec_session_id = ""
         if not spec_mode and request.resume_run_id:
             resume_spec_session_id = self._resume_run_spec_session_id(request.resume_run_id)
@@ -2587,7 +2934,11 @@ class ChatRuntime:
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
             context_mentions=context_mentions,
+            canvas_operation_id=canvas_operation_id,
+            canvas_supervisor_direct=canvas_supervisor_direct,
+            canvas_execution_contract=canvas_execution_contract,
             plugin_references=plugin_references,
+            composer_presentation=composer_presentation,
             context_session_refs=context_session_refs,
             session_coordination_message=session_coordination_message,
             explicit_subagent_families=explicit_subagent_families,
@@ -2657,7 +3008,7 @@ class ChatRuntime:
             prepared.request.conversation_id = prepared.conversation_id
             prepared.request.user_id = prepared.user_id
         else:
-            title_source = prepared.latest_user_content or (prepared.request.messages[0].content if prepared.request.messages else "New Chat")
+            title_source = self._session_title_source(prepared)
             title = f"{title_source[:50]}..." if len(title_source) > 50 else (title_source or "New Chat")
             compat_ephemeral = _is_network_supervisor_compat_transport(transport)
             db.create_or_update_session(
@@ -3045,7 +3396,30 @@ class ChatRuntime:
                 "policy": "hint_only_non_authoritative_no_reveal_no_grant",
             }
             run_service.update_metadata(run_handle.run_id, {"taskShapeHint": dict(prepared.task_shape_hint or {})})
-        if not build_engineering_context:
+        if prepared.canvas_supervisor_direct:
+            prepared.engineering_mode = "off"
+            prepared.explicit_engineering_requested = False
+            prepared.task_shape_hint = self._canvas_task_shape_hint(prepared)
+            prepared.engineering_trigger_decision = {
+                "mode": "off",
+                "active": False,
+                "matched": False,
+                "reason": "validated_canvas_contract_bypasses_engineering_lane",
+            }
+            run_service.update_metadata(
+                run_handle.run_id,
+                {
+                    "canvasSupervisorDirect": True,
+                    "canvasOperationId": prepared.canvas_operation_id,
+                    "canvasRouteKind": self._canvas_runtime_route_kind(prepared.canvas_execution_contract) or None,
+                    "taskShapeHint": dict(prepared.task_shape_hint),
+                    "engineeringMode": "off",
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision),
+                    "engineeringRequired": False,
+                    "explicitEngineeringRequested": False,
+                },
+            )
+        elif not build_engineering_context:
             prepared.engineering_trigger_decision = {
                 "mode": prepared.engineering_mode,
                 "active": False,
@@ -3133,6 +3507,20 @@ class ChatRuntime:
             agent_id=None,
             node="safety_guardian",
         )
+        if chat_run.prepared.canvas_supervisor_direct:
+            chat_run.emit_runtime_event(
+                "canvas.dispatch.accepted",
+                {
+                    "canvasOperationId": chat_run.prepared.canvas_operation_id,
+                    "actionId": chat_run.prepared.canvas_execution_contract.get("actionId"),
+                    "routeKind": self._canvas_runtime_route_kind(chat_run.prepared.canvas_execution_contract) or None,
+                    "attachmentAnalysisMode": "parallel_non_blocking",
+                    "engineeringMode": "off",
+                    "summary": "画布动作已按当前会话合同交给主理人，附件识别在后台并行进行。",
+                },
+                agent_id="supervisor",
+                node="canvas_dispatch",
+            )
         if chat_run.prepared.engineering_trigger_decision:
             chat_run.emit_runtime_event(
                 "engineering_lane.trigger.decided",
@@ -3681,6 +4069,17 @@ class ChatRuntime:
             "plugin_authorizations": list(chat_run.prepared.plugin_authorizations),
             **dict(getattr(chat_run, "engineering_workspace", {}) or {}),
         }
+        if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)):
+            current_route_context.update({
+                "canvasSupervisorDirect": True,
+                "canvas_supervisor_direct": True,
+                "canvasOperationId": chat_run.prepared.canvas_operation_id,
+                "canvas_operation_id": chat_run.prepared.canvas_operation_id,
+                "canvasExecutionContract": dict(chat_run.prepared.canvas_execution_contract or {}),
+            })
+            canvas_runtime_route = self._canvas_runtime_route_arguments(chat_run)
+            if canvas_runtime_route:
+                current_route_context["canvasRuntimeRoute"] = canvas_runtime_route
         current_route_context["workspaceBinding"] = build_workspace_binding(
             current_route_context,
             runtime_kind="chat",
@@ -9381,6 +9780,17 @@ class ChatRuntime:
             "plugin_authorizations": list(getattr(chat_run.prepared, "plugin_authorizations", None) or []),
             "pluginAuthorizations": list(getattr(chat_run.prepared, "plugin_authorizations", None) or []),
         }
+        canvas_operation_id = str(getattr(chat_run.prepared, "canvas_operation_id", "") or "").strip()
+        if canvas_operation_id:
+            context["canvas_operation_id"] = canvas_operation_id
+            context["canvasOperationId"] = canvas_operation_id
+        if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)):
+            context["canvas_supervisor_direct"] = True
+            context["canvasSupervisorDirect"] = True
+            context["canvasExecutionContract"] = dict(chat_run.prepared.canvas_execution_contract or {})
+            canvas_runtime_route = self._canvas_runtime_route_arguments(chat_run)
+            if canvas_runtime_route:
+                context["canvasRuntimeRoute"] = canvas_runtime_route
         safety_approval_mode = self._safety_approval_mode_for_run(chat_run)
         context["safety_approval_mode"] = safety_approval_mode
         context["safetyApprovalMode"] = safety_approval_mode
@@ -9593,6 +10003,17 @@ class ChatRuntime:
             )
 
         stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
+        canvas_attachment_preflight_task: asyncio.Task[None] | None = None
+
+        async def stop_canvas_attachment_preflight() -> None:
+            nonlocal canvas_attachment_preflight_task
+            task = canvas_attachment_preflight_task
+            canvas_attachment_preflight_task = None
+            if task is None:
+                return
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
         try:
             attachment_preflight_pending = bool(self._build_attachment_preflight_work_items(chat_run))
@@ -9609,7 +10030,12 @@ class ChatRuntime:
                     yield preflight_event
                 return
 
-            if attachment_preflight_pending:
+            if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)) and chat_run.request.attachments:
+                canvas_attachment_preflight_task = asyncio.create_task(
+                    self._drain_canvas_attachment_preflight(chat_run, stream_state),
+                    name=f"canvas-attachment-preflight:{chat_run.active_run_id}",
+                )
+            elif attachment_preflight_pending:
                 async for startup_event in self._run_attachment_preflight_then_start_agent(chat_run, stream_state):
                     yield startup_event
             else:
@@ -9647,6 +10073,7 @@ class ChatRuntime:
                     yield text_event
                 for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                     yield flushed_event
+                await stop_canvas_attachment_preflight()
                 self.persist_final_assistant_message(chat_run, stream_state)
                 yield self.finalize_success_run(chat_run, stream_state)
                 return
@@ -9951,6 +10378,7 @@ class ChatRuntime:
                     )
                     continue
 
+            await stop_canvas_attachment_preflight()
             if interrupted_signal:
                 for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
                     yield final_event
@@ -10002,6 +10430,8 @@ class ChatRuntime:
             for failed_event in self.finalize_failed_run(chat_run, exc):
                 yield failed_event
         finally:
+            if canvas_attachment_preflight_task is not None and not canvas_attachment_preflight_task.done():
+                canvas_attachment_preflight_task.cancel()
             # 这里避免在 finally 里再出现 await，防止请求收尾阶段的取消打断
             # lane 已释放但 released 事件尚未来得及落库，造成 handoff 账本缺口。
             session_admission_service.release(

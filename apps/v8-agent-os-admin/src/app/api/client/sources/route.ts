@@ -10,6 +10,8 @@ export async function GET(req: NextRequest) {
     }
     const limit = String(searchParams.get("limit") || "100").trim();
     const query = new URLSearchParams({ session_id: sessionId, limit });
+    const includeUnbound = String(searchParams.get("includeUnbound") || searchParams.get("include_unbound") || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(includeUnbound)) query.set("include_unbound", "true");
     return proxyClientEngineJson(req, `/sources?${query.toString()}`, {
         method: "GET",
         cache: "no-store",

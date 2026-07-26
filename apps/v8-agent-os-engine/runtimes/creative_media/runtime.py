@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +26,7 @@ from core.database import db
 from core.model_control_plane import model_control_plane
 from core.model_endpoint_binding import build_model_endpoint_binding
 from core.model_ref import parse_model_ref
+from core.process_launch import run_windowless
 from core.storage import storage
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from erc.runtime_registry import runtime_registry
@@ -1007,6 +1008,9 @@ class CreativeMediaRuntime:
                     provider_meta=provider_meta,
                     model_data={**model_data, "id": model_id_str},
                 ):
+                    binding_operation_kind = str(endpoint_binding.get("operationKind") or "").strip()
+                    if binding_operation_kind and binding_operation_kind != operation_kind:
+                        continue
                     capability_profile = dict(
                         operation_capability_profiles.get(operation_kind)
                         or capability_profile_for_model(
@@ -1426,6 +1430,76 @@ class CreativeMediaRuntime:
             for key in ("adapter", "provider", "providerId", "provider_id", "model", "modelId", "model_id", "modelRef", "model_ref")
         )
 
+    def _has_explicit_provider_or_model_selection(self, request: dict[str, Any]) -> bool:
+        return any(
+            key in request and str(request.get(key) or "").strip()
+            for key in (
+                "provider",
+                "providerId",
+                "provider_id",
+                "model",
+                "modelId",
+                "model_id",
+                "modelRef",
+                "model_ref",
+            )
+        )
+
+    def _explicit_enabled_model_candidate(
+        self,
+        request: dict[str, Any],
+        *,
+        modality: str,
+        operation_kind: str,
+    ) -> dict[str, Any] | None:
+        model_ref = parse_model_ref(str(request.get("modelRef") or request.get("model_ref") or ""))
+        requested_provider = str(
+            request.get("providerId")
+            or request.get("provider_id")
+            or request.get("provider")
+            or (model_ref[0] if model_ref else "")
+            or ""
+        ).strip()
+        requested_model = str(
+            request.get("model")
+            or request.get("modelId")
+            or request.get("model_id")
+            or (model_ref[1] if model_ref else "")
+            or ""
+        ).strip()
+        requested_model_ref = str(request.get("modelRef") or request.get("model_ref") or "").strip()
+        matches: list[dict[str, Any]] = []
+        for candidate in self._all_model_candidates_for_operation(operation_kind):
+            if str(candidate.get("operationKind") or "").strip() != operation_kind:
+                continue
+            if str(candidate.get("modality") or "").strip() != modality:
+                continue
+            endpoint_binding = dict(candidate.get("endpointBinding") or {})
+            binding_operation_kind = str(endpoint_binding.get("operationKind") or "").strip()
+            if binding_operation_kind and binding_operation_kind != operation_kind:
+                continue
+            if requested_provider and str(candidate.get("providerId") or "").strip() != requested_provider:
+                continue
+            if requested_model_ref and str(candidate.get("modelRef") or "").strip() != requested_model_ref:
+                continue
+            if requested_model:
+                candidate_models = {
+                    str(candidate.get("modelId") or "").strip(),
+                    str(endpoint_binding.get("providerModelId") or "").strip(),
+                }
+                candidate_models.update(
+                    self._strip_provider_model_prefix(value)
+                    for value in list(candidate_models)
+                    if value
+                )
+                if requested_model not in candidate_models and self._strip_provider_model_prefix(requested_model) not in candidate_models:
+                    continue
+            if not bool(candidate.get("enabled", False)) or not bool(candidate.get("available", False)):
+                continue
+            matches.append(dict(candidate))
+        matches.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("modelRef") or "")))
+        return matches[0] if matches else None
+
     def _preferred_model_candidates(self, operation_kind: str) -> list[dict[str, Any]]:
         prefs = self.get_model_preferences()
         candidates = [
@@ -1475,6 +1549,11 @@ class CreativeMediaRuntime:
     def _is_incompatible_media_candidate(self, candidate: dict[str, Any], operation_kind: str) -> bool:
         modality = _modality_for_operation(operation_kind)
         if str(candidate.get("modality") or "") != modality:
+            return True
+        if str(candidate.get("operationKind") or "") != operation_kind:
+            return True
+        binding_operation_kind = str((candidate.get("endpointBinding") or {}).get("operationKind") or "").strip()
+        if binding_operation_kind and binding_operation_kind != operation_kind:
             return True
         return False
 
@@ -1946,7 +2025,7 @@ class CreativeMediaRuntime:
         if not ffprobe:
             return None
         try:
-            result = subprocess.run(
+            result = run_windowless(
                 [
                     ffprobe,
                     "-v",
@@ -2354,7 +2433,7 @@ class CreativeMediaRuntime:
                 profile=dict(plan.get("renderProfile") or {}),
                 preserve_native_audio=preserve_native_audio,
             )
-            result = subprocess.run(command, capture_output=True, text=True, timeout=int(payload.get("timeoutSeconds") or 900), check=False)
+            result = run_windowless(command, capture_output=True, text=True, timeout=int(payload.get("timeoutSeconds") or 900), check=False)
             job["diagnostics"] = {
                 "ffmpegPath": ffmpeg,
                 "ffmpegReturnCode": result.returncode,
@@ -2891,7 +2970,7 @@ class CreativeMediaRuntime:
             path=path,
             kind=kind,
             request=dict(owner.get("request") or owner),
-            runner=subprocess.run,
+            runner=run_windowless,
             which=shutil.which,
             analyze_visual=analyze_visual,
         )
@@ -2974,6 +3053,62 @@ class CreativeMediaRuntime:
             "workspacePath": str(request.get("workspacePath") or request.get("workspace_path") or fallback.get("workspacePath") or "").strip(),
         }
         return self._ensure_project_workspace_registered(scope)
+
+    def _resolve_current_session_source_path(
+        self,
+        request: dict[str, Any],
+        *,
+        source_id: str,
+        role: str,
+    ) -> str:
+        session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+        workspace_path = str(request.get("workspacePath") or request.get("workspace_path") or "").strip()
+        if not session_id or not workspace_path:
+            raise ValueError(f"{role} requires current runtime session and workspace context")
+        source = db.get_session_source(session_id=session_id, source_id=source_id)
+        if not source:
+            raise ValueError(f"{role} sourceId is not registered in the current session source ledger")
+        ledger_path = str(source.get("workspacePath") or "").strip()
+        if not ledger_path:
+            raise ValueError(f"{role} source ledger entry has no local workspace path")
+        workspace_root = Path(workspace_path).expanduser().resolve()
+        candidate = Path(ledger_path).expanduser()
+        candidate = (workspace_root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        try:
+            candidate.relative_to(workspace_root)
+        except ValueError as exc:
+            raise ValueError(f"{role} source path escapes the current runtime workspace") from exc
+        if not candidate.is_file():
+            raise ValueError(f"{role} source file is unavailable in the current runtime workspace")
+        return str(candidate)
+
+    def _prepare_governed_source_inputs(
+        self,
+        request: dict[str, Any],
+        *,
+        operation_kind: str,
+    ) -> dict[str, Any]:
+        prepared = dict(request or {})
+        source_id = str(prepared.get("sourceId") or "").strip()
+        mask_source_id = str(prepared.get("maskSourceId") or "").strip()
+        if not source_id and not mask_source_id:
+            return prepared
+        if operation_kind != "image.edit":
+            raise ValueError("sourceId and maskSourceId are only executable for operationKind=image.edit")
+        if not source_id:
+            raise ValueError("maskSourceId requires sourceId for operationKind=image.edit")
+        prepared["imagePath"] = self._resolve_current_session_source_path(
+            prepared,
+            source_id=source_id,
+            role="image edit source",
+        )
+        if mask_source_id:
+            prepared["maskPath"] = self._resolve_current_session_source_path(
+                prepared,
+                source_id=mask_source_id,
+                role="image edit mask",
+            )
+        return prepared
 
     def _ensure_project_workspace_registered(self, scope: dict[str, str]) -> dict[str, str]:
         workspace_path = str(scope.get("workspacePath") or "").strip()
@@ -3102,6 +3237,11 @@ class CreativeMediaRuntime:
         return {
             "jobId": f"cm_{uuid.uuid4().hex}",
             **self._scope_fields(request),
+            "canvasOperationId": str(request.get("canvasOperationId") or "").strip(),
+            "sourceId": str(request.get("sourceId") or "").strip(),
+            "maskSourceId": str(request.get("maskSourceId") or "").strip(),
+            "outputKind": str(request.get("outputKind") or "").strip(),
+            "outputSlot": str(request.get("outputSlot") or "").strip(),
             "modality": modality,
             "adapter": adapter,
             "operationKind": operation_kind,
@@ -3177,6 +3317,27 @@ class CreativeMediaRuntime:
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
         operation_kind = self._operation_kind_for_request(modality, request)
+        request = self._prepare_governed_source_inputs(request, operation_kind=operation_kind)
+        if self._has_explicit_provider_or_model_selection(request):
+            explicit_candidate = self._explicit_enabled_model_candidate(
+                request,
+                modality=modality,
+                operation_kind=operation_kind,
+            )
+            if not explicit_candidate:
+                job = self._new_job(
+                    modality=modality,
+                    adapter="operation_unavailable",
+                    request={**request, "operationKind": operation_kind},
+                )
+                job["status"] = "failed"
+                job["error"] = (
+                    "Explicit Creative Media provider/model is not enabled and bound to the exact "
+                    f"operationKind={operation_kind}"
+                )
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
+            request = self._request_for_candidate(request, explicit_candidate)
         if not self._has_explicit_model_selection(request):
             preferred = self._preferred_model_candidates(operation_kind)
             if preferred:
@@ -4400,12 +4561,15 @@ class CreativeMediaRuntime:
             raise ValueError(f"Provider {provider_id} has no base_url")
         prompt = str(request.get("prompt") or "").strip()
         image_path = str(request.get("imagePath") or request.get("image_path") or request.get("sourcePath") or request.get("source_path") or "").strip()
+        mask_path = str(request.get("maskPath") or request.get("mask_path") or "").strip()
         if not image_path and request.get("artifactId"):
             image_path = self._artifact_source_path(str(request.get("artifactId") or ""))
         if not prompt:
             raise ValueError("image edit job requires prompt")
         if not image_path or not Path(image_path).exists():
             raise ValueError("OpenAI-compatible image edit requires a local imagePath/sourcePath or artifactId with a source file")
+        if mask_path and not Path(mask_path).is_file():
+            raise ValueError("OpenAI-compatible image edit mask is unavailable")
         size = resolve_image_size(
             ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "1:1"),
             preset=str(request.get("preset") or "1K"),
@@ -4413,9 +4577,23 @@ class CreativeMediaRuntime:
             explicit_size=request.get("size"),
         )
         data = {"model": model, "prompt": prompt, "size": size}
-        job["providerRequestHash"] = self._provider_request_hash(data)
-        with open(image_path, "rb") as image_file:
+        job["providerRequestHash"] = self._provider_request_hash(
+            {
+                **data,
+                "sourceId": request.get("sourceId") or "",
+                "maskSourceId": request.get("maskSourceId") or "",
+            }
+        )
+        with ExitStack() as stack:
+            image_file = stack.enter_context(open(image_path, "rb"))
             files = {"image": (Path(image_path).name, image_file, mimetypes.guess_type(image_path)[0] or "image/png")}
+            if mask_path:
+                mask_file = stack.enter_context(open(mask_path, "rb"))
+                files["mask"] = (
+                    Path(mask_path).name,
+                    mask_file,
+                    mimetypes.guess_type(mask_path)[0] or "image/png",
+                )
             response = await self._request_multipart_json(
                 "POST",
                 self._join_api_path(base_url, str(binding.get("endpointPath") or "images/edits")),
@@ -5194,7 +5372,13 @@ class CreativeMediaRuntime:
             metadata={
                 **metadata,
                 "creativeMediaJobId": job["jobId"],
+                "canvasOperationId": job.get("canvasOperationId") or "",
+                "sourceId": job.get("sourceId") or "",
+                "maskSourceId": job.get("maskSourceId") or "",
                 "modality": job["modality"],
+                "operationKind": job.get("operationKind") or "",
+                "outputKind": job.get("outputKind") or "",
+                "outputSlot": job.get("outputSlot") or "",
                 "projectId": job.get("projectId") or "",
                 "workspaceId": job.get("workspaceId") or "",
                 "workspacePath": job.get("workspacePath") or "",

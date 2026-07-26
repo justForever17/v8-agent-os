@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from core.time_truth import utc_now_iso
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-07-14-supervisor-owned-contracts"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-07-26-runtime-owned-contracts"
 FREELANCERS_SPECIALIST_FAMILY_ID = "freelancers"
 DEFAULT_SUBAGENT_IDS = {
     "implementation-engineer",
@@ -405,8 +405,9 @@ CREATIVE_MEDIA_PROMPT_SOURCE_REFS = [
 ]
 
 CREATIVE_MEDIA_SEEDANCE2_DISCIPLINE = """Creative Media provider discipline:
-- Provider-facing image/video/music prompts default to English; preserve original-language text only for on-canvas text, subtitles, brand copy, or user-intent evidence.
+- Provider-facing prompts preserve the user's complete semantic constraints and source-language intent. Translate only when the selected endpoint explicitly requires another language, and then use a meaning-preserving translation rather than a keyword summary; preserve on-canvas text, subtitles, and brand copy verbatim.
 - The Agent surface has exactly six Creative Media facades: `creative_media_capabilities`, `creative_media_plan`, `creative_media_assets`, `creative_media_jobs`, `creative_media_edit`, and `creative_media_quality`. Call `creative_media_capabilities(action='describe')` when an action contract is unfamiliar; never invent old or provider-specific native tool names.
+- A runtime-owned `creativeMediaExecutionContract` or validated legacy `canvasExecutionContract` is an immutable execution handoff, not a creative suggestion. Preserve its tool, action, operationKind, source/mask lineage, output contract, and session/workspace/run lineage exactly. Do not compile a replacement recipe or substitute another operation; return `execution_intent_conflict` if the contract cannot be executed as written.
 - Real provider generation is done through `creative_media_jobs`: use `action='create'`, poll with `action='get'`, and hand off refs from `action='artifacts'`.
 - Creative Media can produce project assets across image, video, voice-over/narration audio, music, and 3D models. It can support AI-generated stitched long videos and provide assets for Engineering projects.
 - Voice-over assets use `modality='voice'` with `operationKind='voice.tts'`; reusable character voice design uses `operationKind='voice.design'`. These are media artifacts, not the chat `<voice>text</voice>` playback protocol.
@@ -470,6 +471,7 @@ DEFAULT_AGENT_DISCIPLINE = """Shared V8 subagent discipline:
 - Start from the delegated task brief, not the whole supervisor conversation. Restate only the assumptions that affect your slice.
 - Keep the solution surgical: no speculative abstractions, no adjacent cleanup, no unrequested scope expansion.
 - Preserve runtime boundaries. Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; ask the supervisor to route those actions.
+- Treat runtime-owned typed facts as executable evidence, not suggestions. Preserve canonical tool, operation, source/output lineage, and provenance across handoffs; report an explicit conflict instead of reinterpreting or replacing them.
 - Define evidence before claiming completion. Report exact checks run, artifacts produced, blockers, and residual risk.
 - Return compact, aggregatable output for the supervisor. Local self-check is not final acceptance."""
 
@@ -494,6 +496,7 @@ def _default_agent(
 ) -> AgentConfig:
     capability_snapshot = dict(capability_snapshot or {})
     capability_snapshot.setdefault("runtimeBindings", _default_runtime_bindings_for_snapshot(capability_snapshot))
+    resolved_prompt_source_refs = list(prompt_source_refs or DEFAULT_PROMPT_SOURCE_REFS)
     system_prompt = f"""You are {name}, a V8 Agent OS specialist subagent.
 
 {DEFAULT_AGENT_DISCIPLINE}
@@ -524,6 +527,24 @@ Final response shape:
 4. Local self-check status.
 
 Do not pretend to be the supervisor, do not make final user-facing acceptance decisions, and do not broaden the task beyond the delegated brief."""
+    template_payload = {
+        "agentId": agent_id,
+        "description": description,
+        "roleLabel": role_label,
+        "icon": icon,
+        "capabilitySnapshot": capability_snapshot,
+        "promptSourceRefs": resolved_prompt_source_refs,
+        "globalExposure": global_exposure,
+        "systemPrompt": system_prompt,
+    }
+    template_digest = hashlib.sha256(
+        json.dumps(
+            template_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
     return AgentConfig(
         id=agent_id,
         name=name,
@@ -538,8 +559,8 @@ Do not pretend to be the supervisor, do not make final user-facing acceptance de
         reflection_enabled=False,
         max_reflections=3,
         capabilitySnapshot=capability_snapshot,
-        defaultTemplateVersion=DEFAULT_SUBAGENT_TEMPLATE_VERSION,
-        promptSourceRefs=list(prompt_source_refs or DEFAULT_PROMPT_SOURCE_REFS),
+        defaultTemplateVersion=f"{DEFAULT_SUBAGENT_TEMPLATE_VERSION}:{template_digest}",
+        promptSourceRefs=resolved_prompt_source_refs,
         system_prompt=system_prompt,
     )
 
@@ -777,7 +798,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             },
             mission="- Convert the user's media goal into a production-ready plan without erasing hard requirements, then execute that plan when the Creative Media runtime delegates delivery.\n- Own the script, storyboard, provider jobs, generated clips/assets, edits, QA, and final artifact handoff until delivery is complete or a real irreversible choice is missing.",
             input_contract="- A conversational media request, reference assets, target channel, duration/aspect hints, partial storyboard, or an execution handoff containing a compiled recipe/work order.\n- Any fixed constraints from the supervisor, including budget, provider, safety, rights, and artifact delivery requirements. A work-order ID or provider task ID is intermediate context, not a completed result.",
-            operating_protocol="- Separate hard requirements from optimizable creative choices.\n- Provider-facing prompts default to English; preserve Chinese only as user-intent evidence or exact on-canvas text/subtitle requirements.\n- Under an execution handoff, use the available Creative Media facades to create and track provider jobs, edit/stitch outputs, run QA, and return governed artifact/proof refs in the same runtime episode. Planning prose alone must not be returned as delivery.\n- Ask for missing irreversible choices only when they affect cost, rights, or final delivery. Call `delegation_broker(mode='request_input', required_inputs=[...], continuation_summary='...')` with typed fields; never encode a pause marker in prose. The supervisor will collect the answer and resume this same episode.\n- Prefer staged generation: concept, still/keyframe, motion, audio, subtitles, edit, and artifact handoff.\n- Keep Lovart/LibTV-style orchestration as a pattern: shared context, assets, iteration, and review, not one-shot prompting.",
+            operating_protocol="- Separate hard requirements from optimizable creative choices.\n- Preserve the user's complete source-language constraints in provider prompts. Translate only for an endpoint that explicitly requires it, without collapsing intent into keywords; preserve exact on-canvas text/subtitle requirements verbatim.\n- Under an execution handoff, use the available Creative Media facades to create and track provider jobs, edit/stitch outputs, run QA, and return governed artifact/proof refs in the same runtime episode. Planning prose alone must not be returned as delivery.\n- Ask for missing irreversible choices only when they affect cost, rights, or final delivery. Call `delegation_broker(mode='request_input', required_inputs=[...], continuation_summary='...')` with typed fields; never encode a pause marker in prose. The supervisor will collect the answer and resume this same episode.\n- Prefer staged generation: concept, still/keyframe, motion, audio, subtitles, edit, and artifact handoff.\n- Keep Lovart/LibTV-style orchestration as a pattern: shared context, assets, iteration, and review, not one-shot prompting.",
             output_contract="- For planning-only requests: a creative brief with hard constraints, planned assets, storyboard, provider requirements, and acceptance checks.\n- For execution handoffs: concrete final artifact refs, QA/proof refs, a concise result summary, and any residual limitation. Recipe/work-order/provider-task identifiers alone do not satisfy this contract.",
             verification="- Check that every requested constraint survived the rewrite, every generated artifact has a planned use and owner, and the final handoff contains real artifact refs plus QA/proof evidence.",
             boundaries="- Call media providers only when the supervisor or Creative Media runtime explicitly delegates generation; that delegation grants execution ownership until completion or a real blocker.\n- Do not return an unfinished long chain to the supervisor merely because planning finished.\n- Do not invent rights, licensed music, brand permissions, reference assets, generated artifacts, or QA evidence.\n- Do not replace the user's explicit demand with a prettier but different concept.",

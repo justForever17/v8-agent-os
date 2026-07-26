@@ -4,9 +4,10 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from core.process_launch import run_windowless
 
 
 PRODUCTION_PACK_STAGES: tuple[str, ...] = (
@@ -324,7 +325,7 @@ def _ffprobe_metadata(path: Path) -> dict[str, Any]:
     if not ffprobe:
         return {"metadataStatus": "ffprobe_unavailable"}
     try:
-        completed = subprocess.run(
+        completed = run_windowless(
             [
                 ffprobe,
                 "-v",

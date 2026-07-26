@@ -396,37 +396,6 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
     return existing;
   }
 
-  const scopedWorkspaceRef = deriveScopedWorkspaceFileRef(record, {
-    mimeType: typeof record.mimeType === "string"
-      ? record.mimeType
-      : typeof record.mime_type === "string"
-        ? record.mime_type
-        : undefined,
-    displayLabel: typeof record.displayLabel === "string"
-      ? record.displayLabel
-      : typeof record.title === "string"
-        ? record.title
-        : undefined,
-    displaySubtitle: typeof record.displaySubtitle === "string"
-      ? record.displaySubtitle
-      : typeof record.display_subtitle === "string"
-        ? record.display_subtitle
-        : undefined,
-    sourcePath: typeof record.sourcePath === "string"
-      ? record.sourcePath
-      : typeof record.source_path === "string"
-        ? record.source_path
-        : undefined,
-    surfaceVisible: typeof record.surfaceVisible === "boolean"
-      ? record.surfaceVisible
-      : typeof record.surface_visible === "boolean"
-        ? record.surface_visible
-        : undefined,
-  });
-  if (scopedWorkspaceRef) {
-    return scopedWorkspaceRef;
-  }
-
   const artifactId =
     typeof record.artifactId === "string"
       ? record.artifactId
@@ -477,6 +446,37 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
             ? record.path_plane as AdminResourceRef["pathPlane"]
             : undefined),
     });
+  }
+
+  const scopedWorkspaceRef = deriveScopedWorkspaceFileRef(record, {
+    mimeType: typeof record.mimeType === "string"
+      ? record.mimeType
+      : typeof record.mime_type === "string"
+        ? record.mime_type
+        : undefined,
+    displayLabel: typeof record.displayLabel === "string"
+      ? record.displayLabel
+      : typeof record.title === "string"
+        ? record.title
+        : undefined,
+    displaySubtitle: typeof record.displaySubtitle === "string"
+      ? record.displaySubtitle
+      : typeof record.display_subtitle === "string"
+        ? record.display_subtitle
+        : undefined,
+    sourcePath: typeof record.sourcePath === "string"
+      ? record.sourcePath
+      : typeof record.source_path === "string"
+        ? record.source_path
+        : undefined,
+    surfaceVisible: typeof record.surfaceVisible === "boolean"
+      ? record.surfaceVisible
+      : typeof record.surface_visible === "boolean"
+        ? record.surface_visible
+        : undefined,
+  });
+  if (scopedWorkspaceRef) {
+    return scopedWorkspaceRef;
   }
 
   const previewCandidate =

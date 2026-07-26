@@ -77,6 +77,9 @@ def test_runtime_broker_event_agent_visible_result_is_text_surface():
 
     assert visible.startswith("Runtime route menu")
     assert "episode_demo" in visible
+    assert "graph owns waiting" in visible
+    assert "tool_observation_detail" not in visible
+    assert "Raw:" not in visible
     assert not visible.lstrip().startswith("{")
     assert "runtimeRegistry" not in visible
 

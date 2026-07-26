@@ -3,6 +3,14 @@ import { auth } from "@/lib/auth";
 
 import { getAdminProxyConfig } from "@/lib/server/runtime-config";
 
+function toWebResourceUrl(value: unknown) {
+    const url = String(value || "").trim();
+    const adminPrefix = "/api/client/workspace/resource";
+    return url.startsWith(adminPrefix)
+        ? `/api/workspace/resource${url.slice(adminPrefix.length)}`
+        : url;
+}
+
 export async function POST(req: NextRequest) {
     const session = await auth();
     if (!session?.user?.email) {
@@ -41,11 +49,12 @@ export async function POST(req: NextRequest) {
         }
 
         const data = await res.json();
-        const normalizedUrl = String(data?.url || data?.publicUrl || data?.workspacePath || data?.path || "").trim();
+        const normalizedUrl = toWebResourceUrl(data?.url || data?.publicUrl || data?.workspacePath || data?.path);
         return NextResponse.json({
             ...data,
             url: normalizedUrl || data?.url,
-            publicUrl: String(data?.publicUrl || data?.url || normalizedUrl || "").trim() || undefined,
+            publicUrl: toWebResourceUrl(data?.publicUrl || data?.url || normalizedUrl) || undefined,
+            previewUrl: toWebResourceUrl(data?.previewUrl || normalizedUrl) || undefined,
         });
 
     } catch (error) {

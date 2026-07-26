@@ -128,3 +128,38 @@ test("failed file tools never become overview outputs after the result is compac
 
   assert.deepEqual(projection, []);
 });
+
+test("runtime artifact overview keeps local paths on the Runtime Surface", () => {
+  const projection = buildSessionOutputProjection([], [
+    {
+      id: "art-runtime-image",
+      sessionId: "session-a",
+      title: "edited-image.png",
+      mimeType: "image/png",
+      sourcePath: "E:/workspace/creative_media/cm_private/edited-image.png",
+      workspacePath: "creative_media/cm_private/edited-image.png",
+      metadata: {
+        storageClass: "runtime_artifact",
+        pathPlane: "runtime",
+      },
+    },
+    {
+      id: "art-workspace-doc",
+      sessionId: "session-a",
+      title: "README.md",
+      mimeType: "text/markdown",
+      workspaceRelativePath: "docs/README.md",
+      metadata: {
+        storageClass: "workspace",
+        pathPlane: "workspace_artifact",
+      },
+    },
+  ], { sessionId: "session-a" });
+
+  const runtimeImage = projection.find((item) => item.artifactId === "art-runtime-image");
+  const workspaceDoc = projection.find((item) => item.artifactId === "art-workspace-doc");
+  assert.equal(runtimeImage?.path, null);
+  assert.equal(runtimeImage?.name, "edited-image.png");
+  assert.equal(runtimeImage?.mimeType, "image/png");
+  assert.equal(workspaceDoc?.path, "docs/README.md");
+});

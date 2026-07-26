@@ -39,8 +39,10 @@ def count_nodes(value: Any) -> int:
 def artifact_summary(artifact: Any, *, detail: bool = False) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         return {}
+    metadata = dict(artifact.get("metadata") or {})
     payload = {
         "artifactId": artifact.get("artifactId"),
+        "canvasOperationId": metadata.get("canvasOperationId"),
         "kind": artifact.get("kind"),
         "mimeType": artifact.get("mimeType"),
         "title": artifact.get("title"),
@@ -71,6 +73,9 @@ def job_summary(job: Any) -> dict[str, Any]:
     return compact_dict(
         {
             "jobId": job.get("jobId"),
+            "canvasOperationId": job.get("canvasOperationId") or request.get("canvasOperationId"),
+            "sourceId": job.get("sourceId") or request.get("sourceId"),
+            "maskSourceId": job.get("maskSourceId") or request.get("maskSourceId"),
             "projectId": job.get("projectId"),
             "workspaceId": job.get("workspaceId"),
             "modality": job.get("modality") or request.get("modality"),

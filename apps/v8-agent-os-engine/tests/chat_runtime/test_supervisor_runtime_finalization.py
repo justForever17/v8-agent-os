@@ -653,6 +653,8 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     assert "detail, verification, repair, or runtime tools" in content
     assert "do not re-read the same artifact" in content
     assert "no additional handoff will arrive" in content
+    assert "immutable queued receipt" in content
+    assert "Do not call tool_observation_detail or read_background_output" in content
     assert "declared taskBriefIds" in content
     assert "research-plus-implementation" in content
     assert "unfinished delivery contract" in content

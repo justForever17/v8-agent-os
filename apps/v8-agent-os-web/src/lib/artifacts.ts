@@ -22,7 +22,7 @@ export interface RuntimeArtifact {
     canonicalPath?: string;
     projectId?: string;
     workspaceId?: string;
-    pathPlane?: "runtime_private" | "workspace_download" | "workspace_artifact" | "channel_delivery_stage";
+    pathPlane?: "runtime" | "runtime_private" | "workspace_download" | "workspace_artifact" | "channel_delivery_stage";
     storageClass?: string;
     surfaceVisible?: boolean;
     externalUrl?: string;
@@ -35,6 +35,46 @@ export interface RuntimeArtifact {
     origin?: string;
     metadata?: Record<string, unknown>;
     createdAt?: string;
+}
+
+function safeHumanArtifactSubtitle(value: unknown): string {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) return "";
+    const normalized = text.replace(/\\/g, "/");
+    const lowered = normalized.toLowerCase();
+    if (
+        /^[a-z]:\//i.test(normalized)
+        || normalized.startsWith("/")
+        || /^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)
+        || /^(?:art|artifact|src|source|run|episode|cm|handoff|canvas-operation)[_:/-]/i.test(normalized)
+        || lowered.startsWith(".v8/")
+        || lowered.startsWith(".v8-agent-os/")
+        || lowered.startsWith("creative_media/")
+    ) {
+        return "";
+    }
+    return normalized;
+}
+
+function resolveHumanArtifactSubtitle(record: ArtifactRecord, mimeType: string): string {
+    const storageClass = String(record.storageClass || record.storage_class || "").trim().toLowerCase();
+    const pathPlane = String(record.pathPlane || record.path_plane || "").trim().toLowerCase();
+    if (storageClass === "runtime_artifact" || pathPlane === "runtime" || pathPlane === "runtime_private") {
+        return mimeType || "application/octet-stream";
+    }
+    for (const candidate of [
+        record.displaySubtitle,
+        record.workspaceRelativePath,
+        record.workspace_relative_path,
+        record.canonicalPath,
+        record.canonical_path,
+        record.workspacePath,
+        record.workspace_path,
+    ]) {
+        const safe = safeHumanArtifactSubtitle(candidate);
+        if (safe) return safe;
+    }
+    return mimeType || "application/octet-stream";
 }
 
 type ArtifactRecord = Record<string, unknown>;
@@ -65,23 +105,14 @@ export function normalizeRuntimeArtifact(raw: unknown): RuntimeArtifact | null {
     const resourceRef = resolveRuntimeArtifactResource(record);
     const resolvedUrl = resolveAdminResourceUrl("web", undefined, resourceRef);
     const title = String(record.displayLabel || record.title || artifactId);
-    const displaySubtitle = String(
-        record.displaySubtitle
-            || record.canonicalPath
-            || record.canonical_path
-            || record.workspaceRelativePath
-            || record.workspace_relative_path
-            || record.workspacePath
-            || record.workspace_path
-            || resolvedUrl
-            || "暂无路径信息",
-    );
+    const mimeType = String(record.mimeType || record.mime_type || "application/octet-stream");
+    const displaySubtitle = resolveHumanArtifactSubtitle(record, mimeType);
 
     return {
         id: artifactId,
         artifactId,
         kind: String(record.kind || record.artifact_kind || "file"),
-        mimeType: String(record.mimeType || record.mime_type || "application/octet-stream"),
+        mimeType,
         title,
         displayLabel: title,
         displaySubtitle,
@@ -129,7 +160,7 @@ export function inferArtifactCardType(artifact: RuntimeArtifact): "code" | "mark
     if (musicProbe.includes("music")) {
         return "music";
     }
-    if (kind === "image" || kind === "video" || kind === "audio" || kind === "document") {
+    if (kind === "image" || kind === "video" || kind === "audio" || kind === "document" || kind === "code") {
         return kind;
     }
     const mime = String(artifact.mimeType || "").toLowerCase();

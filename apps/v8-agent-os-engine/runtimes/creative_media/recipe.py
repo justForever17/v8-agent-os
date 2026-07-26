@@ -61,49 +61,6 @@ PROTECTED_REFERENCE_REWRITES = [
     },
 ]
 
-ENGLISH_KEYWORD_MAP = [
-    ("超写实", "hyper-realistic"),
-    ("电影级", "cinematic"),
-    ("高清", "high-definition"),
-    ("海报", "poster design"),
-    ("电商", "e-commerce product visual"),
-    ("产品", "product"),
-    ("耳机", "headphones"),
-    ("兔子", "rabbit"),
-    ("玻璃", "glass"),
-    ("金属", "metallic"),
-    ("蓝色", "blue"),
-    ("红色", "red"),
-    ("金色", "gold"),
-    ("白色", "white"),
-    ("黑色", "black"),
-    ("未来", "futuristic"),
-    ("城市", "city"),
-    ("黄昏", "dusk"),
-    ("逆光", "backlit"),
-    ("体积光", "volumetric lighting"),
-    ("旋转", "rotating"),
-    ("推进", "slow camera push-in"),
-    ("运镜", "camera movement"),
-    ("分镜", "storyboard"),
-    ("角色", "character"),
-    ("一致性", "consistency"),
-    ("字幕", "subtitles"),
-    ("旁白", "voiceover"),
-    ("温柔", "gentle"),
-    ("轻快", "upbeat"),
-    ("背景音乐", "background music"),
-    ("音乐", "music"),
-    ("口型", "lip synchronization"),
-    ("动作迁移", "action transfer"),
-    ("数字人", "digital avatar"),
-    ("换人", "character replacement"),
-    ("局部编辑", "localized edit"),
-    ("保留", "preserve"),
-    ("替换", "replace"),
-]
-
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -213,51 +170,20 @@ def _apply_safety_transform(prompt: str) -> dict[str, Any]:
     }
 
 
-def _english_prompt_from_keywords(prompt: str, *, modality: str, preserved_tokens: list[str]) -> str:
+def _provider_prompt_preserving_semantics(prompt: str, *, preserved_tokens: list[str]) -> str:
     working = _remove_preserved_text(prompt, preserved_tokens)
-    if not _contains_cjk(working):
-        return working.strip() or prompt.strip()
-    ascii_phrases = [
-        item.strip(" ,.;:，。；：")
-        for item in re.findall(r"[A-Za-z][A-Za-z0-9 ,;:'\"()\-]{24,}", working)
-        if item.strip()
-    ]
-    features: list[str] = []
-    for chinese, english in ENGLISH_KEYWORD_MAP:
-        if chinese in working and english not in features:
-            features.append(english)
-    seconds = re.findall(r"(\d{1,3})\s*秒", working)
-    duration = f"{seconds[0]} seconds, " if seconds else ""
-    if modality == "video":
-        base = f"{duration}a clean single-focus cinematic video shot"
-        if features:
-            base += " featuring " + ", ".join(features)
-        base += ", coherent subject identity, stable camera motion, avoid overloading too many actions in one clip"
-    elif modality == "music":
-        base = f"{duration}a structured music cue brief"
-        if features:
-            base += " with " + ", ".join(features)
-        base += ", clear mood, tempo, structure, and licensing-safe original composition intent"
-    elif modality == "voice":
-        base = "spoken script with clear delivery, natural pacing, and subtitle-friendly phrasing"
-        if features:
-            base += ", " + ", ".join(features)
-    else:
-        base = "a high-quality visual generation prompt"
-        if features:
-            base += " featuring " + ", ".join(features)
-        base += ", detailed composition, lighting, material, and style constraints"
-    if ascii_phrases:
-        base += ". Descriptive substitute details: " + "; ".join(ascii_phrases[:3])
-    return base
+    # Provider-facing prompts are executable intent, not search keywords.
+    # Without a semantics-preserving translator, retaining the sanitized
+    # source language is safer than collapsing exact constraints into a small
+    # keyword summary. Current media providers accept multilingual prompts.
+    return working.strip() or prompt.strip()
 
 
 def prepare_provider_prompt_policy(prompt: str, *, modality: str, preserved_tokens: list[str] | None = None) -> dict[str, Any]:
     preserved = list(preserved_tokens or _extract_quoted_text(prompt))
     safety = _apply_safety_transform(prompt)
-    translated = _english_prompt_from_keywords(
+    translated = _provider_prompt_preserving_semantics(
         str(safety.get("sanitizedPrompt") or prompt),
-        modality=modality,
         preserved_tokens=preserved,
     )
     if preserved:
@@ -267,7 +193,7 @@ def prepare_provider_prompt_policy(prompt: str, *, modality: str, preserved_toke
         "translatedPrompt": translated.strip(),
         "preservedTextTokens": preserved,
         "mustPreserveOriginalText": bool(preserved),
-        "providerPromptLanguage": "en",
+        "providerPromptLanguage": "source" if _contains_cjk(translated) else "en",
         "safetyTransform": safety,
     }
 

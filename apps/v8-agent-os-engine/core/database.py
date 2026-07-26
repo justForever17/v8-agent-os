@@ -6422,6 +6422,18 @@ class DatabaseManager:
             cursor.execute(query, params)
             return [self._hydrate_session_source_row(dict(row)) for row in cursor.fetchall()]
 
+    def get_session_source(self, *, session_id: str, source_id: str) -> Optional[Dict[str, Any]]:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_source_id = str(source_id or "").strip()
+        if not normalized_session_id or not normalized_source_id:
+            return None
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM session_sources WHERE session_id = ? AND id = ? LIMIT 1",
+                (normalized_session_id, normalized_source_id),
+            ).fetchone()
+            return self._hydrate_session_source_row(dict(row)) if row else None
+
     def attach_runtime_artifacts_to_message(
         self,
         *,

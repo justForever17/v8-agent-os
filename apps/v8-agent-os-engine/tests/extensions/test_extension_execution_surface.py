@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import runtimes.extensions.runtime as extensions_runtime_module
 from runtimes.extensions.runtime import ExtensionsRuntimeService
 
 
@@ -25,6 +26,26 @@ def test_tool_call_only_extension_event_is_not_reported_as_empty_message_preview
     assert payload["toolNames"] == ["research_broker"]
     assert "messagePreview" not in payload
     assert "agent-visible knowledge arrives in the matching tool result" in payload["activitySummary"]
+
+
+def test_cancelled_run_suppresses_late_extension_progress(monkeypatch) -> None:
+    service = object.__new__(ExtensionsRuntimeService)
+    service._resolve_event_context = lambda: {  # type: ignore[method-assign]
+        "session_id": "session-cancelled",
+        "run_id": "run-cancelled",
+    }
+    monkeypatch.setattr(
+        extensions_runtime_module.db,
+        "get_run_record",
+        lambda run_id: {"id": run_id, "status": "cancelled"},
+    )
+    monkeypatch.setattr(
+        extensions_runtime_module.event_bus,
+        "create_emitter",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("cancelled run must not emit extension progress")),
+    )
+
+    service._emit("extension.execution.completed", {"activityKind": "model_text"}, node="execution_completed")
 
 
 def test_health_projection_does_not_require_removed_plugin_host_silk_state() -> None:

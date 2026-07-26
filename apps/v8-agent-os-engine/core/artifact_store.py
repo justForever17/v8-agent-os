@@ -134,6 +134,7 @@ class ArtifactStore:
             source_id=source_id,
             auto_attach_to_message=auto_attach_to_message,
         )
+        descriptor = normalize_artifact_record(descriptor)
         db.add_runtime_artifact(
             artifact_id=artifact_id,
             artifact_kind=descriptor["kind"],
@@ -211,6 +212,7 @@ class ArtifactStore:
             source_id=source_id,
             auto_attach_to_message=auto_attach_to_message,
         )
+        descriptor = normalize_artifact_record(descriptor)
         db.add_runtime_artifact(
             artifact_id=descriptor["artifactId"],
             artifact_kind=descriptor["kind"],

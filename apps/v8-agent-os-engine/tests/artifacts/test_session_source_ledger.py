@@ -40,6 +40,8 @@ def test_source_ledger_binds_upload_to_user_message(tmp_path):
     assert source["sourceId"] == "src-1"
     assert source["messageId"] == "message-1"
     assert source["resourceRef"]["adminPath"].endswith("voice.m4a")
+    assert database.get_session_source(session_id="session-1", source_id="src-1")["sourceId"] == "src-1"
+    assert database.get_session_source(session_id="session-other", source_id="src-1") is None
 
 
 def test_message_attachment_only_claims_true_auto_attach_artifacts(tmp_path):

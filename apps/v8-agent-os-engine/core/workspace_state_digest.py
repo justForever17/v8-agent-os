@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import re
-import subprocess
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.process_launch import run_windowless
 from core.workspace_capability import build_workspace_binding
 from erc.runtime_context import get_runtime_context
 
@@ -87,7 +87,7 @@ def _cache_key(runtime_context: dict[str, Any] | None) -> tuple[str, str]:
 
 def _run_git(workspace_root: Path, *args: str, timeout: float = 2.0) -> tuple[int, str]:
     try:
-        result = subprocess.run(
+        result = run_windowless(
             ["git", "-C", str(workspace_root), *args],
             capture_output=True,
             timeout=timeout,

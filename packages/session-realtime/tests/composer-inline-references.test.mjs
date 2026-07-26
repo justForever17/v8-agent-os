@@ -12,6 +12,7 @@ import {
 const command = { kind: "command", id: "command:spec list", label: "spec list" };
 const design = { kind: "skill", id: "skill:design", label: "Design System" };
 const animation = { kind: "skill", id: "skill:animation", label: "Find Animation Opportunities" };
+const canvasResource = { kind: "canvas_resource", id: "source:image-1", label: "参考图" };
 
 test("inline references preserve arbitrary text order and reference colors can follow kind", () => {
   const text = "先看 @Design System，再执行 /spec list，最后问 @Find Animation Opportunities";
@@ -20,6 +21,16 @@ test("inline references preserve arbitrary text order and reference colors can f
   assert.deepEqual(
     segments.filter((segment) => segment.type === "reference").map((segment) => segment.reference?.kind),
     ["skill", "command", "skill"],
+  );
+});
+
+test("Canvas resources remain structured composer presentation references", () => {
+  const text = "本消息来自画布\n@参考图";
+  const segments = buildComposerInlineSegments(text, [canvasResource]);
+  assert.equal(segments.map((segment) => segment.text).join(""), text);
+  assert.deepEqual(
+    segments.filter((segment) => segment.type === "reference").map((segment) => segment.reference?.kind),
+    ["canvas_resource"],
   );
 });
 

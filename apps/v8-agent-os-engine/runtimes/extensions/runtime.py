@@ -4424,10 +4424,18 @@ class ExtensionsRuntimeService:
         session_id = str(context_payload.get("session_id") or "")
         if not session_id:
             return
+        run_id = str(context_payload.get("run_id") or "").strip()
+        if run_id:
+            try:
+                run_status = str((db.get_run_record(run_id) or {}).get("status") or "").strip().lower()
+            except Exception:
+                run_status = ""
+            if run_status in {"cancelled", "canceled"}:
+                return
         emitter = event_bus.create_emitter(
             session_id=session_id,
             conversation_id=str(context_payload.get("conversation_id") or session_id),
-            run_id=str(context_payload.get("run_id") or "") or None,
+            run_id=run_id or None,
             source=_extension_runtime_source(node=node),
         )
         emitter.emit(topic, payload, source=_extension_runtime_source(node=node))

@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+import core.runtime_episode_runner as runtime_episode_runner_module
 from core.database import DatabaseManager
 from core.runtime_continuation import (
     RuntimeContinuationContractError,
@@ -489,6 +490,382 @@ def test_creative_runtime_rejects_unresumable_waiting_handoff(
     assert handoff["status"] == "failed"
     assert handoff["errorCode"] == error_code
     assert handoff["handoffStage"] == "continuation_contract_failed"
+
+
+def _typed_creative_episode(*, contract: dict, tmp_path) -> dict:
+    return {
+        "episodeId": "episode-typed-creative",
+        "kind": "creative_media",
+        "sessionId": "session-typed-creative",
+        "runId": "run-typed-creative",
+        "inputs": {
+            "workspacePath": str(tmp_path),
+            "workspaceId": "workspace-typed-creative",
+            "projectId": "project-typed-creative",
+            "taskBriefs": [
+                {
+                    "taskBriefId": "typed-creative-task",
+                    "goal": "Execute the exact media operation.",
+                    "context": {"canvasExecutionContract": contract},
+                }
+            ],
+        },
+        "need": {"reason": "Execute exact media operation."},
+    }
+
+
+def _canvas_edit_contract() -> dict:
+    return {
+        "schema": "v8.creative_canvas_task.v1",
+        "canvasOperationId": "canvas-operation-exact",
+        "actionId": "creative_media.edit_image_region",
+        "output": {"kind": "artifact", "slot": "image_derivative"},
+        "resources": {
+            "sourceIds": ["source-exact"],
+            "maskSourceId": "mask-exact",
+        },
+        "execution": {
+            "tool": "creative_media_jobs",
+            "arguments": {
+                "action": "create",
+                "request": {
+                    "modality": "image",
+                    "operationKind": "image.edit",
+                    "prompt": "Replace only the masked region.",
+                    "canvasOperationId": "canvas-operation-exact",
+                    "sourceId": "source-exact",
+                    "maskSourceId": "mask-exact",
+                },
+            },
+        },
+    }
+
+
+def test_generic_creative_execution_contract_is_not_canvas_specific(tmp_path) -> None:
+    contract = {
+        "schema": "v8.creative_media_execution.v1",
+        "execution": {
+            "tool": "creative_media_jobs",
+            "arguments": {
+                "action": "create",
+                "request": {
+                    "modality": "image",
+                    "operationKind": "image.generate",
+                    "prompt": "Create the approved abstract cover.",
+                },
+            },
+        },
+    }
+    episode = _typed_creative_episode(contract=contract, tmp_path=tmp_path)
+    context = episode["inputs"]["taskBriefs"][0]["context"]
+    context["creativeMediaExecutionContract"] = context.pop("canvasExecutionContract")
+
+    executions = RuntimeEpisodeRunner._typed_creative_media_executions(episode)
+
+    assert len(executions) == 1
+    assert executions[0]["sourceSchema"] == "v8.creative_media_execution.v1"
+    assert executions[0]["arguments"] == contract["execution"]["arguments"]
+
+
+def test_typed_creative_episode_preserves_exact_job_contract_and_skips_director(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from core.tools.native.creative_media_facade import creative_media_jobs
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    captured: dict = {}
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+
+    async def _facade_call(_tool, payload: dict, *args, **kwargs) -> str:
+        del args, kwargs
+        captured.update(payload)
+        return json.dumps(
+            {
+                "ok": True,
+                "status": "succeeded",
+                "refs": ["cm_exact", "art_exact"],
+                "detailRef": "toolobs://exact-edit",
+            }
+        )
+
+    async def _director_must_not_run(_episode: dict) -> dict:
+        raise AssertionError("Creative Media Director must not reinterpret an exact execution")
+
+    monkeypatch.setattr(type(creative_media_jobs), "ainvoke", _facade_call)
+    monkeypatch.setattr(runner, "_execute_delegation", _director_must_not_run)
+    monkeypatch.setattr(creative_media_runtime, "list_jobs", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "get_job",
+        lambda *_args, **_kwargs: {
+            "jobId": "cm_exact",
+            "status": "succeeded",
+            "sessionId": "session-typed-creative",
+            "runId": "run-typed-creative",
+            "workspacePath": str(tmp_path),
+            "workspaceId": "workspace-typed-creative",
+            "projectId": "project-typed-creative",
+            "modality": "image",
+            "operationKind": "image.edit",
+            "canvasOperationId": "canvas-operation-exact",
+            "sourceId": "source-exact",
+            "maskSourceId": "mask-exact",
+            "outputKind": "artifact",
+            "outputSlot": "image_derivative",
+            "request": {
+                "modality": "image",
+                "operationKind": "image.edit",
+                "canvasOperationId": "canvas-operation-exact",
+                "sourceId": "source-exact",
+                "maskSourceId": "mask-exact",
+                "outputKind": "artifact",
+                "outputSlot": "image_derivative",
+            },
+            "artifacts": [{"artifactId": "art_exact", "mimeType": "image/png"}],
+        },
+    )
+
+    handoff = asyncio.run(
+        runner._execute_creative_media(
+            _typed_creative_episode(contract=_canvas_edit_contract(), tmp_path=tmp_path)
+        )
+    )
+
+    expected_request = {
+        **_canvas_edit_contract()["execution"]["arguments"]["request"],
+        "outputKind": "artifact",
+        "outputSlot": "image_derivative",
+    }
+    assert captured == {
+        "action": "create",
+        "request": expected_request,
+    }
+    assert handoff["status"] == "ready"
+    assert handoff["artifactRefs"] == ["art_exact"]
+    assert "creative-media-job://cm_exact" in handoff["proofRefs"]
+    assert handoff["taskBriefIds"] == ["typed-creative-task"]
+    assert handoff["coverageComplete"] is True
+    assert handoff["terminalEpisode"] is True
+    assert handoff["handoffStage"] == "typed_execution_delivered"
+
+
+def test_typed_creative_episode_inherits_workspace_identity_from_session_binding(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from core.tools.native.creative_media_facade import creative_media_jobs
+    from erc.runtime_context import get_runtime_context
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    captured_context: dict = {}
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runtime_episode_runner_module.db,
+        "get_session_scope_binding",
+        lambda _session_id: {
+            "workspace_id": "workspace-from-binding",
+            "project_id": "project-from-binding",
+            "workspace_path": str(tmp_path),
+        },
+    )
+
+    async def _facade_call(_tool, _payload: dict, *args, **kwargs) -> str:
+        del args, kwargs
+        captured_context.update(dict(get_runtime_context() or {}))
+        return json.dumps({"ok": True, "status": "succeeded", "refs": ["cm_bound"]})
+
+    monkeypatch.setattr(type(creative_media_jobs), "ainvoke", _facade_call)
+    monkeypatch.setattr(creative_media_runtime, "list_jobs", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "get_job",
+        lambda *_args, **_kwargs: {
+            "jobId": "cm_bound",
+            "status": "succeeded",
+            "sessionId": "session-typed-creative",
+            "runId": "run-typed-creative",
+            "workspacePath": str(tmp_path),
+            "workspaceId": "workspace-from-binding",
+            "projectId": "project-from-binding",
+            "modality": "image",
+            "operationKind": "image.edit",
+            "canvasOperationId": "canvas-operation-exact",
+            "sourceId": "source-exact",
+            "maskSourceId": "mask-exact",
+            "outputKind": "artifact",
+            "outputSlot": "image_derivative",
+            "artifacts": [{"artifactId": "art_bound", "mimeType": "image/png"}],
+        },
+    )
+    episode = _typed_creative_episode(contract=_canvas_edit_contract(), tmp_path=tmp_path)
+    episode["inputs"].pop("workspaceId")
+    episode["inputs"].pop("projectId")
+
+    handoff = asyncio.run(runner._execute_creative_media(episode))
+
+    assert handoff["status"] == "ready"
+    assert captured_context["workspace_id"] == "workspace-from-binding"
+    assert captured_context["project_id"] == "project-from-binding"
+    assert captured_context["workspace_path"] == str(tmp_path)
+
+
+def test_typed_creative_failure_is_terminal_and_never_falls_back_to_director(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from core.tools.native.creative_media_facade import creative_media_jobs
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    director_calls = 0
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+
+    async def _facade_call(_tool, _payload: dict, *args, **kwargs) -> str:
+        del args, kwargs
+        return json.dumps(
+            {
+                "ok": False,
+                "status": "failed",
+                "summary": "edit model unavailable",
+                "error": {"code": "operation_unavailable", "message": "edit model unavailable"},
+            }
+        )
+
+    async def _director(_episode: dict) -> dict:
+        nonlocal director_calls
+        director_calls += 1
+        return {"status": "ready"}
+
+    monkeypatch.setattr(type(creative_media_jobs), "ainvoke", _facade_call)
+    monkeypatch.setattr(runner, "_execute_delegation", _director)
+    monkeypatch.setattr(creative_media_runtime, "list_jobs", lambda **_kwargs: [])
+    handoff = asyncio.run(
+        runner._execute_creative_media(
+            _typed_creative_episode(contract=_canvas_edit_contract(), tmp_path=tmp_path)
+        )
+    )
+
+    assert handoff["status"] == "failed"
+    assert handoff["errorCode"] == "operation_unavailable"
+    assert handoff["recoverable"] is False
+    assert director_calls == 0
+
+
+def test_canvas_typed_execution_reuses_one_existing_durable_job(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from core.tools.native.creative_media_facade import creative_media_jobs
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_emit", lambda *_args, **_kwargs: None)
+
+    existing_job = {
+        "jobId": "cm_existing_exact",
+        "status": "succeeded",
+        "sessionId": "session-typed-creative",
+        "runId": "run-typed-creative",
+        "workspaceId": "workspace-typed-creative",
+        "projectId": "project-typed-creative",
+        "workspacePath": str(tmp_path),
+        "modality": "image",
+        "operationKind": "image.edit",
+        "canvasOperationId": "canvas-operation-exact",
+        "sourceId": "source-exact",
+        "maskSourceId": "mask-exact",
+        "outputKind": "artifact",
+        "outputSlot": "image_derivative",
+        "request": {
+            "modality": "image",
+            "operationKind": "image.edit",
+            "canvasOperationId": "canvas-operation-exact",
+            "sourceId": "source-exact",
+            "maskSourceId": "mask-exact",
+            "outputKind": "artifact",
+            "outputSlot": "image_derivative",
+        },
+        "artifacts": [{"artifactId": "art_existing_exact", "mimeType": "image/png"}],
+    }
+
+    async def _facade_must_not_create(_tool, _payload: dict, *args, **kwargs) -> str:
+        del args, kwargs
+        raise AssertionError("An existing Canvas operation must not create a duplicate job")
+
+    monkeypatch.setattr(type(creative_media_jobs), "ainvoke", _facade_must_not_create)
+    monkeypatch.setattr(creative_media_runtime, "list_jobs", lambda **_kwargs: [existing_job])
+
+    handoff = asyncio.run(
+        runner._execute_creative_media(
+            _typed_creative_episode(contract=_canvas_edit_contract(), tmp_path=tmp_path)
+        )
+    )
+
+    assert handoff["status"] == "ready"
+    assert handoff["artifactRefs"] == ["art_existing_exact"]
+    assert handoff["jobRefs"] == ["creative-media-job://cm_existing_exact"]
+
+
+def test_prose_only_creative_episode_still_uses_director(monkeypatch) -> None:
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    director_calls = 0
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "compile_recipe",
+        lambda _request: {"recipeId": "recipe-prose", "providerStatus": "ready"},
+    )
+
+    async def _director(_episode: dict) -> dict:
+        nonlocal director_calls
+        director_calls += 1
+        return {
+            "status": "ready",
+            "compactSummary": "Director completed the unresolved creative plan.",
+            "results": [
+                {
+                    "creativeExecutionEvidence": {
+                        "schemaVersion": "creative-execution-evidence/v1",
+                        "sourceRuntimeEpisodeId": "episode-prose-creative",
+                        "taskBriefId": "director-task",
+                        "delegationId": "director-delegation",
+                        "records": [
+                            {
+                                "tool": "creative_media_jobs",
+                                "toolCallId": "tool-director",
+                            }
+                        ],
+                        "artifactRefs": ["art_director"],
+                        "proofRefs": ["proof_director"],
+                    }
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_execute_delegation", _director)
+    handoff = asyncio.run(
+        runner._execute_creative_media(
+            {
+                "episodeId": "episode-prose-creative",
+                "kind": "creative_media",
+                "inputs": {"request": {"prompt": "Plan an unresolved creative task."}},
+                "need": {"reason": "Plan an unresolved creative task."},
+            }
+        )
+    )
+
+    assert handoff["status"] == "ready"
+    assert director_calls == 1
+    assert handoff["artifactRefs"] == ["art_director"]
 
 
 def test_creative_branch_stops_after_two_in_branch_evidence_corrections() -> None:

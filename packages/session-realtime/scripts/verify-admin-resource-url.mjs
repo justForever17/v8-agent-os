@@ -22,6 +22,24 @@ assert.equal(phoneUrl, "http://100.64.0.20:9528/api/client/artifacts/artifact_au
 assert(!phoneUrl.includes("127.0.0.1"));
 assert(!/^[A-Za-z]:[\\/]/.test(phoneUrl));
 
+const managedArtifactRef = deriveAdminResourceRefFromArtifactLike({
+  artifactId: "artifact_managed_001",
+  title: "result.json",
+  mimeType: "application/json",
+  sourcePath: "E:/managed/run/result.json",
+  workspaceRoot: "E:/managed/run",
+  workspaceRelativePath: "result.json",
+  workspaceId: "project-workspace",
+  projectId: "project-workspace",
+  pathPlane: "workspace_artifact",
+});
+
+assert.equal(managedArtifactRef?.kind, "artifact_content");
+assert.equal(
+  resolveAdminResourceUrl("web", undefined, managedArtifactRef),
+  "/api/artifacts/artifact_managed_001/content",
+);
+
 const workspaceRef = deriveAdminResourceRefFromArtifactLike({
   resourceRef: {
     kind: "workspace_file",

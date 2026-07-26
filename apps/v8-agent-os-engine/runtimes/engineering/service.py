@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from core.database import db
 from core.delegation_broker import build_workset_dispatch_decisions, normalize_task_brief
 from core.prompt_budget import enforce_prompt_budget, estimate_prompt_tokens, truncate_to_estimated_tokens
+from core.process_launch import run_windowless
 from core.storage import storage
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_registry import runtime_registry
@@ -108,7 +108,7 @@ def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 
 def _run_command(args: list[str], *, cwd: Path, timeout: float = 5.0) -> dict[str, Any]:
     try:
-        completed = subprocess.run(
+        completed = run_windowless(
             args,
             cwd=str(cwd),
             capture_output=True,

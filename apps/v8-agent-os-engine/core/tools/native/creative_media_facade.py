@@ -12,6 +12,7 @@ from erc.runtime_context import get_runtime_context
 _MISSING = object()
 _ID_FIELDS = {
     "artifactId",
+    "canvasOperationId",
     "candidateArtifactId",
     "characterBibleId",
     "editPlanId",
@@ -24,6 +25,8 @@ _ID_FIELDS = {
     "referenceArtifactId",
     "recipeId",
     "renderJobId",
+    "sourceId",
+    "maskSourceId",
 }
 _LIST_FIELDS = {
     "artifactIds",
@@ -111,6 +114,7 @@ _GENERATION_FIELDS = frozenset(
         "audioFormat",
         "audioUrl",
         "brief",
+        "canvasOperationId",
         "costLimit",
         "coverFeatureId",
         "durationSeconds",
@@ -126,6 +130,7 @@ _GENERATION_FIELDS = frozenset(
         "lastFrame",
         "lyrics",
         "maskUrl",
+        "maskSourceId",
         "modality",
         "modelId",
         "modelRef",
@@ -133,6 +138,8 @@ _GENERATION_FIELDS = frozenset(
         "n",
         "negativePrompt",
         "operationKind",
+        "outputKind",
+        "outputSlot",
         "outputFormat",
         "pitch",
         "pollIntervalSeconds",
@@ -156,6 +163,7 @@ _GENERATION_FIELDS = frozenset(
         "seed",
         "speed",
         "style",
+        "sourceId",
         "subtitleEnable",
         "targetImageUrl",
         "timeoutSeconds",
@@ -655,10 +663,17 @@ def _validate_request(spec: CreativeMediaActionSpec, request: Any) -> tuple[dict
         return None, _validation_error(spec, "invalid_limit", "limit must be between 1 and 100")
     if payload.get("maxLayers") is not None and not 1 <= int(payload["maxLayers"]) <= 500:
         return None, _validation_error(spec, "invalid_max_layers", "maxLayers must be between 1 and 500")
-    return _inject_runtime_scope(payload), None
+    return _inject_runtime_scope(
+        payload,
+        include_canvas_operation=spec.facade == "jobs" and spec.action == "create",
+    ), None
 
 
-def _inject_runtime_scope(payload: dict[str, Any]) -> dict[str, Any]:
+def _inject_runtime_scope(
+    payload: dict[str, Any],
+    *,
+    include_canvas_operation: bool = False,
+) -> dict[str, Any]:
     scoped = dict(payload)
     context = dict(get_runtime_context() or {})
     for target, candidates in (
@@ -671,6 +686,17 @@ def _inject_runtime_scope(payload: dict[str, Any]) -> dict[str, Any]:
         value = next((context.get(name) for name in candidates if context.get(name)), None)
         if value is not None:
             scoped[target] = value
+    if include_canvas_operation:
+        canvas_operation_id = next(
+            (
+                context.get(name)
+                for name in ("canvas_operation_id", "canvasOperationId")
+                if context.get(name)
+            ),
+            None,
+        )
+        if canvas_operation_id is not None:
+            scoped["canvasOperationId"] = canvas_operation_id
     return scoped
 
 
@@ -1096,6 +1122,7 @@ async def creative_media_jobs(
     action='create' requires request.modality and request.operationKind. Base operations include image/video
     generation, voice.tts, voice.design, music.generate, music.cover, and model3d.generate. Poll with action='get'
     and obtain deliverable artifact refs with action='artifacts'; provider raw JSON is never the deliverable.
+    For image.edit, pass sourceId and optional maskSourceId from the current session source ledger; never pass paths.
     """
     return await _execute_async("jobs", action, request)
 

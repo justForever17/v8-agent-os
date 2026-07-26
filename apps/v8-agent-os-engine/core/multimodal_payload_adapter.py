@@ -1,13 +1,117 @@
 from __future__ import annotations
 
 import mimetypes
+import ntpath
+import posixpath
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def infer_media_kind(mime_type: str) -> str:
-    lowered = (mime_type or "").lower()
+_CODE_EXTENSIONS = {
+    ".astro", ".bat", ".c", ".cc", ".cmd", ".cpp", ".cs", ".css", ".go", ".h", ".hpp",
+    ".ini", ".java", ".js", ".jsx", ".json", ".kt", ".kts", ".less", ".lua", ".m", ".mm",
+    ".php", ".ps1", ".py", ".rb", ".rs", ".sass", ".scss", ".sh", ".sql", ".svelte", ".swift",
+    ".toml", ".ts", ".tsx", ".vue", ".xml", ".yaml", ".yml",
+}
+_CODE_MIME_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/ld+json",
+    "application/sql",
+    "application/toml",
+    "application/typescript",
+    "application/xml",
+    "application/x-httpd-php",
+    "application/x-javascript",
+    "application/x-sh",
+    "text/css",
+    "text/javascript",
+    "text/jsx",
+    "text/typescript",
+    "text/tsx",
+    "text/x-c",
+    "text/x-c++",
+    "text/x-csharp",
+    "text/x-go",
+    "text/x-java-source",
+    "text/x-python",
+    "text/x-ruby",
+    "text/x-rust",
+    "text/x-shellscript",
+    "text/x-sql",
+    "text/xml",
+    "text/yaml",
+}
+
+_INTERNAL_ARTIFACT_REF_PATTERN = re.compile(
+    r"^(?:art|artifact|src|source|run|episode|cm|handoff|canvas-operation)[_:/-]",
+    re.IGNORECASE,
+)
+
+
+def _safe_human_artifact_subtitle(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace("\\", "/")
+    lowered = normalized.lower()
+    if (
+        ntpath.isabs(text)
+        or posixpath.isabs(normalized)
+        or re.match(r"^[a-z][a-z0-9+.-]*://", lowered)
+        or lowered.startswith(("/api/", "/v1/", ".v8/", ".v8-agent-os/", "creative_media/"))
+        or _INTERNAL_ARTIFACT_REF_PATTERN.match(lowered)
+    ):
+        return ""
+    return normalized
+
+
+def _human_artifact_display_subtitle(
+    *,
+    record: Dict[str, Any],
+    metadata: Dict[str, Any],
+    mime_type: str,
+    workspace_path: Any,
+) -> str:
+    storage_class = str(
+        record.get("storageClass")
+        or record.get("storage_class")
+        or metadata.get("storageClass")
+        or metadata.get("storage_class")
+        or ""
+    ).strip().lower()
+    path_plane = str(
+        record.get("pathPlane")
+        or record.get("path_plane")
+        or metadata.get("pathPlane")
+        or metadata.get("path_plane")
+        or ""
+    ).strip().lower()
+    if storage_class == "runtime_artifact" or path_plane in {"runtime", "runtime_private"}:
+        return str(mime_type or "application/octet-stream")
+
+    for candidate in (
+        record.get("displaySubtitle"),
+        record.get("display_subtitle"),
+        metadata.get("workspaceRelativePath"),
+        metadata.get("workspace_relative_path"),
+        metadata.get("canonicalPath"),
+        metadata.get("canonical_path"),
+        workspace_path,
+    ):
+        safe = _safe_human_artifact_subtitle(candidate)
+        if safe:
+            return safe
+    return str(mime_type or "application/octet-stream")
+
+
+def infer_media_kind(mime_type: str, file_path: str | Path | None = None) -> str:
+    lowered = (mime_type or "").split(";", 1)[0].strip().lower()
+    suffix = Path(str(file_path)).suffix.lower() if file_path else ""
+    if suffix in _CODE_EXTENSIONS or lowered in _CODE_MIME_TYPES:
+        return "code"
     if lowered.startswith("image/"):
         return "image"
     if lowered.startswith("video/"):
@@ -272,7 +376,7 @@ def build_artifact_descriptor(
 ) -> Dict[str, Any]:
     path = Path(file_path) if file_path is not None else (Path(source_path) if source_path else None)
     resolved_mime = mime_type or (guess_mime_type(path) if path else "application/octet-stream")
-    kind = artifact_kind or infer_media_kind(resolved_mime)
+    kind = artifact_kind or infer_media_kind(resolved_mime, path)
     display_name = title or (path.name if path else external_url or preview_url or artifact_id)
     return {
         "artifactId": artifact_id,
@@ -300,15 +404,15 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
     metadata = metadata or {}
 
     artifact_id = record.get("artifactId") or record.get("id")
-    kind = record.get("kind") or record.get("artifact_kind") or infer_media_kind(
-        record.get("mimeType") or record.get("mime_type") or "application/octet-stream"
-    )
     mime_type = record.get("mimeType") or record.get("mime_type") or "application/octet-stream"
-    preview_url = record.get("previewUrl") or record.get("preview_url") or record.get("externalUrl") or record.get("external_url")
-    content_url = record.get("contentUrl") or record.get("content_url") or preview_url
     external_url = record.get("externalUrl") or record.get("external_url")
     source_path = record.get("sourcePath") or record.get("source_path")
     workspace_path = record.get("workspacePath") or record.get("workspace_path")
+    inferred_kind = infer_media_kind(mime_type, source_path or workspace_path)
+    declared_kind = record.get("kind") or record.get("artifact_kind")
+    kind = inferred_kind if inferred_kind == "code" and declared_kind in {None, "", "document", "file"} else declared_kind or inferred_kind
+    preview_url = record.get("previewUrl") or record.get("preview_url") or external_url
+    content_url = record.get("contentUrl") or record.get("content_url") or preview_url
     session_id = record.get("sessionId") or record.get("session_id")
     run_id = record.get("runId") or record.get("run_id")
     message_id = record.get("messageId") or record.get("message_id")
@@ -351,6 +455,12 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
         or metadata.get("preview_kind")
     )
     origin = record.get("origin") or record.get("artifactOrigin") or metadata.get("origin") or metadata.get("artifactOrigin")
+    display_subtitle = _human_artifact_display_subtitle(
+        record=record,
+        metadata=metadata,
+        mime_type=str(mime_type),
+        workspace_path=workspace_path,
+    )
 
     normalized = dict(record)
     normalized.update(
@@ -423,16 +533,7 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "canonicalPath": metadata.get("canonicalPath") or metadata.get("canonical_path") or workspace_path,
             "canonical_path": metadata.get("canonicalPath") or metadata.get("canonical_path") or workspace_path,
             "displayLabel": title or artifact_id,
-            "displaySubtitle": (
-                metadata.get("canonicalPath")
-                or metadata.get("canonical_path")
-                or metadata.get("workspaceRelativePath")
-                or metadata.get("workspace_relative_path")
-                or workspace_path
-                or source_path
-                or preview_url
-                or "暂无路径信息"
-            ),
+            "displaySubtitle": display_subtitle,
         }
     )
     return normalized

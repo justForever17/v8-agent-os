@@ -1579,6 +1579,7 @@ def test_github_cli_login_uses_reviewed_browser_adapter_instead_of_mcp_oauth(
     assert started["status"] == "waiting_for_browser"
     assert started["browserOpened"] is True
     assert started["authorizationUrl"] == "https://github.com/login/device"
+    assert started["interactionHint"] == "device_code_clipboard"
     assert captured["argv"][-6:] == [
         "--web",
         "--clipboard",
@@ -1616,6 +1617,70 @@ def test_github_cli_login_does_not_reopen_browser_when_credential_store_is_ready
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("browser login must not restart")),
     )
     assert service.start_cli_login("github", component_id="gh")["status"] == "connected"
+
+
+def test_cloudflare_cli_login_uses_wrangler_oauth_profile_and_keyring(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "cloudflare")
+    _, profile, adapter = service._cli_browser_auth_contract(
+        "cloudflare",
+        component_id="wrangler",
+    )
+    assert adapter.status_argv(profile) == ["wrangler", "whoami", "--json"]
+    monkeypatch.setattr(service, "_run_cli_auth_status", lambda *_args: False)
+    requirements = service.configuration_requirements("cloudflare")["requirements"]
+    assert [(item["kind"], item["componentId"]) for item in requirements] == [
+        ("cli_login", "wrangler")
+    ]
+
+    captured: dict = {}
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "temporary-token")
+    monkeypatch.setenv("CLOUDFLARE_API_KEY", "temporary-key")
+    monkeypatch.setenv("CLOUDFLARE_EMAIL", "temporary@example.com")
+    monkeypatch.setattr(
+        service_module,
+        "open_system_browser",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Wrangler must own its dynamic OAuth browser URL")
+        ),
+    )
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(service_module.subprocess, "Popen", fake_popen)
+    started = service.start_cli_login("cloudflare", component_id="wrangler", force=True)
+    assert started["status"] == "waiting_for_browser"
+    assert started["browserOpened"] is True
+    assert started["authorizationUrl"] is None
+    assert started["interactionHint"] == "browser_callback"
+    assert captured["argv"][-2:] == ["login", "--use-keyring"]
+    assert "CLOUDFLARE_API_TOKEN" not in captured["kwargs"]["env"]
+    assert "CLOUDFLARE_API_KEY" not in captured["kwargs"]["env"]
+    assert "CLOUDFLARE_EMAIL" not in captured["kwargs"]["env"]
+    assert captured["kwargs"]["shell"] is False
+    assert service.cancel_cli_login("cloudflare", component_id="wrangler")["status"] == "cancelled"
 
 
 def test_github_cli_login_coalesces_a_concurrent_start(runtime, monkeypatch: pytest.MonkeyPatch) -> None:

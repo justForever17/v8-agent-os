@@ -15,6 +15,11 @@ test("plugin manager routes CLI login separately from MCP OAuth", () => {
   assert.match(source, /authorizationForField\?\.authorizationUrl/);
   assert.match(source, /PluginManagerWorkbench\.configuration\.openAuthorizationPage/);
   assert.match(source, /PluginManagerWorkbench\.configuration\.deviceCodeClipboard/);
+  assert.match(source, /interactionHint === "device_code_clipboard"/);
+  assert.match(source, /force: requirement\.configured/);
+  assert.match(source, /PluginManagerWorkbench\.configuration\.reauthorize/);
+  assert.match(source, /selectedHasEditableConfiguration/);
+  assert.match(source, /Boolean\(\s*requirements\s*&&\s*selected\s*&&\s*requirements\.pluginId === selected\.id/);
 });
 
 test("plugin component summary omits zero counts, counts Skills, and pins the daily bundle", () => {

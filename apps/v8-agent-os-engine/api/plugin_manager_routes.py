@@ -160,6 +160,7 @@ async def start_plugin_cli_login(plugin_id: str, payload: dict[str, Any] = Body(
             plugin_manager_service.start_cli_login,
             plugin_id,
             component_id=str(payload.get("componentId") or "").strip(),
+            force=payload.get("force") is True,
         )
     except PluginManagerError as exc:
         _raise(exc)

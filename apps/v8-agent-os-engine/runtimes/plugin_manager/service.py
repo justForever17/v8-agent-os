@@ -1655,7 +1655,13 @@ class PluginManagerService:
             return False
         return completed.returncode == 0
 
-    def start_cli_login(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
+    def start_cli_login(
+        self,
+        plugin_id: str,
+        *,
+        component_id: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
         manifest, profile, adapter = self._cli_browser_auth_contract(
             plugin_id,
             component_id=component_id,
@@ -1672,6 +1678,7 @@ class PluginManagerService:
                     "status": "waiting_for_browser",
                     "authorizationUrl": adapter.browser_url,
                     "browserOpened": bool(current.get("browserOpened")),
+                    "interactionHint": adapter.interaction_hint,
                 }
             if str(current.get("status") or "") == "connecting":
                 return {
@@ -1680,13 +1687,14 @@ class PluginManagerService:
                     "status": "connecting",
                     "authorizationUrl": adapter.browser_url,
                     "browserOpened": False,
+                    "interactionHint": adapter.interaction_hint,
                 }
             self._cli_auth_states[key] = {
                 "status": "connecting",
                 "startedAt": started_at,
                 "browserOpened": False,
             }
-        if self._run_cli_auth_status(manifest, profile, adapter):
+        if not force and self._run_cli_auth_status(manifest, profile, adapter):
             with self._cache_lock:
                 self._cli_auth_states[key] = {
                     "status": "connected",
@@ -1699,6 +1707,7 @@ class PluginManagerService:
                 "status": "connected",
                 "authorizationUrl": adapter.browser_url,
                 "browserOpened": False,
+                "interactionHint": adapter.interaction_hint,
             }
 
         login_spec = self._effective_cli_spec(
@@ -1737,7 +1746,9 @@ class PluginManagerService:
                 "startedAt": started_at,
                 "browserOpened": False,
             }
-        browser_opened = open_system_browser(adapter.browser_url)
+        browser_opened = adapter.cli_opens_browser or bool(
+            adapter.browser_url and open_system_browser(adapter.browser_url)
+        )
         with self._cache_lock:
             self._cli_auth_states[key]["browserOpened"] = browser_opened
         self._event(manifest.id, "cli_login_started", "pending", details={"componentId": profile.id})
@@ -1747,6 +1758,7 @@ class PluginManagerService:
             "status": "waiting_for_browser",
             "authorizationUrl": adapter.browser_url,
             "browserOpened": browser_opened,
+            "interactionHint": adapter.interaction_hint,
         }
 
     def cli_login_status(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
@@ -1778,6 +1790,7 @@ class PluginManagerService:
             "status": status,
             "error": "CLI 登录未完成，请重试。" if status == "failed" else None,
             "authorizationUrl": adapter.browser_url,
+            "interactionHint": adapter.interaction_hint,
         }
 
     def cancel_cli_login(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
@@ -1803,6 +1816,7 @@ class PluginManagerService:
             "componentId": profile.id,
             "status": "cancelled",
             "authorizationUrl": adapter.browser_url,
+            "interactionHint": adapter.interaction_hint,
         }
 
     def refresh_configuration_status(self, plugin_id: str) -> dict[str, Any]:

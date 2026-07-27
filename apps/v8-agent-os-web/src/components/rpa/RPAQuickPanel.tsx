@@ -124,7 +124,7 @@ function coerceValue(value: string, type: string) {
     return value;
 }
 
-export function RPAQuickPanel() {
+export function RPAQuickPanel({ embedded = false }: { embedded?: boolean } = {}) {
     const t = useT();
     const nextExtraId = useRef(1);
     const [loading, setLoading] = useState(true);
@@ -248,16 +248,21 @@ export function RPAQuickPanel() {
 
     return (
         <div className="h-full min-h-0 overflow-auto bg-[radial-gradient(circle_at_50%_-20%,hsl(var(--primary)/0.10),transparent_42%)]">
-            <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6 sm:py-7">
+            <div className={embedded
+                ? "mx-auto flex w-full flex-col gap-4 px-4 py-4 sm:px-5 sm:py-5"
+                : "mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6 sm:py-7"}
+            >
                 <header className="flex flex-col gap-4 border-b border-border/65 pb-5 sm:flex-row sm:items-end sm:justify-between">
                     <div>
-                        <Button variant="ghost" size="sm" asChild className="-ml-3 mb-2 text-muted-foreground hover:text-foreground">
-                            <Link href="/chat"><ArrowLeft className="mr-2 h-4 w-4" />{t("web.rpa.back")}</Link>
-                        </Button>
+                        {!embedded ? (
+                            <Button variant="ghost" size="sm" asChild className="-ml-3 mb-2 text-muted-foreground hover:text-foreground">
+                                <Link href="/chat"><ArrowLeft className="mr-2 h-4 w-4" />{t("web.rpa.back")}</Link>
+                            </Button>
+                        ) : null}
                         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
                             <Workflow className="h-4 w-4" />RPA
                         </div>
-                        <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">{t("web.rpa.title")}</h1>
+                        <h1 className={embedded ? "mt-2 text-xl font-semibold tracking-tight" : "mt-2 text-2xl font-semibold tracking-tight sm:text-3xl"}>{t("web.rpa.title")}</h1>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{t("web.rpa.subtitle")}</p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -274,7 +279,7 @@ export function RPAQuickPanel() {
                 {error ? <div role="alert" className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
                 {notice ? <div className="flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" />{notice}</div> : null}
 
-                <section className="grid gap-5 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.4fr)]">
+                <section className={embedded ? "grid gap-4 md:grid-cols-[minmax(0,0.86fr)_minmax(0,1.4fr)]" : "grid gap-5 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.4fr)]"}>
                     <div className="rounded-2xl border border-border/65 bg-background/82 p-4 shadow-sm backdrop-blur-sm sm:p-5">
                         <div className="text-sm font-semibold">{t("web.rpa.chooseTemplate")}</div>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("web.rpa.chooseTemplateHint")}</p>

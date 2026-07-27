@@ -5,16 +5,14 @@ import {
     ProductShellTopbar,
     ProductSurfaceSwitcher,
     ProductTopbar,
-    TopbarGlowActionButton,
 } from "@v8/product-ui";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
-import Link from "next/link";
 import { useT } from "@/components/providers/LocaleProvider";
-import { Bot } from "lucide-react";
 import { ShellWindowControls } from "./ShellWindowControls";
+import { RpaTopbarOverlay } from "./RpaTopbarOverlay";
 
 const ADMIN_SURFACE_URL = "http://localhost:9528/admin";
 
@@ -62,12 +60,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
             )}
             actions={(
                 <>
-                <TopbarGlowActionButton asChild tone="emerald" aria-label={t("web.rpa.title")} title={t("web.rpa.title")}>
-                    <Link href="/rpa">
-                        <Bot />
-                        <span className="sr-only">{t("web.rpa.title")}</span>
-                    </Link>
-                </TopbarGlowActionButton>
+                <RpaTopbarOverlay />
                 <LocaleToggle />
                 <BackgroundVideoSoundToggle />
                 <ThemeToggle />

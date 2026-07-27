@@ -15,6 +15,7 @@ import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
+import { PhoneRpaOverlay } from "@/src/components/rpa/PhoneRpaOverlay";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 const PRODUCT_MARK = require("../../../assets/images/product-mark.png");
@@ -310,6 +311,7 @@ export function PhoneTopbar({
     onBrandPress?: () => void;
 }) {
     const { colors, themeMode, t } = useUiPrefs();
+    const [rpaOpen, setRpaOpen] = useState(false);
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
         .map((key) => actionMap.get(key))
@@ -333,7 +335,7 @@ export function PhoneTopbar({
                     .map((action) => (
                         <TopbarButton
                             key={action.key}
-                            action={action}
+                            action={action.key === "rpa" ? { ...action, onPress: () => setRpaOpen(true) } : action}
                             colors={colors}
                             themeMode={themeMode}
                         />
@@ -376,6 +378,7 @@ export function PhoneTopbar({
                     )}
                 </Pressable>
             </View>
+            <PhoneRpaOverlay visible={rpaOpen} onClose={() => setRpaOpen(false)} />
         </View>
     );
 }

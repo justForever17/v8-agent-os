@@ -4,9 +4,10 @@ import os
 import json
 import platform
 import socket
-import subprocess
 from typing import Any
 from urllib.parse import urlparse
+
+from core.process_launch import run_windowless
 
 
 TRANSPORT_KINDS = {"manual_url", "lan", "wireguard", "tailscale", "headscale", "cloudflare_tunnel", "custom_vpn"}
@@ -220,7 +221,7 @@ def _candidate_ips() -> list[dict[str, Any]]:
 
 def _run_readonly_command(args: list[str], *, timeout: float = 2.0) -> str:
     try:
-        result = subprocess.run(
+        result = run_windowless(
             args,
             capture_output=True,
             timeout=timeout,

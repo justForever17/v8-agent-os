@@ -1,3 +1,6 @@
+import asyncio
+from copy import deepcopy
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -30,11 +33,20 @@ from .models import (
 
 router = APIRouter()
 
+_AVAILABILITY_CACHE_TTL_SECONDS = 5.0
+_availability_cache: dict[str, Any] | None = None
+_availability_cache_at = 0.0
+_availability_lock = asyncio.Lock()
+
 
 def _rpa_runtime():
     from runtimes.rpa.runtime import rpa_runtime
 
     return rpa_runtime
+
+
+def _build_rpa_availability() -> dict[str, Any]:
+    return dict(_rpa_runtime().availability() or {})
 
 
 def _capture_verification_required_error():
@@ -45,8 +57,21 @@ def _capture_verification_required_error():
 
 @router.get("/rpa/availability")
 async def get_rpa_availability():
+    global _availability_cache, _availability_cache_at
+
     try:
-        return _rpa_runtime().availability()
+        now = monotonic()
+        if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
+            return deepcopy(_availability_cache)
+
+        async with _availability_lock:
+            now = monotonic()
+            if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
+                return deepcopy(_availability_cache)
+            payload = await asyncio.to_thread(_build_rpa_availability)
+            _availability_cache = dict(payload or {})
+            _availability_cache_at = monotonic()
+            return deepcopy(_availability_cache)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

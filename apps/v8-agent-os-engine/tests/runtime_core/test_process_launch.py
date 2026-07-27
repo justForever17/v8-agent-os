@@ -36,12 +36,14 @@ def test_media_process_entrypoints_share_windowless_runner() -> None:
     vision_media_analyzer = importlib.import_module("core.tools.vision_media_analyzer")
     host_load = importlib.import_module("core.host_load")
     workspace_state_digest = importlib.import_module("core.workspace_state_digest")
+    v8_link = importlib.import_module("core.v8_link")
 
     assert creative_runtime.run_windowless is process_launch.run_windowless
     assert production_pack.run_windowless is process_launch.run_windowless
     assert vision_media_analyzer.run_windowless is process_launch.run_windowless
     assert host_load.run_windowless is process_launch.run_windowless
     assert workspace_state_digest.run_windowless is process_launch.run_windowless
+    assert v8_link.run_windowless is process_launch.run_windowless
 
 
 def test_engineering_context_commands_share_windowless_runner(monkeypatch, tmp_path) -> None:

@@ -8,8 +8,11 @@ import { createPortal } from "react-dom";
 import { TopbarGlowActionButton } from "@v8/product-ui";
 import { useT } from "@/components/providers/LocaleProvider";
 
+const loadRPAQuickPanel = () => import("@/components/rpa/RPAQuickPanel")
+    .then((module) => module.RPAQuickPanel);
+
 const RPAQuickPanel = dynamic(
-    () => import("@/components/rpa/RPAQuickPanel").then((module) => module.RPAQuickPanel),
+    loadRPAQuickPanel,
     {
         loading: () => <div className="h-48 animate-pulse rounded-2xl bg-muted/35" />,
         ssr: false,
@@ -20,9 +23,21 @@ export function RpaTopbarOverlay() {
     const t = useT();
     const [mounted, setMounted] = useState(false);
     const [open, setOpen] = useState(false);
+    const [activated, setActivated] = useState(false);
     const triggerRef = useRef<HTMLElement | null>(null);
 
-    useEffect(() => setMounted(true), []);
+    useEffect(() => {
+        setMounted(true);
+        void loadRPAQuickPanel();
+
+        const activate = () => setActivated(true);
+        if (typeof window.requestIdleCallback === "function") {
+            const idleId = window.requestIdleCallback(activate, { timeout: 800 });
+            return () => window.cancelIdleCallback(idleId);
+        }
+        const timer = window.setTimeout(activate, 200);
+        return () => window.clearTimeout(timer);
+    }, []);
 
     useEffect(() => {
         if (!open) return;
@@ -49,15 +64,21 @@ export function RpaTopbarOverlay() {
                 aria-expanded={open}
                 aria-haspopup="dialog"
                 title={t("web.rpa.title")}
-                onClick={() => setOpen((current) => !current)}
+                onClick={() => {
+                    if (!open) setActivated(true);
+                    setOpen((current) => !current);
+                }}
             >
                 <Bot />
                 <span className="sr-only">{t("web.rpa.title")}</span>
             </TopbarGlowActionButton>
 
-            {mounted && open ? createPortal(
+            {mounted && activated ? createPortal(
                 <div
-                    className="fixed inset-0 z-[140] bg-slate-950/12 backdrop-blur-[1px] dark:bg-black/24"
+                    className={open
+                        ? "fixed inset-0 z-[140] bg-slate-950/12 backdrop-blur-[1px] dark:bg-black/24"
+                        : "hidden"}
+                    aria-hidden={!open}
                     onPointerDown={(event) => {
                         if (event.target === event.currentTarget) close();
                     }}

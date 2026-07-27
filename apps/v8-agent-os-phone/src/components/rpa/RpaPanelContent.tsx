@@ -22,6 +22,16 @@ import type { RPAAvailability, RPATemplateSummary } from "@/src/types/admin";
 type ExtraField = { id: number; name: string; value: string };
 type TemplateVariable = NonNullable<RPATemplateSummary["variables"]>[number] & { source?: string };
 type Translator = ReturnType<typeof useUiPrefs>["t"];
+type AuthorizedFetch = Parameters<typeof getRpaAvailability>[0];
+type RpaBootstrap = { availability: RPAAvailability; templates: RPATemplateSummary[] };
+type RpaBootstrapCacheEntry = {
+    value?: RpaBootstrap;
+    cachedAt: number;
+    inFlight?: Promise<RpaBootstrap>;
+};
+
+const RPA_BOOTSTRAP_CACHE_TTL_MS = 30_000;
+const rpaBootstrapCache = new WeakMap<AuthorizedFetch, RpaBootstrapCacheEntry>();
 
 const GITHUB_STAR_TEMPLATE_ID = "system.github.star_repository";
 const GITHUB_STAR_FIELD_KEYS: Record<string, { label: string; description?: string }> = {
@@ -33,6 +43,35 @@ const GITHUB_STAR_FIELD_KEYS: Record<string, { label: string; description?: stri
         description: "src.screens.rpascreen.system.github_star.desired_state_help",
     },
 };
+
+async function loadRpaBootstrap(authorizedFetch: AuthorizedFetch, force = false): Promise<RpaBootstrap> {
+    const now = Date.now();
+    const entry = rpaBootstrapCache.get(authorizedFetch) || { cachedAt: 0 };
+    if (!force && entry.value && now - entry.cachedAt <= RPA_BOOTSTRAP_CACHE_TTL_MS) {
+        return entry.value;
+    }
+    if (!force && entry.inFlight) return entry.inFlight;
+
+    const request = Promise.all([
+        getRpaAvailability(authorizedFetch),
+        listRpaTemplates(authorizedFetch, 100, "approved"),
+    ]).then(([availability, templates]) => ({ availability, templates }));
+    entry.inFlight = request;
+    rpaBootstrapCache.set(authorizedFetch, entry);
+
+    try {
+        const value = await request;
+        if (entry.inFlight === request) {
+            entry.value = value;
+            entry.cachedAt = Date.now();
+            entry.inFlight = undefined;
+        }
+        return value;
+    } catch (error) {
+        if (entry.inFlight === request) entry.inFlight = undefined;
+        throw error;
+    }
+}
 
 function text(value: unknown) {
     return String(value ?? "").trim();
@@ -126,10 +165,10 @@ export function RpaPanelContent({ embedded = false }: { embedded?: boolean } = {
         else setLoading(true);
         setError("");
         try {
-            const [nextAvailability, nextTemplates] = await Promise.all([
-                getRpaAvailability(authorizedFetch),
-                listRpaTemplates(authorizedFetch, 100, "approved"),
-            ]);
+            const { availability: nextAvailability, templates: nextTemplates } = await loadRpaBootstrap(
+                authorizedFetch,
+                manual,
+            );
             const usableTemplates = nextTemplates.filter((template) => text(template.id));
             setAvailability(nextAvailability);
             setTemplates(usableTemplates);

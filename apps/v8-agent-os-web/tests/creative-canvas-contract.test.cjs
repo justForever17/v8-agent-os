@@ -169,6 +169,9 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(media, /暂停视频/);
   assert.match(canvas, /onWheel=\{\(event\) => event\.stopPropagation\(\)\}/);
   assert.match(canvas, /pendingConnectionDrop/);
+  assert.match(canvas, /kind: "reconnect"/);
+  assert.match(canvas, /handleEdgePointerDown/);
+  assert.match(canvas, /current\.edges\.filter\(\(edge\) => edge\.edgeId !== interaction\.edgeId\)/);
   assert.match(canvas, /cursor-default/);
   assert.doesNotMatch(canvas, /cursor-crosshair/);
   assert.match(model, /Bounds/);
@@ -176,6 +179,7 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.segment-scenes.label"], "按场景切分视频");
   assert.equal(zh["web.creativeCanvas.actions.local.fit_view.label"], "显示全部");
   assert.equal(zh["web.creativeCanvas.actions.mediakit.editing.trim-video.label"], "按时间裁切视频");
+  assert.equal(zh["web.creativeCanvas.actions.mediakit.video.probe-video-metadata.label"], "读取视频参数");
 });
 
 test("canvas resource URLs never depend on worktree or physical source paths", () => {

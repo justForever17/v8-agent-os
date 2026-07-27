@@ -186,14 +186,11 @@ type PointerInteraction =
     | { kind: "select"; pointerId: number; start: { x: number; y: number }; additive: boolean }
     | { kind: "move"; pointerId: number; start: { x: number; y: number }; initial: Map<string, { x: number; y: number }> }
     | { kind: "pan"; pointerId: number; start: { x: number; y: number }; initial: CanvasViewport }
-    | { kind: "connect"; pointerId: number; fromNodeId: string; fromPort: CanvasPort };
+    | { kind: "connect"; pointerId: number; fromNodeId: string; fromPort: CanvasPort }
+    | { kind: "reconnect"; pointerId: number; edgeId: string; movingEnd: "from" | "to"; fixedNodeId: string; fixedPort: CanvasPort };
 
 const MAX_NODES = 100;
 const MAX_EDGES = 200;
-const AUTO_SUBMIT_ACTION_IDS = new Set([
-    "mediakit.audio.probe-audio-metadata",
-    "mediakit.video.probe-video-metadata",
-]);
 const NODE_WIDTH = 280;
 const NODE_HEIGHT = 190;
 const MEDIA_FOOTER_HEIGHT = 36;
@@ -439,7 +436,6 @@ export function CreativeArtifactCanvas({
     const sessionRunningRef = useRef(sessionRunning);
     const interactionRef = useRef<PointerInteraction | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
-    const autoSubmittedOperationIdsRef = useRef(new Set<string>());
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const [snapshot, setSnapshot] = useState<CanvasSnapshot>(EMPTY_SNAPSHOT);
     const [hydratedKey, setHydratedKey] = useState("");
@@ -457,6 +453,7 @@ export function CreativeArtifactCanvas({
     const [submitting, setSubmitting] = useState(false);
     const [connectionSourceId, setConnectionSourceId] = useState<string | null>(null);
     const [pendingConnectionDrop, setPendingConnectionDrop] = useState<PendingConnectionDrop | null>(null);
+    const [reconnectingEdgeId, setReconnectingEdgeId] = useState<string | null>(null);
     const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft | null>(null);
     const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
     const [inspectNodeId, setInspectNodeId] = useState<string | null>(null);
@@ -638,7 +635,8 @@ export function CreativeArtifactCanvas({
         setMaskNodeId(null);
         setConnectionSourceId(null);
         setConnectionDraft(null);
-        if (interactionRef.current?.kind === "connect") interactionRef.current = null;
+        setReconnectingEdgeId(null);
+        if (interactionRef.current?.kind === "connect" || interactionRef.current?.kind === "reconnect") interactionRef.current = null;
     }, [sessionRunning]);
 
     const boardPoint = useCallback((clientX: number, clientY: number) => {
@@ -809,7 +807,7 @@ export function CreativeArtifactCanvas({
             return;
         }
         const world = worldPoint(pointer.clientX, pointer.clientY);
-        if (interaction.kind === "connect") {
+        if (interaction.kind === "connect" || interaction.kind === "reconnect") {
             if (sessionRunningRef.current) return;
             setConnectionDraft((current) => current ? { ...current, target: world } : current);
             return;
@@ -884,6 +882,31 @@ export function CreativeArtifactCanvas({
             setConnectionDraft(null);
             setConnectionSourceId(null);
         }
+        if (interaction.kind === "reconnect") {
+            if (event.type !== "pointercancel" && !sessionRunningRef.current) {
+                const end = worldPoint(event.clientX, event.clientY);
+                const threshold = 34 / snapshot.viewport.scale;
+                let nearest: { nodeId: string; port: CanvasPort; distance: number } | null = null;
+                for (const node of snapshot.nodes) {
+                    if (node.nodeId === interaction.fixedNodeId) continue;
+                    for (const port of ["left", "right"] as const) {
+                        const point = portPoint(node, port);
+                        const distance = Math.hypot(point.x - end.x, point.y - end.y);
+                        if (distance <= threshold && (!nearest || distance < nearest.distance)) nearest = { nodeId: node.nodeId, port, distance };
+                    }
+                }
+                setSnapshot((current) => ({
+                    ...current,
+                    edges: nearest
+                        ? current.edges.map((edge) => edge.edgeId !== interaction.edgeId ? edge : interaction.movingEnd === "to"
+                            ? { ...edge, to: nearest.nodeId, toPort: nearest.port }
+                            : { ...edge, from: nearest.nodeId, fromPort: nearest.port })
+                        : current.edges.filter((edge) => edge.edgeId !== interaction.edgeId),
+                }));
+            }
+            setConnectionDraft(null);
+            setReconnectingEdgeId(null);
+        }
         interactionRef.current = null;
         pendingPointerRef.current = null;
         setSelectionRect(null);
@@ -935,6 +958,28 @@ export function CreativeArtifactCanvas({
         boardRef.current?.setPointerCapture(event.pointerId);
     }, []);
 
+    const handleEdgePointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>, edge: CanvasEdge, from: CanvasNode, to: CanvasNode) => {
+        if (event.button !== 0 || sessionRunningRef.current) return;
+        const pointer = worldPoint(event.clientX, event.clientY);
+        const fromPoint = portPoint(from, edge.fromPort);
+        const toPoint = portPoint(to, edge.toPort);
+        const fromDistance = Math.hypot(pointer.x - fromPoint.x, pointer.y - fromPoint.y);
+        const toDistance = Math.hypot(pointer.x - toPoint.x, pointer.y - toPoint.y);
+        if (Math.min(fromDistance, toDistance) > 56 / snapshot.viewport.scale) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const movingEnd = fromDistance <= toDistance ? "from" : "to";
+        const fixedNode = movingEnd === "from" ? to : from;
+        const fixedPort = movingEnd === "from" ? edge.toPort : edge.fromPort;
+        setContextMenu(null);
+        setComposer(null);
+        setSelectedIds([edge.from, edge.to]);
+        setReconnectingEdgeId(edge.edgeId);
+        setConnectionDraft({ fromNodeId: fixedNode.nodeId, fromPort: fixedPort, target: pointer });
+        interactionRef.current = { kind: "reconnect", pointerId: event.pointerId, edgeId: edge.edgeId, movingEnd, fixedNodeId: fixedNode.nodeId, fixedPort };
+        boardRef.current?.setPointerCapture(event.pointerId);
+    }, [snapshot.viewport.scale, worldPoint]);
+
     useEffect(() => () => {
         if (pointerFrameRef.current !== null) window.cancelAnimationFrame(pointerFrameRef.current);
     }, []);
@@ -948,7 +993,8 @@ export function CreativeArtifactCanvas({
                 setMaskNodeId(null);
                 setConnectionSourceId(null);
                 setConnectionDraft(null);
-                if (interactionRef.current?.kind === "connect") interactionRef.current = null;
+                setReconnectingEdgeId(null);
+                if (interactionRef.current?.kind === "connect" || interactionRef.current?.kind === "reconnect") interactionRef.current = null;
                 return;
             }
             if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.length && !sessionRunning && !isEditableTarget(event.target)) {
@@ -1257,12 +1303,6 @@ export function CreativeArtifactCanvas({
         }
     }, [actionLabel, composer, freezeMask, onSubmitTask, resourceForNode, sessionRunning, snapshot.edges, snapshot.nodes, submitting]);
 
-    useEffect(() => {
-        if (!composer || !AUTO_SUBMIT_ACTION_IDS.has(composer.action.actionId) || submitting || autoSubmittedOperationIdsRef.current.has(composer.operationId)) return;
-        autoSubmittedOperationIdsRef.current.add(composer.operationId);
-        void submitComposer();
-    }, [composer, submitComposer, submitting]);
-
     const selectedImageNode = selectedNodes.length === 1 && mediaTypeOf(resourceForNode(selectedNodes[0]) || { name: "", mimeType: "", mediaType: "unknown" }) === "image"
         ? selectedNodes[0]
         : null;
@@ -1363,7 +1403,7 @@ export function CreativeArtifactCanvas({
                         const path = edgePath(from, to, edge);
                         return (
                             <g key={edge.edgeId} data-canvas-edge={edge.edgeId}>
-                                <path d={path} fill="none" stroke="transparent" strokeWidth="18" className="pointer-events-auto cursor-pointer" onPointerEnter={() => setHoveredEdgeId(edge.edgeId)} onPointerLeave={(event) => {
+                                <path d={path} fill="none" stroke="transparent" strokeWidth="18" className="pointer-events-auto cursor-pointer" onPointerDown={(event) => handleEdgePointerDown(event, edge, from, to)} onPointerEnter={() => setHoveredEdgeId(edge.edgeId)} onPointerLeave={(event) => {
                                     const related = event.relatedTarget;
                                     if (related instanceof HTMLElement && related.dataset.canvasEdgeComment === edge.edgeId) return;
                                     setHoveredEdgeId((current) => current === edge.edgeId ? null : current);
@@ -1373,7 +1413,7 @@ export function CreativeArtifactCanvas({
                                     const point = boardPoint(event.clientX, event.clientY);
                                     setContextMenu({ x: point.x, y: point.y, target: "edge", nodeIds: [edge.from, edge.to], edgeId: edge.edgeId });
                                 }} />
-                                <path d={path} fill="none" stroke={hoveredEdgeId === edge.edgeId ? "rgb(124 58 237)" : "rgb(148 163 184)"} strokeWidth="2" markerEnd={`url(#canvas-arrow-${sessionId.replace(/[^a-z0-9]/gi, "")})`} />
+                                <path d={path} fill="none" stroke={hoveredEdgeId === edge.edgeId ? "rgb(124 58 237)" : "rgb(148 163 184)"} strokeWidth="2" markerEnd={`url(#canvas-arrow-${sessionId.replace(/[^a-z0-9]/gi, "")})`} opacity={reconnectingEdgeId === edge.edgeId ? 0.2 : 1} />
                             </g>
                         );
                     })}
@@ -1633,7 +1673,7 @@ export function CreativeArtifactCanvas({
                 </div>
             ) : null}
 
-            {composer && !AUTO_SUBMIT_ACTION_IDS.has(composer.action.actionId) ? (
+            {composer ? (
                 <div
                     style={{ left: Math.min(Math.max(176, composer.x), Math.max(176, (boardRef.current?.clientWidth || 380) - 176)), top: Math.min(Math.max(84, composer.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)) }}
                     className="absolute z-[70] w-[340px] -translate-x-1/2 rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10"

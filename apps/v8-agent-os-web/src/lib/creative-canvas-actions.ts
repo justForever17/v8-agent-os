@@ -488,8 +488,8 @@ export const MEDIAKIT_CREATIVE_CANVAS_ACTIONS: readonly CreativeCanvasAction[] =
     mediaKitAction({ domain: "editing", action: "image-to-video", selection: ONE_OR_MORE_IMAGE, output: output("artifact", "video", ["video"]) }),
     mediaKitAction({ domain: "editing", action: "mix-audio", selection: TWO_OR_MORE_AUDIO, output: output("artifact", "audio", ["audio"]) }),
     mediaKitAction({ domain: "editing", action: "mux-audio-video", selection: VIDEO_AND_AUDIO, output: output("artifact", "video", ["video"]) }),
-    mediaKitAction({ domain: "editing", action: "trim-audio", selection: ONE_AUDIO, output: output("artifact", "audio_derivative", ["audio"]) }),
-    mediaKitAction({ domain: "editing", action: "trim-video", selection: ONE_VIDEO, output: output("artifact", "video_derivative", ["video"]) }),
+    mediaKitAction({ domain: "editing", action: "trim-audio", selection: ONE_AUDIO, output: output("artifact", "audio_derivative", ["audio"]), requiresPrompt: true }),
+    mediaKitAction({ domain: "editing", action: "trim-video", selection: ONE_VIDEO, output: output("artifact", "video_derivative", ["video"]), requiresPrompt: true }),
 
     mediaKitAction({ domain: "image", action: "image-ocr", selection: ONE_IMAGE, output: output("evidence", "recognized_text", ["text", "metadata"]), networkRequired: true, mayIncurCost: true }),
     mediaKitAction({ domain: "image", action: "erase-image", selection: ONE_IMAGE, output: output("artifact", "image_derivative", ["image"]), networkRequired: true, mayIncurCost: true }),

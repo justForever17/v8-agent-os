@@ -176,6 +176,12 @@ type ConnectionDraft = {
     target: { x: number; y: number };
 };
 
+type PendingConnectionDrop = {
+    fromNodeId: string;
+    fromPort: CanvasPort;
+    point: { x: number; y: number };
+};
+
 type PointerInteraction =
     | { kind: "select"; pointerId: number; start: { x: number; y: number }; additive: boolean }
     | { kind: "move"; pointerId: number; start: { x: number; y: number }; initial: Map<string, { x: number; y: number }> }
@@ -184,6 +190,10 @@ type PointerInteraction =
 
 const MAX_NODES = 100;
 const MAX_EDGES = 200;
+const AUTO_SUBMIT_ACTION_IDS = new Set([
+    "mediakit.audio.probe-audio-metadata",
+    "mediakit.video.probe-video-metadata",
+]);
 const NODE_WIDTH = 280;
 const NODE_HEIGHT = 190;
 const MEDIA_FOOTER_HEIGHT = 36;
@@ -429,6 +439,7 @@ export function CreativeArtifactCanvas({
     const sessionRunningRef = useRef(sessionRunning);
     const interactionRef = useRef<PointerInteraction | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
+    const autoSubmittedOperationIdsRef = useRef(new Set<string>());
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const [snapshot, setSnapshot] = useState<CanvasSnapshot>(EMPTY_SNAPSHOT);
     const [hydratedKey, setHydratedKey] = useState("");
@@ -445,6 +456,7 @@ export function CreativeArtifactCanvas({
     const [composer, setComposer] = useState<ComposerState | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [connectionSourceId, setConnectionSourceId] = useState<string | null>(null);
+    const [pendingConnectionDrop, setPendingConnectionDrop] = useState<PendingConnectionDrop | null>(null);
     const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft | null>(null);
     const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
     const [inspectNodeId, setInspectNodeId] = useState<string | null>(null);
@@ -643,7 +655,7 @@ export function CreativeArtifactCanvas({
         };
     }, [boardPoint, snapshot.viewport]);
 
-    const placeResource = useCallback((resource: CanvasResource, point?: { x: number; y: number }) => {
+    const placeResource = useCallback((resource: CanvasResource, point?: { x: number; y: number }, connectFrom?: Pick<PendingConnectionDrop, "fromNodeId" | "fromPort">) => {
         if (sessionRunningRef.current) return;
         setSnapshot((current) => {
             if (current.nodes.length >= MAX_NODES) return current;
@@ -661,7 +673,10 @@ export function CreativeArtifactCanvas({
                 height: mediaTypeOf(resource) === "audio" ? 142 : NODE_HEIGHT,
             };
             setSelectedIds([node.nodeId]);
-            return { ...current, nodes: [...current.nodes, node] };
+            const edges = connectFrom && connectFrom.fromNodeId !== node.nodeId && current.edges.length < MAX_EDGES
+                ? [...current.edges, { edgeId: createId("canvas-edge"), from: connectFrom.fromNodeId, to: node.nodeId, fromPort: connectFrom.fromPort, toPort: "left" as const }]
+                : current.edges;
+            return { ...current, nodes: [...current.nodes, node], edges };
         });
     }, []);
 
@@ -858,6 +873,12 @@ export function CreativeArtifactCanvas({
                 if (nearest && !sessionRunningRef.current) {
                     addEdge(interaction.fromNodeId, nearest.nodeId, interaction.fromPort, nearest.port);
                     setSelectedIds([interaction.fromNodeId, nearest.nodeId]);
+                    setPendingConnectionDrop(null);
+                } else if (!sessionRunningRef.current) {
+                    const menuPoint = boardPoint(event.clientX, event.clientY);
+                    setPendingConnectionDrop({ fromNodeId: interaction.fromNodeId, fromPort: interaction.fromPort, point: end });
+                    setSelectedIds([interaction.fromNodeId]);
+                    setContextMenu({ x: menuPoint.x, y: menuPoint.y, target: "node", nodeIds: [interaction.fromNodeId] });
                 }
             }
             setConnectionDraft(null);
@@ -867,7 +888,7 @@ export function CreativeArtifactCanvas({
         pendingPointerRef.current = null;
         setSelectionRect(null);
         if (boardRef.current?.hasPointerCapture(event.pointerId)) boardRef.current.releasePointerCapture(event.pointerId);
-    }, [addEdge, processPointerMove, snapshot.nodes, snapshot.viewport.scale, worldPoint]);
+    }, [addEdge, boardPoint, processPointerMove, snapshot.nodes, snapshot.viewport.scale, worldPoint]);
 
     const startBoardInteraction = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
         if (event.button !== 0 && event.button !== 1) return;
@@ -961,7 +982,7 @@ export function CreativeArtifactCanvas({
     const menuActions = useMemo(() => {
         if (!contextMenu) return [];
         const nodes = snapshot.nodes.filter((node) => contextMenu.nodeIds.includes(node.nodeId));
-        return getCreativeCanvasActions({
+        const actions = getCreativeCanvasActions({
             target: contextMenu.target,
             selection: nodes.map((node, index) => ({
                 id: node.nodeId,
@@ -973,7 +994,11 @@ export function CreativeArtifactCanvas({
             pluginGranted: false,
             allowPluginGrantRequest: true,
         });
-    }, [contextMenu, mediaKitStatus, resourceForNode, sessionRunning, snapshot.nodes]);
+        if (!pendingConnectionDrop || contextMenu.nodeIds[0] !== pendingConnectionDrop.fromNodeId) return actions;
+        const quickIds = new Set(["local.upload_sources", "local.open_artifact_tray"]);
+        const quickActions = CREATIVE_CANVAS_ACTIONS.filter((action) => quickIds.has(action.actionId));
+        return [...quickActions, ...actions];
+    }, [contextMenu, mediaKitStatus, pendingConnectionDrop, resourceForNode, sessionRunning, snapshot.nodes]);
 
     const openComposerForAction = useCallback((action: CreativeCanvasAction, input: { x: number; y: number; nodeIds: string[]; edgeId?: string }) => {
         if (sessionRunning || action.executionClass !== "chat_task") return;
@@ -1073,10 +1098,13 @@ export function CreativeArtifactCanvas({
                 return [...map.values()];
             });
             if (!sessionRunningRef.current) {
-                uploaded.forEach((resource, index) => placeResource(resource, point ? {
-                    x: point.x + (index % 2) * GRID_COLUMN_STEP,
-                    y: point.y + Math.floor(index / 2) * GRID_ROW_STEP,
-                } : undefined));
+                const connection = pendingConnectionDrop ? { fromNodeId: pendingConnectionDrop.fromNodeId, fromPort: pendingConnectionDrop.fromPort } : undefined;
+                const origin = point || pendingConnectionDrop?.point;
+                uploaded.forEach((resource, index) => placeResource(resource, origin ? {
+                    x: origin.x + (index % 2) * GRID_COLUMN_STEP,
+                    y: origin.y + Math.floor(index / 2) * GRID_ROW_STEP,
+                } : undefined, connection));
+                setPendingConnectionDrop(null);
             }
             setTrayOpen(false);
         } catch (reason) {
@@ -1084,7 +1112,7 @@ export function CreativeArtifactCanvas({
         } finally {
             setUploading(false);
         }
-    }, [placeResource, sessionId, sessionRunning, uploading]);
+    }, [pendingConnectionDrop, placeResource, sessionId, sessionRunning, uploading]);
 
     const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(event.target.files || []);
@@ -1229,6 +1257,12 @@ export function CreativeArtifactCanvas({
         }
     }, [actionLabel, composer, freezeMask, onSubmitTask, resourceForNode, sessionRunning, snapshot.edges, snapshot.nodes, submitting]);
 
+    useEffect(() => {
+        if (!composer || !AUTO_SUBMIT_ACTION_IDS.has(composer.action.actionId) || submitting || autoSubmittedOperationIdsRef.current.has(composer.operationId)) return;
+        autoSubmittedOperationIdsRef.current.add(composer.operationId);
+        void submitComposer();
+    }, [composer, submitComposer, submitting]);
+
     const selectedImageNode = selectedNodes.length === 1 && mediaTypeOf(resourceForNode(selectedNodes[0]) || { name: "", mimeType: "", mediaType: "unknown" }) === "image"
         ? selectedNodes[0]
         : null;
@@ -1299,7 +1333,7 @@ export function CreativeArtifactCanvas({
             }}
             className={cn(
                 "relative h-full min-h-0 w-full overflow-hidden bg-[#f5f6f8] text-foreground outline-none dark:bg-[#111315]",
-                tool === "pan" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair",
+                tool === "pan" ? "cursor-grab active:cursor-grabbing" : "cursor-default",
             )}
         >
             <div
@@ -1505,7 +1539,7 @@ export function CreativeArtifactCanvas({
                 <button type="button" onClick={() => setTool("select")} className={cn("rounded-xl p-2", tool === "select" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground")} aria-label="框选"><MousePointer2 className="h-4 w-4" /></button>
                 <button type="button" onClick={() => setTool("pan")} className={cn("rounded-xl p-2", tool === "pan" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground")} aria-label="移动画布"><Hand className="h-4 w-4" /></button>
                 <span className="mx-0.5 h-5 w-px bg-border" />
-                <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="上传来源">{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}</button>
+                <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="上传">{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}</button>
                 <button type="button" onClick={fitView} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="适合画布"><Focus className="h-4 w-4" /></button>
                 <button type="button" onClick={() => zoomAtCenter(-0.15)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="缩小"><ZoomOut className="h-4 w-4" /></button>
                 <span className="w-10 text-center text-[10px] tabular-nums text-muted-foreground">{Math.round(snapshot.viewport.scale * 100)}%</span>
@@ -1531,7 +1565,7 @@ export function CreativeArtifactCanvas({
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
                         <PackageOpen className="h-4 w-4 text-muted-foreground" />
                         <span className="flex-1 text-xs font-semibold">来源与产物</span>
-                        <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="上传来源"><Plus className="h-4 w-4" /></button>
+                        <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="上传"><Plus className="h-4 w-4" /></button>
                         <button type="button" onClick={() => setTrayOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="关闭素材抽屉"><X className="h-4 w-4" /></button>
                     </div>
                     <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
@@ -1544,7 +1578,10 @@ export function CreativeArtifactCanvas({
                                     type="button"
                                     draggable={!sessionRunning}
                                     onDragStart={(event) => event.dataTransfer.setData(CANVAS_DRAG_TYPE, `${resource.origin}:${resource.id}`)}
-                                    onClick={() => placeResource(resource)}
+                                    onClick={() => {
+                                        placeResource(resource, pendingConnectionDrop?.point, pendingConnectionDrop ? { fromNodeId: pendingConnectionDrop.fromNodeId, fromPort: pendingConnectionDrop.fromPort } : undefined);
+                                        setPendingConnectionDrop(null);
+                                    }}
                                     disabled={sessionRunning}
                                     title={resource.name}
                                     className="group overflow-hidden rounded-xl border border-border/60 bg-muted/25 text-left hover:border-violet-400 hover:bg-muted/45 disabled:cursor-not-allowed disabled:opacity-55"
@@ -1568,7 +1605,7 @@ export function CreativeArtifactCanvas({
                 >
                     <span className="px-2 text-[10px] font-semibold text-muted-foreground">{selectedIds.length} 项</span>
                     <button type="button" disabled={sessionRunning} onClick={() => openSelectionComposer()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-primary disabled:opacity-30" aria-label="基于所选内容发送消息"><MessageSquare className="h-4 w-4" /></button>
-                    <button type="button" disabled={sessionRunning} onClick={() => selectedIds.length > 1 ? connectSelection(selectedIds) : setConnectionSourceId(selectedIds[0])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-emerald-600 disabled:opacity-30" aria-label={selectedIds.length > 1 ? "连接所选内容" : "从这里开始连线"}><Link2 className="h-4 w-4" /></button>
+                    <button type="button" disabled={sessionRunning} onClick={() => selectedIds.length > 1 ? connectSelection(selectedIds) : setConnectionSourceId(selectedIds[0])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-emerald-600 disabled:opacity-30" aria-label={selectedIds.length > 1 ? "连接所选内容" : "连接节点"}><Link2 className="h-4 w-4" /></button>
                     {selectedImageNode ? <button type="button" disabled={sessionRunning} onClick={() => setMaskNodeId(selectedImageNode.nodeId)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-rose-600 disabled:opacity-30" aria-label="绘制蒙版"><Sparkles className="h-4 w-4" /></button> : null}
                     <button type="button" disabled={sessionRunning} onClick={() => removeNodes(selectedIds)} className="rounded-xl p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-30" aria-label="从画布移除"><Trash2 className="h-4 w-4" /></button>
                 </div>
@@ -1579,6 +1616,7 @@ export function CreativeArtifactCanvas({
                     style={{ left: Math.min(contextMenu.x, Math.max(12, (boardRef.current?.clientWidth || 360) - 292)), top: Math.min(contextMenu.y, Math.max(12, (boardRef.current?.clientHeight || 480) - 440)) }}
                     className="absolute z-[60] max-h-[430px] w-[280px] overflow-y-auto rounded-2xl border border-white/80 bg-background/96 p-1.5 shadow-[0_22px_64px_rgba(15,23,42,.22)] backdrop-blur-xl dark:border-white/10"
                     onPointerDown={(event) => event.stopPropagation()}
+                    onWheel={(event) => event.stopPropagation()}
                 >
                     {groupedMenuActions.length ? groupedMenuActions.map(([title, actions]) => (
                         <div key={title} className="py-1">
@@ -1595,7 +1633,7 @@ export function CreativeArtifactCanvas({
                 </div>
             ) : null}
 
-            {composer ? (
+            {composer && !AUTO_SUBMIT_ACTION_IDS.has(composer.action.actionId) ? (
                 <div
                     style={{ left: Math.min(Math.max(176, composer.x), Math.max(176, (boardRef.current?.clientWidth || 380) - 176)), top: Math.min(Math.max(84, composer.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)) }}
                     className="absolute z-[70] w-[340px] -translate-x-1/2 rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10"

@@ -127,6 +127,8 @@ test("canvas action catalog locks mutation and capability-gates MediaKit", () =>
   });
   assert.equal(explicitRequest.some((item) => item.actionId === "mediakit.image.remove-image-background"), true);
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.length, 38);
+  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.editing.trim-video")?.requiresPrompt, true);
+  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.video.probe-video-metadata")?.requiresPrompt, false);
 });
 
 test("canvas is one floating surface and reuses normal chat plus lazy 3D preview", () => {
@@ -162,9 +164,18 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   );
   assert.equal((canvasSubmit.match(/handleSend\(syntheticEvent/g) || []).length, 1);
   assert.match(media, /dynamic\(/);
+  assert.match(media, /preload="auto"/);
+  assert.match(media, /pointer-events-none h-full w-full object-contain/);
+  assert.match(media, /暂停视频/);
+  assert.match(canvas, /onWheel=\{\(event\) => event\.stopPropagation\(\)\}/);
+  assert.match(canvas, /pendingConnectionDrop/);
+  assert.match(canvas, /cursor-default/);
+  assert.doesNotMatch(canvas, /cursor-crosshair/);
   assert.match(model, /Bounds/);
   assert.doesNotMatch(model, /environment="city"/);
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.segment-scenes.label"], "按场景切分视频");
+  assert.equal(zh["web.creativeCanvas.actions.local.fit_view.label"], "显示全部");
+  assert.equal(zh["web.creativeCanvas.actions.mediakit.editing.trim-video.label"], "按时间裁切视频");
 });
 
 test("canvas resource URLs never depend on worktree or physical source paths", () => {

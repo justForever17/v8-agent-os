@@ -3,7 +3,8 @@
 /* eslint-disable @next/next/no-img-element -- session resources include local and signed URLs without fixed dimensions */
 
 import dynamic from "next/dynamic";
-import { Box, FileText, ImageIcon, Loader2, Music2, Video } from "lucide-react";
+import { useRef, useState } from "react";
+import { Box, FileText, ImageIcon, Loader2, Music2, Pause, Play, Video } from "lucide-react";
 
 export type CreativeCanvasMediaResource = {
     name: string;
@@ -70,6 +71,14 @@ export function CreativeCanvasMedia({
 }) {
     const kind = kindOf(resource);
     const url = String(resource.url || "").trim();
+    const playableRef = useRef<HTMLMediaElement | null>(null);
+    const [playing, setPlaying] = useState(false);
+    const togglePlayback = () => {
+        const media = playableRef.current;
+        if (!media) return;
+        if (media.paused) void media.play();
+        else media.pause();
+    };
     if (!url) return <FileFallback resource={resource} compact={compact} />;
     if (kind === "image") {
         return (
@@ -89,29 +98,46 @@ export function CreativeCanvasMedia({
             />
         );
     }
-    if (kind === "video" && !compact) {
+    if (kind === "video") {
+        if (inspect) {
+            return <video src={url} controls playsInline preload="metadata" className="h-full w-full object-contain" />;
+        }
         return (
-            <video
-                src={url}
-                controls={inspect}
-                muted={!inspect}
-                playsInline
-                preload="metadata"
-                onLoadedMetadata={(event) => {
-                    if (inspect) return;
-                    onDimensions?.({
-                        width: event.currentTarget.videoWidth,
-                        height: event.currentTarget.videoHeight,
-                    });
-                }}
-                className="h-full w-full object-contain"
-            />
+            <div className="relative h-full w-full">
+                <video
+                    ref={(element) => { playableRef.current = element; }}
+                    src={url}
+                    muted
+                    playsInline
+                    preload="auto"
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onEnded={() => setPlaying(false)}
+                    onLoadedMetadata={(event) => {
+                        if (compact) return;
+                        onDimensions?.({ width: event.currentTarget.videoWidth, height: event.currentTarget.videoHeight });
+                    }}
+                    className="pointer-events-none h-full w-full object-contain"
+                />
+                {!compact ? (
+                    <button type="button" onClick={togglePlayback} className="absolute left-1/2 top-1/2 grid h-10 w-10 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-black/65 text-white shadow-lg hover:bg-black/80" aria-label={playing ? "暂停视频" : "播放视频"}>
+                        {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
+                    </button>
+                ) : null}
+            </div>
         );
     }
     if (kind === "audio" && !compact) {
-        return inspect
-            ? <audio src={url} controls preload="metadata" className="w-[88%]" />
-            : <FileFallback resource={resource} compact={compact} />;
+        if (inspect) return <audio src={url} controls preload="metadata" className="w-[88%]" />;
+        return (
+            <div className="relative h-full w-full">
+                <FileFallback resource={resource} compact={compact} />
+                <audio ref={(element) => { playableRef.current = element; }} src={url} preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+                <button type="button" onClick={togglePlayback} className="absolute left-1/2 top-1/2 grid h-10 w-10 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-black/65 text-white shadow-lg hover:bg-black/80" aria-label={playing ? "暂停音频" : "播放音频"}>
+                    {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
+                </button>
+            </div>
+        );
     }
     if (kind === "model_3d") {
         const supported = /\.(?:glb|gltf)(?:$|[?#])/i.test(url) || /\.(?:glb|gltf)$/i.test(resource.name);

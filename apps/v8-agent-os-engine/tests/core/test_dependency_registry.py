@@ -55,6 +55,7 @@ def test_ffmpeg_dependency_rejects_old_or_mixed_installation(monkeypatch):
 
 
 def test_dependency_registry_exposes_ffmpeg_minimum_version(monkeypatch):
+    dependency_registry._dependency_status_cache = None
     monkeypatch.setattr(
         dependency_registry,
         "_detect_ffmpeg_pair",
@@ -70,3 +71,23 @@ def test_dependency_registry_exposes_ffmpeg_minimum_version(monkeypatch):
 
     assert ffmpeg["minimumVersion"] == "7.0"
     assert ffmpeg["detection"]["detected"] is True
+
+
+def test_dependency_registry_reuses_short_lived_snapshot(monkeypatch):
+    dependency_registry._dependency_status_cache = None
+    calls = 0
+
+    def detect(entry, _readiness):
+        nonlocal calls
+        calls += 1
+        return {"detected": entry["id"] == "python"}
+
+    monkeypatch.setattr(dependency_registry, "_build_detection_snapshot", detect)
+    monkeypatch.setattr(dependency_registry, "detect_desktop_tools_readiness", lambda: {})
+
+    first = dependency_registry.build_dependency_status()
+    second = dependency_registry.build_dependency_status()
+
+    assert calls == len(dependency_registry.DEPENDENCY_REGISTRY)
+    assert first == second
+    assert first is not second

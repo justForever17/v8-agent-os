@@ -11,15 +11,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useRuntimeOpsData, formatWhen, formatRunStatusLabel, formatRuntimeKindLabel } from "@/components/runtime/use-runtime-ops";
 
 type RecentRunsPanelProps = {
-    hook?: ReturnType<typeof useRuntimeOpsData>;
+    hook: ReturnType<typeof useRuntimeOpsData>;
     focusRunId?: string | null;
     focusSessionId?: string | null;
 };
 
 export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRunsPanelProps) {
     const t = useT();
-    const defaultRuntime = useRuntimeOpsData();
-    const runtime = hook ?? defaultRuntime;
+    const runtime = hook;
     const { runs, busyKey, dispatchRunCommand } = runtime;
     const visibleRuns = runs.filter((run) => {
         if (focusRunId && run.id !== focusRunId) {

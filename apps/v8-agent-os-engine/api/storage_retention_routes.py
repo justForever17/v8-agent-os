@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/storage-retention", tags=["storage-retention"])
 @router.get("/stats")
 async def get_storage_retention_stats():
     try:
-        return storage_retention_service.build_stats()
+        return await asyncio.to_thread(storage_retention_service.build_stats)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

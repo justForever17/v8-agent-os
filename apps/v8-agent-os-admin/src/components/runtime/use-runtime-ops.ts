@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatLocalDateTime } from "@/lib/time";
 import { getRuntimeDisplayText } from "@/lib/runtime-admin";
 
@@ -83,24 +83,38 @@ export function useRuntimeOpsData() {
     const [drafts, setDrafts] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [busyKey, setBusyKey] = useState<string | null>(null);
+    const refreshInFlightRef = useRef<Promise<void> | null>(null);
 
-    const refreshData = useCallback(async () => {
-        setLoading(true);
-        try {
-            const [approvalRes, runRes] = await Promise.all([
-                fetch("/api/approvals?status=pending", { cache: "no-store" }),
-                fetch("/api/runs?limit=8", { cache: "no-store" }),
-            ]);
-
-            const approvalData = approvalRes.ok ? await approvalRes.json().catch(() => ({})) : {};
-            const runData = runRes.ok ? await runRes.json().catch(() => ({})) : {};
-            setApprovals(Array.isArray(approvalData?.approvals) ? approvalData.approvals : []);
-            setRuns(Array.isArray(runData?.runs) ? runData.runs : []);
-        } catch (error) {
-            console.error("[useRuntimeOpsData] Failed to refresh runtime data:", error);
-        } finally {
-            setLoading(false);
+    const refreshData = useCallback(() => {
+        if (refreshInFlightRef.current) {
+            return refreshInFlightRef.current;
         }
+
+        const request = (async () => {
+            setLoading(true);
+            try {
+                const [approvalRes, runRes] = await Promise.all([
+                    fetch("/api/approvals?status=pending", { cache: "no-store" }),
+                    fetch("/api/runs?limit=12", { cache: "no-store" }),
+                ]);
+
+                const approvalData = approvalRes.ok ? await approvalRes.json().catch(() => ({})) : {};
+                const runData = runRes.ok ? await runRes.json().catch(() => ({})) : {};
+                setApprovals(Array.isArray(approvalData?.approvals) ? approvalData.approvals : []);
+                setRuns(Array.isArray(runData?.runs) ? runData.runs : []);
+            } catch (error) {
+                console.error("[useRuntimeOpsData] Failed to refresh runtime data:", error);
+            } finally {
+                setLoading(false);
+            }
+        })();
+        refreshInFlightRef.current = request;
+        void request.finally(() => {
+            if (refreshInFlightRef.current === request) {
+                refreshInFlightRef.current = null;
+            }
+        });
+        return request;
     }, []);
 
     useEffect(() => {

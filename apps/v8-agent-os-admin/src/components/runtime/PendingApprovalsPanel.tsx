@@ -12,15 +12,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { useRuntimeOpsData, formatWhen } from "@/components/runtime/use-runtime-ops";
 
 type PendingApprovalsPanelProps = {
-    hook?: ReturnType<typeof useRuntimeOpsData>;
+    hook: ReturnType<typeof useRuntimeOpsData>;
     focusRunId?: string | null;
     focusSessionId?: string | null;
 };
 
 export function PendingApprovalsPanel({ hook, focusRunId, focusSessionId }: PendingApprovalsPanelProps) {
     const t = useT();
-    const defaultRuntime = useRuntimeOpsData();
-    const runtime = hook ?? defaultRuntime;
+    const runtime = hook;
     const { approvalQuestions, drafts, setDrafts, loading, busyKey, refreshData, submitApproval } = runtime;
     const visibleApprovals = approvalQuestions.filter((approval) => {
         if (focusRunId && approval.run_id !== focusRunId) {

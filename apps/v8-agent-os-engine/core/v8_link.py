@@ -560,7 +560,12 @@ def _build_connection_endpoints(
     return sorted(endpoints, key=lambda item: int(item.get("priority") or 100))
 
 
-def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str, Any]:
+def build_link_manifest(
+    *,
+    request_admin_origin: str | None = None,
+    mesh_status: dict[str, Any] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from core.storage import storage
 
     system_base = storage.get_system_base_config()
@@ -577,14 +582,22 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
     )
     active = _active_profile(remote_link)
     transport_kind = normalize_transport_kind(active.get("kind"))
-    diagnostics = build_vpn_diagnostics(admin_base_url=admin_base, engine_base_url=engine_base)
-    mesh_status = build_mesh_provider_status(admin_base_url=admin_base, engine_base_url=engine_base)
+    resolved_diagnostics = (
+        dict(diagnostics)
+        if isinstance(diagnostics, dict)
+        else build_vpn_diagnostics(admin_base_url=admin_base, engine_base_url=engine_base)
+    )
+    resolved_mesh_status = (
+        dict(mesh_status)
+        if isinstance(mesh_status, dict)
+        else build_mesh_provider_status(admin_base_url=admin_base, engine_base_url=engine_base)
+    )
     tailscale_recommended = {}
-    for provider in list(mesh_status.get("providers") or []):
+    for provider in list(resolved_mesh_status.get("providers") or []):
         if str(provider.get("kind") or "") == "tailscale":
             tailscale_recommended = dict(provider.get("recommendedUrls") or {})
             break
-    warnings = list(diagnostics.get("warnings") or [])
+    warnings = list(resolved_diagnostics.get("warnings") or [])
     if not remote_link.get("enabled", True):
         warnings.append("remote_link_disabled")
     if transport_kind == "cloudflare_tunnel" and not is_stable_cloudflare_origin(active.get("adminBaseUrl")):
@@ -592,7 +605,7 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
     endpoints = _build_connection_endpoints(
         admin_base_url=admin_base,
         remote_link=remote_link,
-        candidate_ips=list(diagnostics.get("candidateIps") or []),
+        candidate_ips=list(resolved_diagnostics.get("candidateIps") or []),
         tailscale_recommended=tailscale_recommended,
     )
     return {
@@ -640,9 +653,9 @@ def build_link_manifest(*, request_admin_origin: str | None = None) -> dict[str,
             "runtimeEvents": True,
             "networkSupervisorPeers": True,
         },
-        "diagnostics": diagnostics,
-        "meshProviders": mesh_status.get("providers", []),
-        "peerCandidates": mesh_status.get("peerCandidates", []),
+        "diagnostics": resolved_diagnostics,
+        "meshProviders": resolved_mesh_status.get("providers", []),
+        "peerCandidates": resolved_mesh_status.get("peerCandidates", []),
         "warnings": warnings,
     }
 

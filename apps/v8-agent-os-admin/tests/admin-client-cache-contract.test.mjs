@@ -21,15 +21,60 @@ test("admin JSON cache preserves stale data while a refresh is in flight", () =>
     assert.match(source, /publish\(key/);
 });
 
-test("admin routes prefetch both Next code and their data contracts", () => {
+test("admin routes prefetch code and data only after stable navigation intent", () => {
     const cacheSource = read("src", "lib", "admin-client-cache.ts");
     const sidebarSource = read("src", "components", "layout", "Sidebar.tsx");
 
     assert.match(cacheSource, /"\/admin\/model-hub": \[\["\/api\/model-hub\/bootstrap", 30_000\]\]/);
     assert.match(cacheSource, /"\/admin\/plugins":/);
-    assert.match(sidebarSource, /router\.prefetch\(item\.href\)/);
-    assert.match(sidebarSource, /prefetchAdminRouteData\(item\.href\)/);
-    assert.doesNotMatch(sidebarSource, /prefetch=\{false\}/);
+    assert.match(sidebarSource, /router\.prefetch\(href\)/);
+    assert.match(sidebarSource, /prefetchAdminRouteData\(href\)/);
+    assert.match(sidebarSource, /prefetch=\{false\}/);
+    assert.match(sidebarSource, /setTimeout\(\(\) =>/);
+    assert.match(sidebarSource, /onPointerLeave=\{cancelPendingPrefetch\}/);
+});
+
+test("network supervisor prefetch uses the same plural neighbor and token routes as the page", () => {
+    const source = read("src", "lib", "admin-client-cache.ts");
+
+    assert.match(source, /"\/api\/network-supervisor\/openai\/tokens"/);
+    assert.match(source, /"\/api\/network-supervisor\/neighbors\/status"/);
+    assert.match(source, /"\/api\/network-supervisor\/neighbors\/tasks\?limit=20"/);
+    assert.doesNotMatch(source, /"\/api\/network-supervisor\/openai-compat\/tokens"/);
+    assert.doesNotMatch(source, /"\/api\/network-supervisor\/neighbor\/status"/);
+});
+
+test("operations prefetch only calls readable storage retention endpoints", () => {
+    const source = read("src", "lib", "admin-client-cache.ts");
+
+    assert.match(source, /"\/api\/storage-retention\/stats"/);
+    assert.doesNotMatch(source, /"\/api\/storage-retention\/config"/);
+});
+
+test("chat runtime and subagents share the supervisor model binding without a duplicate default-model request", () => {
+    const cacheSource = read("src", "lib", "admin-client-cache.ts");
+    const subagentsSource = read("src", "app", "admin", "(dashboard)", "subagents", "page.tsx");
+
+    const chatPrefetch = cacheSource.match(/"\/admin\/chat-runtime": \[([\s\S]*?)\n\s*\],/u)?.[1] || "";
+    const subagentPrefetch = cacheSource.match(/"\/admin\/subagents": \[([\s\S]*?)\n\s*\],/u)?.[1] || "";
+    assert.doesNotMatch(chatPrefetch, /default-agent-model/);
+    assert.doesNotMatch(subagentPrefetch, /default-agent-model/);
+    assert.doesNotMatch(subagentsSource, /fetchAdminJson<\{ modelId\?: string; modelRef\?: string \}>\("\/api\/settings\/default-agent-model"/);
+    assert.match(subagentsSource, /bindings\?\.defaultReplyModel/);
+});
+
+test("operations center owns one runtime data hook and its summary route only reads health", () => {
+    const pageSource = read("src", "app", "admin", "(dashboard)", "operations-center", "page.tsx");
+    const approvalsSource = read("src", "components", "runtime", "PendingApprovalsPanel.tsx");
+    const runsSource = read("src", "components", "runtime", "RecentRunsPanel.tsx");
+    const summarySource = read("src", "app", "api", "operations-center", "summary", "route.ts");
+
+    assert.equal((pageSource.match(/useRuntimeOpsData\(\)/g) || []).length, 1);
+    assert.doesNotMatch(approvalsSource, /const defaultRuntime = useRuntimeOpsData\(\)/);
+    assert.doesNotMatch(runsSource, /const defaultRuntime = useRuntimeOpsData\(\)/);
+    assert.match(summarySource, /proxyEngineJson\("\/health"\)/);
+    assert.doesNotMatch(summarySource, /proxyEngineJson\("\/approvals/);
+    assert.doesNotMatch(summarySource, /proxyEngineJson\("\/runs/);
 });
 
 test("model hub paints cached bootstrap data instead of resetting to a loading screen", () => {
@@ -46,4 +91,22 @@ test("observable resources refresh on focus without discarding their cached snap
     assert.match(source, /useSyncExternalStore/);
     assert.match(source, /window\.addEventListener\("focus"/);
     assert.match(source, /document\.addEventListener\("visibilitychange"/);
+});
+
+test("chat runtime paints its page shell before supervisor configuration finishes", () => {
+    const source = read("src", "app", "admin", "(dashboard)", "supervisor", "page.tsx");
+    const headingIndex = source.indexOf('t("app.admin.dashboard.supervisor.page.kf45c6152")');
+    const loadingRegionIndex = source.indexOf('{isLoading ? <div className="grid');
+
+    assert.ok(headingIndex >= 0 && loadingRegionIndex > headingIndex);
+    assert.match(source, /aria-busy="true"/);
+    assert.doesNotMatch(source, /if \(isLoading\) \{\s*return/);
+});
+
+test("topbar defers inbox work and loads feature packs only on demand", () => {
+    const source = read("src", "components", "layout", "Topbar.tsx");
+
+    assert.match(source, /setTimeout\(\(\) => void loadInbox\(true\), 1200\)/);
+    assert.doesNotMatch(source, /void loadInstallState\(false, true\);/);
+    assert.match(source, /if \(opening\) \{\s*void loadInstallState/);
 });

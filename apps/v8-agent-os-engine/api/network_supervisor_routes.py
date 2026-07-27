@@ -850,7 +850,7 @@ async def post_network_supervisor_relay_probe_envelope(payload: dict[str, Any] |
 
 @router.get("/network-supervisor/neighbors/status")
 async def get_network_supervisor_neighbors_status():
-    return network_neighbor_service.status_payload()
+    return await asyncio.to_thread(network_neighbor_service.status_payload)
 
 
 @router.post("/network-supervisor/neighbors/switch")
@@ -864,7 +864,7 @@ async def post_network_supervisor_neighbors_switch(payload: dict[str, Any] | Non
 
 @router.get("/network-supervisor/neighbors/candidates")
 async def get_network_supervisor_neighbors_candidates():
-    return network_neighbor_service.list_candidates()
+    return await asyncio.to_thread(network_neighbor_service.list_candidates)
 
 
 @router.get("/network-supervisor/neighbors/links")
@@ -989,7 +989,7 @@ async def delete_network_supervisor_openai_compat_token(
 
 @router.get("/network-supervisor/peers")
 async def get_network_supervisor_peers():
-    return network_supervisor_service.list_peers_payload()
+    return await asyncio.to_thread(network_supervisor_service.list_peers_payload)
 
 
 @router.get("/network-supervisor/mesh/candidates")

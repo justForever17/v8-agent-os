@@ -102,6 +102,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
     const installContainerRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
+    const inboxLoadingRef = useRef(false);
 
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
@@ -163,6 +164,10 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     }, [closePanels, router]);
 
     const loadInbox = useCallback(async (silent = false) => {
+        if (inboxLoadingRef.current) {
+            return;
+        }
+        inboxLoadingRef.current = true;
         if (!silent) {
             setInboxLoading(true);
         }
@@ -187,31 +192,31 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                 setInboxItems([]);
             }
         } finally {
+            inboxLoadingRef.current = false;
             setInboxLoading(false);
         }
     }, [t]);
 
     useEffect(() => {
-        void loadInbox(true);
-        void loadInstallState(false, true);
+        // Keep route transitions clear of non-critical governance reads.
+        const initialLoadId = window.setTimeout(() => void loadInbox(true), 1200);
         const intervalId = window.setInterval(() => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
-                void loadInstallState(false, true);
             }
         }, 45000);
         const handleVisible = () => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
-                void loadInstallState(false, true);
             }
         };
         document.addEventListener("visibilitychange", handleVisible);
         return () => {
+            window.clearTimeout(initialLoadId);
             window.clearInterval(intervalId);
             document.removeEventListener("visibilitychange", handleVisible);
         };
-    }, [loadInbox, loadInstallState]);
+    }, [loadInbox]);
 
     useEffect(() => {
         closePanels();

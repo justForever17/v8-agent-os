@@ -9,27 +9,9 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const [{ data: approvals }, { data: runs }, { data: health }] = await Promise.all([
-            proxyEngineJson("/approvals?status=pending"),
-            proxyEngineJson("/runs?limit=12"),
-            proxyEngineJson("/health"),
-        ]);
-
-        const approvalItems = Array.isArray((approvals as { approvals?: unknown[] })?.approvals)
-            ? ((approvals as { approvals?: unknown[] }).approvals || [])
-            : [];
-        const runItems = Array.isArray((runs as { runs?: Array<{ status?: string }> })?.runs)
-            ? ((runs as { runs?: Array<{ status?: string }> }).runs || [])
-            : [];
-
-        const runningCount = runItems.filter((run) => run.status === "running").length;
-        const recoverableCount = runItems.filter((run) => ["paused", "failed", "waiting_input", "cancelled"].includes(run.status || "")).length;
+        const { data: health } = await proxyEngineJson("/health");
 
         return NextResponse.json({
-            pendingApprovals: approvalItems.length,
-            recentRuns: runItems.length,
-            runningCount,
-            recoverableCount,
             health: health || {},
         });
     } catch (error) {

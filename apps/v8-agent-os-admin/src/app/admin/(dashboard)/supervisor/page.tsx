@@ -325,11 +325,6 @@ export default function SupervisorPage() {
       setIsUploading(false);
     }
   };
-  if (isLoading) {
-    return <div className="flex h-[50vh] items-center justify-center">
-                <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>;
-  }
   return <><div className="w-full space-y-8 p-6 lg:p-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
@@ -348,13 +343,16 @@ export default function SupervisorPage() {
                         </p>
                     </div>
                 </div>
-                <Button onClick={handleSave} disabled={isSaving || promptBudgetOverLimit} size="lg" className="shrink-0">
+                <Button onClick={handleSave} disabled={isLoading || isSaving || promptBudgetOverLimit} size="lg" className="shrink-0">
                     {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
                     {t("app.admin.dashboard.supervisor.page.kaf9b5430")}
                 </Button>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6 items-start">
+            {isLoading ? <div className="grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr]" aria-busy="true">
+                    <div className="h-72 animate-pulse rounded-lg border bg-card/70" />
+                    <div className="h-48 animate-pulse rounded-lg border bg-card/70" />
+                </div> : <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6 items-start">
                 {/* 左侧栏：核心配置与提示词策略 */}
                 <div className="space-y-6">
                     {/* 卡片 1：基本设定与主模型参数 */}
@@ -660,7 +658,7 @@ export default function SupervisorPage() {
                         </CardContent>
                     </Card>
                 </div>
-            </div>
+            </div>}
         </div><AvatarCropDialog
             file={avatarCropFile}
             busy={isUploading}

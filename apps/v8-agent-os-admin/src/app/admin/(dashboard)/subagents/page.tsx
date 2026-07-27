@@ -87,6 +87,9 @@ type SupervisorConfigRegistryPayload = {
         temperature?: number | null;
       };
     } | null;
+    bindings?: {
+      defaultReplyModel?: string | null;
+    } | null;
     delegation?: {
       externalWorkers?: unknown[];
       recursive?: {
@@ -667,7 +670,12 @@ export default function SubagentsPage() {
     mcpToolCount: Number(cachedExtensions?.summary?.mcpToolCount || 0) || 0
   });
   const [baselineSystemTools, setBaselineSystemTools] = useState<BaselineSystemTool[]>(Array.isArray(cachedToolSurface?.baselineSystemTools) ? cachedToolSurface.baselineSystemTools : []);
-  const [defaultModelId, setDefaultModelId] = useState(String(cachedDefaultModel?.modelRef || cachedDefaultModel?.modelId || "").trim());
+  const [defaultModelId, setDefaultModelId] = useState(String(
+    cachedDefaultModel?.modelRef
+    || cachedDefaultModel?.modelId
+    || cachedSupervisor?.data?.bindings?.defaultReplyModel
+    || ""
+  ).trim());
   const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(cachedSupervisor || null);
   const [externalWorkers, setExternalWorkers] = useState<ExternalWorkerDescriptor[]>(cachedExternalWorkers);
   const [externalWorkersJson, setExternalWorkersJson] = useState(JSON.stringify(cachedExternalWorkers, null, 2));
@@ -872,19 +880,15 @@ export default function SubagentsPage() {
   const fetchData = useCallback(async (force = false) => {
     if (!peekAdminJsonCache<Agent[]>("/api/agents")) setIsLoading(true);
     try {
-      const [agentsResult, modelsResult, defaultModelResult, extensionsResult, supervisorResult, toolSurfaceResult] = await Promise.allSettled([
+      const [agentsResult, modelsResult, extensionsResult, supervisorResult, toolSurfaceResult] = await Promise.allSettled([
         fetchAdminJson<Agent[]>("/api/agents", { force }),
         fetchAdminJson<AIModel[]>("/api/models", { force }),
-        fetchAdminJson<{ modelId?: string; modelRef?: string }>("/api/settings/default-agent-model", { force }),
         fetchAdminJson<ExtensionsCatalogPayload>("/api/extensions/catalog", { force, ttlMs: 15_000 }),
         fetchAdminJson<SupervisorConfigRegistryPayload>("/api/config-registry/supervisor", { force }),
         fetchAdminJson<AgentToolSurfacePayload>("/api/agents/tool-surface", { force })
       ]);
       if (agentsResult.status === "fulfilled") setAgents(agentsResult.value);
       if (modelsResult.status === "fulfilled") setModels(modelsResult.value);
-      if (defaultModelResult.status === "fulfilled") {
-        setDefaultModelId(String(defaultModelResult.value.modelRef || defaultModelResult.value.modelId || "").trim());
-      }
       if (extensionsResult.status === "fulfilled") {
         const data = extensionsResult.value;
         setSkills(Array.isArray(data.skills?.items) ? data.skills!.items! : []);
@@ -903,6 +907,7 @@ export default function SubagentsPage() {
       if (supervisorResult.status === "fulfilled") {
         const data = supervisorResult.value;
         setSupervisorDomainData(data);
+        setDefaultModelId(String(data?.data?.bindings?.defaultReplyModel || "").trim());
         const temperature = data?.data?.modelParameters?.subagent?.temperature;
         setSubagentTemperature(temperature === null || temperature === undefined ? "" : String(temperature));
         const registry = data?.data?.specialistRegistry || {};
@@ -925,7 +930,7 @@ export default function SubagentsPage() {
         const data = toolSurfaceResult.value;
         setBaselineSystemTools(Array.isArray(data.baselineSystemTools) ? data.baselineSystemTools : []);
       }
-      const results = [agentsResult, modelsResult, defaultModelResult, extensionsResult, supervisorResult, toolSurfaceResult];
+      const results = [agentsResult, modelsResult, extensionsResult, supervisorResult, toolSurfaceResult];
       if (results.every(result => result.status === "rejected")) {
         throw new Error(String((agentsResult as PromiseRejectedResult).reason || "request_failed"));
       }

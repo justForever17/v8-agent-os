@@ -22,10 +22,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { tg, ti } from "@/i18n/admin-legacy";
 import { useAdminJsonResource } from "@/lib/use-admin-json-resource";
 type SummaryPayload = {
-  pendingApprovals: number;
-  recentRuns: number;
-  runningCount: number;
-  recoverableCount: number;
   health?: {
     status?: string;
     mcp_tools?: number;
@@ -1459,7 +1455,6 @@ export default function OperationsCenterPage() {
   const focusSessionId = searchParams.get("focusSession");
   const streamableHttpIssues = summary?.health?.mcp?.streamableHttpIssues || [];
   const degradedServers = summary?.health?.mcp?.degradedServers || [];
-  const pendingApprovalMismatch = typeof summary?.pendingApprovals === "number" && summary.pendingApprovals !== runtime.approvals.length;
   return <AdminPageShell>
             <AdminPageHeader title={"app.admin.dashboard.operations.center.page.k756910c0"} description={"app.admin.dashboard.operations.center.page.k5c84b2ac"} actions={<Button variant="outline" onClick={() => void loadSummary()} disabled={loading}>
                         {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -1570,10 +1565,6 @@ export default function OperationsCenterPage() {
                 </TabsList>
 
                 <TabsContent value="overview" className="space-y-4">
-                    {pendingApprovalMismatch ? <StatusNotice title={"app.admin.dashboard.operations.center.page.kb951aaf4"} description={t("app.admin.dashboard.operations.center.page.warning.pendingApprovalMismatch", {
-          summary_count: summary?.pendingApprovals ?? "-",
-          approval_count: runtime.approvals.length
-        })} tone="warning" /> : null}
                     {runtime.approvals.length > 0 ? <StatusNotice title={"app.admin.dashboard.operations.center.page.kca01fb70"} description={"app.admin.dashboard.operations.center.page.ke9a1b1b4"} tone="warning" /> : null}
                     <div className="grid gap-4 xl:grid-cols-2">
                         <PendingApprovalsPanel hook={runtime} focusRunId={focusRunId} focusSessionId={focusSessionId} />

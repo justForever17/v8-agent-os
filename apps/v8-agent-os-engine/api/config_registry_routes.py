@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import importlib
 import os
@@ -23,7 +24,7 @@ from core.prompt_budget import (
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.system_base import detect_desktop_tools_readiness
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
-from core.v8_link import build_link_manifest, build_mesh_provider_status, normalize_remote_link_config
+from core.v8_link import build_link_manifest, build_mesh_provider_status, build_vpn_diagnostics, normalize_remote_link_config
 from core.v8_agent_os_identity import render_system_identity_block
 from core.v8_agent_os_paths import COMPUTER_USE_JSON_PATH, CONFIG_JSON_PATH, V8_AGENT_OS_HOME
 from core.workspace_guard import build_workspace_path_status
@@ -1024,13 +1025,32 @@ def _save_ui_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_system_base_domain() -> dict[str, Any]:
     system_base = storage.get_system_base_config()
     desktop_readiness = detect_desktop_tools_readiness()
-    dependency_status = build_dependency_status()
     bridge = dict(system_base.get("bridge") or {})
+    admin_base_url = bridge.get("adminBaseUrl") or ""
+    engine_base_url = bridge.get("engineBaseUrl") or ""
     remote_link = normalize_remote_link_config(
         dict(system_base.get("remoteLink") or {}),
-        admin_base_url=bridge.get("adminBaseUrl") or "",
-        engine_base_url=bridge.get("engineBaseUrl") or "",
+        admin_base_url=admin_base_url,
+        engine_base_url=engine_base_url,
     )
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="system-base-read") as executor:
+        dependency_future = executor.submit(
+            build_dependency_status,
+            desktop_readiness=desktop_readiness,
+        )
+        mesh_future = executor.submit(
+            build_mesh_provider_status,
+            admin_base_url=admin_base_url,
+            engine_base_url=engine_base_url,
+        )
+        diagnostics_future = executor.submit(
+            build_vpn_diagnostics,
+            admin_base_url=admin_base_url,
+            engine_base_url=engine_base_url,
+        )
+        dependency_status = dependency_future.result()
+        remote_link_mesh_status = mesh_future.result()
+        remote_link_diagnostics = diagnostics_future.result()
     return {
         "domain": "system-base",
         "title": "系统基础配置",
@@ -1041,11 +1061,11 @@ def _build_system_base_domain() -> dict[str, Any]:
             "desktopTools": dict(system_base.get("desktopTools") or {}),
             "desktopLive": dict(system_base.get("desktopLive") or {}),
             "remoteLink": remote_link,
-            "remoteLinkManifest": build_link_manifest(),
-            "remoteLinkMeshStatus": build_mesh_provider_status(
-                admin_base_url=bridge.get("adminBaseUrl") or "",
-                engine_base_url=bridge.get("engineBaseUrl") or "",
+            "remoteLinkManifest": build_link_manifest(
+                mesh_status=remote_link_mesh_status,
+                diagnostics=remote_link_diagnostics,
             ),
+            "remoteLinkMeshStatus": remote_link_mesh_status,
             "s3": dict(system_base.get("s3") or {}),
             "desktopReadiness": {
                 "status": desktop_readiness.get("status"),
@@ -1167,15 +1187,19 @@ def _resolve_domain(domain: str) -> tuple[ConfigBuilder, ConfigSaver]:
 @router.get("/config-registry")
 async def list_config_registry_domains():
     try:
-        seen: set[str] = set()
-        domains: list[dict[str, Any]] = []
-        for builder, _ in DOMAIN_REGISTRY.values():
-            payload = builder()
-            domain = str(payload.get("domain") or "")
-            if domain in seen:
-                continue
-            seen.add(domain)
-            domains.append(payload)
+        def build_domains() -> list[dict[str, Any]]:
+            seen: set[str] = set()
+            domains: list[dict[str, Any]] = []
+            for builder, _ in DOMAIN_REGISTRY.values():
+                payload = builder()
+                domain = str(payload.get("domain") or "")
+                if domain in seen:
+                    continue
+                seen.add(domain)
+                domains.append(payload)
+            return domains
+
+        domains = await asyncio.to_thread(build_domains)
         return {
             "domains": domains,
         }
@@ -1189,7 +1213,7 @@ async def list_config_registry_domains():
 async def get_config_registry_domain(domain: str):
     try:
         builder, _ = _resolve_domain(domain)
-        return builder()
+        return await asyncio.to_thread(builder)
     except HTTPException:
         raise
     except Exception as exc:

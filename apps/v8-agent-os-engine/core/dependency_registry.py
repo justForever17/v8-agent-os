@@ -5,6 +5,10 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +17,11 @@ from core.system_base import detect_desktop_tools_readiness
 
 FFMPEG_MINIMUM_VERSION = (7, 0)
 FFMPEG_MINIMUM_VERSION_TEXT = "7.0"
+DEPENDENCY_STATUS_CACHE_TTL_SECONDS = 30.0
+
+
+_dependency_status_cache: tuple[float, list[dict[str, Any]]] | None = None
+_dependency_status_cache_lock = threading.Lock()
 
 
 DEPENDENCY_REGISTRY: list[dict[str, Any]] = [
@@ -163,8 +172,11 @@ def _probe_ffmpeg_binary(binary: str) -> dict[str, Any]:
 
 
 def _detect_ffmpeg_pair() -> dict[str, Any]:
-    ffmpeg = _probe_ffmpeg_binary("ffmpeg")
-    ffprobe = _probe_ffmpeg_binary("ffprobe")
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dependency-probe") as executor:
+        ffmpeg_future = executor.submit(_probe_ffmpeg_binary, "ffmpeg")
+        ffprobe_future = executor.submit(_probe_ffmpeg_binary, "ffprobe")
+        ffmpeg = ffmpeg_future.result()
+        ffprobe = ffprobe_future.result()
     ffmpeg_version = ffmpeg.get("versionTuple")
     ffprobe_version = ffprobe.get("versionTuple")
     meets_minimum = bool(
@@ -257,20 +269,33 @@ def _build_detection_snapshot(entry: dict[str, Any], desktop_readiness: dict[str
     return {"detected": False, "detail": ""}
 
 
-def build_dependency_status() -> list[dict[str, Any]]:
-    system_name = platform.system().lower()
-    current_platform = "windows" if system_name.startswith("win") else "macos" if system_name == "darwin" else "linux"
-    desktop_readiness = detect_desktop_tools_readiness()
-    status: list[dict[str, Any]] = []
-    for entry in DEPENDENCY_REGISTRY:
-        detection = _build_detection_snapshot(entry, desktop_readiness)
-        status.append(
-            {
-                **entry,
-                "platforms": list(entry["platforms"]),
-                "appliesToCurrentPlatform": current_platform in entry["platforms"],
-                "currentPlatform": current_platform,
-                "detection": detection,
-            }
-        )
-    return status
+def build_dependency_status(
+    *,
+    desktop_readiness: dict[str, Any] | None = None,
+    refresh: bool = False,
+) -> list[dict[str, Any]]:
+    global _dependency_status_cache
+
+    now = time.monotonic()
+    with _dependency_status_cache_lock:
+        cached = _dependency_status_cache
+        if not refresh and cached is not None and now - cached[0] < DEPENDENCY_STATUS_CACHE_TTL_SECONDS:
+            return deepcopy(cached[1])
+
+        system_name = platform.system().lower()
+        current_platform = "windows" if system_name.startswith("win") else "macos" if system_name == "darwin" else "linux"
+        readiness = dict(desktop_readiness) if isinstance(desktop_readiness, dict) else detect_desktop_tools_readiness()
+        status: list[dict[str, Any]] = []
+        for entry in DEPENDENCY_REGISTRY:
+            detection = _build_detection_snapshot(entry, readiness)
+            status.append(
+                {
+                    **entry,
+                    "platforms": list(entry["platforms"]),
+                    "appliesToCurrentPlatform": current_platform in entry["platforms"],
+                    "currentPlatform": current_platform,
+                    "detection": detection,
+                }
+            )
+        _dependency_status_cache = (time.monotonic(), status)
+        return deepcopy(status)

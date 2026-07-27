@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
@@ -25,6 +25,7 @@ export function Sidebar() {
     const pathname = usePathname() || "/admin";
     const router = useRouter();
     const t = useT();
+    const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const [isCollapsed, setIsCollapsed] = useState(() => {
         if (typeof window === "undefined") {
@@ -40,6 +41,29 @@ export function Sidebar() {
             return next;
         });
     };
+
+    const cancelPendingPrefetch = useCallback(() => {
+        if (!prefetchTimerRef.current) return;
+        clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = null;
+    }, []);
+
+    const prefetchRoute = useCallback((href: string, includeCode: boolean) => {
+        cancelPendingPrefetch();
+        if (includeCode) router.prefetch(href);
+        void prefetchAdminRouteData(href);
+    }, [cancelPendingPrefetch, router]);
+
+    const scheduleRoutePrefetch = useCallback((href: string, delayMs = 180) => {
+        cancelPendingPrefetch();
+        prefetchTimerRef.current = setTimeout(() => {
+            prefetchTimerRef.current = null;
+            router.prefetch(href);
+            void prefetchAdminRouteData(href);
+        }, delayMs);
+    }, [cancelPendingPrefetch, router]);
+
+    useEffect(() => cancelPendingPrefetch, [cancelPendingPrefetch]);
 
     return (
         <aside 
@@ -98,15 +122,12 @@ export function Sidebar() {
                                             <Link
                                                 key={item.href}
                                                 href={item.href}
-                                                prefetch
-                                                onPointerEnter={() => {
-                                                    router.prefetch(item.href);
-                                                    void prefetchAdminRouteData(item.href);
-                                                }}
-                                                onFocus={() => {
-                                                    router.prefetch(item.href);
-                                                    void prefetchAdminRouteData(item.href);
-                                                }}
+                                                prefetch={false}
+                                                onPointerEnter={() => scheduleRoutePrefetch(item.href)}
+                                                onPointerLeave={cancelPendingPrefetch}
+                                                onPointerDown={() => prefetchRoute(item.href, false)}
+                                                onFocus={() => scheduleRoutePrefetch(item.href, 100)}
+                                                onBlur={cancelPendingPrefetch}
                                                 className="block min-w-0"
                                             >
                                                 <div

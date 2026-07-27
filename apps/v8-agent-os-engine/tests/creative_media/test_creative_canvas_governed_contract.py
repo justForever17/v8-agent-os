@@ -190,6 +190,87 @@ def test_validated_canvas_request_starts_supervisor_without_blocking_attachment_
     ] == ["vision_media_analyzer"]
 
 
+def test_canvas_workspace_asset_requires_explicit_current_session_use_without_vision_attachment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    operation_id = "canvas-op-exact-trim"
+    asset_id = "wma-video"
+    contract = {
+        "schema": "v8.creative_canvas_task.v1",
+        "canvasOperationId": operation_id,
+        "actionId": "creative_media.trim_video_exact",
+        "resources": {"workspaceAssetIds": [asset_id]},
+        "execution": {
+            "tool": "creative_media_jobs",
+            "arguments": {
+                "action": "create",
+                "request": {
+                    "modality": "video",
+                    "operationKind": "video.trim_exact",
+                    "canvasOperationId": operation_id,
+                    "workspaceAssetId": asset_id,
+                    "probeFingerprint": "v8mf-proof",
+                    "startFrameIndex": 3,
+                    "endFrameIndexExclusive": 12,
+                },
+            },
+        },
+    }
+    request = ChatRequest.model_validate({
+        "session_id": "session-canvas-workspace",
+        "messages": [{
+            "role": "user",
+            "content": (
+                "This message is from Canvas\n\n"
+                "[CANVAS EXECUTION CONTRACT v1]\n"
+                f"{json.dumps(contract)}\n"
+                "[/CANVAS EXECUTION CONTRACT]"
+            ),
+        }],
+        "attachments": [],
+        "data": {
+            "canvasSupervisorDirect": True,
+            "composerPresentation": {"text": "This message is from Canvas", "references": []},
+            "contextMentions": [{
+                "kind": "canvas_operation",
+                "id": operation_id,
+                "label": "Exact trim",
+                "sourceType": "creative_media.trim_video_exact",
+            }],
+        },
+    })
+    resolved = tmp_path / "video.mp4"
+    resolved.write_bytes(b"video")
+    calls = []
+
+    def resolve_asset_path(**kwargs):
+        calls.append(kwargs)
+        return resolved
+
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.workspace_media_library.resolve_asset_path",
+        resolve_asset_path,
+    )
+    runtime = ChatRuntime()
+    prepared = runtime.prepare_request(request)
+    assert prepared.canvas_supervisor_direct is True
+    assert prepared.canvas_execution_contract == contract
+    assert calls == [{
+        "session_id": "session-canvas-workspace",
+        "asset_id": asset_id,
+        "require_session_use": True,
+    }]
+    assert request.attachments == []
+
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.workspace_media_library.resolve_asset_path",
+        lambda **_kwargs: (_ for _ in ()).throw(PermissionError("not adopted")),
+    )
+    with pytest.raises(ValueError, match="not adopted by the current session workspace"):
+        runtime.prepare_request(request)
+
+
 def test_attachment_preflight_resolves_only_workspace_bound_relative_paths(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     upload = workspace / ".v8" / "uploads" / "source.png"

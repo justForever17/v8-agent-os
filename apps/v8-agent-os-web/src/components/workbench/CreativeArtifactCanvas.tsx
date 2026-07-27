@@ -16,6 +16,8 @@ import {
     Box,
     Check,
     Download,
+    Folder,
+    FolderPlus,
     Focus,
     Hand,
     ImagePlus,
@@ -26,6 +28,7 @@ import {
     MousePointer2,
     PackageOpen,
     Plus,
+    Scissors,
     Send,
     Sparkles,
     Trash2,
@@ -61,7 +64,7 @@ import {
     type CreativeCanvasMediaResource,
 } from "./CreativeCanvasMedia";
 
-type ResourceOrigin = "artifact" | "source";
+type ResourceOrigin = "artifact" | "source" | "workspace_asset";
 
 type CanvasResource = CreativeCanvasMediaResource & {
     id: string;
@@ -75,6 +78,8 @@ type CanvasResource = CreativeCanvasMediaResource & {
     sourceKind?: string;
     size?: number;
     projectionRecord?: Record<string, unknown>;
+    folderId?: string;
+    adoptedByCurrentSession?: boolean;
 };
 
 type CanvasNode = {
@@ -120,6 +125,7 @@ type CanvasOperationRequest = {
     outputSlot: string;
     maskRevision?: number;
     binding?: CreativeCanvasActionBinding;
+    parameters?: Record<string, unknown>;
     edge?: {
         edgeId: string;
         fromNodeId: string;
@@ -166,6 +172,30 @@ type ComposerState = {
     nodeIds: string[];
     edgeId?: string;
     text: string;
+    timeRange?: CanvasTimeRange;
+};
+
+type CanvasTimeRange = {
+    unit?: "frame" | "sample";
+    count: number;
+    startIndex: number;
+    endIndexExclusive: number;
+    durationSeconds: string;
+    timeBaseNumerator: number;
+    timeBaseDenominator: number;
+    boundaryTicks?: number[];
+    probeFingerprint?: string;
+    displayPrecision: number;
+    loading: boolean;
+    error?: string;
+};
+
+type WorkspaceMediaFolder = {
+    folderId: string;
+    parentFolderId?: string;
+    folderKind: "production" | "episode" | "sources" | "work" | "outputs" | "delivery" | "custom";
+    title: string;
+    assetCount: number;
 };
 
 type SelectionRect = { startX: number; startY: number; x: number; y: number };
@@ -249,11 +279,14 @@ function normalizeResource(
     const metadata = recordOf(record.metadata);
     const explicitSessionId = stringValue(record, "sessionId", "session_id") || stringValue(metadata, "sessionId", "session_id");
     if (!explicitSessionId || explicitSessionId !== sessionId) return null;
-    const id = stringValue(record, "artifactId", "artifact_id", "sourceId", "source_id", "id") || `${origin}-${index}`;
+    const id = stringValue(record, "artifactId", "artifact_id", "sourceId", "source_id", "assetId", "asset_id", "id") || `${origin}-${index}`;
     const name = stringValue(record, "displayLabel", "display_label", "title", "name", "filename", "fileName") || id;
     const mimeType = stringValue(record, "mimeType", "mime_type", "contentType", "content_type", "type") || "application/octet-stream";
-    const url = toWebResourceUrl(stringValue(record, "previewUrl", "preview_url", "downloadUrl", "download_url", "url", "publicUrl", "public_url", "externalUrl", "external_url")) || undefined;
-    const resourceRef = recordOf(record.resourceRef || record.resource_ref);
+    const url = toWebResourceUrl(stringValue(record, "previewUrl", "preview_url", "contentUrl", "content_url", "downloadUrl", "download_url", "url", "publicUrl", "public_url", "externalUrl", "external_url")) || undefined;
+    const explicitResourceRef = recordOf(record.resourceRef || record.resource_ref);
+    const resourceRef = origin === "workspace_asset"
+        ? { kind: "workspace_media_asset", assetId: id }
+        : explicitResourceRef;
     const base: CanvasResource = {
         id,
         origin,
@@ -269,6 +302,8 @@ function normalizeResource(
         sourceKind: sourceKind || undefined,
         size: Number.isFinite(Number(record.size)) ? Number(record.size) : undefined,
         projectionRecord: { ...record, sessionId: explicitSessionId },
+        folderId: stringValue(record, "folderId", "folder_id") || undefined,
+        adoptedByCurrentSession: Boolean(record.adoptedByCurrentSession ?? record.adopted_by_current_session),
     };
     return { ...base, mediaType: mediaTypeOf(base) };
 }
@@ -326,7 +361,7 @@ function readSnapshot(storageKey: string): CanvasSnapshot {
         if (record.version !== 2) return EMPTY_SNAPSHOT;
         const nodes = Array.isArray(record.nodes) ? record.nodes.slice(0, MAX_NODES).flatMap((item: unknown) => {
             const node = recordOf(item);
-            const origin = node.origin === "source" || node.origin === "artifact" || node.origin === "placeholder" ? node.origin : "placeholder";
+            const origin = node.origin === "source" || node.origin === "artifact" || node.origin === "workspace_asset" || node.origin === "placeholder" ? node.origin : "placeholder";
             const nodeId = stringValue(node, "nodeId");
             if (!nodeId) return [];
             const storedWidth = Number(node.width) || NODE_WIDTH;
@@ -412,9 +447,238 @@ function mediaNodeDimensions(width: number, height: number) {
 
 function groupTitle(action: CreativeCanvasAction) {
     if (action.binding?.kind === "mediakit") return "专业媒体处理";
+    if (action.binding?.kind === "creative_media" && action.binding.capability.endsWith(".trim_exact")) return "本地精确处理";
     if (action.binding?.kind === "creative_media") return "AI 创作";
     if (action.scope === "local") return "画布操作";
     return "发送给主理人";
+}
+
+function isValidCanvasTimeRange(range: CanvasTimeRange | undefined) {
+    return Boolean(
+        range
+        && range.probeFingerprint
+        && (range.unit === "frame" || range.unit === "sample")
+        && Number.isInteger(range.startIndex)
+        && Number.isInteger(range.endIndexExclusive)
+        && range.startIndex >= 0
+        && range.endIndexExclusive > range.startIndex
+        && range.endIndexExclusive <= range.count,
+    );
+}
+
+function isValidCanvasFramePick(range: CanvasTimeRange | undefined) {
+    return Boolean(
+        range
+        && range.probeFingerprint
+        && range.unit === "frame"
+        && Number.isInteger(range.startIndex)
+        && range.startIndex >= 0
+        && range.startIndex < range.count,
+    );
+}
+
+function canvasTimelineSeconds(range: CanvasTimeRange, index: number) {
+    if (range.unit === "frame") {
+        const ticks = range.boundaryTicks?.[Math.max(0, Math.min(index, range.count))] || 0;
+        return ticks * range.timeBaseNumerator / Math.max(1, range.timeBaseDenominator);
+    }
+    return index * range.timeBaseNumerator / Math.max(1, range.timeBaseDenominator);
+}
+
+function formatCanvasTimelineSeconds(range: CanvasTimeRange, index: number) {
+    return `${canvasTimelineSeconds(range, index).toFixed(range.displayPrecision).replace(/0+$/, "").replace(/\.$/, "")}s`;
+}
+
+function CanvasTimeRangeEditor({
+    sessionId,
+    resource,
+    range,
+    mode,
+    onChange,
+}: {
+    sessionId: string;
+    resource: CanvasResource | null;
+    range: CanvasTimeRange;
+    mode: "frame" | "range";
+    onChange: (range: CanvasTimeRange) => void;
+}) {
+    const t = useT();
+    const mediaRef = useRef<HTMLMediaElement | null>(null);
+    const onChangeRef = useRef(onChange);
+    const rangeRef = useRef(range);
+    onChangeRef.current = onChange;
+    rangeRef.current = range;
+    const mediaType = resource ? mediaTypeOf(resource) : "unknown";
+    const duration = Number(range.durationSeconds) || 0;
+    const selectionStart = range.count ? Math.min(100, (range.startIndex / range.count) * 100) : 0;
+    const selectionEnd = range.count
+        ? Math.min(100, ((mode === "frame" ? range.startIndex + 1 : range.endIndexExclusive) / range.count) * 100)
+        : 0;
+
+    useEffect(() => {
+        const currentRange = rangeRef.current;
+        if (!resource || !currentRange.loading || currentRange.probeFingerprint) return;
+        const controller = new AbortController();
+        const reference = resource.origin === "source"
+            ? { sourceId: resource.id }
+            : resource.origin === "artifact"
+                ? { artifactId: resource.id }
+                : { workspaceAssetId: resource.id };
+        void fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/probe`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(reference),
+            signal: controller.signal,
+        }).then(async (response) => {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            const timeline = recordOf(payload?.timeline);
+            const timeBase = recordOf(timeline.timeBase);
+            const unit = timeline.unit === "frame" ? "frame" : timeline.unit === "sample" ? "sample" : undefined;
+            const count = Number(timeline.count);
+            const boundaryTicks = Array.isArray(timeline.boundaryTicks)
+                ? timeline.boundaryTicks.map(Number).filter(Number.isFinite)
+                : undefined;
+            if (!unit || !Number.isInteger(count) || count <= 0 || (unit === "frame" && boundaryTicks?.length !== count + 1)) {
+                throw new Error(t("web.workbench.canvas.timeline.metadataError"));
+            }
+            if (mode === "frame" && unit !== "frame") {
+                throw new Error(t("web.workbench.canvas.timeline.metadataError"));
+            }
+            onChangeRef.current({
+                unit,
+                count,
+                startIndex: 0,
+                endIndexExclusive: count,
+                durationSeconds: String(timeline.durationSeconds || "0"),
+                timeBaseNumerator: Number(timeBase.numerator) || 1,
+                timeBaseDenominator: Number(timeBase.denominator) || 1,
+                boundaryTicks,
+                probeFingerprint: String(payload?.fingerprint || ""),
+                displayPrecision: Math.max(3, Math.min(9, Number(timeline.displayPrecision) || 6)),
+                loading: false,
+            });
+        }).catch((reason) => {
+            if (!controller.signal.aborted) onChangeRef.current({
+                ...rangeRef.current,
+                loading: false,
+                error: reason instanceof Error ? reason.message : String(reason),
+            });
+        });
+        return () => controller.abort();
+    }, [mode, resource?.id, resource?.origin, sessionId, t]);
+
+    const setBoundary = (kind: "start" | "end", rawValue: number) => {
+        const value = Math.round(rawValue);
+        if (kind === "start") {
+            const maxStart = Math.max(0, range.endIndexExclusive - 1);
+            onChange({ ...range, startIndex: Math.max(0, Math.min(value, maxStart)), error: undefined });
+            return;
+        }
+        onChange({
+            ...range,
+            endIndexExclusive: Math.min(range.count, Math.max(range.startIndex + 1, value)),
+            error: undefined,
+        });
+    };
+    const setFromCurrent = (kind: "start" | "end") => {
+        const currentTime = mediaRef.current?.currentTime;
+        if (!Number.isFinite(currentTime) || !range.unit) return;
+        const target = Number(currentTime);
+        if (range.unit === "sample") {
+            setBoundary(kind, Math.round(target * range.timeBaseDenominator / Math.max(1, range.timeBaseNumerator)));
+        } else {
+            const boundaries = range.boundaryTicks || [];
+            let low = 0;
+            let high = Math.max(0, boundaries.length - 1);
+            const targetTicks = target * range.timeBaseDenominator / Math.max(1, range.timeBaseNumerator);
+            while (low < high) {
+                const middle = Math.floor((low + high) / 2);
+                if ((boundaries[middle] || 0) < targetTicks) low = middle + 1;
+                else high = middle;
+            }
+            const previous = Math.max(0, low - 1);
+            const nearest = Math.abs((boundaries[low] || 0) - targetTicks) < Math.abs((boundaries[previous] || 0) - targetTicks) ? low : previous;
+            setBoundary(kind, nearest);
+        }
+    };
+    const preview = resource?.url && mediaType === "video" ? (
+        <video
+            ref={(element) => { mediaRef.current = element; }}
+            src={resource.url}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-40 w-full rounded-xl bg-black object-contain"
+        />
+    ) : resource?.url && mediaType === "audio" ? (
+        <audio
+            ref={(element) => { mediaRef.current = element; }}
+            src={resource.url}
+            controls
+            preload="metadata"
+            className="w-full"
+        />
+    ) : null;
+
+    return (
+        <div className="space-y-3">
+            {preview}
+            <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="mb-3 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    {range.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                    <span>{range.loading
+                        ? t("web.workbench.canvas.timeline.loading")
+                        : t(mode === "frame" ? "web.workbench.canvas.timeline.frameSelection" : "web.workbench.canvas.timeline.selection")}</span>
+                    {duration ? <span className="ml-auto font-mono">{range.durationSeconds}s</span> : null}
+                </div>
+                {duration ? (
+                    <div className="relative mb-3 h-2 rounded-full bg-muted">
+                        <span
+                            className="absolute inset-y-0 rounded-full bg-violet-500"
+                            style={{ left: `${selectionStart}%`, width: `${Math.max(0, selectionEnd - selectionStart)}%` }}
+                        />
+                    </div>
+                ) : null}
+                {mode === "frame" ? (
+                    <>
+                        <label className="space-y-1.5 text-[10px] font-medium">
+                            <span>{t("web.workbench.canvas.timeline.frame")}</span>
+                            <input type="number" min={0} max={Math.max(0, range.count - 1)} step={1} value={range.startIndex} onChange={(event) => setBoundary("start", Number(event.target.value))} className="h-9 w-full rounded-lg border border-border/70 bg-background px-2 font-mono text-xs outline-none focus:border-violet-400" />
+                            <span className="block font-mono text-[9px] text-muted-foreground">{formatCanvasTimelineSeconds(range, range.startIndex)} · F{range.startIndex}</span>
+                            {range.count ? <input type="range" min={0} max={Math.max(0, range.count - 1)} step={1} value={range.startIndex} onChange={(event) => setBoundary("start", Number(event.target.value))} className="w-full accent-violet-600" /> : null}
+                        </label>
+                        <div className="mt-2 flex items-center gap-2">
+                            <button type="button" onClick={() => setFromCurrent("start")} disabled={!preview} className="rounded-lg border border-border/70 px-2 py-1 text-[9px] hover:bg-muted disabled:opacity-40">{t("web.workbench.canvas.timeline.setFrame")}</button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <div className="grid grid-cols-2 gap-3">
+                            <label className="space-y-1.5 text-[10px] font-medium">
+                                <span>{t("web.workbench.canvas.timeline.start")}</span>
+                                <input type="number" min={0} max={Math.max(0, range.endIndexExclusive - 1)} step={1} value={range.startIndex} onChange={(event) => setBoundary("start", Number(event.target.value))} className="h-9 w-full rounded-lg border border-border/70 bg-background px-2 font-mono text-xs outline-none focus:border-violet-400" />
+                                <span className="block font-mono text-[9px] text-muted-foreground">{formatCanvasTimelineSeconds(range, range.startIndex)} · {range.unit === "frame" ? `F${range.startIndex}` : `S${range.startIndex}`}</span>
+                                {range.count ? <input type="range" min={0} max={Math.max(0, range.endIndexExclusive - 1)} step={1} value={range.startIndex} onChange={(event) => setBoundary("start", Number(event.target.value))} className="w-full accent-violet-600" /> : null}
+                            </label>
+                            <label className="space-y-1.5 text-[10px] font-medium">
+                                <span>{t("web.workbench.canvas.timeline.end")}</span>
+                                <input type="number" min={range.startIndex + 1} max={range.count || undefined} step={1} value={range.endIndexExclusive} onChange={(event) => setBoundary("end", Number(event.target.value))} className="h-9 w-full rounded-lg border border-border/70 bg-background px-2 font-mono text-xs outline-none focus:border-violet-400" />
+                                <span className="block font-mono text-[9px] text-muted-foreground">{formatCanvasTimelineSeconds(range, range.endIndexExclusive)} · {range.unit === "frame" ? `F${range.endIndexExclusive}` : `S${range.endIndexExclusive}`}</span>
+                                {range.count ? <input type="range" min={range.startIndex + 1} max={range.count} step={1} value={range.endIndexExclusive} onChange={(event) => setBoundary("end", Number(event.target.value))} className="w-full accent-violet-600" /> : null}
+                            </label>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                            <button type="button" onClick={() => setFromCurrent("start")} disabled={!preview} className="rounded-lg border border-border/70 px-2 py-1 text-[9px] hover:bg-muted disabled:opacity-40">{t("web.workbench.canvas.timeline.setStart")}</button>
+                            <button type="button" onClick={() => setFromCurrent("end")} disabled={!preview} className="rounded-lg border border-border/70 px-2 py-1 text-[9px] hover:bg-muted disabled:opacity-40">{t("web.workbench.canvas.timeline.setEnd")}</button>
+                            {isValidCanvasTimeRange(range) ? <span className="ml-auto text-[9px] text-muted-foreground">{t("web.workbench.canvas.timeline.selected")} {(canvasTimelineSeconds(range, range.endIndexExclusive) - canvasTimelineSeconds(range, range.startIndex)).toFixed(range.displayPrecision).replace(/0+$/, "").replace(/\.$/, "")}s</span> : null}
+                        </div>
+                    </>
+                )}
+                {range.error ? <div className="mt-2 text-[9px] text-red-500">{range.error}</div> : null}
+            </div>
+        </div>
+    );
 }
 
 export function CreativeArtifactCanvas({
@@ -434,12 +698,19 @@ export function CreativeArtifactCanvas({
     const boardRef = useRef<HTMLDivElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const sessionRunningRef = useRef(sessionRunning);
+    const sessionIdRef = useRef(sessionId);
+    const catalogAbortRef = useRef<AbortController | null>(null);
     const interactionRef = useRef<PointerInteraction | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const [snapshot, setSnapshot] = useState<CanvasSnapshot>(EMPTY_SNAPSHOT);
     const [hydratedKey, setHydratedKey] = useState("");
     const [resources, setResources] = useState<CanvasResource[]>([]);
+    const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceMediaFolder[]>([]);
+    const [activeFolderId, setActiveFolderId] = useState("");
+    const [newFolderTitle, setNewFolderTitle] = useState("");
+    const [newFolderKind, setNewFolderKind] = useState<WorkspaceMediaFolder["folderKind"]>("custom");
+    const [creatingFolder, setCreatingFolder] = useState(false);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
     const [tool, setTool] = useState<"select" | "pan">("select");
@@ -459,10 +730,14 @@ export function CreativeArtifactCanvas({
     const [inspectNodeId, setInspectNodeId] = useState<string | null>(null);
     const [maskNodeId, setMaskNodeId] = useState<string | null>(null);
     sessionRunningRef.current = sessionRunning;
+    sessionIdRef.current = sessionId;
 
     useEffect(() => {
         setHydratedKey("");
         setSnapshot(readSnapshot(storageKey));
+        setResources([]);
+        setWorkspaceFolders([]);
+        setActiveFolderId("");
         setSelectedIds([]);
         setContextMenu(null);
         setComposer(null);
@@ -487,7 +762,9 @@ export function CreativeArtifactCanvas({
     }, [hydratedKey, snapshot, storageKey]);
 
     const loadCatalog = useCallback(async (silent = false) => {
+        catalogAbortRef.current?.abort();
         const controller = new AbortController();
+        catalogAbortRef.current = controller;
         if (!silent) setLoading(true);
         const load = async (path: string, key: "artifacts" | "sources", origin: ResourceOrigin) => {
             const params = new URLSearchParams({ sessionId, limit: "100" });
@@ -504,23 +781,70 @@ export function CreativeArtifactCanvas({
                 load("/api/artifacts", "artifacts", "artifact"),
                 load("/api/sources", "sources", "source"),
             ]);
+            if (controller.signal.aborted || sessionIdRef.current !== sessionId) return;
             const merged = [...artifacts, ...sources];
             setResources((current) => {
-                const byKey = new Map(current.map((item) => [`${item.origin}:${item.id}`, item]));
+                const byKey = new Map(current.filter((item) => item.origin === "workspace_asset").map((item) => [`${item.origin}:${item.id}`, item]));
                 for (const item of merged) byKey.set(`${item.origin}:${item.id}`, item);
                 return [...byKey.values()];
             });
+            const mediaBase = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media`;
+            if (!silent) {
+                const reconcileResponse = await fetch(`${mediaBase}/reconcile`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: "{}",
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
+                const reconcilePayload = await reconcileResponse.json().catch(() => ({}));
+                if (!reconcileResponse.ok) throw new Error(String(reconcilePayload?.detail || reconcilePayload?.error || `HTTP ${reconcileResponse.status}`));
+            }
+            const [assetResponse, folderResponse] = await Promise.all([
+                fetch(`${mediaBase}/assets?limit=500`, { cache: "no-store", signal: controller.signal }),
+                fetch(`${mediaBase}/folders`, { cache: "no-store", signal: controller.signal }),
+            ]);
+            const [assetPayload, folderPayload] = await Promise.all([
+                assetResponse.json().catch(() => ({})),
+                folderResponse.json().catch(() => ({})),
+            ]);
+            if (controller.signal.aborted || sessionIdRef.current !== sessionId) return;
+            if (!assetResponse.ok) throw new Error(String(assetPayload?.detail || assetPayload?.error || `HTTP ${assetResponse.status}`));
+            if (!folderResponse.ok) throw new Error(String(folderPayload?.detail || folderPayload?.error || `HTTP ${folderResponse.status}`));
+            const workspaceAssets = (Array.isArray(assetPayload?.assets) ? assetPayload.assets : [])
+                .map((entry: unknown, index: number) => normalizeResource(entry, "workspace_asset", sessionId, index))
+                .filter((item: CanvasResource | null): item is CanvasResource => Boolean(item));
+            setResources((current) => [
+                ...current.filter((item) => item.origin !== "workspace_asset"),
+                ...workspaceAssets,
+            ]);
+            setWorkspaceFolders((Array.isArray(folderPayload?.folders) ? folderPayload.folders : []).flatMap((raw: unknown) => {
+                const folder = recordOf(raw);
+                const folderId = stringValue(folder, "folderId", "folder_id");
+                if (!folderId) return [];
+                const folderKind = String(folder.folderKind || folder.folder_kind || "custom") as WorkspaceMediaFolder["folderKind"];
+                return [{
+                    folderId,
+                    parentFolderId: stringValue(folder, "parentFolderId", "parent_folder_id") || undefined,
+                    folderKind,
+                    title: stringValue(folder, "title") || folderId,
+                    assetCount: Number(folder.assetCount || folder.asset_count || 0),
+                }];
+            }));
             setError("");
         } catch (reason) {
-            if (!controller.signal.aborted && !silent) setError(reason instanceof Error ? reason.message : String(reason));
+            if (!controller.signal.aborted && sessionIdRef.current === sessionId && !silent) setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
-            if (!silent && !controller.signal.aborted) setLoading(false);
+            if (catalogAbortRef.current === controller) {
+                catalogAbortRef.current = null;
+                if (!silent && !controller.signal.aborted && sessionIdRef.current === sessionId) setLoading(false);
+            }
         }
-        return () => controller.abort();
     }, [sessionId]);
 
     useEffect(() => {
         void loadCatalog();
+        return () => catalogAbortRef.current?.abort();
     }, [loadCatalog]);
 
     useEffect(() => {
@@ -542,7 +866,9 @@ export function CreativeArtifactCanvas({
     const hasPendingPlaceholder = snapshot.nodes.some((node) => node.origin === "placeholder" && !["failed", "cancelled"].includes(String(node.operationState)));
     useEffect(() => {
         if (!sessionRunning && !hasPendingPlaceholder) return;
-        const interval = window.setInterval(() => void loadCatalog(true), 3500);
+        const interval = window.setInterval(() => {
+            if (!catalogAbortRef.current) void loadCatalog(true);
+        }, 3500);
         return () => window.clearInterval(interval);
     }, [hasPendingPlaceholder, loadCatalog, sessionRunning]);
 
@@ -677,6 +1003,95 @@ export function CreativeArtifactCanvas({
             return { ...current, nodes: [...current.nodes, node], edges };
         });
     }, []);
+
+    const adoptWorkspaceResource = useCallback(async (resource: CanvasResource) => {
+        let adopted = resource;
+        if (resource.origin === "workspace_asset" && !resource.adoptedByCurrentSession) {
+            const response = await fetch(
+                `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/assets/${encodeURIComponent(resource.id)}/use`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ context: { surface: "creative_canvas" } }),
+                },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId) throw new Error("Canvas session changed while adopting workspace media");
+            adopted = { ...resource, adoptedByCurrentSession: true };
+            setResources((current) => current.map((item) => item.origin === resource.origin && item.id === resource.id ? adopted : item));
+        }
+        return adopted;
+    }, [sessionId]);
+
+    const adoptAndPlaceResource = useCallback(async (
+        resource: CanvasResource,
+        point?: { x: number; y: number },
+        connectFrom?: Pick<PendingConnectionDrop, "fromNodeId" | "fromPort">,
+    ) => {
+        const adopted = await adoptWorkspaceResource(resource);
+        if (sessionIdRef.current !== sessionId) return;
+        placeResource(adopted, point, connectFrom);
+    }, [adoptWorkspaceResource, placeResource, sessionId]);
+
+    const createWorkspaceFolder = useCallback(async () => {
+        const title = newFolderTitle.trim();
+        if (!title || creatingFolder || sessionRunning) return;
+        setCreatingFolder(true);
+        try {
+            const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/folders`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    title,
+                    folderKind: newFolderKind,
+                    ...(activeFolderId ? { parentFolderId: activeFolderId } : {}),
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId) return;
+            const folder = recordOf(payload?.folder);
+            const folderId = stringValue(folder, "folderId", "folder_id");
+            if (!folderId) throw new Error("Folder response is missing folderId");
+            setWorkspaceFolders((current) => [...current, {
+                folderId,
+                parentFolderId: stringValue(folder, "parentFolderId", "parent_folder_id") || undefined,
+                folderKind: String(folder.folderKind || "custom") as WorkspaceMediaFolder["folderKind"],
+                title: stringValue(folder, "title") || title,
+                assetCount: Number(folder.assetCount || 0),
+            }]);
+            setNewFolderTitle("");
+            setError("");
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setCreatingFolder(false);
+        }
+    }, [activeFolderId, creatingFolder, newFolderKind, newFolderTitle, sessionId, sessionRunning]);
+
+    const moveWorkspaceAsset = useCallback(async (assetId: string, folderId: string) => {
+        if (sessionRunning) return;
+        try {
+            const response = await fetch(
+                `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/assets/${encodeURIComponent(assetId)}/placement`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ folderId: folderId || null }),
+                },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId) return;
+            setResources((current) => current.map((item) => item.origin === "workspace_asset" && item.id === assetId
+                ? { ...item, folderId: folderId || undefined }
+                : item));
+            setError("");
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        }
+    }, [sessionId, sessionRunning]);
 
     const updateNodeDimensions = useCallback((nodeId: string, dimensions: { width: number; height: number }) => {
         const next = mediaNodeDimensions(dimensions.width, dimensions.height);
@@ -1053,6 +1468,18 @@ export function CreativeArtifactCanvas({
             action,
             operationId: createId("canvas-operation"),
             text: "",
+            ...(["frame_pick", "time_range"].includes(String(action.parameterEditor || "")) ? {
+                timeRange: {
+                    count: 0,
+                    startIndex: 0,
+                    endIndexExclusive: 0,
+                    durationSeconds: "0",
+                    timeBaseNumerator: 1,
+                    timeBaseDenominator: 1,
+                    displayPrecision: 6,
+                    loading: true,
+                },
+            } : {}),
         });
         setContextMenu(null);
     }, [sessionRunning]);
@@ -1152,13 +1579,14 @@ export function CreativeArtifactCanvas({
                 } : undefined, connection));
                 setPendingConnectionDrop(null);
             }
+            void loadCatalog();
             setTrayOpen(false);
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
             setUploading(false);
         }
-    }, [pendingConnectionDrop, placeResource, sessionId, sessionRunning, uploading]);
+    }, [loadCatalog, pendingConnectionDrop, placeResource, sessionId, sessionRunning, uploading]);
 
     const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(event.target.files || []);
@@ -1196,6 +1624,8 @@ export function CreativeArtifactCanvas({
         const label = actionLabel(composer.action);
         const instruction = composer.text.trim() || label;
         if (composer.action.requiresPrompt && !composer.text.trim()) return;
+        if (composer.action.parameterEditor === "time_range" && !isValidCanvasTimeRange(composer.timeRange)) return;
+        if (composer.action.parameterEditor === "frame_pick" && !isValidCanvasFramePick(composer.timeRange)) return;
         setSubmitting(true);
         setError("");
         const nodes = snapshot.nodes.filter((node) => composer.nodeIds.includes(node.nodeId));
@@ -1282,6 +1712,23 @@ export function CreativeArtifactCanvas({
                     outputSlot: composer.action.output.slot,
                     maskRevision,
                     binding: composer.action.binding,
+                    ...(composer.action.parameterEditor === "frame_pick" && composer.timeRange ? {
+                        parameters: {
+                            probeFingerprint: composer.timeRange.probeFingerprint,
+                            frameIndex: composer.timeRange.startIndex,
+                        },
+                    } : {}),
+                    ...(composer.action.parameterEditor === "time_range" && composer.timeRange ? {
+                        parameters: composer.timeRange.unit === "frame" ? {
+                            probeFingerprint: composer.timeRange.probeFingerprint,
+                            startFrameIndex: composer.timeRange.startIndex,
+                            endFrameIndexExclusive: composer.timeRange.endIndexExclusive,
+                        } : {
+                            probeFingerprint: composer.timeRange.probeFingerprint,
+                            startSampleIndex: composer.timeRange.startIndex,
+                            endSampleIndexExclusive: composer.timeRange.endIndexExclusive,
+                        },
+                    } : {}),
                     edge: operationEdge,
                 },
             });
@@ -1306,6 +1753,19 @@ export function CreativeArtifactCanvas({
     const selectedImageNode = selectedNodes.length === 1 && mediaTypeOf(resourceForNode(selectedNodes[0]) || { name: "", mimeType: "", mediaType: "unknown" }) === "image"
         ? selectedNodes[0]
         : null;
+    const composerNode = composer?.nodeIds.length === 1
+        ? snapshot.nodes.find((node) => node.nodeId === composer.nodeIds[0]) || null
+        : null;
+    const composerResource = composerNode ? resourceForNode(composerNode) : null;
+    const composerUsesFramePick = composer?.action.parameterEditor === "frame_pick";
+    const composerUsesTimeRange = composer?.action.parameterEditor === "time_range";
+    const composerUsesTimeline = composerUsesFramePick || composerUsesTimeRange;
+    const composerSubmitDisabled = Boolean(
+        submitting
+        || (composer?.action.requiresPrompt && !composer.text.trim())
+        || (composerUsesTimeRange && !isValidCanvasTimeRange(composer?.timeRange))
+        || (composerUsesFramePick && !isValidCanvasFramePick(composer?.timeRange)),
+    );
     const inspectNode = inspectNodeId ? snapshot.nodes.find((node) => node.nodeId === inspectNodeId) || null : null;
     const inspectResource = inspectNode ? resourceForNode(inspectNode) : null;
     const maskNode = maskNodeId ? snapshot.nodes.find((node) => node.nodeId === maskNodeId) || null : null;
@@ -1340,6 +1800,24 @@ export function CreativeArtifactCanvas({
     const connectionDraftSource = connectionDraft
         ? snapshot.nodes.find((node) => node.nodeId === connectionDraft.fromNodeId) || null
         : null;
+    const workspaceResources = resources.filter((item) => item.origin === "workspace_asset");
+    const visibleWorkspaceResources = activeFolderId
+        ? workspaceResources.filter((item) => item.folderId === activeFolderId)
+        : workspaceResources;
+    const folderRows = (() => {
+        const rows: Array<WorkspaceMediaFolder & { depth: number }> = [];
+        const visit = (parentFolderId: string | undefined, depth: number) => {
+            workspaceFolders
+                .filter((folder) => (folder.parentFolderId || undefined) === parentFolderId)
+                .sort((left, right) => left.title.localeCompare(right.title))
+                .forEach((folder) => {
+                    rows.push({ ...folder, depth });
+                    visit(folder.folderId, depth + 1);
+                });
+        };
+        visit(undefined, 0);
+        return rows;
+    })();
 
     return (
         <div
@@ -1364,7 +1842,9 @@ export function CreativeArtifactCanvas({
                 const key = event.dataTransfer.getData(CANVAS_DRAG_TYPE);
                 const resource = resources.find((item) => `${item.origin}:${item.id}` === key);
                 if (resource) {
-                    placeResource(resource, worldPoint(event.clientX, event.clientY));
+                    void adoptAndPlaceResource(resource, worldPoint(event.clientX, event.clientY)).catch((reason) => {
+                        setError(reason instanceof Error ? reason.message : String(reason));
+                    });
                     setTrayOpen(false);
                     return;
                 }
@@ -1488,12 +1968,14 @@ export function CreativeArtifactCanvas({
                                 const key = event.dataTransfer.getData(CANVAS_DRAG_TYPE);
                                 const dropped = resources.find((item) => `${item.origin}:${item.id}` === key);
                                 if (!dropped) return;
-                                setSnapshot((current) => ({
-                                    ...current,
-                                    nodes: current.nodes.map((item) => item.nodeId === node.nodeId
-                                        ? { ...item, origin: dropped.origin, resourceId: dropped.id, operationState: "ready" }
-                                        : item),
-                                }));
+                                void adoptWorkspaceResource(dropped).then((adopted) => {
+                                    setSnapshot((current) => ({
+                                        ...current,
+                                        nodes: current.nodes.map((item) => item.nodeId === node.nodeId
+                                            ? { ...item, origin: adopted.origin, resourceId: adopted.id, operationState: "ready" }
+                                            : item),
+                                    }));
+                                }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
                                 setTrayOpen(false);
                             }}
                             style={{ width: node.width, height: node.height, transform: `translate(${node.x}px, ${node.y}px)` }}
@@ -1597,38 +2079,70 @@ export function CreativeArtifactCanvas({
             ) : null}
 
             <button type="button" onClick={() => setTrayOpen((current) => !current)} className="absolute right-3 top-3 z-30 flex h-10 items-center gap-2 rounded-2xl border border-white/80 bg-background/88 px-3 text-[11px] font-semibold shadow-[0_12px_36px_rgba(15,23,42,.12)] backdrop-blur-xl hover:bg-background dark:border-white/10">
-                <Archive className="h-4 w-4" />素材 <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{resources.length}</span>
+                <Archive className="h-4 w-4" />{t("web.workbench.canvas.library.materials")} <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{workspaceResources.length}</span>
             </button>
 
             {trayOpen ? (
-                <div className="absolute right-3 top-14 z-40 flex max-h-[min(560px,calc(100%-72px))] w-[310px] flex-col overflow-hidden rounded-[20px] border border-white/80 bg-background/94 shadow-[0_24px_72px_rgba(15,23,42,.2)] backdrop-blur-xl dark:border-white/10">
+                <div className="absolute right-3 top-14 z-40 flex max-h-[min(620px,calc(100%-72px))] w-[380px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-[20px] border border-white/80 bg-background/94 shadow-[0_24px_72px_rgba(15,23,42,.2)] backdrop-blur-xl dark:border-white/10">
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
                         <PackageOpen className="h-4 w-4 text-muted-foreground" />
-                        <span className="flex-1 text-xs font-semibold">来源与产物</span>
+                        <span className="flex-1 text-xs font-semibold">{t("web.workbench.canvas.library.title")}</span>
                         <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="上传"><Plus className="h-4 w-4" /></button>
                         <button type="button" onClick={() => setTrayOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="关闭素材抽屉"><X className="h-4 w-4" /></button>
                     </div>
                     <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
-                        {loading ? <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : null}
-                        {!loading && !resources.length ? <div className="px-5 py-10 text-center text-xs leading-5 text-muted-foreground">当前会话还没有来源或产物。上传文件后会登记为来源。</div> : null}
-                        <div className="grid grid-cols-3 gap-2">
-                            {resources.map((resource) => (
+                        <div className="mb-2 space-y-1 rounded-xl border border-border/60 bg-muted/15 p-1.5">
+                            <button type="button" onClick={() => setActiveFolderId("")} className={cn("flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[10px] font-medium hover:bg-muted", !activeFolderId && "bg-muted text-primary")}>
+                                <Archive className="h-3.5 w-3.5" /><span className="flex-1">{t("web.workbench.canvas.library.all")}</span><span className="text-[9px] text-muted-foreground">{workspaceResources.length}</span>
+                            </button>
+                            {folderRows.map((folder) => (
                                 <button
-                                    key={`${resource.origin}:${resource.id}`}
+                                    key={folder.folderId}
                                     type="button"
+                                    onClick={() => setActiveFolderId(folder.folderId)}
+                                    className={cn("flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-[10px] font-medium hover:bg-muted", activeFolderId === folder.folderId && "bg-muted text-primary")}
+                                    style={{ paddingLeft: 8 + folder.depth * 14 }}
+                                >
+                                    <Folder className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">{folder.title}</span><span className="text-[9px] text-muted-foreground">{workspaceResources.filter((resource) => resource.folderId === folder.folderId).length}</span>
+                                </button>
+                            ))}
+                            <div className="grid grid-cols-[1fr_94px_32px] gap-1 pt-1">
+                                <input value={newFolderTitle} onChange={(event) => setNewFolderTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void createWorkspaceFolder(); }} disabled={sessionRunning || creatingFolder} placeholder={t("web.workbench.canvas.library.newFolder")} className="h-8 min-w-0 rounded-lg border border-border/60 bg-background px-2 text-[10px] outline-none focus:border-violet-400" />
+                                <select value={newFolderKind} onChange={(event) => setNewFolderKind(event.target.value as WorkspaceMediaFolder["folderKind"])} disabled={sessionRunning || creatingFolder} className="h-8 rounded-lg border border-border/60 bg-background px-1 text-[9px] outline-none">
+                                    <option value="production">{t("web.workbench.canvas.library.folderKind.production")}</option><option value="episode">{t("web.workbench.canvas.library.folderKind.episode")}</option><option value="sources">{t("web.workbench.canvas.library.folderKind.sources")}</option><option value="work">{t("web.workbench.canvas.library.folderKind.work")}</option><option value="outputs">{t("web.workbench.canvas.library.folderKind.outputs")}</option><option value="delivery">{t("web.workbench.canvas.library.folderKind.delivery")}</option><option value="custom">{t("web.workbench.canvas.library.folderKind.custom")}</option>
+                                </select>
+                                <button type="button" onClick={() => void createWorkspaceFolder()} disabled={!newFolderTitle.trim() || sessionRunning || creatingFolder} className="grid h-8 w-8 place-items-center rounded-lg border border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label="新建素材目录">{creatingFolder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />}</button>
+                            </div>
+                        </div>
+                        {loading ? <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : null}
+                        {!loading && !visibleWorkspaceResources.length ? <div className="px-5 py-10 text-center text-xs leading-5 text-muted-foreground">{t("web.workbench.canvas.library.emptyFolder")}</div> : null}
+                        <div className="grid grid-cols-3 gap-2">
+                            {visibleWorkspaceResources.map((resource) => (
+                                <div
+                                    key={`${resource.origin}:${resource.id}`}
                                     draggable={!sessionRunning}
                                     onDragStart={(event) => event.dataTransfer.setData(CANVAS_DRAG_TYPE, `${resource.origin}:${resource.id}`)}
-                                    onClick={() => {
-                                        placeResource(resource, pendingConnectionDrop?.point, pendingConnectionDrop ? { fromNodeId: pendingConnectionDrop.fromNodeId, fromPort: pendingConnectionDrop.fromPort } : undefined);
-                                        setPendingConnectionDrop(null);
-                                    }}
-                                    disabled={sessionRunning}
                                     title={resource.name}
-                                    className="group overflow-hidden rounded-xl border border-border/60 bg-muted/25 text-left hover:border-violet-400 hover:bg-muted/45 disabled:cursor-not-allowed disabled:opacity-55"
+                                    className="group overflow-hidden rounded-xl border border-border/60 bg-muted/25 text-left hover:border-violet-400 hover:bg-muted/45"
                                 >
-                                    <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact /></span>
-                                    <span className="flex items-center gap-1 border-t border-border/50 px-1.5 py-1.5"><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", resource.origin === "source" ? "bg-cyan-500" : "bg-violet-500")} /><span className="truncate text-[9px] font-medium">{resource.name}</span></span>
-                                </button>
+                                    <button
+                                        type="button"
+                                        disabled={sessionRunning}
+                                        onClick={() => {
+                                            void adoptAndPlaceResource(resource, pendingConnectionDrop?.point, pendingConnectionDrop ? { fromNodeId: pendingConnectionDrop.fromNodeId, fromPort: pendingConnectionDrop.fromPort } : undefined).then(() => {
+                                                setPendingConnectionDrop(null);
+                                            }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+                                        }}
+                                        className="block w-full disabled:cursor-not-allowed disabled:opacity-55"
+                                    >
+                                        <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact /></span>
+                                        <span className="flex items-center gap-1 border-t border-border/50 px-1.5 py-1.5"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" /><span className="truncate text-[9px] font-medium">{resource.name}</span></span>
+                                    </button>
+                                    <select value={resource.folderId || ""} onChange={(event) => void moveWorkspaceAsset(resource.id, event.target.value)} disabled={sessionRunning} aria-label={t("web.workbench.canvas.library.organize", { name: resource.name })} className="h-6 w-full border-0 border-t border-border/50 bg-transparent px-1 text-[8px] text-muted-foreground outline-none">
+                                        <option value="">{t("web.workbench.canvas.library.uncategorized")}</option>
+                                        {folderRows.map((folder) => <option key={folder.folderId} value={folder.folderId}>{`${"· ".repeat(folder.depth)}${folder.title}`}</option>)}
+                                    </select>
+                                </div>
                             ))}
                         </div>
                     </div>
@@ -1675,27 +2189,49 @@ export function CreativeArtifactCanvas({
 
             {composer ? (
                 <div
-                    style={{ left: Math.min(Math.max(176, composer.x), Math.max(176, (boardRef.current?.clientWidth || 380) - 176)), top: Math.min(Math.max(84, composer.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)) }}
-                    className="absolute z-[70] w-[340px] -translate-x-1/2 rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10"
+                    style={{
+                        left: Math.min(
+                            Math.max(composerUsesTimeline ? 260 : 176, composer.x),
+                            Math.max(composerUsesTimeline ? 260 : 176, (boardRef.current?.clientWidth || 380) - (composerUsesTimeline ? 260 : 176)),
+                        ),
+                        top: composerUsesTimeline
+                            ? Math.min(Math.max(12, composer.y), Math.max(12, (boardRef.current?.clientHeight || 520) - 430))
+                            : Math.min(Math.max(84, composer.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)),
+                    }}
+                    className={cn(
+                        "absolute z-[70] max-h-[calc(100%-24px)] -translate-x-1/2 overflow-y-auto rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10",
+                        composerUsesTimeline ? "w-[520px] max-w-[calc(100%-24px)]" : "w-[340px]",
+                    )}
                     onPointerDown={(event) => event.stopPropagation()}
+                    onWheel={(event) => event.stopPropagation()}
                 >
                     <div className="flex items-center gap-2 px-1 pb-2">
                         <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-600"><Sparkles className="h-3.5 w-3.5" /></span>
                         <div className="min-w-0 flex-1"><div className="truncate text-[11px] font-semibold">{actionLabel(composer.action)}</div><div className="text-[9px] text-muted-foreground">将作为一条正常聊天消息发送，进度仍显示在消息区</div></div>
                         <button type="button" onClick={() => setComposer(null)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><X className="h-3.5 w-3.5" /></button>
                     </div>
-                    <textarea
-                        autoFocus
-                        rows={3}
-                        value={composer.text}
-                        onChange={(event) => setComposer((current) => current ? { ...current, text: event.target.value } : current)}
-                        onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submitComposer(); }}
-                        placeholder={composer.action.requiresPrompt ? "描述具体要求…" : "补充参数或要求（可选）…"}
-                        className="w-full resize-none rounded-xl border border-border/70 bg-muted/25 px-3 py-2 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15"
-                    />
+                    {composerUsesTimeline && composer.timeRange ? (
+                        <CanvasTimeRangeEditor
+                            sessionId={sessionId}
+                            resource={composerResource}
+                            range={composer.timeRange}
+                            mode={composerUsesFramePick ? "frame" : "range"}
+                            onChange={(timeRange) => setComposer((current) => current?.operationId === composer.operationId ? { ...current, timeRange } : current)}
+                        />
+                    ) : (
+                        <textarea
+                            autoFocus
+                            rows={3}
+                            value={composer.text}
+                            onChange={(event) => setComposer((current) => current ? { ...current, text: event.target.value } : current)}
+                            onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submitComposer(); }}
+                            placeholder={composer.action.requiresPrompt ? "描述具体要求…" : "补充参数或要求（可选）…"}
+                            className="w-full resize-none rounded-xl border border-border/70 bg-muted/25 px-3 py-2 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15"
+                        />
+                    )}
                     <div className="mt-2 flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate px-1 text-[9px] text-muted-foreground">引用 {composer.nodeIds.length} 项{composer.action.requiresMask ? " · 发送时冻结蒙版快照" : ""}</span>
-                        <button type="button" disabled={submitting || (composer.action.requiresPrompt && !composer.text.trim())} onClick={() => void submitComposer()} className="flex h-8 items-center gap-1.5 rounded-xl bg-primary px-3 text-[11px] font-semibold text-primary-foreground disabled:opacity-35">{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}发送</button>
+                        <button type="button" disabled={composerSubmitDisabled} onClick={() => void submitComposer()} className="flex h-8 items-center gap-1.5 rounded-xl bg-primary px-3 text-[11px] font-semibold text-primary-foreground disabled:opacity-35">{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}{composerUsesFramePick ? t("web.workbench.canvas.timeline.createFrame") : composerUsesTimeRange ? t("web.workbench.canvas.timeline.create") : "发送"}</button>
                     </div>
                 </div>
             ) : null}

@@ -3436,7 +3436,7 @@ export default function ChatClient() {
             CREATIVE_CANVAS_CONTRACT_START,
             JSON.stringify(executionContract),
             CREATIVE_CANVAS_CONTRACT_END,
-            "按合同执行，并在工具调用、任务与产物 lineage 中透传 canvasOperationId；所有来源必须按当前 session 严格解析，不得使用其他会话或最近产物兜底。",
+            "按合同执行，并在工具调用、任务与产物 lineage 中透传 canvasOperationId；source/artifact 只按当前 session 解析，workspace asset 只按当前 session 的显式采用边与物理 workspace 解析，不得使用最近资源兜底。",
         ].join("\n");
         const sourceRefs = boundedRefs.filter((reference) => (
             reference.origin === "source"

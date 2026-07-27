@@ -29,6 +29,7 @@ from core.model_ref import parse_model_ref
 from core.process_launch import run_windowless
 from core.storage import storage
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
+from core.workspace_media_library import workspace_media_library
 from erc.runtime_registry import runtime_registry
 
 from .catalog import (
@@ -59,6 +60,7 @@ from .media_quality import (
     image_visual_signature,
     inspect_media_quality,
 )
+from .governed_media import trim_exact as trim_governed_media_exact
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
@@ -124,7 +126,11 @@ EXECUTABLE_OPERATION_KINDS = {
     "music.generate",
     "music.cover",
     "model3d.generate",
+    "video.extract_frame_exact",
+    "video.trim_exact",
+    "audio.trim_exact",
 }
+GOVERNED_LOCAL_OPERATION_KINDS = {"video.extract_frame_exact", "video.trim_exact", "audio.trim_exact"}
 DASHSCOPE_VIDEO_OPERATION_KINDS = {
     "video.text_to_video",
     "video.image_to_video",
@@ -3091,6 +3097,8 @@ class CreativeMediaRuntime:
         prepared = dict(request or {})
         source_id = str(prepared.get("sourceId") or "").strip()
         mask_source_id = str(prepared.get("maskSourceId") or "").strip()
+        if operation_kind in GOVERNED_LOCAL_OPERATION_KINDS:
+            return prepared
         if not source_id and not mask_source_id:
             return prepared
         if operation_kind != "image.edit":
@@ -3160,6 +3168,9 @@ class CreativeMediaRuntime:
             "video.avatar": ["image_url", "audio_url"],
             "video.action_transfer": ["target_image_url", "reference_video_url"],
             "video.replacement": ["source_video_url", "target_image_url", "reference_video_url"],
+            "video.extract_frame_exact": ["session_source_or_workspace_media_asset"],
+            "video.trim_exact": ["session_source_or_workspace_media_asset"],
+            "audio.trim_exact": ["session_source_or_workspace_media_asset"],
         }
         return list(mapping.get(str(operation_kind or ""), []))
 
@@ -3239,6 +3250,8 @@ class CreativeMediaRuntime:
             **self._scope_fields(request),
             "canvasOperationId": str(request.get("canvasOperationId") or "").strip(),
             "sourceId": str(request.get("sourceId") or "").strip(),
+            "artifactId": str(request.get("artifactId") or "").strip(),
+            "workspaceAssetId": str(request.get("workspaceAssetId") or "").strip(),
             "maskSourceId": str(request.get("maskSourceId") or "").strip(),
             "outputKind": str(request.get("outputKind") or "").strip(),
             "outputSlot": str(request.get("outputSlot") or "").strip(),
@@ -3318,6 +3331,12 @@ class CreativeMediaRuntime:
             return self._save_job(job)
         operation_kind = self._operation_kind_for_request(modality, request)
         request = self._prepare_governed_source_inputs(request, operation_kind=operation_kind)
+        if operation_kind in GOVERNED_LOCAL_OPERATION_KINDS:
+            return await self._create_governed_local_media_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
         if self._has_explicit_provider_or_model_selection(request):
             explicit_candidate = self._explicit_enabled_model_candidate(
                 request,
@@ -3365,6 +3384,65 @@ class CreativeMediaRuntime:
         if modality == "model3d":
             return await self._create_model3d_job(request)
         raise ValueError(f"Unsupported creative media modality: {modality}")
+
+    async def _create_governed_local_media_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        expected_modality = "video" if operation_kind.startswith("video.") else "voice"
+        if modality != expected_modality:
+            raise ValueError(f"operationKind={operation_kind} requires modality={expected_modality}")
+        job = self._new_job(
+            modality=modality,
+            adapter="governed_ffmpeg",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        extension = ".png" if operation_kind == "video.extract_frame_exact" else ".mp4" if operation_kind == "video.trim_exact" else ".flac"
+        artifact_kind = "image" if operation_kind == "video.extract_frame_exact" else "video" if operation_kind == "video.trim_exact" else "audio"
+        mime_type = "image/png" if operation_kind == "video.extract_frame_exact" else "video/mp4" if operation_kind == "video.trim_exact" else "audio/flac"
+        output_label = "image-exact-frame" if operation_kind == "video.extract_frame_exact" else f"{artifact_kind}-exact-trim"
+        output_path = self._output_path(job, output_label, extension)
+        try:
+            proof = await asyncio.to_thread(
+                trim_governed_media_exact,
+                {**request, "operationKind": operation_kind},
+                output_path=output_path,
+            )
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind=artifact_kind,
+                mime_type=mime_type,
+                metadata={
+                    "origin": "governed_local_edit",
+                    "governedMediaProof": proof,
+                    "providerInvoked": False,
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "governed_ffmpeg",
+                "proofSchema": proof.get("schema"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = "passed"
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+        return self._save_job(job)
 
     async def retry_job(self, job_id: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
         original = self.get_job(job_id, refresh=False)
@@ -5374,6 +5452,8 @@ class CreativeMediaRuntime:
                 "creativeMediaJobId": job["jobId"],
                 "canvasOperationId": job.get("canvasOperationId") or "",
                 "sourceId": job.get("sourceId") or "",
+                "artifactId": job.get("artifactId") or "",
+                "workspaceAssetId": job.get("workspaceAssetId") or "",
                 "maskSourceId": job.get("maskSourceId") or "",
                 "modality": job["modality"],
                 "operationKind": job.get("operationKind") or "",
@@ -5389,6 +5469,18 @@ class CreativeMediaRuntime:
             source_component="creative_media_runtime",
             node="creative_media_runtime",
         )
+        session_id = str(job.get("sessionId") or "").strip()
+        artifact_id = str(artifact.get("artifactId") or artifact.get("id") or "").strip()
+        if session_id and artifact_id:
+            try:
+                workspace_media_library.register_artifact(
+                    session_id=session_id,
+                    artifact_id=artifact_id,
+                    attach_to_session=True,
+                )
+            except (FileNotFoundError, PermissionError, ValueError):
+                # Artifact truth is authoritative; workspace media indexing is reconciled separately.
+                pass
         return artifact
 
     def _output_path(self, owner: dict[str, Any] | str, kind: str, extension: str) -> Path:

@@ -1246,6 +1246,88 @@ class DatabaseManager:
                     FOREIGN KEY (message_id) REFERENCES messages (id) ON DELETE SET NULL
                 )
             ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS workspace_media_assets (
+                    asset_id TEXT PRIMARY KEY,
+                    workspace_key TEXT NOT NULL,
+                    workspace_id TEXT,
+                    project_id TEXT,
+                    workspace_relative_path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    mime_type TEXT,
+                    byte_size INTEGER,
+                    content_sha256 TEXT,
+                    origin_kind TEXT NOT NULL,
+                    origin_id TEXT,
+                    origin_session_id TEXT,
+                    origin_run_id TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                )
+            ''')
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_media_asset_locator
+                ON workspace_media_assets(workspace_key, workspace_relative_path)
+                WHERE deleted_at IS NULL
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_workspace_media_assets_workspace
+                ON workspace_media_assets(workspace_key, updated_at DESC)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS workspace_media_folders (
+                    folder_id TEXT PRIMARY KEY,
+                    workspace_key TEXT NOT NULL,
+                    workspace_id TEXT,
+                    project_id TEXT,
+                    parent_folder_id TEXT,
+                    folder_kind TEXT NOT NULL DEFAULT 'custom',
+                    title TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (parent_folder_id) REFERENCES workspace_media_folders(folder_id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_media_folder_sibling
+                ON workspace_media_folders(workspace_key, COALESCE(parent_folder_id, ''), title)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS workspace_media_folder_items (
+                    asset_id TEXT PRIMARY KEY,
+                    folder_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (asset_id) REFERENCES workspace_media_assets(asset_id) ON DELETE CASCADE,
+                    FOREIGN KEY (folder_id) REFERENCES workspace_media_folders(folder_id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_workspace_media_folder_items_folder
+                ON workspace_media_folder_items(folder_id, updated_at DESC)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS session_media_asset_uses (
+                    session_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    canvas_node_id TEXT,
+                    context_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, asset_id),
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (asset_id) REFERENCES workspace_media_assets(asset_id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_session_media_asset_uses_asset
+                ON session_media_asset_uses(asset_id, updated_at DESC)
+            ''')
             
             # Indexes for fast querying
             conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages (session_id)')

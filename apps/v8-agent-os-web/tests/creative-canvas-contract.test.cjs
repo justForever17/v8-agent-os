@@ -126,8 +126,11 @@ test("canvas action catalog locks mutation and capability-gates MediaKit", () =>
     allowPluginGrantRequest: true,
   });
   assert.equal(explicitRequest.some((item) => item.actionId === "mediakit.image.remove-image-background"), true);
-  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.length, 38);
-  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.editing.trim-video")?.requiresPrompt, true);
+  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.length, 36);
+  assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.some((item) => item.actionId === "mediakit.editing.trim-video"), false);
+  assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.extract_video_frame_exact")?.parameterEditor, "frame_pick");
+  assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.parameterEditor, "time_range");
+  assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.networkRequired, false);
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.video.probe-video-metadata")?.requiresPrompt, false);
 });
 
@@ -169,6 +172,11 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(media, /暂停视频/);
   assert.match(canvas, /onWheel=\{\(event\) => event\.stopPropagation\(\)\}/);
   assert.match(canvas, /pendingConnectionDrop/);
+  assert.match(canvas, /adoptWorkspaceResource\(dropped\)/);
+  assert.match(canvas, /catalogAbortRef\.current\?\.abort\(\)/);
+  assert.match(canvas, /sessionIdRef\.current !== sessionId/);
+  assert.match(canvas, /onChangeRef\.current\(/);
+  assert.match(canvas, /\[mode, resource\?\.id, resource\?\.origin, sessionId, t\]/);
   assert.match(canvas, /kind: "reconnect"/);
   assert.match(canvas, /handleEdgePointerDown/);
   assert.match(canvas, /current\.edges\.filter\(\(edge\) => edge\.edgeId !== interaction\.edgeId\)/);
@@ -178,7 +186,7 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(model, /environment="city"/);
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.segment-scenes.label"], "按场景切分视频");
   assert.equal(zh["web.creativeCanvas.actions.local.fit_view.label"], "显示全部");
-  assert.equal(zh["web.creativeCanvas.actions.mediakit.editing.trim-video.label"], "按时间裁切视频");
+  assert.equal(zh["web.creativeCanvas.actions.mediakit.editing.trim-video.label"], "分割视频片段");
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.probe-video-metadata.label"], "读取视频参数");
 });
 
@@ -191,7 +199,7 @@ test("canvas resource URLs never depend on worktree or physical source paths", (
 
   assert.match(
     normalizeSlice,
-    /stringValue\(record, "previewUrl", "preview_url", "downloadUrl", "download_url", "url", "publicUrl", "public_url", "externalUrl", "external_url"\)/,
+    /stringValue\(record, "previewUrl", "preview_url", "contentUrl", "content_url", "downloadUrl", "download_url", "url", "publicUrl", "public_url", "externalUrl", "external_url"\)/,
   );
   assert.doesNotMatch(normalizeSlice, /stringValue\(record,[^\n]*(?:sourcePath|source_path)/);
   assert.doesNotMatch(normalizeSlice, /stringValue\(record,[^\n]*(?:worktreeRoot|worktree_root)/);
@@ -276,6 +284,58 @@ test("canvas task contract gives Supervisor exact native, mask, tool and edge bi
   assert.equal(toolContract.execution.pluginId, "volcengine-mediakit");
   assert.equal(toolContract.execution.profileId, "mediakit-cli");
   assert.equal(toolContract.execution.actionId, "remove-image-background");
+
+  const trimContract = contractModule.buildCreativeCanvasExecutionContract({
+    instruction: "分割视频片段",
+    refs: [{ id: "workspace-video", origin: "workspace_asset", mediaType: "video" }],
+    operation: {
+      operationId: "operation-trim",
+      actionId: "creative_media.trim_video_exact",
+      outputKind: "artifact",
+      outputSlot: "video_derivative",
+      parameters: { probeFingerprint: "v8mf-proof", startFrameIndex: 31, endFrameIndexExclusive: 115 },
+      binding: { kind: "creative_media", capability: "video.trim_exact" },
+    },
+  });
+  assert.deepEqual(trimContract.resources, { workspaceAssetIds: ["workspace-video"] });
+  assert.deepEqual(trimContract.execution, {
+    tool: "creative_media_jobs",
+    arguments: {
+      action: "create",
+      request: {
+        modality: "video",
+        operationKind: "video.trim_exact",
+        prompt: "分割视频片段",
+        canvasOperationId: "operation-trim",
+        workspaceAssetId: "workspace-video",
+        probeFingerprint: "v8mf-proof",
+        startFrameIndex: 31,
+        endFrameIndexExclusive: 115,
+      },
+    },
+  });
+
+  const frameContract = contractModule.buildCreativeCanvasExecutionContract({
+    instruction: "抽取指定画面",
+    refs: [{ id: "workspace-video", origin: "workspace_asset", mediaType: "video" }],
+    operation: {
+      operationId: "operation-frame",
+      actionId: "creative_media.extract_video_frame_exact",
+      outputKind: "artifact",
+      outputSlot: "image_derivative",
+      parameters: { probeFingerprint: "v8mf-proof", frameIndex: 73 },
+      binding: { kind: "creative_media", capability: "video.extract_frame_exact" },
+    },
+  });
+  assert.deepEqual(frameContract.execution.arguments.request, {
+    modality: "video",
+    operationKind: "video.extract_frame_exact",
+    prompt: "抽取指定画面",
+    canvasOperationId: "operation-frame",
+    workspaceAssetId: "workspace-video",
+    probeFingerprint: "v8mf-proof",
+    frameIndex: 73,
+  });
 
   const edgeContract = contractModule.buildCreativeCanvasExecutionContract({
     instruction: "让右侧卡片延续左侧卡片",

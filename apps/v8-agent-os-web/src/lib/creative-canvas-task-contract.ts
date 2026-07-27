@@ -3,7 +3,7 @@ export const CREATIVE_CANVAS_CONTRACT_END = "[/CANVAS EXECUTION CONTRACT]";
 
 type CanvasContractReference = {
     id: string;
-    origin: "source" | "artifact";
+    origin: "source" | "artifact" | "workspace_asset";
     mediaType?: string;
 };
 
@@ -30,6 +30,7 @@ type CanvasContractOperation = {
     binding?: CanvasContractBinding;
     edgeId?: string;
     edge?: CanvasContractEdge;
+    parameters?: Record<string, unknown>;
 };
 
 function unique(values: Array<string | undefined>) {
@@ -48,6 +49,32 @@ function canonicalCreativeMediaOperation(capability: string) {
     return value;
 }
 
+function canonicalGovernedMediaParameters(operationKind: string, value: unknown): Record<string, string | number> | undefined {
+    if (!["video.extract_frame_exact", "video.trim_exact", "audio.trim_exact"].includes(operationKind)) return undefined;
+    const parameters = recordOf(value);
+    const probeFingerprint = String(parameters.probeFingerprint || "").trim();
+    if (!probeFingerprint) throw new Error("Canvas governed media operation requires an authoritative probe fingerprint.");
+    if (operationKind === "video.extract_frame_exact") {
+        const frameIndex = Number(parameters.frameIndex);
+        if (!Number.isInteger(frameIndex) || frameIndex < 0) {
+            throw new Error("Canvas frame extraction requires a valid frame index.");
+        }
+        return { probeFingerprint, frameIndex };
+    }
+    const startKey = operationKind === "video.trim_exact" ? "startFrameIndex" : "startSampleIndex";
+    const endKey = operationKind === "video.trim_exact" ? "endFrameIndexExclusive" : "endSampleIndexExclusive";
+    const start = Number(parameters[startKey]);
+    const end = Number(parameters[endKey]);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) {
+        throw new Error("Canvas exact trim requires a valid frame/sample range.");
+    }
+    return {
+        probeFingerprint,
+        [startKey]: start,
+        [endKey]: end,
+    };
+}
+
 /**
  * Build the compact canonical contract sent to Supervisor. It carries stable
  * ledger ids only; paths and preview URLs remain in governed attachments.
@@ -59,9 +86,11 @@ export function buildCreativeCanvasExecutionContract(input: {
 }): Record<string, unknown> {
     const sourceRefs = input.refs.filter((reference) => reference.origin === "source");
     const artifactRefs = input.refs.filter((reference) => reference.origin === "artifact");
+    const workspaceAssetRefs = input.refs.filter((reference) => reference.origin === "workspace_asset");
     const maskSourceId = sourceRefs.find((reference) => reference.mediaType === "mask")?.id;
     const sourceIds = unique(sourceRefs.filter((reference) => reference.mediaType !== "mask").map((reference) => reference.id));
     const artifactIds = unique(artifactRefs.map((reference) => reference.id));
+    const workspaceAssetIds = unique(workspaceAssetRefs.map((reference) => reference.id));
     const contract: Record<string, unknown> = {
         schema: "v8.creative_canvas_task.v1",
         canvasOperationId: input.operation.operationId,
@@ -72,10 +101,11 @@ export function buildCreativeCanvasExecutionContract(input: {
         },
     };
 
-    if (sourceIds.length || artifactIds.length || maskSourceId) {
+    if (sourceIds.length || artifactIds.length || workspaceAssetIds.length || maskSourceId) {
         contract.resources = {
             ...(sourceIds.length ? { sourceIds } : {}),
             ...(artifactIds.length ? { artifactIds } : {}),
+            ...(workspaceAssetIds.length ? { workspaceAssetIds } : {}),
             ...(maskSourceId ? { maskSourceId } : {}),
         };
     }
@@ -91,6 +121,7 @@ export function buildCreativeCanvasExecutionContract(input: {
     const binding = input.operation.binding;
     if (binding?.kind === "creative_media") {
         const operationKind = canonicalCreativeMediaOperation(binding.capability);
+        const governedParameters = canonicalGovernedMediaParameters(operationKind, input.operation.parameters);
         contract.execution = {
             tool: "creative_media_jobs",
             arguments: {
@@ -104,7 +135,10 @@ export function buildCreativeCanvasExecutionContract(input: {
                     ...(sourceIds.length > 1 ? { sourceIds } : {}),
                     ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
                     ...(artifactIds.length > 1 ? { artifactIds } : {}),
+                    ...(workspaceAssetIds[0] ? { workspaceAssetId: workspaceAssetIds[0] } : {}),
+                    ...(workspaceAssetIds.length > 1 ? { workspaceAssetIds } : {}),
                     ...(maskSourceId ? { maskSourceId } : {}),
+                    ...(governedParameters || {}),
                 },
             },
         };

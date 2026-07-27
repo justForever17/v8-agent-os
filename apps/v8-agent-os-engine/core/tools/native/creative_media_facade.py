@@ -27,6 +27,7 @@ _ID_FIELDS = {
     "renderJobId",
     "sourceId",
     "maskSourceId",
+    "workspaceAssetId",
 }
 _LIST_FIELDS = {
     "artifactIds",
@@ -64,7 +65,22 @@ _BOOL_FIELDS = {
     "wait",
     "watermark",
 }
-_INT_FIELDS = {"fps", "height", "limit", "maxLayers", "maxRepairAttempts", "n", "sampleRate", "seed", "width"}
+_INT_FIELDS = {
+    "endFrameIndexExclusive",
+    "endSampleIndexExclusive",
+    "frameIndex",
+    "fps",
+    "height",
+    "limit",
+    "maxLayers",
+    "maxRepairAttempts",
+    "n",
+    "sampleRate",
+    "seed",
+    "startFrameIndex",
+    "startSampleIndex",
+    "width",
+}
 _DICT_FIELDS = {
     "canvas",
     "crossShotConsistency",
@@ -118,9 +134,12 @@ _GENERATION_FIELDS = frozenset(
         "costLimit",
         "coverFeatureId",
         "durationSeconds",
+        "endFrameIndexExclusive",
+        "endSampleIndexExclusive",
         "emotion",
         "firstFrame",
         "fps",
+        "frameIndex",
         "generateAudio",
         "goal",
         "hardRequirements",
@@ -147,6 +166,7 @@ _GENERATION_FIELDS = frozenset(
         "previewText",
         "prompt",
         "promptOptimizer",
+        "probeFingerprint",
         "fastPretreatment",
         "pronunciationDict",
         "providerId",
@@ -164,6 +184,8 @@ _GENERATION_FIELDS = frozenset(
         "speed",
         "style",
         "sourceId",
+        "startFrameIndex",
+        "startSampleIndex",
         "subtitleEnable",
         "targetImageUrl",
         "timeoutSeconds",
@@ -174,6 +196,7 @@ _GENERATION_FIELDS = frozenset(
         "voiceSetting",
         "volume",
         "watermark",
+        "workspaceAssetId",
     }
 )
 _RECIPE_FIELDS = _GENERATION_FIELDS | frozenset({"intent", "ratio", "size"})
@@ -1117,10 +1140,12 @@ async def creative_media_jobs(
     action: Literal["create", "get", "list", "artifacts", "retry"] = "list",
     request: dict[str, Any] | None = None,
 ) -> str:
-    """Create, query, list, and retry provider-backed 多媒体创作 jobs through one governed job facade.
+    """Create, query, list, and retry governed 多媒体创作 jobs through one job facade.
 
     action='create' requires request.modality and request.operationKind. Base operations include image/video
-    generation, voice.tts, voice.design, music.generate, music.cover, and model3d.generate. Poll with action='get'
+    generation, voice.tts, voice.design, music.generate, music.cover, model3d.generate, plus local
+    video.extract_frame_exact/video.trim_exact/audio.trim_exact with a probe fingerprint and exact frame/sample
+    indices. Poll with action='get'
     and obtain deliverable artifact refs with action='artifacts'; provider raw JSON is never the deliverable.
     For image.edit, pass sourceId and optional maskSourceId from the current session source ledger; never pass paths.
     """

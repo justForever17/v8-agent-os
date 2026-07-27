@@ -17,6 +17,7 @@ export type CreativeCanvasExecutionClass =
     | "chat_task"
     | "agent_projection"
     | "governance_projection";
+export type CreativeCanvasParameterEditor = "frame_pick" | "time_range";
 export type CreativeCanvasOutputKind =
     | "none"
     | "canvas_state"
@@ -85,6 +86,7 @@ export type CreativeCanvasAction = {
     selection: CreativeCanvasSelectionConstraint;
     requiresPrompt: boolean;
     requiresMask: boolean;
+    parameterEditor?: CreativeCanvasParameterEditor;
     output: CreativeCanvasActionOutput;
     executionClass: CreativeCanvasExecutionClass;
     networkRequired: boolean;
@@ -319,6 +321,9 @@ function creativeMediaAction(input: {
     selection: CreativeCanvasSelectionConstraint;
     requiresPrompt: boolean;
     requiresMask?: boolean;
+    parameterEditor?: CreativeCanvasParameterEditor;
+    networkRequired?: boolean;
+    mayIncurCost?: boolean;
     output: CreativeCanvasActionOutput;
 }): CreativeCanvasAction {
     return defineAction({
@@ -327,10 +332,11 @@ function creativeMediaAction(input: {
         selection: input.selection,
         requiresPrompt: input.requiresPrompt,
         requiresMask: input.requiresMask ?? false,
+        parameterEditor: input.parameterEditor,
         output: input.output,
         executionClass: "chat_task",
-        networkRequired: true,
-        mayIncurCost: true,
+        networkRequired: input.networkRequired ?? true,
+        mayIncurCost: input.mayIncurCost ?? true,
         requiresGrant: false,
         availableWhileRunning: false,
         binding: { kind: "creative_media", capability: input.capability },
@@ -422,6 +428,36 @@ export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
         requiresPrompt: true,
         output: output("artifact", "model_3d", ["model_3d"]),
     }),
+    creativeMediaAction({
+        actionId: "creative_media.extract_video_frame_exact",
+        capability: "video.extract_frame_exact",
+        selection: ONE_VIDEO,
+        requiresPrompt: false,
+        parameterEditor: "frame_pick",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "image_derivative", ["image"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.trim_video_exact",
+        capability: "video.trim_exact",
+        selection: ONE_VIDEO,
+        requiresPrompt: false,
+        parameterEditor: "time_range",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "video_derivative", ["video"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.trim_audio_exact",
+        capability: "audio.trim_exact",
+        selection: ONE_AUDIO,
+        requiresPrompt: false,
+        parameterEditor: "time_range",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "audio_derivative", ["audio"]),
+    }),
 ];
 
 function mediaKitAction(input: {
@@ -430,6 +466,7 @@ function mediaKitAction(input: {
     selection: CreativeCanvasSelectionConstraint;
     output: CreativeCanvasActionOutput;
     requiresPrompt?: boolean;
+    parameterEditor?: CreativeCanvasParameterEditor;
     networkRequired?: boolean;
     mayIncurCost?: boolean;
 }): CreativeCanvasAction {
@@ -439,6 +476,7 @@ function mediaKitAction(input: {
         selection: input.selection,
         requiresPrompt: input.requiresPrompt ?? false,
         requiresMask: false,
+        parameterEditor: input.parameterEditor,
         output: input.output,
         executionClass: "chat_task",
         networkRequired: input.networkRequired ?? false,
@@ -488,9 +526,6 @@ export const MEDIAKIT_CREATIVE_CANVAS_ACTIONS: readonly CreativeCanvasAction[] =
     mediaKitAction({ domain: "editing", action: "image-to-video", selection: ONE_OR_MORE_IMAGE, output: output("artifact", "video", ["video"]) }),
     mediaKitAction({ domain: "editing", action: "mix-audio", selection: TWO_OR_MORE_AUDIO, output: output("artifact", "audio", ["audio"]) }),
     mediaKitAction({ domain: "editing", action: "mux-audio-video", selection: VIDEO_AND_AUDIO, output: output("artifact", "video", ["video"]) }),
-    mediaKitAction({ domain: "editing", action: "trim-audio", selection: ONE_AUDIO, output: output("artifact", "audio_derivative", ["audio"]), requiresPrompt: true }),
-    mediaKitAction({ domain: "editing", action: "trim-video", selection: ONE_VIDEO, output: output("artifact", "video_derivative", ["video"]), requiresPrompt: true }),
-
     mediaKitAction({ domain: "image", action: "image-ocr", selection: ONE_IMAGE, output: output("evidence", "recognized_text", ["text", "metadata"]), networkRequired: true, mayIncurCost: true }),
     mediaKitAction({ domain: "image", action: "erase-image", selection: ONE_IMAGE, output: output("artifact", "image_derivative", ["image"]), networkRequired: true, mayIncurCost: true }),
     mediaKitAction({ domain: "image", action: "remove-image-background", selection: ONE_IMAGE, output: output("artifact", "image_derivative", ["image"]), networkRequired: true, mayIncurCost: true }),

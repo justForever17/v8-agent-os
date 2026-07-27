@@ -23,6 +23,7 @@ from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.workbench_files import workbench_file_service
 from core.workbench_events import emit_workbench_document_event
+from core.workspace_media_library import WorkspaceMediaLibraryError, workspace_media_library
 from core.session_activity import session_activity_broker
 from core.runtime_projection import (
     build_projection_controls,
@@ -64,6 +65,7 @@ from runtimes.memory.scope_resolution import (
     session_scope_binding_service,
 )
 from runtimes.memory.project_registry import project_registry_service
+from runtimes.creative_media.governed_media import GovernedMediaError, probe_request as probe_governed_media
 
 
 router = APIRouter()
@@ -71,6 +73,16 @@ _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_a
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 _WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
 _WEB_SESSION_INDEX_VERSION = 4
+
+
+def _raise_media_library_http(error: Exception) -> None:
+    if isinstance(error, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if isinstance(error, PermissionError):
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if isinstance(error, (WorkspaceMediaLibraryError, GovernedMediaError)):
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 def _now_perf_ms() -> float:
@@ -1156,6 +1168,121 @@ async def list_session_sources(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/media/reconcile")
+async def reconcile_workspace_media(session_id: str):
+    try:
+        return await asyncio.to_thread(workspace_media_library.reconcile_session, session_id=session_id)
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.get("/sessions/{session_id}/media/assets")
+async def list_workspace_media_assets(
+    session_id: str,
+    folder_id: str | None = Query(default=None, alias="folderId"),
+    limit: int = 500,
+):
+    try:
+        assets = await asyncio.to_thread(
+            workspace_media_library.list_assets,
+            session_id=session_id,
+            folder_id=folder_id,
+            limit=limit,
+        )
+        return {"assets": assets}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.post("/sessions/{session_id}/media/assets/{asset_id}/use")
+async def use_workspace_media_asset(session_id: str, asset_id: str, body: dict = Body(default={})):
+    try:
+        asset = await asyncio.to_thread(
+            workspace_media_library.use_asset,
+            session_id=session_id,
+            asset_id=asset_id,
+            canvas_node_id=str(body.get("canvasNodeId") or ""),
+            context=dict(body.get("context") or {}) if isinstance(body.get("context"), dict) else {},
+        )
+        return {"asset": asset}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.post("/sessions/{session_id}/media/assets/{asset_id}/placement")
+async def place_workspace_media_asset(session_id: str, asset_id: str, body: dict = Body(...)):
+    try:
+        asset = await asyncio.to_thread(
+            workspace_media_library.place_asset,
+            session_id=session_id,
+            asset_id=asset_id,
+            folder_id=body.get("folderId"),
+        )
+        return {"asset": asset}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.get("/sessions/{session_id}/media/assets/{asset_id}/content")
+async def get_workspace_media_asset_content(session_id: str, asset_id: str, download: bool = False):
+    try:
+        path = await asyncio.to_thread(
+            workspace_media_library.resolve_asset_path,
+            session_id=session_id,
+            asset_id=asset_id,
+        )
+        asset = await asyncio.to_thread(workspace_media_library.get_asset, session_id=session_id, asset_id=asset_id)
+        return FileResponse(
+            path,
+            media_type=str(asset.get("mimeType") or "application/octet-stream"),
+            filename=path.name,
+            content_disposition_type="attachment" if download else "inline",
+        )
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.get("/sessions/{session_id}/media/folders")
+async def list_workspace_media_folders(session_id: str):
+    try:
+        return {"folders": await asyncio.to_thread(workspace_media_library.list_folders, session_id=session_id)}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.post("/sessions/{session_id}/media/folders")
+async def create_workspace_media_folder(session_id: str, body: dict = Body(...)):
+    try:
+        folder = await asyncio.to_thread(
+            workspace_media_library.create_folder,
+            session_id=session_id,
+            title=str(body.get("title") or ""),
+            parent_folder_id=str(body.get("parentFolderId") or ""),
+            folder_kind=str(body.get("folderKind") or "custom"),
+        )
+        return {"folder": folder}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.delete("/sessions/{session_id}/media/folders/{folder_id}")
+async def delete_workspace_media_folder(session_id: str, folder_id: str):
+    try:
+        await asyncio.to_thread(workspace_media_library.delete_folder, session_id=session_id, folder_id=folder_id)
+        return {"deleted": True, "folderId": folder_id}
+    except Exception as error:
+        _raise_media_library_http(error)
+
+
+@router.post("/sessions/{session_id}/media/probe")
+async def probe_workspace_media(session_id: str, body: dict = Body(...)):
+    try:
+        request = {**dict(body or {}), "sessionId": session_id}
+        return await asyncio.to_thread(probe_governed_media, request)
+    except Exception as error:
+        _raise_media_library_http(error)
 
 
 @router.post("/artifacts/adopt-workspace-file")

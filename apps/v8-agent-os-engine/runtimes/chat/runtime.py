@@ -65,6 +65,7 @@ from core.task_boundary_resolver import attach_task_boundary_decision, build_sup
 from core.tool_invocation_ids import make_tool_invocation_id
 from core.tools.native.tool_governance import normalize_safety_approval_mode
 from core.workspace_capability import build_workspace_binding
+from core.workspace_media_library import workspace_media_library
 from core.context.workspace import workspace_resolution_service
 from erc.chat_canonical_transcript import (
     CanonicalTranscriptBuilder,
@@ -2033,6 +2034,16 @@ class ChatRuntime:
         }
         if contract_source_ids and not contract_source_ids.issubset(attachment_source_ids):
             raise ValueError("canvasSupervisorDirect source ids must be backed by Canvas attachments")
+        contract_artifact_ids = {
+            str(item).strip()
+            for item in list(resources.get("artifactIds") or [])
+            if str(item).strip()
+        }
+        contract_workspace_asset_ids = {
+            str(item).strip()
+            for item in list(resources.get("workspaceAssetIds") or [])
+            if str(item).strip()
+        }
         execution = contract.get("execution") if isinstance(contract.get("execution"), dict) else {}
         if str(execution.get("tool") or "").strip() == "creative_media_jobs":
             execution_arguments = (
@@ -2064,6 +2075,30 @@ class ChatRuntime:
             }
             if requested_source_ids != contract_source_ids:
                 raise ValueError("canvasSupervisorDirect Creative Media sources must match the Canvas resource contract")
+            execution_artifact_ids = (
+                list(execution_request.get("artifactIds") or [])
+                if isinstance(execution_request.get("artifactIds"), list)
+                else []
+            )
+            requested_artifact_ids = {
+                str(item).strip()
+                for item in [execution_request.get("artifactId"), *execution_artifact_ids]
+                if str(item or "").strip()
+            }
+            if requested_artifact_ids != contract_artifact_ids:
+                raise ValueError("canvasSupervisorDirect Creative Media artifacts must match the Canvas resource contract")
+            execution_workspace_asset_ids = (
+                list(execution_request.get("workspaceAssetIds") or [])
+                if isinstance(execution_request.get("workspaceAssetIds"), list)
+                else []
+            )
+            requested_workspace_asset_ids = {
+                str(item).strip()
+                for item in [execution_request.get("workspaceAssetId"), *execution_workspace_asset_ids]
+                if str(item or "").strip()
+            }
+            if requested_workspace_asset_ids != contract_workspace_asset_ids:
+                raise ValueError("canvasSupervisorDirect Creative Media workspace assets must match the Canvas resource contract")
             if str(execution_request.get("maskSourceId") or "").strip() != str(resources.get("maskSourceId") or "").strip():
                 raise ValueError("canvasSupervisorDirect Creative Media mask must match the Canvas resource contract")
         for source_id in attachment_source_ids:
@@ -2080,6 +2115,19 @@ class ChatRuntime:
                 raise ValueError("canvasSupervisorDirect mask is not bound to the current session")
             if str(mask_source.get("sourceKind") or mask_source.get("source_kind") or "").strip() != "canvas_mask":
                 raise ValueError("canvasSupervisorDirect mask must use the internal canvas_mask source kind")
+        for artifact_id in contract_artifact_ids:
+            artifact = db.get_runtime_artifact(artifact_id)
+            if not artifact or str(artifact.get("sessionId") or artifact.get("session_id") or "").strip() != str(request.session_id or "").strip():
+                raise ValueError("canvasSupervisorDirect artifact is not bound to the current session")
+        for asset_id in contract_workspace_asset_ids:
+            try:
+                workspace_media_library.resolve_asset_path(
+                    session_id=str(request.session_id or ""),
+                    asset_id=asset_id,
+                    require_session_use=True,
+                )
+            except (FileNotFoundError, PermissionError, ValueError) as exc:
+                raise ValueError("canvasSupervisorDirect workspace asset is not adopted by the current session workspace") from exc
         return True
 
     @staticmethod
@@ -2178,6 +2226,7 @@ class ChatRuntime:
                 ],
                 "constraints": [
                     "Resolve sourceId and maskSourceId only from the current session source ledger",
+                    "Resolve artifactId only from the current session; resolve workspaceAssetId only from an explicit current-session use edge in the same physical workspace",
                     "Do not register the internal canvas_mask source as a user-visible source or attachment",
                 ],
                 "detailRefs": [],

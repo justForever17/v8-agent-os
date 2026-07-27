@@ -1,6 +1,6 @@
 # Creative Artifact Canvas 测试矩阵
 
-更新：2026-07-26
+更新：2026-07-28
 范围：V8OS Web / Phone / Workbench / Creative Media runtime
 原则：`Supervisor First, Runtime Grounded`。STATIC、MOCK、REAL-LIVE 与桌面 Preview 的结果分开记录，未跑项不得写成通过。
 
@@ -8,8 +8,11 @@
 
 ```text
 Workspace
+├── Media Assets（稳定工作区身份，不保存会话 URL）
+│   └── Virtual Folders（项目/剧集/素材/工作稿/产出/成片）
 └── Session
     ├── Sources（用户上传）
+    ├── Media Asset Uses（显式采用边）
     ├── Runs / Runtime Episodes
     │   └── Artifacts（Agent 产物）
     └── Components
@@ -20,12 +23,13 @@ Workspace
 
 硬约束：
 
-1. Session 必须绑定一个明确 Workspace；同 Workspace 的两个 Session 仍必须完全隔离。
+1. Session 必须绑定一个明确 Workspace；同 Workspace 的两个 Session 只共享素材身份与虚拟目录，运行态、来源、产物、组件状态和采用边仍完全隔离。
 2. Source 必须精确绑定当前 Session；用户上传不能重复登记为 Artifact。
 3. Artifact 必须绑定 Session、Run 和工具/job lineage。
 4. Canvas Artifact 还必须显式绑定 `canvasOperationId`；禁止用“最近产物”猜测占位卡。
 5. 节点、边、选区、缩放、本地存储、文件标签、运行锁和迟到事件全部以 Session 为边界。
-6. 普通 Human Surface 不投影 `include_unbound` 数据，不显示本地路径、内部 ID、binding 或执行合同。
+6. 工作区素材跨 Session 使用必须先建立目标 Session 的显式采用边；不同物理 Workspace 一律拒绝。
+7. 普通 Human Surface 不投影 `include_unbound` 数据，不显示本地路径、内部 ID、binding 或执行合同。
 
 ## 2. 结果状态与时限
 
@@ -33,6 +37,7 @@ Workspace
 |---|---|
 | PASS | 在当前候选上实际执行，断言和证据完整 |
 | FAIL | 任一硬断言失败，或超过对应时限 |
+| PARTIAL | 主链成立，但明确列出的验收子项尚未满足；不得对外称完整通过 |
 | BLOCKED | Provider、配置、权限或环境明确阻断 |
 | NOT-RUN | 尚未执行 |
 | HISTORICAL | 旧候选曾通过，最终候选仍需复跑 |
@@ -61,6 +66,12 @@ Real-live 时限：
 | ART-02 | INTEGRATION | S-B 猜测 S-A artifact detail/content | detail 与 content 两层均拒绝 | NOT-RUN |
 | ART-03 | INTEGRATION | 普通聊天 Artifact 无 Canvas lineage | 可进素材抽屉，但不能填任意占位卡 | NOT-RUN |
 | ART-04 | INTEGRATION | Canvas 产物回填 | 仅显式 `canvasOperationId` 更新原占位卡 | PASS |
+| MAT-01 | STATIC | Creative Media 素材纪律 | 角色、用途、manifest、lineage、owner 与 artifact proof 均有明确合同 | PASS |
+| MAT-02 | UNIT | 工作区素材列表 | 只返回当前 Session 所绑定物理 Workspace 的素材；不同 Workspace fail closed | PASS |
+| MAT-03 | UNIT | 素材目录 | 目录只保存虚拟组织关系，不修改文件路径、来源或产物 lineage | PASS |
+| MAT-04 | INTEGRATION | 同 Workspace 跨 Session 复用素材 | 可见但未采用不可执行；显式采用后只新增 use edge，不复制文件/URL | PASS |
+| MAT-05 | UNIT | Session 删除 | 删除来源 Session 后，工作区素材身份仍存在；删除 Session 只级联其 use edge | PASS |
+| MAT-06 | UNIT | 内部蒙版 | `canvas_mask` 不进入工作区素材库和素材目录 | PASS |
 
 ## 4. 消息区与 Canvas 同步矩阵
 
@@ -97,6 +108,19 @@ Real-live 时限：
 | UI-08 | BROWSER | 边 hover 出现评论按钮和小输入框 | PASS |
 | UI-09 | BROWSER | 其他产物以微缩图留在素材抽屉，拉出才成节点 | PASS |
 | UI-10 | BROWSER | 运行中拖动、删除、连线、蒙版、上传全部禁用 | PASS |
+
+### 5.1 音视频时间选区
+
+| ID | 模式 | 断言 | 状态 |
+|---|---|---|---|
+| TIME-01 | CONTRACT | 视频/音频使用专用时间轴，不再让用户填写自然语言或两位小数秒参数 | PASS |
+| TIME-02 | CONTRACT | Canvas 合同只传 `probeFingerprint` + frame/sample index，并保留资源与 `canvasOperationId` | PASS |
+| TIME-03 | LOCAL | Engine 自有成对 FFmpeg/FFprobe 7+ 无窗口执行，原文件不变且不调用 Provider/MediaKit | PASS |
+| TIME-04 | LOCAL | 视频按 PTS/time base 建立 frame boundary；输出 postflight 帧数等于 `[start,end)` | PASS（24fps 真实短片，12/12 帧） |
+| TIME-05 | LOCAL | 音频按 sample index 分割；无损输出 postflight 样本数等于 `[start,end)` | PASS（48kHz 真实音频，12000/12000 样本） |
+| TIME-06 | LOCAL | 视频按 `frameIndex` 抽取单帧；产出正式 PNG artifact，postflight 仅 1 帧 | PASS（真实短片第 9 帧，PNG 签名与 1/1 帧） |
+| TIME-06 | BROWSER | 当前位置吸附到最近真实边界、显示实际边界时间、滚动隔离与窄窗口不溢出 | NOT-RUN |
+| TIME-07 | REAL-LIVE | 新片段按当前 Session/Run/tool/operation lineage 登记并回填目标空卡 | NOT-RUN |
 
 ## 6. 蒙版局部编辑 Real-live
 

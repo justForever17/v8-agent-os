@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { signOut } from "next-auth/react";
 
 import { ADMIN_NAV_GROUPS } from "@/lib/admin-navigation";
@@ -11,8 +11,6 @@ import { prefetchAdminRouteData } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-
-const WEB_CHAT_URL = "http://localhost:9527/chat";
 
 function badgeClasses(tone: "beta" | "dev") {
     if (tone === "dev") {
@@ -76,7 +74,7 @@ export function Sidebar() {
                 type="button"
                 onClick={toggleCollapse}
                 className={cn(
-                    "absolute top-8 z-40 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-[left,right,background-color,color] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:border-white/10",
+                    "absolute top-8 z-40 flex h-7 w-7 items-center justify-center text-muted-foreground opacity-70 transition-[left,right,color,opacity] hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
                     isCollapsed ? "left-3" : "-right-3.5",
                 )}
                 title={t(isCollapsed ? "components.layout.Sidebar.expandSidebar" : "components.layout.Sidebar.collapseSidebar")}
@@ -89,21 +87,6 @@ export function Sidebar() {
                 "flex h-full w-80 min-w-0 flex-col transition-[opacity,transform] [transition-duration:180ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:transform-none motion-reduce:[transition-duration:150ms]",
                 isCollapsed ? "pointer-events-none -translate-x-1.5 opacity-0" : "translate-x-0 opacity-100",
             )} aria-hidden={isCollapsed} inert={isCollapsed}>
-            <div className={cn(
-                "flex h-9 shrink-0 items-center border-b border-border dark:border-white/10",
-                "px-3"
-            )}>
-                <a
-                    href={WEB_CHAT_URL}
-                    className={cn(
-                        "flex h-7 w-7 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-card hover:text-foreground dark:text-muted-foreground dark:hover:bg-white/[0.06] dark:hover:text-slate-100",
-                    )}
-                    title={t("components.layout.Sidebar.backToChat")}
-                >
-                    <ArrowLeft className="h-4 w-4" />
-                </a>
-            </div>
-
             {/* 导航菜单区域 */}
             <div
                 data-v8-context-menu-ignore

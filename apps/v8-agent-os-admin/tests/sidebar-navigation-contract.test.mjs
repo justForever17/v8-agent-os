@@ -22,6 +22,14 @@ test("admin sidebar navigation does not expose text or link context menus", () =
     assert.match(source, /select-none overflow-y-auto/);
 });
 
+test("admin sidebar omits the redundant return rail and uses an unframed collapse control", () => {
+    const source = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Sidebar.tsx"), "utf8");
+
+    assert.doesNotMatch(source, /WEB_CHAT_URL|backToChat|ArrowLeft/);
+    assert.doesNotMatch(source, /rounded-full border border-border bg-background/);
+    assert.match(source, /hover:text-foreground hover:opacity-100/);
+});
+
 test("admin sidebar group labels are localized in Chinese", () => {
     const locale = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "zh-CN.json"), "utf8"));
 

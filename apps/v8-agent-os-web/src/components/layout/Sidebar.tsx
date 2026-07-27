@@ -590,15 +590,15 @@ export function Sidebar() {
                 )}
             >
                 <div className={cn("absolute top-8 z-50 hidden transition-all duration-300 md:block", isCollapsed ? "left-3" : "-right-3")}>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        className="h-7 w-7 rounded-full border-border bg-background shadow-md transition-all duration-300 hover:bg-accent hover:text-accent-foreground"
+                    <button
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center text-muted-foreground opacity-70 transition-[color,opacity] duration-200 hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                         onClick={() => setIsCollapsed(!isCollapsed)}
                         title={isCollapsed ? t("web.generated.431d44b6ca") : t("web.generated.99260f0e75")}
+                        aria-label={isCollapsed ? t("web.generated.431d44b6ca") : t("web.generated.99260f0e75")}
                     >
                         {isCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
-                    </Button>
+                    </button>
                 </div>
 
                 <div

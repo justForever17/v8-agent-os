@@ -34,6 +34,7 @@ export {
 } from "./ProductTheme.js";
 export {
   PRODUCT_THEME_STORAGE_KEY,
+  PRODUCT_THEME_COOKIE_KEY,
   buildProductThemeBootstrapScript,
   normalizeProductTheme,
 } from "./product-theme-bootstrap.js";

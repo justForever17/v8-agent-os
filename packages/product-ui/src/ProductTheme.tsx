@@ -12,7 +12,12 @@ import {
   useState,
 } from "react";
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes";
-import { normalizeProductTheme, type UiTheme } from "./product-theme-bootstrap.js";
+import {
+  PRODUCT_THEME_COOKIE_KEY,
+  PRODUCT_THEME_STORAGE_KEY,
+  normalizeProductTheme,
+  type UiTheme,
+} from "./product-theme-bootstrap.js";
 
 export type { UiTheme } from "./product-theme-bootstrap.js";
 export type ProductThemeSyncState = "idle" | "syncing" | "synced" | "degraded";
@@ -35,6 +40,17 @@ export type ProductThemeProviderProps = ComponentProps<typeof NextThemesProvider
 };
 
 const ProductThemeContext = createContext<ProductThemeContextValue | null>(null);
+
+const PRODUCT_THEME_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
+
+function persistThemeFallback(theme: UiTheme) {
+  try {
+    localStorage.setItem(PRODUCT_THEME_STORAGE_KEY, theme);
+    document.cookie = `${PRODUCT_THEME_COOKIE_KEY}=${encodeURIComponent(theme)}; Path=/; Max-Age=${PRODUCT_THEME_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`;
+  } catch {
+    // A blocked storage surface must not prevent the in-memory theme change.
+  }
+}
 
 function ProductThemeSync({
   children,
@@ -71,7 +87,9 @@ function ProductThemeSync({
         }
         if (!response.ok) throw new Error(String(payload?.error || `HTTP ${response.status}`));
         if (requestId !== requestSequence.current) return;
-        setNextThemeRef.current(normalizeProductTheme(payload?.theme));
+        const canonicalTheme = normalizeProductTheme(payload?.theme);
+        persistThemeFallback(canonicalTheme);
+        setNextThemeRef.current(canonicalTheme);
         setSyncState("synced");
       } catch (error) {
         if (requestId !== requestSequence.current) return;
@@ -90,6 +108,7 @@ function ProductThemeSync({
     const normalized = normalizeProductTheme(nextTheme);
     const requestId = ++requestSequence.current;
     writeInFlightCount.current += 1;
+    persistThemeFallback(normalized);
     setNextThemeRef.current(normalized);
     setSyncState("syncing");
     try {
@@ -101,7 +120,9 @@ function ProductThemeSync({
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(String(payload?.error || `HTTP ${response.status}`));
       if (requestId !== requestSequence.current) return;
-      setNextThemeRef.current(normalizeProductTheme(payload?.theme ?? normalized));
+      const canonicalTheme = normalizeProductTheme(payload?.theme ?? normalized);
+      persistThemeFallback(canonicalTheme);
+      setNextThemeRef.current(canonicalTheme);
       setSyncState("synced");
     } catch (error) {
       if (requestId !== requestSequence.current) return;
@@ -113,8 +134,12 @@ function ProductThemeSync({
   }, [endpoint]);
 
   useEffect(() => {
-    setNextThemeRef.current(initialTheme);
-    if (initialSyncState !== "synced") void refreshThemeRef.current();
+    if (initialSyncState === "synced") {
+      persistThemeFallback(initialTheme);
+      setNextThemeRef.current(initialTheme);
+    } else {
+      void refreshThemeRef.current();
+    }
     const handleFocus = () => void refreshThemeRef.current();
     const handleVisibility = () => {
       if (document.visibilityState === "visible") void refreshThemeRef.current();
@@ -126,8 +151,8 @@ function ProductThemeSync({
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-    // Initial canonical theme must be applied exactly once. Subsequent updates are
-    // owned by setTheme/refreshTheme and must never be reset to initialTheme.
+    // A degraded server fallback is not canonical and must never overwrite the
+    // pre-paint local/cookie theme. Subsequent updates are owned by setTheme/refreshTheme.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

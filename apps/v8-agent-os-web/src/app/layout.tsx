@@ -1,6 +1,11 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
-import { buildProductThemeBootstrapScript, PRODUCT_THEME_STORAGE_KEY } from "@v8/product-ui/theme-bootstrap";
+import {
+    buildProductThemeBootstrapScript,
+    normalizeProductTheme,
+    PRODUCT_THEME_COOKIE_KEY,
+    PRODUCT_THEME_STORAGE_KEY,
+} from "@v8/product-ui/theme-bootstrap";
 import "./globals.css";
 import "@v8/product-ui/styles.css";
 import { Topbar } from "@/components/layout/Topbar";
@@ -35,7 +40,8 @@ export default async function RootLayout({
         cookieStore.get(LOCALE_COOKIE_NAME)?.value,
         headerStore.get("accept-language"),
     );
-    const initialTheme = await resolveInitialProductTheme();
+    const themeCookie = cookieStore.get(PRODUCT_THEME_COOKIE_KEY)?.value;
+    const initialTheme = await resolveInitialProductTheme(normalizeProductTheme(themeCookie));
 
     return (
         <html lang={initialLocale} suppressHydrationWarning className="h-full">
@@ -43,7 +49,11 @@ export default async function RootLayout({
                 <script
                     id="v8-product-theme-bootstrap"
                     dangerouslySetInnerHTML={{
-                        __html: buildProductThemeBootstrapScript(initialTheme.theme, PRODUCT_THEME_STORAGE_KEY),
+                        __html: buildProductThemeBootstrapScript(
+                            initialTheme.theme,
+                            PRODUCT_THEME_STORAGE_KEY,
+                            initialTheme.syncState === "synced",
+                        ),
                     }}
                 />
                 <script

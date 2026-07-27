@@ -7,7 +7,7 @@ export type InitialProductTheme = {
     syncState: "synced" | "degraded";
 };
 
-export async function resolveInitialProductTheme(): Promise<InitialProductTheme> {
+export async function resolveInitialProductTheme(fallbackTheme: UiTheme = "system"): Promise<InitialProductTheme> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 500);
     try {
@@ -23,7 +23,7 @@ export async function resolveInitialProductTheme(): Promise<InitialProductTheme>
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return { theme: normalizeProductTheme(data.theme), syncState: "synced" };
     } catch {
-        return { theme: "system", syncState: "degraded" };
+        return { theme: normalizeProductTheme(fallbackTheme), syncState: "degraded" };
     } finally {
         clearTimeout(timeout);
     }

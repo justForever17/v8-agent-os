@@ -14,6 +14,10 @@ Desktop.ini
 .bootstrap-workspace/
 /.agents/
 
+# Root live-test output
+/.v8/
+/creative_media/
+
 # Logs and coverage
 *.log
 coverage/

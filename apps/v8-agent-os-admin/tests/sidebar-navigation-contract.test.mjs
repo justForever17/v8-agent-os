@@ -14,6 +14,14 @@ test("admin sidebar keeps navigation groups visible without per-group collapse c
     assert.doesNotMatch(source, /openGroups|setOpenGroups|isGroupActive/);
 });
 
+test("admin sidebar navigation does not expose text or link context menus", () => {
+    const source = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Sidebar.tsx"), "utf8");
+
+    assert.match(source, /data-v8-context-menu-ignore/);
+    assert.match(source, /onContextMenu=\{\(event\) => event\.preventDefault\(\)\}/);
+    assert.match(source, /select-none overflow-y-auto/);
+});
+
 test("admin sidebar group labels are localized in Chinese", () => {
     const locale = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "zh-CN.json"), "utf8"));
 

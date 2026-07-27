@@ -105,7 +105,11 @@ export function Sidebar() {
             </div>
 
             {/* 导航菜单区域 */}
-            <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">
+            <div
+                data-v8-context-menu-ignore
+                className="min-w-0 flex-1 select-none overflow-y-auto overscroll-contain"
+                onContextMenu={(event) => event.preventDefault()}
+            >
                 <div className="w-full min-w-0 space-y-6 px-4 py-5 pr-5">
                     {ADMIN_NAV_GROUPS.map((group) => {
                         return (

@@ -59,6 +59,22 @@ class _FakeScopeRepo:
     def upsert_workspace_binding(self, binding):
         self.bindings.append(binding)
 
+    def delete_workspace_bindings(self, project_id: str):
+        before = len(self.bindings)
+        self.bindings = [binding for binding in self.bindings if binding.project_id != project_id]
+        return before - len(self.bindings)
+
+
+class _FakeDatabase:
+    def __init__(self):
+        self.cached_projects = set()
+
+    def sync_project_descriptor_cache(self, project):
+        self.cached_projects.add(project["project_id"])
+
+    def delete_project_descriptor_cache(self, project_id: str):
+        self.cached_projects.discard(project_id)
+
 
 def _service(monkeypatch, main_root: Path) -> ProjectRegistryService:
     monkeypatch.setattr(
@@ -66,6 +82,7 @@ def _service(monkeypatch, main_root: Path) -> ProjectRegistryService:
         "_main_workspace_root",
         staticmethod(lambda: main_root.expanduser().resolve(strict=False)),
     )
+    monkeypatch.setattr("runtimes.memory.project_registry.db", _FakeDatabase())
     return ProjectRegistryService(project_repo=_FakeProjectRepo(), scope_repo=_FakeScopeRepo())
 
 
@@ -120,6 +137,7 @@ def test_save_project_allows_user_confirmed_external_workspace(tmp_path, monkeyp
     assert project.workspace_trust_state == "trusted"
     assert project.workspace_trust_source == "user_confirmed"
     assert (external_root / ".agents" / "rules" / "AGENTS.md").exists()
+    assert not (external_root / ".git").exists()
 
 
 def test_find_project_normalizes_repeated_workspace_separators(tmp_path, monkeypatch):
@@ -172,6 +190,25 @@ def test_find_project_ignores_stale_workspace_binding(tmp_path, monkeypatch):
 
     assert resolved is not None
     assert resolved.project_id == project.project_id
+
+
+def test_delete_project_removes_workspace_lookup_truth(tmp_path, monkeypatch):
+    main_root = tmp_path / "main"
+    external_root = tmp_path / "external" / "project"
+    main_root.mkdir()
+    service = _service(monkeypatch, main_root)
+    project = service.save_project(
+        {
+            "workspacePath": str(external_root),
+            "workspaceTrustState": "trusted",
+            "workspaceTrustSource": "user_confirmed",
+        }
+    )
+
+    assert service.scope_repo.get_workspace_binding(workspace_id=project.workspace_id) is not None
+
+    assert service.delete_project(project.project_id) is True
+    assert service.scope_repo.get_workspace_binding(workspace_id=project.workspace_id) is None
 
 
 def test_default_project_uses_configured_main_workspace_root(tmp_path, monkeypatch):

@@ -721,6 +721,85 @@ def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
     assert decision.reason == "required_write_files_missing"
 
 
+def test_non_spec_direct_write_accepts_exact_authoritative_run_artifact(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "result.md"
+    target.write_text("done", encoding="utf-8")
+    episode = _required_write_episode(str(tmp_path))
+    episode.update({"sessionId": "session-direct-write", "runId": "run-direct-write"})
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "list_runtime_artifacts",
+        lambda **_kwargs: [
+            {
+                "resourceRole": "artifact",
+                "sessionId": "session-direct-write",
+                "runId": "run-direct-write",
+                "origin": "agent_file_write",
+                "sourceComponent": "write_native_file",
+                "sourcePath": str(target),
+                "metadata": {
+                    "storageClass": "workspace",
+                    "pathPlane": "workspace_artifact",
+                    "deliveryState": "authoritative",
+                    "managedExecution": False,
+                    "workspaceRelativePath": "result.md",
+                },
+            }
+        ],
+    )
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-write": [{"status": "ready", "proofRefs": ["proof://direct-write-validation"]}]
+        },
+        final_text="验收决定：ACCEPT — direct write and validation proof verified.",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_non_spec_managed_candidate_artifact_cannot_bypass_merge_handoff(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "result.md"
+    target.write_text("candidate only", encoding="utf-8")
+    episode = _required_write_episode(str(tmp_path))
+    episode.update({"sessionId": "session-managed-write", "runId": "run-managed-write"})
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "list_runtime_artifacts",
+        lambda **_kwargs: [
+            {
+                "resourceRole": "artifact",
+                "sessionId": "session-managed-write",
+                "runId": "run-managed-write",
+                "origin": "agent_file_write",
+                "sourceComponent": "write_native_file",
+                "sourcePath": str(target),
+                "metadata": {
+                    "storageClass": "workspace",
+                    "pathPlane": "workspace_artifact",
+                    "deliveryState": "candidate",
+                    "managedExecution": True,
+                    "workspaceRelativePath": "result.md",
+                },
+            }
+        ],
+    )
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-write": [{"status": "ready", "proofRefs": ["proof://candidate-validation"]}]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_files_missing"
+
+
 def test_non_spec_typed_creative_artifact_satisfies_artifact_delivery_without_workspace_file(
     tmp_path,
     monkeypatch,

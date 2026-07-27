@@ -2496,6 +2496,7 @@ class RuntimeEpisodeRunner:
         integration_ready_count = 0
         validated_count = 0
         blocked_count = 0
+        waiting_count = 0
         visited: set[int] = set()
 
         def _add_relative_path(value: Any) -> None:
@@ -2507,8 +2508,9 @@ class RuntimeEpisodeRunner:
                 changed_paths.append(rendered)
 
         def _inspect(item: dict[str, Any]) -> None:
-            nonlocal merged_count, integration_ready_count, validated_count, blocked_count
+            nonlocal merged_count, integration_ready_count, validated_count, blocked_count, waiting_count
             status = str(item.get("status") or item.get("workerStatus") or "").strip().lower()
+            delegation_state = str(item.get("delegationState") or "").strip().lower()
             sandbox = dict(item.get("sandboxEvidence") or {}) if isinstance(item.get("sandboxEvidence"), dict) else {}
             sandbox_state = str(sandbox.get("state") or "").strip().lower()
             parent_merge = (
@@ -2518,6 +2520,13 @@ class RuntimeEpisodeRunner:
             )
             parent_merge_status = str(parent_merge.get("status") or "").strip().lower()
             error = str(item.get("error") or item.get("errorCode") or sandbox.get("errorCode") or "").strip()
+            if status in {"waiting", "waiting_child", "waiting_child_delegation", "queued"} or delegation_state in {
+                "waiting",
+                "waiting_child",
+                "waiting_child_delegation",
+            }:
+                waiting_count += 1
+                return
             if (
                 status in {"error", "failed", "blocked", "dependency_failed", "degraded", "cancelled"}
                 or error
@@ -2579,6 +2588,9 @@ class RuntimeEpisodeRunner:
         elif validated_count:
             state = "validated_candidate"
             accepted = False
+        elif waiting_count:
+            state = "awaiting_child"
+            accepted = False
         else:
             state = "unknown"
             accepted = False
@@ -2590,6 +2602,7 @@ class RuntimeEpisodeRunner:
             "taskBriefIds": task_brief_ids[:24],
             "mergedResultCount": merged_count,
             "blockedResultCount": blocked_count,
+            "waitingResultCount": waiting_count,
         }
 
     @classmethod
@@ -2611,6 +2624,8 @@ class RuntimeEpisodeRunner:
             lines.append("- Delivery: validated integration candidate is ready for the owning runtime to merge.")
         elif delivery.get("state") == "quarantined":
             lines.append("- Delivery: failed candidate remains quarantined and unmerged.")
+        elif delivery.get("state") == "awaiting_child":
+            lines.append("- Delivery: child verification is still running; no candidate has been rejected.")
         changed = cls._collect_handoff_values(
             handoff,
             {

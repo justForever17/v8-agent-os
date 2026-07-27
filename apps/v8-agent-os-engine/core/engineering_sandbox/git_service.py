@@ -172,7 +172,10 @@ class ManagedGitService:
         self.index_root = self.runtime_root / "indexes"
         self.git_executable = str(git_executable or shutil.which("git") or "").strip()
         if not self.git_executable:
-            raise ManagedGitError("git_not_installed", "Git is required for managed engineering workspaces.")
+            raise ManagedGitError(
+                "git_not_installed",
+                "Git is required only for optional managed-worktree parallel isolation; direct Engineering remains available.",
+            )
         self.empty_hooks_root.mkdir(parents=True, exist_ok=True)
         self.index_root.mkdir(parents=True, exist_ok=True)
 

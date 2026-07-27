@@ -42,3 +42,5 @@ class ScopeBindingRepository:
         )
         return WorkspaceProjectBinding.model_validate(row) if row else None
 
+    def delete_workspace_bindings(self, project_id: str) -> int:
+        return db.delete_workspace_project_bindings(project_id)

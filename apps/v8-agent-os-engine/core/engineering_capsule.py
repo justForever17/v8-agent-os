@@ -322,13 +322,15 @@ def bind_engineering_task_workspace(
     *,
     workspace_path: str,
     original_workspace_path: str = "",
+    workspace_strategy: str = "",
+    isolation_reasons: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Project one engineering brief onto its actual execution worktree.
+    """Project one engineering brief onto its selected execution workspace.
 
     The original workspace remains the authority boundary.  The active workspace
-    path is execution-only and must follow the worktree allocated to this branch;
-    otherwise a child receives a valid sandbox lease while its task capsule still
-    points at the parent's checkout.
+    may be the bound workspace itself or a late-selected worktree.  Keeping the
+    choice inside the task contract prevents the worker's prose, Capsule and
+    runtime cwd from describing different checkouts.
     """
 
     task = deepcopy(dict(task_brief or {}))
@@ -341,6 +343,28 @@ def bind_engineering_task_workspace(
     context["workspacePath"] = active_workspace
     if authority_workspace:
         context["originalWorkspacePath"] = authority_workspace
+    normalized_strategy = str(workspace_strategy or "").strip().lower()
+    if normalized_strategy in {"direct", "git_worktree"}:
+        direct = normalized_strategy == "direct"
+        context["engineeringWorkspaceStrategy"] = {
+            "mode": normalized_strategy,
+            "managed": not direct,
+            "isolationReasons": [
+                str(value).strip()
+                for value in list(isolation_reasons or [])
+                if str(value).strip()
+            ],
+            "mutationBoundary": (
+                "native_file_tools_with_capsule_write_set"
+                if direct
+                else "managed_worktree_sandbox_lease"
+            ),
+            "shellBoundary": (
+                "read_and_validation_commands_only"
+                if direct
+                else "sandbox_lease_policy"
+            ),
+        }
     execution_contract = (
         deepcopy(context.get("engineeringExecutionContract"))
         if isinstance(context.get("engineeringExecutionContract"), dict)
@@ -349,6 +373,14 @@ def bind_engineering_task_workspace(
     execution_contract["workspacePath"] = active_workspace
     if authority_workspace:
         execution_contract["originalWorkspacePath"] = authority_workspace
+    if normalized_strategy in {"direct", "git_worktree"}:
+        execution_contract["workspaceStrategy"] = normalized_strategy
+        execution_contract["managedWorkspace"] = normalized_strategy == "git_worktree"
+        execution_contract["isolationReasons"] = [
+            str(value).strip()
+            for value in list(isolation_reasons or [])
+            if str(value).strip()
+        ]
     context["engineeringExecutionContract"] = execution_contract
     task["context"] = context
     task["workspacePath"] = active_workspace
@@ -392,6 +424,11 @@ def derive_grandchild_engineering_task(
         child_context.pop(stale_key, None)
     child_context["inheritedEngineeringContract"] = deepcopy(parent_capsule)
     child_context.setdefault("shellDialect", shell_dialect or parent_capsule.get("shellDialect") or "")
+    child_context["terminalDelegationRole"] = (
+        "You are the requested terminal grandchild worker. Completing this task's direct inspection or validation "
+        "and returning compact evidence fulfills the grandchild portion of the parent request. Do not claim that "
+        "another grandchild is required, and do not attempt further delegation."
+    )
     child_context.setdefault(
         "artifactWriteDiscipline",
         "This grandchild receives engineering facts and acceptance criteria but no inherited write authority. Return evidence to the parent.",

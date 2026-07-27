@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -179,9 +180,59 @@ def _cancel_run(engine_url: str, run_id: str) -> None:
         pass
 
 
+def _iter_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_dicts(child)
+
+
+def _canonical_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for message in messages:
+        for item in _iter_dicts(message.get("nodes") or []):
+            name = str(item.get("toolName") or item.get("tool_name") or "").strip()
+            args = item.get("args") or item.get("arguments") or item.get("input")
+            if not name or not isinstance(args, dict):
+                continue
+            calls.append({"name": name, "args": dict(args)})
+    return calls
+
+
+def _capsule_checks(episodes: list[dict[str, Any]], *, target_relative: str) -> dict[str, Any]:
+    checked = 0
+    valid = 0
+    for episode in episodes:
+        inputs = episode.get("inputs") if isinstance(episode.get("inputs"), dict) else {}
+        for brief in list(inputs.get("workerBriefs") or inputs.get("tasks") or []):
+            if not isinstance(brief, dict):
+                continue
+            capsule = (
+                brief.get("engineeringTaskCapsule")
+                if isinstance(brief.get("engineeringTaskCapsule"), dict)
+                else {}
+            )
+            if str(capsule.get("executionMode") or "").strip() != "write":
+                continue
+            checked += 1
+            write_set = [str(value).replace("\\", "/") for value in list(capsule.get("writeSet") or [])]
+            expected = [str(value).replace("\\", "/") for value in list(capsule.get("expectedOutputs") or [])]
+            if (
+                str(capsule.get("contractStatus") or "").strip() == "valid"
+                and target_relative in write_set
+                and any(target_relative in item for item in expected)
+                and capsule.get("acceptance") not in (None, "", [], {})
+            ):
+                valid += 1
+    return {"checked": checked, "valid": valid}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run a real Supervisor -> Engineering -> child -> grandchild managed-worktree audit."
+        description="Run a real Supervisor -> Engineering -> child -> grandchild direct-workspace audit."
     )
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--allow-side-effects", action="store_true")
@@ -245,6 +296,7 @@ def main() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("print(sandbox_live_value)\n", encoding="utf-8")
         head_before = _git_head(workspace)
+        git_directory_before = (workspace / ".git").exists()
 
         db.create_or_update_session(
             session_id=session_id,
@@ -301,6 +353,43 @@ def main() -> int:
             for item in delegation_episodes
         )
         worktrees = _load_worktree_evidence(run_id)
+        canonical_messages = db.get_chat_canonical_messages(session_id)
+        canonical_tool_calls = _canonical_tool_calls(canonical_messages)
+        manual_local_polling = any(
+            item.get("name") == "delegation_broker"
+            and str((item.get("args") or {}).get("mode") or "").strip().lower() in {"observe", "status"}
+            for item in canonical_tool_calls
+        )
+        assistant_surface = "\n".join(
+            str(item.get("content_text") or "")
+            for item in canonical_messages
+            if str(item.get("role") or "").strip().lower() == "assistant"
+        )
+        false_git_prerequisite = bool(
+            re.search(
+                r"(?i)(git\s+is\s+required|engineering\s+requires\s+git|must\s+enable\s+git|"
+                r"必须(?:先)?启用\s*git|工程(?:模式|执行).{0,20}(?:必须|需要).{0,10}git|接管\s*git)",
+                assistant_surface,
+            )
+        )
+        progress_events = [
+            item
+            for item in db.get_runtime_events_for_run(run_id, session_id=session_id, limit=1000)
+            if str(item.get("topic") or "").strip() == "runtime.episode.progress"
+        ]
+        direct_strategy_episodes = [
+            item
+            for item in delegation_episodes
+            if str(
+                ((item.get("inputs") or {}).get("engineeringWorkspace") or {}).get(
+                    "engineering_workspace_strategy"
+                )
+                or ""
+            ).strip()
+            == "direct"
+        ]
+        capsule_checks = _capsule_checks(delegation_episodes, target_relative=target_relative)
+        handoff_count = sum(len(list(item.get("handoffRefs") or [])) for item in delegation_episodes)
         target_execution = subprocess.run(
             [sys.executable, str(target)],
             cwd=str(target.parent),
@@ -310,51 +399,17 @@ def main() -> int:
             check=False,
         )
         head_after = _git_head(workspace)
+        git_directory_after = (workspace / ".git").exists()
         changed_paths = {
             str(path)
             for item in worktrees
             for path in list(item.get("changedPaths") or [])
         }
-        workspace_key = str(workspace).casefold().rstrip("\\/")
-        worktree_roots_separate = bool(worktrees) and all(
-            str(item.get("worktreeWorkspaceRoot") or "").casefold().rstrip("\\/") != workspace_key
-            for item in worktrees
-        )
-        policy_bindings_valid = bool(worktrees) and all(
-            str(item.get("policyWorktreeRoot") or "").casefold().rstrip("\\/")
-            == str(item.get("worktreeRoot") or "").casefold().rstrip("\\/")
-            and str(item.get("policyOriginalWorkspaceRoot") or "").casefold().rstrip("\\/") == workspace_key
-            for item in worktrees
-            if item.get("leaseId")
-        )
-        sandbox_roles = {str(item.get("actorRole") or "") for item in worktrees}
-        failed_worktrees = [
-            item for item in worktrees if item.get("errorCode") or item.get("state") in {"failed", "blocked"}
-        ]
-        nonterminal_worktrees = [
-            item
-            for item in worktrees
-            if item.get("state")
-            not in {
-                "delivered",
-                "integrated",
-                "merged_to_parent",
-                "ignored",
-                "failed",
-                "blocked",
-                "cancelled",
-                "canceled",
-                "cleaned",
-            }
-        ]
-        nonterminal_leases = [
-            item
-            for item in worktrees
-            if item.get("leaseId")
-            and item.get("leaseState") not in {"completed", "failed", "blocked", "expired"}
-        ]
+        parallel_isolation = dict(repository_status.get("parallelIsolation") or {})
         passed = bool(
-            str((repository_status.get("repository") or {}).get("state") or "") == "ready"
+            str((repository_status.get("repository") or {}).get("state") or "") == "adoption_required"
+            and bool(parallel_isolation.get("directExecutionAvailable"))
+            and not bool(parallel_isolation.get("enabled"))
             and run_state == "completed"
             and engineering_episodes
             and any(
@@ -363,16 +418,17 @@ def main() -> int:
             )
             and len(delegation_episodes) >= 2
             and nested_delegation
-            and "supervisor" in sandbox_roles
-            and "direct_subagent" in sandbox_roles
-            and "grandchild" in sandbox_roles
-            and worktree_roots_separate
-            and policy_bindings_valid
-            and not nonterminal_worktrees
-            and not nonterminal_leases
-            and target_relative in changed_paths
-            and head_before
-            and head_before == head_after
+            and direct_strategy_episodes
+            and capsule_checks["valid"] >= 1
+            and handoff_count >= 1
+            and progress_events
+            and not manual_local_polling
+            and not false_git_prerequisite
+            and not worktrees
+            and not git_directory_before
+            and not git_directory_after
+            and not head_before
+            and not head_after
             and target_execution.returncode == 0
             and str(target_execution.stdout or "").strip() == "sandbox-live-ok"
         )
@@ -386,6 +442,7 @@ def main() -> int:
             "modelProfile": str(args.model_profile or "").strip() or "role:supervisor",
             "targetAgent": str(args.target_agent or "").strip() or "supervisor-selected",
             "repositoryState": str((repository_status.get("repository") or {}).get("state") or ""),
+            "parallelIsolation": parallel_isolation,
             "workspaceRole": str((repository_status.get("workspace") or {}).get("role") or ""),
             "repositoryRole": str((repository_status.get("repository") or {}).get("role") or ""),
             "worktreeRole": str((repository_status.get("worktree") or {}).get("role") or ""),
@@ -393,14 +450,16 @@ def main() -> int:
             "engineeringEpisodeCount": len(engineering_episodes),
             "delegationEpisodeCount": len(delegation_episodes),
             "nestedDelegationObserved": nested_delegation,
-            "sandboxActorRoles": sorted(sandbox_roles),
-            "worktreeRootsSeparate": worktree_roots_separate,
-            "policyBindingsValid": policy_bindings_valid,
-            "failedWorktreeCount": len(failed_worktrees),
-            "nonterminalWorktreeCount": len(nonterminal_worktrees),
-            "nonterminalLeaseCount": len(nonterminal_leases),
+            "directStrategyEpisodeCount": len(direct_strategy_episodes),
+            "capsuleChecks": capsule_checks,
+            "handoffCount": handoff_count,
+            "progressEventCount": len(progress_events),
+            "manualLocalPollingObserved": manual_local_polling,
+            "falseGitPrerequisiteObserved": false_git_prerequisite,
+            "gitDirectoryCreated": git_directory_after,
+            "worktreeCount": len(worktrees),
             "changedPaths": sorted(changed_paths),
-            "userHeadUnchanged": bool(head_before and head_before == head_after),
+            "userHeadUnchanged": head_before == head_after,
             "targetReturnCode": target_execution.returncode,
             "targetStdout": str(target_execution.stdout or "").strip(),
             "worktrees": worktrees,

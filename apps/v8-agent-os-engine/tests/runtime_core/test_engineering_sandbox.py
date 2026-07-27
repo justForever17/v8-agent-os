@@ -16,7 +16,10 @@ from core.engineering_sandbox.contracts import (
     SandboxPolicy,
 )
 from core.engineering_sandbox.git_service import ManagedGitError, ManagedGitService
-from core.engineering_sandbox.delegation import prepare_delegated_engineering_workspace
+from core.engineering_sandbox.delegation import (
+    EngineeringWorkspaceIsolationError,
+    prepare_delegated_engineering_workspace,
+)
 from core.engineering_sandbox.platform_driver import (
     build_sanitized_environment,
     locate_sandbox_host,
@@ -28,8 +31,8 @@ from graph.parallel_support import (
     _fail_managed_branch_workspace,
     _finalize_managed_branch_workspace,
 )
-from core.delegation_broker import normalize_task_brief
-from core.engineering_capsule import derive_grandchild_engineering_task
+from core.delegation_broker import normalize_task_brief, task_brief_query_text
+from core.engineering_capsule import bind_engineering_task_workspace, derive_grandchild_engineering_task
 
 
 def _is_test_worktree(path: Path, managed_roots: list[Path]) -> bool:
@@ -614,6 +617,17 @@ def test_engineering_command_fails_closed_without_a_lease() -> None:
     assert argv == [sys.executable, "--version"]
     assert environment is None
 
+    direct_subagent_argv, direct_subagent_environment = _sandbox_launch(
+        {
+            "runtime_kind": "subagent",
+            "engineering_capsule_mode": "write",
+            "managed_engineering_execution": False,
+        },
+        [sys.executable, "--version"],
+    )
+    assert direct_subagent_argv == [sys.executable, "--version"]
+    assert direct_subagent_environment is None
+
 
 def _git_service(tmp_path: Path) -> ManagedGitService:
     return ManagedGitService(home=tmp_path / "v8-home")
@@ -638,6 +652,31 @@ def test_git_init_creates_managed_baseline_and_blocks_large_files(tmp_path: Path
     with pytest.raises(ManagedGitError) as error:
         service.snapshot_base_commit(service.inspect_repository(workspace), run_id="large-file")  # type: ignore[arg-type]
     assert error.value.code == "managed_git_large_file_blocked"
+
+
+def test_non_git_workspace_keeps_direct_engineering_available_without_initializing_git(tmp_path: Path) -> None:
+    service = EngineeringSandboxService(
+        home=tmp_path / "v8-home",
+        git_service=_git_service(tmp_path),
+        database=DatabaseManager(tmp_path / "state.db"),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    status = service.project_repository_status(workspace_root=workspace, project_id="demo")
+
+    assert status["repository"]["state"] == "adoption_required"
+    assert status["parallelIsolation"] == {
+        "optional": True,
+        "enabled": False,
+        "setupRequired": True,
+        "directExecutionAvailable": True,
+        "setupEffects": [
+            "create_git_repository_if_missing",
+            "create_v8os_baseline_commit",
+        ],
+    }
+    assert not (workspace / ".git").exists()
 
 
 def test_worktrees_default_to_hidden_root_on_repository_volume(tmp_path: Path) -> None:
@@ -1362,40 +1401,89 @@ def test_top_level_read_only_inspection_keeps_original_workspace(monkeypatch, tm
     assert allocation_attempted is False
 
 
-@pytest.mark.skipif(locate_sandbox_host() is None, reason="native sandbox host has not been built")
-def test_grandchild_verification_gets_separate_read_only_snapshot_of_parent_changes(
+def test_serial_low_risk_write_projects_direct_strategy_without_git_probe(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    allocation_attempted = False
+
+    def _unexpected_service():
+        nonlocal allocation_attempted
+        allocation_attempted = True
+        raise AssertionError("serial low-risk writes must not probe or initialize Git")
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
+        _unexpected_service,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_brief = normalize_task_brief(
+        {
+            "taskBriefId": "direct-write",
+            "goal": "Write one bounded local HTML file.",
+            "context": {"workspacePath": str(workspace)},
+            "writeRequired": True,
+            "writeSet": ["index.html"],
+            "expectedOutputs": ["index.html"],
+            "acceptanceContract": "index.html contains the requested heading.",
+        }
+    )
+
+    prepared = prepare_delegated_engineering_workspace(
+        base_state={
+            "run_id": "run-direct",
+            "session_id": "session-direct",
+            "project_id": "project-direct",
+            "workspace_path": str(workspace),
+        },
+        task_brief=task_brief,
+        delegation_id="delegation-direct",
+        current_depth=0,
+        runtime_context={"run_id": "run-direct", "workspace_path": str(workspace)},
+    )
+
+    assert prepared is not None
+    assert prepared["engineering_workspace_strategy"] == "direct"
+    assert prepared["managed_engineering_execution"] is False
+    assert Path(prepared["workspace_path"]) == workspace.resolve()
+    assert allocation_attempted is False
+
+    bound = bind_engineering_task_workspace(
+        task_brief,
+        workspace_path=prepared["workspace_path"],
+        original_workspace_path=prepared["original_workspace_path"],
+        workspace_strategy=prepared["engineering_workspace_strategy"],
+    )
+    query = task_brief_query_text(bound)
+    assert '"mode": "direct"' in query
+    assert '"mutationBoundary": "native_file_tools_with_capsule_write_set"' in query
+    assert '"shellBoundary": "read_and_validation_commands_only"' in query
+
+
+def test_grandchild_verification_reuses_parent_snapshot_without_allocating_another_worktree(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    database = DatabaseManager(tmp_path / "state.db")
-    git = ManagedGitService(home=tmp_path / "v8-home")
-    service = EngineeringSandboxService(home=tmp_path / "v8-home", git_service=git, database=database)
+    allocation_attempted = False
+
+    def _unexpected_service():
+        nonlocal allocation_attempted
+        allocation_attempted = True
+        raise AssertionError("verification must inherit the parent view without another worktree")
+
     monkeypatch.setattr(
         "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
-        lambda: service,
+        _unexpected_service,
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "result.txt").write_text("baseline\n", encoding="utf-8")
-    service.ensure_project_repository(workspace_root=workspace, project_id="demo", allow_initialize=True)
-    parent = service.prepare_task_workspace(
-        workspace_root=workspace,
-        project_id="demo",
-        session_id="session",
-        run_id="run-nested",
-        delegation_id="delegation-parent",
-        worktree_id="parent-task",
-        write_set=("result.txt",),
-        actor_role="direct_subagent",
-        runtime_kind="engineering",
-        network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
-    )
-    Path(parent.execution_workspace_root, "result.txt").write_text("parent-change\n", encoding="utf-8")
     parent_brief = normalize_task_brief(
         {
             "taskBriefId": "parent-write",
             "goal": "Write the parent result.",
-            "context": {"workspacePath": parent.execution_workspace_root},
+            "context": {"workspacePath": str(workspace)},
             "writeRequired": True,
             "writeSet": ["result.txt"],
             "expectedOutputs": ["result.txt"],
@@ -1407,7 +1495,7 @@ def test_grandchild_verification_gets_separate_read_only_snapshot_of_parent_chan
         normalize_task_brief({
             "taskBriefId": "verify-child",
             "goal": "Independently verify the parent result.",
-            "context": {"workspacePath": parent.execution_workspace_root},
+            "context": {"workspacePath": str(workspace)},
             "readOnly": True,
             "readSet": ["result.txt"],
             "verificationContract": ["result.txt contains parent-change"],
@@ -1430,14 +1518,56 @@ def test_grandchild_verification_gets_separate_read_only_snapshot_of_parent_chan
         runtime_context={"run_id": "run-nested", "workspace_path": str(workspace)},
     )
 
-    assert child is not None
-    assert child["worktree_id"] != "parent-task"
-    assert child["parent_worktree_id"] == "parent-task"
-    assert child["engineering_capsule_mode"] == "verify"
-    assert child["sandbox_policy"]["actor_role"] == "grandchild"
-    assert child["sandbox_policy"]["execution_mode"] == "read"
-    assert Path(child["workspace_path"], "result.txt").read_text(encoding="utf-8") == "parent-change\n"
+    assert child is None
+    assert allocation_attempted is False
     assert any(
         "Do not create temporary evidence" in item
         for item in verification_brief["behaviorScope"]
     )
+
+
+def test_isolation_required_write_does_not_silently_fall_back_in_non_git_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = EngineeringSandboxService(
+        home=tmp_path / "v8-home",
+        git_service=_git_service(tmp_path),
+        database=DatabaseManager(tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
+        lambda: service,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_brief = normalize_task_brief(
+        {
+            "taskBriefId": "parallel-write",
+            "goal": "Write the isolated result.",
+            "context": {"workspacePath": str(workspace)},
+            "writeRequired": True,
+            "writeSet": ["result.txt"],
+            "expectedOutputs": ["result.txt"],
+            "acceptanceContract": "result.txt contains the requested result.",
+        }
+    )
+
+    with pytest.raises(EngineeringWorkspaceIsolationError) as error:
+        prepare_delegated_engineering_workspace(
+            base_state={
+                "run_id": "run-parallel",
+                "session_id": "session-parallel",
+                "project_id": "demo",
+                "workspace_path": str(workspace),
+            },
+            task_brief=task_brief,
+            delegation_id="delegation-parallel",
+            current_depth=0,
+            runtime_context={"run_id": "run-parallel", "workspace_path": str(workspace)},
+            parallel_dispatch=True,
+        )
+
+    assert error.value.code == "git_parallel_isolation_not_enabled"
+    assert error.value.details["directExecutionAvailable"] is True
+    assert not (workspace / ".git").exists()

@@ -589,6 +589,7 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Handoff Usage", "handoffUsage", 900),
     ("Shell Dialect", "shellDialect", 120),
     ("Workspace Path", "workspacePath", 260),
+    ("Terminal Delegation Role", "terminalDelegationRole", 800),
     ("Verification Evidence Contract", "verificationEvidenceContract", 1800),
     ("Artifact Write Discipline", "artifactWriteDiscipline", 800),
     ("Artifact Acceptance Guard", "artifactAcceptanceGuard", 800),

@@ -604,8 +604,9 @@ def _runtime_broker_payload(
     parameter_guidance: dict[str, Any] | None = None,
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
+    expanded_detail = normalized_detail in {"catalog", "detail", "full"}
     group_items = list(groups or [])
-    if normalized_detail not in {"catalog", "detail", "full"}:
+    if not expanded_detail:
         original_group_count = len(group_items)
         group_items = [
             {
@@ -625,11 +626,24 @@ def _runtime_broker_payload(
         "activeGrants": [str((item or {}).get("group") or item) for item in list(grants or [])],
         "availableGroups": group_items,
         "rejected": list(rejected or []),
-        "detailMode": normalized_detail if normalized_detail in {"catalog", "detail", "full"} else "summary",
-        "detailTool": "runtime_broker(mode='list', detail_level='catalog') for compact catalog; detail_level='full' for diagnostics",
+        "detailMode": normalized_detail if expanded_detail else "summary",
     }
+    if expanded_detail:
+        payload["detailTool"] = "runtime_broker(mode='list', detail_level='catalog') for compact catalog; detail_level='full' for diagnostics"
     if changed is not None:
-        payload["changed"] = list(changed or [])
+        changed_items = list(changed or [])
+        payload["changed"] = (
+            changed_items
+            if expanded_detail
+            else [
+                {
+                    "group": str(item.get("group") or ""),
+                    "kind": str(item.get("runtimeKind") or item.get("kind") or ""),
+                }
+                for item in changed_items
+                if isinstance(item, dict)
+            ]
+        )
     if episode:
         episode_id = str(episode.get("episodeId") or episode.get("needId") or "")
         episode_kind = str(episode.get("kind") or "")
@@ -638,9 +652,10 @@ def _runtime_broker_payload(
             "episodeId": episode_id,
             "kind": episode_kind,
             "state": episode_state,
-            "reason": str(episode.get("reason") or ""),
             "continuationTarget": str(episode.get("continuationTarget") or ""),
         }
+        if expanded_detail:
+            payload["episode"]["reason"] = str(episode.get("reason") or "")
         payload["queuedEpisodeId"] = episode_id
         payload["episodeKind"] = episode_kind
         payload["state"] = episode_state
@@ -653,16 +668,15 @@ def _runtime_broker_payload(
         payload["routeBriefQuality"] = dict(route_brief_quality)
     if parameter_guidance:
         payload["parameterGuidance"] = dict(parameter_guidance)
-    if normalized_detail not in {"catalog", "detail", "full"} and groups:
+    if not expanded_detail and groups:
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
             "toolNames": omitted_tools,
             "availableGroups": max(0, original_group_count - len(group_items)),
-            "reason": "default list is a compact route menu; capability_registry already describes runtime details",
         }
     if error:
         payload["error"] = error
-    if normalized_detail in {"catalog", "detail", "full"}:
+    if expanded_detail:
         return json.dumps(payload, ensure_ascii=False, indent=2)
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 

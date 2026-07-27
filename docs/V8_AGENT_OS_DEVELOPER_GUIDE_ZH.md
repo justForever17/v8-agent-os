@@ -293,7 +293,7 @@ Storage Retention：
 
 ### 14.4 工程写入问题
 
-依次检查 workspace trust、Git adoption、Capsule writeSet、worktree/lease、command preflight、change set、parent/integration merge 和 Supervisor delivery。
+先检查 workspace trust 与 Capsule 的 `writeSet / expectedOutputs / acceptance` 是否完整，再检查执行策略是否正确：串行低风险任务应直接使用绑定工作区；只有并行、风险隔离或长期恢复才检查 Git 并行隔离、worktree/lease、command preflight、change set、parent/integration merge 和 Supervisor delivery。不要把缺少 Git 误报为整个 Engineering 不可用。
 
 ## 15. 测试与交付门禁
 

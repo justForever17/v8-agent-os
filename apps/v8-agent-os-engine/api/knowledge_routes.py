@@ -1387,7 +1387,17 @@ async def get_project_engineering_workspace(project_id: str):
                     "role": "process_lease_bound_to_one_worktree",
                     "capabilities": probe_sandbox_capabilities().as_dict(),
                 },
-                "adoptionRequired": False,
+                "parallelIsolation": {
+                    "optional": True,
+                    "enabled": False,
+                    "setupRequired": False,
+                    "directExecutionAvailable": True,
+                    "unavailableReason": "git_not_installed",
+                    "setupEffects": [
+                        "create_git_repository_if_missing",
+                        "create_v8os_baseline_commit",
+                    ],
+                },
                 "dependency": {
                     "kind": "git",
                     "state": "missing",
@@ -1396,8 +1406,8 @@ async def get_project_engineering_workspace(project_id: str):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/projects/{project_id}/engineering-workspace/adopt")
-async def adopt_project_engineering_workspace(project_id: str):
+@router.post("/projects/{project_id}/engineering-workspace/parallel-isolation/enable")
+async def enable_project_git_parallel_isolation(project_id: str):
     project = project_registry_service.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
@@ -1409,7 +1419,7 @@ async def adopt_project_engineering_workspace(project_id: str):
     try:
         from core.engineering_sandbox.service import get_engineering_sandbox_service
 
-        return get_engineering_sandbox_service().adopt_project_repository(
+        return get_engineering_sandbox_service().enable_git_parallel_isolation(
             workspace_root=workspace_path,
             project_id=project_id,
         )
@@ -1418,7 +1428,7 @@ async def adopt_project_engineering_workspace(project_id: str):
         raise HTTPException(
             status_code=status_code,
             detail={
-                "error": str(getattr(exc, "code", None) or "engineering_workspace_adoption_failed"),
+                "error": str(getattr(exc, "code", None) or "git_parallel_isolation_enable_failed"),
                 "message": str(exc),
                 "details": dict(getattr(exc, "details", None) or {}),
             },

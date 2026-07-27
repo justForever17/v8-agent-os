@@ -573,6 +573,23 @@ def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     mode = _short_text(payload.get("mode") or "status", 40)
     failed = payload.get("ok") is False
+    state = payload.get("state") or payload.get("status")
+    episode = payload.get("episode") if isinstance(payload.get("episode"), dict) else {}
+    episode_id = payload.get("queuedEpisodeId") or payload.get("episodeId") or payload.get("runtimeEpisodeId")
+    episode_kind = payload.get("episodeKind") or episode.get("kind")
+    graph_owned_route_receipt = bool(
+        not failed
+        and mode == "route"
+        and episode_id
+        and str(state or episode.get("state") or "").strip().lower() == "queued"
+    )
+    if graph_owned_route_receipt:
+        kind_label = _short_text(episode_kind or "execution", 60)
+        return (
+            f"{kind_label} runtime queued.\n"
+            "The graph owns waiting and will inject the durable terminal handoff automatically. "
+            "This receipt is not execution evidence; do not poll or inspect runtime control details."
+        )
     lines = [f"Runtime route {'repair' if failed else 'menu'} ({mode})"]
     summary = payload.get("summary")
     if summary:
@@ -580,10 +597,8 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
     error = payload.get("error")
     if error:
         lines.append(f"Problem: {_short_text(error, 120)}")
-    state = payload.get("state") or payload.get("status")
     if state:
         lines.append(f"Status: {_short_text(state, 80)}")
-    episode_id = payload.get("queuedEpisodeId") or payload.get("episodeId") or payload.get("runtimeEpisodeId")
     if episode_id:
         lines.append(f"Episode: {_short_text(episode_id, 120)}")
     handoff_id = payload.get("handoffId") or payload.get("runtimeHandoffId")
@@ -693,14 +708,7 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
     next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
     if next_action:
         lines.append(f"Next: {_short_text(next_action, 180)}")
-    graph_owned_route_receipt = bool(episode_id) and str(state or "").strip().lower() == "queued"
-    if graph_owned_route_receipt:
-        lines.append(
-            "Receipt only: the graph owns waiting and will inject the durable terminal handoff; "
-            "this queued receipt is not execution evidence and has no Agent-side polling step."
-        )
-    else:
-        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
     return "\n".join(line for line in lines if line).strip()
 
 

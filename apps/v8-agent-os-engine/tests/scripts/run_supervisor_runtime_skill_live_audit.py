@@ -130,7 +130,7 @@ def _wait_for_engine(engine_url: str, *, timeout: float = 20.0) -> tuple[bool, s
 
 
 def _ensure_explicit_live_workspace_trusted(workspace: Path) -> tuple[bool, dict[str, Any]]:
-    """Trust and adopt only the disposable workspace supplied to this live side-effect harness.
+    """Trust and inspect only the disposable workspace supplied to this live side-effect harness.
 
     Product trust remains unchanged.  This helper is called only for the case
     that already requires ``--allow-side-effects``; normal Engine execution
@@ -169,15 +169,12 @@ def _ensure_explicit_live_workspace_trusted(workspace: Path) -> tuple[bool, dict
             workspace_root=str(workspace),
             project_id=event["projectId"] or None,
         )
-        if bool(repository.get("adoptionRequired")):
-            repository = sandbox.adopt_project_repository(
-                workspace_root=str(workspace),
-                project_id=event["projectId"] or None,
-            )
-            event["action"] += "+adopted_repository"
+        parallel_isolation = dict(repository.get("parallelIsolation") or {})
         event["repository"] = {
             "state": ((repository.get("repository") or {}).get("state")),
-            "adoptionRequired": bool(repository.get("adoptionRequired")),
+            "setupRequired": bool(parallel_isolation.get("setupRequired")),
+            "parallelIsolationEnabled": bool(parallel_isolation.get("enabled")),
+            "directExecutionAvailable": bool(parallel_isolation.get("directExecutionAvailable", True)),
         }
         authority = workspace_authority_service.resolve(
             runtime_kind="engineering",

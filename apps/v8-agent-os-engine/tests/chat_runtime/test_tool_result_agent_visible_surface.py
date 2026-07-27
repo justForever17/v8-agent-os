@@ -75,9 +75,10 @@ def test_runtime_broker_event_agent_visible_result_is_text_surface():
         payload,
     )
 
-    assert visible.startswith("Runtime route menu")
-    assert "episode_demo" in visible
+    assert visible.startswith("execution runtime queued")
+    assert "episode_demo" not in visible
     assert "graph owns waiting" in visible
+    assert "Active grants" not in visible
     assert "tool_observation_detail" not in visible
     assert "Raw:" not in visible
     assert not visible.lstrip().startswith("{")

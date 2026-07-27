@@ -9819,26 +9819,12 @@ class ChatRuntime:
             context["specRevision"] = dict(spec_revision)
         if chat_run.prepared.live_audit_context:
             context["live_audit"] = dict(chat_run.prepared.live_audit_context)
-        engineering_active = self._supervisor_direct_scope_requires_engineering_route(chat_run)
-        supports_managed_workspace = hasattr(chat_run, "engineering_workspace")
-        if engineering_active and context.get("workspace_path") and supports_managed_workspace:
-            if not getattr(chat_run, "engineering_workspace", None):
-                from core.engineering_sandbox.service import get_engineering_sandbox_service
-
-                prepared_workspace = get_engineering_sandbox_service().prepare_task_workspace(
-                    workspace_root=str(context["workspace_path"]),
-                    project_id=str(context.get("project_id") or "").strip() or None,
-                    session_id=chat_run.session_id,
-                    run_id=chat_run.active_run_id,
-                    delegation_id=None,
-                    worktree_id=f"supervisor_{uuid.uuid5(uuid.NAMESPACE_URL, chat_run.active_run_id).hex[:24]}",
-                    write_set=("**",),
-                    actor_role="supervisor",
-                    runtime_kind="engineering",
-                    worktree_kind="supervisor_integration",
-                )
-                chat_run.engineering_workspace = prepared_workspace.runtime_context()
-            context.update(dict(getattr(chat_run, "engineering_workspace", {}) or {}))
+        # Supervisor direct work starts in the bound workspace. A Git worktree is
+        # selected later only by a delegated write contract that needs parallel,
+        # risk, or durable-recovery isolation; entering Engineering mode alone is
+        # never sufficient reason to create a repository or execution copy.
+        if getattr(chat_run, "engineering_workspace", None):
+            context.update(dict(chat_run.engineering_workspace or {}))
         context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()
         return context
 

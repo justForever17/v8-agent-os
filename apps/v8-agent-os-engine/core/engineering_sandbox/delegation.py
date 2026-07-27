@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
 
 from .contracts import SandboxNetworkProfile
 from .service import get_engineering_sandbox_service
+from .strategy import select_engineering_workspace_strategy
+
+
+logger = logging.getLogger(__name__)
+
+
+class EngineeringWorkspaceIsolationError(RuntimeError):
+    """A task needs Git isolation that the bound workspace cannot provide."""
+
+    def __init__(self, code: str, *, reason: str, strategy: dict[str, Any]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.details = {
+            "reason": reason,
+            "strategy": dict(strategy),
+            "directExecutionAvailable": True,
+        }
 
 
 def prepare_delegated_engineering_workspace(
@@ -16,24 +34,25 @@ def prepare_delegated_engineering_workspace(
     delegation_id: str,
     current_depth: int,
     runtime_context: dict[str, Any],
+    parallel_dispatch: bool = False,
 ) -> dict[str, Any] | None:
-    """Allocate the worktree + sandbox lease used by one delegated branch.
+    """Optionally allocate the worktree + sandbox lease for one write branch.
 
-    This belongs to the engineering execution layer rather than a particular tool
-    entry point because durable Runtime episodes and direct broker calls must use
-    exactly the same allocation contract.
+    A valid Capsule is always authoritative. Git isolation is late-bound and is
+    selected only for parallel, risky, or explicitly recoverable writes. Serial
+    low-risk work and non-Git workspaces continue in the bound workspace.
     """
 
     capsule = effective_engineering_capsule(task_brief)
     capsule_mode = engineering_capsule_mode(task_brief)
-    if capsule_mode not in {"verify", "write"}:
+    if capsule_mode != "write":
         return None
     write_set = [
         str(item or "").strip()
         for item in list(capsule.get("writeSet") or [])
         if str(item or "").strip()
     ]
-    if capsule_mode == "write" and not write_set:
+    if not write_set:
         raise RuntimeError("managed_worktree_write_set_required")
     route_context = dict(base_state.get("current_route_context") or {})
     original_workspace = str(
@@ -59,6 +78,27 @@ def prepare_delegated_engineering_workspace(
     if not run_id:
         raise RuntimeError("managed_worktree_run_required")
     task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    strategy = select_engineering_workspace_strategy(
+        task_brief,
+        parallel_dispatch=parallel_dispatch,
+    )
+    if strategy.strategy != "git_worktree":
+        logger.info(
+            "Engineering task will use the bound workspace directly",
+            extra={
+                "delegationId": delegation_id,
+                "strategy": strategy.as_dict(),
+            },
+        )
+        return {
+            "workspace_path": original_workspace,
+            "original_workspace_path": original_workspace,
+            "write_set": write_set,
+            "engineering_capsule_mode": capsule_mode,
+            "engineering_workspace_strategy": "direct",
+            "engineering_workspace_strategy_reasons": [],
+            "managed_engineering_execution": False,
+        }
     raw_network_profile = str(
         capsule.get("networkProfile")
         or task_brief.get("networkProfile")
@@ -78,14 +118,28 @@ def prepare_delegated_engineering_workspace(
         or route_context.get("worktreeId")
         or ""
     ).strip() or None
-    if capsule_mode == "verify" and not parent_worktree_id:
-        # A read-only inspection has no candidate branch to isolate. Keep it on
-        # the active/original workspace so its Capsule path and native read-tool
-        # boundary describe the same checkout. A verification task receives a
-        # child worktree only when it must snapshot a managed parent's pending
-        # changes.
-        return None
-    prepared = get_engineering_sandbox_service().prepare_task_workspace(
+    sandbox_service = get_engineering_sandbox_service()
+    try:
+        repository_status = sandbox_service.project_repository_status(
+            workspace_root=original_workspace,
+            project_id=str(base_state.get("project_id") or runtime_context.get("project_id") or "").strip()
+            or None,
+        )
+    except Exception as exc:
+        if str(getattr(exc, "code", "") or "").strip() != "git_not_installed":
+            raise
+        raise EngineeringWorkspaceIsolationError(
+            "git_parallel_isolation_unavailable",
+            reason="git_not_installed",
+            strategy=strategy.as_dict(),
+        ) from exc
+    if str((repository_status.get("repository") or {}).get("state") or "").strip() != "ready":
+        raise EngineeringWorkspaceIsolationError(
+            "git_parallel_isolation_not_enabled",
+            reason=str((repository_status.get("repository") or {}).get("state") or "not_enabled"),
+            strategy=strategy.as_dict(),
+        )
+    prepared = sandbox_service.prepare_task_workspace(
         workspace_root=original_workspace,
         project_id=str(base_state.get("project_id") or runtime_context.get("project_id") or "").strip()
         or None,
@@ -97,7 +151,7 @@ def prepare_delegated_engineering_workspace(
         write_set=write_set,
         actor_role="grandchild" if current_depth > 0 else "direct_subagent",
         runtime_kind="engineering",
-        execution_mode="write" if capsule_mode == "write" else "read",
+        execution_mode="write",
         network_profile=network_profile,
         parent_worktree_id=parent_worktree_id,
     )
@@ -107,8 +161,13 @@ def prepare_delegated_engineering_workspace(
         "parent_worktree_id": parent_worktree_id,
         "write_set": write_set,
         "engineering_capsule_mode": capsule_mode,
+        "engineering_workspace_strategy": "git_worktree",
+        "engineering_workspace_strategy_reasons": list(strategy.isolation_reasons),
         "change_set_status": "pending",
     }
 
 
-__all__ = ["prepare_delegated_engineering_workspace"]
+__all__ = [
+    "EngineeringWorkspaceIsolationError",
+    "prepare_delegated_engineering_workspace",
+]

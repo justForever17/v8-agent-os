@@ -1903,12 +1903,38 @@ def test_engineering_handoff_projects_merged_child_delivery_without_exposing_wor
         "taskBriefIds": ["page-implementation"],
         "mergedResultCount": 1,
         "blockedResultCount": 0,
+        "waitingResultCount": 0,
     }
     assert "already merged into the current Active Workspace Root" in handoff["consumerHint"]
     assert "index.html" in handoff["visibleEvidenceSummary"]
     assert "src/main.js" in handoff["visibleEvidenceSummary"]
     assert ".v8os-worktrees" not in handoff["visibleEvidenceSummary"]
     assert child_worktree not in handoff["compactSummary"]
+
+
+def test_waiting_child_handoff_is_not_reported_as_failed_candidate():
+    handoff = {
+        "status": "waiting",
+        "delegationState": "waiting_child",
+        "error": "delegation_child_requested",
+        "compactSummary": "A terminal grandchild is still verifying the result.",
+        "results": [
+            {
+                "status": "waiting_child_delegation",
+                "error": "delegation_child_requested",
+                "taskBriefId": "verification-child",
+            }
+        ],
+    }
+
+    projection = RuntimeEpisodeRunner._delegation_handoff_delivery_projection(handoff)
+    summary = RuntimeEpisodeRunner._delegation_handoff_visible_evidence_summary(handoff)
+
+    assert projection["state"] == "awaiting_child"
+    assert projection["blockedResultCount"] == 0
+    assert projection["waitingResultCount"] >= 1
+    assert "child verification is still running" in summary
+    assert "failed candidate" not in summary
 
 
 def test_delegation_episode_without_tasks_returns_degraded_missing_tasks_handoff():

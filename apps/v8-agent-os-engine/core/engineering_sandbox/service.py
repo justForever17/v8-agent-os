@@ -136,6 +136,7 @@ class EngineeringSandboxService:
             project_id=project_id,
             allow_initialize=False,
         )
+        parallel_isolation_enabled = repository.state == "ready"
         return {
             "workspace": {
                 "root": repository.topology.original_workspace_root,
@@ -153,10 +154,19 @@ class EngineeringSandboxService:
                 "role": "process_lease_bound_to_one_worktree",
                 "capabilities": probe_sandbox_capabilities().as_dict(),
             },
-            "adoptionRequired": repository.state in {"adoption_required", "unborn"},
+            "parallelIsolation": {
+                "optional": True,
+                "enabled": parallel_isolation_enabled,
+                "setupRequired": repository.state in {"adoption_required", "unborn"},
+                "directExecutionAvailable": True,
+                "setupEffects": [
+                    "create_git_repository_if_missing",
+                    "create_v8os_baseline_commit",
+                ],
+            },
         }
 
-    def adopt_project_repository(
+    def enable_git_parallel_isolation(
         self,
         *,
         workspace_root: str | Path,
@@ -193,8 +203,8 @@ class EngineeringSandboxService:
             )
             if repository.state != "ready":
                 raise ManagedGitError(
-                    "workspace_repository_adoption_required",
-                    "This existing workspace must be explicitly adopted before parallel writes can use managed worktrees.",
+                    "git_parallel_isolation_not_enabled",
+                    "Git parallel isolation must be enabled before this task can use a managed worktree. Serial low-risk Engineering remains available in the bound workspace.",
                     details=repository.as_dict(),
                 )
             base_commit: str | None = None

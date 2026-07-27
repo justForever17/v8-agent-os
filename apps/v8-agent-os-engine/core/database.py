@@ -8340,6 +8340,17 @@ class DatabaseManager:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def delete_workspace_project_bindings(self, project_id: str) -> int:
+        """Remove workspace lookup truth owned by a deleted project."""
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                'DELETE FROM workspace_project_bindings WHERE project_id = ?',
+                (project_id,),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def sync_project_descriptor_cache(self, project: Dict[str, Any]):
         with self.get_connection() as conn:
             conn.execute(

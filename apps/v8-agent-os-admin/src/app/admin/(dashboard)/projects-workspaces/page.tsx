@@ -74,7 +74,14 @@ type EngineeringWorkspaceStatus = {
             reason?: string;
         };
     };
-    adoptionRequired?: boolean;
+    parallelIsolation?: {
+        optional?: boolean;
+        enabled?: boolean;
+        setupRequired?: boolean;
+        directExecutionAvailable?: boolean;
+        unavailableReason?: string;
+        setupEffects?: string[];
+    };
     dependency?: { kind?: string; state?: string };
 };
 
@@ -106,7 +113,7 @@ type ProjectEditorState = {
     loadedWorkspacePath: string;
     engineeringStatus: EngineeringWorkspaceStatus | null;
     engineeringStatusLoading: boolean;
-    engineeringAdopting: boolean;
+    engineeringIsolationEnabling: boolean;
 };
 
 const WORKSPACE_RULES_BUDGET_TOKENS = 10_000;
@@ -207,7 +214,7 @@ function buildProjectEditors(projects: ProjectRecord[], previous: Record<string,
             loadedWorkspacePath: current?.loadedWorkspacePath ?? "",
             engineeringStatus: current?.engineeringStatus ?? null,
             engineeringStatusLoading: current?.engineeringStatusLoading ?? false,
-            engineeringAdopting: current?.engineeringAdopting ?? false,
+            engineeringIsolationEnabling: current?.engineeringIsolationEnabling ?? false,
         };
     });
     return next;
@@ -639,8 +646,8 @@ export default function ProjectsWorkspacesPage() {
         }
     }, [patchProjectEditor, t, toast]);
 
-    const adoptEngineeringWorkspace = useCallback(async (projectId: string) => {
-        patchProjectEditor(projectId, { engineeringAdopting: true });
+    const enableGitParallelIsolation = useCallback(async (projectId: string) => {
+        patchProjectEditor(projectId, { engineeringIsolationEnabling: true });
         try {
             const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/engineering-workspace`, {
                 method: "POST",
@@ -651,17 +658,17 @@ export default function ProjectsWorkspacesPage() {
             }
             patchProjectEditor(projectId, {
                 engineeringStatus: payload as EngineeringWorkspaceStatus,
-                engineeringAdopting: false,
+                engineeringIsolationEnabling: false,
             });
             toast({
-                title: t("app.admin.dashboard.projects.workspaces.page.engineering.adopted"),
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.enabled"),
                 description: t("app.admin.dashboard.projects.workspaces.page.engineering.readyHint"),
             });
         } catch (error) {
-            patchProjectEditor(projectId, { engineeringAdopting: false });
+            patchProjectEditor(projectId, { engineeringIsolationEnabling: false });
             toast({
                 title: t("app.admin.dashboard.projects.workspaces.page.engineering.error.title"),
-                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.adopt"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.enable"),
                 variant: "destructive",
             });
         }
@@ -1020,8 +1027,11 @@ export default function ProjectsWorkspacesPage() {
                                 const rulesBlockedByTrust = trustState === "restricted";
                                 const engineeringStatus = editor?.engineeringStatus;
                                 const repositoryState = String(engineeringStatus?.repository?.state || "unknown");
-                                const engineeringReady = repositoryState === "ready";
-                                const gitRequired = repositoryState === "git_required";
+                                const parallelIsolation = engineeringStatus?.parallelIsolation;
+                                const engineeringReady = Boolean(parallelIsolation?.enabled ?? repositoryState === "ready");
+                                const isolationSetupRequired = Boolean(parallelIsolation?.setupRequired);
+                                const gitRequired = String(parallelIsolation?.unavailableReason || "") === "git_not_installed"
+                                    || repositoryState === "git_required";
                                 const repositoryRoot = String(engineeringStatus?.repository?.topology?.repositoryRoot || "");
                                 const workspaceRelativePath = String(engineeringStatus?.repository?.topology?.workspaceRelativePath || ".");
                                 const sandboxCapabilities = engineeringStatus?.sandbox?.capabilities;
@@ -1137,17 +1147,17 @@ export default function ProjectsWorkspacesPage() {
                                                                         ? t("app.admin.dashboard.projects.workspaces.page.engineering.ready")
                                                                         : gitRequired
                                                                             ? t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequired")
-                                                                            : t("app.admin.dashboard.projects.workspaces.page.engineering.adoptionRequired")}
+                                                                            : t("app.admin.dashboard.projects.workspaces.page.engineering.notEnabled")}
                                                                 </span>
-                                                                {engineeringStatus?.adoptionRequired ? (
+                                                                {isolationSetupRequired ? (
                                                                     <Button
                                                                         type="button"
                                                                         size="sm"
-                                                                        onClick={() => void adoptEngineeringWorkspace(project.id)}
-                                                                        disabled={editor?.engineeringAdopting || trustState !== "trusted"}
+                                                                        onClick={() => void enableGitParallelIsolation(project.id)}
+                                                                        disabled={editor?.engineeringIsolationEnabling || trustState !== "trusted"}
                                                                     >
-                                                                        {editor?.engineeringAdopting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitBranch className="mr-2 h-4 w-4" />}
-                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.adopt")}
+                                                                        {editor?.engineeringIsolationEnabling ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitBranch className="mr-2 h-4 w-4" />}
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.enable")}
                                                                     </Button>
                                                                 ) : null}
                                                             </div>
@@ -1160,6 +1170,11 @@ export default function ProjectsWorkspacesPage() {
                                                         {gitRequired ? (
                                                             <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
                                                                 {t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequiredHint")}
+                                                            </div>
+                                                        ) : null}
+                                                        {isolationSetupRequired ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.setupHint")}
                                                             </div>
                                                         ) : null}
                                                     </div>

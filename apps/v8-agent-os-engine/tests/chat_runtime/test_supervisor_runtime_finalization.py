@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -2169,6 +2170,48 @@ def test_system_resume_restores_persisted_safety_mode_and_workspace_binding(monk
     assert restarted["safetyApprovalMode"] == "reduced"
     assert restarted["workspaceBinding"]["projectId"] == "project-resume"
     assert restarted["workspaceBinding"]["workspaceId"] == "workspace-resume"
+
+
+def test_supervisor_engineering_context_starts_in_bound_workspace_without_worktree(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.get_run_record",
+        lambda _run_id: {"metadata": {}},
+    )
+    chat_run = SimpleNamespace(
+        request=SimpleNamespace(data=None, resume_value={}),
+        active_run_id="run-direct-engineering",
+        session_id="session-direct-engineering",
+        user_id="user-demo",
+        transport="http",
+        engineering_workspace={},
+        prepared=SimpleNamespace(
+            latest_user_content="修改当前工作区中的页面并验证。",
+            spec_id="",
+            spec_brief={},
+            live_audit_context={},
+            plugin_references=[],
+            plugin_authorizations=[],
+            canvas_operation_id="",
+            canvas_supervisor_direct=False,
+        ),
+        scope_result=SimpleNamespace(
+            binding=SimpleNamespace(
+                project_id="project-direct",
+                workspace_id="workspace-direct",
+                workspace_path="E:/Projects/direct",
+                resolved_scope="project:project-direct",
+            )
+        ),
+    )
+
+    context = ChatRuntime()._runtime_context_kwargs(chat_run)
+
+    assert context["workspace_path"] == "E:/Projects/direct"
+    assert Path(context["workspace_binding"]["activeWorkspaceRoot"]) == Path("E:/Projects/direct")
+    assert "worktree_id" not in context
+    assert "worktree_root" not in context
+    assert "sandbox_policy" not in context
+    assert "managed_engineering_execution" not in context
 
 
 @pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])

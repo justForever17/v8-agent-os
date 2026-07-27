@@ -167,6 +167,21 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.segment-scenes.label"], "按场景切分视频");
 });
 
+test("canvas resource URLs never depend on worktree or physical source paths", () => {
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const normalizeSlice = canvas.slice(
+    canvas.indexOf("function normalizeResource"),
+    canvas.indexOf("function sanitizeMask"),
+  );
+
+  assert.match(
+    normalizeSlice,
+    /stringValue\(record, "previewUrl", "preview_url", "downloadUrl", "download_url", "url", "publicUrl", "public_url", "externalUrl", "external_url"\)/,
+  );
+  assert.doesNotMatch(normalizeSlice, /stringValue\(record,[^\n]*(?:sourcePath|source_path)/);
+  assert.doesNotMatch(normalizeSlice, /stringValue\(record,[^\n]*(?:worktreeRoot|worktree_root)/);
+});
+
 test("canvas task contract gives Supervisor exact native, mask, tool and edge bindings", () => {
   const contractModule = loadTypeScriptModule(
     "apps/v8-agent-os-web/src/lib/creative-canvas-task-contract.ts",

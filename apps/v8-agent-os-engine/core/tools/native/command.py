@@ -138,6 +138,74 @@ __all__ = [
 ]
 
 
+_DIRECT_ENGINEERING_VALIDATION_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"python(?:\.exe)?\s+-m\s+(?:pytest|unittest)\b.*|"
+    r"pytest\b.*|vitest\b.*|jest\b.*|"
+    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|typecheck|check)\b.*|"
+    r"(?:pnpm|yarn|bun)\s+exec\s+(?:tsc|eslint|vitest|jest)\b.*|"
+    r"tsc\b(?=.*--noemit\b).*|"
+    r"cargo\s+(?:test|check|clippy)\b.*|"
+    r"go\s+(?:test|vet)\b.*|"
+    r"dotnet\s+test\b.*|"
+    r"(?:mvn|gradle|gradlew(?:\.bat)?)\b(?=.*(?:test|check)\b).*|"
+    r"ruff\s+check\b.*|eslint\b.*|"
+    r"node(?:\.exe)?\s+--check\b.*"
+    r")\s*$"
+)
+_DIRECT_ENGINEERING_READ_ONLY_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"rg\b.*|grep\b.*|findstr\b.*|"
+    r"get-content\b.*|get-childitem\b.*|select-string\b.*|"
+    r"get-item\b.*|test-path\b.*|resolve-path\b.*|"
+    r"cat\b.*|head\b.*|tail\b.*|wc\b.*|ls\b.*|dir\b.*|"
+    r"git\s+(?:status|diff|show|log|rev-parse|ls-files)\b.*|"
+    r"(?:npm|pnpm|yarn|bun)\s+(?:list|why)\b.*|"
+    r"(?:python(?:\.exe)?|node(?:\.exe)?)\s+--version\b.*|"
+    r"(?:where(?:\.exe)?|which|get-command)\b.*|echo\b.*"
+    r")\s*$"
+)
+_DIRECT_ENGINEERING_REDIRECTION_RE = re.compile(
+    r"(?i)(?:>>?|\b(?:out-file|set-content|add-content|export-clixml)\b)"
+)
+_DIRECT_ENGINEERING_COMPOUND_RE = re.compile(r"[;&]")
+_DIRECT_ENGINEERING_SAFE_PIPE_STAGE_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"select-object\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+|"
+    r"sort-object\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+|"
+    r"measure-object(?:\s+(?:-property\s+)?[-A-Za-z0-9_.*?,\s]+)?"
+    r")\s*$"
+)
+
+
+def _direct_engineering_command_is_read_or_validation(command: str) -> bool:
+    """Return whether a non-worktree delegated command may run directly.
+
+    Direct Capsule writes use native file tools for mutation so writeSet remains
+    enforceable. Shell stays available for inspection and common validation, but
+    commands that obviously write, install, or execute arbitrary scripts require
+    an isolated Git worktree.
+    """
+
+    text = str(command or "").strip()
+    if not text or command_may_change_workspace(text) or _DIRECT_ENGINEERING_REDIRECTION_RE.search(text):
+        return False
+    if _DIRECT_ENGINEERING_COMPOUND_RE.search(text):
+        return False
+    if "|" in text:
+        stages = [stage.strip() for stage in text.split("|")]
+        if len(stages) < 2 or any(not stage for stage in stages):
+            return False
+        return bool(
+            _DIRECT_ENGINEERING_READ_ONLY_RE.fullmatch(stages[0])
+            and all(_DIRECT_ENGINEERING_SAFE_PIPE_STAGE_RE.fullmatch(stage) for stage in stages[1:])
+        )
+    return bool(
+        _DIRECT_ENGINEERING_VALIDATION_RE.fullmatch(text)
+        or _DIRECT_ENGINEERING_READ_ONLY_RE.fullmatch(text)
+    )
+
+
 def _engineering_command_scope_block(
     runtime_context: dict[str, Any],
     *,
@@ -153,7 +221,23 @@ def _engineering_command_scope_block(
         or "none"
     ).strip().lower()
     if capsule_mode == "write":
-        return None
+        managed_execution = bool(
+            runtime_context.get("managed_engineering_execution")
+            or runtime_context.get("managedEngineeringExecution")
+            or runtime_context.get("sandbox_policy")
+            or runtime_context.get("sandboxPolicy")
+        )
+        if managed_execution or _direct_engineering_command_is_read_or_validation(command):
+            return None
+        return {
+            "ok": False,
+            "kind": "git_parallel_isolation_required",
+            "summary": "当前任务在原工作区直接执行；为保证 writeSet 不被 shell 绕过，写盘、安装或任意脚本命令需要 Git 并行隔离。",
+            "operation": operation,
+            "command": str(command or "").strip(),
+            "engineeringCapsuleMode": capsule_mode,
+            "recommendedNextAction": "使用受 writeSet 约束的文件工具完成修改，并运行只读/验证命令；确需 shell 写盘时，由用户在工作区设置中启用 Git 并行隔离。",
+        }
     if capsule_mode in {"read_only", "verify"} and not command_may_change_workspace(command):
         return None
     return {
@@ -165,6 +249,7 @@ def _engineering_command_scope_block(
             else "当前子 Agent 没有可执行 Engineering Capsule，命令工具保持只读关闭。"
         ),
         "operation": operation,
+        "command": str(command or "").strip(),
         "engineeringCapsuleMode": capsule_mode or "none",
         "recommendedNextAction": "向父级返回阻塞原因；由 Supervisor 通过 Engineering episode 派发带验收与证明合同的任务。",
     }
@@ -256,16 +341,10 @@ def _sandbox_launch(
         runtime_kind = str(
             runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or ""
         ).strip().lower()
-        capsule_mode = str(
-            runtime_context.get("engineering_capsule_mode")
-            or runtime_context.get("engineeringCapsuleMode")
-            or ""
-        ).strip().lower()
         managed_required = bool(
             runtime_context.get("managed_engineering_execution")
             or runtime_context.get("managedEngineeringExecution")
             or runtime_kind == "engineering"
-            or capsule_mode in {"verify", "write"}
         )
         if managed_required:
             raise RuntimeError("sandbox_lease_required_for_engineering_command")

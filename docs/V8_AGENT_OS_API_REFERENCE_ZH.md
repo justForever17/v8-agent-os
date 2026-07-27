@@ -128,9 +128,9 @@ Spec 阶段同意、ask_user 回答和安全副作用审批是不同语义，客
 - `GET /v1/engineering-lane/proof-ledger`
 - `GET /v1/engineering-lane/workset-observations`
 - `GET /v1/projects/{projectId}/engineering-workspace`
-- `POST /v1/projects/{projectId}/engineering-workspace/adopt`
+- `POST /v1/projects/{projectId}/engineering-workspace/parallel-isolation/enable`
 
-项目工作区路由受安装 profile/knowledge service 影响。采用现有非 Git 工作区必须是显式操作；托管 worktree、sandbox lease 和候选 change set 是执行控制面，不应作为普通文件 API 暴露。
+项目工作区路由受安装 profile/knowledge service 影响。非 Git 工作区仍可执行串行、低风险 Engineering；只有用户选择启用 Git 并行隔离时，才允许创建 `.git` 与 V8OS baseline。托管 worktree、sandbox lease 和候选 change set 是可选隔离控制面，不应作为普通文件 API 暴露。
 
 ### 5.2 UI Patch Workbench
 

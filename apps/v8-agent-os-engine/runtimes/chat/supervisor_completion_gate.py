@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -447,6 +448,129 @@ def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mappi
                     break
         except Exception:
             continue
+    evidence.extend(_authoritative_agent_write_artifacts(episode, workspace_paths))
+    return list(dict.fromkeys(evidence))[:32]
+
+
+def _normalized_contract_path(value: Any) -> str:
+    text = str(value or "").strip().strip("`'\"").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return re.sub(r"/+", "/", text).lstrip("/")
+
+
+def _episode_write_set(episode: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for brief in _episode_task_briefs(episode):
+        capsule = (
+            brief.get("engineeringTaskCapsule")
+            if isinstance(brief.get("engineeringTaskCapsule"), Mapping)
+            else {}
+        )
+        raw_values = capsule.get("writeSet") if capsule else brief.get("writeSet") or brief.get("write_set")
+        if isinstance(raw_values, str):
+            raw_values = [raw_values]
+        for item in list(raw_values or []):
+            normalized = _normalized_contract_path(item)
+            if normalized and normalized not in values:
+                values.append(normalized)
+    return values
+
+
+def _write_set_covers_path(relative_path: str, write_set: Iterable[str]) -> bool:
+    candidate = _normalized_contract_path(relative_path).casefold()
+    if not candidate:
+        return False
+    for raw_pattern in write_set:
+        pattern = _normalized_contract_path(raw_pattern).casefold()
+        if not pattern:
+            continue
+        if any(marker in pattern for marker in ("*", "?", "[")):
+            if fnmatch(candidate, pattern):
+                return True
+            continue
+        if candidate == pattern or candidate.startswith(pattern.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _authoritative_agent_write_artifacts(
+    episode: Mapping[str, Any],
+    workspace_paths: Iterable[Path],
+) -> list[str]:
+    """Resolve direct-workspace writes from the governed artifact ledger.
+
+    A direct Engineering write is recorded even when a delegated handoff keeps
+    only compact proof. Only the exact session/run-bound, authoritative
+    ``write_native_file`` record may close this evidence gap. Managed worktree
+    candidates remain ineligible until their ordinary merge handoff proves
+    delivery to the original workspace.
+    """
+
+    session_id = str(episode.get("sessionId") or episode.get("session_id") or "").strip()
+    run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+    write_set = _episode_write_set(episode)
+    roots = [Path(item).resolve() for item in workspace_paths]
+    if not session_id or not run_id or not write_set or not roots:
+        return []
+    try:
+        artifacts = db.list_runtime_artifacts(session_id=session_id, run_id=run_id, limit=200)
+    except Exception:
+        return []
+
+    evidence: list[str] = []
+    for artifact in list(artifacts or []):
+        if not isinstance(artifact, Mapping):
+            continue
+        metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), Mapping) else {}
+        if str(artifact.get("resourceRole") or artifact.get("resource_role") or "artifact").strip() != "artifact":
+            continue
+        if str(artifact.get("sessionId") or artifact.get("session_id") or "").strip() != session_id:
+            continue
+        if str(artifact.get("runId") or artifact.get("run_id") or "").strip() != run_id:
+            continue
+        if str(artifact.get("origin") or metadata.get("origin") or "").strip() != "agent_file_write":
+            continue
+        source_component = str(
+            artifact.get("sourceComponent")
+            or artifact.get("source_component")
+            or metadata.get("source")
+            or ""
+        ).strip()
+        if source_component != "write_native_file":
+            continue
+        if str(metadata.get("storageClass") or metadata.get("storage_class") or "").strip() != "workspace":
+            continue
+        if str(metadata.get("pathPlane") or metadata.get("path_plane") or "").strip() != "workspace_artifact":
+            continue
+        if str(metadata.get("deliveryState") or metadata.get("delivery_state") or "").strip() != "authoritative":
+            continue
+        if metadata.get("managedExecution") is not False and metadata.get("managed_execution") is not False:
+            continue
+
+        source_path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+        if not source_path:
+            continue
+        try:
+            resolved = Path(source_path).resolve()
+        except Exception:
+            continue
+        if not resolved.exists() or not resolved.is_file():
+            continue
+        relative = _normalized_contract_path(
+            metadata.get("workspaceRelativePath") or metadata.get("workspace_relative_path")
+        )
+        matching_root = next((root for root in roots if _path_is_within(resolved, root)), None)
+        if matching_root is None:
+            continue
+        if not relative:
+            try:
+                relative = resolved.relative_to(matching_root).as_posix()
+            except (OSError, ValueError):
+                continue
+        if not _write_set_covers_path(relative, write_set):
+            continue
+        evidence.append(str(resolved))
     return list(dict.fromkeys(evidence))[:32]
 
 

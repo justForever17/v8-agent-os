@@ -19,6 +19,7 @@ from core.engineering_capsule import (
     engineering_tool_allowed,
 )
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
+from core.engineering_sandbox.strategy import select_engineering_workspace_strategy
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.tools.native.command import _engineering_command_scope_block, run_system_command
 from core.tools.native import delegation as native_delegation
@@ -46,6 +47,38 @@ def _write_task(workspace: Path) -> dict:
             "writeRequired": True,
         }
     )
+
+
+def test_engineering_worktree_strategy_is_late_bound_to_complete_write_contract(tmp_path: Path) -> None:
+    write_task = _write_task(tmp_path)
+
+    serial = select_engineering_workspace_strategy(write_task)
+    parallel = select_engineering_workspace_strategy(write_task, parallel_dispatch=True)
+    risky = select_engineering_workspace_strategy({**write_task, "requiresIsolation": True})
+    recoverable = select_engineering_workspace_strategy({**write_task, "durableRecovery": True})
+    incomplete = select_engineering_workspace_strategy(
+        normalize_task_brief(
+            {
+                "taskBriefId": "incomplete-write",
+                "goal": "Write a file without a valid output and acceptance contract.",
+                "writeRequired": True,
+                "writeSet": ["src/page.tsx"],
+            }
+        ),
+        parallel_dispatch=True,
+    )
+
+    assert serial.as_dict() == {
+        "strategy": "direct",
+        "writeContractPresent": True,
+        "isolationReasons": [],
+    }
+    assert parallel.strategy == "git_worktree"
+    assert parallel.isolation_reasons == ("parallel_writes",)
+    assert risky.isolation_reasons == ("risk_isolation",)
+    assert recoverable.isolation_reasons == ("durable_recovery",)
+    assert incomplete.write_contract_present is False
+    assert incomplete.strategy == "direct"
 
 
 def test_engineering_kernel_publishes_workspace_and_detected_shell(tmp_path: Path) -> None:
@@ -358,6 +391,56 @@ def test_read_only_capsule_can_run_non_mutating_verification_but_not_write_comma
     assert write_block["kind"] == "engineering_capsule_required"
 
 
+def test_direct_write_capsule_shell_is_limited_to_read_and_validation_commands() -> None:
+    runtime_context = {
+        "runtime_kind": "subagent",
+        "engineering_capsule_mode": "write",
+    }
+
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="verification",
+        command="rg -n TODO src",
+    ) is None
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="verification",
+        command="python -m pytest tests/test_page.py -q",
+    ) is None
+    assert _engineering_command_scope_block(
+        runtime_context,
+        operation="inspection",
+        command="Get-ChildItem -LiteralPath . | Select-Object FullName, PSIsContainer",
+    ) is None
+
+    arbitrary_script = _engineering_command_scope_block(
+        runtime_context,
+        operation="implementation",
+        command="python mutate.py",
+    )
+    compound_bypass = _engineering_command_scope_block(
+        runtime_context,
+        operation="implementation",
+        command="python -m pytest -q; python mutate.py",
+    )
+    direct_write = _engineering_command_scope_block(
+        runtime_context,
+        operation="implementation",
+        command="New-Item result.txt",
+    )
+    unsafe_pipeline = _engineering_command_scope_block(
+        runtime_context,
+        operation="implementation",
+        command="Get-ChildItem | ForEach-Object { Remove-Item $_ }",
+    )
+
+    assert arbitrary_script and arbitrary_script["kind"] == "git_parallel_isolation_required"
+    assert arbitrary_script["command"] == "python mutate.py"
+    assert compound_bypass and compound_bypass["kind"] == "git_parallel_isolation_required"
+    assert direct_write and direct_write["kind"] == "git_parallel_isolation_required"
+    assert unsafe_pipeline and unsafe_pipeline["kind"] == "git_parallel_isolation_required"
+
+
 @pytest.mark.parametrize("approval_mode", ["manual", "reduced", "minimal"])
 def test_parallel_runtime_context_projects_capsule_workspace_and_approval(
     tmp_path: Path,
@@ -416,6 +499,9 @@ def test_grandchild_capsule_preserves_parent_contract_as_read_only_verification(
     assert inherited["writeSet"] == ["src/page.tsx"]
     assert inherited["acceptance"] == "The page builds and the requested interaction works."
     assert inherited["proofExpectations"] == ["test output", "file artifact"]
+    terminal_role = child["context"]["terminalDelegationRole"]
+    assert "requested terminal grandchild worker" in terminal_role
+    assert "Do not claim that another grandchild is required" in terminal_role
 
 
 def test_grandchild_capsule_allows_only_explicit_strict_write_partition(tmp_path: Path) -> None:

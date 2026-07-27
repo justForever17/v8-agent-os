@@ -93,6 +93,36 @@ _PREFERRED_WORKER_AGENT_ALIASES = {
 _DEPRECATED_DELEGATION_TARGET_IDS = {"project-planner"}
 
 
+def _engineering_workspace_preparation_failure(exc: Exception) -> dict[str, str]:
+    code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+    if code in {
+        "git_parallel_isolation_not_enabled",
+        "git_parallel_isolation_unavailable",
+    }:
+        return {
+            "code": code,
+            "localSelfCheck": (
+                "The task contract requires parallel, risk, or durable-recovery isolation, "
+                "but optional Git parallel isolation is not available. No worker was started "
+                "and no workspace file was changed."
+            ),
+            "acceptanceHint": (
+                "Retry one low-risk write task at a time in the bound workspace, or ask the user "
+                "to enable optional Git parallel isolation in workspace settings."
+            ),
+            "repairSuggestion": (
+                "Do not present Git as an Engineering prerequisite. Serialize the write tasks, "
+                "or use the user-enabled Git parallel-isolation baseline."
+            ),
+        }
+    return {
+        "code": code,
+        "localSelfCheck": "Engineering workspace preparation failed before Agent execution.",
+        "acceptanceHint": "Repair the reported workspace or sandbox failure, then retry this delegation.",
+        "repairSuggestion": "Inspect the compact error and retry only after its execution boundary is valid.",
+    }
+
+
 def _is_supervisor_delegation_caller(runtime_context: dict[str, Any]) -> bool:
     runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
     agent_id = str(
@@ -1988,6 +2018,7 @@ def delegation_broker(
                         delegation_id=delegation_id_value,
                         current_depth=current_depth,
                         runtime_context=runtime_context,
+                        parallel_dispatch=len(normalized_tasks) > 1,
                     )
                     if managed_workspace:
                         branch_task_brief = bind_engineering_task_workspace(
@@ -1996,11 +2027,18 @@ def delegation_broker(
                             original_workspace_path=str(
                                 managed_workspace.get("original_workspace_path") or ""
                             ),
+                            workspace_strategy=str(
+                                managed_workspace.get("engineering_workspace_strategy") or ""
+                            ),
+                            isolation_reasons=list(
+                                managed_workspace.get("engineering_workspace_strategy_reasons") or []
+                            ),
                         )
                         # The human instruction is built from the task brief.
-                        # Recompute it after worktree binding; otherwise the
-                        # worker receives a valid child lease but prose that
-                        # still points at the parent's checkout.
+                        # Recompute it after execution-workspace binding;
+                        # otherwise the worker can receive a valid Capsule while
+                        # its prose describes a different checkout or shell
+                        # boundary.
                         task_query = task_brief_query_text(branch_task_brief) or str(
                             branch_task_brief.get("goal") or ""
                         ).strip()
@@ -2013,7 +2051,8 @@ def delegation_broker(
                             str(branch_task_brief.get("taskBriefId") or "").strip()
                         ] = dict(branch_task_brief)
                 except Exception as exc:
-                    error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+                    workspace_failure = _engineering_workspace_preparation_failure(exc)
+                    error_code = workspace_failure["code"]
                     parallel_results.append(
                         {
                             "invocationId": invocation_id,
@@ -2029,8 +2068,8 @@ def delegation_broker(
                             "branchIndex": index,
                             "status": "error",
                             "error": error_code,
-                            "localSelfCheck": "Managed worktree or native sandbox preparation failed before Agent execution.",
-                            "acceptanceHint": "Repair the repository/sandbox readiness issue, then retry this delegation.",
+                            "localSelfCheck": workspace_failure["localSelfCheck"],
+                            "acceptanceHint": workspace_failure["acceptanceHint"],
                             "supervisorAcceptance": {
                                 "status": "pending",
                                 "requiredAction": ["retry", "ignore"],
@@ -2056,7 +2095,7 @@ def delegation_broker(
                             workset_dispatch_decision=workset_decision,
                             engineering_capsule_attached=True,
                             dispatch_blocked_reason=error_code,
-                            repair_suggestion="Ensure Git is ready and the native sandbox host is available, then retry.",
+                            repair_suggestion=workspace_failure["repairSuggestion"],
                             registry_version=registry_version,
                             registry_hash=registry_hash,
                             error=error_code,
@@ -2230,6 +2269,12 @@ def delegation_broker(
 
             if external_worker:
                 external_workspace: dict[str, Any] | None = None
+                external_task_brief = dict(task_brief)
+                if engineering_capsule_mode(external_task_brief) == "write":
+                    # An opaque CLI worker cannot be constrained by native
+                    # writeSet-aware file tools, so its write contract always
+                    # needs the optional Git isolation boundary.
+                    external_task_brief["requiresIsolation"] = True
                 external_seed = (
                     f"external::{invocation_id}::{index}::"
                     f"{str(task_brief.get('taskBriefId') or 'task')}::"
@@ -2238,13 +2283,15 @@ def delegation_broker(
                 try:
                     external_workspace = prepare_delegated_engineering_workspace(
                         base_state=base_state,
-                        task_brief=task_brief,
+                        task_brief=external_task_brief,
                         delegation_id=external_seed,
                         current_depth=current_depth,
                         runtime_context=runtime_context,
+                        parallel_dispatch=len(normalized_tasks) > 1,
                     )
                 except Exception as exc:
-                    error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+                    workspace_failure = _engineering_workspace_preparation_failure(exc)
+                    error_code = workspace_failure["code"]
                     item = _delegation_compact_item(
                         delegation_id=external_seed,
                         task_brief=task_brief,
@@ -2264,11 +2311,29 @@ def delegation_broker(
                         engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
                         registry_version=registry_version,
                         registry_hash=registry_hash,
+                        repair_suggestion=workspace_failure["repairSuggestion"],
                         error=error_code,
                     )
                     items.append(item)
                     parallel_results.append(item)
                     continue
+                if external_workspace:
+                    external_task_brief = bind_engineering_task_workspace(
+                        external_task_brief,
+                        workspace_path=str(external_workspace.get("workspace_path") or ""),
+                        original_workspace_path=str(
+                            external_workspace.get("original_workspace_path") or ""
+                        ),
+                        workspace_strategy=str(
+                            external_workspace.get("engineering_workspace_strategy") or ""
+                        ),
+                        isolation_reasons=list(
+                            external_workspace.get("engineering_workspace_strategy_reasons") or []
+                        ),
+                    )
+                    effective_task_briefs_by_id[
+                        str(external_task_brief.get("taskBriefId") or "").strip()
+                    ] = dict(external_task_brief)
                 execution_workspace_path = str(
                     (external_workspace or {}).get("workspace_path")
                     or base_state.get("workspace_path")
@@ -2276,7 +2341,7 @@ def delegation_broker(
                 ).strip()
                 rendered_command = render_external_worker_command(
                     descriptor=external_worker,
-                    task_brief=task_brief,
+                    task_brief=external_task_brief,
                     workspace_path=execution_workspace_path,
                     workspace_id=str(base_state.get("workspace_id") or ""),
                     project_id=str(base_state.get("project_id") or ""),

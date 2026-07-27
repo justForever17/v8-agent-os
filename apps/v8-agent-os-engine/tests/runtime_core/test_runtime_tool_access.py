@@ -472,10 +472,11 @@ def test_runtime_broker_grant_does_not_repeat_catalog_by_default():
 
 
 def test_runtime_broker_route_creates_episode_and_grants_access():
+    route_reason = "need multi-source evidence sentinel-runtime-route-reason"
     command = runtime_broker.func(
         mode="route",
         routeKind="research",
-        routeReason="need multi-source evidence",
+        routeReason=route_reason,
         researchBriefIds=["source-a", "source-b"],
         researchBriefGoals=["Verify source A.", "Verify source B."],
         state={"current_route_context": {}},
@@ -488,12 +489,16 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert payload["episode"]["kind"] == "research"
     assert payload["episode"]["state"] == "queued"
     assert payload["episode"]["continuationTarget"] == "runtime_episode_runner"
+    assert "reason" not in payload["episode"]
+    assert route_reason not in command.update["messages"][0].content
+    assert len(command.update["messages"][0].content) < 1000
     assert payload["queuedEpisodeId"] == payload["episode"]["episodeId"]
     assert payload["episodeKind"] == "research"
     assert payload["nextAction"] == "runtime_episode"
     assert runtime_access_from_route_context(updated_context) == ["research.core"]
     assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
     assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
+    assert updated_context["capabilityEpisodes"][-1]["reason"] == route_reason
     assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
 

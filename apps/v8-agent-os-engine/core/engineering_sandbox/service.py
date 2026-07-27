@@ -978,6 +978,15 @@ class EngineeringSandboxService:
             return {"ok": True, "status": "no_managed_changes", "changedPaths": []}
         payload = json.loads(str(row["change_set_json"]))
         if str(row["state"] or "").strip() in {"delivered", "cleaned"}:
+            artifact_rebind = self._rebind_delivered_artifacts(
+                run_id=run_id,
+                workspace_root=str(row["original_workspace_root"]),
+            )
+            cleanup = (
+                self.cleanup_accepted_run_worktrees(run_id=run_id)
+                if artifact_rebind.get("ok") is True
+                else self._deferred_artifact_cleanup(artifact_rebind)
+            )
             return {
                 "ok": True,
                 "status": "delivered",
@@ -985,6 +994,8 @@ class EngineeringSandboxService:
                 "commitId": payload.get("commitId"),
                 "changedPaths": list(payload.get("changedPaths") or []),
                 "recoveryRef": payload.get("recoveryRef"),
+                "artifactRebind": artifact_rebind,
+                "cleanup": cleanup,
                 "idempotent": True,
             }
         integration = GitChangeSetRef(
@@ -1003,14 +1014,57 @@ class EngineeringSandboxService:
             raise ManagedGitError("managed_repository_not_found", "The managed repository record is missing.")
         changed = self.git.apply_integration_to_workspace(repository, integration=integration, run_id=run_id)
         self._update_worktree_state(str(row["worktree_id"]), "delivered")
-        cleanup = self.cleanup_accepted_run_worktrees(run_id=run_id)
+        artifact_rebind = self._rebind_delivered_artifacts(
+            run_id=run_id,
+            workspace_root=repository.topology.original_workspace_root,
+        )
+        cleanup = (
+            self.cleanup_accepted_run_worktrees(run_id=run_id)
+            if artifact_rebind.get("ok") is True
+            else self._deferred_artifact_cleanup(artifact_rebind)
+        )
         return {
             "ok": True,
             "status": "delivered",
             "worktreeId": str(row["worktree_id"]),
             "commitId": integration.commit_id,
             "changedPaths": list(changed),
+            "artifactRebind": artifact_rebind,
             "cleanup": cleanup,
+        }
+
+    def _rebind_delivered_artifacts(self, *, run_id: str, workspace_root: str) -> dict[str, Any]:
+        try:
+            from core.artifact_store import ArtifactStore
+
+            return ArtifactStore(database=self.database).rebind_managed_workspace_artifacts(
+                run_id=run_id,
+                workspace_root=workspace_root,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "rebound": 0,
+                "invalidated": 0,
+                "skipped": 0,
+                "errorCode": "artifact_rebind_failed",
+                "error": str(getattr(exc, "code", None) or exc),
+            }
+
+    @staticmethod
+    def _deferred_artifact_cleanup(artifact_rebind: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "removed": 0,
+            "removedPolicyFiles": 0,
+            "preservedRefs": [],
+            "failures": [
+                {
+                    "worktreeId": "run",
+                    "error": str(artifact_rebind.get("errorCode") or "artifact_rebind_incomplete"),
+                }
+            ],
+            "deferred": True,
         }
 
     def record_run_integration_decision(self, *, run_id: str, decision: str) -> None:
@@ -1290,9 +1344,18 @@ class EngineeringSandboxService:
 
         self.database._run_write_with_retry(_write)
 
-    def cleanup_terminal_worktrees(self, *, older_than_days: int = 7, limit: int = 100) -> dict[str, Any]:
+    def cleanup_terminal_worktrees(
+        self,
+        *,
+        older_than_days: float = 1,
+        abandoned_after_days: float = 7,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         self._sync_worktree_storage_config()
-        cutoff = (_utc_now() - timedelta(days=max(1, int(older_than_days)))).isoformat()
+        terminal_cutoff = (_utc_now() - timedelta(days=max(0.0, float(older_than_days)))).isoformat()
+        abandoned_cutoff = (
+            _utc_now() - timedelta(days=max(0.0, float(abandoned_after_days)))
+        ).isoformat()
         terminal_states = (
             "delivered",
             "integrated",
@@ -1302,7 +1365,9 @@ class EngineeringSandboxService:
             "blocked",
             "cancelled",
         )
-        placeholders = ",".join("?" for _ in terminal_states)
+        abandoned_states = ("recoverable", "integration_candidate")
+        terminal_placeholders = ",".join("?" for _ in terminal_states)
+        abandoned_placeholders = ",".join("?" for _ in abandoned_states)
         with self.database.get_connection() as conn:
             rows = conn.execute(
                 f"""
@@ -1312,12 +1377,45 @@ class EngineeringSandboxService:
                        repo.metadata_json
                 FROM engineering_worktrees wt
                 JOIN managed_git_repositories repo ON repo.repository_id = wt.repository_id
-                WHERE wt.state IN ({placeholders}) AND wt.updated_at < ?
+                WHERE (
+                    (wt.state IN ({terminal_placeholders}) AND wt.updated_at < ?)
+                    OR (
+                        wt.state IN ({abandoned_placeholders})
+                        AND wt.updated_at < ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sandbox_execution_leases lease
+                            WHERE lease.worktree_id = wt.worktree_id
+                              AND lease.state IN ('active', 'finalizing')
+                        )
+                    )
+                )
                 ORDER BY wt.updated_at ASC LIMIT ?
                 """,
-                (*terminal_states, cutoff, max(1, int(limit))),
+                (
+                    *terminal_states,
+                    terminal_cutoff,
+                    *abandoned_states,
+                    abandoned_cutoff,
+                    max(1, int(limit)),
+                ),
             ).fetchall()
-        cleanup = self._cleanup_worktree_rows(rows, preserve_recovery_refs=True)
+        accepted_states = {"delivered", "integrated", "merged_to_parent"}
+        accepted_rows = [row for row in rows if str(row["state"] or "").strip() in accepted_states]
+        discarded_rows = [row for row in rows if str(row["state"] or "").strip() not in accepted_states]
+        accepted_cleanup = self._cleanup_worktree_rows(accepted_rows, preserve_recovery_refs=True)
+        discarded_cleanup = self._cleanup_worktree_rows(discarded_rows, preserve_recovery_refs=False)
+        cleanup = {
+            "removed": int(accepted_cleanup.get("removed") or 0)
+            + int(discarded_cleanup.get("removed") or 0),
+            "removedPolicyFiles": int(accepted_cleanup.get("removedPolicyFiles") or 0)
+            + int(discarded_cleanup.get("removedPolicyFiles") or 0),
+            "preservedRefs": list(accepted_cleanup.get("preservedRefs") or []),
+            "failures": [
+                *(accepted_cleanup.get("failures") or []),
+                *(discarded_cleanup.get("failures") or []),
+            ][:20],
+            "discarded": int(discarded_cleanup.get("removed") or 0),
+        }
         stale_index_files = 0
         stale_index_cutoff = (_utc_now() - timedelta(days=1)).timestamp()
         for index_file in self.git.index_root.glob("*.index"):
@@ -1330,6 +1428,8 @@ class EngineeringSandboxService:
         return {
             **cleanup,
             "removedStaleIndexes": stale_index_files,
+            "terminalRetentionDays": max(0.0, float(older_than_days)),
+            "abandonedRetentionDays": max(0.0, float(abandoned_after_days)),
         }
 
     @staticmethod

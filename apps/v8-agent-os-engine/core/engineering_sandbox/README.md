@@ -29,7 +29,8 @@ The original workspace remains the authority root. A valid sandbox policy tempor
 4. Supervisor, direct child, grandchild and external worker writes run in separate managed worktrees. A sandbox lease is immutable and bound to one worktree, base commit, write set and network profile.
 5. A completed task becomes a candidate commit. Nested candidates merge into their parent worktree; sibling candidates are combined in a separate integration worktree.
 6. Only a validated Supervisor delivery decision applies the integration patch to the original workspace. V8OS does not silently commit or move the user's current branch.
-7. After Supervisor accepts delivery, V8OS writes a durable `refs/v8os/delivered/...` recovery ref and immediately removes the physical checkout. Unaccepted or interrupted worktrees remain recoverable and follow their lifecycle policy.
+7. After Supervisor accepts delivery, V8OS first rebinds Agent-written artifact records to the delivered files in the original workspace, writes a durable `refs/v8os/delivered/...` recovery ref, and removes the physical checkout. If artifact rebinding fails, checkout cleanup is deferred so the delivery can be reconciled without a dangling artifact.
+8. The Engine runs the managed-worktree janitor at startup and hourly. Terminal worktrees are retained for one day; abandoned `recoverable` and `integration_candidate` worktrees are retained for seven days and are removed only when they have no active or finalizing sandbox lease. Accepted delivery refs remain durable after physical checkout cleanup; failed, cancelled, ignored and abandoned candidates are discarded after their retention window instead of creating permanent Git refs.
 
 Files over 20 MiB cannot enter a managed change set. During explicit adoption, pre-existing untracked files above that limit are recorded in `.git/info/exclude`; this does not delete or move them.
 

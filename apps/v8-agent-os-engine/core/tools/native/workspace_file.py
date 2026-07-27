@@ -210,6 +210,12 @@ def _record_agent_written_file_artifact(
     if not session_id or not run_id or not target_path.is_file():
         return None
     workspace_root = str(runtime_context.get("workspace_path") or "").strip()
+    original_workspace_root = str(
+        runtime_context.get("original_workspace_path")
+        or runtime_context.get("originalWorkspacePath")
+        or ""
+    ).strip()
+    managed_execution = runtime_context.get("managed_engineering_execution") is True
     workspace_relative_path = ""
     if workspace_root:
         try:
@@ -221,7 +227,7 @@ def _record_agent_written_file_artifact(
             file_path=target_path,
             session_id=session_id,
             run_id=run_id,
-            workspace_path=str(target_path),
+            workspace_path=workspace_relative_path or None,
             metadata={
                 "origin": "agent_file_write",
                 "source": "write_native_file",
@@ -229,10 +235,17 @@ def _record_agent_written_file_artifact(
                 "surfaceVisible": True,
                 "storageClass": "workspace",
                 "pathPlane": "workspace_artifact",
-                "workspaceRoot": workspace_root or None,
+                "workspaceRoot": (
+                    original_workspace_root if managed_execution and original_workspace_root else workspace_root
+                ) or None,
                 "workspaceRelativePath": workspace_relative_path or None,
                 "projectId": str(runtime_context.get("project_id") or "").strip() or None,
                 "workspaceId": str(runtime_context.get("workspace_id") or "").strip() or None,
+                "managedExecution": managed_execution,
+                "deliveryState": "candidate" if managed_execution else "authoritative",
+                "worktreeId": str(
+                    runtime_context.get("worktree_id") or runtime_context.get("worktreeId") or ""
+                ).strip() or None,
             },
             source_component="write_native_file",
             node="write_native_file",

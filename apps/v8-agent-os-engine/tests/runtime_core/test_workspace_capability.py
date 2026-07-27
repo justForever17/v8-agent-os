@@ -356,8 +356,52 @@ def test_write_native_file_records_a_session_bound_artifact(tmp_path, monkeypatc
     assert len(recorded) == 1
     assert recorded[0]["session_id"] == "session-a"
     assert recorded[0]["run_id"] == "run-a"
+    assert recorded[0]["workspace_path"] == "src/generated.ts"
     assert recorded[0]["metadata"]["origin"] == "agent_file_write"
     assert recorded[0]["metadata"]["workspaceRelativePath"] == "src/generated.ts"
+    assert recorded[0]["metadata"]["managedExecution"] is False
+    assert recorded[0]["metadata"]["deliveryState"] == "authoritative"
+
+
+def test_managed_write_artifact_records_original_workspace_authority(tmp_path, monkeypatch):
+    from core.tools.native import workspace_file as workspace_file_module
+
+    execution_root = tmp_path / "worktree"
+    original_root = tmp_path / "workspace"
+    target = execution_root / "src" / "generated.ts"
+    target.parent.mkdir(parents=True)
+    target.write_text("export const ok = true;\n", encoding="utf-8")
+    original_root.mkdir()
+    recorded: list[dict] = []
+
+    class _ArtifactStore:
+        def record_local_file(self, **kwargs):
+            recorded.append(kwargs)
+            return {"artifactId": "art_managed"}
+
+    monkeypatch.setattr(workspace_file_module, "artifact_store", _ArtifactStore())
+
+    artifact = workspace_file_module._record_agent_written_file_artifact(
+        {
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "workspace_path": str(execution_root),
+            "original_workspace_path": str(original_root),
+            "workspace_id": "workspace-a",
+            "project_id": "project-a",
+            "managed_engineering_execution": True,
+            "worktree_id": "worktree-a",
+        },
+        target,
+        operation="create_or_overwrite",
+    )
+
+    assert artifact == {"artifactId": "art_managed"}
+    assert recorded[0]["workspace_path"] == "src/generated.ts"
+    assert recorded[0]["metadata"]["managedExecution"] is True
+    assert recorded[0]["metadata"]["deliveryState"] == "candidate"
+    assert recorded[0]["metadata"]["workspaceRoot"] == str(original_root)
+    assert recorded[0]["metadata"]["worktreeId"] == "worktree-a"
 
 
 def test_write_native_file_enforces_delegated_task_write_set(tmp_path, monkeypatch):

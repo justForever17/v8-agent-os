@@ -6291,6 +6291,38 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+    def update_runtime_artifact_location(
+        self,
+        *,
+        artifact_id: str,
+        source_path: Optional[str],
+        workspace_path: Optional[str],
+        metadata: dict,
+    ) -> bool:
+        normalized_artifact_id = str(artifact_id or "").strip()
+        if not normalized_artifact_id:
+            return False
+
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE runtime_artifacts
+                    SET source_path = ?, workspace_path = ?, metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        source_path,
+                        workspace_path,
+                        json.dumps(metadata or {}, ensure_ascii=False),
+                        normalized_artifact_id,
+                    ),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+
+        return bool(self._run_write_with_retry(_write))
+
     @staticmethod
     def _hydrate_session_source_row(row: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(row)

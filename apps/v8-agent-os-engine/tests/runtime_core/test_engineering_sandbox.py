@@ -851,13 +851,18 @@ def test_dependency_changes_become_downstream_baseline_not_downstream_output(tmp
     assert (workspace / "downstream.txt").read_text(encoding="utf-8") == "downstream only\n"
 
 
-def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(tmp_path: Path) -> None:
+def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     database = DatabaseManager(tmp_path / "state.db")
     git = _git_service(tmp_path)
     service = EngineeringSandboxService(home=tmp_path / "v8-home", git_service=git, database=database)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("base\n", encoding="utf-8")
+    database.create_or_update_session("session", "Managed delivery", user_id="user")
+    database.create_run_record("run", "session", user_id="user", run_type="chat")
     service.ensure_project_repository(workspace_root=workspace, project_id="demo", allow_initialize=True)
     prepared = service.prepare_task_workspace(
         workspace_root=workspace,
@@ -872,7 +877,27 @@ def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(tmp
         network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
     )
     task_root = Path(str(prepared.worktree.topology.worktree_root))
-    Path(prepared.execution_workspace_root, "result.txt").write_text("done\n", encoding="utf-8")
+    candidate_file = Path(prepared.execution_workspace_root, "result.txt")
+    candidate_file.write_text("done\n", encoding="utf-8")
+    database.add_runtime_artifact(
+        "art-managed-result",
+        "document",
+        "text/plain",
+        session_id="session",
+        run_id="run",
+        title="result.txt",
+        source_path=str(candidate_file),
+        workspace_path="result.txt",
+        preview_url="/v1/artifacts/art-managed-result/content",
+        metadata={
+            "origin": "agent_file_write",
+            "storageClass": "workspace",
+            "pathPlane": "workspace_artifact",
+            "workspaceRelativePath": "result.txt",
+            "managedExecution": True,
+            "deliveryState": "candidate",
+        },
+    )
     change_set = service.finalize_task_workspace(worktree_id="task", commit_message="test: result")
     integration, _combined = service.build_run_integration(
         run_id="run",
@@ -881,14 +906,40 @@ def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(tmp
     )
     integration_root = Path(str(integration.topology.worktree_root))
 
+    original_rebind = service._rebind_delivered_artifacts  # pylint: disable=protected-access
+    monkeypatch.setattr(
+        service,
+        "_rebind_delivered_artifacts",
+        lambda **_kwargs: {
+            "ok": False,
+            "status": "blocked",
+            "errorCode": "artifact_rebind_failed",
+        },
+    )
+    deferred = service.promote_run_integration(run_id="run")
+
+    assert deferred["status"] == "delivered"
+    assert deferred["cleanup"]["deferred"] is True
+    assert task_root.exists()
+    assert integration_root.exists()
+
+    monkeypatch.setattr(service, "_rebind_delivered_artifacts", original_rebind)
     delivered = service.promote_run_integration(run_id="run")
 
     assert delivered["status"] == "delivered"
+    assert delivered["idempotent"] is True
     assert delivered["cleanup"]["removed"] == 2
+    assert delivered["artifactRebind"]["rebound"] == 1
     assert len(delivered["cleanup"]["preservedRefs"]) == 2
     assert (workspace / "result.txt").read_text(encoding="utf-8") == "done\n"
     assert not task_root.exists()
     assert not integration_root.exists()
+    rebound_artifact = database.get_runtime_artifact("art-managed-result")
+    assert rebound_artifact is not None
+    assert rebound_artifact["sourcePath"] == str(workspace / "result.txt")
+    assert rebound_artifact["workspacePath"] == "result.txt"
+    assert rebound_artifact["metadata"]["deliveryState"] == "delivered"
+    assert Path(str(rebound_artifact["sourcePath"])).read_text(encoding="utf-8") == "done\n"
     for recovery_ref in delivered["cleanup"]["preservedRefs"]:
         git.run(["show-ref", "--verify", recovery_ref], cwd=workspace)
     with database.get_connection() as conn:
@@ -1219,8 +1270,52 @@ subprocess.Popen([
 
     assert cleanup["removed"] == 1
     assert cleanup["removedPolicyFiles"] == 1
+    assert cleanup["discarded"] == 1
+    assert cleanup["preservedRefs"] == []
     assert not failed_root.exists()
     assert not failed_policy.exists()
+
+    abandoned_roots: dict[str, Path] = {}
+    for worktree_id, state, updated_at in (
+        ("recoverable-old", "recoverable", "2000-01-01T00:00:00+00:00"),
+        ("candidate-old", "integration_candidate", "2000-01-01T00:00:00+00:00"),
+        ("recoverable-fresh", "recoverable", "2999-01-01T00:00:00+00:00"),
+    ):
+        abandoned = service.prepare_task_workspace(
+            workspace_root=workspace,
+            project_id="demo",
+            session_id="session",
+            run_id=f"{worktree_id}-run",
+            delegation_id=f"{worktree_id}-delegation",
+            worktree_id=worktree_id,
+            write_set=(f"{worktree_id}.txt",),
+            actor_role="direct_subagent",
+            runtime_kind="engineering",
+            network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
+        )
+        abandoned_roots[worktree_id] = Path(abandoned.worktree.topology.worktree_root or "")
+        with database.get_connection() as conn:
+            conn.execute(
+                "UPDATE engineering_worktrees SET state = ?, updated_at = ? WHERE worktree_id = ?",
+                (state, updated_at, worktree_id),
+            )
+            conn.execute(
+                "UPDATE sandbox_execution_leases SET state = 'expired' WHERE worktree_id = ?",
+                (worktree_id,),
+            )
+            conn.commit()
+
+    abandoned_cleanup = service.cleanup_terminal_worktrees(
+        older_than_days=1,
+        abandoned_after_days=7,
+    )
+
+    assert abandoned_cleanup["removed"] == 2
+    assert abandoned_cleanup["discarded"] == 2
+    assert abandoned_cleanup["preservedRefs"] == []
+    assert not abandoned_roots["recoverable-old"].exists()
+    assert not abandoned_roots["candidate-old"].exists()
+    assert abandoned_roots["recoverable-fresh"].exists()
 
 
 def test_top_level_read_only_inspection_keeps_original_workspace(monkeypatch, tmp_path: Path) -> None:

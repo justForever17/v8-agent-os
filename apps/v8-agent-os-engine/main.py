@@ -349,12 +349,13 @@ async def lifespan(app: FastAPI):
             service = get_engineering_sandbox_service()
             accepted_cleanup = await asyncio.to_thread(
                 service.cleanup_accepted_worktrees,
-                limit_runs=50,
+                limit_runs=250,
             )
             aged_cleanup = await asyncio.to_thread(
                 service.cleanup_terminal_worktrees,
-                older_than_days=7,
-                limit=50,
+                older_than_days=1,
+                abandoned_after_days=7,
+                limit=250,
             )
             cleanup = {
                 "removed": int(accepted_cleanup.get("removed") or 0) + int(aged_cleanup.get("removed") or 0),
@@ -366,12 +367,25 @@ async def lifespan(app: FastAPI):
                 ],
             }
             if cleanup.get("removed") or cleanup.get("failures"):
-                print("[Engine] Managed engineering workspace cleanup completed.", cleanup)
+                print(
+                    "[Engine] Managed engineering workspace cleanup completed.",
+                    {
+                        "removed": cleanup["removed"],
+                        "acceptedRemoved": int(accepted_cleanup.get("removed") or 0),
+                        "agedRemoved": int(aged_cleanup.get("removed") or 0),
+                        "failureCount": len(cleanup["failures"]),
+                    },
+                )
         except Exception as exc:
             print(f"[Engine] Managed engineering workspace cleanup failed (non-fatal): {exc}")
 
+    async def _monitor_engineering_workspace_cleanup() -> None:
+        while True:
+            await _cleanup_terminal_engineering_workspaces()
+            await asyncio.sleep(60 * 60)
+
     app.state.engineering_workspace_cleanup_task = asyncio.create_task(
-        _cleanup_terminal_engineering_workspaces()
+        _monitor_engineering_workspace_cleanup()
     )
     async def _recover_knowledge_projections() -> None:
         try:

@@ -13,6 +13,9 @@ from erc.models import RuntimeSource
 
 
 class ArtifactStore:
+    def __init__(self, *, database: Any | None = None) -> None:
+        self.database = database or db
+
     @staticmethod
     def _build_content_url(artifact_id: str) -> str:
         return f"/v1/artifacts/{artifact_id}/content"
@@ -135,7 +138,7 @@ class ArtifactStore:
             auto_attach_to_message=auto_attach_to_message,
         )
         descriptor = normalize_artifact_record(descriptor)
-        db.add_runtime_artifact(
+        self.database.add_runtime_artifact(
             artifact_id=artifact_id,
             artifact_kind=descriptor["kind"],
             mime_type=descriptor.get("mimeType"),
@@ -213,7 +216,7 @@ class ArtifactStore:
             auto_attach_to_message=auto_attach_to_message,
         )
         descriptor = normalize_artifact_record(descriptor)
-        db.add_runtime_artifact(
+        self.database.add_runtime_artifact(
             artifact_id=descriptor["artifactId"],
             artifact_kind=descriptor["kind"],
             mime_type=descriptor.get("mimeType"),
@@ -238,6 +241,141 @@ class ArtifactStore:
             node=node,
         )
         return normalize_artifact_record(descriptor)
+
+    @staticmethod
+    def _safe_workspace_relative_path(value: Any) -> str | None:
+        normalized = str(value or "").strip().replace("\\", "/")
+        if not normalized or normalized.startswith("/"):
+            return None
+        parts = [part for part in normalized.split("/") if part not in {"", "."}]
+        if not parts or any(part == ".." or ":" in part for part in parts):
+            return None
+        return "/".join(parts)
+
+    def rebind_managed_workspace_artifacts(
+        self,
+        *,
+        run_id: str,
+        workspace_root: str | Path,
+    ) -> Dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        root = Path(workspace_root).expanduser().resolve(strict=False)
+        if not normalized_run_id:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "rebound": 0,
+                "skipped": 0,
+                "errorCode": "run_id_required",
+            }
+        if not root.is_dir():
+            return {
+                "ok": False,
+                "status": "blocked",
+                "rebound": 0,
+                "skipped": 0,
+                "errorCode": "delivery_workspace_missing",
+            }
+
+        limit = 10_000
+        artifacts = self.database.list_runtime_artifacts(run_id=normalized_run_id, limit=limit)
+        if len(artifacts) >= limit:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "rebound": 0,
+                "skipped": 0,
+                "errorCode": "artifact_rebind_limit_exceeded",
+            }
+
+        rebound_ids: list[str] = []
+        invalidated_ids: list[str] = []
+        failures: list[Dict[str, str]] = []
+        for artifact in artifacts:
+            metadata = dict(artifact.get("metadata") or {})
+            if metadata.get("origin") != "agent_file_write" or metadata.get("managedExecution") is not True:
+                continue
+            artifact_id = str(artifact.get("artifactId") or artifact.get("id") or "").strip()
+            relative_path = self._safe_workspace_relative_path(
+                metadata.get("workspaceRelativePath") or artifact.get("workspacePath")
+            )
+            if not artifact_id:
+                failures.append({"artifactId": "unknown", "reason": "artifact_id_missing"})
+                continue
+            unavailable_reason: str | None = None
+            target: Path | None = None
+            if not relative_path:
+                unavailable_reason = "relative_path_missing"
+            else:
+                target = (root / Path(relative_path)).resolve(strict=False)
+                try:
+                    target.relative_to(root)
+                except ValueError:
+                    unavailable_reason = "path_outside_workspace"
+                if unavailable_reason is None and not target.is_file():
+                    unavailable_reason = "delivered_file_missing"
+
+            if unavailable_reason is not None:
+                updated_metadata = {
+                    **metadata,
+                    "deliveryState": "not_delivered",
+                    "surfaceVisible": False,
+                    "unavailableReason": unavailable_reason,
+                    "workspaceRoot": str(root),
+                    "executionWorkspaceRebound": True,
+                }
+                updated = self.database.update_runtime_artifact_location(
+                    artifact_id=artifact_id,
+                    source_path=None,
+                    workspace_path=relative_path,
+                    metadata=updated_metadata,
+                )
+                if updated:
+                    invalidated_ids.append(artifact_id)
+                else:
+                    failures.append({"artifactId": artifact_id, "reason": "artifact_record_missing"})
+                continue
+
+            assert target is not None
+            updated_metadata = {
+                **metadata,
+                "deliveryState": "delivered",
+                "workspaceRoot": str(root),
+                "workspaceRelativePath": relative_path,
+                "executionWorkspaceRebound": True,
+            }
+            updated = self.database.update_runtime_artifact_location(
+                artifact_id=artifact_id,
+                source_path=str(target),
+                workspace_path=relative_path,
+                metadata=updated_metadata,
+            )
+            if updated:
+                rebound_ids.append(artifact_id)
+            else:
+                failures.append({"artifactId": artifact_id, "reason": "artifact_record_missing"})
+
+        if failures:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "rebound": len(rebound_ids),
+                "invalidated": len(invalidated_ids),
+                "skipped": len(failures),
+                "reboundArtifactIds": rebound_ids,
+                "invalidatedArtifactIds": invalidated_ids,
+                "failures": failures[:20],
+                "errorCode": "artifact_rebind_incomplete",
+            }
+        return {
+            "ok": True,
+            "status": "rebound" if rebound_ids else "reconciled",
+            "rebound": len(rebound_ids),
+            "invalidated": len(invalidated_ids),
+            "skipped": 0,
+            "reboundArtifactIds": rebound_ids,
+            "invalidatedArtifactIds": invalidated_ids,
+        }
 
     def adopt_workspace_file(
         self,

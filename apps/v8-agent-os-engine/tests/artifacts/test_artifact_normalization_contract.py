@@ -98,3 +98,57 @@ def test_computer_use_local_artifact_uses_canonical_content_endpoint(tmp_path, m
     assert artifact["contentUrl"] == canonical_url
     assert stored["preview_url"] == canonical_url
     assert stored["source_path"] == str(screenshot)
+
+
+def test_missing_managed_delivery_artifact_is_hidden_before_worktree_cleanup(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    updates: list[dict] = []
+
+    class _Database:
+        @staticmethod
+        def list_runtime_artifacts(**_kwargs):
+            return [
+                {
+                    "artifactId": "art-intermediate",
+                    "workspacePath": "tmp/intermediate.txt",
+                    "metadata": {
+                        "origin": "agent_file_write",
+                        "managedExecution": True,
+                        "deliveryState": "candidate",
+                        "surfaceVisible": True,
+                        "workspaceRelativePath": "tmp/intermediate.txt",
+                    },
+                }
+            ]
+
+        @staticmethod
+        def update_runtime_artifact_location(**kwargs):
+            updates.append(kwargs)
+            return True
+
+    result = ArtifactStore(database=_Database()).rebind_managed_workspace_artifacts(
+        run_id="run-managed",
+        workspace_root=workspace,
+    )
+
+    assert result["ok"] is True
+    assert result["invalidated"] == 1
+    assert result["rebound"] == 0
+    assert updates == [
+        {
+            "artifact_id": "art-intermediate",
+            "source_path": None,
+            "workspace_path": "tmp/intermediate.txt",
+            "metadata": {
+                "origin": "agent_file_write",
+                "managedExecution": True,
+                "deliveryState": "not_delivered",
+                "surfaceVisible": False,
+                "workspaceRelativePath": "tmp/intermediate.txt",
+                "unavailableReason": "delivered_file_missing",
+                "workspaceRoot": str(workspace),
+                "executionWorkspaceRebound": True,
+            },
+        }
+    ]

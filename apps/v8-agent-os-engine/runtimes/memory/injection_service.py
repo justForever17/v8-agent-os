@@ -58,8 +58,18 @@ class InjectionService:
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:
         return memory_store.get_recent_logs(days=days, scope_chain=scope_chain)
 
-    def read_memory_summary(self, *, tier: str, date_str: Optional[str] = None) -> str:
-        return memory_store.read_memory_summary(tier=tier, date_str=date_str)
+    def read_memory_summary(
+        self,
+        *,
+        tier: str,
+        date_str: Optional[str] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        return memory_store.read_memory_summary(
+            tier=tier,
+            date_str=date_str,
+            scope_chain=scope_chain,
+        )
 
     def build_memory_map(self, *, anchor_date: Optional[str] = None) -> dict:
         return memory_store.build_memory_map(anchor_date=anchor_date)
@@ -67,8 +77,13 @@ class InjectionService:
     def expand_memory_map(self, *, memory_ref: str) -> dict:
         return memory_store.expand_memory_map(memory_ref)
 
-    def read_memory_day(self, *, memory_ref_or_date: str) -> str:
-        return memory_store.read_memory_day(memory_ref_or_date)
+    def read_memory_day(
+        self,
+        *,
+        memory_ref_or_date: str,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        return memory_store.read_memory_day(memory_ref_or_date, scope_chain=scope_chain)
 
     def get_memory_map_health(self) -> dict:
         return memory_store.get_memory_map_health()
@@ -78,6 +93,15 @@ class InjectionService:
 
     def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
         return memory_store.get_logs_for_period(tier=tier, dt=dt, scope_chain=scope_chain)
+
+    def prepare_periodic_summary_input(
+        self,
+        *,
+        tier: str,
+        dt: Optional[datetime] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> dict:
+        return memory_store.prepare_periodic_summary_input(tier=tier, dt=dt, scope_chain=scope_chain)
 
     def save_periodic_summary(self, *, tier: str, payload: dict, dt: Optional[datetime] = None) -> None:
         memory_store.save_periodic_summary(tier=tier, payload=payload, dt=dt)

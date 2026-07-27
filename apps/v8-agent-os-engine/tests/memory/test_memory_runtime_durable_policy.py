@@ -41,9 +41,9 @@ from agents.memory_agent import (
 from core import memory_store as memory_store_module
 from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
-from core.v8_agent_os_paths import WORKSPACE_HOME
 from runtimes.memory.models import ProjectDescriptor, SessionScopeBinding
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, ScopeResolutionService
+from runtimes.memory.workspace_scope import canonical_workspace_scope, legacy_external_workspace_scope
 
 
 POLICY = {
@@ -413,6 +413,7 @@ class MemoryDurablePolicyTests(unittest.TestCase):
             preferences=[
                 PreferenceExtraction(scope="global", key="surface", value="os-phone", importance=90, confidence=0.9),
                 PreferenceExtraction(scope="global", key="language", value="所有项目默认使用中文回复。", importance=90, confidence=0.9),
+                PreferenceExtraction(scope="global", key="command", value="这个项目以后都默认运行 pytest。", importance=90, confidence=0.9),
             ],
             knowledge=[
                 KnowledgeExtraction(
@@ -429,6 +430,7 @@ class MemoryDurablePolicyTests(unittest.TestCase):
 
         self.assertEqual(result.preferences[0].scope, "project:v8")
         self.assertEqual(result.preferences[1].scope, "global")
+        self.assertEqual(result.preferences[2].scope, "project:v8")
         self.assertEqual(result.knowledge[0].scope, "project:v8")
         self.assertTrue(any(item.get("scopeDecision") == "global_promoted" for item in decisions))
 
@@ -516,6 +518,42 @@ class MemoryDurablePolicyTests(unittest.TestCase):
 
 
 class MemoryScopeResolutionTests(unittest.TestCase):
+    def test_memory_write_scope_prefers_workspace_project_over_channel(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "alpha"
+            workspace.mkdir()
+            binding = SimpleNamespace(
+                project_id="alpha",
+                workspace_id="alpha-workspace",
+                workspace_path=str(workspace),
+                channel_type="phone",
+                channel_remote_id="same-device",
+            )
+
+            self.assertEqual(
+                memory_agent._effective_memory_scope(binding, "channel:phone:same-device"),
+                canonical_workspace_scope(str(workspace)),
+            )
+
+    def test_memory_write_rejects_missing_or_unproven_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "deleted"
+            binding = SimpleNamespace(
+                project_id="alpha",
+                workspace_id="alpha-workspace",
+                workspace_path=str(missing),
+            )
+            self.assertEqual(memory_agent._effective_memory_scope(binding, "project:alpha"), "")
+
+        unproven = SimpleNamespace(
+            project_id="unknown-project",
+            workspace_id="unknown-workspace",
+        )
+        self.assertEqual(memory_agent._effective_memory_scope(unproven, "project:unknown-project"), "")
+
+    def test_explicit_global_memory_remains_global(self):
+        self.assertEqual(memory_agent._effective_memory_scope(None, "global"), "global")
+
     def test_default_global_hint_does_not_mask_project_workspace_binding(self):
         project = ProjectDescriptor(
             id="v8",
@@ -535,104 +573,161 @@ class MemoryScopeResolutionTests(unittest.TestCase):
             scope_hint="global",
         )
 
-        self.assertEqual(result.binding.resolved_scope, "project:v8")
+        self.assertEqual(
+            result.binding.resolved_scope,
+            canonical_workspace_scope(r"E:\Projects\v8chat\v8-agent-os"),
+        )
         self.assertEqual(result.binding.project_id, "v8")
         self.assertEqual(result.binding.scope_source, "request_explicit")
 
     def test_default_global_hint_resolves_to_main_workspace_scope(self):
-        service = ScopeResolutionService(
-            project_registry=_FakeProjectRegistry(None),
-            binding_service=_FakeBindingService(),
-            resolution_repo=_FakeResolutionRepo(),
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_workspace = Path(temp_dir) / "main"
+            main_workspace.mkdir()
+            service = ScopeResolutionService(
+                project_registry=_FakeProjectRegistry(None),
+                binding_service=_FakeBindingService(),
+                resolution_repo=_FakeResolutionRepo(),
+            )
+            with patch.object(
+                storage,
+                "get_workspace_config",
+                return_value={"agent_workspace_path": str(main_workspace)},
+            ):
+                result = service.resolve(
+                    session_id="session-main",
+                    workspace_path=str(main_workspace),
+                    scope_hint="global",
+                )
 
-        result = service.resolve(
-            session_id="session-main",
-            workspace_path=str(WORKSPACE_HOME),
-            scope_hint="global",
+        expected_scope = canonical_workspace_scope(str(main_workspace))
+        self.assertEqual(result.binding.resolved_scope, expected_scope)
+        self.assertEqual(
+            result.scope_chain,
+            ["global", legacy_external_workspace_scope(str(main_workspace)), expected_scope],
         )
-
-        self.assertEqual(result.binding.resolved_scope, "workspace:main")
-        self.assertEqual(result.scope_chain, ["global", "workspace:main"])
+        self.assertNotIn("workspace:main", result.scope_chain)
         self.assertIsNone(result.binding.project_id)
 
+    def test_implicit_default_binding_persists_physical_main_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_workspace = Path(temp_dir) / "main"
+            main_workspace.mkdir()
+            service = ScopeResolutionService(
+                project_registry=_FakeProjectRegistry(None),
+                binding_service=_FakeBindingService(),
+                resolution_repo=_FakeResolutionRepo(),
+            )
+            with patch.object(
+                storage,
+                "get_workspace_config",
+                return_value={"agent_workspace_path": str(main_workspace)},
+            ):
+                result = service.resolve(session_id="session-implicit-main", scope_hint="global")
+
+        self.assertEqual(result.binding.workspace_path, str(main_workspace.resolve()))
+        self.assertEqual(result.binding.resolved_scope, canonical_workspace_scope(str(main_workspace)))
+        self.assertNotIn("workspace:main", result.scope_chain)
+
     def test_unregistered_explicit_workspace_path_does_not_impersonate_main_scope(self):
-        service = ScopeResolutionService(
-            project_registry=_FakeProjectRegistry(None),
-            binding_service=_FakeBindingService(),
-            resolution_repo=_FakeResolutionRepo(),
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_workspace = Path(temp_dir) / "main"
+            external_workspace = Path(temp_dir) / "external"
+            main_workspace.mkdir()
+            external_workspace.mkdir()
+            service = ScopeResolutionService(
+                project_registry=_FakeProjectRegistry(None),
+                binding_service=_FakeBindingService(),
+                resolution_repo=_FakeResolutionRepo(),
+            )
+            with patch.object(
+                storage,
+                "get_workspace_config",
+                return_value={"agent_workspace_path": str(main_workspace)},
+            ):
+                result = service.resolve(
+                    session_id="session-external",
+                    workspace_path=str(external_workspace),
+                    scope_hint="global",
+                )
 
-        result = service.resolve(
-            session_id="session-external",
-            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
-            scope_hint="global",
+        self.assertEqual(
+            result.binding.resolved_scope,
+            canonical_workspace_scope(str(external_workspace)),
         )
-
-        self.assertTrue(result.binding.resolved_scope.startswith("workspace:external:"))
         self.assertNotEqual(result.binding.resolved_scope, "workspace:main")
         self.assertIn(result.binding.resolved_scope, result.scope_chain)
-        self.assertEqual(result.binding.workspace_path, r"E:\Projects\v8chat\v8-agent-os")
+        self.assertEqual(result.binding.workspace_path, str(external_workspace))
 
-    def test_bound_session_rejects_workspace_project_switch(self):
-        project = ProjectDescriptor(
-            id="v8",
-            name="V8",
-            workspaceId="workspace-v8",
-            workspacePath=r"E:\Projects\v8chat\v8-agent-os",
-        ).normalized()
-        binding_service = _FakeBindingService()
-        binding_service.binding = SessionScopeBinding(
-            session_id="session-rebind",
-            conversationId="session-rebind",
-            workspacePath=r"E:\Projects\v8chat\v8-agent-os",
-            scopeHint="global",
-            resolved_scope="global",
-            scope_source="request_explicit",
-        )
-        service = ScopeResolutionService(
-            project_registry=_FakeProjectRegistry(project),
-            binding_service=binding_service,
-            resolution_repo=_FakeResolutionRepo(),
-        )
-
-        with self.assertRaises(ScopeBindingConflictError) as raised:
-            service.resolve(
+    def test_bound_global_scope_with_physical_workspace_upgrades_in_place(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_path = str(Path(temp_dir) / "workspace")
+            Path(workspace_path).mkdir()
+            project = ProjectDescriptor(
+                id="v8",
+                name="V8",
+                workspaceId="workspace-v8",
+                workspacePath=workspace_path,
+            ).normalized()
+            binding_service = _FakeBindingService()
+            binding_service.binding = SessionScopeBinding(
                 session_id="session-rebind",
-                workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+                conversation_id="session-rebind",
+                project_id="v8",
+                workspace_id="workspace-v8",
+                workspace_path=workspace_path,
+                scope_hint="global",
+                resolved_scope="global",
+                scope_source="request_explicit",
+            )
+            service = ScopeResolutionService(
+                project_registry=_FakeProjectRegistry(project),
+                binding_service=binding_service,
+                resolution_repo=_FakeResolutionRepo(),
+            )
+
+            result = service.resolve(
+                session_id="session-rebind",
+                project_id="v8",
+                workspace_id="workspace-v8",
+                workspace_path=workspace_path,
                 scope_hint="global",
             )
 
-        self.assertEqual(raised.exception.payload["recommendedAction"], "create_new_session")
+        self.assertFalse(result.reused_existing_binding)
+        self.assertEqual(result.binding.resolved_scope, canonical_workspace_scope(workspace_path))
+        self.assertNotEqual(result.binding.resolved_scope, "global")
+        self.assertEqual(result.evidence["rebind_reason"], "physical_workspace_scope_upgrade")
 
-    def test_bound_project_session_accepts_resolved_scope_as_followup_hint(self):
-        binding_service = _FakeBindingService()
-        binding_service.binding = SessionScopeBinding(
-            session_id="session-project-followup",
-            conversation_id="session-project-followup",
-            project_id="v8-agent-os",
-            workspace_id="v8-agent-os",
-            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
-            scope_hint="global",
-            resolved_scope="project:v8-agent-os",
-            scope_source="request_explicit",
-        )
-        service = ScopeResolutionService(
-            project_registry=_FakeProjectRegistry(None),
-            binding_service=binding_service,
-            resolution_repo=_FakeResolutionRepo(),
-        )
+    def test_bound_project_scope_with_physical_workspace_upgrades_in_place(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_path = str(Path(temp_dir) / "workspace")
+            Path(workspace_path).mkdir()
+            binding_service = _FakeBindingService()
+            binding_service.binding = SessionScopeBinding(
+                session_id="session-project-followup",
+                conversation_id="session-project-followup",
+                project_id="v8-agent-os",
+                workspace_id="v8-agent-os",
+                workspace_path=workspace_path,
+                scope_hint="global",
+                resolved_scope="project:v8-agent-os",
+                scope_source="request_explicit",
+            )
+            service = ScopeResolutionService(
+                project_registry=_FakeProjectRegistry(None),
+                binding_service=binding_service,
+                resolution_repo=_FakeResolutionRepo(),
+            )
 
-        result = service.resolve(
-            session_id="session-project-followup",
-            project_id="v8-agent-os",
-            workspace_id="v8-agent-os",
-            workspace_path=r"E:\Projects\v8chat\v8-agent-os",
-            scope_hint="project:v8-agent-os",
-        )
+            result = service.resolve(
+                session_id="session-project-followup",
+                scope_hint="project:v8-agent-os",
+            )
 
-        self.assertIs(result.binding, binding_service.binding)
-        self.assertEqual(result.binding.resolved_scope, "project:v8-agent-os")
+        self.assertFalse(result.reused_existing_binding)
+        self.assertEqual(result.binding.resolved_scope, canonical_workspace_scope(workspace_path))
+        self.assertEqual(result.evidence["rebind_reason"], "physical_workspace_scope_upgrade")
 
     def test_bound_project_session_still_rejects_unrelated_scope_hint(self):
         binding_service = _FakeBindingService()

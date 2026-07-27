@@ -39,7 +39,11 @@ export async function POST(req: NextRequest) {
             ? "/research-runtime/experience/archive"
             : action === "restore"
                 ? "/research-runtime/experience/restore"
+                : action === "bulk_archive" || action === "bulk_restore"
+                    ? "/research-runtime/experience/bulk"
                 : "/research-runtime/experience/promote";
+        if (action === "bulk_archive") body.action = "archive";
+        if (action === "bulk_restore") body.action = "restore";
         const { response, data } = await proxyEngineJson(path, {
             method: "POST",
             headers: { "content-type": "application/json" },

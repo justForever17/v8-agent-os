@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FileAudio, FileImage, FileText, FileVideo, Link2, Loader2, RefreshCw, Search } from "lucide-react";
+import { FileAudio, FileCode2, FileImage, FileText, FileVideo, Link2, Loader2, RefreshCw, Search } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenc
 import { tg } from "@/i18n/admin-legacy";
 import { fetchAdminJson, invalidateAdminJsonCache, peekAdminJsonCache } from "@/lib/admin-client-cache";
 
-type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
+type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "code" | "file";
 
 interface ArtifactRecord {
   id?: string;
@@ -50,7 +50,7 @@ interface ArtifactRecord {
   metadata?: Record<string, unknown>;
 }
 
-const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "file"];
+const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "code", "file"];
 const ARTIFACTS_URL = "/api/memory/artifacts?limit=160";
 const STORAGE_STATS_URL = "/api/storage-retention/stats";
 
@@ -76,7 +76,8 @@ function mbToBytes(value: string) {
 }
 
 function getArtifactKind(artifact: ArtifactRecord): ArtifactKind {
-  return (artifact.kind || artifact.artifact_kind || "file") as ArtifactKind || "file";
+  const kind = String(artifact.kind || artifact.artifact_kind || "file") as ArtifactKind;
+  return ARTIFACT_KINDS.includes(kind) ? kind : "file";
 }
 
 function getArtifactMime(artifact: ArtifactRecord): string {
@@ -113,6 +114,8 @@ function getArtifactIcon(kind: ArtifactKind) {
       return FileAudio;
     case "document":
       return FileText;
+    case "code":
+      return FileCode2;
     default:
       return Link2;
   }
@@ -168,6 +171,8 @@ export function ArtifactExplorerPanel() {
     t("components.memory.ArtifactExplorerPanel.kaeef0707") :
     kind === "document" ?
     t("components.memory.ArtifactExplorerPanel.k5fc5a6ad") :
+    kind === "code" ?
+    t("components.memory.ArtifactExplorerPanel.code") :
     t("components.memory.ArtifactExplorerPanel.ka9205a18"),
     [t]
   );
@@ -292,6 +297,7 @@ export function ArtifactExplorerPanel() {
       video: 0,
       audio: 0,
       document: 0,
+      code: 0,
       file: 0
     };
     for (const artifact of artifacts) {
@@ -320,7 +326,7 @@ export function ArtifactExplorerPanel() {
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
                         <Card className="border-border/50 bg-muted/10">
                             <CardContent className="p-4">
                                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Artifacts</p>
@@ -343,6 +349,7 @@ export function ArtifactExplorerPanel() {
                       kind === "video" ? t("components.memory.ArtifactExplorerPanel.kd0d9a483") :
                       kind === "audio" ? t("components.memory.ArtifactExplorerPanel.k05f8fe1a") :
                       kind === "document" ? t("components.memory.ArtifactExplorerPanel.k4b4dd70e") :
+                      kind === "code" ? t("components.memory.ArtifactExplorerPanel.codeHint") :
                       t("components.memory.ArtifactExplorerPanel.k57ee4cb3")}
                                         </p>
                                     </CardContent>
@@ -389,6 +396,7 @@ export function ArtifactExplorerPanel() {
                                 <SelectItem value="video">{t("components.memory.ArtifactExplorerPanel.k7512b41f")}</SelectItem>
                                 <SelectItem value="audio">{t("components.memory.ArtifactExplorerPanel.kaeef0707")}</SelectItem>
                                 <SelectItem value="document">{t("components.memory.ArtifactExplorerPanel.k5fc5a6ad")}</SelectItem>
+                                <SelectItem value="code">{t("components.memory.ArtifactExplorerPanel.code")}</SelectItem>
                                 <SelectItem value="file">{t("components.memory.ArtifactExplorerPanel.ka9205a18")}</SelectItem>
                             </SelectContent>
                         </Select>

@@ -659,9 +659,21 @@ async def record_memory_workflow_hint_event(candidate_id: str, payload: dict = B
 
 
 @router.get("/memory/graph/entity/{entity}")
-async def get_graph_entity(entity: str):
+async def get_graph_entity(
+    entity: str,
+    workspace_key: str | None = Query(default=None, alias="workspaceKey"),
+):
     try:
-        return {"entity": entity, "relations": memory_runtime.query_entity(entity=entity)}
+        return {
+            "entity": entity,
+            "workspaceKey": workspace_key,
+            "relations": memory_runtime.query_workspace_entity(
+                entity=entity,
+                workspace_key=workspace_key,
+            ),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -682,7 +694,7 @@ async def memory_fts_search(q: str, scope: str = None):
             item
             for item in results
             if str(item.get("scope") or "global").strip() == "global"
-            or str(item.get("scope") or "").startswith(("project:", "channel:"))
+            or str(item.get("scope") or "").startswith(("workspace:", "project:", "channel:"))
         ]
         return {"query": q, "results": valid_results}
     except Exception as e:
@@ -771,17 +783,41 @@ async def create_knowledge_cleanup_plan(body: dict = Body(default={})):
 
 
 @router.get("/memory/graph/all")
-async def get_full_graph(limit: int = 100):
+async def get_full_graph(
+    limit: int = 100,
+    workspace_key: str | None = Query(default=None, alias="workspaceKey"),
+):
     try:
-        return memory_runtime.get_full_graph(limit=limit)
+        return memory_runtime.get_workspace_graph(limit=limit, workspace_key=workspace_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/graph/workspaces")
+async def get_graph_workspaces():
+    try:
+        return memory_runtime.list_graph_workspaces()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/memory/graph/search")
-async def search_graph_entities(keyword: str, limit: int = 20):
+async def search_graph_entities(
+    keyword: str,
+    limit: int = 20,
+    workspace_key: str | None = Query(default=None, alias="workspaceKey"),
+):
     try:
-        return {"items": memory_runtime.search_entities(keyword=keyword, limit=limit), "keyword": keyword}
+        return {
+            "items": memory_runtime.search_workspace_entities(
+                keyword=keyword,
+                limit=limit,
+                workspace_key=workspace_key,
+            ),
+            "keyword": keyword,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -803,8 +839,13 @@ async def add_graph_entity(payload: GraphEntityPayload):
 @router.delete("/memory/graph/entity")
 async def remove_graph_entity(payload: GraphEntityPayload):
     try:
-        deleted = memory_runtime.delete_entity(name=payload.name, scope=payload.scope)
+        scope = payload.scope
+        if payload.workspace_key:
+            scope = memory_runtime.get_graph_workspace_write_scope(workspace_key=payload.workspace_key)
+        deleted = memory_runtime.delete_entity(name=payload.name, scope=scope)
         return {"deleted": deleted, "name": payload.name.lower()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -812,14 +853,23 @@ async def remove_graph_entity(payload: GraphEntityPayload):
 @router.post("/memory/graph/relation")
 async def add_graph_relation(payload: GraphRelationPayload):
     try:
-        if not payload.scope or not payload.source_fact_ids:
-            raise HTTPException(status_code=400, detail="scope and sourceFactIds are required")
+        scope = payload.scope
+        if payload.workspace_key:
+            scope = memory_runtime.get_graph_workspace_write_scope(workspace_key=payload.workspace_key)
+        evidence_refs = (
+            [f"admin://memory/graph/{payload.workspace_key}"]
+            if payload.workspace_key and not payload.source_fact_ids
+            else []
+        )
+        if not scope or (not payload.source_fact_ids and not evidence_refs):
+            raise HTTPException(status_code=400, detail="scope and relation evidence are required")
         memory_runtime.add_relation(
             subject=payload.subject,
             predicate=payload.predicate,
             object_name=payload.object_name,
-            scope=payload.scope,
+            scope=scope,
             source_fact_ids=payload.source_fact_ids,
+            evidence_refs=evidence_refs,
             confidence=payload.confidence or 1.0,
             maintainer_source=payload.maintainer_source or "human_admin",
         )
@@ -833,6 +883,8 @@ async def add_graph_relation(payload: GraphRelationPayload):
         }
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -840,11 +892,17 @@ async def add_graph_relation(payload: GraphRelationPayload):
 @router.delete("/memory/graph/relation")
 async def remove_graph_relation(payload: GraphRelationPayload):
     try:
+        scope = payload.scope
+        if payload.workspace_key:
+            scope = memory_runtime.validate_graph_workspace_relation_scope(
+                workspace_key=payload.workspace_key,
+                relation_scope=payload.scope,
+            )
         deleted = memory_runtime.delete_relation(
             subject=payload.subject,
             predicate=payload.predicate,
             object_name=payload.object_name,
-            scope=payload.scope,
+            scope=scope,
         )
         return {
             "deleted": deleted,
@@ -854,6 +912,8 @@ async def remove_graph_relation(payload: GraphRelationPayload):
                 "object": payload.object_name.lower(),
             },
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -916,7 +976,7 @@ async def revalidate_knowledge_item(fact_id: str, body: dict | None = Body(defau
 async def list_projects():
     try:
         return {
-            "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
+            "defaultProjectId": project_registry_service.get_effective_default_project_id(),
             "mainWorkspacePath": workspace_resolution_service.get_main_workspace_path(),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in project_registry_service.list_projects()],
             "workspacePresentations": project_registry_service.list_workspace_presentations(),

@@ -29,6 +29,13 @@ type OperationsSummary = {
             interpreterPath?: string;
             expectedInterpreterPath?: string;
             interpreterDrift?: boolean;
+            maintenance?: {
+                enabled?: boolean;
+                due?: boolean;
+                reason?: string;
+                lastSuccessAt?: string | null;
+                nextScheduledAt?: string | null;
+            };
             warnings?: string[];
         };
     };
@@ -157,6 +164,17 @@ export async function GET(req: NextRequest) {
                 severity: "warning",
                 href: "/admin/operations-center",
                 source: "operations-center",
+            });
+        }
+
+        if (summary.health?.memory?.maintenance?.due) {
+            pushItem(items, {
+                id: "memory-maintenance-missed",
+                title: t("app.api.adminInbox.memoryMaintenanceMissed.title"),
+                summary: t("app.api.adminInbox.memoryMaintenanceMissed.summary"),
+                severity: "warning",
+                href: "/admin/automation?tab=cron#system-memory-maintenance",
+                source: "automation",
             });
         }
 

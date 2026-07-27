@@ -1388,6 +1388,19 @@ def _experience_reuse_decision(
         matched, match_reason = _reuse_topic_match(question, pack)
         if not matched:
             continue
+        pack_freshness_state = _safe_text(pack.get("freshnessState")).lower()
+        if pack_freshness_state in {"stale", "expired"}:
+            return {
+                "reuseDecision": "refresh",
+                "reason": "experience_pack_freshness_expired",
+                "matchReason": match_reason,
+                "candidatePackId": pack.get("experiencePackId"),
+                "freshnessState": pack_freshness_state,
+                "ageDays": pack.get("ageDays"),
+                "staleAt": pack.get("staleAt"),
+                "expiresAt": pack.get("expiresAt"),
+                "topicFingerprint": pack.get("topicFingerprint") or _topic_fingerprint(question),
+            }
         quality_status = _safe_text(pack.get("qualityStatus")).lower()
         invalidation_reason = _safe_text(pack.get("invalidationReason"))
         has_final_result = bool(_safe_text(pack.get("researchResult")) or list(pack.get("claimDigest") or []))
@@ -3289,6 +3302,10 @@ def research_broker(
                         "topicFingerprint": item.get("topicFingerprint"),
                         "sourcePolicy": item.get("sourcePolicy"),
                         "freshnessWindow": item.get("freshnessWindow"),
+                        "freshnessState": item.get("freshnessState"),
+                        "ageDays": item.get("ageDays"),
+                        "staleAt": item.get("staleAt"),
+                        "expiresAt": item.get("expiresAt"),
                         "qualityStatus": item.get("qualityStatus"),
                         "invalidationReason": item.get("invalidationReason"),
                         "missingEvidence": list(item.get("missingEvidence") or [])[:3],
@@ -3457,7 +3474,7 @@ def research_broker(
     )
     if experience_reuse.get("reuseDecision") == "reuse" and experience_candidates:
         pack_id = _safe_text(experience_reuse.get("candidatePackId"))
-        pack = get_experience_pack(pack_id) if pack_id else experience_candidates[0]
+        pack = get_experience_pack(pack_id, record_usage=True) if pack_id else experience_candidates[0]
         if pack:
             return _render_payload(
                 _bundle_from_reused_pack(

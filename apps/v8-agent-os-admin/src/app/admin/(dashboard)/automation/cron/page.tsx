@@ -378,6 +378,15 @@ function ScheduledTasksPage() {
     const jobs = useMemo(() => envelope?.data.jobs ?? [], [envelope?.data.jobs]);
     const systemMemoryJob = useMemo(() => jobs.find((job) => job.id === SYSTEM_MEMORY_MAINTENANCE_JOB_ID) ?? null, [jobs]);
     const userJobs = useMemo(() => jobs.filter((job) => job.id !== SYSTEM_MEMORY_MAINTENANCE_JOB_ID), [jobs]);
+
+    useEffect(() => {
+        if (!systemMemoryJob || window.location.hash !== `#${SYSTEM_MEMORY_MAINTENANCE_JOB_ID}`) return;
+        const frame = window.requestAnimationFrame(() => {
+            document.getElementById(SYSTEM_MEMORY_MAINTENANCE_JOB_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [systemMemoryJob]);
+
     const enabledCount = useMemo(() => jobs.filter((job) => job.enabled).length, [jobs]);
     const runByType = useMemo(
         () => ({
@@ -572,10 +581,11 @@ function ScheduledTasksPage() {
             />
 
             {systemMemoryJob ? (
-                <ConfigCard
-                    title={"app.admin.dashboard.automation.cron.page.kd7925760"}
-                    description={"app.admin.dashboard.automation.cron.page.k984a406e"}
-                >
+                <div id="system-memory-maintenance" className="scroll-mt-24">
+                    <ConfigCard
+                        title={"app.admin.dashboard.automation.cron.page.kd7925760"}
+                        description={"app.admin.dashboard.automation.cron.page.k984a406e"}
+                    >
                     <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-4">
                             <div className="space-y-2">
@@ -620,7 +630,8 @@ function ScheduledTasksPage() {
                         </div>
                         {renderRunNotice(systemMemoryJob.id)}
                     </div>
-                </ConfigCard>
+                    </ConfigCard>
+                </div>
             ) : null}
 
             <ConfigCard title={"app.admin.dashboard.automation.cron.page.k6ba7f7f9"} description={"app.admin.dashboard.automation.cron.page.k635517f8"} variant="list" bodyHeight={420} bodyScroll="auto">

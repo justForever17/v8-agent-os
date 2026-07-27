@@ -9,6 +9,8 @@ from core.database import db as state_db
 from core.knowledge_db import knowledge_db
 from core.knowledge_projection import knowledge_projection_service
 from core.memory.store import memory_store
+from core.workspace_identity import workspace_path_key
+from runtimes.memory.workspace_scope import build_workspace_scope_catalog
 
 
 class KnowledgeService:
@@ -56,7 +58,14 @@ class KnowledgeService:
         revision_no_override: Optional[int] = None,
     ) -> Dict[str, object]:
         normalized_scope = memory_store._validate_scope(scope)
-        signature = memory_store._current_soft_signature() if memory_store._scope_uses_repo_signature(normalized_scope) else {}
+        signature = (
+            memory_store._soft_signature_for_scope(normalized_scope, metadata=metadata)
+            if memory_store._scope_uses_repo_signature(normalized_scope)
+            else {}
+        )
+        write_metadata = dict(metadata or {})
+        if str(signature.get("workspaceRoot") or "").strip():
+            write_metadata.setdefault("workspaceRoot", str(signature["workspaceRoot"]))
         result = knowledge_db.write_knowledge(
             fact=fact,
             category=category,
@@ -77,7 +86,7 @@ class KnowledgeService:
             repo_signature=str(signature.get("repoSignature") or ""),
             signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
             promotion_reason=promotion_reason,
-            metadata=metadata,
+            metadata=write_metadata,
             fact_id=fact_id,
             lineage_id_override=lineage_id_override,
             revision_no_override=revision_no_override,
@@ -264,18 +273,172 @@ class KnowledgeService:
         status: str = "active",
     ) -> List[Dict]:
         normalized_status = str(status or "active").strip().lower() or "active"
-        if normalized_status == "active":
-            memory_store.refresh_stale_revalidation(scopes=[scope] if scope else None)
         return knowledge_db.get_all_knowledge(scope=scope, limit=limit, status=normalized_status)
 
     def get_knowledge_count(self) -> int:
         return knowledge_db.get_knowledge_count()
 
-    def get_graph_stats(self) -> Dict:
-        return knowledge_db.get_graph_stats()
+    def get_graph_stats(self, *, scope: Optional[str] = None) -> Dict:
+        return knowledge_db.get_graph_stats(scope=scope)
 
-    def get_full_graph(self, *, limit: int = 100) -> Dict:
-        return knowledge_db.get_full_graph(limit=limit)
+    def get_full_graph(self, *, limit: int = 100, scope: Optional[str] = None) -> Dict:
+        return knowledge_db.get_full_graph(limit=limit, scope=scope)
+
+    def _build_graph_workspace_catalog(self) -> Dict[str, object]:
+        raw_items = knowledge_db.list_graph_scopes()
+        raw_by_scope = {str(item.get("scope") or "global"): item for item in raw_items}
+        catalog = build_workspace_scope_catalog()
+        groups = {
+            str(item.get("workspaceKey") or ""): item
+            for item in list(catalog.get("items") or [])
+        }
+        groups_by_scope: Dict[str, Dict[str, object]] = {}
+        groups_by_path = {
+            str(item.get("_pathKey") or ""): item
+            for item in groups.values()
+            if str(item.get("_pathKey") or "")
+        }
+        for group in groups.values():
+            for scope in group["_scopes"]:  # type: ignore[union-attr]
+                groups_by_scope[str(scope)] = group
+
+        for raw in raw_items:
+            scope = str(raw.get("scope") or "global")
+            if scope == "global":
+                continue
+            group = groups_by_scope.get(scope)
+            if group is None:
+                matched_groups = {
+                    id(item): item
+                    for root in list(raw.get("workspaceRoots") or [])
+                    for item in [groups_by_path.get(workspace_path_key(str(root or "").strip()))]
+                    if item is not None
+                }
+                if len(matched_groups) == 1:
+                    group = next(iter(matched_groups.values()))
+            if group is not None:
+                group["_scopes"].add(scope)  # type: ignore[union-attr]
+                groups_by_scope[scope] = group
+
+        global_relation_count = int((raw_by_scope.get("global") or {}).get("relationCount") or 0)
+        items: List[Dict[str, object]] = []
+        for group in groups.values():
+            scope_values = sorted(str(item) for item in group["_scopes"])  # type: ignore[arg-type]
+            relation_count = global_relation_count + sum(
+                int((raw_by_scope.get(scope_value) or {}).get("relationCount") or 0)
+                for scope_value in scope_values
+                if scope_value != "global"
+            )
+            group["relationCount"] = relation_count
+            items.append(group)
+
+        items.sort(key=lambda item: (
+            0 if bool(item.get("isDefault")) else 1,
+            str(item.get("label") or "").lower(),
+            str(item.get("workspaceKey") or ""),
+        ))
+        return {
+            "defaultWorkspaceKey": catalog.get("defaultWorkspaceKey"),
+            "items": items,
+        }
+
+    def list_graph_workspaces(self) -> Dict[str, object]:
+        catalog = self._build_graph_workspace_catalog()
+        return {
+            "defaultWorkspaceKey": catalog.get("defaultWorkspaceKey"),
+            "items": [
+                {
+                    "workspaceKey": item.get("workspaceKey"),
+                    "workspaceId": item.get("workspaceId"),
+                    "projectId": item.get("projectId"),
+                    "workspacePath": item.get("workspacePath"),
+                    "label": item.get("label"),
+                    "isDefault": bool(item.get("isDefault")),
+                    "relationCount": int(item.get("relationCount") or 0),
+                }
+                for item in list(catalog.get("items") or [])
+            ],
+        }
+
+    def _resolve_graph_workspace(self, workspace_key: Optional[str]) -> Dict[str, object]:
+        catalog = self._build_graph_workspace_catalog()
+        resolved_key = str(workspace_key or catalog.get("defaultWorkspaceKey") or "").strip()
+        match = next(
+            (
+                item
+                for item in list(catalog.get("items") or [])
+                if str(item.get("workspaceKey") or "") == resolved_key
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError("knowledge_graph_workspace_not_found")
+        return match
+
+    @staticmethod
+    def _graph_workspace_read_scopes(workspace: Dict[str, object]) -> List[str]:
+        scopes = sorted(str(item) for item in workspace["_scopes"])  # type: ignore[arg-type]
+        if "global" not in scopes:
+            scopes.append("global")
+        return scopes
+
+    def get_workspace_graph(self, *, limit: int = 100, workspace_key: Optional[str] = None) -> Dict:
+        workspace = self._resolve_graph_workspace(workspace_key)
+        graph = knowledge_db.get_full_graph(
+            limit=limit,
+            scopes=self._graph_workspace_read_scopes(workspace),
+        )
+        graph.setdefault("meta", {}).update({
+            "workspaceKey": workspace.get("workspaceKey"),
+            "workspaceLabel": workspace.get("label"),
+        })
+        return graph
+
+    def query_workspace_entity(
+        self,
+        *,
+        entity: str,
+        workspace_key: Optional[str] = None,
+    ) -> List[Dict]:
+        workspace = self._resolve_graph_workspace(workspace_key)
+        return knowledge_db.query_entity(
+            entity,
+            scopes=self._graph_workspace_read_scopes(workspace),
+        )
+
+    def search_workspace_entities(
+        self,
+        *,
+        keyword: str,
+        limit: int = 20,
+        workspace_key: Optional[str] = None,
+    ) -> List[Dict]:
+        workspace = self._resolve_graph_workspace(workspace_key)
+        return knowledge_db.search_entities(
+            keyword,
+            limit,
+            scopes=self._graph_workspace_read_scopes(workspace),
+        )
+
+    def get_graph_workspace_write_scope(self, *, workspace_key: Optional[str] = None) -> str:
+        workspace = self._resolve_graph_workspace(workspace_key)
+        write_scope = str(workspace.get("writeScope") or "").strip()
+        if not write_scope or write_scope == "global":
+            raise ValueError("knowledge_graph_workspace_is_not_writable")
+        return write_scope
+
+    def validate_graph_workspace_relation_scope(
+        self,
+        *,
+        workspace_key: Optional[str],
+        relation_scope: Optional[str],
+    ) -> str:
+        workspace = self._resolve_graph_workspace(workspace_key)
+        normalized_scope = str(relation_scope or "").strip()
+        workspace_scopes = {str(item) for item in workspace["_scopes"]}  # type: ignore[arg-type]
+        if not normalized_scope or normalized_scope == "global" or normalized_scope not in workspace_scopes:
+            raise ValueError("knowledge_graph_relation_is_not_owned_by_workspace")
+        return normalized_scope
 
     def get_projection_health(self) -> Dict:
         return knowledge_projection_service.health(deep=True)
@@ -502,8 +665,14 @@ class KnowledgeService:
     ) -> List[Dict]:
         return knowledge_db.multi_hop_query(entity, hops, scopes=scopes)
 
-    def search_entities(self, *, keyword: str, limit: int = 20) -> List[Dict]:
-        return knowledge_db.search_entities(keyword, limit)
+    def search_entities(
+        self,
+        *,
+        keyword: str,
+        limit: int = 20,
+        scopes: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        return knowledge_db.search_entities(keyword, limit, scopes=scopes)
 
 
 knowledge_service = KnowledgeService()

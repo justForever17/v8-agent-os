@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from core.v8_agent_os_paths import runtime_private_root
 
 _LOCK = threading.RLock()
 _VERSION = 1
+_DEFAULT_EXPERIENCE_MAX_AGE_DAYS = 180
+_FRESHNESS_WARNING_RATIO = 0.75
 
 
 def _utc_now_iso() -> str:
@@ -70,6 +73,84 @@ def _write_store(payload: dict[str, Any]) -> None:
 
 def _visible(item: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in item.items() if not str(key).startswith("_")}
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _freshness_max_age_days(value: Any) -> int:
+    if isinstance(value, dict):
+        for key in ("maxAgeDays", "max_age_days", "days"):
+            try:
+                if value.get(key) is not None:
+                    return max(1, min(int(value.get(key)), 3650))
+            except (TypeError, ValueError):
+                continue
+        value = value.get("value") or value.get("window") or value.get("policy")
+    text = _safe_text(value).lower()
+    match = re.fullmatch(r"(\d+)\s*(h|hr|hour|hours|d|day|days|w|week|weeks|m|month|months|y|year|years)", text)
+    if match:
+        amount = max(1, int(match.group(1)))
+        unit = match.group(2)
+        if unit.startswith("h"):
+            return max(1, math.ceil(amount / 24))
+        if unit.startswith("w"):
+            return min(amount * 7, 3650)
+        if unit.startswith("m"):
+            return min(amount * 30, 3650)
+        if unit.startswith("y"):
+            return min(amount * 365, 3650)
+        return min(amount, 3650)
+    if text in {"latest", "current", "fresh", "实时", "最新"}:
+        return 7
+    if text in {"recent", "近期"}:
+        return 30
+    if text in {"stable", "evergreen", "长期", "常青"}:
+        return 365
+    return _DEFAULT_EXPERIENCE_MAX_AGE_DAYS
+
+
+def _experience_freshness(item: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    checked_at = now or datetime.now(timezone.utc)
+    source_at = (
+        _parse_datetime(item.get("evidenceCheckedAt"))
+        or _parse_datetime(item.get("researchedAt"))
+        or _parse_datetime(item.get("createdAt"))
+        or checked_at
+    )
+    max_age_days = _freshness_max_age_days(item.get("freshnessWindow"))
+    age_days = max(0, int((checked_at - source_at).total_seconds() // 86400))
+    stale_at = source_at + timedelta(days=max_age_days)
+    expires_at = source_at + timedelta(days=max_age_days * 2)
+    if checked_at >= expires_at:
+        state = "expired"
+    elif checked_at >= stale_at:
+        state = "stale"
+    elif age_days >= max(1, math.floor(max_age_days * _FRESHNESS_WARNING_RATIO)):
+        state = "aging"
+    else:
+        state = "current"
+    return {
+        "freshnessState": state,
+        "ageDays": age_days,
+        "maxAgeDays": max_age_days,
+        "staleAt": stale_at.isoformat().replace("+00:00", "Z"),
+        "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _visible_experience(item: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    return {**_visible(item), **_experience_freshness(item, now=now)}
 
 
 def _not_expired(item: dict[str, Any], now: float | None = None) -> bool:
@@ -373,6 +454,7 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         ],
         "sourceMatrixDigest": source_digest,
         "createdFromBundleId": bundle_id,
+        "evidenceCheckedAt": _safe_text(bundle.get("completedAt") or bundle.get("createdAt")) or created_at,
         "createdAt": created_at,
         "updatedAt": created_at,
         "lastUsedAt": None,
@@ -427,6 +509,77 @@ def _pack_excluded_from_default_search(item: dict[str, Any]) -> bool:
     return False
 
 
+def _experience_search_score(item: dict[str, Any], *, overlap: int, now: datetime) -> float:
+    freshness = _experience_freshness(item, now=now)
+    try:
+        authority_score = float(item.get("authorityScore") or 0)
+    except (TypeError, ValueError):
+        authority_score = 0.0
+    try:
+        usage_count = max(0, int(item.get("usageCount") or 0))
+    except (TypeError, ValueError):
+        usage_count = 0
+    usage_bonus = min(6.0, math.log2(usage_count + 1) * 1.5)
+    age_ratio = float(freshness["ageDays"]) / max(1.0, float(freshness["maxAgeDays"]))
+    age_penalty = min(24.0, age_ratio * 12.0)
+    state_penalty = {"current": 0.0, "aging": 3.0, "stale": 12.0, "expired": 24.0}.get(
+        _safe_text(freshness.get("freshnessState")),
+        0.0,
+    )
+    return overlap * 10.0 + authority_score / 10.0 + usage_bonus - age_penalty - state_penalty
+
+
+def _search_experience_packs(
+    *,
+    query: str,
+    scope: str,
+    tags: list[str] | None,
+    min_confidence: str,
+    limit: int,
+    include_archived: bool,
+) -> list[dict[str, Any]]:
+    q_tokens = _question_tokens(query)
+    tag_set = {str(item).strip().lower() for item in list(tags or []) if str(item).strip()}
+    confidence_rank = {"low": 1, "medium": 2, "high": 3}
+    min_rank = confidence_rank.get(_safe_text(min_confidence).lower(), 0)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    now = datetime.now(timezone.utc)
+    with _LOCK:
+        payload = _read_store()
+        for item in payload["experiencePacks"]:
+            if not isinstance(item, dict) or not _scope_matches(item, scope):
+                continue
+            if _pack_excluded_from_default_search(item):
+                continue
+            if not include_archived and _safe_text(item.get("status")).lower() == "archived":
+                continue
+            if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
+                continue
+            item_tags = {str(tag).strip().lower() for tag in _as_list(item.get("tags")) if str(tag).strip()}
+            if tag_set and not tag_set.intersection(item_tags):
+                continue
+            haystack = " ".join(
+                [
+                    _safe_text(item.get("title")),
+                    _safe_text(item.get("query")),
+                    _safe_text(item.get("summary")),
+                    _safe_text(item.get("researchResult")),
+                    _safe_text(item.get("applicability")),
+                    _safe_text(item.get("sourcePolicy")),
+                    " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
+                    " ".join(_safe_text(url) for url in _as_list(item.get("sourceUrls"))),
+                    " ".join(item_tags),
+                ]
+            ).lower()
+            tokens = _question_tokens(haystack)
+            overlap = len(q_tokens.intersection(tokens)) if q_tokens else 0
+            if q_tokens and overlap == 0:
+                continue
+            scored.append((_experience_search_score(item, overlap=overlap, now=now), _visible_experience(item, now=now)))
+    scored.sort(key=lambda pair: (pair[0], _safe_text(pair[1].get("createdAt"))), reverse=True)
+    return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
+
+
 def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dict[str, Any]]:
     with _LOCK:
         payload = _prune_expired(_read_store())
@@ -446,46 +599,14 @@ def get_evidence_bundle(evidence_bundle_id: str) -> dict[str, Any] | None:
 
 
 def search_experience_packs(*, query: str, scope: str = "global", tags: list[str] | None = None, min_confidence: str = "", limit: int = 10) -> list[dict[str, Any]]:
-    q_tokens = _question_tokens(query)
-    tag_set = {str(item).strip().lower() for item in list(tags or []) if str(item).strip()}
-    confidence_rank = {"low": 1, "medium": 2, "high": 3}
-    min_rank = confidence_rank.get(_safe_text(min_confidence).lower(), 0)
-    scored: list[tuple[int, dict[str, Any]]] = []
-    with _LOCK:
-        payload = _read_store()
-        for item in payload["experiencePacks"]:
-            if not isinstance(item, dict) or not _scope_matches(item, scope):
-                continue
-            if _pack_excluded_from_default_search(item):
-                continue
-            if _safe_text(item.get("status")).lower() == "archived":
-                continue
-            if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
-                continue
-            item_tags = {str(tag).strip().lower() for tag in _as_list(item.get("tags")) if str(tag).strip()}
-            if tag_set and not tag_set.intersection(item_tags):
-                continue
-            haystack = " ".join(
-                [
-                    _safe_text(item.get("title")),
-                    _safe_text(item.get("query")),
-                    _safe_text(item.get("summary")),
-                    _safe_text(item.get("researchResult")),
-                    _safe_text(item.get("applicability")),
-                    _safe_text(item.get("sourcePolicy")),
-                    " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
-                    " ".join(_safe_text(url) for url in _as_list(item.get("sourceUrls"))),
-                    " ".join(item_tags),
-                ]
-            ).lower()
-            tokens = _question_tokens(haystack)
-            overlap = len(q_tokens.intersection(tokens)) if q_tokens else 0
-            score = overlap * 10 + int(float(item.get("authorityScore") or 0) / 10) + int(item.get("usageCount") or 0)
-            if q_tokens and overlap == 0:
-                continue
-            scored.append((score, _visible(item)))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
+    return _search_experience_packs(
+        query=query,
+        scope=scope,
+        tags=tags,
+        min_confidence=min_confidence,
+        limit=limit,
+        include_archived=False,
+    )
 
 
 def search_experience_packs_with_options(
@@ -497,63 +618,34 @@ def search_experience_packs_with_options(
     limit: int = 10,
     include_archived: bool = False,
 ) -> list[dict[str, Any]]:
-    if not include_archived:
-        return search_experience_packs(query=query, scope=scope, tags=tags, min_confidence=min_confidence, limit=limit)
-    q_tokens = _question_tokens(query)
-    tag_set = {str(item).strip().lower() for item in list(tags or []) if str(item).strip()}
-    confidence_rank = {"low": 1, "medium": 2, "high": 3}
-    min_rank = confidence_rank.get(_safe_text(min_confidence).lower(), 0)
-    scored: list[tuple[int, dict[str, Any]]] = []
-    with _LOCK:
-        payload = _read_store()
-        for item in payload["experiencePacks"]:
-            if not isinstance(item, dict) or not _scope_matches(item, scope):
-                continue
-            if _pack_excluded_from_default_search(item):
-                continue
-            if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
-                continue
-            item_tags = {str(tag).strip().lower() for tag in _as_list(item.get("tags")) if str(tag).strip()}
-            if tag_set and not tag_set.intersection(item_tags):
-                continue
-            haystack = " ".join(
-                [
-                    _safe_text(item.get("title")),
-                    _safe_text(item.get("query")),
-                    _safe_text(item.get("summary")),
-                    _safe_text(item.get("researchResult")),
-                    _safe_text(item.get("applicability")),
-                    _safe_text(item.get("sourcePolicy")),
-                    " ".join(_safe_text(src.get("host")) for src in _as_list(item.get("sourceMatrixDigest")) if isinstance(src, dict)),
-                    " ".join(_safe_text(url) for url in _as_list(item.get("sourceUrls"))),
-                    " ".join(item_tags),
-                ]
-            ).lower()
-            tokens = _question_tokens(haystack)
-            overlap = len(q_tokens.intersection(tokens)) if q_tokens else 0
-            score = overlap * 10 + int(float(item.get("authorityScore") or 0) / 10) + int(item.get("usageCount") or 0)
-            if q_tokens and overlap == 0:
-                continue
-            scored.append((score, _visible(item)))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
+    return _search_experience_packs(
+        query=query,
+        scope=scope,
+        tags=tags,
+        min_confidence=min_confidence,
+        limit=limit,
+        include_archived=include_archived,
+    )
 
 
-def get_experience_pack(experience_pack_id: str, *, include_archived: bool = False) -> dict[str, Any] | None:
+def get_experience_pack(
+    experience_pack_id: str,
+    *,
+    include_archived: bool = False,
+    record_usage: bool = False,
+) -> dict[str, Any] | None:
     with _LOCK:
         payload = _read_store()
         target = _safe_text(experience_pack_id)
-        changed = False
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
                 if _safe_text(item.get("status")).lower() == "archived" and not include_archived:
                     return None
-                item["usageCount"] = int(item.get("usageCount") or 0) + 1
-                item["lastUsedAt"] = _utc_now_iso()
-                changed = True
-                if changed:
+                if record_usage:
+                    item["usageCount"] = int(item.get("usageCount") or 0) + 1
+                    item["lastUsedAt"] = _utc_now_iso()
                     _write_store(payload)
-                return _visible(item)
+                return _visible_experience(item)
     return None
 
 
@@ -576,7 +668,7 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
         packs.insert(0, candidate)
         payload["experiencePacks"] = packs[:500]
         _write_store(payload)
-        return _visible(candidate)
+        return _visible_experience(candidate)
 
 
 def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "admin", reason: str = "") -> dict[str, Any] | None:
@@ -592,7 +684,7 @@ def archive_experience_pack(experience_pack_id: str, *, initiated_by: str = "adm
                 item["archiveReason"] = _safe_text(reason)
                 item["updatedAt"] = now
                 _write_store(payload)
-                return _visible(item)
+                return _visible_experience(item)
     return None
 
 
@@ -608,7 +700,7 @@ def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "adm
                 item["restoredBy"] = _safe_text(initiated_by) or "admin"
                 item["updatedAt"] = now
                 _write_store(payload)
-                return _visible(item)
+                return _visible_experience(item)
     return None
 
 
@@ -632,14 +724,129 @@ def delete_experience_pack(experience_pack_id: str, *, confirm: bool = False) ->
 def list_experience_packs(*, scope: str = "global", limit: int = 50, include_archived: bool = False) -> list[dict[str, Any]]:
     with _LOCK:
         payload = _read_store()
+        now = datetime.now(timezone.utc)
         items = [
-            _visible(item)
+            _visible_experience(item, now=now)
             for item in payload["experiencePacks"]
             if isinstance(item, dict)
             and _scope_matches(item, scope)
             and (include_archived or _safe_text(item.get("status")).lower() != "archived")
         ]
         return items[: max(1, min(int(limit or 50), 200))]
+
+
+def bulk_update_experience_packs(
+    experience_pack_ids: list[str],
+    *,
+    action: str,
+    initiated_by: str = "admin",
+    reason: str = "",
+) -> dict[str, Any]:
+    normalized_action = _safe_text(action).lower()
+    if normalized_action not in {"archive", "restore"}:
+        raise ValueError("bulk experience action must be archive or restore")
+    requested = []
+    for value in list(experience_pack_ids or [])[:100]:
+        pack_id = _safe_text(value)
+        if pack_id and pack_id not in requested:
+            requested.append(pack_id)
+    if not requested:
+        return {"ok": True, "action": normalized_action, "updatedCount": 0, "missingIds": [], "items": []}
+    with _LOCK:
+        payload = _read_store()
+        now = _utc_now_iso()
+        updated: list[dict[str, Any]] = []
+        found: set[str] = set()
+        for item in payload["experiencePacks"]:
+            pack_id = _safe_text(item.get("experiencePackId")) if isinstance(item, dict) else ""
+            if pack_id not in requested:
+                continue
+            found.add(pack_id)
+            current_status = _safe_text(item.get("status")).lower()
+            if normalized_action == "archive":
+                if current_status != "archived":
+                    item["status"] = "archived"
+                    item["archivedAt"] = now
+                    item["archivedBy"] = _safe_text(initiated_by) or "admin"
+                    item["archiveReason"] = _safe_text(reason) or "bulk_governance"
+                    item["updatedAt"] = now
+                    updated.append(_visible_experience(item))
+            elif current_status == "archived":
+                item["status"] = "active"
+                item["restoredAt"] = now
+                item["restoredBy"] = _safe_text(initiated_by) or "admin"
+                item["updatedAt"] = now
+                updated.append(_visible_experience(item))
+        if updated:
+            _write_store(payload)
+        return {
+            "ok": True,
+            "action": normalized_action,
+            "updatedCount": len(updated),
+            "missingIds": [pack_id for pack_id in requested if pack_id not in found],
+            "items": updated,
+        }
+
+
+def maintain_experience_packs(*, now: datetime | None = None) -> dict[str, Any]:
+    """Converge reusable research packs without hard-deleting user evidence."""
+    checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    checked_at_text = checked_at.isoformat().replace("+00:00", "Z")
+    with _LOCK:
+        payload = _read_store()
+        packs = [item for item in payload["experiencePacks"] if isinstance(item, dict)]
+        changed = False
+        expired_ids: list[str] = []
+        duplicate_ids: list[str] = []
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for item in packs:
+            state = _experience_freshness(item, now=checked_at)
+            for key in ("freshnessState", "staleAt", "expiresAt"):
+                if item.get(key) != state.get(key):
+                    item[key] = state.get(key)
+                    changed = True
+            if state["freshnessState"] == "expired" and _safe_text(item.get("status")).lower() != "archived":
+                item["status"] = "archived"
+                item["archivedAt"] = checked_at_text
+                item["archivedBy"] = "memory_maintenance"
+                item["archiveReason"] = "freshness_expired"
+                item["updatedAt"] = checked_at_text
+                expired_ids.append(_safe_text(item.get("experiencePackId")))
+                changed = True
+            fingerprint = _safe_text(item.get("topicFingerprint"))
+            if fingerprint and _safe_text(item.get("status")).lower() != "archived":
+                groups.setdefault((_safe_text(item.get("scope")) or "global", fingerprint), []).append(item)
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            ordered = sorted(
+                group,
+                key=lambda item: (
+                    not _pack_excluded_from_default_search(item),
+                    _parse_datetime(item.get("evidenceCheckedAt")) or _parse_datetime(item.get("createdAt")) or datetime.min.replace(tzinfo=timezone.utc),
+                    _safe_text(item.get("experiencePackId")),
+                ),
+                reverse=True,
+            )
+            for item in ordered[1:]:
+                item["status"] = "archived"
+                item["archivedAt"] = checked_at_text
+                item["archivedBy"] = "memory_maintenance"
+                item["archiveReason"] = "superseded_duplicate_topic"
+                item["updatedAt"] = checked_at_text
+                duplicate_ids.append(_safe_text(item.get("experiencePackId")))
+                changed = True
+        if changed:
+            _write_store(payload)
+        return {
+            "ok": True,
+            "candidateCount": len(packs),
+            "expiredArchivedCount": len(expired_ids),
+            "duplicateArchivedCount": len(duplicate_ids),
+            "expiredArchivedIds": [value for value in expired_ids if value][:20],
+            "duplicateArchivedIds": [value for value in duplicate_ids if value][:20],
+            "changed": changed,
+        }
 
 
 def research_ledger_summary(*, scope: str = "global", include_archived: bool = False) -> dict[str, Any]:

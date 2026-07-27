@@ -8,13 +8,18 @@ export async function GET(req: Request) {
         const { searchParams } = new URL(req.url);
         const entity = searchParams.get("entity");
         const keyword = searchParams.get("keyword");
+        const workspaceKey = searchParams.get("workspaceKey");
+        const workspaces = searchParams.get("workspaces");
         const limit = searchParams.get("limit") || "100";
+        const workspaceQuery = workspaceKey ? `&workspaceKey=${encodeURIComponent(workspaceKey)}` : "";
 
-        const response = entity
-            ? await fetch(`${ENGINE_URL}/v1/memory/graph/entity/${encodeURIComponent(entity)}`)
+        const response = workspaces === "1"
+            ? await fetch(`${ENGINE_URL}/v1/memory/graph/workspaces`)
+            : entity
+            ? await fetch(`${ENGINE_URL}/v1/memory/graph/entity/${encodeURIComponent(entity)}?workspaceKey=${encodeURIComponent(workspaceKey || "")}`)
             : keyword
-                ? await fetch(`${ENGINE_URL}/v1/memory/graph/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}`)
-                : await fetch(`${ENGINE_URL}/v1/memory/graph/all?limit=${limit}`);
+                ? await fetch(`${ENGINE_URL}/v1/memory/graph/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}${workspaceQuery}`)
+                : await fetch(`${ENGINE_URL}/v1/memory/graph/all?limit=${limit}${workspaceQuery}`);
         if (!response.ok) throw new Error(`Failed: ${response.status}`);
         return NextResponse.json(await response.json());
     } catch (error) {

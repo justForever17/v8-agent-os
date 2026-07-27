@@ -49,6 +49,16 @@ interface GraphRelation {
   predicate: string;
   object: string;
   confidence: number;
+  scope?: string;
+}
+interface GraphWorkspaceOption {
+  workspaceKey: string;
+  workspaceId?: string | null;
+  projectId?: string | null;
+  workspacePath: string;
+  label: string;
+  isDefault: boolean;
+  relationCount: number;
 }
 interface GraphViewerProps {
   filterNode?: string;
@@ -144,6 +154,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   const [mutating, setMutating] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [motionClock, setMotionClock] = useState(0);
+  const [graphWorkspaces, setGraphWorkspaces] = useState<GraphWorkspaceOption[]>([]);
+  const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState("");
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const labelBoxesRef = useRef<Array<{
@@ -157,6 +170,10 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
   const normalizedFilter = filterNode.trim().toLowerCase();
+  const selectedWorkspace = useMemo(
+    () => graphWorkspaces.find((item) => item.workspaceKey === selectedWorkspaceKey) || null,
+    [graphWorkspaces, selectedWorkspaceKey],
+  );
   const selectedNode = useMemo(() => data?.nodes.find((node) => node.id === selectedNodeId) || null, [data?.nodes, selectedNodeId]);
   const firstRenderableNodeId = useMemo(() => data?.nodes?.[0]?.id ?? null, [data?.nodes]);
   const selectedNeighborhood = useMemo(() => {
@@ -313,10 +330,32 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     setConnectPredicate("RELATED_TO");
     setSelectedNodeId(null);
   }, []);
+  const loadGraphWorkspaces = useCallback(async () => {
+    try {
+      const res = await fetch("/api/memory/graph?workspaces=1");
+      if (!res.ok) throw new Error(`Workspace load failed: ${res.status}`);
+      const json = await res.json();
+      const options = Array.isArray(json?.items) ? json.items as GraphWorkspaceOption[] : [];
+      setGraphWorkspaces(options);
+      setSelectedWorkspaceKey(String(json?.defaultWorkspaceKey || ""));
+    } catch (error) {
+      console.error("Failed to load graph workspaces:", error);
+      setGraphWorkspaces([]);
+      setSelectedWorkspaceKey("");
+    } finally {
+      setWorkspaceReady(true);
+    }
+  }, []);
   const loadGraph = useCallback(async () => {
+    if (!workspaceReady) return;
+    if (!selectedWorkspaceKey) {
+      setData({ nodes: [], links: [] });
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const res = await fetch("/api/memory/graph");
+      const res = await fetch(`/api/memory/graph?workspaceKey=${encodeURIComponent(selectedWorkspaceKey)}`);
       if (!res.ok) {
         throw new Error(`Load failed: ${res.status}`);
       }
@@ -335,10 +374,14 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     {
       setLoading(false);
     }
-  }, [t, toast]);
+  }, [selectedWorkspaceKey, t, toast, workspaceReady]);
   const loadEntityRelations = useCallback(async (entityId: string) => {
+    if (!selectedWorkspaceKey) {
+      setRelations([]);
+      return;
+    }
     try {
-      const res = await fetch(`/api/memory/graph?entity=${encodeURIComponent(entityId)}`);
+      const res = await fetch(`/api/memory/graph?entity=${encodeURIComponent(entityId)}&workspaceKey=${encodeURIComponent(selectedWorkspaceKey)}`);
       if (!res.ok) {
         throw new Error(`Relation query failed: ${res.status}`);
       }
@@ -354,10 +397,16 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         variant: "destructive"
       });
     }
-  }, [t, toast]);
+  }, [selectedWorkspaceKey, t, toast]);
+  useEffect(() => {
+    void loadGraphWorkspaces();
+  }, [loadGraphWorkspaces]);
   useEffect(() => {
     void loadGraph();
   }, [loadGraph]);
+  useEffect(() => {
+    closeMenu();
+  }, [closeMenu, selectedWorkspaceKey]);
   useEffect(() => {
     const element = containerRef.current;
     if (!element || typeof ResizeObserver === "undefined") {
@@ -533,7 +582,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     }
   }, [loadEntityRelations, loadGraph, selectedNodeId]);
   const handleDeleteNode = useCallback(async () => {
-    if (!selectedNode) {
+    if (!selectedNode || !selectedWorkspaceKey) {
       return;
     }
     if (!window.confirm(t("components.memory.GraphViewer.k30907e46", {
@@ -546,7 +595,11 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       const res = await fetch("/api/memory/graph", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "delete_entity", name: selectedNode.id })
+        body: JSON.stringify({
+          action: "delete_entity",
+          name: selectedNode.id,
+          workspaceKey: selectedWorkspaceKey,
+        })
       });
       if (!res.ok) {
         throw new Error(`Delete failed: ${res.status}`);
@@ -571,9 +624,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     {
       setMutating(false);
     }
-  }, [closeMenu, loadGraph, selectedNode, t, toast]);
+  }, [closeMenu, loadGraph, selectedNode, selectedWorkspaceKey, t, toast]);
   const handleCreateRelation = useCallback(async () => {
-    if (!selectedNode) {
+    if (!selectedNode || !selectedWorkspaceKey) {
       return;
     }
     const target = connectTarget.trim().toLowerCase();
@@ -597,7 +650,8 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
           predicate,
           object: target,
           confidence: 1.0,
-          maintainerSource: "human_admin"
+          maintainerSource: "human_admin",
+          workspaceKey: selectedWorkspaceKey,
         })
       });
       if (!res.ok) {
@@ -623,8 +677,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     {
       setMutating(false);
     }
-  }, [connectPredicate, connectTarget, refreshGraphState, selectedNode, t, toast]);
+  }, [connectPredicate, connectTarget, refreshGraphState, selectedNode, selectedWorkspaceKey, t, toast]);
   const handleDeleteRelation = useCallback(async (relation: GraphRelation) => {
+    if (!selectedWorkspaceKey || relation.scope === "global") return;
     setMutating(true);
     try {
       const res = await fetch("/api/memory/graph", {
@@ -634,7 +689,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
           action: "delete_relation",
           subject: relation.subject,
           predicate: relation.predicate,
-          object: relation.object
+          object: relation.object,
+          scope: relation.scope,
+          workspaceKey: selectedWorkspaceKey,
         })
       });
       if (!res.ok) {
@@ -660,7 +717,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     {
       setMutating(false);
     }
-  }, [refreshGraphState, t, toast]);
+  }, [refreshGraphState, selectedWorkspaceKey, t, toast]);
   const handleNodeClick = useCallback(async (node: object, event: MouseEvent) => {
     const nextNode = node as GraphNode;
     setSelectedNodeId(nextNode.id);
@@ -690,15 +747,35 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     }
     return matchedNodeIds.has(sourceId) || matchedNodeIds.has(targetId) || link.label.toLowerCase().includes(normalizedFilter);
   }, [hoveredNodeId, matchedNodeIds, normalizedFilter, selectedNodeId]);
+  const workspaceSelector = workspaceReady && graphWorkspaces.length > 0 ? <label className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+            <span className="sr-only">{t("components.memory.GraphViewer.workspaceLabel")}</span>
+            <select
+              className="max-w-56 cursor-pointer bg-transparent pr-1 text-foreground outline-none"
+              value={selectedWorkspaceKey}
+              onChange={(event) => setSelectedWorkspaceKey(event.target.value)}
+              aria-label={t("components.memory.GraphViewer.workspaceLabel")}
+            >
+              {!selectedWorkspaceKey ? <option value="" disabled>
+                {t("components.memory.GraphViewer.chooseWorkspace")}
+              </option> : null}
+              {graphWorkspaces.map((option) => <option key={option.workspaceKey} value={option.workspaceKey}>
+                {option.label}{option.isDefault ? `（${t("components.memory.GraphViewer.defaultWorkspace")}）` : ""} — {option.workspacePath} · {option.relationCount}
+              </option>)}
+            </select>
+        </label> : null;
   if (loading) {
-    return <div className="flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
+    return <div className="relative flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
+                {workspaceSelector}
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>;
   }
   if (!data || data.nodes.length === 0) {
-    return <div className="flex h-[620px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/10">
+    return <div className="relative flex h-[620px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 bg-muted/10">
+                {workspaceSelector}
                 <p className="mb-2 text-muted-foreground">{t("components.memory.GraphViewer.kc8e2fe51")}</p>
-                <p className="text-xs text-muted-foreground/70">{t("components.memory.GraphViewer.k46f71c00")}</p>
+                <p className="text-xs text-muted-foreground/70">
+                  {selectedWorkspace ? t("components.memory.GraphViewer.k46f71c00") : t("components.memory.GraphViewer.workspaceUnavailable")}
+                </p>
             </div>;
   }
   return <div ref={containerRef} className="relative h-[620px] w-full overflow-hidden rounded-3xl border border-border/60 bg-[radial-gradient(circle_at_center,rgba(99,102,241,0.12),transparent_42%),radial-gradient(circle_at_24%_22%,rgba(56,189,248,0.12),transparent_28%),radial-gradient(circle_at_78%_18%,rgba(16,185,129,0.08),transparent_24%),linear-gradient(180deg,rgba(15,23,42,0.16),rgba(2,6,23,0.02))]">
@@ -706,9 +783,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                 <div className="absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/10 blur-3xl" />
             </div>
 
-            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-full border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
-                {t("components.memory.GraphViewer.interactionHint")}
-            </div>
+            {workspaceSelector}
 
             <div className="pointer-events-none absolute right-4 top-4 z-10 rounded-full border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
                 {data.meta?.truncated ? t("components.memory.GraphViewer.graphCountTruncated", {
@@ -897,9 +972,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                                         </div>;
             })}
                             </div>
-                            <Button variant="outline" size="sm" className="w-full" onClick={() => setMenuMode("root")}>
+                            {selectedWorkspaceKey ? <Button variant="outline" size="sm" className="w-full" onClick={() => setMenuMode("root")}>
                                 {t("components.memory.GraphViewer.manageRelations")}
-                            </Button>
+                            </Button> : null}
                         </div> : null}
 
                     {menuMode === "root" ? <div className="mt-4 grid gap-2">
@@ -968,12 +1043,12 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
             return <div key={`${relation.subject}-${relation.predicate}-${relation.object}-${index}`} className="rounded-2xl border border-border/50 bg-muted/20 px-3 py-3">
                                                 <div className="text-xs text-muted-foreground">{relation.predicate}</div>
                                                 <div className="mt-1 text-sm font-medium break-all">{counterpart}</div>
-                                                <div className="mt-3 flex justify-end">
+                                                {relation.scope !== "global" ? <div className="mt-3 flex justify-end">
                                                     <Button variant="outline" size="sm" className="text-xs" onClick={() => void handleDeleteRelation(relation)} disabled={mutating}>
                                                         <Unlink2 className="mr-2 h-3.5 w-3.5" />
                                                         {t("components.memory.GraphViewer.k96f8f8c3")}
                                                     </Button>
-                                                </div>
+                                                </div> : null}
                                             </div>;
           })}
                             </div>

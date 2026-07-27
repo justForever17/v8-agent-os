@@ -46,6 +46,11 @@ from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
 )
+from runtimes.memory.workspace_scope import (
+    canonical_workspace_scope,
+    resolve_workspace_scope_identity,
+    workspace_directory_exists,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +109,7 @@ def _utc_now_iso() -> str:
 # === LLM 提取结果模型 ===
 
 class PreferenceExtraction(BaseModel):
-    scope: str = Field(description="Scope of this preference (e.g., 'global', 'project:v8-agent-os')")
+    scope: str = Field(description="Use the exact runtime resolved_scope for workspace memory; use 'global' only for explicitly universal memory")
     key: str = Field(description="A short key name for this preference (e.g., 'preferred_framework', 'code_style')")
     value: str = Field(description="The actual value or content of the preference")
     importance: int = Field(default=50, description="Importance score from 0 to 100")
@@ -1452,8 +1457,8 @@ def _store_workflow_episodes(
     return len(stored), stored
 
 _GLOBAL_PROMOTION_RE = re.compile(
-    r"(所有项目|全部项目|全局|所有工作区|任何工作区|跨项目|以后都|永远|默认|个人偏好|我的偏好|"
-    r"all projects|global|all workspaces|any workspace|across projects|from now on|always|by default|personal preference|runtime governance|runtime contract)",
+    r"(所有项目|全部项目|全局|所有工作区|任何工作区|跨项目|跨工作区|"
+    r"all projects|global|all workspaces|any workspace|across projects|across workspaces)",
     re.IGNORECASE,
 )
 
@@ -1690,22 +1695,34 @@ def _get_log_source(trigger_source: str) -> str:
 
 def _effective_memory_scope(binding: Any | None, resolved_scope: str) -> str:
     if binding is not None:
-        channel_type = str(getattr(binding, "channel_type", "") or "").strip()
-        channel_remote_id = str(getattr(binding, "channel_remote_id", "") or "").strip()
+        workspace_path = str(getattr(binding, "workspace_path", "") or "").strip()
         project_id = str(getattr(binding, "project_id", "") or "").strip()
         workspace_id = str(getattr(binding, "workspace_id", "") or "").strip()
-        if channel_type and channel_remote_id:
-            normalized_remote = channel_remote_id.replace(":", "_").replace("/", "_")
-            return f"channel:{channel_type}:{normalized_remote}"
-        if project_id:
-            return f"project:{project_id}"
-        if workspace_id:
-            normalized_workspace = workspace_id.replace(":", "_").replace("/", "_").replace("\\", "_")
-            return f"workspace:{normalized_workspace}"
+        if workspace_path:
+            if not workspace_directory_exists(workspace_path):
+                return ""
+            canonical_scope = canonical_workspace_scope(workspace_path)
+            if canonical_scope:
+                return canonical_scope
     normalized_scope = str(resolved_scope or "").strip()
-    if normalized_scope.startswith(("channel:", "project:", "workspace:", "external_api_thread:")):
-        return normalized_scope
-    return "workspace:main"
+    if normalized_scope == "global":
+        return "global"
+    identity = resolve_workspace_scope_identity(
+        scope_alias=normalized_scope or None,
+        project_id=(
+            str(getattr(binding, "project_id", "") or "").strip() or None
+            if binding is not None
+            else None
+        ),
+        workspace_id=(
+            str(getattr(binding, "workspace_id", "") or "").strip() or None
+            if binding is not None
+            else None
+        ),
+    )
+    if identity and workspace_directory_exists(str(identity.get("workspacePath") or "")):
+        return str(identity.get("writeScope") or "")
+    return ""
 
 
 def _session_scope_hints(session_id: str) -> Dict[str, Any]:
@@ -2216,6 +2233,7 @@ def analyze_session_memory(
             channel_remote_id=binding.channel_remote_id,
             workspace_id=binding.workspace_id,
             project_id=binding.project_id,
+            workspace_path=binding.workspace_path,
             workflow_id=binding.workflow_id,
         )
     else:
@@ -2237,6 +2255,47 @@ def analyze_session_memory(
         scope = binding.resolved_scope
         scope_chain = resolved.scope_chain
     effective_memory_scope = _effective_memory_scope(binding, scope)
+    if not effective_memory_scope:
+        skip_reason = "workspace_identity_unavailable"
+        logger.warning(
+            "[MemoryAgent] Skipping session %s because its physical workspace "
+            "is missing or cannot be proven.",
+            session_id[:8],
+        )
+        _update_run_metadata(
+            run_handle,
+            {
+                "memory_extraction": {
+                    "status": "skipped",
+                    "skipReason": skip_reason,
+                    "resolvedScope": scope,
+                    "workspacePath": getattr(binding, "workspace_path", None),
+                    "transcriptSource": transcript["source"],
+                    "latestSeq": transcript["latest_seq"],
+                }
+            },
+        )
+        _emit_memory_event(
+            run_handle,
+            "memory.session_extraction.skipped",
+            {
+                "session_id": session_id,
+                "reason": skip_reason,
+                "resolved_scope": scope,
+                "parent_run_id": parent_run_id,
+                "transcript_source": transcript["source"],
+                "latest_seq": transcript["latest_seq"],
+            },
+        )
+        return {
+            "status": "skipped",
+            "task_kind": "session_extraction",
+            "session_id": session_id,
+            "reason": skip_reason,
+            "resolved_scope": scope,
+            "parent_run_id": parent_run_id,
+            "transcript_source": transcript["source"],
+        }
     source_runtime = _memory_source_runtime(trigger_source)
     provenance_class = _memory_provenance_class(trigger_source)
     memory_policy = _memory_policy_for_provenance(provenance_class)
@@ -2752,12 +2811,25 @@ async def generate_periodic_summary(
         },
     )
     
-    content = ""
-    if tier in {"week", "month", "year"}:
-        content = memory_runtime.get_logs_for_period(tier=tier, dt=dt, scope_chain=["global"])
+    prepared = memory_runtime.prepare_periodic_summary_input(
+        tier=tier,
+        dt=dt,
+        scope_chain=["global"],
+    )
+    content = str(prepared.get("content") or "")
+    model_content = str(prepared.get("model_content") or content)
+    source_metadata = {
+        "sourceDigest": str(prepared.get("source_digest") or ""),
+        "sourceRangeStart": str(prepared.get("source_range_start") or ""),
+        "sourceRangeEnd": str(prepared.get("source_range_end") or ""),
+        "sourceRefs": list(prepared.get("source_refs") or []),
+        "sourceEvidence": list(prepared.get("source_evidence") or []),
+        "changedSourceRefs": list(prepared.get("changed_source_refs") or []),
+        "removedSourceRefs": list(prepared.get("removed_source_refs") or []),
+    }
     daily_log_count = content.count("] Ref: memory://day/")
-        
-    if not content.strip():
+
+    if not content.strip() and not bool(prepared.get("existing_verified")):
         logger.debug(f"[MemoryAgent] No logs found for {tier}, skipping summary.")
         audit_logger.log(
             source_type=source_type,
@@ -2782,13 +2854,62 @@ async def generate_periodic_summary(
             "reason": "no_logs_found",
             "daily_log_count": 0,
             "input_content_length": 0,
+            "source_content_length": 0,
+            "model_invoked": False,
         }
-        
-    try:
-        payload = await _synthesize_periodic_summary_payload(tier=tier, content=content)
-        normalized_payload = _normalize_periodic_summary_payload(tier=tier, payload=payload)
 
-        memory_runtime.save_periodic_summary(tier=tier, payload=normalized_payload, dt=dt)
+    if bool(prepared.get("existing_verified")) and (
+        not bool(prepared.get("semantic_changed")) or not content.strip()
+    ):
+        reason = "source_content_unchanged" if content.strip() else "source_content_absent_preserved"
+        memory_runtime.save_periodic_summary(
+            tier=tier,
+            payload={
+                "summary": str(prepared.get("existing_summary") or ""),
+                "body": str(prepared.get("existing_body") or ""),
+                "sourceMetadata": source_metadata,
+            },
+            dt=dt,
+        )
+        logger.info("[MemoryAgent] Refreshed %s coverage without model invocation (%s).", tier, reason)
+        _emit_memory_event(
+            run_handle,
+            "memory.summary.coverage_refreshed",
+            {
+                "tier": tier,
+                "target_date": dt.isoformat(),
+                "source_digest": source_metadata["sourceDigest"],
+                "reason": reason,
+            },
+        )
+        audit_logger.log(
+            source_type=source_type,
+            action="Memory Agent: Periodic Summary",
+            status="REFRESHED",
+            details=f"Refreshed {tier} coverage without model invocation ({reason}).",
+        )
+        return {
+            "status": "completed",
+            "task_kind": "periodic_summary",
+            "tier": tier,
+            "target_date": dt.isoformat(),
+            "reason": reason,
+            "daily_log_count": daily_log_count,
+            "source_block_count": len(prepared.get("blocks") or []),
+            "source_content_length": len(content),
+            "input_content_length": 0,
+            "content_length": len(str(prepared.get("existing_body") or "")),
+            "summary_length": len(str(prepared.get("existing_summary") or "")),
+            "model_invoked": False,
+            "source_digest": source_metadata["sourceDigest"],
+        }
+
+    try:
+        payload = await _synthesize_periodic_summary_payload(tier=tier, content=model_content)
+        normalized_payload = _normalize_periodic_summary_payload(tier=tier, payload=payload)
+        save_payload: Dict[str, Any] = {**normalized_payload, "sourceMetadata": source_metadata}
+
+        memory_runtime.save_periodic_summary(tier=tier, payload=save_payload, dt=dt)
         logger.info(f"[MemoryAgent] Successfully generated and saved {tier} summary.")
         _emit_memory_event(
             run_handle,
@@ -2798,6 +2919,8 @@ async def generate_periodic_summary(
                 "target_date": dt.isoformat(),
                 "content_length": len(normalized_payload["body"] or ""),
                 "summary_length": len(normalized_payload["summary"] or ""),
+                "source_digest": source_metadata["sourceDigest"],
+                "changed_source_refs": source_metadata["changedSourceRefs"],
             },
         )
         audit_logger.log(
@@ -2812,9 +2935,15 @@ async def generate_periodic_summary(
             "tier": tier,
             "target_date": dt.isoformat(),
             "daily_log_count": daily_log_count,
-            "input_content_length": len(content),
+            "source_block_count": len(prepared.get("blocks") or []),
+            "source_content_length": len(content),
+            "input_content_length": len(model_content),
             "content_length": len(normalized_payload["body"] or ""),
             "summary_length": len(normalized_payload["summary"] or ""),
+            "model_invoked": True,
+            "source_digest": source_metadata["sourceDigest"],
+            "changed_source_refs": source_metadata["changedSourceRefs"],
+            "removed_source_refs": source_metadata["removedSourceRefs"],
         }
     except Exception as e:
         logger.error(f"[MemoryAgent] Failed to generate {tier} summary: {e}")
@@ -2840,7 +2969,9 @@ async def generate_periodic_summary(
             "target_date": dt.isoformat(),
             "reason": str(e),
             "daily_log_count": daily_log_count,
-            "input_content_length": len(content),
+            "source_content_length": len(content),
+            "input_content_length": len(model_content),
+            "model_invoked": True,
         }
 
 # === Agent Hook 包装 ===

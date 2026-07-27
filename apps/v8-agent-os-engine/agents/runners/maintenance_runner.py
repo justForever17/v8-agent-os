@@ -17,6 +17,7 @@ from erc.runtime_context import bind_runtime_context
 from erc.runtime_stability import runtime_stability_service
 from erc.session_admission_service import session_admission_service
 from core.storage import storage
+from core.tools.research_ledger import maintain_experience_packs
 from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.workflow_service import workflow_memory_service
 
@@ -340,7 +341,7 @@ class MemoryAgentRunner:
             sessionId=session_id,
             runId=run_handle.run_id,
             parentRunId=parent_run_id,
-            callsLlm=status not in {"skipped", "rejected"},
+            callsLlm=bool(result.get("model_invoked")),
             skipReason=result.get("reason") if status == "skipped" else None,
             inputCharEstimate=result.get("content_length") or result.get("input_char_estimate"),
             messageCount=result.get("message_count") or result.get("entry_count"),
@@ -518,7 +519,7 @@ class MemoryAgentRunner:
             runId=run_handle.run_id,
             sessionId=effective_session_id,
             targetDate=result.get("target_date"),
-            callsLlm=status not in {"skipped", "rejected"},
+            callsLlm=bool(result.get("model_invoked")),
             dailyLogCount=result.get("daily_log_count"),
             inputCharEstimate=result.get("input_content_length"),
             outputCharEstimate=result.get("content_length"),
@@ -632,8 +633,10 @@ class MemoryAgentRunner:
         legacy_summary_backfilled_count = 0
         workflow_maintenance_result: Dict[str, Any] = {}
         global_quarantine_result: Dict[str, Any] = {}
+        signature_revalidation_result: Dict[str, Any] = {}
         knowledge_compaction_result: Dict[str, Any] = {}
         graph_maintenance_result: Dict[str, Any] = {}
+        research_experience_maintenance_result: Dict[str, Any] = {}
 
         try:
             tier_order = {"week": 0, "month": 1, "year": 2}
@@ -649,11 +652,7 @@ class MemoryAgentRunner:
                     trigger_source=trigger_source,
                     run_handle=run_handle,
                 )
-                try:
-                    input_content_length = int(result.get("input_content_length") or 0)
-                except (TypeError, ValueError):
-                    input_content_length = 0
-                if input_content_length > 0:
+                if bool(result.get("model_invoked")):
                     summary_llm_candidate_count += 1
                 if str(result.get("status") or "").strip().lower() == "completed":
                     summary_backfilled_count += 1
@@ -701,6 +700,15 @@ class MemoryAgentRunner:
             ]
             legacy_summary_backfilled_count = int(backfill_result.get("updatedCount") or 0)
             global_quarantine_result = self._quarantine_global_high_risk_memory()
+            signature_revalidation_result = memory_store_module.memory_store.refresh_stale_revalidation()
+            run_handle.emit(
+                "memory.knowledge.signature_revalidation.completed",
+                {
+                    "stale_marked_count": int(signature_revalidation_result.get("staleMarked") or 0),
+                    "resolved_scope_count": len(signature_revalidation_result.get("resolvedScopes") or []),
+                    "skipped_scope_count": len(signature_revalidation_result.get("skippedScopes") or []),
+                },
+            )
             compaction_options = self._maintenance_compaction_options()
             compaction_cursor = workflow_memory_service.maintenance_cursor("knowledge_compaction")
             knowledge_compaction_result = knowledge_db.maintenance_compact_knowledge(
@@ -743,6 +751,15 @@ class MemoryAgentRunner:
                     "merge_suggestion_count": int(workflow_maintenance_result.get("mergeSuggestionCount") or 0),
                 },
             )
+            research_experience_maintenance_result = maintain_experience_packs()
+            run_handle.emit(
+                "memory.research_experience.maintenance.completed",
+                {
+                    "candidate_count": int(research_experience_maintenance_result.get("candidateCount") or 0),
+                    "expired_archived_count": int(research_experience_maintenance_result.get("expiredArchivedCount") or 0),
+                    "duplicate_archived_count": int(research_experience_maintenance_result.get("duplicateArchivedCount") or 0),
+                },
+            )
         except Exception as exc:
             run_handle.fail(str(exc), node="maintenance_runner")
             raise
@@ -775,12 +792,15 @@ class MemoryAgentRunner:
             or legacy_summary_touched_refs
             or int(global_quarantine_result.get("quarantinedPreferenceCount") or 0)
             or int(global_quarantine_result.get("quarantinedKnowledgeCount") or 0)
+            or int(signature_revalidation_result.get("staleMarked") or 0)
             or knowledge_superseded_count
             or knowledge_merge_suggestion_count
             or int(graph_result.get("rewiredRelationCount") or 0)
             or graph_pruned_entity_count
             or workflow_candidate_updated_count
             or workflow_merge_suggestion_count
+            or int(research_experience_maintenance_result.get("expiredArchivedCount") or 0)
+            or int(research_experience_maintenance_result.get("duplicateArchivedCount") or 0)
         )
         no_op_reason = ""
         if not failed_targets and not has_mutation:
@@ -797,6 +817,13 @@ class MemoryAgentRunner:
                 "completedCount": summary_backfilled_count + legacy_summary_backfilled_count,
                 "skippedCount": len(skipped_targets),
                 "failedCount": len(failed_targets),
+            },
+            {
+                "name": "knowledge_signature_revalidation",
+                "status": "completed" if int(signature_revalidation_result.get("staleMarked") or 0) else "no_op",
+                "staleMarkedCount": int(signature_revalidation_result.get("staleMarked") or 0),
+                "resolvedScopeCount": len(signature_revalidation_result.get("resolvedScopes") or []),
+                "skippedScopeCount": len(signature_revalidation_result.get("skippedScopes") or []),
             },
             {
                 "name": "knowledge_compaction",
@@ -820,6 +847,13 @@ class MemoryAgentRunner:
                 "candidateCount": int(workflow_maintenance_result.get("candidateCount") or 0),
                 "updatedCount": workflow_candidate_updated_count,
                 "mergeSuggestionCount": workflow_merge_suggestion_count,
+            },
+            {
+                "name": "research_experience_maintenance",
+                "status": "completed" if research_experience_maintenance_result.get("changed") else "no_op",
+                "candidateCount": int(research_experience_maintenance_result.get("candidateCount") or 0),
+                "expiredArchivedCount": int(research_experience_maintenance_result.get("expiredArchivedCount") or 0),
+                "duplicateArchivedCount": int(research_experience_maintenance_result.get("duplicateArchivedCount") or 0),
             },
         ]
         maintenance_meta = {
@@ -845,6 +879,9 @@ class MemoryAgentRunner:
             "globalQuarantinedPreferenceKeys": list(global_quarantine_result.get("quarantinedPreferenceKeys") or []),
             "globalQuarantinedKnowledgeCount": int(global_quarantine_result.get("quarantinedKnowledgeCount") or 0),
             "globalQuarantinedKnowledgeIds": list(global_quarantine_result.get("quarantinedKnowledgeIds") or []),
+            "knowledgeSignatureStaleMarkedCount": int(signature_revalidation_result.get("staleMarked") or 0),
+            "knowledgeSignatureResolvedScopes": list(signature_revalidation_result.get("resolvedScopes") or [])[:50],
+            "knowledgeSignatureSkippedScopes": list(signature_revalidation_result.get("skippedScopes") or [])[:50],
             "knowledgeCandidateCount": knowledge_candidate_count,
             "knowledgeSupersededCount": knowledge_superseded_count,
             "knowledgeMergeSuggestionCount": knowledge_merge_suggestion_count,
@@ -862,6 +899,9 @@ class MemoryAgentRunner:
             "workflowActiveHintCount": int(workflow_maintenance_result.get("activatedCount") or 0),
             "workflowQuarantinedCount": int(workflow_maintenance_result.get("quarantinedCount") or 0),
             "workflowMergeSuggestionCount": workflow_merge_suggestion_count,
+            "researchExperienceCandidateCount": int(research_experience_maintenance_result.get("candidateCount") or 0),
+            "researchExperienceExpiredArchivedCount": int(research_experience_maintenance_result.get("expiredArchivedCount") or 0),
+            "researchExperienceDuplicateArchivedCount": int(research_experience_maintenance_result.get("duplicateArchivedCount") or 0),
             "budgetStopped": bool(knowledge_compaction_result.get("budgetStopped") or workflow_maintenance_result.get("budgetStopped")),
             "noOpReason": no_op_reason,
             "summaryHealthBefore": before_health,
@@ -881,6 +921,7 @@ class MemoryAgentRunner:
             "legacy_summary_backfilled_count": legacy_summary_backfilled_count,
             "global_quarantined_preference_count": maintenance_meta["globalQuarantinedPreferenceCount"],
             "global_quarantined_knowledge_count": maintenance_meta["globalQuarantinedKnowledgeCount"],
+            "knowledge_signature_stale_marked_count": maintenance_meta["knowledgeSignatureStaleMarkedCount"],
             "knowledge_candidate_count": maintenance_meta["knowledgeCandidateCount"],
             "knowledge_superseded_count": maintenance_meta["knowledgeSupersededCount"],
             "knowledge_merge_suggestion_count": maintenance_meta["knowledgeMergeSuggestionCount"],
@@ -893,6 +934,8 @@ class MemoryAgentRunner:
             "workflow_active_hint_count": maintenance_meta["workflowActiveHintCount"],
             "workflow_quarantined_count": maintenance_meta["workflowQuarantinedCount"],
             "workflow_merge_suggestion_count": maintenance_meta["workflowMergeSuggestionCount"],
+            "research_experience_expired_archived_count": maintenance_meta["researchExperienceExpiredArchivedCount"],
+            "research_experience_duplicate_archived_count": maintenance_meta["researchExperienceDuplicateArchivedCount"],
             "touched_refs": touched_refs,
             "legacy_summary_touched_refs": legacy_summary_touched_refs,
             "skipped_targets": skipped_targets,
@@ -930,6 +973,8 @@ class MemoryAgentRunner:
             workflowActiveHintCount=maintenance_meta["workflowActiveHintCount"],
             workflowQuarantinedCount=maintenance_meta["workflowQuarantinedCount"],
             workflowMergeSuggestionCount=maintenance_meta["workflowMergeSuggestionCount"],
+            researchExperienceExpiredArchivedCount=maintenance_meta["researchExperienceExpiredArchivedCount"],
+            researchExperienceDuplicateArchivedCount=maintenance_meta["researchExperienceDuplicateArchivedCount"],
             budgetStopped=maintenance_meta["budgetStopped"],
         )
         return self._finalize_run(run_handle, reason="memory_maintenance_completed", result=result)

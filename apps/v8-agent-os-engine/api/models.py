@@ -385,6 +385,7 @@ class GraphEntityPayload(BaseModel):
     maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
     confidence: Optional[float] = 1.0
     scope: Optional[str] = None
+    workspace_key: Optional[str] = Field(default=None, alias="workspaceKey")
 
 
 class GraphRelationPayload(BaseModel):
@@ -397,6 +398,7 @@ class GraphRelationPayload(BaseModel):
     source_fact_ids: List[str] = Field(default_factory=list, alias="sourceFactIds")
     confidence: Optional[float] = 1.0
     maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
+    workspace_key: Optional[str] = Field(default=None, alias="workspaceKey")
 
 
 class RunCommandPayload(BaseModel):

@@ -45,10 +45,49 @@ class ProjectRegistryService:
         return self.project_repo.get_project(project_id)
 
     def get_default_project(self) -> Optional[ProjectDescriptor]:
-        project_id = self.project_repo.get_default_project_id()
+        project_id = self.get_effective_default_project_id()
         if not project_id:
             return None
         return self.get_project(project_id)
+
+    def get_effective_default_project_id(self) -> Optional[str]:
+        """Resolve the project attached to the canonical default workspace.
+
+        The workspace config is the product truth. ``defaultProjectId`` can be
+        stale after tests or an older client changes the default path, so it is
+        only a fallback when it still points at that same physical workspace.
+        """
+
+        from core.storage import storage
+        from core.workspace_identity import get_main_workspace_path, workspace_path_key
+
+        workspace_config = storage.get_workspace_config() or {}
+        configured_project_id = str(
+            workspace_config.get("projectId") or workspace_config.get("project_id") or ""
+        ).strip()
+        main_path_key = workspace_path_key(get_main_workspace_path())
+        projects = [project for project in self.list_projects() if bool(project.active)]
+
+        if configured_project_id:
+            configured = next(
+                (project for project in projects if project.project_id == configured_project_id),
+                None,
+            )
+            if configured and workspace_path_key(configured.workspace_path) == main_path_key:
+                return configured.project_id
+
+        path_match = next(
+            (project for project in projects if workspace_path_key(project.workspace_path) == main_path_key),
+            None,
+        )
+        if path_match:
+            return path_match.project_id
+
+        stored_project_id = str(self.project_repo.get_default_project_id() or "").strip()
+        stored = next((project for project in projects if project.project_id == stored_project_id), None)
+        if stored and workspace_path_key(stored.workspace_path) == main_path_key:
+            return stored.project_id
+        return None
 
     def save_project(self, payload: Dict[str, Any]) -> ProjectDescriptor:
         prepared_payload = dict(payload or {})

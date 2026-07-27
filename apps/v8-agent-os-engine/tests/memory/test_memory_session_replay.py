@@ -184,6 +184,66 @@ class MemorySessionReplayTests(unittest.TestCase):
         self.assertEqual(recorder.relations, [])
         self.assertEqual(result["no_persisted_memory_reason"], "policy_filtered")
 
+    def test_deleted_workspace_stops_before_extraction_or_persistence(self) -> None:
+        recorder = _Recorder()
+        missing_workspace = Path(__file__).with_name(".deleted-memory-workspace")
+        binding = SessionScopeBinding(
+            session_id="fixture-deleted-workspace",
+            conversation_id="fixture-deleted-workspace",
+            workspace_id="deleted-workspace",
+            workspace_path=str(missing_workspace),
+            project_id="deleted-project",
+            resolved_scope="project:deleted-project",
+            scope_source="fixture",
+            status="active",
+        )
+        transcript = {
+            "source": "chat_canonical_messages",
+            "latest_seq": 1,
+            "durable_message_count": 2,
+            "runtime_event_count": 0,
+            "user_message_count": 1,
+            "entries": [
+                {
+                    "id": "deleted-workspace-user-message",
+                    "role": "user",
+                    "content": "这段内容属于已经被物理删除的工程工作区，绝不能因为旧项目标识仍在数据库中，就被提取或注入到其他任何工作区。",
+                    "source": "canonical",
+                },
+                {
+                    "id": "deleted-workspace-assistant-message",
+                    "role": "assistant",
+                    "content": "系统应保留历史会话记录，但停止工作区记忆提取，并且只允许稳定的全局记忆继续读取。",
+                    "source": "canonical",
+                },
+            ],
+        }
+
+        with (
+            patch.object(memory_agent, "_load_memory_policy", return_value=_policy_with_defaults()),
+            patch.object(memory_agent.db, "get_messages", return_value=[]),
+            patch.object(memory_agent, "_build_canonical_session_transcript", return_value=transcript),
+            patch.object(memory_agent, "_extract_with_llm") as extract_with_llm,
+            patch.object(memory_agent.memory_runtime, "write_knowledge") as write_knowledge,
+            patch.object(memory_agent.memory_runtime, "upsert_preference") as upsert_preference,
+            patch.object(memory_agent.memory_runtime, "append_daily_log_with_yaml") as append_daily_log,
+            patch.object(memory_agent.audit_logger, "log", return_value=None),
+            patch.object(memory_agent.session_scope_binding_service, "get_binding", return_value=binding),
+        ):
+            result = memory_agent.analyze_session_memory(
+                "fixture-deleted-workspace",
+                trigger_source="SYSTEM",
+                run_handle=recorder,
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "workspace_identity_unavailable")
+        extract_with_llm.assert_not_called()
+        write_knowledge.assert_not_called()
+        upsert_preference.assert_not_called()
+        append_daily_log.assert_not_called()
+        self.assertTrue(any(topic == "memory.session_extraction.skipped" for topic, _ in recorder.events))
+
 
 if __name__ == "__main__":
     unittest.main()

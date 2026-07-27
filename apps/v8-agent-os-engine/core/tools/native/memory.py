@@ -8,6 +8,7 @@ from typing import Any, Optional
 from langchain_core.tools import tool
 
 from core.database import db
+from core.workspace_identity import workspace_path_key
 
 __all__ = [
     "_get_memory_runtime",
@@ -54,6 +55,66 @@ def _get_memory_runtime():
     return memory_runtime
 
 
+def _memory_runtime_scope_context(requested_scope: Optional[str] = None) -> dict[str, Any]:
+    """Resolve the read surface from the current runtime's physical workspace.
+
+    The model-facing ``scope`` argument is never authority to cross a workspace
+    boundary.  Managed Engineering worktrees keep the original workspace as
+    their memory owner.
+    """
+
+    try:
+        from erc.runtime_context import get_runtime_context
+        from runtimes.memory.scope_resolution import build_scope_chain
+
+        context = get_runtime_context()
+        workspace_path = str(
+            context.get("original_workspace_path")
+            or context.get("originalWorkspacePath")
+            or context.get("workspace_path")
+            or context.get("workspacePath")
+            or ""
+        ).strip()
+        resolved_scope = str(
+            context.get("resolved_scope")
+            or context.get("resolvedScope")
+            or "global"
+        ).strip() or "global"
+        scope_chain = build_scope_chain(
+            resolved_scope=resolved_scope,
+            workspace_path=workspace_path or None,
+            project_id=str(context.get("project_id") or context.get("projectId") or "").strip() or None,
+            workspace_id=str(context.get("workspace_id") or context.get("workspaceId") or "").strip() or None,
+            channel_type=str(context.get("channel_type") or context.get("channelType") or "").strip() or None,
+            channel_remote_id=str(
+                context.get("channel_remote_id") or context.get("channelRemoteId") or ""
+            ).strip() or None,
+            workflow_id=str(context.get("workflow_id") or context.get("workflowId") or "").strip() or None,
+        )
+    except Exception:
+        context = {}
+        workspace_path = ""
+        scope_chain = ["global"]
+
+    scope_chain = list(dict.fromkeys(str(item).strip() for item in scope_chain if str(item).strip()))
+    if "global" not in scope_chain:
+        scope_chain.insert(0, "global")
+    requested = str(requested_scope or "").strip()
+    preferred = requested if requested in scope_chain else ""
+    if not preferred:
+        preferred = next(
+            (item for item in scope_chain if item.startswith("workspace:ws_")),
+            next((item for item in scope_chain if item != "global"), "global"),
+        )
+    return {
+        "scope": preferred,
+        "scopes": scope_chain,
+        "workspacePath": workspace_path,
+        "surfaceScope": "current_workspace" if any(item != "global" for item in scope_chain) else "global",
+        "runtimeContext": context,
+    }
+
+
 def _memory_broker_clamp_limit(limit: int | None, *, default: int = 5, maximum: int = 12) -> int:
     try:
         value = int(limit or default)
@@ -81,10 +142,18 @@ def _memory_broker_score(item: dict[str, Any]) -> float | None:
     return None
 
 
-def _memory_broker_compact_recall_item(item: dict[str, Any]) -> dict[str, Any]:
+def _memory_broker_compact_recall_item(
+    item: dict[str, Any],
+    *,
+    allowed_scopes: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    raw_scope = str(item.get("scope") or "global").strip() or "global"
+    display_scope = "global" if raw_scope == "global" else "current_workspace"
+    if allowed_scopes is not None and raw_scope not in allowed_scopes:
+        display_scope = "outside_current_workspace"
     payload = {
         "id": item.get("id") or item.get("memoryRef") or item.get("memory_ref"),
-        "scope": item.get("scope"),
+        "scope": display_scope,
         "category": item.get("category") or item.get("source"),
         "confidence": _memory_broker_score(item),
         "updatedAt": item.get("updated_at") or item.get("updatedAt"),
@@ -351,11 +420,37 @@ def _memory_compact_research_pack(pack: dict[str, Any], *, rejected_reason: str 
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
-def _memory_route_research_experience(query: str, *, scope: Optional[str], limit: int) -> dict[str, Any]:
+def _memory_route_research_experience(
+    query: str,
+    *,
+    scope: Optional[str],
+    scopes: Optional[list[str]] = None,
+    limit: int,
+) -> dict[str, Any]:
     try:
         from core.tools.research_ledger import search_experience_packs_with_options
 
-        packs = search_experience_packs_with_options(query=query, scope=scope or "global", limit=max(limit * 2, 6), include_archived=True)
+        allowed_scopes = list(
+            dict.fromkeys(str(item).strip() for item in list(scopes or [scope or "global"]) if str(item).strip())
+        ) or ["global"]
+        packs = []
+        seen_pack_ids: set[str] = set()
+        for candidate_scope in [item for item in allowed_scopes if item != "global"] + ["global"]:
+            for pack in search_experience_packs_with_options(
+                query=query,
+                scope=candidate_scope,
+                limit=max(limit * 2, 6),
+                include_archived=True,
+            ):
+                pack_scope = str(pack.get("scope") or "global").strip() or "global"
+                if pack_scope not in allowed_scopes:
+                    continue
+                pack_id = str(pack.get("experiencePackId") or "").strip()
+                dedupe_key = pack_id or json.dumps(pack, ensure_ascii=False, sort_keys=True, default=str)
+                if dedupe_key in seen_pack_ids:
+                    continue
+                seen_pack_ids.add(dedupe_key)
+                packs.append(pack)
     except Exception as exc:
         return _memory_evidence_pack(
             source_domain="research_experience",
@@ -414,11 +509,19 @@ def _memory_route_research_experience(query: str, *, scope: Optional[str], limit
     )
 
 
-def _memory_route_workflow(query: str, *, scope: Optional[str], limit: int) -> dict[str, Any]:
+def _memory_route_workflow(
+    query: str,
+    *,
+    scope: Optional[str],
+    scopes: Optional[list[str]] = None,
+    limit: int,
+) -> dict[str, Any]:
     try:
         from runtimes.memory.workflow_service import workflow_memory_service
 
-        scope_chain = [value for value in [scope, "global"] if value]
+        scope_chain = list(
+            dict.fromkeys(str(item).strip() for item in list(scopes or [scope, "global"]) if str(item).strip())
+        )
         hints = workflow_memory_service.match_hints(query=query, scope_chain=scope_chain, limit=min(limit, 3), engineering_active=True)
     except Exception as exc:
         return _memory_evidence_pack(
@@ -455,7 +558,13 @@ def _memory_route_workflow(query: str, *, scope: Optional[str], limit: int) -> d
     )
 
 
-def _memory_route_engineering_proof(query: str, *, scope: Optional[str], limit: int) -> dict[str, Any]:
+def _memory_route_engineering_proof(
+    query: str,
+    *,
+    scope: Optional[str],
+    workspace_path: Optional[str] = None,
+    limit: int,
+) -> dict[str, Any]:
     try:
         entries = db.list_engineering_proof_entries(limit=30)
     except Exception as exc:
@@ -467,11 +576,16 @@ def _memory_route_engineering_proof(query: str, *, scope: Optional[str], limit: 
         )
     q_tokens = _memory_query_tokens(query)
     scored: list[tuple[int, dict[str, Any]]] = []
+    owner_workspace_key = workspace_path_key(workspace_path)
     for entry in list(entries or []):
         if not isinstance(entry, dict):
             continue
         workspace = str(entry.get("workspace_path") or entry.get("workspacePath") or "").strip()
-        if scope and scope not in {"global", "current_session"} and workspace and str(scope) not in workspace:
+        entry_workspace_key = workspace_path_key(workspace)
+        if owner_workspace_key:
+            if not entry_workspace_key or entry_workspace_key != owner_workspace_key:
+                continue
+        elif entry_workspace_key:
             continue
         haystack = " ".join(
             [
@@ -494,7 +608,7 @@ def _memory_route_engineering_proof(query: str, *, scope: Optional[str], limit: 
                 for key, value in {
                     "id": entry.get("id") or entry.get("entryId"),
                     "summary": _memory_broker_preview(entry.get("summary") or entry.get("patchIntent"), 260),
-                    "workspacePath": entry.get("workspace_path") or entry.get("workspacePath"),
+                    "workspace": "current_workspace" if owner_workspace_key else "global",
                     "verificationStatus": entry.get("verificationStatus"),
                     "updatedAt": entry.get("updated_at") or entry.get("updatedAt") or entry.get("createdAt"),
                 }.items()
@@ -512,9 +626,20 @@ def _memory_route_engineering_proof(query: str, *, scope: Optional[str], limit: 
     )
 
 
-def _memory_route_core(runtime: Any, query: str, *, scope: Optional[str], limit: int) -> dict[str, Any]:
-    results = runtime.unified_recall(query=query, limit=limit, scope=scope)
-    selected = [_memory_broker_compact_recall_item(item) for item in list(results or [])[:limit] if isinstance(item, dict)]
+def _memory_route_core(
+    runtime: Any,
+    query: str,
+    *,
+    scope: Optional[str],
+    scopes: Optional[list[str]] = None,
+    limit: int,
+) -> dict[str, Any]:
+    results = runtime.unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
+    selected = [
+        _memory_broker_compact_recall_item(item, allowed_scopes=scopes)
+        for item in list(results or [])[:limit]
+        if isinstance(item, dict)
+    ]
     return _memory_evidence_pack(
         source_domain="memory_core",
         selected=selected,
@@ -555,14 +680,19 @@ def memory_broker(
     normalized_detail = str(detail_level or "summary").strip().lower()
     runtime = _get_memory_runtime()
     effective_limit = _memory_broker_clamp_limit(limit)
+    ownership = _memory_runtime_scope_context(scope)
+    effective_scope = str(ownership["scope"])
+    effective_scopes = list(ownership["scopes"])
+    effective_workspace_path = str(ownership["workspacePath"] or "")
+    surface_scope = str(ownership["surfaceScope"])
     try:
         if normalized_mode == "catalog":
-            domains = _memory_broker_catalog(scope=scope)
+            domains = _memory_broker_catalog(scope=surface_scope)
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
                 mode=normalized_mode,
-                scope=scope or "current_session",
+                scope=surface_scope,
                 summary=f"Memory catalog lists {len(domains)} domain(s). Queryable domains are intentionally compact.",
                 domains=domains,
                 nextAction="Use memory_broker(mode='route', query='...', intent='...') to retrieve a compact evidence pack.",
@@ -584,24 +714,56 @@ def memory_broker(
             rejected_domains: list[dict[str, Any]] = []
             for domain in routed_domains:
                 if domain == "memory_core":
-                    packs.append(_memory_route_core(runtime, search_text, scope=scope, limit=min(effective_limit, 3)))
+                    packs.append(
+                        _memory_route_core(
+                            runtime,
+                            search_text,
+                            scope=effective_scope,
+                            scopes=effective_scopes,
+                            limit=min(effective_limit, 3),
+                        )
+                    )
                 elif domain == "research_experience":
-                    packs.append(_memory_route_research_experience(search_text, scope=scope or "global", limit=min(effective_limit, 3)))
+                    packs.append(
+                        _memory_route_research_experience(
+                            search_text,
+                            scope=effective_scope,
+                            scopes=effective_scopes,
+                            limit=min(effective_limit, 3),
+                        )
+                    )
                 elif domain == "workflow_memory":
-                    packs.append(_memory_route_workflow(search_text, scope=scope, limit=min(effective_limit, 3)))
+                    packs.append(
+                        _memory_route_workflow(
+                            search_text,
+                            scope=effective_scope,
+                            scopes=effective_scopes,
+                            limit=min(effective_limit, 3),
+                        )
+                    )
                 elif domain == "engineering_proof":
-                    packs.append(_memory_route_engineering_proof(search_text, scope=scope, limit=min(effective_limit, 3)))
+                    packs.append(
+                        _memory_route_engineering_proof(
+                            search_text,
+                            scope=effective_scope,
+                            workspace_path=effective_workspace_path,
+                            limit=min(effective_limit, 3),
+                        )
+                    )
                 elif domain == "knowledge_graph":
                     rejected_domains.append({"domain": domain, "reason": "Use graph_search/graph_neighbors for exact entity traversal."})
                 elif domain == "daily_log":
                     rejected_domains.append({"domain": domain, "reason": "Use map/read_day when a date or memoryRef is available."})
             selected_count = sum(len(pack.get("selectedEvidence") or []) for pack in packs)
+            for pack in packs:
+                if isinstance(pack, dict):
+                    pack["scope"] = surface_scope
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
                 mode=normalized_mode,
                 query=search_text,
-                scope=scope,
+                scope=surface_scope,
                 selectedDomains=[pack.get("sourceDomain") for pack in packs if pack.get("sourceDomain")],
                 rejectedDomains=rejected_domains,
                 summary=f"Routed memory query to {len(packs)} domain(s); selected {selected_count} evidence item(s).",
@@ -621,14 +783,23 @@ def memory_broker(
                     summary="memory_broker recall needs a query.",
                     nextAction="Call memory_broker(mode='recall', query='...') with the memory question or keywords.",
                 )
-            results = runtime.unified_recall(query=search_text, limit=effective_limit, scope=scope)
-            items = [_memory_broker_compact_recall_item(item) for item in results[:effective_limit] if isinstance(item, dict)]
+            results = runtime.unified_recall(
+                query=search_text,
+                limit=effective_limit,
+                scope=effective_scope,
+                scopes=effective_scopes,
+            )
+            items = [
+                _memory_broker_compact_recall_item(item, allowed_scopes=effective_scopes)
+                for item in results[:effective_limit]
+                if isinstance(item, dict)
+            ]
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
                 mode=normalized_mode,
                 query=search_text,
-                scope=scope,
+                scope=surface_scope,
                 summary=f"Found {len(items)} relevant memory item(s)." if items else "No matching prior memory.",
                 items=items,
                 nextAction="Use get_item/read_day/graph_neighbors if a result needs deeper verification." if items else None,
@@ -645,13 +816,22 @@ def memory_broker(
                     summary="memory_broker get_item needs item_id.",
                     nextAction="Pass an id returned by memory_broker(mode='recall').",
                 )
-            results = runtime.query_knowledge(query=search_text, scope=scope, limit=effective_limit)
+            results = runtime.query_knowledge(
+                query=search_text,
+                scope=effective_scope,
+                scopes=effective_scopes,
+                limit=effective_limit,
+            )
             exact = [item for item in results if str(item.get("id") or "") == search_text]
             selected = exact or results[:effective_limit]
             runtime.mark_knowledge_injected(
                 fact_ids=[str(item.get("id") or "") for item in selected if isinstance(item, dict) and item.get("id")]
             )
-            items = [_memory_broker_compact_recall_item(item) for item in selected if isinstance(item, dict)]
+            items = [
+                _memory_broker_compact_recall_item(item, allowed_scopes=effective_scopes)
+                for item in selected
+                if isinstance(item, dict)
+            ]
             return _memory_broker_response(
                 ok=True,
                 kind="memory_broker",
@@ -673,7 +853,7 @@ def memory_broker(
                     summary="memory_broker read_day needs memory_ref_or_date.",
                     nextAction="Pass memory://day/YYYY-MM-DD or YYYY-MM-DD.",
                 )
-            text = runtime.read_memory_day(memory_ref_or_date=ref)
+            text = runtime.read_memory_day(memory_ref_or_date=ref, scope_chain=effective_scopes)
             preview_limit = 1800 if normalized_detail not in {"full", "detail"} else 4200
             preview = _memory_broker_preview(text, preview_limit)
             return _memory_broker_response(
@@ -771,7 +951,11 @@ def memory_broker(
                     summary="memory_broker graph_search needs query or entity.",
                     nextAction="Pass an entity name or fuzzy keyword.",
                 )
-            results = runtime.search_entities(keyword=keyword, limit=effective_limit)
+            results = runtime.search_entities(
+                keyword=keyword,
+                limit=effective_limit,
+                scopes=effective_scopes,
+            )
             items = [
                 {
                     key: value
@@ -807,9 +991,13 @@ def memory_broker(
                     summary="memory_broker graph_neighbors needs entity.",
                     nextAction="Pass an exact entity name, or call graph_search first.",
                 )
-            direct = runtime.query_entity(entity=name)
+            direct = runtime.query_entity(entity=name, scopes=effective_scopes)
             hop_count = max(1, min(int(hops or 2), 3))
-            multi_hop = runtime.query_multi_hop(entity=name, hops=hop_count) if hop_count > 1 else []
+            multi_hop = (
+                runtime.query_multi_hop(entity=name, hops=hop_count, scopes=effective_scopes)
+                if hop_count > 1
+                else []
+            )
             relations = []
             for item in [*list(direct or []), *list(multi_hop or [])]:
                 if not isinstance(item, dict):
@@ -894,7 +1082,13 @@ def memory_recall(query: str, limit: int = 5) -> str:
         limit (int): Max number of distinct memory fragments to return. Default: 5.
     """
     try:
-        results = _get_memory_runtime().unified_recall(query=query, limit=limit)
+        ownership = _memory_runtime_scope_context()
+        results = _get_memory_runtime().unified_recall(
+            query=query,
+            limit=limit,
+            scope=str(ownership["scope"]),
+            scopes=list(ownership["scopes"]),
+        )
 
         if not results:
             return f"No relevant memory found for '{query}'."
@@ -966,7 +1160,12 @@ def mem_summary(tier: str, date: Optional[str] = None) -> str:
         date (str, optional): A target date in "YYYY-MM-DD" format. If omitted, uses the current date as reference to fetch the current week/month/year.
     """
     try:
-        return _get_memory_runtime().read_memory_summary(tier=tier, date_str=date)
+        ownership = _memory_runtime_scope_context()
+        return _get_memory_runtime().read_memory_summary(
+            tier=tier,
+            date_str=date,
+            scope_chain=list(ownership["scopes"]),
+        )
     except Exception as e:
         return f"Error retrieving memory summary: {str(e)}"
 
@@ -995,6 +1194,10 @@ def memory_map_expand(memory_ref: str) -> str:
 def memory_read_day(memory_ref_or_date: str) -> str:
     """Read a single memory day log by brokered memoryRef or YYYY-MM-DD date."""
     try:
-        return _get_memory_runtime().read_memory_day(memory_ref_or_date=memory_ref_or_date)
+        ownership = _memory_runtime_scope_context()
+        return _get_memory_runtime().read_memory_day(
+            memory_ref_or_date=memory_ref_or_date,
+            scope_chain=list(ownership["scopes"]),
+        )
     except Exception as e:
         return f"Error reading memory day: {str(e)}"

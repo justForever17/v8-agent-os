@@ -121,7 +121,9 @@ class MemoryBrokeredMapTests(unittest.TestCase):
                 ), patch.object(memory_store_module, "datetime", _FixedDatetime):
                     context = store.build_session_context(user_query="总结一下最近记忆")
                 self.assertIn("[MEMORY MAP]", context)
-                self.assertIn("[MEMORY SUMMARY]", context)
+                # A plain historical summary.md has no verified global-only
+                # provenance and must not be injected into another workspace.
+                self.assertNotIn("[MEMORY SUMMARY]", context)
                 self.assertIn("[RECENT ACTIVITY TEASER]", context)
                 self.assertIn("call memory_broker", context)
                 self.assertIn("Ref: memory://year/2026", context)
@@ -133,6 +135,39 @@ class MemoryBrokeredMapTests(unittest.TestCase):
                 self.assertNotIn("[PRIOR MEMORY SUMMARY BEFORE DETAILED WINDOW]", context)
                 self.assertNotIn("[RECENT ACTIVITY LOGS]", context)
                 self.assertNotIn(str(memory_root), context)
+
+    def test_verified_agent_journal_is_injected_globally(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "MEMORY_ROOT", memory_root):
+                store = MemoryStore()
+                store.save_periodic_summary(
+                    tier="week",
+                    payload={
+                        "summary": "经 Agent 周期维护验证的全局周记。",
+                        "body": "## 稳定结论\n\n- 这是经过策略标记的 Agent 周记。",
+                    },
+                    dt=datetime(2026, 4, 19),
+                )
+                with patch.object(
+                    storage,
+                    "get_memory_config",
+                    return_value={
+                        "max_recent_days": 5,
+                        "max_context_tokens": 4000,
+                        "passive_context_profile": "balanced",
+                        "passive_summary_enabled": True,
+                        "passive_memory_map_enabled": False,
+                        "passive_recent_activity_teaser_enabled": False,
+                    },
+                ), patch.object(memory_store_module, "datetime", _FixedDatetime):
+                    context = store.build_session_context(
+                        user_query="继续当前工作",
+                        scope_chain=["global", "workspace:ws_fixture"],
+                    )
+
+        self.assertIn("[MEMORY SUMMARY]", context)
+        self.assertIn("经 Agent 周期维护验证的全局周记", context)
 
     def test_memory_log_and_map_markers_are_supervisor_only_by_default(self):
         store = MemoryStore()
@@ -235,6 +270,66 @@ class MemoryBrokeredMapTests(unittest.TestCase):
         self.assertIn("周记摘要：只给月记读取这一层。", monthly_input)
         self.assertIn("Ref: memory://week/2026-W16", monthly_input)
         self.assertNotIn("RAW_DAILY_BODY_SHOULD_NOT_BE_READ", monthly_input)
+
+    def test_periodic_summary_source_digest_ignores_mtime_and_tracks_changed_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "MEMORY_ROOT", memory_root):
+                store = MemoryStore()
+                day_path = memory_root / "daily" / "2026" / "04_april" / "week_16" / "2026-04-14.md"
+                _write_day_log(day_path, summaries=["完成了第一项工作"])
+                first = store.prepare_periodic_summary_input(
+                    tier="week",
+                    dt=datetime(2026, 4, 19),
+                    scope_chain=["global"],
+                )
+                source_metadata = {
+                    "sourceDigest": first["source_digest"],
+                    "sourceRangeStart": first["source_range_start"],
+                    "sourceRangeEnd": first["source_range_end"],
+                    "sourceRefs": first["source_refs"],
+                    "sourceEvidence": first["source_evidence"],
+                    "changedSourceRefs": first["changed_source_refs"],
+                    "removedSourceRefs": first["removed_source_refs"],
+                }
+                store.save_periodic_summary(
+                    tier="week",
+                    payload={
+                        "summary": "已完成第一项工作。",
+                        "body": "## 连续性\n\n- 已完成第一项工作。",
+                        "sourceMetadata": source_metadata,
+                    },
+                    dt=datetime(2026, 4, 19),
+                )
+
+                stat = day_path.stat()
+                os.utime(day_path, (stat.st_atime + 5, stat.st_mtime + 5))
+                touched_only = store.prepare_periodic_summary_input(
+                    tier="week",
+                    dt=datetime(2026, 4, 19),
+                    scope_chain=["global"],
+                )
+                self.assertFalse(touched_only["semantic_changed"])
+                self.assertEqual(touched_only["source_digest"], first["source_digest"])
+                self.assertEqual(touched_only["changed_source_refs"], [])
+
+                day_path.write_text(
+                    day_path.read_text(encoding="utf-8") + "\n### 11:00\neffective_memory_scope: global\nsummary: 第二项工作完成\n",
+                    encoding="utf-8",
+                )
+                changed = store.prepare_periodic_summary_input(
+                    tier="week",
+                    dt=datetime(2026, 4, 19),
+                    scope_chain=["global"],
+                )
+
+        self.assertTrue(changed["semantic_changed"])
+        self.assertEqual(changed["changed_source_refs"], ["memory://day/2026-04-14"])
+        self.assertIn("Code-computed source range: 2026-04-13..2026-04-19", changed["model_content"])
+        self.assertIn("Evidence refs:\n- memory://day/2026-04-14", changed["model_content"])
+        self.assertIn("Previous verified narrative", changed["model_content"])
+        self.assertIn("memory://day/2026-04-14", changed["model_content"])
+        self.assertNotEqual(changed["source_digest"], first["source_digest"])
 
     def test_backfill_periodic_summaries_rewrites_legacy_summary_files_idempotently(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -305,8 +305,7 @@ class MemoryRuntime:
                 "globalQuarantineCount": len(quarantined_global_preferences),
                 "canonicalLongTermScopes": [
                     "global",
-                    "project:{id}",
-                    "channel:{type}:{remote_id}",
+                    "workspace:{physical-path-identity}",
                 ],
             },
             "knowledge": {
@@ -610,11 +609,57 @@ class MemoryRuntime:
     def revalidate_knowledge(self, *, fact_id: str, maintainer_source: str = "human_admin") -> bool:
         return knowledge_service.revalidate_knowledge(fact_id=fact_id, maintainer_source=maintainer_source)
 
-    def get_graph_stats(self) -> Dict[str, Any]:
-        return knowledge_service.get_graph_stats()
+    def get_graph_stats(self, *, scope: Optional[str] = None) -> Dict[str, Any]:
+        return knowledge_service.get_graph_stats(scope=scope)
 
-    def get_full_graph(self, *, limit: int = 100) -> Dict[str, Any]:
-        return knowledge_service.get_full_graph(limit=limit)
+    def get_full_graph(self, *, limit: int = 100, scope: Optional[str] = None) -> Dict[str, Any]:
+        return knowledge_service.get_full_graph(limit=limit, scope=scope)
+
+    def get_workspace_graph(
+        self,
+        *,
+        limit: int = 100,
+        workspace_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return knowledge_service.get_workspace_graph(limit=limit, workspace_key=workspace_key)
+
+    def list_graph_workspaces(self) -> Dict[str, Any]:
+        return knowledge_service.list_graph_workspaces()
+
+    def query_workspace_entity(
+        self,
+        *,
+        entity: str,
+        workspace_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return knowledge_service.query_workspace_entity(entity=entity, workspace_key=workspace_key)
+
+    def search_workspace_entities(
+        self,
+        *,
+        keyword: str,
+        limit: int = 20,
+        workspace_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return knowledge_service.search_workspace_entities(
+            keyword=keyword,
+            limit=limit,
+            workspace_key=workspace_key,
+        )
+
+    def get_graph_workspace_write_scope(self, *, workspace_key: Optional[str] = None) -> str:
+        return knowledge_service.get_graph_workspace_write_scope(workspace_key=workspace_key)
+
+    def validate_graph_workspace_relation_scope(
+        self,
+        *,
+        workspace_key: Optional[str],
+        relation_scope: Optional[str],
+    ) -> str:
+        return knowledge_service.validate_graph_workspace_relation_scope(
+            workspace_key=workspace_key,
+            relation_scope=relation_scope,
+        )
 
     def get_projection_health(self) -> Dict[str, Any]:
         return knowledge_service.get_projection_health()
@@ -637,8 +682,14 @@ class MemoryRuntime:
     ) -> List[Dict[str, Any]]:
         return knowledge_service.query_multi_hop(entity=entity, hops=hops, scopes=scopes)
 
-    def search_entities(self, *, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
-        return knowledge_service.search_entities(keyword=keyword, limit=limit)
+    def search_entities(
+        self,
+        *,
+        keyword: str,
+        limit: int = 20,
+        scopes: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        return knowledge_service.search_entities(keyword=keyword, limit=limit, scopes=scopes)
 
     def add_entity(
         self,
@@ -860,8 +911,18 @@ class MemoryRuntime:
     def get_recent_logs(self, *, days: int = 2, scope_chain: Optional[List[str]] = None) -> str:
         return injection_service.get_recent_logs(days=days, scope_chain=scope_chain)
 
-    def read_memory_summary(self, *, tier: str, date_str: Optional[str] = None) -> str:
-        return injection_service.read_memory_summary(tier=tier, date_str=date_str)
+    def read_memory_summary(
+        self,
+        *,
+        tier: str,
+        date_str: Optional[str] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        return injection_service.read_memory_summary(
+            tier=tier,
+            date_str=date_str,
+            scope_chain=scope_chain,
+        )
 
     def build_memory_map(self, *, anchor_date: Optional[str] = None) -> Dict[str, Any]:
         return injection_service.build_memory_map(anchor_date=anchor_date)
@@ -869,8 +930,16 @@ class MemoryRuntime:
     def expand_memory_map(self, *, memory_ref: str) -> Dict[str, Any]:
         return injection_service.expand_memory_map(memory_ref=memory_ref)
 
-    def read_memory_day(self, *, memory_ref_or_date: str) -> str:
-        return injection_service.read_memory_day(memory_ref_or_date=memory_ref_or_date)
+    def read_memory_day(
+        self,
+        *,
+        memory_ref_or_date: str,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        return injection_service.read_memory_day(
+            memory_ref_or_date=memory_ref_or_date,
+            scope_chain=scope_chain,
+        )
 
     def get_memory_map_health(self) -> Dict[str, Any]:
         return injection_service.get_memory_map_health()
@@ -880,6 +949,15 @@ class MemoryRuntime:
 
     def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
         return injection_service.get_logs_for_period(tier=tier, dt=dt, scope_chain=scope_chain)
+
+    def prepare_periodic_summary_input(
+        self,
+        *,
+        tier: str,
+        dt: Optional[datetime] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> dict:
+        return injection_service.prepare_periodic_summary_input(tier=tier, dt=dt, scope_chain=scope_chain)
 
     def save_periodic_summary(
         self,

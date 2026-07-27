@@ -29,6 +29,59 @@ class _FakeRunHandle:
 
 
 class MemoryMaintenanceRunnerTests(unittest.TestCase):
+    def test_run_periodic_summary_reports_coverage_refresh_without_llm_call(self):
+        run_handle = _FakeRunHandle()
+        lane_decision = SimpleNamespace(
+            acquired=True,
+            waited=False,
+            policy="queue",
+            active_run_id=None,
+            interrupted_run_id=None,
+            rejected_by_run_id=None,
+        )
+        observations: list[tuple[str, str, dict]] = []
+
+        async def _fake_generate_periodic_summary(**_kwargs):
+            return {
+                "status": "completed",
+                "task_kind": "periodic_summary",
+                "tier": "week",
+                "target_date": "2026-07-26",
+                "model_invoked": False,
+                "coverage_refreshed": True,
+                "daily_log_count": 7,
+            }
+
+        def _capture_observation(action: str, status: str, **metadata) -> None:
+            observations.append((action, status, metadata))
+
+        with patch("agents.runners.maintenance_runner.memory_runtime.begin_run", return_value=run_handle), patch(
+            "agents.runners.maintenance_runner.session_admission_service.acquire",
+            return_value=lane_decision,
+        ), patch("agents.runners.maintenance_runner.session_admission_service.release"), patch(
+            "agents.runners.maintenance_runner.run_service.transition_run"
+        ), patch(
+            "agents.runners.maintenance_runner.memory_agent.generate_periodic_summary",
+            side_effect=_fake_generate_periodic_summary,
+        ), patch(
+            "agents.runners.maintenance_runner.memory_runtime.update_run_metadata"
+        ), patch(
+            "agents.runners.maintenance_runner.log_memory_observation",
+            side_effect=_capture_observation,
+        ):
+            result = asyncio.run(
+                memory_agent_runner.run_periodic_summary(
+                    "week",
+                    trigger_source="CRON",
+                )
+            )
+
+        self.assertEqual(result["result"]["status"], "completed")
+        periodic_observations = [item for item in observations if item[0] == "periodic_summary"]
+        self.assertEqual(len(periodic_observations), 1)
+        self.assertEqual(periodic_observations[0][1], "SUCCESS")
+        self.assertFalse(periodic_observations[0][2]["callsLlm"])
+
     def test_run_maintenance_backfills_missing_or_stale_summaries(self):
         run_handle = _FakeRunHandle()
         lane_decision = SimpleNamespace(
@@ -77,6 +130,16 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         ), patch(
             "agents.runners.maintenance_runner.memory_runtime.backfill_periodic_summaries",
             return_value={"updatedCount": 1, "touchedRefs": ["memory://year/2026"]},
+        ), patch(
+            "agents.runners.maintenance_runner.memory_store_module.memory_store.refresh_stale_revalidation",
+            return_value={
+                "staleMarked": 1,
+                "resolvedScopes": [{"scope": "project:test", "workspaceRoot": "test", "resolution": "project_registry"}],
+                "skippedScopes": [],
+            },
+        ), patch(
+            "agents.runners.maintenance_runner.maintain_experience_packs",
+            return_value={"candidateCount": 2, "expiredArchivedCount": 1, "duplicateArchivedCount": 0, "changed": True},
         ), patch(
             "agents.runners.maintenance_runner.memory_runtime.run_workflow_maintenance",
             return_value={"candidateCount": 3, "updatedCount": 1, "activatedCount": 1, "quarantinedCount": 0, "mergeSuggestionCount": 0},
@@ -135,6 +198,7 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         self.assertEqual(result["result"]["workflow_candidate_count"], 3)
         self.assertEqual(result["result"]["workflow_active_hint_count"], 1)
         self.assertEqual(result["result"]["knowledge_superseded_count"], 1)
+        self.assertEqual(result["result"]["knowledge_signature_stale_marked_count"], 1)
         self.assertEqual(result["result"]["graph_rewired_relation_count"], 1)
         self.assertEqual(result["result"]["graph_pruned_isolated_entity_count"], 2)
         maintenance_updates = [item for item in update_calls if "memory_maintenance" in item]
@@ -205,6 +269,12 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         ), patch(
             "agents.runners.maintenance_runner.memory_runtime.backfill_periodic_summaries",
             return_value={"updatedCount": 0, "touchedRefs": []},
+        ), patch(
+            "agents.runners.maintenance_runner.memory_store_module.memory_store.refresh_stale_revalidation",
+            return_value={"staleMarked": 0, "resolvedScopes": [], "skippedScopes": []},
+        ), patch(
+            "agents.runners.maintenance_runner.maintain_experience_packs",
+            return_value={"candidateCount": 0, "expiredArchivedCount": 0, "duplicateArchivedCount": 0, "changed": False},
         ), patch(
             "agents.runners.maintenance_runner.memory_runtime.run_workflow_maintenance",
             return_value={"candidateCount": 0, "updatedCount": 0, "activatedCount": 0, "quarantinedCount": 0, "mergeSuggestionCount": 0},

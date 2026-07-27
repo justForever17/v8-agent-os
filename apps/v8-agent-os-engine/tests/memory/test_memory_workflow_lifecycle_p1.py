@@ -191,6 +191,43 @@ def test_candidate_delete_and_merge_remove_derived_exports(monkeypatch, tmp_path
     assert all(not path.exists() for path in source_paths)
 
 
+def test_repeated_hint_delivery_is_compacted_without_losing_delivery_count(monkeypatch, tmp_path: Path) -> None:
+    database, service = _prepare(monkeypatch, tmp_path)
+    database.create_or_update_session("session-hint", "hint delivery", user_id="user")
+    database.create_run_record("run-hint", "session-hint", run_type="chat", status="running")
+    candidate = _add_candidate(service, "hint-delivery")
+
+    first = service.record_hint_event(
+        candidate_id=candidate["id"],
+        query="same query",
+        hint={"nextStep": "verify"},
+        session_id="session-hint",
+        run_id="run-hint",
+        outcome="injected",
+    )
+    second = service.record_hint_event(
+        candidate_id=candidate["id"],
+        query="same query",
+        hint={"nextStep": "verify"},
+        session_id="session-hint",
+        run_id="run-hint",
+        outcome="injected",
+    )
+
+    summary = service.dashboard_summary()
+    with database.get_connection() as conn:
+        persisted_rows = conn.execute(
+            "SELECT COUNT(*) FROM memory_workflow_hint_events WHERE candidate_id = ?",
+            (candidate["id"],),
+        ).fetchone()[0]
+
+    assert first["id"] == second["id"]
+    assert second["aggregated"] is True
+    assert persisted_rows == 1
+    assert summary["hintEventCount"] == 1
+    assert summary["hintDeliveryCount7d"] == 2
+
+
 def test_nightly_candidate_maintenance_advances_cursor_across_full_set(monkeypatch, tmp_path: Path) -> None:
     database, service = _prepare(monkeypatch, tmp_path)
     for index in range(5):

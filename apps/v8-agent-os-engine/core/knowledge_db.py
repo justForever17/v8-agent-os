@@ -1982,6 +1982,11 @@ class KnowledgeDB:
         if not fact_id or not target_id or fact_id == target_id:
             return False
         now = _utc_now_iso()
+        similarity_value = round(_bounded_confidence(similarity, default=0.0), 4)
+        pair_ids = sorted((fact_id, target_id))
+        candidate_id = "resolution-" + hashlib.sha256(
+            f"{pair_ids[0]}:{pair_ids[1]}:similarity".encode("utf-8")
+        ).hexdigest()[:16]
         with self._conn() as conn:
             row = conn.execute("SELECT metadata_json FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
             if not row:
@@ -1992,9 +1997,36 @@ class KnowledgeDB:
             except Exception:
                 metadata = {}
             maintenance = dict(metadata.get("maintenance") or {})
+            existing_suggestion = maintenance.get("mergeSuggestion") if isinstance(maintenance.get("mergeSuggestion"), dict) else {}
+            existing_candidate = conn.execute(
+                """
+                SELECT id, candidate_fact_id, target_fact_id, similarity, reason
+                FROM knowledge_resolution_candidates
+                WHERE state = 'pending'
+                  AND ((candidate_fact_id = ? AND target_fact_id = ?)
+                    OR (candidate_fact_id = ? AND target_fact_id = ?))
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (fact_id, target_id, target_id, fact_id),
+            ).fetchone()
+            suggestion_unchanged = (
+                str(existing_suggestion.get("targetId") or "") == target_id
+                and round(_bounded_confidence(existing_suggestion.get("similarity"), default=0.0), 4) == similarity_value
+                and str(existing_suggestion.get("reason") or "") == reason
+            )
+            candidate_unchanged = bool(
+                existing_candidate
+                and str(existing_candidate["candidate_fact_id"] or "") == fact_id
+                and str(existing_candidate["target_fact_id"] or "") == target_id
+                and round(_bounded_confidence(existing_candidate["similarity"], default=0.0), 4) == similarity_value
+                and str(existing_candidate["reason"] or "") == reason
+            )
+            if suggestion_unchanged and candidate_unchanged:
+                return False
             maintenance["mergeSuggestion"] = {
                 "targetId": target_id,
-                "similarity": round(float(similarity or 0.0), 4),
+                "similarity": similarity_value,
                 "reason": reason,
                 "updatedAt": now,
             }
@@ -2002,17 +2034,24 @@ class KnowledgeDB:
             cursor = conn.execute(
                 """
                 UPDATE knowledge
-                SET metadata_json = ?, updated_at = ?
+                SET metadata_json = ?
                 WHERE id = ?
                   AND status = 'active'
                   AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded')
                 """,
-                (json.dumps(metadata, ensure_ascii=False), now, fact_id),
+                (json.dumps(metadata, ensure_ascii=False), fact_id),
             )
             if cursor.rowcount:
-                candidate_id = "resolution-" + hashlib.sha256(
-                    f"{fact_id}:{target_id}:similarity".encode("utf-8")
-                ).hexdigest()[:16]
+                conn.execute(
+                    """
+                    DELETE FROM knowledge_resolution_candidates
+                    WHERE state = 'pending'
+                      AND id != ?
+                      AND ((candidate_fact_id = ? AND target_fact_id = ?)
+                        OR (candidate_fact_id = ? AND target_fact_id = ?))
+                    """,
+                    (candidate_id, fact_id, target_id, target_id, fact_id),
+                )
                 conn.execute(
                     """
                     INSERT INTO knowledge_resolution_candidates (
@@ -2020,10 +2059,12 @@ class KnowledgeDB:
                         state, similarity, reason, created_at
                     ) VALUES (?, ?, ?, 'reinforce', 'pending', ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
+                        candidate_fact_id = excluded.candidate_fact_id,
+                        target_fact_id = excluded.target_fact_id,
                         similarity = excluded.similarity,
                         reason = excluded.reason
                     """,
-                    (candidate_id, fact_id, target_id, float(similarity or 0.0), reason, now),
+                    (candidate_id, fact_id, target_id, similarity_value, reason, now),
                 )
             return cursor.rowcount > 0
 
@@ -2092,12 +2133,16 @@ class KnowledgeDB:
         merge_suggestions: List[Dict[str, object]] = []
         processed_clusters = 0
 
-        def _keeper_key(item: Dict) -> tuple[float, str, str]:
+        def _keeper_key(item: Dict) -> tuple[float, int, str, str]:
             try:
                 confidence = float(item.get("effective_confidence") or item.get("confidence") or 0.0)
             except (TypeError, ValueError):
                 confidence = 0.0
-            return (confidence, str(item.get("updated_at") or ""), str(item.get("id") or ""))
+            try:
+                importance = int(item.get("importance") or 0)
+            except (TypeError, ValueError):
+                importance = 0
+            return (-confidence, -importance, str(item.get("created_at") or ""), str(item.get("id") or ""))
 
         for (_scope, _category), bucket in buckets.items():
             by_exact: Dict[str, List[Dict]] = {}
@@ -2109,7 +2154,7 @@ class KnowledgeDB:
                 if processed_clusters >= cluster_budget:
                     break
                 processed_clusters += 1
-                keeper = sorted(exact_group, key=_keeper_key, reverse=True)[0]
+                keeper = sorted(exact_group, key=_keeper_key)[0]
                 for duplicate in exact_group:
                     if duplicate.get("id") == keeper.get("id"):
                         continue
@@ -2149,7 +2194,7 @@ class KnowledgeDB:
                         continue
                     processed_clusters += 1
                     duplicate_candidates += 1
-                    keeper, duplicate = sorted([left, right], key=_keeper_key, reverse=True)[:2]
+                    keeper, duplicate = sorted([left, right], key=_keeper_key)[:2]
                     # Similarity is evidence for review, never authority to rewrite
                     # knowledge history.  Only normalized exact duplicates above
                     # are automatically reinforced/superseded.
@@ -2394,6 +2439,29 @@ class KnowledgeDB:
                 (now, agents_hash, repo_signature, signature_policy, maintainer_source, effective, now, fact_id),
             )
             if cursor.rowcount:
+                conn.execute(
+                    """
+                    UPDATE scoped_relations
+                    SET status = 'active', updated_at = ?
+                    WHERE id IN (
+                        SELECT evidence.relation_id
+                        FROM scoped_relation_evidence evidence
+                        WHERE evidence.fact_id = ?
+                    )
+                      AND (EXISTS (
+                        SELECT 1
+                        FROM scoped_relation_evidence evidence
+                        JOIN knowledge fact ON fact.id = evidence.fact_id
+                        WHERE evidence.relation_id = scoped_relations.id
+                          AND fact.status = 'active'
+                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                      ) OR EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
+                        WHERE evidence_ref.relation_id = scoped_relations.id
+                      ))
+                    """,
+                    (now, fact_id),
+                )
                 self._enqueue_projection(conn, fact_id=fact_id, operation="upsert")
             return cursor.rowcount > 0
     
@@ -2574,15 +2642,22 @@ class KnowledgeDB:
     def query_entity(self, entity: str, scopes: Optional[List[str]] = None) -> List[Dict]:
         """Query evidence-backed relations inside an explicit scope chain."""
         entity_lower = entity.lower()
-        scope_values = [str(item).strip() for item in list(scopes or ["global"]) if str(item).strip()]
-        if not scope_values:
+        requested_scopes = [str(item).strip() for item in list(scopes or []) if str(item).strip()]
+        all_scopes = "*" in requested_scopes
+        scope_values = [item for item in requested_scopes if item != "*"]
+        if not requested_scopes:
             scope_values = ["global"]
-        placeholders = ",".join("?" for _ in scope_values)
+        scope_clause = ""
+        scope_params: List[object] = []
+        if not all_scopes:
+            placeholders = ",".join("?" for _ in scope_values)
+            scope_clause = f" AND scope IN ({placeholders})"
+            scope_params.extend(scope_values)
         with self._conn() as conn:
             outgoing = conn.execute(f"""
                 SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
                 FROM scoped_relations relation
-                WHERE subject = ? AND scope IN ({placeholders}) AND status = 'active'
+                WHERE subject = ?{scope_clause} AND status = 'active'
                   AND (EXISTS (
                     SELECT 1 FROM scoped_relation_evidence evidence
                     JOIN knowledge fact ON fact.id = evidence.fact_id
@@ -2594,11 +2669,11 @@ class KnowledgeDB:
                     WHERE evidence_ref.relation_id = relation.id
                   ))
                 ORDER BY effective_confidence DESC, confidence DESC
-            """, (entity_lower, *scope_values)).fetchall()
+            """, (entity_lower, *scope_params)).fetchall()
             incoming = conn.execute(f"""
                 SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
                 FROM scoped_relations relation
-                WHERE object = ? AND scope IN ({placeholders}) AND status = 'active'
+                WHERE object = ?{scope_clause} AND status = 'active'
                   AND (EXISTS (
                     SELECT 1 FROM scoped_relation_evidence evidence
                     JOIN knowledge fact ON fact.id = evidence.fact_id
@@ -2610,7 +2685,7 @@ class KnowledgeDB:
                     WHERE evidence_ref.relation_id = relation.id
                   ))
                 ORDER BY effective_confidence DESC, confidence DESC
-            """, (entity_lower, *scope_values)).fetchall()
+            """, (entity_lower, *scope_params)).fetchall()
             
             results = []
             for r in outgoing:
@@ -2687,17 +2762,32 @@ class KnowledgeDB:
             """, (limit,))
             return [{"name": row[0], "type": row[1]} for row in cursor.fetchall()]
 
-    def search_entities(self, keyword: str, limit: int = 20) -> List[Dict]:
-        """模糊搜索实体，方便不知道准确名称时查找"""
+    def search_entities(
+        self,
+        keyword: str,
+        limit: int = 20,
+        scopes: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Search only entities backed by relations visible to the scope set."""
         keyword_lower = keyword.lower()
+        active_sql, scope_params = self._active_graph_relations_sql(
+            scopes=scopes if scopes is not None else ["global"]
+        )
         with self._conn() as conn:
-            cursor = conn.execute("""
-                SELECT name, type, maintainer_source, confidence, effective_confidence
-                FROM entities
-                WHERE name LIKE ?
-                ORDER BY effective_confidence DESC, name ASC
+            cursor = conn.execute(f"""
+                WITH active_relations AS ({active_sql}), visible_entities AS (
+                    SELECT subject AS name FROM active_relations
+                    UNION
+                    SELECT object AS name FROM active_relations
+                )
+                SELECT entity.name, entity.type, entity.maintainer_source,
+                       entity.confidence, entity.effective_confidence
+                FROM entities entity
+                JOIN visible_entities visible ON visible.name = entity.name
+                WHERE LOWER(entity.name) LIKE ?
+                ORDER BY entity.effective_confidence DESC, entity.name ASC
                 LIMIT ?
-            """, (f"%{keyword_lower}%", limit))
+            """, (*scope_params, f"%{keyword_lower}%", limit))
             return [
                 {
                     "name": row[0],
@@ -2767,105 +2857,168 @@ class KnowledgeDB:
         
         return results
     
-    def get_graph_stats(self) -> Dict:
-        """Return active scoped graph health and archived legacy count."""
+    @staticmethod
+    def _active_graph_relations_sql(
+        *,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> tuple[str, List[object]]:
+        requested_scopes = list(dict.fromkeys(
+            str(item or "").strip()
+            for item in list(scopes or [])
+            if str(item or "").strip()
+        ))
+        if scopes is None:
+            requested_scope = str(scope or "").strip()
+            requested_scopes = [] if requested_scope in {"", "*"} else [requested_scope]
+        if "*" in requested_scopes:
+            requested_scopes = []
+
+        # Workspace isolation is expressed as a set of internal scope aliases.
+        # The global layer is shared by every workspace and is therefore always
+        # included in a workspace-scoped graph query.
+        if requested_scopes and "global" not in requested_scopes:
+            requested_scopes.append("global")
+        placeholders = ",".join("?" for _ in requested_scopes)
+        scope_clause = f" AND relation.scope IN ({placeholders})" if requested_scopes else ""
+        return (
+            f"""
+            SELECT relation.*
+            FROM scoped_relations relation
+            WHERE relation.status = 'active'
+              {scope_clause}
+              AND (EXISTS (
+                SELECT 1 FROM scoped_relation_evidence evidence
+                JOIN knowledge fact ON fact.id = evidence.fact_id
+                WHERE evidence.relation_id = relation.id
+                  AND fact.status = 'active'
+                  AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+              ) OR EXISTS (
+                SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
+                WHERE evidence_ref.relation_id = relation.id
+              ))
+            """,
+            list(requested_scopes),
+        )
+
+    def get_graph_stats(
+        self,
+        *,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict:
+        """Return evidence-backed graph health for an aggregate or workspace scope set."""
+        active_sql, scope_params = self._active_graph_relations_sql(scope=scope, scopes=scopes)
         with self._conn() as conn:
             registered_entities_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
             entities_count = conn.execute(
-                """
-                WITH active_relations AS (
-                    SELECT relation.subject, relation.object
-                    FROM scoped_relations relation
-                    WHERE relation.status = 'active'
-                      AND (EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence evidence
-                        JOIN knowledge fact ON fact.id = evidence.fact_id
-                        WHERE evidence.relation_id = relation.id
-                          AND fact.status = 'active'
-                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                      ) OR EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                        WHERE evidence_ref.relation_id = relation.id
-                      ))
-                ), active_entities AS (
+                f"""
+                WITH active_relations AS ({active_sql}), active_entities AS (
                     SELECT subject AS name FROM active_relations
                     UNION
                     SELECT object AS name FROM active_relations
                 )
                 SELECT COUNT(*) FROM active_entities
-                """
+                """,
+                scope_params,
             ).fetchone()[0]
             relations_count = conn.execute(
-                """
-                SELECT COUNT(*) FROM scoped_relations relation
-                WHERE relation.status = 'active'
-                  AND (EXISTS (
-                    SELECT 1 FROM scoped_relation_evidence evidence
-                    JOIN knowledge fact ON fact.id = evidence.fact_id
-                    WHERE evidence.relation_id = relation.id
-                      AND fact.status = 'active'
-                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                  ) OR EXISTS (
-                    SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                    WHERE evidence_ref.relation_id = relation.id
-                  ))
-                """
+                f"WITH active_relations AS ({active_sql}) SELECT COUNT(*) FROM active_relations",
+                scope_params,
             ).fetchone()[0]
             legacy_relations = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
-            covered_relations = relations_count
             external_evidence_relations = conn.execute(
-                """
+                f"""
+                WITH active_relations AS ({active_sql})
                 SELECT COUNT(DISTINCT relation.id)
-                FROM scoped_relations relation
+                FROM active_relations relation
                 JOIN scoped_relation_evidence_refs evidence_ref ON evidence_ref.relation_id = relation.id
-                WHERE relation.status = 'active'
-                """
+                """,
+                scope_params,
             ).fetchone()[0]
-            top_entities = conn.execute("""
-                SELECT name, type, 
-                    (SELECT COUNT(*) FROM scoped_relations relation
-                     WHERE relation.status = 'active'
-                       AND (relation.subject = e.name OR relation.object = e.name)
-                       AND (EXISTS (
-                         SELECT 1 FROM scoped_relation_evidence evidence
-                         JOIN knowledge fact ON fact.id = evidence.fact_id
-                         WHERE evidence.relation_id = relation.id
-                           AND fact.status = 'active'
-                           AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                       ) OR EXISTS (
-                         SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                         WHERE evidence_ref.relation_id = relation.id
-                       ))) as degree
-                FROM entities e
-                WHERE EXISTS (
-                    SELECT 1 FROM scoped_relations relation
-                    WHERE relation.status = 'active'
-                      AND (relation.subject = e.name OR relation.object = e.name)
-                      AND (EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence evidence
-                        JOIN knowledge fact ON fact.id = evidence.fact_id
-                        WHERE evidence.relation_id = relation.id
-                          AND fact.status = 'active'
-                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                      ) OR EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                        WHERE evidence_ref.relation_id = relation.id
-                      ))
+            top_entities = conn.execute(
+                f"""
+                WITH active_relations AS ({active_sql}), endpoints AS (
+                    SELECT subject AS name FROM active_relations
+                    UNION ALL
+                    SELECT object AS name FROM active_relations
                 )
-                ORDER BY degree DESC
+                SELECT entity.name, entity.type, COUNT(endpoints.name) AS degree
+                FROM entities entity
+                JOIN endpoints ON endpoints.name = entity.name
+                GROUP BY entity.name, entity.type
+                ORDER BY degree DESC, entity.name ASC
                 LIMIT 10
-            """).fetchall()
-            
+                """,
+                scope_params,
+            ).fetchall()
+            has_scope_filter = bool(str(scope or "").strip() or scopes is not None)
+            scoped_registered = int(entities_count) if has_scope_filter else int(registered_entities_count)
             return {
-                "entities": entities_count,
-                "registeredEntities": registered_entities_count,
-                "isolatedEntities": max(registered_entities_count - entities_count, 0),
-                "relations": relations_count,
-                "legacyArchivedRelations": legacy_relations,
-                "sourceCoverage": (float(covered_relations) / float(relations_count)) if relations_count else 1.0,
-                "externalEvidenceRelations": external_evidence_relations,
-                "top_entities": [{"name": r[0], "type": r[1], "degree": r[2]} for r in top_entities]
+                "scope": str(scope or "").strip() or None,
+                "scopes": list(scope_params) if scopes is not None else None,
+                "entities": int(entities_count),
+                "registeredEntities": scoped_registered,
+                "isolatedEntities": max(scoped_registered - int(entities_count), 0),
+                "relations": int(relations_count),
+                "legacyArchivedRelations": int(legacy_relations),
+                "sourceCoverage": 1.0,
+                "externalEvidenceRelations": int(external_evidence_relations),
+                "top_entities": [{"name": row[0], "type": row[1], "degree": row[2]} for row in top_entities],
             }
+
+    def list_graph_scopes(self) -> List[Dict[str, object]]:
+        """List internal scope sources that own active knowledge or graph relations."""
+        active_sql, params = self._active_graph_relations_sql()
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                WITH active_relations AS ({active_sql}), available_scopes AS (
+                    SELECT scope FROM active_relations
+                    UNION
+                    SELECT scope
+                    FROM knowledge
+                    WHERE status = 'active'
+                      AND COALESCE(lifecycle_state, 'active') = 'active'
+                )
+                SELECT available_scopes.scope, COUNT(active_relations.id) AS relation_count
+                FROM available_scopes
+                LEFT JOIN active_relations ON active_relations.scope = available_scopes.scope
+                GROUP BY available_scopes.scope
+                ORDER BY relation_count DESC, available_scopes.scope ASC
+                """,
+                params,
+            ).fetchall()
+            workspace_roots: Dict[str, set[str]] = {}
+            metadata_rows = conn.execute(
+                """
+                SELECT scope, metadata_json
+                FROM knowledge
+                WHERE status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') = 'active'
+                """
+            ).fetchall()
+            for metadata_row in metadata_rows:
+                try:
+                    metadata = json.loads(metadata_row["metadata_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+                workspace_root = str(
+                    metadata.get("workspaceRoot")
+                    or metadata.get("workspacePath")
+                    or metadata.get("workspace_path")
+                    or ""
+                ).strip()
+                if workspace_root:
+                    workspace_roots.setdefault(str(metadata_row["scope"] or "global"), set()).add(workspace_root)
+        return [
+            {
+                "scope": str(row["scope"] or "global"),
+                "relationCount": int(row["relation_count"] or 0),
+                "workspaceRoots": sorted(workspace_roots.get(str(row["scope"] or "global"), set())),
+            }
+            for row in rows
+        ]
     
     # === 实体类型 → 颜色映射（供前端使用） ===
     ENTITY_TYPE_COLORS = {
@@ -2879,63 +3032,43 @@ class KnowledgeDB:
         "platform": "#f97316",   # orange
     }
     
-    def get_full_graph(self, limit: int = 100) -> Dict:
-        """
-        返回 force-graph 兼容的完整图谱数据。
-        
-        Returns:
-            {
-                "nodes": [{"id": "next.js", "label": "Next.js", "type": "technology", "color": "#06b6d4", "val": 5}],
-                "links": [{"source": "next.js", "target": "react", "label": "DEPENDS_ON"}]
-            }
-        
-        毒点修复:
-        - display name: name.title() 恢复大小写
-        - 性能: 只取 Top N 实体 (按 degree 排序) + 相关 links
-        """
-        graph_stats = self.get_graph_stats()
+    def get_full_graph(
+        self,
+        limit: int = 100,
+        *,
+        scope: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+    ) -> Dict:
+        """Return force-graph data for one workspace scope set, or all scopes when omitted."""
+        graph_stats = self.get_graph_stats(scope=scope, scopes=scopes)
         bounded_limit = max(1, min(int(limit or 100), 1000))
+        active_sql, scope_params = self._active_graph_relations_sql(scope=scope, scopes=scopes)
         with self._conn() as conn:
-            # 取 Top N 实体（按关联度排序）
-            entities = conn.execute("""
-                SELECT e.name, e.type, e.maintainer_source, e.confidence, e.effective_confidence,
-                    (SELECT COUNT(*) FROM scoped_relations relation
-                     WHERE relation.status = 'active'
-                       AND (relation.subject = e.name OR relation.object = e.name)
-                       AND (EXISTS (
-                         SELECT 1 FROM scoped_relation_evidence evidence
-                         JOIN knowledge fact ON fact.id = evidence.fact_id
-                         WHERE evidence.relation_id = relation.id
-                           AND fact.status = 'active'
-                           AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                       ) OR EXISTS (
-                         SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                         WHERE evidence_ref.relation_id = relation.id
-                       ))) as degree
-                FROM entities e
-                WHERE EXISTS (
-                    SELECT 1 FROM scoped_relations sr
-                    WHERE sr.status = 'active' AND (sr.subject = e.name OR sr.object = e.name)
-                      AND (EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence evidence
-                        JOIN knowledge fact ON fact.id = evidence.fact_id
-                        WHERE evidence.relation_id = sr.id
-                          AND fact.status = 'active'
-                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                      ) OR EXISTS (
-                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                        WHERE evidence_ref.relation_id = sr.id
-                      ))
+            entities = conn.execute(
+                f"""
+                WITH active_relations AS ({active_sql}), endpoints AS (
+                    SELECT subject AS name FROM active_relations
+                    UNION ALL
+                    SELECT object AS name FROM active_relations
+                ), degrees AS (
+                    SELECT name, COUNT(*) AS degree FROM endpoints GROUP BY name
                 )
-                ORDER BY effective_confidence DESC, degree DESC
+                SELECT entity.name, entity.type, entity.maintainer_source,
+                       entity.confidence, entity.effective_confidence, degrees.degree
+                FROM entities entity
+                JOIN degrees ON degrees.name = entity.name
+                ORDER BY entity.effective_confidence DESC, degrees.degree DESC, entity.name ASC
                 LIMIT ?
-            """, (bounded_limit,)).fetchall()
-            
+                """,
+                [*scope_params, bounded_limit],
+            ).fetchall()
             if not entities:
                 return {
                     "nodes": [],
                     "links": [],
                     "meta": {
+                        "scope": str(scope or "").strip() or None,
+                        "scopes": list(scope_params) if scopes is not None else None,
                         "totalEntities": int(graph_stats.get("entities") or 0),
                         "totalRelations": int(graph_stats.get("relations") or 0),
                         "renderedEntities": 0,
@@ -2944,64 +3077,51 @@ class KnowledgeDB:
                         "truncated": False,
                     },
                 }
-            
-            # 构建实体名称集合（用于过滤 links）
-            entity_names = {e[0] for e in entities}
-            
-            # 构建 nodes
-            nodes = []
-            for name, etype, maintainer_source, confidence, effective_confidence, degree in entities:
-                # display name 恢复：lowercase → Title Case
-                # 特殊处理："next.js" → "Next.js", "fastapi" → "Fastapi"
-                display = name.replace(".", ".").title() if "." not in name else name.title()
-                color = self.ENTITY_TYPE_COLORS.get(etype, "#94a3b8")  # 默认 slate
-                
-                nodes.append({
+
+            entity_names = sorted({str(row[0]) for row in entities})
+            nodes = [
+                {
                     "id": name,
-                    "label": display,
-                    "type": etype,
-                    "color": color,
-                    "val": max(degree, 1),  # 节点大小基于关联度
+                    "label": name.title(),
+                    "type": entity_type,
+                    "color": self.ENTITY_TYPE_COLORS.get(entity_type, "#94a3b8"),
+                    "val": max(int(degree or 0), 1),
                     "maintainerSource": maintainer_source,
                     "confidence": confidence,
                     "effectiveConfidence": effective_confidence,
-                })
-            
-            # 取所有关系（两端都在 entity_names 中的）
-            placeholders = ",".join("?" * len(entity_names))
-            relations = conn.execute(f"""
-                SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
-                FROM scoped_relations relation
-                WHERE status = 'active'
-                  AND subject IN ({placeholders}) AND object IN ({placeholders})
-                  AND (EXISTS (
-                    SELECT 1 FROM scoped_relation_evidence evidence
-                    JOIN knowledge fact ON fact.id = evidence.fact_id
-                    WHERE evidence.relation_id = relation.id
-                      AND fact.status = 'active'
-                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
-                  ) OR EXISTS (
-                    SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
-                    WHERE evidence_ref.relation_id = relation.id
-                  ))
-            """, (*entity_names, *entity_names)).fetchall()
-            
-            links = []
-            for subj, pred, obj, relation_scope, conf, effective_conf, maintainer_source in relations:
-                links.append({
-                    "source": subj,
-                    "target": obj,
-                    "label": pred,
+                }
+                for name, entity_type, maintainer_source, confidence, effective_confidence, degree in entities
+            ]
+            placeholders = ",".join("?" for _ in entity_names)
+            relations = conn.execute(
+                f"""
+                WITH active_relations AS ({active_sql})
+                SELECT subject, predicate, object, scope, confidence,
+                       effective_confidence, maintainer_source
+                FROM active_relations
+                WHERE subject IN ({placeholders}) AND object IN ({placeholders})
+                ORDER BY effective_confidence DESC, subject ASC, predicate ASC, object ASC
+                """,
+                [*scope_params, *entity_names, *entity_names],
+            ).fetchall()
+            links = [
+                {
+                    "source": subject,
+                    "target": object_name,
+                    "label": predicate,
                     "scope": relation_scope,
-                    "confidence": conf,
-                    "effectiveConfidence": effective_conf,
+                    "confidence": confidence,
+                    "effectiveConfidence": effective_confidence,
                     "maintainerSource": maintainer_source,
-                })
-            
+                }
+                for subject, predicate, object_name, relation_scope, confidence, effective_confidence, maintainer_source in relations
+            ]
             return {
                 "nodes": nodes,
                 "links": links,
                 "meta": {
+                    "scope": str(scope or "").strip() or None,
+                    "scopes": list(scope_params) if scopes is not None else None,
                     "totalEntities": int(graph_stats.get("entities") or 0),
                     "totalRelations": int(graph_stats.get("relations") or 0),
                     "renderedEntities": len(nodes),

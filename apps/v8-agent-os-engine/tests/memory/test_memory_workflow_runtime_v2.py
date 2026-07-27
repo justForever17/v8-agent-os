@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import uuid
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from core.database import db
 from core.realtime_protocol import utc_now_iso
 from runtimes.memory.workflow_service import workflow_memory_service
+from runtimes.memory.workspace_scope import canonical_workspace_scope
 
 
 def _workflow_test_config() -> dict:
@@ -48,6 +51,9 @@ def _engineering_workflow_test_config(**engineering_overrides: object) -> dict:
 class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.suffix = uuid.uuid4().hex[:10]
+        self.workspace_temp = tempfile.TemporaryDirectory()
+        self.workspace_root = Path(self.workspace_temp.name) / "workspace"
+        self.workspace_root.mkdir()
         self.candidate_ids: list[str] = []
         self.episode_ids: list[str] = []
         self.session_ids: list[str] = []
@@ -67,6 +73,7 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
             for session_id in self.session_ids:
                 conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
+        self.workspace_temp.cleanup()
 
     def _add_episode(self, payload: dict, *, extraction_source: str = "memory_agent") -> dict:
         episode = workflow_memory_service.normalize_episode_payload(
@@ -458,6 +465,7 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
             "metadata": {
                 "engineeringMode": "auto",
                 "triggerDecision": {"active": True, "reason": "test"},
+                "workspaceRoot": str(self.workspace_root),
             },
             "residualRisks": [],
         }
@@ -563,13 +571,13 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
             candidate_id = result["candidate"]["id"]
             inactive = workflow_memory_service.match_hints(
                 query="工程任务 admin build 需要验证",
-                scope_chain=["workspace:main"],
+                scope_chain=[canonical_workspace_scope(str(self.workspace_root))],
                 limit=4,
                 engineering_active=False,
             )
             active = workflow_memory_service.match_hints(
                 query="工程任务 admin build 需要验证",
-                scope_chain=["workspace:main"],
+                scope_chain=[canonical_workspace_scope(str(self.workspace_root))],
                 limit=4,
                 engineering_active=True,
             )
@@ -578,6 +586,73 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
 
         self.assertNotIn(candidate_id, [item.get("id") for item in inactive])
         self.assertIn(candidate_id, [item.get("id") for item in active])
+
+    def test_same_workflow_signature_is_isolated_by_physical_workspace(self) -> None:
+        alpha = Path(self.workspace_temp.name) / "alpha"
+        beta = Path(self.workspace_temp.name) / "beta"
+        alpha.mkdir()
+        beta.mkdir()
+        base_payload = {
+            "taskFamily": f"Shared build workflow {self.suffix}",
+            "taskFamilySignature": f"wf:shared:{self.suffix}",
+            "canonicalTriggerPatterns": ["shared build workflow"],
+            "goldenPathSteps": ["run scoped verification"],
+            "finalSuccessEvidence": "verified",
+            "runtimeEvidence": [{"status": "verified"}],
+            "evidenceSource": "runtime_events",
+            "confidence": 0.9,
+        }
+        with patch(
+            "runtimes.memory.workflow_service.workflow_memory_config",
+            return_value=_workflow_test_config(),
+        ):
+            alpha_episode = workflow_memory_service.normalize_episode_payload(
+                {**base_payload, "id": f"mw_ep_alpha_{self.suffix}"},
+                session_id=None,
+                run_id=None,
+                scope=canonical_workspace_scope(str(alpha)),
+            )
+            beta_episode = workflow_memory_service.normalize_episode_payload(
+                {**base_payload, "id": f"mw_ep_beta_{self.suffix}"},
+                session_id=None,
+                run_id=None,
+                scope=canonical_workspace_scope(str(beta)),
+            )
+            alpha_record = workflow_memory_service.add_episode(alpha_episode)
+            beta_record = workflow_memory_service.add_episode(beta_episode)
+
+        for record in (alpha_record, beta_record):
+            self.episode_ids.append(record["episode"]["id"])
+            self.candidate_ids.append(record["candidate"]["id"])
+        self.assertNotEqual(alpha_episode["task_family_signature"], beta_episode["task_family_signature"])
+        self.assertNotEqual(alpha_record["candidate"]["id"], beta_record["candidate"]["id"])
+
+        alpha_hints = workflow_memory_service.match_hints(
+            query="shared build workflow",
+            scope_chain=["global", canonical_workspace_scope(str(alpha))],
+            limit=5,
+        )
+        self.assertIn(alpha_record["candidate"]["id"], [item.get("id") for item in alpha_hints])
+        self.assertNotIn(beta_record["candidate"]["id"], [item.get("id") for item in alpha_hints])
+
+        with self.assertRaisesRegex(ValueError, "workflow_candidate_scope_mismatch"):
+            workflow_memory_service.merge_candidates(
+                alpha_record["candidate"]["id"],
+                [beta_record["candidate"]["id"]],
+            )
+
+    def test_engineering_proof_without_physical_workspace_is_not_learned(self) -> None:
+        entry = self._engineering_proof_entry(
+            proof_id=f"proof_missing_workspace_{self.suffix}",
+            verification_status="verified",
+            extra={"metadata": {"engineeringMode": "auto", "triggerDecision": {"active": True}}},
+        )
+        result = workflow_memory_service.record_engineering_proof_episode(
+            proof_entry=entry,
+            workset_observations=[],
+        )
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "workspace_identity_missing")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,11 @@ from core.json_safe import to_jsonable
 from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+from runtimes.memory.workspace_scope import (
+    canonical_workspace_scope,
+    resolve_workspace_scope_identity,
+    workspace_directory_exists,
+)
 
 
 WORKFLOW_MEMORY_DEFAULTS: Dict[str, Any] = {
@@ -173,11 +178,47 @@ def _norm_text(text: Any) -> str:
 
 
 def _signature_for(task_family: str, triggers: Iterable[Any], intent: str = "") -> str:
-    base = " ".join([task_family, " ".join(str(item) for item in triggers), intent]).lower()
-    tokens = re.findall(r"[\w\u4e00-\u9fff]+", base)
-    compact = " ".join(tokens[:24]) or "workflow"
+    family = _norm_text(task_family).lower() or "workflow"
+    trigger_text = " ".join(_norm_text(item).lower() for item in triggers if _norm_text(item))
+    tokens = sorted(_meaningful_tokens(trigger_text))
+    if not tokens:
+        tokens = sorted(_meaningful_tokens(_norm_text(intent).lower()))[:12]
+    compact = " | ".join([family, " ".join(tokens[:20])]).strip(" |") or "workflow"
     digest = hashlib.sha1(compact.encode("utf-8")).hexdigest()[:12]
     return f"wf:{digest}"
+
+
+def _canonical_workflow_scope(scope: Any) -> str:
+    normalized = _norm_text(scope) or "global"
+    if normalized in {"global", "workspace:main"}:
+        return normalized
+    identity = resolve_workspace_scope_identity(scope_alias=normalized)
+    write_scope = str((identity or {}).get("writeScope") or "").strip()
+    return write_scope or normalized
+
+
+def _scoped_task_family_signature(base_signature: str, scope: str) -> str:
+    normalized_scope = _canonical_workflow_scope(scope)
+    if normalized_scope == "global":
+        return base_signature
+    digest = hashlib.sha256(
+        f"{normalized_scope}\n{base_signature}".encode("utf-8")
+    ).hexdigest()[:20]
+    return f"wf:scoped:{digest}"
+
+
+def _workflow_scope_owner(scope: Any) -> str:
+    normalized = _norm_text(scope) or "global"
+    if normalized == "global":
+        return "global"
+    # Historical workspace:main rows do not prove which physical default they
+    # belonged to. Keep them in their own legacy bucket instead of attaching
+    # them to today's default workspace during a manual merge.
+    if normalized == "workspace:main":
+        return "scope:workspace:main"
+    identity = resolve_workspace_scope_identity(scope_alias=normalized)
+    workspace_key = str((identity or {}).get("workspaceKey") or "").strip()
+    return f"workspace:{workspace_key}" if workspace_key else f"scope:{normalized}"
 
 
 def _token_set(text: str) -> set[str]:
@@ -696,9 +737,11 @@ class WorkflowMemoryService:
         task_family = _norm_text(payload.get("taskFamily") or payload.get("task_family") or payload.get("summary"))[:220]
         initial_intent = _norm_text(payload.get("initialUserIntent") or payload.get("initial_user_intent") or "")
         triggers = _as_list(payload.get("canonicalTriggerPatterns") or payload.get("triggerPatterns") or payload.get("triggers"))
-        signature = _norm_text(payload.get("taskFamilySignature") or payload.get("task_family_signature") or "")
-        if not signature:
-            signature = _signature_for(task_family, triggers, initial_intent)
+        normalized_scope = _canonical_workflow_scope(scope)
+        base_signature = _norm_text(payload.get("taskFamilySignature") or payload.get("task_family_signature") or "")
+        if not base_signature:
+            base_signature = _signature_for(task_family, triggers, initial_intent)
+        signature = _scoped_task_family_signature(base_signature, normalized_scope)
         failure_markers = _as_list(payload.get("failureMarkers") or payload.get("failure_markers"))
         correction_points = _as_list(payload.get("userCorrectionPoints") or payload.get("user_correction_points"))
         final_success = _norm_text(payload.get("finalSuccessEvidence") or payload.get("final_success_evidence") or "")
@@ -742,7 +785,7 @@ class WorkflowMemoryService:
             "id": _norm_text(payload.get("id")) or f"mw_ep_{uuid.uuid4().hex}",
             "session_id": session_id,
             "run_id": run_id,
-            "scope": scope or "global",
+            "scope": normalized_scope,
             "task_family": task_family or "reusable workflow",
             "task_family_signature": signature,
             "initial_user_intent": initial_intent,
@@ -783,6 +826,7 @@ class WorkflowMemoryService:
                 "lastVerificationStatus": verification_status,
                 "worksetRisk": workset_risk,
                 "proofBacked": bool(proof_refs),
+                "baseTaskFamilySignature": base_signature,
                 "outsideWriteSetCount": int(payload.get("outsideWriteSetCount") or payload.get("outside_write_set_count") or 0),
                 "manualOverrideCount": int(payload.get("manualOverrideCount") or payload.get("manual_override_count") or 0),
                 "raw": to_jsonable(payload),
@@ -990,6 +1034,12 @@ class WorkflowMemoryService:
             },
         }
         scope = self._scope_for_engineering_proof(proof_entry)
+        if not scope:
+            return {
+                "status": "skipped",
+                "reason": "workspace_identity_missing",
+                "proofEntryId": proof_entry.get("id"),
+            }
         session_id = str(proof_entry.get("sessionId") or proof_entry.get("session_id") or "").strip() or None
         run_id = str(proof_entry.get("runId") or proof_entry.get("run_id") or "").strip() or None
         episode = self.normalize_episode_payload(
@@ -1013,17 +1063,45 @@ class WorkflowMemoryService:
         if session_id:
             try:
                 binding = db.get_session_scope_binding(session_id) or {}
+                workspace_path = str(binding.get("workspace_path") or "").strip()
+                if workspace_path:
+                    if not workspace_directory_exists(workspace_path):
+                        return ""
+                    return canonical_workspace_scope(workspace_path)
                 resolved = str(binding.get("resolved_scope") or "").strip()
-                if resolved:
-                    return resolved
+                if resolved and resolved not in {"global", "workspace:main"}:
+                    identity = resolve_workspace_scope_identity(
+                        scope_alias=resolved,
+                        project_id=str(binding.get("project_id") or "").strip() or None,
+                        workspace_id=str(binding.get("workspace_id") or "").strip() or None,
+                    )
+                    if identity and workspace_directory_exists(str(identity.get("workspacePath") or "")):
+                        return str(identity.get("writeScope") or "")
             except Exception:
                 pass
         metadata = proof_entry.get("metadata") if isinstance(proof_entry.get("metadata"), dict) else {}
+        workspace_path = str(
+            proof_entry.get("workspaceRoot")
+            or proof_entry.get("workspace_root")
+            or metadata.get("workspaceRoot")
+            or metadata.get("workspace_root")
+            or metadata.get("workspacePath")
+            or metadata.get("workspace_path")
+            or ""
+        ).strip()
+        if workspace_path:
+            if not workspace_directory_exists(workspace_path):
+                return ""
+            return canonical_workspace_scope(workspace_path)
         project_id = str(metadata.get("projectId") or metadata.get("project_id") or "").strip()
-        if project_id:
-            safe = project_id.replace(":", "_").replace("/", "_").replace("\\", "_")
-            return f"project:{safe}"
-        return "workspace:main"
+        workspace_id = str(metadata.get("workspaceId") or metadata.get("workspace_id") or "").strip()
+        identity = resolve_workspace_scope_identity(
+            project_id=project_id or None,
+            workspace_id=workspace_id or None,
+        )
+        if identity and workspace_directory_exists(str(identity.get("workspacePath") or "")):
+            return str(identity.get("writeScope") or "")
+        return ""
 
     def _engineering_file_family(self, paths: Iterable[Any]) -> str:
         extensions: set[str] = set()
@@ -1754,12 +1832,22 @@ class WorkflowMemoryService:
         target = self.get_candidate(target_id)
         if not target:
             raise ValueError(f"target workflow candidate not found: {target_id}")
+        target_owner = _workflow_scope_owner(target.get("scope"))
+        sources: List[tuple[str, Dict[str, Any]]] = []
         for source_id in source_ids:
             if source_id == target_id:
                 continue
             source = self.get_candidate(source_id)
             if not source:
                 continue
+            source_owner = _workflow_scope_owner(source.get("scope"))
+            if source_owner != target_owner:
+                raise ValueError(
+                    "workflow_candidate_scope_mismatch: candidates from different "
+                    "physical workspaces cannot be merged"
+                )
+            sources.append((source_id, source))
+        for source_id, source in sources:
             target["canonicalTriggerPatterns"] = _uniq(target.get("canonicalTriggerPatterns", []) + source.get("canonicalTriggerPatterns", []), limit=24)
             target["firstActionTriggers"] = _uniq(target.get("firstActionTriggers", []) + source.get("firstActionTriggers", []), limit=16)
             target["goldenPathSteps"] = _uniq(target.get("goldenPathSteps", []) + source.get("goldenPathSteps", []), limit=18)
@@ -1769,6 +1857,16 @@ class WorkflowMemoryService:
             target["success_count"] = int(target.get("success_count") or 0) + int(source.get("success_count") or 0)
             target["correction_count"] = int(target.get("correction_count") or 0) + int(source.get("correction_count") or 0)
             target["negative_feedback_count"] = int(target.get("negative_feedback_count") or 0) + int(source.get("negative_feedback_count") or 0)
+            with db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE memory_workflow_hint_events SET candidate_id = ? WHERE candidate_id = ?",
+                    (target_id, source_id),
+                )
+                conn.execute(
+                    "UPDATE memory_workflow_guide_states SET candidate_id = ? WHERE candidate_id = ?",
+                    (target_id, source_id),
+                )
+                conn.commit()
             self.delete_candidate(source_id)
         return self.update_candidate(target_id, target)
 
@@ -1795,6 +1893,39 @@ class WorkflowMemoryService:
         now = utc_now_iso()
         event_id = f"mw_hint_{uuid.uuid4().hex}"
         normalized_outcome = str(outcome or "injected").strip().lower() or "injected"
+        normalized_query = _norm_text(query)
+        with db.get_connection() as conn:
+            repeated = conn.execute(
+                """
+                SELECT id, metadata_json, created_at
+                FROM memory_workflow_hint_events
+                WHERE COALESCE(candidate_id, '') = COALESCE(?, '')
+                  AND COALESCE(session_id, '') = COALESCE(?, '')
+                  AND COALESCE(run_id, '') = COALESCE(?, '')
+                  AND query = ? AND outcome = ?
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (candidate_id, session_id, run_id, normalized_query, normalized_outcome),
+            ).fetchone()
+            if repeated:
+                repeated_metadata = _json_load(repeated["metadata_json"], {})
+                repeated_metadata.update(dict(metadata or {}))
+                repeated_metadata["deliveryCount"] = int(repeated_metadata.get("deliveryCount") or 1) + 1
+                repeated_metadata.setdefault("firstDeliveryAt", repeated["created_at"])
+                repeated_metadata["lastDeliveryAt"] = now
+                conn.execute(
+                    "UPDATE memory_workflow_hint_events SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                    (_json_dump(repeated_metadata), now, repeated["id"]),
+                )
+                conn.commit()
+                return {
+                    "id": str(repeated["id"]),
+                    "candidateId": candidate_id,
+                    "outcome": normalized_outcome,
+                    "aggregated": True,
+                    "deliveryCount": int(repeated_metadata["deliveryCount"]),
+                }
         current_candidate = self.get_candidate(candidate_id) if candidate_id else None
         candidate_metadata = dict(current_candidate.get("metadata") or {}) if current_candidate else {}
         outcome_counts = dict(candidate_metadata.get("hintOutcomeCounts") or {})
@@ -1828,7 +1959,7 @@ class WorkflowMemoryService:
                 (id, candidate_id, session_id, run_id, query, injected_hint_json, outcome, metadata_json, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (event_id, candidate_id, session_id, run_id, query, _json_dump(hint), normalized_outcome, _json_dump(metadata or {}), now, now),
+                (event_id, candidate_id, session_id, run_id, normalized_query, _json_dump(hint), normalized_outcome, _json_dump({**dict(metadata or {}), "deliveryCount": 1}), now, now),
             )
             if candidate_id:
                 conn.execute(
@@ -2392,16 +2523,19 @@ class WorkflowMemoryService:
             episode_ids = [str(row["id"]) for row in episode_rows if str(row["id"]) not in protected_episodes][:limit]
             hint_rows = conn.execute(
                 """
-                SELECT id FROM (
-                    SELECT id, created_at,
+                SELECT ranked.id FROM (
+                    SELECT id, candidate_id, created_at,
                            ROW_NUMBER() OVER (
-                               PARTITION BY COALESCE(candidate_id, ''), COALESCE(run_id, ''), COALESCE(session_id, '')
+                               PARTITION BY COALESCE(candidate_id, ''), COALESCE(run_id, ''),
+                                            COALESCE(session_id, ''), COALESCE(query, ''), COALESCE(outcome, '')
                                ORDER BY updated_at DESC, created_at DESC, id DESC
                            ) AS rank_no
                     FROM memory_workflow_hint_events
                 ) ranked
-                WHERE rank_no > 1 AND datetime(created_at) < datetime(?)
-                ORDER BY created_at ASC LIMIT ?
+                LEFT JOIN memory_workflow_candidates candidate ON candidate.id = ranked.candidate_id
+                WHERE rank_no > 1
+                   OR (datetime(ranked.created_at) < datetime(?) AND candidate.id IS NULL)
+                ORDER BY ranked.created_at ASC LIMIT ?
                 """,
                 (cutoffs["hints"], limit),
             ).fetchall()
@@ -2461,15 +2595,27 @@ class WorkflowMemoryService:
             ]
             episode_count = conn.execute("SELECT COUNT(*) AS count FROM memory_workflow_episodes").fetchone()
             hint_count = conn.execute("SELECT COUNT(*) AS count FROM memory_workflow_hint_events").fetchone()
+            recent_hint_rows = conn.execute(
+                "SELECT metadata_json FROM memory_workflow_hint_events WHERE datetime(created_at) >= datetime('now', '-7 days')"
+            ).fetchall()
         by_status = {str(row["status"] or "candidate"): int(row["count"] or 0) for row in rows}
         episode_total = int(episode_count["count"] or 0) if episode_count else 0
         hint_total = int(hint_count["count"] or 0) if hint_count else 0
+        recent_hint_total = 0
+        for row in recent_hint_rows:
+            metadata = _json_load(row["metadata_json"], {})
+            try:
+                recent_hint_total += max(int(metadata.get("deliveryCount") or 1), 1)
+            except (TypeError, ValueError):
+                recent_hint_total += 1
         return {
             "enabled": bool(cfg.get("enabled")),
             "hintInjectionEnabled": bool(cfg.get("hintInjectionEnabled")),
             "candidateCount": sum(by_status.values()),
             "episodeCount": episode_total,
             "hintEventCount": hint_total,
+            "hintDeliveryCount7d": recent_hint_total,
+            "reusableCandidateCount": int(by_status.get("active_hint") or 0),
             "byStatus": by_status,
             "recent": [
                 {
@@ -2791,15 +2937,19 @@ class WorkflowMemoryService:
         budget_stopped = False
 
         def _candidate_merge_key(item: Dict[str, Any]) -> str:
-            scope = _norm_text(item.get("scope") or "global").lower()
-            family = _norm_text(item.get("task_family") or item.get("taskFamily") or "").lower()
-            steps = [_norm_text(step).lower() for step in list(item.get("goldenPathSteps") or [])[:3]]
-            triggers = [_norm_text(trigger).lower() for trigger in list(item.get("canonicalTriggerPatterns") or [])[:3]]
-            base = " | ".join([scope, family, " > ".join(steps), " ; ".join(triggers)])
-            tokens = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", base)
-            if len(tokens) < 4:
+            identity = {
+                "scope": _norm_text(item.get("scope") or "global").lower(),
+                "workflowClass": _norm_text(item.get("workflowClass") or item.get("workflow_class") or "general").lower(),
+                "sourceRuntime": _norm_text(item.get("sourceRuntime") or item.get("source_runtime") or "").lower(),
+                "taskFamily": _norm_text(item.get("task_family") or item.get("taskFamily") or "").lower(),
+                "triggers": sorted(_norm_text(value).lower() for value in list(item.get("canonicalTriggerPatterns") or [])),
+                "firstActions": sorted(_norm_text(value).lower() for value in list(item.get("firstActionTriggers") or [])),
+                "steps": [_norm_text(value).lower() for value in list(item.get("goldenPathSteps") or [])],
+                "verify": sorted(_norm_text(value).lower() for value in list(item.get("verificationSteps") or [])),
+            }
+            if not identity["taskFamily"] or not identity["steps"]:
                 return ""
-            return " ".join(tokens[:48])
+            return hashlib.sha256(_json_dump(identity).encode("utf-8")).hexdigest()
 
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for item in candidates:
@@ -2807,7 +2957,7 @@ class WorkflowMemoryService:
             if key:
                 grouped.setdefault(key, []).append(item)
 
-        def _candidate_score(item: Dict[str, Any]) -> tuple[float, int, str]:
+        def _candidate_score(item: Dict[str, Any]) -> tuple[float, int, str, str]:
             try:
                 maturity = float(item.get("maturity_score") or 0.0)
             except (TypeError, ValueError):
@@ -2816,33 +2966,26 @@ class WorkflowMemoryService:
                 successes = int(item.get("success_count") or 0)
             except (TypeError, ValueError):
                 successes = 0
-            return (maturity, successes, str(item.get("updated_at") or ""))
+            return (-maturity, -successes, str(item.get("created_at") or ""), str(item.get("id") or ""))
 
         for group in grouped.values():
             if len(group) < 2:
                 continue
-            keeper = sorted(group, key=_candidate_score, reverse=True)[0]
+            keeper = sorted(group, key=_candidate_score)[0]
             keeper_id = str(keeper.get("id") or "").strip()
             if not keeper_id:
                 continue
-            for duplicate in group:
-                duplicate_id = str(duplicate.get("id") or "").strip()
-                if not duplicate_id or duplicate_id == keeper_id:
-                    continue
-                existing = duplicate.get("mergeSuggestion") if isinstance(duplicate.get("mergeSuggestion"), dict) else {}
-                if str(existing.get("targetId") or "") == keeper_id:
-                    continue
-                suggestion = {
-                    "targetId": keeper_id,
-                    "reason": "maintenance_high_similarity_workflow",
-                    "confidence": 1.0,
-                    "updatedAt": utc_now_iso(),
-                }
-                self.update_candidate(duplicate_id, {"mergeSuggestion": suggestion})
-                merge_suggestions += 1
-                if merge_suggestions >= 40:
-                    budget_stopped = True
-                    break
+            duplicate_ids = [
+                str(item.get("id") or "").strip()
+                for item in group
+                if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != keeper_id
+            ]
+            if duplicate_ids:
+                self.merge_candidates(keeper_id, duplicate_ids)
+                merge_suggestions += len(duplicate_ids)
+            if merge_suggestions >= 40:
+                budget_stopped = True
+                break
             if budget_stopped:
                 break
 
@@ -2882,6 +3025,7 @@ class WorkflowMemoryService:
             "activatedCount": activated,
             "quarantinedCount": quarantined,
             "mergeSuggestionCount": merge_suggestions,
+            "mergedDuplicateCount": merge_suggestions,
             "budgetStopped": budget_stopped,
             "cursor": cursor_result,
             "terminalGuides": terminal_guide_result,

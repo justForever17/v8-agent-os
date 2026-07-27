@@ -3731,7 +3731,7 @@ class ComputerUseRuntime:
         kind: str,
         suffix: str = ".png",
         workspace_path: str | None = None,
-    ) -> tuple[Path, str | None, str | None, Path]:
+    ) -> tuple[Path, str | None, Path]:
         workspace_root = self._workspace_root(workspace_path)
         artifact_root = workspace_artifact_run_root(
             workspace_root,
@@ -3741,14 +3741,7 @@ class ComputerUseRuntime:
         artifact_root.mkdir(parents=True, exist_ok=True)
         full_path = artifact_root / f"{kind}_{uuid.uuid4().hex[:8]}{suffix}"
         relative_path = full_path.relative_to(workspace_root)
-        preview_url = None
-        try:
-            from core.system_base import get_engine_origin
-
-            preview_url = f"{get_engine_origin().rstrip('/')}/workspace/{relative_path.as_posix()}"
-        except Exception:
-            preview_url = None
-        return full_path, relative_path.as_posix(), preview_url, workspace_root
+        return full_path, relative_path.as_posix(), workspace_root
 
     def _capture_runtime_screenshot_artifact(
         self,
@@ -3760,7 +3753,7 @@ class ComputerUseRuntime:
         **capture_kwargs,
     ) -> tuple[Dict[str, Any], Path]:
         runtime_context = get_runtime_context()
-        output_path, workspace_rel, preview_url, workspace_root = self._artifact_output_path(
+        output_path, workspace_rel, workspace_root = self._artifact_output_path(
             session_id=run_handle.session_id,
             run_id=run_handle.run_id,
             kind=kind,
@@ -3772,7 +3765,6 @@ class ComputerUseRuntime:
             session_id=run_handle.session_id,
             run_id=run_handle.run_id,
             workspace_path=workspace_rel,
-            preview_url=preview_url,
             metadata={
                 "runtime": "computer_use",
                 "origin": "computer_use_screenshot",
@@ -11330,7 +11322,7 @@ class ComputerUseRuntime:
 
         def _runner(run_handle, runtime_payload):
             runtime_context = get_runtime_context()
-            output_path, workspace_rel, preview_url, workspace_root = self._artifact_output_path(
+            output_path, workspace_rel, workspace_root = self._artifact_output_path(
                 session_id=run_handle.session_id,
                 run_id=run_handle.run_id,
                 kind="capture",
@@ -11347,7 +11339,6 @@ class ComputerUseRuntime:
                 session_id=run_handle.session_id,
                 run_id=run_handle.run_id,
                 workspace_path=workspace_rel,
-                preview_url=preview_url,
                 metadata={
                     "runtime": "computer_use",
                     "origin": "computer_use_screenshot",

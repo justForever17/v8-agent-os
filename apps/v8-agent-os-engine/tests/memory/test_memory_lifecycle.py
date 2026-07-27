@@ -207,6 +207,53 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertEqual(graph["meta"]["totalEntities"], stats["entities"])
         self.assertFalse(graph["meta"]["truncated"])
 
+    def test_workspace_graph_includes_global_knowledge_without_mixing_other_workspaces(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            db.add_knowledge("global-fact", "global graph evidence", scope="global", category="memory")
+            db.add_knowledge("project-fact", "project graph evidence", scope="project:demo", category="memory")
+            db.add_knowledge("workspace-fact", "workspace alias evidence", scope="workspace:demo", category="memory")
+            db.add_knowledge("other-fact", "other graph evidence", scope="project:other", category="memory")
+            db.add_scoped_relation("shared", "USES", "global-node", scope="global", source_fact_ids=["global-fact"])
+            db.add_scoped_relation("shared", "USES", "project-node", scope="project:demo", source_fact_ids=["project-fact"])
+            db.add_scoped_relation("shared", "USES", "workspace-node", scope="workspace:demo", source_fact_ids=["workspace-fact"])
+            db.add_scoped_relation("shared", "USES", "other-node", scope="project:other", source_fact_ids=["other-fact"])
+
+            stats = db.get_graph_stats(scopes=["project:demo", "workspace:demo"])
+            graph = db.get_full_graph(scopes=["project:demo", "workspace:demo"], limit=100)
+            all_stats = db.get_graph_stats(scope="*")
+
+        assert stats["relations"] == 3
+        assert stats["entities"] == 4
+        assert {node["id"] for node in graph["nodes"]} == {
+            "shared",
+            "global-node",
+            "project-node",
+            "workspace-node",
+        }
+        assert {link["target"] for link in graph["links"]} == {
+            "global-node",
+            "project-node",
+            "workspace-node",
+        }
+        assert all_stats["relations"] == 4
+
+    def test_graph_scope_catalog_keeps_fact_only_scopes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            workspace_root = str(Path(temp_dir) / "workspace")
+            db.add_knowledge(
+                "project-fact",
+                "project evidence without graph edges",
+                scope="project:demo",
+                metadata={"workspaceRoot": workspace_root},
+            )
+            scopes = db.list_graph_scopes()
+
+        assert {item["scope"] for item in scopes} == {"project:demo"}
+        assert scopes[0]["relationCount"] == 0
+        assert scopes[0]["workspaceRoots"] == [workspace_root]
+
     def test_graph_maintenance_keeps_entities_referenced_by_legacy_audit_relations(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = KnowledgeDB(Path(temp_dir) / "knowledge.db")

@@ -15,6 +15,7 @@ import json
 import uuid
 import logging
 import time
+import hashlib
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
@@ -73,6 +74,8 @@ _DAY_FILENAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 _DAILY_ENTRY_MAX_CHARS_DEFAULT = 6000
 _DAILY_ENTRY_SUMMARY_EXCERPT_CHARS_DEFAULT = 900
 _SUMMARY_CHILD_EXCERPT_CHARS_DEFAULT = 1200
+_PERIODIC_SUMMARY_GLOBAL_POLICY = "global_only_v1"
+_PERIODIC_SUMMARY_LEGACY_POLICY = "legacy_unverified"
 
 GLOBAL_PROFILE_DEFAULTS: Dict[str, str] = {
     "preferred_language": "",
@@ -759,6 +762,16 @@ class MemoryStore:
         normalized = str(scope or "").strip()
         return normalized.startswith("project:") or normalized.startswith("workspace:")
 
+    @staticmethod
+    def _empty_soft_signature(*, resolution: str = "unresolved") -> Dict[str, Any]:
+        return {
+            "signaturePolicy": "soft_v1",
+            "workspaceRoot": "",
+            "agentsHash": "",
+            "repoSignature": "",
+            "resolution": resolution,
+        }
+
     def _current_soft_signature(self) -> Dict[str, Any]:
         try:
             from core.storage import storage
@@ -767,35 +780,133 @@ class MemoryStore:
 
             context = get_runtime_context()
             workspace_path = (
-                str(context.get("workspace_path") or "").strip()
+                str(
+                    context.get("original_workspace_path")
+                    or context.get("originalWorkspacePath")
+                    or context.get("workspace_path")
+                    or ""
+                ).strip()
                 or str((storage.get_workspace_config() or {}).get("agent_workspace_path") or "").strip()
             )
-            return build_soft_repo_signature(workspace_path)
+            signature = build_soft_repo_signature(workspace_path)
+            signature["resolution"] = "runtime_context" if workspace_path and context else "main_workspace"
+            return signature
         except Exception:
-            return {
-                "signaturePolicy": "soft_v1",
-                "workspaceRoot": "",
-                "agentsHash": "",
-                "repoSignature": "",
-            }
+            return self._empty_soft_signature()
+
+    def _soft_signature_for_scope(
+        self,
+        scope: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Resolve a repository signature from the workspace that owns ``scope``.
+
+        A scope that cannot be mapped back to a workspace is deliberately left
+        unresolved. Comparing it with the configured main workspace was the
+        cross-workspace invalidation bug that could stale unrelated memories.
+        """
+        normalized_scope = str(scope or "").strip()
+        if not self._scope_uses_repo_signature(normalized_scope):
+            return self._empty_soft_signature(resolution="not_repo_scoped")
+
+        workspace_path = str((metadata or {}).get("workspaceRoot") or "").strip()
+        resolution = "fact_metadata" if workspace_path else ""
+        try:
+            from core.storage import storage
+            from erc.runtime_context import get_runtime_context
+            from runtimes.memory.project_registry import project_registry_service
+            from runtimes.memory.signature import build_soft_repo_signature
+
+            context = get_runtime_context()
+            context_path = str(
+                context.get("original_workspace_path")
+                or context.get("originalWorkspacePath")
+                or context.get("workspace_path")
+                or ""
+            ).strip()
+            context_project_id = str(context.get("project_id") or "").strip()
+            context_workspace_id = str(context.get("workspace_id") or "").strip()
+            context_scope = str(context.get("resolved_scope") or "").strip()
+
+            if not workspace_path and normalized_scope == "workspace:main":
+                # Historical ``workspace:main`` rows do not prove which
+                # physical directory was "main" when they were written.
+                return self._empty_soft_signature(resolution="unresolved_legacy_main")
+
+            if not workspace_path:
+                try:
+                    from runtimes.memory.workspace_scope import resolve_workspace_scope_identity
+
+                    identity = resolve_workspace_scope_identity(scope_alias=normalized_scope)
+                except Exception:
+                    identity = None
+                identity_path = str((identity or {}).get("workspacePath") or "").strip()
+                if identity_path:
+                    workspace_path = identity_path
+                    resolution = "workspace_scope_catalog"
+
+            if not workspace_path and normalized_scope.startswith("project:"):
+                project_id = normalized_scope.split(":", 1)[1]
+                if context_path and context_project_id == project_id:
+                    workspace_path = context_path
+                    resolution = "runtime_project"
+                else:
+                    project = project_registry_service.get_project(project_id)
+                    if project and str(project.workspace_path or "").strip():
+                        workspace_path = str(project.workspace_path).strip()
+                        resolution = "project_registry"
+            elif not workspace_path and normalized_scope.startswith("workspace:"):
+                workspace_id = normalized_scope.split(":", 1)[1]
+                runtime_matches = (
+                    context_scope == normalized_scope
+                    or (context_workspace_id and context_workspace_id == workspace_id)
+                )
+                if context_path and runtime_matches:
+                    workspace_path = context_path
+                    resolution = "runtime_workspace"
+                elif not normalized_scope.startswith("workspace:external:"):
+                    project = project_registry_service.find_project_for_workspace(workspace_id=workspace_id)
+                    if project and str(project.workspace_path or "").strip():
+                        workspace_path = str(project.workspace_path).strip()
+                        resolution = "workspace_registry"
+
+            if not workspace_path:
+                return self._empty_soft_signature(resolution="unresolved_scope")
+            signature = build_soft_repo_signature(workspace_path)
+            signature["resolution"] = resolution or "resolved_scope"
+            return signature
+        except Exception as exc:
+            logger.warning("[MemoryStore] Could not resolve signature for %s: %s", normalized_scope, exc)
+            return self._empty_soft_signature(resolution="resolution_error")
 
     def _mark_stale_for_signature_mismatch(self, scopes: List[str]) -> Dict[str, Any]:
         from core.knowledge_db import knowledge_db
 
-        scoped = [scope for scope in scopes if self._scope_uses_repo_signature(scope)]
-        signature = self._current_soft_signature()
-        if not scoped or not (signature.get("agentsHash") or signature.get("repoSignature")):
-            return {"staleMarked": 0, "signaturePolicy": signature.get("signaturePolicy") or "soft_v1"}
-        marked = knowledge_db.mark_stale_for_signature_mismatch(
-            scopes=scoped,
-            agents_hash=str(signature.get("agentsHash") or ""),
-            repo_signature=str(signature.get("repoSignature") or ""),
-        )
+        scoped = list(dict.fromkeys(scope for scope in scopes if self._scope_uses_repo_signature(scope)))
+        marked = 0
+        resolved_scopes: List[Dict[str, Any]] = []
+        skipped_scopes: List[Dict[str, str]] = []
+        for scope in scoped:
+            signature = self._soft_signature_for_scope(scope)
+            if not (signature.get("agentsHash") or signature.get("repoSignature")):
+                skipped_scopes.append({"scope": scope, "reason": str(signature.get("resolution") or "unresolved_scope")})
+                continue
+            marked += knowledge_db.mark_stale_for_signature_mismatch(
+                scopes=[scope],
+                agents_hash=str(signature.get("agentsHash") or ""),
+                repo_signature=str(signature.get("repoSignature") or ""),
+            )
+            resolved_scopes.append({
+                "scope": scope,
+                "workspaceRoot": str(signature.get("workspaceRoot") or ""),
+                "resolution": str(signature.get("resolution") or "resolved_scope"),
+            })
         return {
             "staleMarked": marked,
-            "signaturePolicy": signature.get("signaturePolicy") or "soft_v1",
-            "agentsHash": signature.get("agentsHash") or "",
-            "repoSignature": signature.get("repoSignature") or "",
+            "signaturePolicy": "soft_v1",
+            "resolvedScopes": resolved_scopes,
+            "skippedScopes": skipped_scopes,
         }
 
     def refresh_stale_revalidation(self, scopes: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -841,15 +952,19 @@ class MemoryStore:
 
         try:
             with knowledge_db._conn() as conn:
-                row = conn.execute("SELECT scope FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+                row = conn.execute("SELECT scope, metadata_json FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
                 if not row:
                     return False
                 scope = str(row["scope"] or "global")
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except Exception:
+                    metadata = {}
         except Exception as exc:
             logger.warning(f"[MemoryStore] Could not fetch scope for knowledge revalidation {fact_id}: {exc}")
             return False
 
-        signature = self._current_soft_signature() if self._scope_uses_repo_signature(scope) else {}
+        signature = self._soft_signature_for_scope(scope, metadata=metadata) if self._scope_uses_repo_signature(scope) else {}
         ok = knowledge_db.revalidate_knowledge(
             fact_id,
             agents_hash=str(signature.get("agentsHash") or ""),
@@ -878,7 +993,7 @@ class MemoryStore:
 
         normalized_scope = self._validate_scope(scope)
         fact_id = f"fact-{uuid.uuid4().hex[:8]}"
-        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
+        signature = self._soft_signature_for_scope(normalized_scope) if self._scope_uses_repo_signature(normalized_scope) else {}
         result = knowledge_db.write_knowledge(
             fact=fact,
             category=category,
@@ -913,7 +1028,7 @@ class MemoryStore:
         if not current:
             return False
         normalized_scope = self._validate_scope(scope or str(current["scope"] or "global"))
-        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
+        signature = self._soft_signature_for_scope(normalized_scope) if self._scope_uses_repo_signature(normalized_scope) else {}
         result = knowledge_db.write_knowledge(
             fact=new_fact,
             category=category or str(current["category"] or "general"),
@@ -930,6 +1045,7 @@ class MemoryStore:
             metadata={
                 "deprecatedOverwriteId": fact_id,
                 "compatibilityEntry": "MemoryStore.update_knowledge",
+                "workspaceRoot": signature.get("workspaceRoot") if signature else "",
             },
         )
         knowledge_projection_service.process_outbox(limit=10)
@@ -957,42 +1073,32 @@ class MemoryStore:
         from core.knowledge_db import knowledge_db
 
         scope_candidates = self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes)
-        self._mark_stale_for_signature_mismatch(scope_candidates)
         include_exact_scopes = [item for item in scope_candidates if item != "global"]
+        # Query exact workspace aliases first, then the shared global scope.
+        # Passing ``scope=None`` to KnowledgeDB means every scope, which is not
+        # a safe fallback for a workspace-bound request.
+        query_scopes = [*reversed(include_exact_scopes), "global"]
         results = []
-
-        if include_exact_scopes:
-            seen_ids = set()
-            for candidate_scope in reversed(include_exact_scopes):
-                try:
-                    batch = knowledge_db.fts_search(query, scope=candidate_scope, limit=limit) if query else knowledge_db.get_all_knowledge(scope=candidate_scope, limit=limit)
-                except Exception as e:
-                    logger.warning(f"[MemoryStore] Scoped knowledge query failed for {candidate_scope}: {e}")
-                    batch = []
-                for item in batch:
-                    item_id = item.get("id")
-                    if item_id and item_id in seen_ids:
-                        continue
-                    if item_id:
-                        seen_ids.add(item_id)
-                    results.append(item)
-                if len(results) >= limit:
-                    break
-        else:
-            if query:
-                try:
-                    results = knowledge_db.fts_search(query, scope=scope, limit=limit)
-                    if results:
-                        logger.info(f"[MemoryStore] FTS5 returned {len(results)} results for '{query}'")
-                except Exception as e:
-                    logger.warning(f"[MemoryStore] FTS5 search failed: {e}")
-                    results = []
-            else:
-                try:
-                    results = knowledge_db.get_all_knowledge(scope=scope, limit=limit)
-                except Exception as e:
-                    logger.warning(f"[MemoryStore] DB direct query failed: {e}")
-                    results = []
+        seen_ids = set()
+        for candidate_scope in query_scopes:
+            try:
+                batch = (
+                    knowledge_db.fts_search(query, scope=candidate_scope, limit=limit)
+                    if query
+                    else knowledge_db.get_all_knowledge(scope=candidate_scope, limit=limit)
+                )
+            except Exception as e:
+                logger.warning(f"[MemoryStore] Scoped knowledge query failed for {candidate_scope}: {e}")
+                batch = []
+            for item in batch:
+                item_id = item.get("id")
+                if item_id and item_id in seen_ids:
+                    continue
+                if item_id:
+                    seen_ids.add(item_id)
+                results.append(item)
+            if len(results) >= limit:
+                break
                 
         if category:
             results = [r for r in results if r.get("category") == category]
@@ -1147,7 +1253,6 @@ class MemoryStore:
         if "global" not in scope_chain:
             scope_chain.append("global")
         allowed_scopes = set(scope_chain)
-        self._mark_stale_for_signature_mismatch(list(allowed_scopes))
 
         seed_candidates: Dict[str, Dict[str, Any]] = {}
         diagnostics: Dict[str, Any] = {
@@ -1637,9 +1742,13 @@ class MemoryStore:
         scalar_key_order = (
             "type",
             "tier",
+            "scopePolicy",
             "date",
             "periodStart",
             "periodEnd",
+            "sourceDigest",
+            "sourceRangeStart",
+            "sourceRangeEnd",
             "summary",
             "missingChildrenCount",
             "presentChildrenCount",
@@ -1648,6 +1757,10 @@ class MemoryStore:
             "tags",
             "children",
             "coverage",
+            "sourceRefs",
+            "sourceEvidence",
+            "changedSourceRefs",
+            "removedSourceRefs",
             "summaries",
         )
 
@@ -1769,6 +1882,8 @@ class MemoryStore:
         tier: str,
         dt: date | datetime,
         summary: str,
+        scope_policy: str = _PERIODIC_SUMMARY_GLOBAL_POLICY,
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         target = dt.date() if isinstance(dt, datetime) else dt
         start_date, end_date = self._period_date_bounds(tier, datetime.combine(target, datetime.min.time()))
@@ -1784,7 +1899,14 @@ class MemoryStore:
             while cursor <= end_date:
                 log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
                 label = cursor.strftime("%Y-%m-%d")
-                has_record = log_path.exists()
+                has_record = bool(
+                    log_path.exists()
+                    and self._read_scoped_daily_entries(
+                        log_path=log_path,
+                        allowed_scopes=["global"],
+                        max_entries_per_day=1,
+                    )
+                )
                 coverage.append(f"{label}: {'有记录' if has_record else '未产生记录'}")
                 if has_record:
                     tags.append(label)
@@ -1799,7 +1921,12 @@ class MemoryStore:
             while current <= end_date:
                 week_label = f"{current.year}-W{int(current.strftime('%V')):02d}"
                 _memory_ref, summary_path, _label = self._resolve_summary_target("week", datetime.combine(current, datetime.min.time()))
-                has_record = summary_path.exists()
+                child_metadata, _child_body = self._read_frontmatter(summary_path)
+                has_record = (
+                    summary_path.exists()
+                    and str(child_metadata.get("scopePolicy") or "").strip()
+                    == _PERIODIC_SUMMARY_GLOBAL_POLICY
+                )
                 week_status[week_label] = bool(week_status.get(week_label)) or has_record
                 current += timedelta(days=1)
             for week_label, has_record in week_status.items():
@@ -1814,7 +1941,12 @@ class MemoryStore:
             for month in range(1, 13):
                 month_label = f"{target.year}-{month:02d}"
                 _memory_ref, summary_path, _label = self._resolve_summary_target("month", date(target.year, month, 1))
-                has_record = summary_path.exists()
+                child_metadata, _child_body = self._read_frontmatter(summary_path)
+                has_record = (
+                    summary_path.exists()
+                    and str(child_metadata.get("scopePolicy") or "").strip()
+                    == _PERIODIC_SUMMARY_GLOBAL_POLICY
+                )
                 coverage.append(f"{month_label}: {'有月记摘要' if has_record else '缺月记摘要'}")
                 if has_record:
                     tags.append(month_label)
@@ -1825,9 +1957,10 @@ class MemoryStore:
         else:
             raise ValueError(f"Unknown summary tier: {tier}")
 
-        return {
+        metadata: Dict[str, Any] = {
             "type": "periodic_summary",
             "tier": tier,
+            "scopePolicy": str(scope_policy or "").strip(),
             "date": date_value,
             "periodStart": start_date.strftime("%Y-%m-%d"),
             "periodEnd": end_date.strftime("%Y-%m-%d"),
@@ -1838,6 +1971,22 @@ class MemoryStore:
             "missingChildrenCount": missing_children_count,
             "presentChildrenCount": present_children_count,
         }
+        # Source provenance is computed by code before the Memory Agent is
+        # invoked.  It is deliberately additive so old summaries remain
+        # readable and can be regenerated once to obtain a digest.
+        for key in (
+            "sourceDigest",
+            "sourceRangeStart",
+            "sourceRangeEnd",
+        ):
+            value = (source_metadata or {}).get(key)
+            if value not in (None, ""):
+                metadata[key] = str(value)
+        for key in ("sourceRefs", "sourceEvidence", "changedSourceRefs", "removedSourceRefs"):
+            values = (source_metadata or {}).get(key)
+            if isinstance(values, list):
+                metadata[key] = [str(item).strip() for item in values if str(item).strip()]
+        return metadata
 
     def _is_complete_periodic_summary_metadata(
         self,
@@ -1849,6 +1998,8 @@ class MemoryStore:
         if str(metadata.get("type") or "").strip() != "periodic_summary":
             return False
         if str(metadata.get("tier") or "").strip() != tier:
+            return False
+        if str(metadata.get("scopePolicy") or "").strip() != _PERIODIC_SUMMARY_GLOBAL_POLICY:
             return False
         if str(metadata.get("date") or "").strip() != self._summary_date_value(tier=tier, dt=dt):
             return False
@@ -1874,11 +2025,15 @@ class MemoryStore:
         dt: date | datetime,
         summary: str,
         body: str,
+        scope_policy: str = _PERIODIC_SUMMARY_GLOBAL_POLICY,
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         metadata = self._build_periodic_summary_metadata(
             tier=tier,
             dt=dt,
             summary=summary,
+            scope_policy=scope_policy,
+            source_metadata=source_metadata,
         )
         rendered = self._render_frontmatter(metadata)
         normalized_body = str(body or "").strip()
@@ -2012,6 +2167,28 @@ class MemoryStore:
             matched.append(snippet)
         return matched[-max_entries_per_day:]
 
+    def _summaries_from_scoped_daily_entries(
+        self,
+        entries: List[str],
+        *,
+        limit: int = 4,
+        max_chars: int = _DAILY_ENTRY_SUMMARY_EXCERPT_CHARS_DEFAULT,
+    ) -> List[str]:
+        summaries: List[str] = []
+        for entry in entries:
+            match = re.search(r"(?m)^summary:\s*(.+?)\s*$", str(entry or ""))
+            if not match:
+                continue
+            summary = self._normalize_summary_text(match.group(1))
+            if not summary or summary.lower() == "n/a":
+                continue
+            excerpt = self._read_summary_excerpt_from_text(summary, limit=max_chars)
+            if excerpt and excerpt not in summaries:
+                summaries.append(excerpt)
+            if len(summaries) >= max(1, limit):
+                break
+        return summaries
+
     def _memory_ref(self, kind: str, value: str) -> str:
         return f"memory://{kind}/{value}"
 
@@ -2087,6 +2264,8 @@ class MemoryStore:
             return None
         try:
             metadata, body = self._read_frontmatter(summary_path)
+            if str(metadata.get("scopePolicy") or "").strip() != _PERIODIC_SUMMARY_GLOBAL_POLICY:
+                return None
             summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
             if not summary_text:
                 return None
@@ -2132,6 +2311,17 @@ class MemoryStore:
     def _summary_state(self, *, summary_path: Path, descendant_paths: List[Path]) -> tuple[bool, str]:
         if not summary_path.exists():
             return False, "missing"
+        try:
+            metadata, _body = self._read_frontmatter(summary_path)
+            if str(metadata.get("scopePolicy") or "").strip() != _PERIODIC_SUMMARY_GLOBAL_POLICY:
+                return True, "stale"
+            # Verified summaries created before source-digest tracking need a
+            # one-time refresh. After that, mtime-only staleness can be closed
+            # without another model call.
+            if not str(metadata.get("sourceDigest") or "").strip():
+                return True, "stale"
+        except Exception:
+            return True, "stale"
         if not descendant_paths:
             return True, "present"
         try:
@@ -2302,11 +2492,35 @@ class MemoryStore:
             "children": [self._shallow_memory_node(child) for child in node.get("children") or []],
         }
 
-    def read_memory_day(self, memory_ref_or_date: str) -> str:
+    def read_memory_day(
+        self,
+        memory_ref_or_date: str,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
         day_date = self._resolve_day_date(memory_ref_or_date)
         log_path = self._get_daily_log_path(datetime.combine(day_date, datetime.min.time()))
         memory_ref = self._day_memory_ref(day_date)
         if log_path.exists():
+            if scope_chain is not None:
+                allowed_scopes = [
+                    item
+                    for item in self._normalize_scope_chain(scope_chain=scope_chain)
+                    if self._is_valid_scope(item)
+                ]
+                entries = self._read_scoped_daily_entries(
+                    log_path=log_path,
+                    allowed_scopes=allowed_scopes,
+                    max_entries_per_day=100,
+                )
+                if not entries:
+                    return (
+                        f"No daily memory visible to the current workspace for "
+                        f"{day_date.strftime('%Y-%m-%d')} (Ref: {memory_ref})."
+                    )
+                return (
+                    f"[{day_date.strftime('%Y-%m-%d')}] Ref: {memory_ref}\n"
+                    + "\n\n".join(entries)
+                )
             return f"[{day_date.strftime('%Y-%m-%d')}] Ref: {memory_ref}\n{log_path.read_text(encoding='utf-8')}"
         return f"No daily log found for {day_date.strftime('%Y-%m-%d')} (Ref: {memory_ref})."
 
@@ -2518,49 +2732,76 @@ class MemoryStore:
         diagnostics["consistencyConflicts"] = conflicts
         return "\n".join(lines), diagnostics
 
-    def _format_memory_map_for_injection(self, anchor_date: Optional[str] = None, *, node_limit: int = 4) -> str:
-        memory_map = self.build_memory_map(anchor_date=anchor_date)
-        current_refs = dict(memory_map.get("currentRefs") or {})
+    def _format_memory_map_for_injection(
+        self,
+        anchor_date: Optional[str] = None,
+        *,
+        node_limit: int = 4,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
+        try:
+            anchor = date.fromisoformat(anchor_date) if anchor_date else datetime.now().date()
+        except ValueError:
+            anchor = datetime.now().date()
+        current_refs = {
+            "year": self._year_memory_ref(anchor.year),
+            "month": self._month_memory_ref(anchor.year, anchor.month),
+            "week": self._week_memory_ref(anchor.year, int(anchor.strftime("%V"))),
+            "day": self._day_memory_ref(anchor),
+        }
+        allowed_scopes = [
+            item
+            for item in self._normalize_scope_chain(scope_chain=scope_chain)
+            if self._is_valid_scope(item)
+        ]
         current_items: list[str] = []
         for kind in ("year", "month", "week", "day"):
             memory_ref = str(current_refs.get(kind) or "").strip()
             if not memory_ref:
                 continue
-            node = self._find_memory_node(memory_ref) or {}
-            summary_state = str(node.get("summaryState") or ("present" if node.get("hasSummary") else "missing")).strip()
-            latest_day = str(node.get("latestDay") or "").strip()
-            excerpt = str(node.get("summaryExcerpt") or "").strip()
-            line = f"- [{kind}] {str(node.get('label') or memory_ref)} | Ref: {memory_ref}"
+            summary_state = "missing"
+            excerpt = ""
+            label = memory_ref.rsplit("/", 1)[-1]
+            if kind == "day":
+                log_path = self._get_daily_log_path(datetime.combine(anchor, datetime.min.time()))
+                entries = (
+                    self._read_scoped_daily_entries(
+                        log_path=log_path,
+                        allowed_scopes=allowed_scopes,
+                        max_entries_per_day=1,
+                    )
+                    if log_path.exists()
+                    else []
+                )
+                if entries:
+                    summary_state = "present"
+                    summaries = self._summaries_from_scoped_daily_entries(entries, limit=1)
+                    excerpt = summaries[0] if summaries else ""
+            else:
+                _resolved_ref, summary_path, resolved_label = self._resolve_summary_target(
+                    kind,
+                    datetime.combine(anchor, datetime.min.time()),
+                )
+                label = resolved_label
+                metadata, body = self._read_frontmatter(summary_path)
+                if str(metadata.get("scopePolicy") or "").strip() == _PERIODIC_SUMMARY_GLOBAL_POLICY:
+                    summary_state = "present"
+                    excerpt = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
+                elif summary_path.exists():
+                    summary_state = "stale"
+            line = f"- [{kind}] {label} | Ref: {memory_ref}"
             if summary_state:
                 line += f" | summary={summary_state}"
-            if latest_day:
-                line += f" | latestDay={latest_day}"
             if excerpt:
                 clipped = excerpt[:120] + "..." if len(excerpt) > 120 else excerpt
                 line += f" | excerpt={clipped}"
             current_items.append(line)
-
-        available_years: list[str] = []
-        for item in list(memory_map.get("items") or [])[: max(1, node_limit)]:
-            memory_ref = str(item.get("memoryRef") or "").strip()
-            if not memory_ref:
-                continue
-            summary_state = str(item.get("summaryState") or "missing").strip()
-            latest_day = str(item.get("latestDay") or "").strip()
-            line = f"- [{str(item.get('kind') or 'year')}] {str(item.get('label') or memory_ref)} | Ref: {memory_ref} | summary={summary_state}"
-            if latest_day:
-                line += f" | latestDay={latest_day}"
-            available_years.append(line)
 
         parts = ["Current focus refs:"]
         if current_items:
             parts.extend(current_items)
         else:
             parts.append("- No current memory refs available.")
-        if available_years:
-            parts.append("")
-            parts.append("Available top-level memory nodes:")
-            parts.extend(available_years)
         parts.append("")
         parts.append("Use memory_broker(mode='expand_map', memory_ref='...') or memory_map_expand(memoryRef) to drill down. Use memory_broker(mode='read_day', memory_ref_or_date='...') or memory_read_day(memory://day/YYYY-MM-DD or YYYY-MM-DD) when you need an exact daily log.")
         return "\n".join(parts).strip()
@@ -2627,9 +2868,7 @@ class MemoryStore:
                 continue
 
             summary_line = self._extract_entry_summary_line(matched_entries[-1])
-            frontmatter_summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
-            fallback_line = frontmatter_summaries[0] if frontmatter_summaries else ""
-            teaser = summary_line or fallback_line
+            teaser = summary_line
             if not teaser:
                 continue
             if len(teaser) > 140:
@@ -2720,36 +2959,59 @@ class MemoryStore:
             return year_start, year_end
         raise ValueError(f"Unknown summary tier: {tier}")
 
-    def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
+    def _periodic_summary_source_blocks(
+        self,
+        *,
+        tier: str,
+        dt: Optional[datetime] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> List[Dict[str, str]]:
+        """Build deterministic source blocks without asking the model.
+
+        A block is the smallest unit that can be compared across maintenance
+        runs: one day for a week, one verified week for a month, and one
+        verified month for a year.  File timestamps are intentionally not
+        included in the block content or digest.
+        """
         target_dt = dt or datetime.now()
         start_date, end_date = self._period_date_bounds(tier, target_dt)
         allowed_scopes = [scope for scope in self._normalize_scope_chain(scope_chain=scope_chain) if self._is_valid_scope(scope)]
         options = self._memory_maintenance_summary_options()
-        summaries: List[str] = []
+        blocks: List[Dict[str, str]] = []
 
         if tier == "week":
             cursor = start_date
             while cursor <= end_date:
                 log_path = self._get_daily_log_path(datetime.combine(cursor, datetime.min.time()))
                 if log_path.exists():
-                    frontmatter_summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
                     matched_entries = self._read_scoped_daily_entries(
                         log_path=log_path,
                         allowed_scopes=allowed_scopes,
                         max_entries_per_day=min(options["maxEntriesPerDay"], 2),
                         max_entry_chars=options["summaryExcerptChars"],
                     )
+                    scoped_summaries = self._summaries_from_scoped_daily_entries(
+                        matched_entries,
+                        limit=4,
+                        max_chars=options["summaryExcerptChars"],
+                    )
                     day_lines = [f"[{cursor.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(cursor)}"]
-                    if frontmatter_summaries:
+                    if scoped_summaries:
                         day_lines.append("Summaries:")
-                        day_lines.extend(f"- {self._read_summary_excerpt_from_text(item, limit=options['summaryExcerptChars'])}" for item in frontmatter_summaries[:4])
+                        day_lines.extend(f"- {item}" for item in scoped_summaries)
                     if matched_entries:
                         day_lines.append("Capped entries:")
                         day_lines.extend(matched_entries)
                     if len(day_lines) > 1:
-                        summaries.append("\n".join(line for line in day_lines if str(line or "").strip()))
+                        blocks.append(
+                            {
+                                "ref": self._day_memory_ref(cursor),
+                                "label": cursor.strftime("%Y-%m-%d"),
+                                "content": "\n".join(line for line in day_lines if str(line or "").strip()),
+                            }
+                        )
                 cursor += timedelta(days=1)
-            return "\n\n".join(summaries).strip()
+            return blocks
 
         if tier == "month":
             seen_weeks: set[str] = set()
@@ -2766,9 +3028,15 @@ class MemoryStore:
                         max_chars=options["childSummaryExcerptChars"],
                     )
                     if compact:
-                        summaries.append(compact)
+                        blocks.append(
+                            {
+                                "ref": memory_ref,
+                                "label": label,
+                                "content": compact,
+                            }
+                        )
                 cursor += timedelta(days=1)
-            return "\n\n".join(summaries).strip()
+            return blocks
 
         if tier == "year":
             for month in range(1, 13):
@@ -2781,10 +3049,125 @@ class MemoryStore:
                     max_chars=options["childSummaryExcerptChars"],
                 )
                 if compact:
-                    summaries.append(compact)
-            return "\n\n".join(summaries).strip()
+                    blocks.append(
+                        {
+                            "ref": memory_ref,
+                            "label": label,
+                            "content": compact,
+                        }
+                    )
+            return blocks
 
-        return "\n\n".join(summaries).strip()
+        return blocks
+
+    @staticmethod
+    def _periodic_source_digest(value: str) -> str:
+        normalized = "\n".join(line.rstrip() for line in str(value or "").replace("\r\n", "\n").splitlines()).strip()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _periodic_summary_source_path(self, *, tier: str, dt: datetime) -> Path:
+        _memory_ref, summary_path, _label = self._resolve_summary_target(tier, dt)
+        return summary_path
+
+    def prepare_periodic_summary_input(
+        self,
+        *,
+        tier: str,
+        dt: Optional[datetime] = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Compute summary deltas and provenance before model invocation."""
+        target_dt = dt or datetime.now()
+        start_date, end_date = self._period_date_bounds(tier, target_dt)
+        blocks = self._periodic_summary_source_blocks(tier=tier, dt=target_dt, scope_chain=scope_chain)
+        source_refs = [str(block.get("ref") or "").strip() for block in blocks if str(block.get("ref") or "").strip()]
+        source_evidence: List[str] = []
+        block_digests: Dict[str, str] = {}
+        for block in blocks:
+            ref = str(block.get("ref") or "").strip()
+            digest = self._periodic_source_digest(str(block.get("content") or ""))
+            if ref:
+                block_digests[ref] = digest
+                source_evidence.append(f"{ref}|{digest}")
+        digest_payload = "\n".join(f"{ref}\t{block_digests.get(ref, '')}" for ref in source_refs)
+        source_digest = self._periodic_source_digest(digest_payload)
+        full_content = "\n\n".join(str(block.get("content") or "").strip() for block in blocks if str(block.get("content") or "").strip()).strip()
+
+        summary_path = self._periodic_summary_source_path(tier=tier, dt=target_dt)
+        existing_metadata, existing_body = self._read_frontmatter(summary_path)
+        existing_verified = (
+            summary_path.exists()
+            and str(existing_metadata.get("scopePolicy") or "").strip() == _PERIODIC_SUMMARY_GLOBAL_POLICY
+        )
+        existing_source_digest = str(existing_metadata.get("sourceDigest") or "").strip()
+        existing_summary = self._extract_primary_summary(existing_metadata) or self._extract_summary_candidate_from_body(existing_body)
+        previous_evidence: Dict[str, str] = {}
+        for raw in list(existing_metadata.get("sourceEvidence") or []):
+            raw_text = str(raw).strip()
+            if "|" in raw_text:
+                ref, digest = raw_text.rsplit("|", 1)
+                if ref.strip() and digest.strip():
+                    previous_evidence[ref.strip()] = digest.strip()
+                    continue
+            try:
+                item = json.loads(raw_text)
+                ref = str(item.get("ref") or "").strip()
+                digest = str(item.get("digest") or "").strip()
+                if ref and digest:
+                    previous_evidence[ref] = digest
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        changed_refs = [ref for ref in source_refs if previous_evidence.get(ref) != block_digests.get(ref)]
+        removed_refs = [ref for ref in previous_evidence if ref not in block_digests]
+        semantic_changed = (not existing_verified) or existing_source_digest != source_digest
+
+        # On a changed source set, only send the changed blocks plus the prior
+        # narrative to the Memory Agent.  The code, not the model, determines
+        # the range and evidence set.
+        provenance_lines = [
+            f"Code-computed source range: {start_date.strftime('%Y-%m-%d')}..{end_date.strftime('%Y-%m-%d')}",
+            "Evidence refs:",
+            *[f"- {ref}" for ref in source_refs],
+        ]
+        provenance_header = "\n".join(provenance_lines).strip()
+        model_content = "\n\n".join(part for part in (provenance_header, full_content) if part).strip()
+        if semantic_changed and existing_verified and (changed_refs or removed_refs):
+            delta_parts: List[str] = [provenance_header]
+            if existing_summary:
+                delta_parts.append(f"Previous verified narrative:\n{existing_summary}")
+            changed_ref_set = set(changed_refs)
+            selected = [block for block in blocks if str(block.get("ref") or "") in changed_ref_set]
+            if selected:
+                delta_parts.append(
+                    "Changed source blocks (code-computed):\n"
+                    + "\n\n".join(str(block.get("content") or "").strip() for block in selected)
+                )
+            if removed_refs:
+                delta_parts.append("Removed source refs (coverage change only):\n" + "\n".join(f"- {ref}" for ref in removed_refs))
+            model_content = "\n\n".join(part for part in delta_parts if part.strip()).strip()
+
+        return {
+            "content": full_content,
+            "model_content": model_content,
+            "blocks": blocks,
+            "source_digest": source_digest,
+            "source_refs": source_refs,
+            "source_evidence": source_evidence,
+            "changed_source_refs": changed_refs,
+            "removed_source_refs": removed_refs,
+            "source_range_start": start_date.strftime("%Y-%m-%d"),
+            "source_range_end": end_date.strftime("%Y-%m-%d"),
+            "semantic_changed": semantic_changed,
+            "existing_verified": existing_verified,
+            "existing_summary": existing_summary,
+            "existing_metadata": existing_metadata,
+            "existing_body": existing_body,
+            "summary_path": str(summary_path),
+        }
+
+    def get_logs_for_period(self, *, tier: str, dt: Optional[datetime] = None, scope_chain: Optional[List[str]] = None) -> str:
+        prepared = self.prepare_periodic_summary_input(tier=tier, dt=dt, scope_chain=scope_chain)
+        return str(prepared.get("content") or "").strip()
 
     def get_recent_logs(self, days: int = 1, scope_chain: Optional[List[str]] = None) -> str:
         """获取最近 N 天与 scope 匹配的日志条目摘要。"""
@@ -2846,8 +3229,7 @@ class MemoryStore:
         scope_chain: Optional[List[str]] = None,
     ) -> str:
         """
-        读取详细日志窗口之前一天的紧凑摘要。
-        仅输出 memoryRef 与 YAML frontmatter summaries，不回退正文。
+        读取详细日志窗口之前一天、且只属于当前 scope 链的紧凑摘要。
         """
         normalized_chain = self._normalize_scope_chain(scope_chain=scope_chain)
         allowed_scopes = [scope for scope in normalized_chain if self._is_valid_scope(scope)]
@@ -2866,17 +3248,14 @@ class MemoryStore:
             return ""
 
         lines = [f"[{date_check.strftime('%Y-%m-%d')}] Ref: {self._day_memory_ref(date_check)}"]
-        summaries = self._read_daily_frontmatter_summaries(log_path=log_path)
+        summaries = self._summaries_from_scoped_daily_entries(matched_entries, limit=4)
         if summaries:
             lines.append("Summaries:")
             lines.extend(f"- {item}" for item in summaries)
         return "\n".join(lines).strip()
         
     def get_hierarchical_summaries(self, scope_chain: Optional[List[str]] = None) -> str:
-        """读取年、月、周的最高层级摘要，仅在非特定项目上下文中启用以避免跨 scope 污染。"""
-        normalized_chain = self._normalize_scope_chain(scope_chain=scope_chain)
-        if any(scope.startswith(_SPECIFIC_SCOPE_PREFIXES) for scope in normalized_chain):
-            return ""
+        """Read verified global-only Agent journals for every workspace."""
 
         now = datetime.now()
         latest_day = self._latest_memory_day_date()
@@ -2890,6 +3269,8 @@ class MemoryStore:
             if not summary_path.exists():
                 continue
             metadata, body = self._read_frontmatter(summary_path)
+            if str(metadata.get("scopePolicy") or "").strip() != _PERIODIC_SUMMARY_GLOBAL_POLICY:
+                continue
             summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
             coverage_lines = self._read_summary_coverage(metadata, limit=None)
             lines = [f"[{label} Summary] Ref: {memory_ref}"]
@@ -2906,14 +3287,19 @@ class MemoryStore:
 
         return "\n\n".join(parts)
         
-    def read_memory_summary(self, tier: str, date_str: str = None) -> str:
+    def read_memory_summary(
+        self,
+        tier: str,
+        date_str: str = None,
+        scope_chain: Optional[List[str]] = None,
+    ) -> str:
         """
         根据层级(day, week, month, year)与指定的日期字符串，查找相应的结构化记录(日志或摘要)。
         date_str 格式必须至少包含对应的粒度，例如 YYYY-MM-DD 或 YYYY-MM，未指定则用当前时间。
         """
         dt = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
         if tier == "day":
-            return self.read_memory_day(dt.strftime("%Y-%m-%d"))
+            return self.read_memory_day(dt.strftime("%Y-%m-%d"), scope_chain=scope_chain)
 
         if tier in {"week", "month", "year"}:
             memory_ref, summary_path, label = self._resolve_summary_target(tier, dt)
@@ -2944,6 +3330,18 @@ class MemoryStore:
         payload = dict(payload or {})
         summary = str(payload.get("summary") or "").strip()
         body = str(payload.get("body") or "").strip()
+        source_metadata = payload.get("sourceMetadata") if isinstance(payload.get("sourceMetadata"), dict) else {}
+        if not source_metadata:
+            prepared = self.prepare_periodic_summary_input(tier=tier, dt=dt, scope_chain=["global"])
+            source_metadata = {
+                "sourceDigest": str(prepared.get("source_digest") or ""),
+                "sourceRangeStart": str(prepared.get("source_range_start") or ""),
+                "sourceRangeEnd": str(prepared.get("source_range_end") or ""),
+                "sourceRefs": list(prepared.get("source_refs") or []),
+                "sourceEvidence": list(prepared.get("source_evidence") or []),
+                "changedSourceRefs": list(prepared.get("changed_source_refs") or []),
+                "removedSourceRefs": list(prepared.get("removed_source_refs") or []),
+            }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             self._render_periodic_summary_document(
@@ -2951,6 +3349,7 @@ class MemoryStore:
                 dt=dt,
                 summary=summary,
                 body=body,
+                source_metadata=source_metadata,
             ),
             encoding="utf-8",
         )
@@ -2960,6 +3359,9 @@ class MemoryStore:
         metadata, body = self._read_frontmatter(summary_path)
         if self._is_complete_periodic_summary_metadata(tier=tier, dt=dt, metadata=metadata):
             return False
+        current_scope_policy = str(metadata.get("scopePolicy") or "").strip()
+        if current_scope_policy == _PERIODIC_SUMMARY_LEGACY_POLICY:
+            return False
         summary_text = self._extract_primary_summary(metadata) or self._extract_summary_candidate_from_body(body)
         summary_path.write_text(
             self._render_periodic_summary_document(
@@ -2967,6 +3369,10 @@ class MemoryStore:
                 dt=dt,
                 summary=summary_text,
                 body=body,
+                # Metadata backfill cannot prove that an old summary was
+                # generated from global-only entries. Keep it visible to
+                # maintenance as stale, but never inject it into a workspace.
+                scope_policy=_PERIODIC_SUMMARY_LEGACY_POLICY,
             ),
             encoding="utf-8",
         )
@@ -3144,6 +3550,7 @@ class MemoryStore:
 
         memory_map_text = self._format_memory_map_for_injection(
             node_limit=passive_context_options["memoryMapNodeLimit"],
+            scope_chain=normalized_chain,
         ) if passive_context_options["memoryMapEnabled"] and not suppress_memory_map else ""
         if memory_map_text:
             parts.append(

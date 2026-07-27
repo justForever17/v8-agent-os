@@ -651,7 +651,26 @@ def _save_workspace_domain(payload: dict[str, Any]) -> dict[str, Any]:
                 f"{path_status.get('reason')} 推荐路径：{path_status.get('recommendedPath') or ''}".strip()
             ),
         )
-    storage.save_workspace_config({"agent_workspace_path": normalized_path})
+    registry = _get_project_registry_service()
+    project = registry.find_project_for_workspace(workspace_path=normalized_path)
+    workspace_payload: dict[str, Any] = {"agent_workspace_path": normalized_path}
+    if project is not None:
+        workspace_payload.update(
+            {
+                "projectId": project.project_id,
+                "project_id": project.project_id,
+                "workspaceId": project.workspace_id,
+                "workspace_id": project.workspace_id,
+                "workspaceTrustState": project.workspace_trust_state,
+                "workspace_trust_state": project.workspace_trust_state,
+                "workspaceTrustSource": project.workspace_trust_source,
+                "workspace_trust_source": project.workspace_trust_source,
+            }
+        )
+        registry.set_default_project(project.project_id)
+    else:
+        registry.set_default_project(None)
+    storage.save_workspace_config(workspace_payload)
     return _build_workspace_domain()
 
 
@@ -920,7 +939,7 @@ def _build_projects_domain() -> dict[str, Any]:
         "title": "项目与工作区",
         "summary": "管理默认工作区、项目工作区与绑定关系。",
         "data": {
-            "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
+            "defaultProjectId": _get_project_registry_service().get_effective_default_project_id(),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in _get_project_registry_service().list_projects()],
         },
         "source": _config_source("projects"),

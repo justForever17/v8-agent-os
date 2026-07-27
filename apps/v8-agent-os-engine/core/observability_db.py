@@ -1047,6 +1047,39 @@ class ObservabilityDatabaseManager:
                 rows.append(item)
             return rows
 
+    def get_latest_execution(
+        self,
+        *,
+        action_target: str,
+        statuses: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        target = str(action_target or "").strip()
+        if not target:
+            return None
+        params: List[Any] = [target]
+        status_clause = ""
+        normalized_statuses = [str(item).strip() for item in list(statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            status_clause = f" AND status IN ({placeholders})"
+            params.extend(normalized_statuses)
+        with self.get_connection() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM execution_logs
+                WHERE action_target = ?{status_clause}
+                ORDER BY datetime(started_at) DESC, rowid DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item.get("payload") or "{}")
+        item["finished_at"] = item.get("completed_at")
+        return item
+
     def get_recent_model_invocations(self, limit: int = 20, days: int | None = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows: list[dict[str, Any]] = []

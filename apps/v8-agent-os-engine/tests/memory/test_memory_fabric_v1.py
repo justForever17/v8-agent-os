@@ -8,7 +8,15 @@ from core.tools.research_ledger import promote_experience_pack, store_evidence_b
 
 
 class _FakeMemoryRuntime:
-    def unified_recall(self, *, query: str, limit: int = 5, scope: str | None = None):
+    def unified_recall(
+        self,
+        *,
+        query: str,
+        limit: int = 5,
+        scope: str | None = None,
+        scopes: list[str] | None = None,
+    ):
+        assert not scopes or (scope or "global") in scopes
         return [
             {
                 "id": "mem-project-preference",

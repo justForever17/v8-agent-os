@@ -38,6 +38,7 @@ from erc.models import ApprovalRequest
 from erc.safety_guardian import safety_guardian
 from core.tools.research_ledger import (
     archive_experience_pack,
+    bulk_update_experience_packs,
     delete_experience_pack,
     list_evidence_bundles,
     promote_experience_pack,
@@ -48,6 +49,7 @@ from core.tools.research_ledger import (
 from core.ui_action_requests import UiActionRequestError, ui_action_request_service
 from core.config_broker_service import ConfigBrokerError, config_broker_service
 from runtimes.extensions.mcp.client import mcp_manager
+from runtimes.memory.project_registry import project_registry_service
 
 
 router = APIRouter()
@@ -818,7 +820,26 @@ async def get_workspace_config():
 @router.post("/config/workspace")
 async def update_workspace_config(config: dict = Body(...)):
     try:
-        storage.save_workspace_config(config)
+        payload = dict(config or {})
+        workspace_path = str(
+            payload.get("agent_workspace_path") or payload.get("workspacePath") or payload.get("path") or ""
+        ).strip()
+        project = project_registry_service.find_project_for_workspace(workspace_path=workspace_path) if workspace_path else None
+        if project is not None:
+            payload.update(
+                {
+                    "projectId": project.project_id,
+                    "project_id": project.project_id,
+                    "workspaceId": project.workspace_id,
+                    "workspace_id": project.workspace_id,
+                }
+            )
+            project_registry_service.set_default_project(project.project_id)
+        elif workspace_path:
+            for key in ("projectId", "project_id", "workspaceId", "workspace_id"):
+                payload.pop(key, None)
+            project_registry_service.set_default_project(None)
+        storage.save_workspace_config(payload)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1927,6 +1948,22 @@ async def restore_research_runtime_experience(data: dict = Body(...)):
         return {"ok": True, "item": pack}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/research-runtime/experience/bulk")
+async def bulk_update_research_runtime_experience(data: dict = Body(...)):
+    try:
+        ids = data.get("experiencePackIds") if isinstance(data.get("experiencePackIds"), list) else []
+        return bulk_update_experience_packs(
+            ids,
+            action=str(data.get("action") or "").strip(),
+            initiated_by=str(data.get("initiatedBy") or "admin").strip(),
+            reason=str(data.get("reason") or "").strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

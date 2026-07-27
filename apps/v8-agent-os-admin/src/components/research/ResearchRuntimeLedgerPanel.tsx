@@ -44,6 +44,11 @@ type ExperiencePack = {
     authorityScore?: number;
     usageCount?: number;
     lastUsedAt?: string | null;
+    freshnessState?: "current" | "aging" | "stale" | "expired";
+    ageDays?: number;
+    maxAgeDays?: number;
+    staleAt?: string;
+    expiresAt?: string;
     archivedAt?: string | null;
     qualityStatus?: string;
     invalidationReason?: string;
@@ -125,6 +130,12 @@ function resolvePackState(item: ExperiencePack, t: ReturnType<typeof useT>) {
     if (isRefreshNeeded) {
         return { key: "refresh" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.refresh") };
     }
+    if (item.freshnessState === "stale" || item.freshnessState === "expired") {
+        return { key: "refresh" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.expired") };
+    }
+    if (item.freshnessState === "aging") {
+        return { key: "review" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.aging") };
+    }
     if (status === "draft" || (!hasAnswer && !hasClaims)) {
         return { key: "review" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.review") };
     }
@@ -200,13 +211,15 @@ export function ResearchRuntimeLedgerPanel() {
     const [data, setData] = useState<LedgerPayload | null>(initialLedger ?? null);
     const [query, setQuery] = useState("");
     const [packs, setPacks] = useState<ExperiencePack[]>([]);
+    const [searchApplied, setSearchApplied] = useState(false);
     const [includeArchived, setIncludeArchived] = useState(false);
     const [loading, setLoading] = useState(initialLedger === undefined);
     const [error, setError] = useState("");
+    const [selectedPackIds, setSelectedPackIds] = useState<Set<string>>(() => new Set());
 
     const evidence = useMemo(() => data?.evidenceBundles || [], [data]);
     const timeline = useMemo(() => data?.confidenceTimeline || [], [data]);
-    const visiblePacks = packs.length ? packs : data?.experiencePacks || [];
+    const visiblePacks = searchApplied ? packs : data?.experiencePacks || [];
 
     const refresh = useCallback(async (force = false) => {
         const url = ledgerUrl(includeArchived);
@@ -233,6 +246,7 @@ export function ResearchRuntimeLedgerPanel() {
             const payload = await response.json();
             if (!response.ok) throw new Error(payload?.detail || payload?.error || "research_runtime_search_failed");
             setPacks(Array.isArray(payload.items) ? payload.items : []);
+            setSearchApplied(true);
         } catch (err) {
             setError(err instanceof Error ? err.message : "research_runtime_search_failed");
         } finally {
@@ -287,6 +301,34 @@ export function ResearchRuntimeLedgerPanel() {
         },
         [refresh, searchPacks],
     );
+
+    const mutateSelectedPacks = useCallback(async (action: "archive" | "restore") => {
+        const experiencePackIds = Array.from(selectedPackIds);
+        if (!experiencePackIds.length) return;
+        setLoading(true);
+        setError("");
+        try {
+            const response = await fetch("/api/research-runtime", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    action: action === "archive" ? "bulk_archive" : "bulk_restore",
+                    experiencePackIds,
+                    initiatedBy: "admin_research_runtime",
+                    reason: "bulk_governance",
+                }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.detail || payload?.error || `research_runtime_bulk_${action}_failed`);
+            setSelectedPackIds(new Set());
+            await refresh(true);
+            await searchPacks();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : `research_runtime_bulk_${action}_failed`);
+        } finally {
+            setLoading(false);
+        }
+    }, [refresh, searchPacks, selectedPackIds]);
 
     const hardDeletePack = useCallback(
         async (pack: ExperiencePack) => {
@@ -358,10 +400,25 @@ export function ResearchRuntimeLedgerPanel() {
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.research.runtime.ledger.experiencePacks")}</h3>
                         <div className="flex gap-2">
+                            {selectedPackIds.size ? (
+                                <>
+                                    <Button type="button" variant="outline" size="sm" onClick={() => void mutateSelectedPacks("archive")} disabled={loading}>
+                                        <Archive className="mr-2 h-4 w-4" />
+                                        {t("app.admin.dashboard.research.runtime.ledger.bulkArchive", { count: selectedPackIds.size })}
+                                    </Button>
+                                    {includeArchived ? (
+                                        <Button type="button" variant="outline" size="sm" onClick={() => void mutateSelectedPacks("restore")} disabled={loading}>
+                                            <RotateCcw className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.bulkRestore", { count: selectedPackIds.size })}
+                                        </Button>
+                                    ) : null}
+                                </>
+                            ) : null}
                             <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 text-xs text-slate-600">
                                 <Checkbox checked={includeArchived} onCheckedChange={(value) => {
                                     setIncludeArchived(Boolean(value));
                                     setPacks([]);
+                                    setSearchApplied(false);
                                 }} />
                                 {t("app.admin.dashboard.research.runtime.ledger.includeArchived")}
                             </label>
@@ -383,7 +440,21 @@ export function ResearchRuntimeLedgerPanel() {
                             return (
                                 <div key={item.experiencePackId} className="rounded-2xl border border-slate-200 bg-white p-4">
                                     <div className="flex items-start justify-between gap-3">
-                                        <div>
+                                        <div className="flex min-w-0 items-start gap-3">
+                                            <Checkbox
+                                                checked={Boolean(item.experiencePackId && selectedPackIds.has(item.experiencePackId))}
+                                                aria-label={t("app.admin.dashboard.research.runtime.ledger.selectPack")}
+                                                onCheckedChange={(value) => {
+                                                    const packId = String(item.experiencePackId || "").trim();
+                                                    if (!packId) return;
+                                                    setSelectedPackIds((current) => {
+                                                        const next = new Set(current);
+                                                        if (value) next.add(packId); else next.delete(packId);
+                                                        return next;
+                                                    });
+                                                }}
+                                            />
+                                            <div className="min-w-0">
                                             <AdminHoverInfo
                                                 content={(
                                                     <div className="space-y-1">
@@ -399,6 +470,15 @@ export function ResearchRuntimeLedgerPanel() {
                                                 </div>
                                             </AdminHoverInfo>
                                             <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
+                                            {item.freshnessState && item.freshnessState !== "current" ? (
+                                                <div className="mt-1 text-xs text-amber-700">
+                                                    {t("app.admin.dashboard.research.runtime.ledger.freshnessAge", {
+                                                        age: item.ageDays ?? 0,
+                                                        limit: item.maxAgeDays ?? 0,
+                                                    })}
+                                                </div>
+                                            ) : null}
+                                            </div>
                                         </div>
                                         <Badge variant="outline" className={packStateTone(packState.key)}>
                                             {packState.label}

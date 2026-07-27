@@ -393,9 +393,9 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
   const stats = useMemo(() => ({
     preferenceCount: data?.preferences?.total || 0,
     preferenceScopes: data?.preferences?.scopes?.length || 0,
-    workflowCandidateCount: data?.workflows?.candidateCount || 0,
-    workflowActiveCount: data?.workflows?.byStatus?.active_hint || 0,
-    workflowHintEventCount: data?.workflows?.hintEventCount || 0,
+    workflowCandidateCount: data?.workflows?.reusableCandidateCount || 0,
+    workflowPendingCandidateCount: data?.workflows?.candidateCount || 0,
+    workflowHintDeliveryCount7d: data?.workflows?.hintDeliveryCount7d || 0,
     knowledgeCount: data?.knowledge?.count || 0,
     graphEntities: data?.graph?.entities || 0,
     graphRelations: data?.graph?.relations || 0
@@ -451,8 +451,8 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                         <p className="text-3xl font-bold">{stats.workflowCandidateCount}</p>
                         <p className="mt-1 text-xs text-muted-foreground">
                             {t("app.admin.dashboard.memory.page.workflowSummary", {
-              activeCount: stats.workflowActiveCount,
-              hintEventCount: stats.workflowHintEventCount
+              candidateCount: stats.workflowPendingCandidateCount,
+              deliveryCount: stats.workflowHintDeliveryCount7d
             })}
                         </p>
                     </CardContent>

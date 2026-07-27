@@ -3,9 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from core.storage import storage
-from core.workspace_guard import build_workspace_path_status, legacy_workspace_residue_status
-from core.v8_agent_os_paths import WORKSPACE_HOME
+from core.workspace_guard import build_workspace_path_status
+from core.workspace_identity import get_main_workspace_path
 from runtimes.memory.project_registry import project_registry_service
 from runtimes.memory.scope_resolution import session_scope_binding_service
 
@@ -32,13 +31,7 @@ class WorkspaceResolutionService:
         return str(Path(raw).expanduser()) if raw else ""
 
     def get_main_workspace_path(self) -> str:
-        configured = str(storage.get_workspace_config().get("agent_workspace_path") or "").strip()
-        if configured:
-            expanded = str(Path(configured).expanduser())
-            residue = legacy_workspace_residue_status(expanded)
-            if not residue["isLegacyResidue"]:
-                return expanded
-        return str(WORKSPACE_HOME.expanduser())
+        return get_main_workspace_path()
 
     def runtime_uses_scoped_workspace(self, runtime_kind: str | None) -> bool:
         normalized = self._normalize_runtime_kind(runtime_kind)

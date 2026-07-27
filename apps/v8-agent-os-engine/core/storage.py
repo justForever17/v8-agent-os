@@ -980,16 +980,19 @@ class StorageManager:
         self._legacy_model_bindings_migrated = False
         self._config_payload_cache_signature: tuple[int, int] | None = None
         self._config_payload_cache_data: dict[str, Any] | None = None
-        self._initialize_structure()
+        # The bundled workspace is a first-install convenience, not a
+        # persistent resurrection rule.  Once config.json exists, deleting a
+        # workspace on disk must stay observable instead of being silently
+        # recreated on every Engine import.
+        self._initialize_structure(initialize_default_workspace=not CONFIG_JSON_PATH.exists())
         
-    def _initialize_structure(self):
+    def _initialize_structure(self, *, initialize_default_workspace: bool = False):
         """Ensures all required directories and default files exist."""
         dirs_to_create = [
             self.base_dir,
             self.base_dir / "core",
             self.base_dir / "core" / "oauth",
             self.base_dir / "core" / "oauth" / "providers",
-            self.base_dir / "workspace",
             RUNTIME_DATA_HOME,
             runtime_private_root("computer_use"),
             runtime_private_root("rpa"),
@@ -1000,6 +1003,8 @@ class StorageManager:
             self.base_dir / "web_fetch",
             self.base_dir / "plugins",
         ]
+        if initialize_default_workspace:
+            dirs_to_create.append(WORKSPACE_HOME)
         for d in dirs_to_create:
             d.mkdir(parents=True, exist_ok=True)
         defaults = {

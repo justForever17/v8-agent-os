@@ -14,6 +14,8 @@ from core.process_launch import run_windowless
 from core.storage import storage
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_registry import runtime_registry
+from runtimes.memory.scope_resolution import build_scope_chain
+from runtimes.memory.workspace_scope import canonical_workspace_scope
 from runtimes.memory.workflow_service import workflow_memory_service
 
 
@@ -2106,12 +2108,20 @@ class EngineeringLaneService:
 
     def _scope_chain_for_descriptor(self, descriptor: dict[str, Any]) -> list[str]:
         project_id = str(descriptor.get("projectId") or "").strip()
-        source = str(descriptor.get("source") or "")
-        if project_id:
-            return ["global", f"project:{project_id}"]
-        if source == "main_workspace" or not descriptor.get("isScopedOverride"):
-            return ["global", "workspace:main"]
-        return ["global"]
+        workspace_id = str(descriptor.get("workspaceId") or "").strip()
+        workspace_root = str(descriptor.get("workspaceRoot") or "").strip()
+        resolved_scope = (
+            canonical_workspace_scope(workspace_root)
+            or (f"project:{project_id}" if project_id else "")
+            or (f"workspace:{workspace_id}" if workspace_id else "")
+            or "global"
+        )
+        return build_scope_chain(
+            resolved_scope=resolved_scope,
+            project_id=project_id or None,
+            workspace_id=workspace_id or None,
+            workspace_path=workspace_root or None,
+        )
 
     def _ranked_workflow_paths(self, *, query: str, scope_chain: list[str], max_paths: int) -> list[dict[str, Any]]:
         hints = workflow_memory_service.match_hints(query=query, scope_chain=scope_chain, limit=max_paths)

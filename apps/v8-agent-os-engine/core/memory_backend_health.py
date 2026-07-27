@@ -51,6 +51,22 @@ def inspect_memory_backend() -> dict[str, Any]:
         elif not collection_ready:
             warnings.append("向量后端未就绪：collection 尚未初始化，当前可能退化到 SQLite FTS5。")
 
+    try:
+        from core.memory_maintenance_status import get_memory_maintenance_status
+
+        maintenance = get_memory_maintenance_status()
+    except Exception as exc:  # pragma: no cover - diagnostic fallback
+        maintenance = {
+            "enabled": False,
+            "due": False,
+            "reason": "unavailable",
+            "lastAttemptAt": None,
+            "lastAttemptStatus": None,
+            "lastSuccessAt": None,
+            "nextScheduledAt": None,
+        }
+        warnings.append(f"记忆维护状态暂不可用：{str(exc).strip() or exc.__class__.__name__}")
+
     return {
         "design": "sqlite_fts5_plus_chromadb",
         "mode": "sqlite_fts5_plus_chromadb" if vector_ready else "fts5_only_degraded",
@@ -71,5 +87,6 @@ def inspect_memory_backend() -> dict[str, Any]:
             "error": vector_error,
         },
         "fts5OnlyDegraded": not vector_ready,
+        "maintenance": maintenance,
         "warnings": warnings,
     }

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import uuid
-import hashlib
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.database import db
-from core.v8_agent_os_paths import WORKSPACE_HOME
+from core.workspace_identity import get_main_workspace_path
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
 from persistence.repositories.scope_resolution_repository import ScopeResolutionRepository
 from runtimes.memory.models import (
@@ -16,6 +14,7 @@ from runtimes.memory.models import (
     SessionScopeBinding,
 )
 from runtimes.memory.project_registry import ProjectRegistryService, project_registry_service
+from runtimes.memory.workspace_scope import canonical_workspace_scope, expand_workspace_scope_chain
 
 
 _SCOPE_REUSE_ANCHORS = (
@@ -136,31 +135,6 @@ def _scope_for_workspace(workspace_id: Optional[str]) -> Optional[str]:
     return f"workspace:{safe}"
 
 
-def _normalized_workspace_path_for_scope(value: Optional[str]) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        normalized = str(Path(text).expanduser().resolve(strict=False))
-    except Exception:
-        normalized = str(Path(text).expanduser())
-    normalized = normalized.replace("\\", "/").rstrip("/")
-    return normalized.lower()
-
-
-def _is_canonical_main_workspace_path(workspace_path: Optional[str]) -> bool:
-    normalized = _normalized_workspace_path_for_scope(workspace_path)
-    if not normalized:
-        return False
-    return normalized == _normalized_workspace_path_for_scope(str(WORKSPACE_HOME))
-
-
-def _scope_for_external_workspace_path(workspace_path: Optional[str]) -> str:
-    normalized = _normalized_workspace_path_for_scope(workspace_path)
-    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12] if normalized else "unknown"
-    return f"workspace:external:{digest}"
-
-
 def _scope_for_channel(channel_type: Optional[str], remote_id: Optional[str]) -> Optional[str]:
     if not channel_type or not remote_id:
         return None
@@ -175,18 +149,21 @@ def build_scope_chain(
     channel_remote_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
     workflow_id: Optional[str] = None,
+    project_registry: ProjectRegistryService = project_registry_service,
 ) -> List[str]:
-    chain: List[str] = ["global"]
-    for item in (
-        _scope_for_channel(channel_type, channel_remote_id),
-        _scope_for_project(project_id),
-        _scope_for_workspace(workspace_id) if not project_id else None,
-        resolved_scope,
-    ):
-        if item and item not in chain:
-            chain.append(item)
-    return chain
+    # Channel identity is transport metadata, not a Memory ownership boundary.
+    # It must never expand the recall surface independently of a physical
+    # workspace.  The parameters remain in this public helper because callers
+    # still carry channel metadata, but they are intentionally not projected.
+    return expand_workspace_scope_chain(
+        resolved_scope=resolved_scope,
+        workspace_path=workspace_path,
+        project_id=project_id,
+        workspace_id=workspace_id,
+        project_registry=project_registry,
+    )
 
 
 class SessionScopeBindingService:
@@ -266,6 +243,7 @@ class ScopeResolutionService:
         )
 
         existing = self.binding_service.get_binding(session_id)
+        binding_upgrade_reason: Optional[str] = None
         if existing and existing.status == "active":
             matched_anchors, changed_anchors, compared_anchors = _diff_scope_anchors(
                 existing_binding=existing,
@@ -288,6 +266,39 @@ class ScopeResolutionService:
             if force_reresolve:
                 can_reuse_existing_binding = False
                 reuse_evidence["reuse_reason"] = "force_reresolve_requested"
+            elif (
+                can_reuse_existing_binding
+                and existing.resolved_scope != "global"
+                and not existing.workspace_path
+                and not (existing.channel_type and existing.channel_remote_id)
+            ):
+                # Older bindings could retain only a mutable project/workspace
+                # alias. Re-resolve once so future writes are pinned to a
+                # physical workspace instead of following whichever path an
+                # alias happens to describe later.
+                can_reuse_existing_binding = False
+                reuse_evidence["reuse_reason"] = "physical_workspace_identity_upgrade"
+                binding_upgrade_reason = "physical_workspace_identity_upgrade"
+            elif (
+                can_reuse_existing_binding
+                and existing.workspace_path
+                and canonical_workspace_scope(existing.workspace_path)
+                and existing.resolved_scope != canonical_workspace_scope(existing.workspace_path)
+            ):
+                # Historical clients could bind a real workspace path while
+                # persisting ``global`` or a mutable project/workspace alias
+                # as the write scope.  The path is the ownership proof: renew
+                # the binding in place so ordinary/default workspaces never
+                # continue writing into global or an ID-owned partition.
+                can_reuse_existing_binding = False
+                binding_upgrade_reason = "physical_workspace_scope_upgrade"
+                reuse_evidence["reuse_reason"] = binding_upgrade_reason
+                workspace_path = existing.workspace_path
+                project_id = project_id or existing.project_id
+                workspace_id = workspace_id or existing.workspace_id
+                workflow_id = workflow_id or existing.workflow_id
+                channel_type = channel_type or existing.channel_type
+                channel_remote_id = channel_remote_id or existing.channel_remote_id
             elif changed_anchors:
                 conflict_payload = self._scope_conflict_payload(
                     session_id=session_id,
@@ -346,7 +357,9 @@ class ScopeResolutionService:
                     channel_remote_id=existing.channel_remote_id,
                     workspace_id=existing.workspace_id,
                     project_id=existing.project_id,
+                    workspace_path=existing.workspace_path,
                     workflow_id=existing.workflow_id,
+                    project_registry=self.project_registry,
                 )
                 reuse_evidence["scope_chain"] = scope_chain
                 self._record_resolution_event(
@@ -367,10 +380,10 @@ class ScopeResolutionService:
                 )
 
         previous_scope = existing.resolved_scope if existing and existing.status == "active" else None
-        rebind_reason = None
+        rebind_reason = binding_upgrade_reason
         if force_reresolve:
             rebind_reason = "force_reresolve_requested"
-        elif existing and existing.status == "active":
+        elif existing and existing.status == "active" and not rebind_reason:
             _, changed_anchors, compared_anchors = _diff_scope_anchors(
                 existing_binding=existing,
                 requested_anchors=requested_anchors,
@@ -393,8 +406,20 @@ class ScopeResolutionService:
                 "changed": changed_anchors,
             }
 
+        if not any(
+            (
+                explicit_requested_scope,
+                project_id,
+                workspace_id,
+                workspace_path,
+                workflow_id,
+                channel_type and channel_remote_id,
+            )
+        ):
+            workspace_path = get_main_workspace_path()
+
         resolved_project: Optional[ProjectDescriptor] = None
-        resolved_scope = "workspace:main"
+        resolved_scope = canonical_workspace_scope(workspace_path) or "workspace:main"
         scope_source = "main_workspace_default"
         scope_confidence = 1.0
 
@@ -468,12 +493,23 @@ class ScopeResolutionService:
                             scope_source = "main_workspace_default"
                             scope_confidence = 1.0
 
-        if not project_id and resolved_project:
+        if resolved_project:
+            # The project/workspace IDs are aliases of the resolved physical
+            # workspace, not independent routing authorities.  Canonicalize
+            # stale request metadata before it can affect Memory writes.
             project_id = resolved_project.project_id
-        if not workspace_id and resolved_project and resolved_project.workspace_id:
-            workspace_id = resolved_project.workspace_id
-        if not workspace_path and resolved_project and resolved_project.workspace_path:
-            workspace_path = resolved_project.workspace_path
+            if resolved_project.workspace_id:
+                workspace_id = resolved_project.workspace_id
+            if resolved_project.workspace_path:
+                workspace_path = resolved_project.workspace_path
+
+        # A project ID, workspace ID, or legacy scope hint is descriptive
+        # metadata once a physical directory is known. Persist the physical
+        # identity as the binding truth so changing the default workspace or
+        # reusing a display ID cannot redirect future Memory injection.
+        physical_scope = canonical_workspace_scope(workspace_path)
+        if physical_scope:
+            resolved_scope = physical_scope
 
         binding = SessionScopeBinding(
             session_id=session_id,
@@ -499,7 +535,9 @@ class ScopeResolutionService:
             channel_remote_id=saved.channel_remote_id,
             workspace_id=saved.workspace_id,
             project_id=saved.project_id,
+            workspace_path=saved.workspace_path,
             workflow_id=saved.workflow_id,
+            project_registry=self.project_registry,
         )
         evidence["scope_chain"] = scope_chain
         if previous_scope:
@@ -564,52 +602,96 @@ class ScopeResolutionService:
         workspace_path: Optional[str],
         workflow_id: Optional[str],
     ) -> tuple[str, Optional[ProjectDescriptor]]:
+        # A physical workspace is the strongest identity.  Scope hints and
+        # project IDs are storage aliases and must not redirect a request away
+        # from the path selected by the user-facing workspace binding.
+        if workspace_path:
+            workspace_project = self.project_registry.find_project_for_workspace(
+                workspace_path=workspace_path,
+            )
+            if workspace_project:
+                return (
+                    canonical_workspace_scope(workspace_project.workspace_path)
+                    or workspace_project.default_scope
+                    or _scope_for_project(workspace_project.project_id)
+                    or "workspace:main",
+                    workspace_project,
+                )
+            return canonical_workspace_scope(workspace_path) or "workspace:main", None
+
+        if workspace_id:
+            workspace_project = self.project_registry.find_project_for_workspace(
+                workspace_id=workspace_id,
+            )
+            if workspace_project:
+                return (
+                    canonical_workspace_scope(workspace_project.workspace_path)
+                    or workspace_project.default_scope
+                    or _scope_for_project(workspace_project.project_id)
+                    or "workspace:main",
+                    workspace_project,
+                )
+            return _scope_for_workspace(workspace_id) or "workspace:main", None
+
+        if project_id:
+            project = self.project_registry.get_project(project_id)
+            if project and project.workspace_path:
+                return canonical_workspace_scope(project.workspace_path) or _scope_for_project(project_id) or "workspace:main", project
+            return _scope_for_project(project_id) or "workspace:main", project
+
+        if workflow_id:
+            workflow_project = self.project_registry.find_project_for_workflow(workflow_id)
+            if workflow_project:
+                return (
+                    canonical_workspace_scope(workflow_project.workspace_path)
+                    or workflow_project.default_scope
+                    or _scope_for_project(workflow_project.project_id)
+                    or "workspace:main",
+                    workflow_project,
+                )
+            return "workspace:main", None
+
         if requested_scope:
             normalized = requested_scope.strip()
             if normalized.startswith("project:"):
                 explicit_project_id = normalized.split(":", 1)[1]
-                return normalized, self.project_registry.get_project(explicit_project_id)
+                explicit_project = self.project_registry.get_project(explicit_project_id)
+                if explicit_project and explicit_project.workspace_path:
+                    return canonical_workspace_scope(explicit_project.workspace_path) or normalized, explicit_project
+                return normalized, explicit_project
             legacy_prefix, _, legacy_identifier = normalized.partition(":")
             if legacy_prefix == "workflow" and legacy_identifier:
                 workflow_project = self.project_registry.find_project_for_workflow(workflow_id or legacy_identifier)
                 if workflow_project:
-                    return workflow_project.default_scope or _scope_for_project(workflow_project.project_id) or "global", workflow_project
-                return "global", None
+                    return (
+                        canonical_workspace_scope(workflow_project.workspace_path)
+                        or workflow_project.default_scope
+                        or _scope_for_project(workflow_project.project_id)
+                        or "global",
+                        workflow_project,
+                    )
+                return "workspace:main", None
             if legacy_prefix == "workspace" and legacy_identifier:
                 workspace_project = self.project_registry.find_project_for_workspace(
                     workspace_id=workspace_id or legacy_identifier,
                     workspace_path=workspace_path,
                 )
                 if workspace_project:
-                    return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
-                return "global", None
+                    return (
+                        canonical_workspace_scope(workspace_project.workspace_path)
+                        or workspace_project.default_scope
+                        or _scope_for_project(workspace_project.project_id)
+                        or "global",
+                        workspace_project,
+                    )
+                # Unknown workspace aliases must stay isolated. Falling back
+                # to global here is a silent cross-workspace write/read leak.
+                return normalized, None
             if normalized.startswith("channel:"):
                 return normalized, None
             if normalized.startswith("workspace:"):
                 return normalized, None
             return normalized, None
-
-        if workflow_id:
-            workflow_project = self.project_registry.find_project_for_workflow(workflow_id)
-            if workflow_project:
-                return workflow_project.default_scope or _scope_for_project(workflow_project.project_id) or "global", workflow_project
-            return "global", None
-
-        if project_id:
-            return _scope_for_project(project_id) or "global", self.project_registry.get_project(project_id)
-
-        if workspace_id or workspace_path:
-            workspace_project = self.project_registry.find_project_for_workspace(
-                workspace_id=workspace_id,
-                workspace_path=workspace_path,
-            )
-            if workspace_project:
-                return workspace_project.default_scope or _scope_for_project(workspace_project.project_id) or "global", workspace_project
-            if workspace_id:
-                return _scope_for_workspace(workspace_id) or "workspace:main", None
-            if _is_canonical_main_workspace_path(workspace_path):
-                return "workspace:main", None
-            return _scope_for_external_workspace_path(workspace_path), None
 
         return "workspace:main", None
 

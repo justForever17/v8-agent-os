@@ -45,19 +45,19 @@ The Supervisor coordinates the work. Tools are projected from the current role, 
 
 - Coding Mode: the Supervisor can work directly on a long-running project, using Engineering episodes or subagents when isolation, parallel work, recovery, or independent proof is useful.
 - Research: source-backed search, evidence sorting, and research packs.
-- Creative Media: images, video, audio, music, and 3D assets.
+- Creative Media: images, video, audio, music, and 3D assets, with a Web Creative Artifact Canvas for arranging workspace media, connecting references, and starting governed edits.
 - Memory: preferences, knowledge, and long-running project context.
 - Desktop Companion: follows the active session, plays actions and speech, and can send voice or snapshots as attachments.
 
 ### Governed Project Execution
 
-The Engineering Kernel provides the bound workspace, operating system, and command environment at the start of a task. Delegated writes use typed task contracts and managed worktrees. V8OS does not silently move your branch or commit on your behalf; only validated delivery applies a candidate patch back to the original workspace. The current cross-platform sandbox provides partial enforcement, not a kernel filesystem jail or a guaranteed offline network namespace.
+The Engineering Kernel provides the bound workspace, operating system, and command environment at the start of a task. Writes use typed task contracts. Low-risk serial changes run directly in the trusted bound workspace under an exact write set; managed worktrees are reserved for parallel isolation, risk containment, or durable recovery. V8OS does not silently initialize Git, move your branch, or commit on your behalf, and isolated candidates still require validation before they reach the original workspace. The current cross-platform sandbox provides partial enforcement, not a kernel filesystem jail or a guaranteed offline network namespace.
 
-User uploads remain session sources. Files written or downloaded by governed Agent, Spec, or Creative Media tools become session artifacts. Existing workspace files do not become artifacts merely because the system discovers them.
+User uploads remain session sources. Files written or downloaded by governed Agent, Spec, or Creative Media tools become session artifacts. Existing workspace files do not become artifacts merely because the system discovers them. The Creative Artifact Canvas keeps reusable media at workspace scope and requires explicit adoption by the current session; cross-workspace references are rejected, and internal edit masks are not promoted into the normal asset library.
 
 ### Plugin Manager
 
-Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signed catalog while keeping credentials behind opaque references. `@plugin` is a strong user hint, not the only entry: when a task clearly benefits from an installed, configured, healthy plugin, the Supervisor may create the smallest task-scoped grant. A direct subagent may pass an explicitly smaller component subset to one grandchild layer, but no farther. Machine discovery is read-only and does not claim ordinary MCP configuration; the CLI executor appears only when an active grant projects a reviewed command profile. Installation, configuration, secret access, and lasting session grants remain user-controlled. The curated catalog includes official components such as GitHub, Figma, and the AMap CLI.
+Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signed catalog while keeping credentials behind opaque references. Components still materialize in the existing Skill and MCP stores instead of a private plugin-only store. `@plugin` is a strong user hint, not the only entry: when a task clearly benefits from an installed, configured, healthy plugin, the Supervisor may create the smallest task-scoped grant and project only that package's exact components. A direct subagent may pass an explicitly smaller component subset to one grandchild layer, but no farther. Machine discovery is read-only and does not claim ordinary MCP configuration; the CLI executor appears only when an active grant projects a reviewed command profile. Installation, configuration, secret access, and lasting session grants remain user-controlled. The curated catalog includes GitHub, Figma, AMap, the Volcengine MediaKit CLI, and Cloudflare Wrangler. MediaKit uses full command-schema synchronization, while Wrangler supports a governed browser-login flow for its local profile.
 
 ## Quick Start
 
@@ -88,7 +88,7 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 
 | Product | Status | Notes |
 | --- | --- | --- |
-| Desktop | Preview | Windows unsigned preview is being finalized. Signing, auto-update, and stable releases are still future work. |
+| Desktop | Preview | Windows unsigned preview builds are available. Signing, auto-update, and stable releases are still future work. |
 | Phone | Preview | Android APK first. iOS targets 16.4 and later, with the release pipeline still evolving. |
 | TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
 | Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |
@@ -104,6 +104,8 @@ User-facing surfaces should stay clean: status, results, risks, next steps, and 
 - [Quick Start](./docs/V8_AGENT_OS_QUICK_START_ZH.md)
 - [Configuration Guide](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
 - [Developer Guide](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
+- [Creative Media Runtime](./docs/creative-runtime/V8OS_CREATIVE_MEDIA_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
+- [Extensions Runtime](./docs/extensions/V8OS_EXTENSIONS_RUNTIME_PUBLIC_OVERVIEW_ZH.md)
 - [API Reference](./docs/V8_AGENT_OS_API_REFERENCE_ZH.md)
 - [Productization Masterplan](./docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md)
 - [Release Versioning Baseline](./docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md)

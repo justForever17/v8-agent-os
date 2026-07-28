@@ -43,6 +43,8 @@ Windows 源码预览需要：
 - Python 3.11 或更高版本
 - Node.js 20 或更高版本
 
+若要使用精确抽帧、视频分段或音频分段，还需要同一套安装中的 FFmpeg 与 FFprobe，版本均为 7.0 或更高。云端媒体生成并不因此自动可用，仍取决于 Model Hub 中真实配置的 provider、模型和能力。
+
 首次克隆后，在仓库根目录准备 desktop profile 依赖：
 
 ```powershell
@@ -126,19 +128,28 @@ Web、Shell、桌宠和 CLI 是本机可信入口，不使用 Phone 配对票据
 
 有写入权限的委派任务必须带 Engineering Task Capsule，至少明确读写范围、期望输出和验收。子/孙 Agent 没有 Capsule 时是只读姿态；孙 Agent 默认做终止型独立验证，只有显式且严格更小的父写集子集才能写入。
 
-托管 worktree 用于隔离候选变更；只有通过验证的 Supervisor 交付才应用回原工作区。当前 sandbox 是部分强制执行，不是内核级文件系统或离线网络隔离。
+串行、低风险修改会在已信任的绑定工作区内，受 Capsule 的精确 `writeSet` 约束直接执行。只有任务同时需要并行隔离、风险控制或长期恢复时，才使用托管 worktree；隔离候选必须经 Supervisor 验证后才能应用回原工作区。V8OS 不会为普通任务静默 `git init`、移动分支或替用户提交。当前 sandbox 是部分强制执行，不是内核级文件系统或离线网络隔离。
 
 ### 4.2 来源与产物
 
 - 用户上传：记录为会话 source，在用户消息里展示，不重复算作 Agent 产物。
 - Agent 写入、下载、Spec 和创意媒体输出：带 session/run/tool lineage 的 artifact。
 - 工作区已有或手工复制的文件：不会自动成为本轮 artifact；需要时必须显式采用。
+- 工作区媒体素材库：可被同一工作区的其他会话发现，但当前会话必须显式采用后才能用于本轮创作；跨工作区引用会被拒绝，蒙版等内部编辑资源不会进入普通素材库。
 
 ### 4.3 插件
 
-`@插件` 是强提示，不是唯一授权入口。Supervisor 可以查看已安装插件的轻量可用性提示，并为当前 run 创建最小 task grant；提示本身不加载 Skill 正文、MCP schema 或 CLI action，也不代表已经授权或调用。
+`@插件` 是强提示，不是唯一授权入口。Supervisor 可以查看已安装插件的轻量可用性提示，并为当前 run 创建最小 task grant；提示本身不加载 Skill 正文、MCP schema 或 CLI action，也不代表已经授权或调用。插件安装的 Skill 与 MCP 仍写入现有资源真相面；有效 grant 只为当前执行投影所选插件包的精确组件，不会接管普通 Extensions 候选。
 
 直接子 Agent 只能获得父级明确授予的组件子集，并且最多再向一层孙 Agent 传递更小子集。上机发现是只读的，不会接管用户维护的普通 MCP；`plugin_cli` 只有在有效授权投影受审命令后才出现。
+
+精选目录中的火山引擎 MediaKit CLI 会同步完整命令 schema，避免 Agent 自行拼接未知参数；Cloudflare Wrangler 可从插件详情发起受治理的浏览器登录并用本机 profile 校验状态。登录不会把 token 回显到页面或 Agent Surface。
+
+### 4.4 创意产物画布与精确媒体编辑
+
+Web 的右侧工作台提供 Creative Artifact Canvas。画布可以从当前会话产物和工作区素材库添加图片、视频与音频，建立引用关系、蒙版局部编辑或发起创意媒体任务；画布消息仍沿正常会话执行链进入 Supervisor，不是另一个隐藏的运行入口。任务运行期间会锁定会破坏 lineage 的自由修改。
+
+精确抽帧、视频分段和音频分段由 Engine 自有的受治理媒体路径执行，使用输入指纹、视频 frame index/time base 或音频 sample index 校验边界，不经云端 provider，也不等同于 MediaKit 插件能力。Phone 目前只消费正常消息与产物，不提供 Web 的完整画布编辑面。
 
 ## 5. 配置真相
 

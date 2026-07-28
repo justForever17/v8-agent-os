@@ -151,7 +151,7 @@ Engineering episode 是持久执行、依赖、证明和恢复控制层，但不
 
 孙 Agent 是终止层：不能继续委派。默认派生 `verify` Capsule，独立读取和验证父级结果，不写临时报告文件。只有任务明确提出写入、且请求路径是父 `writeSet` 的严格真子集时，才能获得 write Capsule。
 
-## 7. Managed Engineering Execution
+## 7. Engineering Execution 与按需隔离
 
 四层不能混为一个路径或权限位：
 
@@ -162,14 +162,15 @@ Engineering episode 是持久执行、依赖、证明和恢复控制层，但不
 | Managed worktree | 单个 run/task/delegation 的隔离 checkout |
 | Sandbox lease | 一次执行的进程、资源、环境、写集和证据策略 |
 
-生命周期：
+执行策略：
 
-1. V8OS 创建的空工作区可建立 baseline Git；现有非 Git 工作区需显式采用。
-2. dispatch 通过 alternate index 捕获 tracked/untracked 状态，不移动用户 `HEAD` 或 index。
-3. Supervisor、直接子 Agent、孙 Agent和外部 worker 的写入使用独立 worktree。
-4. 子 change set 合并到父 worktree；并列候选在 integration worktree 汇总。
-5. 只有通过验证的 Supervisor delivery 才把 patch 应用到原工作区。
-6. 已接受交付写入 `refs/v8os/delivered/...` 恢复引用并清理物理 checkout；失败/中断 worktree 保留为 recoverable。
+1. 所有写入先要求已信任的绑定工作区和完整 Engineering Task Capsule，至少包含精确 `writeSet`、期望产物与验收。
+2. 串行、低风险写入直接在绑定工作区执行；变更只走受 `writeSet` 约束的原生文件工具，shell 用于读取和验证，不把 worktree 当作 Engineering 的默认前置步骤。
+3. 只有完整写入合同同时满足并行隔离、风险控制或长期恢复之一时，才创建 managed worktree 与不可变 sandbox lease。
+4. 现有非 Git 工作区进入托管隔离前必须由用户显式采用；普通任务不得静默 `git init`、创建 baseline、移动分支、改变 index 或替用户提交。
+5. 进入隔离后，dispatch 通过 alternate index 捕获 tracked/untracked 状态；需要隔离的 Supervisor、子 Agent 或外部 worker 使用各自 worktree。
+6. 子 change set 合并到父 worktree，并列候选在 integration worktree 汇总；只有通过验证的 Supervisor delivery 才把 patch 应用到原工作区。
+7. 已接受交付写入 `refs/v8os/delivered/...` 恢复引用并清理物理 checkout；失败/中断 worktree 保留为 recoverable。
 
 当前 enforcement 是 `partial`：跨平台具备进程树生命周期、资源限制、环境 allowlist、路径预检、不可变写集、Git diff 验证和 20 MiB 文件门禁，但没有硬文件系统 namespace 或硬离线网络 namespace。`offline_enforced` / `brokered` 在不支持的平台必须 fail closed。
 
@@ -200,8 +201,11 @@ Human Surface 只显示状态、结果、阻塞、风险、下一步和人类可
 - 工作区已有文件或手工复制文件不会被扫描后自动升级为 artifact；显式采用走治理 API。
 - 当前会话产物看板不得混入同工作区其他会话、整个目录或用户上传的重复卡片。
 - 资源预览走 scoped resolver 与 Admin broker，不向远程端发送裸绝对路径或 `file://`。
+- Creative workspace library 归工作区，可在同一工作区跨会话发现；当前会话必须显式采用后才能使用。跨工作区引用拒绝，mask 等内部编辑资源不进入普通素材库。
 
 UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 DOM 选择到源码映射、白名单属性 patch、diff、保存验证和精确 undo；不支持任意互联网页面、无法映射的生产压缩页面或“只改 inline style”的假保存。
+
+Creative Artifact Canvas 也是 Web 专属工作台。它组织当前会话产物与已采用的工作区素材，支持媒体卡片、连线、框选、蒙版局部编辑和受治理的 Creative Media 动作；运行中锁定会破坏 lineage 的自由修改。画布消息沿正常 ChatRuntime 进入当前会话，不建立旁路执行真相。精确抽帧、视频分段与音频分段由 Engine 自有媒体路径执行，要求配对的 FFmpeg/FFprobe 7+，并通过 probe fingerprint、frame index/time base 或 sample index 验证边界，不经过 provider 或 MediaKit 插件。
 
 ## 10. 模型与 provider 合同
 
@@ -236,6 +240,10 @@ UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 D
 8. 直接子 Agent 只能获得明确组件子集；一层孙 Agent可获得更小子集，再往下拒绝。
 9. 每次调用重新校验 owner、session/run、delegation identity、manifest digest、组件和健康状态。
 10. CLI 只接受 `actionId + typed parameters`，禁止任意 argv/shell 字符串。
+11. 插件 Skill/MCP 安装到现有 `~/.agents/skills` 与 `~/.v8-agent-os/mcp.json` 真相面；插件不创建私有资源仓。普通任务仍由 Extensions 预筛，只有“已注册 + 已安装 + 有效 grant”同时成立时，当前 run 才临时投影该插件包的精确组件。
+12. Skill 正文和关联资源继续由通用 `fetch_skill_instructions` 按需读取；不额外制造插件专用 Skill 工具，也不把完整 SKILL.md 常驻注入。
+13. 支持 schema 的 CLI 必须同步当前安装版本的完整 action/parameter 定义并记录版本摘要；升级 harness 比较新增、删除和类型变化，未审阅的破坏性变化阻断投影，不能为了稳定而削掉 CLI 的正式能力。
+14. CLI 登录适配器只能暴露受审动作和人类可读状态。GitHub/Cloudflare 等浏览器登录由官方 CLI 发起，token 留在其安全 profile/keyring；V8OS 不解析授权 URL 中的秘密，也不向 Agent 或日志回显凭据。
 
 ## 12. Checkpoint 与存储治理
 
@@ -300,6 +308,10 @@ Storage Retention：
 - Engine 测试地图：`apps/v8-agent-os-engine/tests/README.md`。
 - 改共享契约：构建/测试 `packages/session-realtime`，必要时重新 pack tgz，并验证 Admin/Web/Phone。
 - 改桌面壳、生产 Next、登录态、托盘、桌宠或 Engine 启动：必须额外跑 `v8os preview --rebuild`。
+- 改 CLI：同步检查命令注册、`--help`、人类输出/`--json`、退出码、Windows `v8os.cmd`/PowerShell 入口和打包资源路径；后台进程必须无窗口启动，源码树与打包形态分别 smoke。
+- 改 Shell：同时检查 main/preload/renderer bridge、IPC 与 deep-link allowlist、tray state、主题/当前会话同步和打包资源；受控设置入口复用现有窗口，不能误开系统浏览器。
+- 改桌宠：验证 Shell managed mode、单实例、控制通道状态、当前会话同步、配置热更新、息屏动画/shutdown ack、超时强制兜底、Shell 异常退出 watchdog 和 preview 重启重连；managed mode 不得再建独立托盘。
+- 改插件 CLI：联查 catalog/digest、安装 journal/receipt、上机发现、Doctor/登录状态、全量 schema 同步、typed parameters 和逐次 grant 校验；“已安装”不能替代“已配置、健康且当前调用获授权”。
 - 改写入/安装/清理/恢复：必须有 dry-run、故障注入、重启恢复和 rollback 证据。
 - 真实 provider、联网调研、媒体生成和高成本 eval 只在显式 `--live` harness 中运行。
 - 重大改动比较基线；性能退化超过 10% 或错误率增加超过 0.1% 不交付。

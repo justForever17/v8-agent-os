@@ -117,7 +117,7 @@ Checkpoint 只使用 strict msgpack 和加密存储；不要恢复 pickle、任�
 - capability（文本、视觉、图片/视频/语音/音乐/3D 等）；
 - role binding（Supervisor、subagent、media、embedding 等）。
 
-快捷目录只是填写便利，不覆盖用户已保存的 endpoint 或真实模型。Provider 原生 system/tool/reasoning 合同应尽量保留，不能为兼容 UI 强行扁平化成同一种消息。
+快捷目录只是填写便利，不覆盖用户已保存的 endpoint、模型 ID 或 capability。Model Hub 的最终配置是文本与多媒体路由的权威输入；Creative Media 候选不能再用便利性 JSON 或“V8OS 已适配”白名单过滤掉用户明确配置的真实能力。Provider 原生 system/tool/reasoning 合同应尽量保留，不能为兼容 UI 强行扁平化成同一种消息。
 
 ### 5.2 Supervisor 与 Agents
 
@@ -143,12 +143,13 @@ Engineering Kernel 会把绑定工作区和命令环境注入协作角色；不�
 
 关键策略包括：
 
+- 直接执行与隔离执行的选择条件；
 - worktree 放置与生命周期；
 - sandbox lease 和 network mode；
 - proof ledger；
 - write set、文件大小和交付验证。
 
-当前 sandbox capability 是 `partial`：有进程树、资源限制、环境 allowlist、路径预检、不可变写集与 Git diff 验证，但没有硬文件系统 namespace 或硬离线网络 namespace。配置和 UI 不得把它升级宣传成 `enforced`。
+串行、低风险写入优先在已信任的绑定工作区内按精确 `writeSet` 直接执行；只有完整任务合同同时需要并行、风险隔离或长期恢复时才启用 worktree 与 sandbox lease。Git 隔离不是 Engineering 的前置条件，V8OS 不能因普通任务静默初始化仓库。当前 sandbox capability 是 `partial`：有进程树、资源限制、环境 allowlist、路径预检、不可变写集与 Git diff 验证，但没有硬文件系统 namespace 或硬离线网络 namespace。配置和 UI 不得把它升级宣传成 `enforced`。
 
 ### 5.5 Plugin Manager 与 Extensions
 
@@ -157,15 +158,25 @@ Engineering Kernel 会把绑定工作区和命令环境注入协作角色；不�
 - Extensions：普通 Skill/MCP 的发现、安全审查和候选预筛；
 - Plugin Manager：签名 catalog、组件安装事务、配置需求、授权与精确能力投影。
 
-Plugin Manager 上机发现只读。它可以识别外部 CLI 和官方 Skill，并显示 adopt/install/conflict，但不会接管用户维护的普通 MCP 配置。受审 CLI 执行器只在有效 task grant 投影后出现。
+Plugin Manager 上机发现只读。它可以识别外部 CLI 和官方 Skill，并显示 adopt/install/conflict，但不会接管用户维护的普通 MCP 配置。插件包含的 Skill 与 MCP 仍安装到 `~/.agents/skills` 和 `~/.v8-agent-os/mcp.json` 等现有真相面，不创建另一套私有资源仓；普通任务继续由 Extensions 预筛。仅当插件已注册、已安装且存在有效 task grant 时，当前 run 才临时投影该插件的精确组件包，受审 CLI 执行器也只在此时出现。
 
-`@插件` 是强提示，不是强制唯一入口。Supervisor 可以为当前 run 创建最小 task grant；持续 session grant 仍由用户显式控制。子 Agent 授权必须绑定精确 delegation identity，组件范围只能缩小，最多传播到一层孙 Agent。
+`@插件` 是强提示，不是强制唯一入口。Supervisor 可以为当前 run 创建最小 task grant；持续 session grant 仍由用户显式控制。子 Agent 授权必须绑定精确 delegation identity，组件范围只能缩小，最多传播到一层孙 Agent。Skill 正文继续由通用 `fetch_skill_instructions` 按需读取完整可达资源包，不为插件另造 Skill 读取工具。
 
-### 5.6 Memory
+插件 CLI 使用 `actionId + typed parameters`，安装事务保留 journal、digest、幂等键和 receipt。MediaKit CLI 会同步已安装版本的完整 action schema，并在升级时检查破坏性变化；Cloudflare Wrangler 使用 CLI 自身的浏览器登录与本机 keyring/profile，V8OS 负责发起受审动作和校验 `whoami` 状态，不读取或回显明文 token。
+
+### 5.6 Creative Media 与 Canvas
+
+Creative Media 的模型候选来自 Model Hub 已保存的 provider endpoint、原生模型 ID 与 capability。预设 JSON 只能帮助填写，不能覆盖或过滤真实配置。
+
+Web Creative Artifact Canvas 的素材分为两层：可复用素材归工作区，使用权由当前会话显式采用；跨工作区引用拒绝，蒙版等内部编辑资源不进入普通素材库。画布发起的任务仍走当前会话、Supervisor 和 Creative Media 治理链，不建立独立会话或隐藏授权。
+
+精确抽帧、视频分段和音频分段依赖同一套安装中的 FFmpeg 与 FFprobe 7.0 或更高版本。该本机路径通过输入指纹、frame index/time base 或 sample index 固定边界，不需要媒体 provider 或 MediaKit plugin grant；云端生成、OCR、ASR 等能力仍按各自 provider/plugin 配置和授权判断。
+
+### 5.7 Memory
 
 Memory 是证据层，不是当前指令的替代者。自动提取、手动会话提取、召回、知识图谱与周期维护共享同一长期记忆真相，但候选内容只有在策略通过并真实持久化后才能增长知识/关系计数。
 
-### 5.7 Storage Retention
+### 5.8 Storage Retention
 
 磁盘治理通过专用 API 修改：
 

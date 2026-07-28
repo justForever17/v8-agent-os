@@ -492,6 +492,78 @@ def test_creative_runtime_rejects_unresumable_waiting_handoff(
     assert handoff["handoffStage"] == "continuation_contract_failed"
 
 
+def test_non_exact_creative_episode_preserves_source_brief_for_director(monkeypatch) -> None:
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    runner = RuntimeEpisodeRunner()
+    captured: dict = {}
+    source_brief = {
+        "taskBriefId": "creative-source-brief",
+        "goal": "Replace only the masked head while preserving the suit, pose, lighting, and canvas size.",
+        "context": {
+            "sourceIds": ["source-image"],
+            "maskSourceId": "head-mask",
+            "mustKeep": ["suit", "pose", "lighting", "canvas size"],
+        },
+        "constraints": ["Do not alter pixels outside the mask", "Return one edited image"],
+        "acceptanceContract": ["Only the masked head changes"],
+        "toolPolicy": {
+            "mode": "allowlist",
+            "allowedTools": ["creative_media_edit", "inspect_image"],
+            "forbiddenTools": [],
+        },
+    }
+    plugin_references = [{"pluginId": "media-kit", "componentIds": ["image-edit"]}]
+    extension_route_context = {
+        "extensionSelectorsAuthoritative": True,
+        "selectedSkillIds": ["skill:image-edit-method"],
+        "selectedSkillNames": ["Image Edit Method"],
+        "selectedMcpTools": ["inspect_image"],
+    }
+
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+
+    def _compile_recipe(request: dict) -> dict:
+        captured["request"] = dict(request)
+        return {"recipeId": "recipe-preserved", "providerStatus": "ready"}
+
+    async def _capture_director(episode: dict) -> dict:
+        captured["episode"] = episode
+        return {"status": "failed", "compactSummary": "captured director handoff"}
+
+    monkeypatch.setattr(creative_media_runtime, "compile_recipe", _compile_recipe)
+    monkeypatch.setattr(runner, "_execute_delegation", _capture_director)
+
+    handoff = asyncio.run(
+        runner._execute_creative_media(
+            {
+                "episodeId": "episode-creative-preserved",
+                "kind": "creative_media",
+                "inputs": {
+                    "request": {"modality": "image", "prompt": "generic provider fallback"},
+                    "taskBriefs": [source_brief],
+                    "pluginReferences": plugin_references,
+                    **extension_route_context,
+                    "extensionRouteContext": extension_route_context,
+                },
+                "need": {"reason": "generic runtime fallback"},
+            }
+        )
+    )
+
+    director_brief = captured["episode"]["inputs"]["workerBriefs"][0]
+    assert captured["request"]["prompt"] == source_brief["goal"]
+    assert captured["request"]["taskBriefContext"] == source_brief["context"]
+    assert director_brief["goal"].startswith(source_brief["goal"])
+    assert director_brief["context"]["sourceTaskBriefs"] == [source_brief]
+    assert director_brief["pluginReferences"] == plugin_references
+    assert director_brief["toolPolicy"] == source_brief["toolPolicy"]
+    delegated_inputs = captured["episode"]["inputs"]
+    assert delegated_inputs["extensionRouteContext"] == extension_route_context
+    assert delegated_inputs["selectedMcpTools"] == ["inspect_image"]
+    assert handoff["status"] == "failed"
+
+
 def _typed_creative_episode(*, contract: dict, tmp_path) -> dict:
     return {
         "episodeId": "episode-typed-creative",

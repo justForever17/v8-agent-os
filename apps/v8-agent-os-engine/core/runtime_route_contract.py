@@ -121,6 +121,35 @@ def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
             "session-bound Creative Media artifact reference",
             "durable job/provider/model proof without raw provider payload",
         ]
+    elif normalized_kind == "rpa":
+        task_briefs = [
+            {
+                "taskBriefId": task_id,
+                "goal": "Execute one approved RPA target with typed inputs and return its run proof.",
+                "context": {
+                    "rpaExecution": {
+                        "action": "execute",
+                        "draftId": "<approved RPA draft id>",
+                        "variables": {"<variable name>": "<typed value>"},
+                        "timeoutMs": 600000,
+                    }
+                },
+                "writeRequired": False,
+                "readOnly": False,
+                "writeSet": [],
+                "expectedOutputs": ["RPA run result plus trace or robot proof"],
+                "acceptanceContract": [
+                    "The exact typed RPA target is prepared or executed as requested",
+                    "The handoff reports run, trace, robot, and verification evidence without inferred parameters",
+                ],
+                "constraints": [],
+                "detailRefs": [],
+            }
+        ]
+        proof_expectations = [
+            "RPA draft, robot, trace, or run reference",
+            "execution or dry-run verification outcome",
+        ]
     else:
         task_briefs = [
             {
@@ -166,6 +195,7 @@ def runtime_route_contract_example(kind: str = "engineering") -> dict[str, Any]:
 def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any]:
     normalized_kind = str(kind or "engineering").strip().lower()
     research_route = normalized_kind == "research"
+    rpa_route = normalized_kind == "rpa"
     guidance = {
         "canonicalTaskArray": "taskBriefs",
         "requiredPaths": [
@@ -177,6 +207,7 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
                 else [
                     "taskBriefs[].taskBriefId",
                     "taskBriefs[].goal",
+                    *(["taskBriefs[].context.rpaExecution"] if rpa_route else []),
                 ]
             ),
         ],
@@ -187,6 +218,14 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
             "taskBriefs[].constraints",
             "taskBriefs[].detailRefs",
             "taskBriefs[].dependencies",
+            *(
+                [
+                    "taskBriefs[].context.rpaExecution.traceRunIds",
+                    "taskBriefs[].context.rpaExecution.runIds",
+                ]
+                if rpa_route
+                else []
+            ),
             "proofExpectations",
         ],
         "discipline": [
@@ -200,6 +239,7 @@ def runtime_route_parameter_guidance(kind: str = "engineering") -> dict[str, Any
             "For research, put every currently known independent fact domain in the same initial ID/goal arrays; both arrays must have equal length and order. Do not route only the first domain and defer already-known domains to repair episodes.",
             "For engineering, one taskBrief is one coherent independently executable and acceptable work unit. Split separable implementation, generated results/documentation, and final verification into dependent briefs; do not assign one worker an unrelated project-wide writeSet or rename the same oversized brief as a repair.",
             "For Creative Media, when operationKind and all required inputs are already known, put the exact job in taskBriefs[].context.creativeMediaExecutionContract using schema v8.creative_media_execution.v1. The runtime executes that contract without re-inferring operationKind. Omit the contract only when the Creative Media Director must genuinely plan unresolved choices.",
+            "For RPA, put the exact typed execution in taskBriefs[].context.rpaExecution. Use action plus one target family: draftId, scriptId, templateId, robotFile, traceRunId, traceRunIds, or runIds. Keep variables as an object and traceRunIds/runIds as arrays; the runtime never infers these values from goal prose.",
             "Engineering writeSet entries are paths relative to the original bound workspace. Never copy an absolute managed-worktree path from a handoff. Declare every generated file deterministically, or confine variable names below one declared output directory; do not let versioned/cache/report variants escape the declared scope.",
             "Omit optional arrays when empty. For task ordering use the plural dependencies array; singular dependency is a read-only legacy alias.",
             "Preserve object and array types; use [] or omit an optional array, never an empty string.",

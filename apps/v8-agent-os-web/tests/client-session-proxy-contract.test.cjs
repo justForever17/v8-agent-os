@@ -41,7 +41,10 @@ test("Web refreshes visible session activity without replaying the initial loadi
   const context = readText("apps/v8-agent-os-web/src/context/ConversationContext.tsx");
 
   assert.match(context, /document\.visibilityState === "visible"/);
-  assert.match(context, /window\.setInterval\(refreshWhenVisible, 3500\)/);
+  assert.match(context, /new EventSource\("\/api\/realtime\/session-activity\/stream"\)/);
+  assert.match(context, /activityStream\.addEventListener\("activity", handleActivity\)/);
+  assert.match(context, /const scheduleRefresh = \(delayMs = 80\)/);
+  assert.doesNotMatch(context, /window\.setInterval\(refreshWhenVisible/);
   assert.match(context, /refreshInFlightRef/);
   assert.match(context, /showInitialLoading = !hasLoadedRef\.current/);
 });

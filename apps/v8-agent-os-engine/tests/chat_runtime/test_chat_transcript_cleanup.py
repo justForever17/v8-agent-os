@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -120,6 +121,96 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.chat_run.events[-1]["topic"], "subagent.text.delta")
         self.assertIsNone(self.stream_state.assistant_message_id)
 
+    async def test_subagent_model_stream_uses_its_own_reasoning_contract_and_owner(self):
+        self.stream_state.valid_agent_node_names = ["supervisor", "worker-one"]
+        self.stream_state.reasoning_surface_contract = {"mode": "hidden", "trust": "unknown"}
+        minimax_surface = {
+            "mode": "provider_reasoning",
+            "trust": "official",
+            "requestStyle": "minimax_interleaved_thinking",
+            "responseFields": [
+                "reasoning_details",
+                "additional_kwargs.reasoning_details",
+            ],
+            "displayKind": "provider_reasoning",
+        }
+
+        with mock.patch.object(
+            chat_runtime_module.llm_factory,
+            "get_model_metadata",
+            return_value={"reasoning_surface": minimax_surface},
+        ) as metadata_lookup:
+            emitted = await self.runtime.handle_stream_event(
+                self.chat_run,
+                self.stream_state,
+                {
+                    "event": "on_chat_model_stream",
+                    "run_id": "model_child_reasoning",
+                    "name": "V8ChatModelAdapter",
+                    "metadata": {
+                        "langgraph_node": "worker-one",
+                        "v8_owner_runtime_kind": "subagent",
+                        "v8_owner_agent_id": "worker-one",
+                        "v8_owner_subagent_id": "worker-one",
+                        "v8_owner_delegation_id": "delegation-one",
+                    },
+                    "data": {
+                        "chunk": {
+                            "additional_kwargs": {
+                                "reasoning_details": [
+                                    {"type": "reasoning.text", "text": "先核对委派边界。"}
+                                ]
+                            },
+                            "response_metadata": {
+                                "v8_model_ref": "minimax-cn::MiniMax-M3",
+                                "v8_model_id": "MiniMax-M3",
+                            },
+                        }
+                    },
+                },
+            )
+
+        metadata_lookup.assert_called_once_with("minimax-cn::MiniMax-M3")
+        topics = [event["topic"] for event in self.chat_run.events]
+        self.assertIn("subagent.reasoning.delta", topics)
+        self.assertNotIn("run.reasoning.delta", topics)
+        self.assertEqual(self.stream_state.reasoning_buffer, [])
+        self.assertIsNone(self.stream_state.assistant_message_id)
+        self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
+        self.assertEqual(emitted[0]["ownerAgentId"], "worker-one")
+        self.assertFalse(emitted[0]["displayInMessage"])
+
+    def test_unknown_explicit_subagent_model_ref_does_not_inherit_supervisor_reasoning_surface(self):
+        self.stream_state.reasoning_surface_contract = {
+            "mode": "provider_reasoning",
+            "trust": "official",
+            "responseFields": ["reasoning_details"],
+        }
+        event = {
+            "event": "on_chat_model_stream",
+            "run_id": "unknown-child-model-run",
+            "data": {
+                "chunk": {
+                    "response_metadata": {
+                        "v8_model_ref": "other-provider::unknown-model",
+                    }
+                }
+            },
+        }
+
+        with mock.patch.object(
+            chat_runtime_module.llm_factory,
+            "get_model_metadata",
+            side_effect=KeyError("unknown model"),
+        ):
+            surface = self.runtime._reasoning_surface_for_event(self.stream_state, event)
+
+        self.assertEqual(surface, {})
+        self.assertEqual(
+            self.stream_state.reasoning_surfaces_by_run["unknown-child-model-run"],
+            {},
+        )
+
     async def test_provider_internal_model_event_cannot_create_a_second_assistant_stream(self):
         emitted = await self.runtime.handle_stream_event(
             self.chat_run,
@@ -231,7 +322,8 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("run.reasoning.delta", topics)
         self.assertEqual(self.stream_state.reasoning_buffer, [])
 
-    async def test_unverified_reasoning_only_terminal_response_is_thinking_not_text(self):
+    async def test_unverified_reasoning_only_terminal_response_is_suppressed(self):
+        private_reasoning = "只有思考，没有正文。"
         await self.runtime.handle_stream_event(
             self.chat_run,
             self.stream_state,
@@ -239,18 +331,26 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
                 "event": "on_chat_model_end",
                 "run_id": "model_reasoning",
                 "name": "V8ChatModelAdapter",
-                "data": {"output": {"reasoning_content": "只有思考，没有正文。"}},
+                "data": {"output": {"reasoning_content": private_reasoning}},
             },
         )
 
         topics = [event["topic"] for event in self.chat_run.events]
         self.assertNotIn("run.text.delta", topics)
-        self.assertNotIn("run.reasoning.suppressed", topics)
-        self.assertIn("run.reasoning.delta", topics)
-        self.assertEqual("".join(self.stream_state.reasoning_buffer), "只有思考，没有正文。")
+        self.assertIn("run.reasoning.suppressed", topics)
+        self.assertNotIn("run.reasoning.delta", topics)
+        self.assertEqual(self.stream_state.reasoning_buffer, [])
         self.assertEqual("".join(self.stream_state.output_buffer), "")
-        reasoning_event = next(event for event in self.chat_run.events if event["topic"] == "run.reasoning.delta")
-        self.assertTrue(reasoning_event["payload"].get("reasoningUnverified"))
+        suppressed = next(
+            event["payload"] for event in self.chat_run.events if event["topic"] == "run.reasoning.suppressed"
+        )
+        self.assertNotIn("preview", suppressed)
+        self.assertNotIn(private_reasoning, str(suppressed))
+        self.assertEqual(suppressed["contentLength"], len(private_reasoning))
+        self.assertEqual(
+            suppressed["contentSha256"],
+            hashlib.sha256(private_reasoning.encode("utf-8")).hexdigest(),
+        )
 
     async def test_explicit_reasoning_block_still_keeps_reasoning(self):
         self.stream_state.reasoning_surface_contract = {
@@ -275,7 +375,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run.reasoning.delta", topics)
         self.assertEqual("".join(self.stream_state.reasoning_buffer), "这是可信思考。")
 
-    async def test_unverified_reasoning_token_deltas_do_not_become_narrative_text_nodes(self):
+    async def test_unverified_reasoning_token_deltas_are_suppressed(self):
         for token in ["用户", "正在", "查询。"]:
             await self.runtime.handle_stream_event(
                 self.chat_run,
@@ -288,15 +388,29 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        self.assertIsNotNone(self.stream_state.assistant_message_id)
-        self.assertEqual("".join(self.stream_state.reasoning_buffer), "用户正在查询。")
+        self.assertEqual(self.stream_state.reasoning_buffer, [])
         self.assertEqual("".join(self.stream_state.output_buffer), "")
         topics = [event["topic"] for event in self.chat_run.events]
         self.assertNotIn("run.text.delta", topics)
-        self.assertNotIn("run.reasoning.suppressed", topics)
-        self.assertIn("run.reasoning.delta", topics)
+        self.assertIn("run.reasoning.suppressed", topics)
+        self.assertNotIn("run.reasoning.delta", topics)
+        suppressed_payloads = [
+            event["payload"] for event in self.chat_run.events if event["topic"] == "run.reasoning.suppressed"
+        ]
+        self.assertTrue(suppressed_payloads)
+        self.assertTrue(all("preview" not in payload for payload in suppressed_payloads))
+        self.assertNotIn("用户", str(suppressed_payloads))
+        self.assertNotIn("正在", str(suppressed_payloads))
+        self.assertNotIn("查询", str(suppressed_payloads))
 
     async def test_reasoning_token_deltas_preserve_provider_spacing_and_paragraphs(self):
+        self.stream_state.reasoning_surface_contract = {
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": ["additional_kwargs.reasoning_content"],
+            "displayKind": "provider_reasoning",
+        }
         for token in ["I need", " to inspect", " the workspace.\n", "下一步读取文件。"]:
             await self.runtime.handle_stream_event(
                 self.chat_run,

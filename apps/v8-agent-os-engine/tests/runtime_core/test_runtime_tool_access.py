@@ -156,6 +156,226 @@ def test_runtime_episode_preserves_managed_workspace_authority_and_parent_worktr
     assert inputs["engineeringWorkspace"]["original_workspace_path"] == r"E:\Projects\example"
 
 
+def test_runtime_episode_preserves_current_request_sources_and_authorized_selectors(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: {**episode, "state": "queued"},
+    )
+    route_context = {
+        "sessionId": "session-current",
+        "runId": "run-current",
+        "supervisorRuntimeMode": "creative_media",
+        "attachmentDescriptors": [
+            {"sourceId": "source-current", "name": "portrait.png", "mimeType": "image/png"}
+        ],
+        "skillReferences": [{"id": "image-method", "name": "Image Method"}],
+        "contextMentions": [{"kind": "mcp_tool", "id": "inspect_image"}],
+        "pluginReferences": [
+            {"pluginId": "media-kit", "componentIds": ["image-edit"]},
+            {"pluginId": "blocked-plugin", "componentIds": ["unsafe"]},
+        ],
+        "pluginAuthorizations": [
+            {"pluginId": "media-kit", "status": "authorized"},
+            {"pluginId": "blocked-plugin", "status": "configuration_required"},
+        ],
+    }
+
+    _updated, episode = native_runtime._append_runtime_episode(
+        route_context,
+        need={
+            "kind": "creative_media",
+            "reason": "Edit the selected image.",
+            "inputs": {
+                "sourceIds": ["source-forged"],
+                "sourceDescriptors": [{"sourceId": "source-forged", "name": "wrong.png"}],
+                "pluginReferences": [{"pluginId": "blocked-plugin", "componentIds": ["unsafe"]}],
+                "selectedSkillIds": ["skill-forged"],
+                "selectedSkillNames": ["Forged Skill"],
+                "selectedMcpTools": ["unrelated_mcp"],
+                "extensionSelectorsAuthoritative": False,
+                "extensionRouteContext": {"selectedMcpTools": ["unrelated_mcp"]},
+                "extensionToolPolicy": {
+                    "mode": "allowlist",
+                    "allowedTools": ["unrelated_mcp"],
+                },
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "edit",
+                        "goal": "Edit the selected image.",
+                        "context": {
+                            "sourceIds": ["source-forged"],
+                            "selectedMcpTools": ["unrelated_mcp"],
+                        },
+                        "pluginReferences": [{"pluginId": "blocked-plugin", "componentIds": ["unsafe"]}],
+                        "selectedSkillIds": ["skill-forged"],
+                        "selectedMcpTools": ["unrelated_mcp"],
+                        "toolPolicy": {
+                            "mode": "allowlist",
+                            "allowedTools": ["creative_media_edit", "inspect_image", "unrelated_mcp"],
+                        },
+                    }
+                ],
+            },
+        },
+        kind="creative_media",
+        groups=[{"group": "creative_media.core"}],
+        allow_direct_fallback=False,
+    )
+
+    inputs = episode["inputs"]
+    brief = inputs["taskBriefs"][0]
+    assert inputs["sourceIds"] == ["source-current"]
+    assert inputs["selectedSkillIds"] == ["image-method"]
+    assert inputs["selectedSkillNames"] == ["Image Method"]
+    assert inputs["selectedMcpTools"] == ["inspect_image"]
+    assert inputs["pluginReferences"] == [
+        {"pluginId": "media-kit", "componentIds": ["image-edit"]}
+    ]
+    assert inputs["extensionSelectorsAuthoritative"] is True
+    assert inputs["extensionRouteContext"] == {
+        "extensionSelectorsAuthoritative": True,
+        "selectedSkillIds": ["image-method"],
+        "selectedSkillNames": ["Image Method"],
+        "selectedMcpTools": ["inspect_image"],
+    }
+    assert "creative_media_edit" in inputs["extensionToolPolicy"]["allowedTools"]
+    assert "inspect_image" in inputs["extensionToolPolicy"]["allowedTools"]
+    assert "unrelated_mcp" not in inputs["extensionToolPolicy"]["allowedTools"]
+    assert brief["context"]["sourceIds"] == ["source-current"]
+    assert brief["context"]["extensionRouteContext"] == inputs["extensionRouteContext"]
+    assert brief["selectedSkillIds"] == ["image-method"]
+    assert brief["selectedMcpTools"] == ["inspect_image"]
+    assert brief["pluginReferences"] == [
+        {"pluginId": "media-kit", "componentIds": ["image-edit"]}
+    ]
+    assert brief["toolPolicy"] == {
+        "mode": "allowlist",
+        "allowedTools": ["creative_media_edit", "inspect_image"],
+        "forbiddenTools": [],
+    }
+
+
+def test_runtime_episode_explicit_runtime_keeps_empty_extension_selectors_authoritative(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: {**episode, "state": "queued"},
+    )
+
+    _updated, episode = native_runtime._append_runtime_episode(
+        {
+            "sessionId": "session-explicit-research",
+            "runId": "run-explicit-research",
+            "supervisorRuntimeMode": "research",
+        },
+        need={
+            "kind": "research",
+            "reason": "Research with the selected Runtime only.",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "research",
+                        "goal": "Research with the selected Runtime only.",
+                        "toolPolicy": {"mode": "default"},
+                    }
+                ]
+            },
+        },
+        kind="research",
+        groups=[{"group": "research.core"}],
+        allow_direct_fallback=False,
+    )
+
+    inputs = episode["inputs"]
+    assert inputs["extensionSelectorsAuthoritative"] is True
+    assert inputs["selectedSkillIds"] == []
+    assert inputs["selectedSkillNames"] == []
+    assert inputs["selectedMcpTools"] == []
+    assert inputs["extensionRouteContext"] == {
+        "extensionSelectorsAuthoritative": True,
+        "selectedSkillIds": [],
+        "selectedSkillNames": [],
+        "selectedMcpTools": [],
+    }
+    assert "research_broker" in inputs["extensionToolPolicy"]["allowedTools"]
+    assert "unselected_mcp" not in inputs["extensionToolPolicy"]["allowedTools"]
+    brief = inputs["taskBriefs"][0]
+    assert brief["context"]["extensionRouteContext"] == inputs["extensionRouteContext"]
+    assert brief["toolPolicy"]["mode"] == "allowlist"
+    assert "research_broker" in brief["toolPolicy"]["allowedTools"]
+    assert "unselected_mcp" not in brief["toolPolicy"]["allowedTools"]
+
+
+def test_runtime_episode_auto_without_engine_selectors_rejects_model_selectors_without_narrowing(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: {**episode, "state": "queued"},
+    )
+
+    _updated, episode = native_runtime._append_runtime_episode(
+        {
+            "sessionId": "session-auto",
+            "runId": "run-auto",
+            "supervisorRuntimeMode": "auto",
+        },
+        need={
+            "kind": "research",
+            "reason": "Research the topic.",
+            "inputs": {
+                "sourceIds": ["source-forged"],
+                "sourceDescriptors": [{"sourceId": "source-forged"}],
+                "pluginReferences": [{"pluginId": "plugin-forged"}],
+                "selectedSkillIds": ["skill-forged"],
+                "selectedSkillNames": ["Forged Skill"],
+                "selectedMcpTools": ["mcp-forged"],
+                "extensionSelectorsAuthoritative": True,
+                "extensionRouteContext": {"selectedMcpTools": ["mcp-forged"]},
+                "extensionToolPolicy": {"mode": "none"},
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "research",
+                        "goal": "Research the topic.",
+                        "context": {
+                            "note": "preserve me",
+                            "sourceIds": ["source-forged"],
+                            "selectedMcpTools": ["mcp-forged"],
+                        },
+                        "pluginReferences": [{"pluginId": "plugin-forged"}],
+                        "selectedSkillIds": ["skill-forged"],
+                        "selectedMcpTools": ["mcp-forged"],
+                        "toolPolicy": {"mode": "default"},
+                    }
+                ],
+            },
+        },
+        kind="research",
+        groups=[],
+        allow_direct_fallback=False,
+    )
+
+    inputs = episode["inputs"]
+    for field_name in (
+        "sourceIds",
+        "sourceDescriptors",
+        "pluginReferences",
+        "selectedSkillIds",
+        "selectedSkillNames",
+        "selectedMcpTools",
+        "extensionSelectorsAuthoritative",
+        "extensionRouteContext",
+        "extensionToolPolicy",
+    ):
+        assert field_name not in inputs
+    brief = inputs["taskBriefs"][0]
+    assert brief["context"] == {"note": "preserve me"}
+    assert brief["toolPolicy"] == {"mode": "default"}
+    assert "pluginReferences" not in brief
+    assert "selectedSkillIds" not in brief
+    assert "selectedMcpTools" not in brief
+
+
 def test_collaboration_actor_identity_separates_user_facing_tree_from_internal_models():
     assert resolve_collaboration_actor(actor="supervisor").role == SUPERVISOR_ACTOR
     assert resolve_collaboration_actor(

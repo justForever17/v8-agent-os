@@ -27,6 +27,7 @@ import {
     buildComposerInlineSegments,
     type ComposerInlineReference,
 } from "@v8/session-realtime/composer-inline-references";
+import type { SupervisorRuntimeMode } from "@v8/session-realtime";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -269,8 +270,8 @@ export const Composer = memo(function Composer({
     onRemoveContextSessionRef,
     specModeEnabled,
     onToggleSpecMode,
-    supervisorWorkMode = "daily",
-    onChangeSupervisorWorkMode,
+    supervisorRuntimeMode = "auto",
+    onChangeSupervisorRuntimeMode,
     safetyApprovalMode,
     onChangeSafetyApprovalMode,
     reasoningEffortVisible = false,
@@ -308,8 +309,8 @@ export const Composer = memo(function Composer({
     onRemoveContextSessionRef: (sessionId: string) => void;
     specModeEnabled: boolean;
     onToggleSpecMode: () => void;
-    supervisorWorkMode?: "daily" | "engineering";
-    onChangeSupervisorWorkMode?: (mode: "daily" | "engineering") => void;
+    supervisorRuntimeMode?: SupervisorRuntimeMode;
+    onChangeSupervisorRuntimeMode?: (mode: SupervisorRuntimeMode) => void;
     safetyApprovalMode: SafetyApprovalMode;
     onChangeSafetyApprovalMode: (mode: SafetyApprovalMode) => void;
     reasoningEffortVisible?: boolean;
@@ -329,6 +330,7 @@ export const Composer = memo(function Composer({
     const safeAreaInsets = useSafeAreaInsets();
     const { width: windowWidth } = useWindowDimensions();
     const [isFocused, setIsFocused] = useState(false);
+    const [runtimeModeOpen, setRuntimeModeOpen] = useState(false);
     const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
     const [reasoningEffortOpen, setReasoningEffortOpen] = useState(false);
     const [pluginSheetId, setPluginSheetId] = useState("");
@@ -346,6 +348,57 @@ export const Composer = memo(function Composer({
     );
     const commandColor = themeMode === "dark" ? "#C4B5FD" : "#7C3AED";
     const mentionColor = themeMode === "dark" ? "#FDBA74" : "#F97316";
+    const runtimeModeOptions: Array<{
+        mode: SupervisorRuntimeMode;
+        title: string;
+        description: string;
+        icon: React.ComponentProps<typeof MaterialCommunityIcons>["name"];
+        color: string;
+    }> = [
+        {
+            mode: "auto",
+            title: t("src.components.chat.composer.runtime_mode_auto_title"),
+            description: t("src.components.chat.composer.runtime_mode_auto_description"),
+            icon: "creation-outline",
+            color: colors.textMuted,
+        },
+        {
+            mode: "engineering",
+            title: t("src.components.chat.composer.runtime_mode_engineering_title"),
+            description: t("src.components.chat.composer.runtime_mode_engineering_description"),
+            icon: "code-tags",
+            color: colors.primary,
+        },
+        {
+            mode: "research",
+            title: t("src.components.chat.composer.runtime_mode_research_title"),
+            description: t("src.components.chat.composer.runtime_mode_research_description"),
+            icon: "text-search",
+            color: colors.accent,
+        },
+        {
+            mode: "creative_media",
+            title: t("src.components.chat.composer.runtime_mode_creative_media_title"),
+            description: t("src.components.chat.composer.runtime_mode_creative_media_description"),
+            icon: "palette-outline",
+            color: colors.danger,
+        },
+        {
+            mode: "computer_use",
+            title: t("src.components.chat.composer.runtime_mode_computer_use_title"),
+            description: t("src.components.chat.composer.runtime_mode_computer_use_description"),
+            icon: "monitor-dashboard",
+            color: colors.success,
+        },
+        {
+            mode: "rpa",
+            title: t("src.components.chat.composer.runtime_mode_rpa_title"),
+            description: t("src.components.chat.composer.runtime_mode_rpa_description"),
+            icon: "robot-industrial-outline",
+            color: colors.warning,
+        },
+    ];
+    const activeRuntimeMode = runtimeModeOptions.find((option) => option.mode === supervisorRuntimeMode) || runtimeModeOptions[0]!;
     const safetyApprovalOptions: Array<{
         mode: SafetyApprovalMode;
         title: string;
@@ -529,23 +582,26 @@ export const Composer = memo(function Composer({
                         <View style={styles.leftControls}>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel={supervisorWorkMode === "engineering"
-                                    ? t("src.components.chat.composer.switch_daily_mode")
-                                    : t("src.components.chat.composer.switch_engineering_mode")}
+                                accessibilityLabel={t("src.components.chat.composer.select_runtime_mode", { mode: activeRuntimeMode.title })}
+                                accessibilityState={{ expanded: runtimeModeOpen }}
                                 style={[
                                     styles.taskModeButton,
-                                    styles.workModeButton,
+                                    styles.runtimeModeButton,
                                     {
-                                        backgroundColor: supervisorWorkMode === "engineering" ? colors.primarySoft : "transparent",
-                                        borderColor: supervisorWorkMode === "engineering" ? `${colors.primary}26` : "transparent",
+                                        backgroundColor: runtimeModeOpen || supervisorRuntimeMode !== "auto" ? `${activeRuntimeMode.color}1A` : "transparent",
+                                        borderColor: runtimeModeOpen || supervisorRuntimeMode !== "auto" ? `${activeRuntimeMode.color}33` : "transparent",
                                     },
                                 ]}
-                                onPress={() => onChangeSupervisorWorkMode?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
+                                onPress={() => {
+                                    setRuntimeModeOpen((current) => !current);
+                                    setSafetyApprovalOpen(false);
+                                    setReasoningEffortOpen(false);
+                                }}
                             >
                                 <MaterialCommunityIcons
-                                    name={supervisorWorkMode === "engineering" ? "code-tags" : "message-processing-outline"}
+                                    name={activeRuntimeMode.icon}
                                     size={19}
-                                    color={supervisorWorkMode === "engineering" ? colors.primaryDeep : colors.textMuted}
+                                    color={supervisorRuntimeMode === "auto" ? colors.textMuted : activeRuntimeMode.color}
                                 />
                             </Pressable>
                             <Pressable
@@ -583,7 +639,11 @@ export const Composer = memo(function Composer({
                                                 : "transparent",
                                         },
                                     ]}
-                                    onPress={() => setSafetyApprovalOpen((current) => !current)}
+                                    onPress={() => {
+                                        setSafetyApprovalOpen((current) => !current);
+                                        setRuntimeModeOpen(false);
+                                        setReasoningEffortOpen(false);
+                                    }}
                                 >
                                     <MaterialCommunityIcons
                                         name={activeSafetyApproval.icon}
@@ -609,7 +669,11 @@ export const Composer = memo(function Composer({
                                                 : themeMode === "dark" ? "rgba(167,139,250,0.42)" : "rgba(124,58,237,0.3)",
                                         },
                                     ]}
-                                    onPress={() => setReasoningEffortOpen(true)}
+                                    onPress={() => {
+                                        setReasoningEffortOpen(true);
+                                        setRuntimeModeOpen(false);
+                                        setSafetyApprovalOpen(false);
+                                    }}
                                 >
                                     <Gauge
                                         size={18}
@@ -748,6 +812,76 @@ export const Composer = memo(function Composer({
                         ariaLabel={t("src.components.chat.composer.reasoning_effort")}
                         labelFormatter={(level) => String(level || "auto").trim().toLowerCase()}
                     />
+                </View>
+            </View>
+        </Modal>
+        <Modal
+            visible={runtimeModeOpen}
+            transparent
+            animationType="fade"
+            statusBarTranslucent
+            onRequestClose={() => setRuntimeModeOpen(false)}
+        >
+            <View style={styles.safetyOverlay}>
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={() => setRuntimeModeOpen(false)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("src.components.chat.mediaviewerlightbox.cancel")}
+                />
+                <View
+                    style={[
+                        styles.safetySheet,
+                        {
+                            paddingBottom: Math.max(safeAreaInsets.bottom, 16),
+                            backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.99)" : "rgba(255,255,255,0.99)",
+                            borderColor: colors.border,
+                            shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                        },
+                    ]}
+                >
+                    <View style={[styles.safetySheetHandle, { backgroundColor: colors.border }]} />
+                    <ScrollView
+                        style={styles.safetySheetScroll}
+                        contentContainerStyle={styles.safetySheetContent}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        {runtimeModeOptions.map((option) => {
+                            const active = option.mode === supervisorRuntimeMode;
+                            return (
+                                <Pressable
+                                    key={option.mode}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={option.title}
+                                    accessibilityState={{ selected: active }}
+                                    style={({ pressed }) => [
+                                        styles.safetyMenuItem,
+                                        {
+                                            backgroundColor: active ? `${option.color}1A` : pressed ? colors.surfaceStrong : "transparent",
+                                        },
+                                    ]}
+                                    onPress={() => {
+                                        onChangeSupervisorRuntimeMode?.(option.mode);
+                                        setRuntimeModeOpen(false);
+                                    }}
+                                >
+                                    <MaterialCommunityIcons
+                                        name={option.icon}
+                                        size={19}
+                                        color={active ? option.color : colors.textMuted}
+                                    />
+                                    <View style={styles.safetyMenuText}>
+                                        <Text style={[styles.safetyMenuTitle, { color: colors.text }]} numberOfLines={1}>
+                                            {option.title}
+                                        </Text>
+                                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted }]} numberOfLines={3}>
+                                            {option.description}
+                                        </Text>
+                                    </View>
+                                </Pressable>
+                            );
+                        })}
+                    </ScrollView>
                 </View>
             </View>
         </Modal>
@@ -981,7 +1115,7 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         borderWidth: 1,
     },
-    workModeButton: {
+    runtimeModeButton: {
         width: 32,
         paddingHorizontal: 0,
     },

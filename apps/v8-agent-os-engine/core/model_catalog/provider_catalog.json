@@ -43,10 +43,7 @@
             "trust": "official",
             "requestStyle": "openai_reasoning",
             "responseFields": [
-              "reasoning.summary",
-              "reasoning_content",
-              "additional_kwargs.reasoning_content",
-              "response_metadata.reasoning_content"
+              "reasoning.summary"
             ],
             "displayKind": "summary",
             "sourceRefs": [
@@ -72,10 +69,7 @@
             "trust": "official",
             "requestStyle": "openai_reasoning",
             "responseFields": [
-              "reasoning.summary",
-              "reasoning_content",
-              "additional_kwargs.reasoning_content",
-              "response_metadata.reasoning_content"
+              "reasoning.summary"
             ],
             "displayKind": "summary",
             "sourceRefs": [
@@ -101,10 +95,7 @@
             "trust": "official",
             "requestStyle": "openai_reasoning",
             "responseFields": [
-              "reasoning.summary",
-              "reasoning_content",
-              "additional_kwargs.reasoning_content",
-              "response_metadata.reasoning_content"
+              "reasoning.summary"
             ],
             "displayKind": "summary",
             "sourceRefs": [
@@ -130,10 +121,7 @@
             "trust": "official",
             "requestStyle": "openai_reasoning",
             "responseFields": [
-              "reasoning.summary",
-              "reasoning_content",
-              "additional_kwargs.reasoning_content",
-              "response_metadata.reasoning_content"
+              "reasoning.summary"
             ],
             "displayKind": "summary",
             "sourceRefs": [
@@ -159,10 +147,7 @@
             "trust": "official",
             "requestStyle": "openai_reasoning",
             "responseFields": [
-              "reasoning.summary",
-              "reasoning_content",
-              "additional_kwargs.reasoning_content",
-              "response_metadata.reasoning_content"
+              "reasoning.summary"
             ],
             "displayKind": "summary",
             "sourceRefs": [
@@ -190,10 +175,7 @@
         "trust": "official",
         "requestStyle": "openai_reasoning",
         "responseFields": [
-          "reasoning.summary",
-          "reasoning_content",
-          "additional_kwargs.reasoning_content",
-          "response_metadata.reasoning_content"
+          "reasoning.summary"
         ],
         "displayKind": "summary",
         "sourceRefs": [
@@ -442,13 +424,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         },
         {
@@ -465,13 +458,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         },
         {
@@ -488,13 +492,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         },
         {
@@ -511,13 +526,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         },
         {
@@ -534,13 +560,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         },
         {
@@ -557,13 +594,24 @@
             "multimodal"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Gemini thinking output is not verified in current V8 adapter fixtures."
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
           }
         }
       ],

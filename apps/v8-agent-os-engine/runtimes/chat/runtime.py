@@ -158,6 +158,14 @@ def _is_network_supervisor_compat_transport(transport: str | None) -> bool:
     return str(transport or "").strip() in _NETWORK_SUPERVISOR_COMPAT_TRANSPORTS
 
 
+def _suppressed_reasoning_diagnostics(content: Any) -> dict[str, Any]:
+    text = str(content or "")
+    return {
+        "contentLength": len(text),
+        "contentSha256": hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest(),
+    }
+
+
 def _chat_runtime_readonly_command_allowed(command: str) -> bool:
     try:
         from graph.tool_routing import _planning_readonly_command_allowed
@@ -243,6 +251,7 @@ class ChatPreparedRequest:
     spec_id: str = ""
     spec_brief: dict[str, Any] = field(default_factory=dict)
     supervisor_work_mode: str = "daily"
+    supervisor_runtime_mode: str = "auto"
     engineering_mode: str = "auto"
     explicit_engineering_requested: bool = False
     engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
@@ -350,6 +359,7 @@ class ChatStreamState:
     trace_group_seq: int = 0
     active_trace_group_id: str | None = None
     reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
+    reasoning_surfaces_by_run: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_text_delta: str = ""
     last_text_delta_run_id: str = ""
     last_text_delta_at_ms: int | None = None
@@ -1205,8 +1215,12 @@ class ChatRuntime:
                 or local_path
                 or name
             ).strip()
+            request_scope = self._request_client_message_id(chat_run.request)
             digest = hashlib.sha256(
-                f"{chat_run.active_run_id}|{index}|{tool_name}|{source_identity}".encode("utf-8", errors="ignore")
+                f"{chat_run.active_run_id}|{request_scope}|{index}|{tool_name}|{source_identity}".encode(
+                    "utf-8",
+                    errors="ignore",
+                )
             ).hexdigest()[:20]
             tool_call_id = f"call_v8_attachment_preflight_{digest}"
             display_args = {
@@ -1549,6 +1563,18 @@ class ChatRuntime:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in {"daily", "engineering"} else "daily"
 
+    @staticmethod
+    def _normalize_supervisor_runtime_mode(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {
+            "auto",
+            "engineering",
+            "research",
+            "creative_media",
+            "computer_use",
+            "rpa",
+        } else "auto"
+
     def _session_supervisor_work_mode(self, session_id: str) -> str:
         if not session_id:
             return "daily"
@@ -1556,6 +1582,15 @@ class ChatRuntime:
         metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
         return self._normalize_supervisor_work_mode(
             metadata.get("supervisorWorkMode") or metadata.get("supervisor_work_mode")
+        )
+
+    def _session_supervisor_runtime_mode(self, session_id: str) -> str:
+        if not session_id:
+            return "auto"
+        session = db.get_session(session_id) or {}
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        return self._normalize_supervisor_runtime_mode(
+            metadata.get("supervisorRuntimeMode") or metadata.get("supervisor_runtime_mode")
         )
 
     def _detect_explicit_supervisor_work_mode_request(self, user_content: str) -> str | None:
@@ -1805,6 +1840,7 @@ class ChatRuntime:
         message_id = str(
             (getattr(request_data, "_session_coordination_message_id", "") or "") if request_data else ""
         ).strip()
+
         if not message_id:
             return {}
         from erc.session_coordination_service import session_coordination_service
@@ -1823,6 +1859,33 @@ class ChatRuntime:
             "sourceRunId": row.get("sourceRunId") or row.get("source_run_id"),
             "targetRunId": row.get("targetRunId") or row.get("target_run_id"),
         }
+
+    @staticmethod
+    def _runtime_route_attachment_descriptors(request: ChatRequest) -> list[dict[str, Any]]:
+        descriptors: list[dict[str, Any]] = []
+        for attachment in list(request.attachments or [])[:8]:
+            if not isinstance(attachment, dict):
+                continue
+            source_id = str(
+                attachment.get("sourceId")
+                or attachment.get("source_id")
+                or attachment.get("id")
+                or ""
+            ).strip()
+            if not source_id:
+                continue
+            descriptor = {
+                "sourceId": source_id,
+                "name": str(attachment.get("name") or "attachment").strip(),
+                "mimeType": str(attachment.get("mimeType") or attachment.get("mime_type") or "").strip(),
+                "mediaType": str(attachment.get("mediaType") or attachment.get("media_type") or "").strip(),
+                "role": str(attachment.get("role") or "source").strip(),
+            }
+            resource_ref = attachment.get("resourceRef") or attachment.get("resource_ref")
+            if isinstance(resource_ref, dict):
+                descriptor["resourceRef"] = dict(resource_ref)
+            descriptors.append({key: value for key, value in descriptor.items() if value not in (None, "", [], {})})
+        return descriptors
 
     @staticmethod
     def _session_coordination_envelope(message: dict[str, Any]) -> str:
@@ -2533,7 +2596,7 @@ class ChatRuntime:
         request: ChatRequest,
         *,
         session_id: str,
-    ) -> tuple[dict[str, Any] | None, str, str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
+    ) -> tuple[dict[str, Any] | None, str, str, str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         spec_mode = bool(getattr(request_data, "spec_mode", False)) if request_data else False
@@ -2546,6 +2609,18 @@ class ChatRuntime:
             if str(requested_work_mode or "").strip()
             else self._session_supervisor_work_mode(session_id)
         )
+        requested_runtime_mode = getattr(request_data, "supervisor_runtime_mode", None) if request_data else None
+        runtime_mode_explicit = requested_runtime_mode is not None
+        supervisor_runtime_mode = (
+            self._normalize_supervisor_runtime_mode(requested_runtime_mode)
+            if runtime_mode_explicit
+            else self._session_supervisor_runtime_mode(session_id)
+        )
+        if runtime_mode_explicit:
+            # New mode-aware clients must not inherit the retired UI's hidden
+            # Supervisor engineering posture. Explicit natural-language work-mode
+            # requests below remain valid for compatibility.
+            supervisor_work_mode = "daily"
         engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
         latest_user = self._latest_user_content(request)
         if not spec_mode and self._detect_explicit_spec_mode_request(latest_user):
@@ -2566,7 +2641,7 @@ class ChatRuntime:
         skill_references = self._normalize_skill_references(request)
         context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
         explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
-        return command_preset, supervisor_work_mode, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
+        return command_preset, supervisor_work_mode, supervisor_runtime_mode, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
 
     @staticmethod
     def _runtime_execution_allowed_by_spec(spec_brief: dict[str, Any] | None) -> bool:
@@ -2869,6 +2944,7 @@ class ChatRuntime:
         (
             command_preset,
             supervisor_work_mode,
+            supervisor_runtime_mode,
             engineering_mode,
             explicit_engineering_requested,
             skill_references,
@@ -2979,6 +3055,7 @@ class ChatRuntime:
             spec_command=spec_command,
             spec_id=spec_id,
             supervisor_work_mode=supervisor_work_mode,
+            supervisor_runtime_mode=supervisor_runtime_mode,
             engineering_mode=engineering_mode,
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
@@ -3145,7 +3222,10 @@ class ChatRuntime:
             )
         run_service.update_metadata(
             run_handle.run_id,
-            {"supervisorWorkMode": prepared.supervisor_work_mode},
+            {
+                "supervisorWorkMode": prepared.supervisor_work_mode,
+                "supervisorRuntimeMode": prepared.supervisor_runtime_mode,
+            },
         )
         try:
             prepared.task_shape_hint = build_supervisor_task_context(prepared.latest_user_content)
@@ -3468,6 +3548,26 @@ class ChatRuntime:
                     "explicitEngineeringRequested": False,
                 },
             )
+        elif prepared.supervisor_runtime_mode != "auto":
+            prepared.engineering_mode = "off"
+            prepared.explicit_engineering_requested = False
+            prepared.engineering_trigger_decision = {
+                "mode": "off",
+                "active": False,
+                "matched": False,
+                "selectedRuntimeMode": prepared.supervisor_runtime_mode,
+                "reason": "selected_runtime_mode_uses_authoritative_runtime_route",
+            }
+            run_service.update_metadata(
+                run_handle.run_id,
+                {
+                    "supervisorRuntimeMode": prepared.supervisor_runtime_mode,
+                    "engineeringMode": "off",
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision),
+                    "engineeringRequired": False,
+                    "explicitEngineeringRequested": False,
+                },
+            )
         elif not build_engineering_context:
             prepared.engineering_trigger_decision = {
                 "mode": prepared.engineering_mode,
@@ -3570,13 +3670,24 @@ class ChatRuntime:
                 agent_id="supervisor",
                 node="canvas_dispatch",
             )
-        if chat_run.prepared.engineering_trigger_decision:
+        trigger_decision = dict(chat_run.prepared.engineering_trigger_decision or {})
+        emit_engineering_trigger = bool(
+            trigger_decision
+            and self._normalize_supervisor_runtime_mode(
+                getattr(chat_run.prepared, "supervisor_runtime_mode", "auto")
+            ) == "auto"
+            and not chat_run.prepared.canvas_supervisor_direct
+            and not bool(trigger_decision.get("deferred"))
+        )
+        if emit_engineering_trigger:
             chat_run.emit_runtime_event(
                 "engineering_lane.trigger.decided",
                 {
+                    **trigger_decision,
                     "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
+                    "supervisorRuntimeMode": chat_run.prepared.supervisor_runtime_mode,
                     "engineeringMode": chat_run.prepared.engineering_mode,
-                    "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
+                    "triggerDecision": trigger_decision,
                     "contextPackActive": bool(chat_run.prepared.engineering_context_pack),
                 },
                 agent_id=None,
@@ -3650,6 +3761,9 @@ class ChatRuntime:
             metadata["taskShapeHint"] = dict(chat_run.prepared.task_shape_hint)
         metadata["supervisorWorkMode"] = str(
             getattr(chat_run.prepared, "supervisor_work_mode", "daily") or "daily"
+        )
+        metadata["supervisorRuntimeMode"] = str(
+            getattr(chat_run.prepared, "supervisor_runtime_mode", "auto") or "auto"
         )
         engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
         engineering_trigger_decision = getattr(chat_run.prepared, "engineering_trigger_decision", None)
@@ -3730,6 +3844,7 @@ class ChatRuntime:
                 **({"specCommand": dict(metadata["specCommand"])} if isinstance(metadata.get("specCommand"), dict) else {}),
                 **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
                 **({"supervisorWorkMode": metadata.get("supervisorWorkMode")} if metadata.get("supervisorWorkMode") else {}),
+                **({"supervisorRuntimeMode": metadata.get("supervisorRuntimeMode")} if metadata.get("supervisorRuntimeMode") else {}),
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
@@ -4070,6 +4185,8 @@ class ChatRuntime:
                 "safetyApprovalMode": safety_mode,
                 "supervisor_work_mode": getattr(chat_run.prepared, "supervisor_work_mode", None),
                 "supervisorWorkMode": getattr(chat_run.prepared, "supervisor_work_mode", None),
+                "supervisor_runtime_mode": getattr(chat_run.prepared, "supervisor_runtime_mode", None),
+                "supervisorRuntimeMode": getattr(chat_run.prepared, "supervisor_runtime_mode", None),
             }
         )
         if engineering_workspace:
@@ -4079,6 +4196,312 @@ class ChatRuntime:
             runtime_kind="chat",
         ).as_dict()
         return context
+
+    def _queued_guidance_chat_run(
+        self,
+        chat_run: ChatRunContext,
+        queue_item: dict[str, Any],
+    ) -> ChatRunContext:
+        stored_request = queue_item.get("request") if isinstance(queue_item.get("request"), dict) else {}
+        if stored_request:
+            request_payload = dict(stored_request)
+        else:
+            request_payload = {
+                "config": chat_run.request.config.model_dump(mode="json", by_alias=True),
+                "stream": chat_run.request.stream,
+                "data": {},
+            }
+
+        guidance_content = str(queue_item.get("content") or "").strip()
+        messages = [dict(item) for item in list(request_payload.get("messages") or []) if isinstance(item, dict)]
+        latest_user_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if str(messages[index].get("role") or "").strip().lower() == "user"
+            ),
+            None,
+        )
+        if latest_user_index is None:
+            messages.append({"role": "user", "content": guidance_content})
+        else:
+            messages[latest_user_index] = {
+                **messages[latest_user_index],
+                "content": guidance_content,
+            }
+
+        binding = chat_run.scope_result.binding
+        client_message_id = str(
+            queue_item.get("client_message_id")
+            or request_payload.get("clientMessageId")
+            or request_payload.get("client_message_id")
+            or ""
+        ).strip()
+        request_data = (
+            dict(request_payload.get("data") or {})
+            if isinstance(request_payload.get("data"), dict)
+            else {}
+        )
+        request_data.pop("conversation_id", None)
+        request_data.pop("client_message_id", None)
+        request_data.update(
+            {
+                "conversationId": chat_run.session_id,
+                **({"clientMessageId": client_message_id} if client_message_id else {}),
+            }
+        )
+        for field_name in (
+            "conversation_id",
+            "client_message_id",
+            "project_id",
+            "workspace_id",
+            "workspace_path",
+            "scope_hint",
+            "scope_mode",
+            "resume_run_id",
+            "resume_value",
+        ):
+            request_payload.pop(field_name, None)
+        request_payload.update(
+            {
+                "messages": messages,
+                "session_id": chat_run.session_id,
+                "conversationId": chat_run.session_id,
+                "user_id": chat_run.user_id,
+                "projectId": binding.project_id,
+                "workspaceId": binding.workspace_id,
+                "workspacePath": binding.workspace_path,
+                "scopeHint": binding.resolved_scope,
+                "scopeMode": "explicit",
+                "resumeRunId": None,
+                "resumeValue": None,
+                "data": request_data,
+            }
+        )
+        if client_message_id:
+            request_payload["clientMessageId"] = client_message_id
+        if isinstance(queue_item.get("attachments"), list):
+            queued_attachments = list(queue_item.get("attachments") or [])
+            request_payload["attachments"] = queued_attachments
+            request_data["attachments"] = queued_attachments
+        if isinstance(queue_item.get("fileUrls"), list):
+            queued_file_urls = list(queue_item.get("fileUrls") or [])
+            request_payload["fileUrls"] = queued_file_urls
+            request_data["fileUrls"] = queued_file_urls
+
+        queued_request = ChatRequest.model_validate(request_payload)
+        queued_prepared = self.prepare_request(queued_request)
+        if queued_prepared.session_id != chat_run.session_id:
+            raise ValueError("queued guidance session does not match the active chat run")
+        if queued_prepared.canvas_supervisor_direct:
+            queued_prepared.engineering_mode = "off"
+            queued_prepared.explicit_engineering_requested = False
+            queued_prepared.task_shape_hint = self._canvas_task_shape_hint(queued_prepared)
+            queued_prepared.engineering_trigger_decision = {
+                "mode": "off",
+                "active": False,
+                "matched": False,
+                "reason": "validated_canvas_contract_bypasses_engineering_lane",
+            }
+        elif queued_prepared.supervisor_runtime_mode != "auto":
+            queued_prepared.engineering_mode = "off"
+            queued_prepared.explicit_engineering_requested = False
+            queued_prepared.engineering_trigger_decision = {
+                "mode": "off",
+                "active": False,
+                "matched": False,
+                "selectedRuntimeMode": queued_prepared.supervisor_runtime_mode,
+                "reason": "selected_runtime_mode_uses_authoritative_runtime_route",
+            }
+
+        return ChatRunContext(
+            prepared=queued_prepared,
+            run_handle=chat_run.run_handle,
+            scope_result=chat_run.scope_result,
+            transport=chat_run.transport,
+            existing_binding=chat_run.existing_binding,
+            preflight_decision=chat_run.preflight_decision,
+            engineering_workspace=dict(chat_run.engineering_workspace or {}),
+            engineering_change_set=dict(chat_run.engineering_change_set or {}),
+        )
+
+    def _queued_guidance_route_context(
+        self,
+        guidance_chat_run: ChatRunContext,
+        queue_item: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        prepared = guidance_chat_run.prepared
+        spec_runtime_allowed = bool(
+            prepared.spec_mode
+            and self._runtime_execution_allowed_by_spec(prepared.spec_brief)
+        )
+        context = self._restart_route_context(guidance_chat_run, snapshot)
+        context.update(
+            {
+                "canvasSupervisorDirect": False,
+                "canvas_supervisor_direct": False,
+                "canvasOperationId": "",
+                "canvas_operation_id": "",
+                "canvasExecutionContract": {},
+                "canvas_execution_contract": {},
+                "canvasRuntimeRoute": {},
+                "canvas_runtime_route": {},
+                "engineeringRequired": False,
+                "explicitEngineeringRequested": False,
+                "engineeringMode": str(prepared.engineering_mode or "auto"),
+                "engineeringTriggerDecision": {},
+                "engineeringContinuation": {},
+                "engineering_continuation": {},
+                "taskShapeHint": dict(prepared.task_shape_hint or {}),
+                "task_shape_hint": dict(prepared.task_shape_hint or {}),
+                "latestUserContent": prepared.latest_user_content,
+                "latest_user_content": prepared.latest_user_content,
+                "userRequest": prepared.latest_user_content,
+                "user_request": prepared.latest_user_content,
+                "contextSessionRefs": list(prepared.context_session_refs or []),
+                "context_session_refs": list(prepared.context_session_refs or []),
+                "pluginReferences": list(prepared.plugin_references or []),
+                "plugin_references": list(prepared.plugin_references or []),
+                "pluginAuthorizations": list(prepared.plugin_authorizations or []),
+                "plugin_authorizations": list(prepared.plugin_authorizations or []),
+                "skillReferences": list(prepared.skill_references or []),
+                "contextMentions": list(prepared.context_mentions or []),
+                "attachmentDescriptors": self._runtime_route_attachment_descriptors(guidance_chat_run.request),
+                "supervisorRuntimeModeRequestScope": {},
+                "specMode": bool(prepared.spec_mode),
+                "spec_mode": bool(prepared.spec_mode),
+                "specId": str(prepared.spec_id or ""),
+                "spec_id": str(prepared.spec_id or ""),
+                "specBrief": dict(prepared.spec_brief or {}),
+                "spec_brief": dict(prepared.spec_brief or {}),
+                "specCommand": dict(prepared.spec_command or {}),
+                "spec_command": dict(prepared.spec_command or {}),
+                "specContinuation": {},
+                "specRevision": {},
+                "specNextStage": "",
+                "spec_next_stage": "",
+                "runtimeAllowed": spec_runtime_allowed,
+                "runtimeExecutionAllowed": spec_runtime_allowed,
+            }
+        )
+
+        required_runtime_kind = ""
+        if prepared.canvas_supervisor_direct:
+            context.update(
+                {
+                    "canvasSupervisorDirect": True,
+                    "canvas_supervisor_direct": True,
+                    "canvasOperationId": prepared.canvas_operation_id,
+                    "canvas_operation_id": prepared.canvas_operation_id,
+                    "canvasExecutionContract": dict(prepared.canvas_execution_contract or {}),
+                    "canvas_execution_contract": dict(prepared.canvas_execution_contract or {}),
+                    "engineeringMode": "off",
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                }
+            )
+            canvas_runtime_route = self._canvas_runtime_route_arguments(guidance_chat_run)
+            if canvas_runtime_route:
+                context["canvasRuntimeRoute"] = canvas_runtime_route
+                context["canvas_runtime_route"] = canvas_runtime_route
+                required_runtime_kind = "creative_media"
+        elif prepared.supervisor_runtime_mode != "auto":
+            context.update(
+                {
+                    "engineeringMode": "off",
+                    "engineeringTriggerDecision": dict(prepared.engineering_trigger_decision or {}),
+                }
+            )
+            required_runtime_kind = prepared.supervisor_runtime_mode
+        elif prepared.explicit_engineering_requested:
+            context.update(
+                {
+                    "engineeringRequired": True,
+                    "explicitEngineeringRequested": True,
+                }
+            )
+            required_runtime_kind = "engineering"
+
+        if required_runtime_kind:
+            prior_episode_ids = [
+                str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+                for episode in list(context.get("capabilityEpisodes") or [])
+                if isinstance(episode, dict)
+                and str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+            ]
+            context["supervisorRuntimeModeRequestScope"] = {
+                "queueItemId": str(queue_item.get("id") or "").strip(),
+                "requiredRuntimeKind": required_runtime_kind,
+                "priorEpisodeIds": prior_episode_ids,
+            }
+        return context
+
+    async def _run_queued_guidance_attachment_preflight(
+        self,
+        guidance_chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> AsyncIterator[dict[str, Any]]:
+        if (
+            not guidance_chat_run.request.attachments
+            or guidance_chat_run.prepared.canvas_supervisor_direct
+        ):
+            return
+        async for attachment_event in self._run_attachment_preflight(
+            guidance_chat_run,
+            stream_state,
+        ):
+            yield attachment_event
+
+    def _record_queued_guidance_preparation_failure(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        queue_id: str,
+        exc: Exception,
+    ) -> str:
+        failure_class = (
+            "queued_request_invalid"
+            if isinstance(exc, ValueError)
+            else "guidance_preparation_failed"
+        )
+        logger = logging.getLogger("v8chat.chat_runtime")
+        log_method = logger.warning if isinstance(exc, ValueError) else logger.exception
+        log_method(
+            "Queued guidance '%s' could not be prepared for active run '%s': %s",
+            queue_id,
+            chat_run.active_run_id,
+            exc,
+        )
+        try:
+            db.update_chat_user_message_queue_item(
+                queue_id,
+                metadata_updates={
+                    "guidanceInjectionFailure": failure_class,
+                    "guidanceInjectionRunId": chat_run.active_run_id,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist queued guidance preparation failure for '%s'",
+                queue_id,
+            )
+        try:
+            chat_run.emit_runtime_event(
+                "human_guidance.failed",
+                {
+                    "queueMessageId": queue_id,
+                    "failureClass": failure_class,
+                    "summary": "运行中引导未通过当前消息的校验，未注入 Supervisor；当前任务将正常收束。",
+                },
+                agent_id=None,
+                node="human_guidance_queue",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to emit queued guidance preparation failure for '%s'",
+                queue_id,
+            )
+        return failure_class
 
     async def create_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         compat_diagnostics = _compat_ingress_diagnostics_from_request(chat_run.request)
@@ -4104,6 +4527,8 @@ class ChatRuntime:
             "safetyApprovalMode": safety_approval_mode,
             "supervisor_work_mode": chat_run.prepared.supervisor_work_mode,
             "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
+            "supervisor_runtime_mode": chat_run.prepared.supervisor_runtime_mode,
+            "supervisorRuntimeMode": chat_run.prepared.supervisor_runtime_mode,
             "latestUserContent": chat_run.prepared.latest_user_content,
             "latest_user_content": chat_run.prepared.latest_user_content,
             "userRequest": chat_run.prepared.latest_user_content,
@@ -4116,6 +4541,9 @@ class ChatRuntime:
             "plugin_references": list(chat_run.prepared.plugin_references),
             "pluginAuthorizations": list(chat_run.prepared.plugin_authorizations),
             "plugin_authorizations": list(chat_run.prepared.plugin_authorizations),
+            "skillReferences": list(chat_run.prepared.skill_references),
+            "contextMentions": list(chat_run.prepared.context_mentions),
+            "attachmentDescriptors": self._runtime_route_attachment_descriptors(chat_run.request),
             **dict(getattr(chat_run, "engineering_workspace", {}) or {}),
         }
         if bool(getattr(chat_run.prepared, "canvas_supervisor_direct", False)):
@@ -4261,8 +4689,11 @@ class ChatRuntime:
             else {}
         )
         engineering_required = bool(
-            getattr(chat_run.prepared, "explicit_engineering_requested", False)
-            or engineering_continuation.get("active")
+            getattr(chat_run.prepared, "supervisor_runtime_mode", "auto") == "auto"
+            and (
+                getattr(chat_run.prepared, "explicit_engineering_requested", False)
+                or engineering_continuation.get("active")
+            )
         )
         if (
             getattr(chat_run.prepared, "explicit_engineering_requested", False)
@@ -4541,6 +4972,7 @@ class ChatRuntime:
         chat_run: ChatRunContext,
         previous_bundle: ChatExecutionBundle,
         queue_item: dict[str, Any],
+        guidance_chat_run: ChatRunContext | None = None,
     ) -> ChatExecutionBundle | None:
         snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
         if isinstance(snapshot, dict):
@@ -4552,7 +4984,14 @@ class ChatRuntime:
         if not state_messages:
             return None
 
+        guidance_chat_run = guidance_chat_run or self._queued_guidance_chat_run(chat_run, queue_item)
         guidance_content = str(queue_item.get("content") or "").strip()
+        for message in reversed(list(guidance_chat_run.lc_messages or [])):
+            if not isinstance(message, HumanMessage):
+                continue
+            if isinstance(message.content, str) and message.content.strip():
+                guidance_content = message.content.strip()
+            break
         if not guidance_content:
             return None
         guidance_envelope = (
@@ -4569,21 +5008,61 @@ class ChatRuntime:
             )
         )
         snapshot_dict = snapshot if isinstance(snapshot, dict) else {}
-        runner_bundle = await supervisor_runner.create_execution_bundle(
-            config=chat_run.request.config,
-            messages=state_messages,
-            session_id=chat_run.session_id,
-            current_route_context=self._restart_route_context(chat_run, snapshot_dict),
-            runtime_dispatch_status=None,
-            engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
-            task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
-            explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
-            context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
-            context_session_refs=snapshot_dict.get("context_session_refs") if isinstance(snapshot_dict.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
-            session_coordination=snapshot_dict.get("session_coordination") if isinstance(snapshot_dict.get("session_coordination"), dict) else dict(getattr(chat_run.prepared, "session_coordination_message", None) or {}),
-            recursion_limit=self._recursion_limit(),
-            transport=chat_run.transport,
+        guidance_route_context = self._queued_guidance_route_context(
+            guidance_chat_run,
+            queue_item,
+            snapshot_dict,
         )
+        runner_bundle = await supervisor_runner.create_execution_bundle(
+            config=guidance_chat_run.request.config,
+            messages=state_messages,
+            session_id=guidance_chat_run.session_id,
+            current_route_context=guidance_route_context,
+            runtime_dispatch_status={},
+            engineering_context=guidance_chat_run.prepared.engineering_context_pack or {},
+            task_shape_hint=dict(guidance_chat_run.prepared.task_shape_hint or {}),
+            explicit_subagent_families=list(guidance_chat_run.prepared.explicit_subagent_families or []),
+            context_mentions=list(guidance_chat_run.prepared.context_mentions or []),
+            context_session_refs=list(guidance_chat_run.prepared.context_session_refs or []),
+            session_coordination=dict(guidance_chat_run.prepared.session_coordination_message or {}),
+            recursion_limit=self._recursion_limit(),
+            transport=guidance_chat_run.transport,
+        )
+        runner_payload = getattr(runner_bundle, "payload", None)
+        if isinstance(runner_payload, dict):
+            spec_runtime_allowed = bool(
+                guidance_chat_run.prepared.spec_mode
+                and self._runtime_execution_allowed_by_spec(
+                    guidance_chat_run.prepared.spec_brief
+                )
+            )
+            runner_payload.update(
+                {
+                    "runtime_dispatch_status": {},
+                    "engineering_context": guidance_chat_run.prepared.engineering_context_pack or {},
+                    "task_shape_hint": dict(guidance_chat_run.prepared.task_shape_hint or {}),
+                    "explicit_subagent_families": list(guidance_chat_run.prepared.explicit_subagent_families or []),
+                    "context_mentions": list(guidance_chat_run.prepared.context_mentions or []),
+                    "context_session_refs": list(guidance_chat_run.prepared.context_session_refs or []),
+                    "contextSessionRefs": list(guidance_chat_run.prepared.context_session_refs or []),
+                    "session_coordination": dict(guidance_chat_run.prepared.session_coordination_message or {}),
+                    "sessionCoordination": dict(guidance_chat_run.prepared.session_coordination_message or {}),
+                    "specMode": bool(guidance_chat_run.prepared.spec_mode),
+                    "spec_mode": bool(guidance_chat_run.prepared.spec_mode),
+                    "specId": str(guidance_chat_run.prepared.spec_id or ""),
+                    "spec_id": str(guidance_chat_run.prepared.spec_id or ""),
+                    "specBrief": dict(guidance_chat_run.prepared.spec_brief or {}),
+                    "spec_brief": dict(guidance_chat_run.prepared.spec_brief or {}),
+                    "specCommand": dict(guidance_chat_run.prepared.spec_command or {}),
+                    "spec_command": dict(guidance_chat_run.prepared.spec_command or {}),
+                    "specContinuation": {},
+                    "specRevision": {},
+                    "specNextStage": "",
+                    "spec_next_stage": "",
+                    "runtimeAllowed": spec_runtime_allowed,
+                    "runtimeExecutionAllowed": spec_runtime_allowed,
+                }
+            )
         diagnostics = dict(runner_bundle.diagnostics or {})
         diagnostics.update(
             {
@@ -4591,6 +5070,9 @@ class ChatRuntime:
                 "guidanceInjected": True,
                 "guidanceChars": len(guidance_content),
                 "messageCount": len(state_messages),
+                "guidanceSupervisorRuntimeMode": guidance_chat_run.prepared.supervisor_runtime_mode,
+                "guidanceCanvasSupervisorDirect": guidance_chat_run.prepared.canvas_supervisor_direct,
+                "guidanceAttachmentCount": len(list(guidance_chat_run.request.attachments or [])),
             }
         )
         runner_bundle.diagnostics = diagnostics
@@ -4757,6 +5239,66 @@ class ChatRuntime:
             valid_agent_node_names=valid_nodes,
             preserve_stream_timeline=preserve_timeline,
             reasoning_surface_contract=reasoning_surface_contract,
+        )
+
+    @staticmethod
+    def _event_model_ref(value: Any, *, depth: int = 0) -> str:
+        if value is None or depth > 4:
+            return ""
+        response_metadata = getattr(value, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            model_ref = str(
+                response_metadata.get("v8_model_ref")
+                or response_metadata.get("v8_model_id")
+                or ""
+            ).strip()
+            if model_ref:
+                return model_ref
+        if isinstance(value, dict):
+            for metadata_key in ("response_metadata", "responseMetadata", "generation_info"):
+                metadata = value.get(metadata_key)
+                if not isinstance(metadata, dict):
+                    continue
+                model_ref = str(metadata.get("v8_model_ref") or metadata.get("v8_model_id") or "").strip()
+                if model_ref:
+                    return model_ref
+            for child_key in ("message", "output", "generations", "generation"):
+                model_ref = ChatRuntime._event_model_ref(value.get(child_key), depth=depth + 1)
+                if model_ref:
+                    return model_ref
+        elif isinstance(value, (list, tuple)):
+            for item in value[:4]:
+                model_ref = ChatRuntime._event_model_ref(item, depth=depth + 1)
+                if model_ref:
+                    return model_ref
+        return ""
+
+    def _reasoning_surface_for_event(
+        self,
+        stream_state: ChatStreamState,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        model_run_id = self._normalized_stream_run_id(str(event.get("run_id") or ""))
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        payload = data.get("chunk") if event.get("event") == "on_chat_model_stream" else data.get("output")
+        model_ref = self._event_model_ref(payload)
+        if model_ref:
+            try:
+                surface = dict(llm_factory.get_model_metadata(model_ref).get("reasoning_surface") or {})
+            except Exception:
+                surface = {}
+            if surface:
+                stream_state.reasoning_surfaces_by_run[model_run_id] = surface
+                return surface
+            # An explicit model identity is authoritative. If it is unknown,
+            # fail closed instead of inheriting the Supervisor model's trusted
+            # reasoning surface for a subagent or failover model.
+            stream_state.reasoning_surfaces_by_run[model_run_id] = {}
+            return {}
+        return dict(
+            stream_state.reasoning_surfaces_by_run.get(model_run_id)
+            or stream_state.reasoning_surface_contract
+            or {}
         )
 
     @staticmethod
@@ -5233,11 +5775,18 @@ class ChatRuntime:
             runtime_context_summary["delegation_id"] = metadata.get("v8_owner_delegation_id")
         if metadata.get("v8_owner_trigger_source"):
             runtime_context_summary["trigger_source"] = metadata.get("v8_owner_trigger_source")
+        internal_model_surface = str(metadata.get("v8_internal_model_surface") or "").strip()
+        if internal_model_surface:
+            runtime_context_summary["internal_model_surface"] = internal_model_surface
         return {
             "ownerRuntimeId": owner_runtime_id,
             "ownerAgentKind": owner_kind,
             "ownerAgentId": current_agent,
-            "displayInMessage": owner_runtime_id == "chat" and owner_kind == "supervisor",
+            "displayInMessage": (
+                owner_runtime_id == "chat"
+                and owner_kind == "supervisor"
+                and not internal_model_surface
+            ),
             "runtimeContext": runtime_context_summary,
         }
 
@@ -7789,11 +8338,12 @@ class ChatRuntime:
                 return emitted_events
             provider_delta_at_ms = self._now_timestamp_ms()
             event_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
+            reasoning_surface = self._reasoning_surface_for_event(stream_state, event)
             model_events = canonical_model_event_adapter.normalize_chat_model_stream(
                 event,
                 text_snapshots=stream_state.text_snapshots_by_run,
                 reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
-                reasoning_surface=stream_state.reasoning_surface_contract,
+                reasoning_surface=reasoning_surface,
             )
             for model_event in model_events:
                 canonical_event_at_ms = self._now_timestamp_ms()
@@ -7847,7 +8397,7 @@ class ChatRuntime:
                                 "reasoningSurfaceTrust": model_event.diagnostics.get("reasoningSurfaceTrust") or "unknown",
                                 "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
                                 "modelRunId": model_run_id,
-                                "preview": str(model_event.delta or "")[:160],
+                                **_suppressed_reasoning_diagnostics(model_event.delta),
                             },
                             agent_id=stream_state.current_agent,
                             node="canonical_model_event_adapter",
@@ -7884,7 +8434,7 @@ class ChatRuntime:
                         model_run_id=model_run_id,
                         snapshot=model_event.snapshot,
                         reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
+                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                         owner=event_owner,
@@ -7899,13 +8449,14 @@ class ChatRuntime:
             provider_delta_at_ms = self._now_timestamp_ms()
             event_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
             model_run_id = (event.get("run_id") or "").strip()
+            reasoning_surface = self._reasoning_surface_for_event(stream_state, event)
             model_events = canonical_model_event_adapter.normalize_chat_model_end(
                 event,
                 text_snapshots=stream_state.text_snapshots_by_run,
                 reasoning_snapshots=stream_state.reasoning_snapshots_by_run,
                 suppress_reasoning=self._normalized_stream_run_id(model_run_id) in stream_state.narrative_started_model_run_ids,
                 emitted_text=self._current_canonical_text(stream_state),
-                reasoning_surface=stream_state.reasoning_surface_contract,
+                reasoning_surface=reasoning_surface,
             )
             final_snapshot = stream_state.text_snapshots_by_run.get(self._normalized_stream_run_id(model_run_id))
             if final_snapshot and bool(event_owner.get("displayInMessage")):
@@ -7970,7 +8521,7 @@ class ChatRuntime:
                                 "reasoningSurfaceTrust": model_event.diagnostics.get("reasoningSurfaceTrust") or "unknown",
                                 "looksLikeProgress": bool(model_event.diagnostics.get("looksLikeProgress")),
                                 "modelRunId": model_event.model_run_id,
-                                "preview": str(model_event.delta or "")[:160],
+                                **_suppressed_reasoning_diagnostics(model_event.delta),
                             },
                             agent_id=stream_state.current_agent,
                             node="canonical_model_event_adapter",
@@ -8007,7 +8558,7 @@ class ChatRuntime:
                         model_run_id=model_event.model_run_id,
                         snapshot=model_event.snapshot,
                         reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
+                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
                         owner=event_owner,
@@ -10207,24 +10758,53 @@ class ChatRuntime:
                             )
                             continuation_bundle = None
                             break
-                        self._emit_human_guidance_injected(chat_run, stream_state, queue_item)
-                        guidance_bundle = await self.create_guidance_bundle(
-                            chat_run=chat_run,
-                            previous_bundle=execution_bundle,
-                            queue_item=queue_item,
-                        )
+                        try:
+                            guidance_chat_run = self._queued_guidance_chat_run(chat_run, queue_item)
+                            self._apply_explicit_plugin_grants(guidance_chat_run)
+                            async for attachment_event in self._run_queued_guidance_attachment_preflight(
+                                guidance_chat_run,
+                                stream_state,
+                            ):
+                                yield attachment_event
+                            guidance_bundle = await self.create_guidance_bundle(
+                                chat_run=chat_run,
+                                previous_bundle=execution_bundle,
+                                queue_item=queue_item,
+                                guidance_chat_run=guidance_chat_run,
+                            )
+                        except Exception as exc:
+                            self._record_queued_guidance_preparation_failure(
+                                chat_run,
+                                queue_id=queue_id,
+                                exc=exc,
+                            )
+                            continuation_bundle = None
+                            break
                         if guidance_bundle is None:
                             chat_run.emit_runtime_event(
                                 "human_guidance.failed",
                                 {
                                     "queueMessageId": queue_id,
                                     "failureClass": "guidance_continuation_unavailable",
-                                    "summary": "运行中引导已记录，但无法创建续跑执行包。",
+                                    "summary": "运行中引导未能创建续跑执行包，未注入 Supervisor；当前任务将正常收束。",
                                 },
                                 agent_id=None,
                                 node="human_guidance_queue",
                             )
                             break
+                        self._emit_human_guidance_injected(chat_run, stream_state, queue_item)
+                        if (
+                            guidance_chat_run.prepared.canvas_supervisor_direct
+                            and guidance_chat_run.request.attachments
+                        ):
+                            await stop_canvas_attachment_preflight()
+                            canvas_attachment_preflight_task = asyncio.create_task(
+                                self._drain_canvas_attachment_preflight(
+                                    guidance_chat_run,
+                                    stream_state,
+                                ),
+                                name=f"canvas-attachment-preflight:{chat_run.active_run_id}:{queue_id}",
+                            )
                         continuation_bundle = guidance_bundle
                         try:
                             from erc.session_coordination_service import session_coordination_service

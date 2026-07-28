@@ -172,6 +172,65 @@ class SessionHistoryTimeTruthTests(unittest.TestCase):
             gc.collect()
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_supervisor_runtime_mode_is_session_truth_and_clears_legacy_work_posture(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session(
+                "sess_runtime_mode",
+                "媒体任务",
+                user_id="user",
+                metadata={"supervisorWorkMode": "engineering"},
+            )
+
+            updated = db.update_session_presentation(
+                "sess_runtime_mode",
+                {"supervisorRuntimeMode": "creative_media"},
+            )
+
+            self.assertEqual(updated["metadata"]["supervisorRuntimeMode"], "creative_media")
+            self.assertEqual(updated["metadata"]["supervisorWorkMode"], "daily")
+            db.create_or_update_session("sess_runtime_mode", "运行中标题", user_id="user")
+            session = db.get_session("sess_runtime_mode")
+            self.assertEqual(session["metadata"]["supervisorRuntimeMode"], "creative_media")
+            self.assertEqual(session["metadata"]["supervisorWorkMode"], "daily")
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_legacy_work_mode_switch_migrates_the_runtime_mode(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session(
+                "sess_legacy_runtime_mode",
+                "跨版本模式",
+                user_id="user",
+                metadata={
+                    "supervisorWorkMode": "daily",
+                    "supervisorRuntimeMode": "research",
+                },
+            )
+
+            engineering = db.update_session_presentation(
+                "sess_legacy_runtime_mode",
+                {"supervisorWorkMode": "engineering"},
+            )
+            self.assertEqual(engineering["metadata"]["supervisorWorkMode"], "engineering")
+            self.assertEqual(engineering["metadata"]["supervisorRuntimeMode"], "engineering")
+
+            daily = db.update_session_presentation(
+                "sess_legacy_runtime_mode",
+                {"supervisorWorkMode": "daily"},
+            )
+            self.assertEqual(daily["metadata"]["supervisorWorkMode"], "daily")
+            self.assertEqual(daily["metadata"]["supervisorRuntimeMode"], "auto")
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_materialized_record_keeps_history_sort_at_stable_when_runtime_is_newer(self):
         record = build_session_history_materialized_record(
             session_row={

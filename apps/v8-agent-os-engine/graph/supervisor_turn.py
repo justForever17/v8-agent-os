@@ -1,4 +1,6 @@
 import ast
+from copy import deepcopy
+import hashlib
 import json
 import re
 import time
@@ -9,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from .supervisor_context import (
     apply_passive_rag_injection,
+    build_runtime_route_compiler_system_content,
     build_supervisor_system_content,
     has_explicit_recall_cue,
     resolve_supervisor_request_context,
@@ -18,6 +21,7 @@ from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_
 from core.context.delegation import build_delegation_context
 from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.memory_observability import log_memory_observation
+from core.prompt_cache_segments import hash_prompt_segment
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
 from core.runtime_route_contract import render_runtime_route_contract
@@ -29,6 +33,15 @@ from core.runtime.reflex_gate import (
     runtime_reflex_service,
 )
 from core.system_tools.baseline import select_baseline_system_tool_names
+
+
+_SUPERVISOR_RUNTIME_MODE_KINDS = frozenset({
+    "engineering",
+    "research",
+    "creative_media",
+    "computer_use",
+    "rpa",
+})
 
 
 def _last_memory_session_context_diagnostics() -> dict:
@@ -645,6 +658,8 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
 def _authoritative_runtime_route_kinds(state) -> list[str]:
     if not isinstance(state, dict):
         return []
+    if _spec_mode_active(state) and not _spec_runtime_execution_allowed(state):
+        return []
     route_context = dict(state.get("current_route_context") or {})
     canvas_route = (
         route_context.get("canvasRuntimeRoute")
@@ -654,6 +669,13 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
     canvas_route_kind = str(canvas_route.get("routeKind") or "").strip()
     if bool(route_context.get("canvasSupervisorDirect")) and canvas_route_kind == "creative_media":
         return [canvas_route_kind]
+    selected_runtime_mode = str(
+        route_context.get("supervisorRuntimeMode")
+        or route_context.get("supervisor_runtime_mode")
+        or "auto"
+    ).strip().lower()
+    if selected_runtime_mode in _SUPERVISOR_RUNTIME_MODE_KINDS:
+        return [selected_runtime_mode]
     task_shape = _task_shape_from_state(state)
     continuation = route_context.get("engineeringContinuation")
     if not isinstance(continuation, dict):
@@ -687,6 +709,16 @@ def _authoritative_runtime_route_guidance(
         and required_kind == "creative_media"
         and str(canvas_route.get("routeKind") or "").strip() == required_kind
     )
+    selected_runtime_mode = str(
+        route_context.get("supervisorRuntimeMode")
+        or route_context.get("supervisor_runtime_mode")
+        or "auto"
+    ).strip().lower()
+    validated_mode_selection = bool(
+        not validated_canvas_route
+        and selected_runtime_mode in _SUPERVISOR_RUNTIME_MODE_KINDS
+        and selected_runtime_mode == required_kind
+    )
     contract_example = (
         json.dumps(canvas_route, ensure_ascii=False, indent=2)
         if validated_canvas_route
@@ -706,14 +738,28 @@ def _authoritative_runtime_route_guidance(
         if validated_canvas_route
         else ""
     )
-    continuation_discipline = (
-        "After the typed handoff returns, review its artifact proof and complete the current Canvas operation."
-        if validated_canvas_route
-        else (
-            "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
-            "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
-        )
+    mode_selection_discipline = (
+        f"The user explicitly selected the {required_kind} runtime in the composer mode controller. "
+        "The selection fixes the runtime family only: derive its typed briefs from the current user request and current session/workspace evidence. "
+        "It does not create Canvas authority, source/mask lineage, or an attachment-analysis bypass. "
+        if validated_mode_selection
+        else ""
     )
+    if validated_canvas_route:
+        handoff_discipline = (
+            "After the typed handoff returns, review its artifact proof and complete the current Canvas operation."
+        )
+    elif required_kind == "engineering":
+        handoff_discipline = (
+            "Carry the current request and workspace binding into bounded task briefs. When engineeringContinuation is active, "
+            "also carry its prior episode/proof refs. Include a bounded write set when known and explicit verification expectations. "
+            "After the typed handoff returns, review its proof and deliver or repair it once."
+        )
+    else:
+        handoff_discipline = (
+            "Build the runtime-specific typed briefs from the current request, current workspace binding, and any attachment-opening results already supplied. "
+            "After the typed handoff returns, review its proof and complete the user's task or report the runtime's explicit blocker."
+        )
     route_copy_instruction = (
         "Copy the exact JSON object below as the runtime_broker arguments and preserve every key, value, path, and object/array type. "
         if validated_canvas_route
@@ -728,6 +774,7 @@ def _authoritative_runtime_route_guidance(
             f"The current turn has an authoritative continuation or explicit route requirement for the {required_kind} runtime in the same session and workspace. "
             f"{correction_line}Do not repair it with Supervisor-local file or shell tools and do not answer with a prose-only diagnosis. "
             f"{canvas_discipline}"
+            f"{mode_selection_discipline}"
             "Your first durable action MUST be one runtime_broker route call. "
             f"{route_copy_instruction}"
             "never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
@@ -735,9 +782,197 @@ def _authoritative_runtime_route_guidance(
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "When one direct child is required to delegate a grandchild verifier, keep implementation and nested verification in one parent taskBrief; "
             "do not create the intended grandchild as a sibling top-level taskBrief. "
-            f"{continuation_discipline}"
+            f"{handoff_discipline}"
         )
     )
+
+
+def _selected_supervisor_runtime_mode(state) -> str:
+    route_context = (
+        dict(state.get("current_route_context") or {})
+        if isinstance(state, dict)
+        else {}
+    )
+    return str(
+        route_context.get("supervisorRuntimeMode")
+        or route_context.get("supervisor_runtime_mode")
+        or "auto"
+    ).strip().lower()
+
+
+def _runtime_route_call_id(state, *, runtime_kind: str, user_query: str) -> str:
+    state_map = state if isinstance(state, dict) else {}
+    route_context = (
+        dict(state_map.get("current_route_context") or {})
+        if isinstance(state_map.get("current_route_context"), dict)
+        else {}
+    )
+    request_scope = (
+        dict(route_context.get("supervisorRuntimeModeRequestScope") or {})
+        if isinstance(route_context.get("supervisorRuntimeModeRequestScope"), dict)
+        else {}
+    )
+    seed = "|".join(
+        [
+            str(route_context.get("sessionId") or route_context.get("session_id") or ""),
+            str(request_scope.get("queueItemId") or ""),
+            str(route_context.get("runId") or route_context.get("run_id") or state_map.get("run_id") or ""),
+            str(runtime_kind or ""),
+            str(user_query or ""),
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:20]
+    return f"call_v8_runtime_mode_{runtime_kind}_{digest}"
+
+
+def _runtime_route_shortcut_common_eligible(
+    *,
+    state,
+    messages,
+    pending_required_runtime_kinds: list[str],
+    required_orchestration_tool: str,
+    selected_tools,
+    runtime_handoff_ready: bool,
+    session_coordination: dict,
+    explicit_coordination_send: bool,
+) -> bool:
+    if len(list(pending_required_runtime_kinds or [])) != 1:
+        return False
+    if required_orchestration_tool != "runtime_broker" or not _has_tool(selected_tools, "runtime_broker"):
+        return False
+    if _spec_mode_active(state) or runtime_handoff_ready or _runtime_episode_recoverable_failure(state):
+        return False
+    if session_coordination or explicit_coordination_send:
+        return False
+    if _is_network_supervisor_compat_transport(state):
+        return False
+    if not _latest_message_is_true_user_input(messages):
+        return False
+    route_context = dict((state or {}).get("current_route_context") or {})
+    if any(
+        route_context.get(key)
+        for key in (
+            "runtimeEpisodeHandoffResume",
+            "engineeringContinuation",
+            "specContinuation",
+            "specRevision",
+        )
+    ):
+        return False
+    task_shape = _task_shape_from_state(state)
+    boundary = task_shape.get("boundaryDecision") if isinstance(task_shape.get("boundaryDecision"), dict) else {}
+    return not bool(boundary.get("askUserNeeded"))
+
+
+def _deterministic_authoritative_runtime_route_response(
+    *,
+    state,
+    messages,
+    user_query: str,
+    pending_required_runtime_kinds: list[str],
+    required_orchestration_tool: str,
+    selected_tools,
+    gate_decision,
+    runtime_handoff_ready: bool,
+    session_coordination: dict,
+    explicit_coordination_send: bool,
+) -> AIMessage | None:
+    if not _runtime_route_shortcut_common_eligible(
+        state=state,
+        messages=messages,
+        pending_required_runtime_kinds=pending_required_runtime_kinds,
+        required_orchestration_tool=required_orchestration_tool,
+        selected_tools=selected_tools,
+        runtime_handoff_ready=runtime_handoff_ready,
+        session_coordination=session_coordination,
+        explicit_coordination_send=explicit_coordination_send,
+    ):
+        return None
+    required_kind = pending_required_runtime_kinds[0]
+    route_context = dict((state or {}).get("current_route_context") or {})
+    gate_status = str(getattr(gate_decision, "status", "clean") or "clean").strip().lower()
+    canvas_route = (
+        deepcopy(route_context.get("canvasRuntimeRoute") or {})
+        if isinstance(route_context.get("canvasRuntimeRoute"), dict)
+        else {}
+    )
+    if (
+        bool(route_context.get("canvasSupervisorDirect"))
+        and required_kind == "creative_media"
+        and str(canvas_route.get("routeKind") or "").strip() == "creative_media"
+        and str(canvas_route.get("mode") or "route").strip().lower() == "route"
+        and gate_status != "blocked"
+    ):
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": _runtime_route_call_id(
+                        state,
+                        runtime_kind=required_kind,
+                        user_query=str(route_context.get("canvasOperationId") or user_query),
+                    ),
+                    "name": "runtime_broker",
+                    "args": canvas_route,
+                    "type": "tool_call",
+                }
+            ],
+        )
+        response.additional_kwargs = {
+            **dict(getattr(response, "additional_kwargs", None) or {}),
+            "v8_authoritative_runtime_direct_route": {
+                "runtimeKind": required_kind,
+                "source": "validated_canvas_contract",
+            },
+        }
+        return response
+    return None
+
+
+def _should_use_runtime_route_compiler(
+    *,
+    state,
+    messages,
+    pending_required_runtime_kinds: list[str],
+    required_orchestration_tool: str,
+    selected_tools,
+    gate_decision,
+    runtime_handoff_ready: bool,
+    session_coordination: dict,
+    explicit_coordination_send: bool,
+) -> bool:
+    if not _runtime_route_shortcut_common_eligible(
+        state=state,
+        messages=messages,
+        pending_required_runtime_kinds=pending_required_runtime_kinds,
+        required_orchestration_tool=required_orchestration_tool,
+        selected_tools=selected_tools,
+        runtime_handoff_ready=runtime_handoff_ready,
+        session_coordination=session_coordination,
+        explicit_coordination_send=explicit_coordination_send,
+    ):
+        return False
+    route_context = dict((state or {}).get("current_route_context") or {})
+    if bool(route_context.get("canvasSupervisorDirect")):
+        return False
+    required_kind = pending_required_runtime_kinds[0]
+    if _selected_supervisor_runtime_mode(state) != required_kind:
+        return False
+    gate_status = str(getattr(gate_decision, "status", "clean") or "clean").strip().lower()
+    if gate_status == "clean":
+        return True
+    # The extension prefilter's lack of a Skill/MCP candidate is irrelevant
+    # after the user has explicitly selected an owning runtime. Preserve real
+    # scope, inventory-barrier, and write-contract gates by allowing only this
+    # exact legacy clarification reason through the bounded compiler.
+    gate_reasons = {
+        str(item or "").strip()
+        for item in list(getattr(gate_decision, "reasons", None) or [])
+        if str(item or "").strip()
+    }
+    return gate_status == "clarify" and gate_reasons == {
+        "route_no_candidate_for_tool_like_query"
+    }
 
 
 def _merge_runtime_route_guidance_into_primary_system(
@@ -756,14 +991,33 @@ def _merge_runtime_route_guidance_into_primary_system(
     for index, message in enumerate(merged):
         if not isinstance(message, SystemMessage):
             continue
-        content = str(getattr(message, "content", "") or "").rstrip()
+        content = str(getattr(message, "content", "") or "")
         guidance_content = str(guidance.content or "").strip()
+        separator = "\n\n" if content and guidance_content else ""
+        merged_content = f"{content}{separator}{guidance_content}"
+        additional_kwargs = {
+            **dict(getattr(message, "additional_kwargs", {}) or {}),
+            "v8_runtime_route_guidance": True,
+        }
+        prompt_segments = list(additional_kwargs.get("v8_prompt_segments") or [])
+        if guidance_content:
+            start_offset = len(content) + len(separator)
+            prompt_segments.append(
+                {
+                    "type": "dynamic",
+                    "source": "runtime.route_guidance",
+                    "scope": "runtime_route",
+                    "hash": hash_prompt_segment(guidance_content),
+                    "charCount": len(guidance_content),
+                    "estimatedTokens": max(1, len(guidance_content) // 4),
+                    "startOffset": start_offset,
+                    "endOffset": start_offset + len(guidance_content),
+                }
+            )
+            additional_kwargs["v8_prompt_segments"] = prompt_segments
         merged[index] = SystemMessage(
-            content=f"{content}\n\n{guidance_content}" if content else guidance_content,
-            additional_kwargs={
-                **dict(getattr(message, "additional_kwargs", {}) or {}),
-                "v8_runtime_route_guidance": True,
-            },
+            content=merged_content,
+            additional_kwargs=additional_kwargs,
         )
         return merged
     return [guidance, *merged]
@@ -940,6 +1194,23 @@ def _response_has_required_broker_attempt(response, tool_name: str) -> bool:
         if str(args.get("mode") or "").strip().lower() == expected_mode:
             return True
     return False
+
+
+def _runtime_route_compiler_contract_error(response, required_kind: str) -> str | None:
+    calls = list(getattr(response, "tool_calls", None) or [])
+    if len(calls) != 1 or not isinstance(calls[0], dict):
+        return "expected_exactly_one_tool_call"
+    call = calls[0]
+    if str(call.get("name") or "").strip() != "runtime_broker":
+        return "expected_runtime_broker"
+    args = _coerce_json_mapping(call.get("args"))
+    if str(args.get("mode") or "").strip().lower() != "route":
+        return "expected_route_mode"
+    observed_kind = str(args.get("routeKind") or args.get("route_kind") or "").strip().lower()
+    expected_kind = str(required_kind or "").strip().lower()
+    if observed_kind != expected_kind:
+        return f"route_kind_mismatch:{observed_kind or 'missing'}:{expected_kind or 'missing'}"
+    return None
 
 
 def _delegation_dispatch_contract_error(response) -> str | None:
@@ -1564,9 +1835,24 @@ def _pending_runtime_milestone_kinds(state) -> list[str]:
 
 def _observed_runtime_episode_kinds(state) -> set[str]:
     route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    request_scope = (
+        dict(route_context.get("supervisorRuntimeModeRequestScope") or {})
+        if isinstance(route_context.get("supervisorRuntimeModeRequestScope"), dict)
+        else {}
+    )
+    prior_episode_ids = {
+        str(value or "").strip()
+        for value in list(request_scope.get("priorEpisodeIds") or [])
+        if str(value or "").strip()
+    }
     observed: set[str] = set()
     for episode in list(route_context.get("capabilityEpisodes") or []):
         if not isinstance(episode, dict):
+            continue
+        episode_id = str(
+            episode.get("episodeId") or episode.get("id") or episode.get("needId") or ""
+        ).strip()
+        if episode_id and episode_id in prior_episode_ids:
             continue
         kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip().lower()
         if kind:
@@ -2660,34 +2946,127 @@ def execute_supervisor_turn(
         )
         reflex_prompt_addition = render_reflex_prompt_addition(reflex_decision)
         gate_prompt_addition = render_gate_prompt_addition(gate_decision)
-        plugin_catalog_prompt_addition = ""
-        try:
-            from runtimes.plugin_manager.service import plugin_manager_service
+        route_guidance = None
+        if pending_required_runtime_kinds:
+            route_guidance = (
+                _authoritative_runtime_route_guidance(pending_required_runtime_kinds, state=state)
+                if authoritative_runtime_kinds
+                else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds)
+            )
 
-            plugin_catalog_prompt_addition = plugin_manager_service.supervisor_availability_prompt()
-        except Exception:
-            plugin_catalog_prompt_addition = ""
+        deterministic_route_response = _deterministic_authoritative_runtime_route_response(
+            state=state,
+            messages=messages,
+            user_query=user_query,
+            pending_required_runtime_kinds=pending_required_runtime_kinds,
+            required_orchestration_tool=required_orchestration_tool,
+            selected_tools=filtered_supervisor_tools,
+            gate_decision=gate_decision,
+            runtime_handoff_ready=runtime_handoff_ready,
+            session_coordination=session_coordination,
+            explicit_coordination_send=explicit_coordination_send,
+        )
+        if deterministic_route_response is not None:
+            evidence_feedback_packet = runtime_evidence_feedback_service.record(
+                session_id=session_id,
+                run_id=state.get("run_id") or state.get("runId"),
+                scope=current_scope,
+                reflex_decision=reflex_decision,
+                gate_decision=gate_decision,
+                memory_diagnostics={},
+                route_bundle=route_bundle,
+                state=state,
+            )
+            direct_marker = dict(
+                getattr(deterministic_route_response, "additional_kwargs", {}) or {}
+            ).get("v8_authoritative_runtime_direct_route") or {}
+            extensions_runtime_service.emit_supervisor_diagnostics(
+                {
+                    "queryPreview": str(user_query or "")[:160],
+                    "routeBuildMs": route_duration_ms,
+                    "systemContentBuildMs": 0.0,
+                    "passiveRagMs": 0.0,
+                    "selectedSkillCount": 0,
+                    "selectedMcpToolCount": 0,
+                    "extensionsPrefilterPromptIncluded": False,
+                    "routeReason": route_bundle.candidate_summary.get("reason"),
+                    "scope": current_scope,
+                    "sessionId": session_id,
+                    "promptProfile": "deterministic_runtime_route",
+                    "modelInvocationRequired": False,
+                    "deterministicRuntimeRoute": dict(direct_marker),
+                    "runtimeReflex": reflex_decision.as_dict(),
+                    "runtimeGate": gate_decision.as_dict(),
+                    "evidenceFeedback": evidence_feedback_packet.as_dict(),
+                }
+            )
+            _attach_route_context_to_response(
+                deterministic_route_response,
+                user_query=user_query,
+                route_bundle=route_bundle,
+                selected_tools=filtered_supervisor_tools,
+            )
+            extensions_runtime_service.emit_response_tool_calls(deterministic_route_response)
+            extensions_runtime_service.emit_execution_completed(response=deterministic_route_response)
+            return deterministic_route_response
+
+        use_runtime_route_compiler = _should_use_runtime_route_compiler(
+            state=state,
+            messages=messages,
+            pending_required_runtime_kinds=pending_required_runtime_kinds,
+            required_orchestration_tool=required_orchestration_tool,
+            selected_tools=filtered_supervisor_tools,
+            gate_decision=gate_decision,
+            runtime_handoff_ready=runtime_handoff_ready,
+            session_coordination=session_coordination,
+            explicit_coordination_send=explicit_coordination_send,
+        )
+        plugin_catalog_prompt_addition = ""
+        if not use_runtime_route_compiler:
+            try:
+                from runtimes.plugin_manager.service import plugin_manager_service
+
+                plugin_catalog_prompt_addition = plugin_manager_service.supervisor_availability_prompt()
+            except Exception:
+                plugin_catalog_prompt_addition = ""
 
         prompt_started_at = time.perf_counter()
-        context_bundle = build_supervisor_system_content(
-            state=state,
-            config=config,
-            user_query=user_query,
-            current_scope=current_scope,
-            scope_chain=scope_chain,
-            session_id=session_id,
-            messages=messages,
-            loaded_agents=loaded_agents,
-            supervisor_tools=filtered_supervisor_tools,
-            memory_runtime=memory_runtime,
-            extension_prompt_addition=route_bundle.prompt_addition,
-            plugin_catalog_prompt_addition=plugin_catalog_prompt_addition,
-            reflex_prompt_addition=reflex_prompt_addition,
-            gate_prompt_addition=gate_prompt_addition,
-        )
+        if use_runtime_route_compiler:
+            context_bundle = build_runtime_route_compiler_system_content(
+                state=state,
+                config=config,
+                user_query=user_query,
+                current_scope=current_scope,
+                session_id=session_id,
+                required_runtime_kind=required_orchestration_kind,
+                route_guidance=str(getattr(route_guidance, "content", "") or ""),
+                reflex_prompt_addition=reflex_prompt_addition,
+                gate_prompt_addition=gate_prompt_addition,
+            )
+        else:
+            context_bundle = build_supervisor_system_content(
+                state=state,
+                config=config,
+                user_query=user_query,
+                current_scope=current_scope,
+                scope_chain=scope_chain,
+                session_id=session_id,
+                messages=messages,
+                loaded_agents=loaded_agents,
+                supervisor_tools=filtered_supervisor_tools,
+                memory_runtime=memory_runtime,
+                extension_prompt_addition=route_bundle.prompt_addition,
+                plugin_catalog_prompt_addition=plugin_catalog_prompt_addition,
+                reflex_prompt_addition=reflex_prompt_addition,
+                gate_prompt_addition=gate_prompt_addition,
+            )
         prompt_duration_ms = round((time.perf_counter() - prompt_started_at) * 1000, 2)
         system_content = context_bundle["system_content"]
-        memory_diagnostics = _last_memory_session_context_diagnostics()
+        memory_diagnostics = (
+            {}
+            if use_runtime_route_compiler
+            else _last_memory_session_context_diagnostics()
+        )
         log_memory_observation(
             "passive_context",
             "INFO",
@@ -2713,7 +3092,15 @@ def execute_supervisor_turn(
             state=state,
         )
 
-        if session_coordination or explicit_coordination_send:
+        if use_runtime_route_compiler:
+            prepared_messages = messages
+            passive_rag_duration_ms = 0.0
+            passive_rag_diagnostics = {
+                "injection_allowed": False,
+                "reject_reason": "explicit_runtime_route_compiler_uses_current_request_only",
+                "promptProfile": "runtime_route_compiler",
+            }
+        elif session_coordination or explicit_coordination_send:
             prepared_messages = messages
             passive_rag_duration_ms = 0.0
             passive_rag_diagnostics = {
@@ -2773,6 +3160,11 @@ def execute_supervisor_turn(
             resolved_scope=current_scope,
             scope_chain=scope_chain,
             remaining_steps=state.get("remaining_steps", 100),
+            prompt_profile=(
+                "runtime_route_compiler"
+                if use_runtime_route_compiler
+                else "full"
+            ),
         )
         if not explicit_coordination_send and _should_force_memory_broker_first(
             user_query=user_query,
@@ -2805,12 +3197,7 @@ def execute_supervisor_turn(
         spec_revision_contract = _latest_spec_revision_contract(prepared_messages)
         if spec_revision_contract:
             prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
-        if pending_required_runtime_kinds:
-            route_guidance = (
-                _authoritative_runtime_route_guidance(pending_required_runtime_kinds, state=state)
-                if authoritative_runtime_kinds
-                else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds)
-            )
+        if pending_required_runtime_kinds and not use_runtime_route_compiler:
             prepared_messages = _merge_runtime_route_guidance_into_primary_system(
                 prepared_messages,
                 route_guidance,
@@ -2827,6 +3214,12 @@ def execute_supervisor_turn(
                 "routeReason": route_bundle.candidate_summary.get("reason"),
                 "scope": current_scope,
                 "sessionId": session_id,
+                "promptProfile": (
+                    "runtime_route_compiler"
+                    if use_runtime_route_compiler
+                    else "full_supervisor"
+                ),
+                "modelInvocationRequired": True,
                 "runtimeReflex": reflex_decision.as_dict(),
                 "runtimeGate": gate_decision.as_dict(),
                 "evidenceFeedback": evidence_feedback_packet.as_dict(),
@@ -2883,11 +3276,16 @@ def execute_supervisor_turn(
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                 candidate_model_id,
-                streaming=False,
+                streaming=True,
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),
             tool_choice=required_orchestration_tool or None,
+            invocation_config=(
+                {"metadata": {"v8_internal_model_surface": "runtime_route_compiler"}}
+                if use_runtime_route_compiler
+                else None
+            ),
             # A missing route is a Supervisor behavior error, not a provider
             # outage. Return the first response so the same model can receive
             # one precise contract correction before failover governance is
@@ -2897,22 +3295,28 @@ def execute_supervisor_turn(
         response = _normalize_runtime_broker_response_arguments(
             sanitize_response_tool_calls(response)
         )
-        response = _retry_missing_research_briefs_once(
-            response,
-            state=state,
-            prepared_messages=prepared_messages,
-            invoke_llm=invoke_llm,
-            filtered_tools=filtered_supervisor_tools,
-            robust_invoke=robust_invoke,
-            preferred_model_id=sup_model_name,
-            build_model=lambda candidate_model_id: llm_factory.create_chat_model(
-                candidate_model_id,
-                streaming=False,
-                _role="supervisor",
-                **invoke_caller_kwargs,
-            ),
-            sanitize_response_tool_calls=sanitize_response_tool_calls,
-        )
+        if use_runtime_route_compiler:
+            # Compiler prose is an internal routing representation. Its stream
+            # is suppressed by metadata; clear the aggregate as a second guard
+            # before the AIMessage reaches history or Human Surface projection.
+            response.content = ""
+        if not use_runtime_route_compiler:
+            response = _retry_missing_research_briefs_once(
+                response,
+                state=state,
+                prepared_messages=prepared_messages,
+                invoke_llm=invoke_llm,
+                filtered_tools=filtered_supervisor_tools,
+                robust_invoke=robust_invoke,
+                preferred_model_id=sup_model_name,
+                build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                    candidate_model_id,
+                    streaming=True,
+                    _role="supervisor",
+                    **invoke_caller_kwargs,
+                ),
+                sanitize_response_tool_calls=sanitize_response_tool_calls,
+            )
         response = _retry_spec_revision_once(
             response,
             contract=spec_revision_contract,
@@ -2923,7 +3327,7 @@ def execute_supervisor_turn(
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                 candidate_model_id,
-                streaming=False,
+                streaming=True,
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),
@@ -2938,7 +3342,7 @@ def execute_supervisor_turn(
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                 candidate_model_id,
-                streaming=False,
+                streaming=True,
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),
@@ -2946,7 +3350,16 @@ def execute_supervisor_turn(
         )
         if pending_required_runtime_kinds:
             required_kind = required_orchestration_kind
-            if (
+            compiler_contract_error = (
+                _runtime_route_compiler_contract_error(response, required_kind)
+                if use_runtime_route_compiler
+                else None
+            )
+            if compiler_contract_error:
+                raise RuntimeError(
+                    f"runtime_route_compiler_contract_invalid:{compiler_contract_error}"
+                )
+            if not use_runtime_route_compiler and (
                 required_kind not in _response_runtime_route_kinds(response)
                 and not _response_has_required_broker_attempt(
                     response,
@@ -2970,7 +3383,7 @@ def execute_supervisor_turn(
                     preferred_model_id=sup_model_name,
                     build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                         candidate_model_id,
-                        streaming=False,
+                        streaming=True,
                         _role="supervisor",
                         **invoke_caller_kwargs,
                     ),
@@ -3009,7 +3422,7 @@ def execute_supervisor_turn(
                 preferred_model_id=sup_model_name,
                 build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                     candidate_model_id,
-                    streaming=False,
+                    streaming=True,
                     _role="supervisor",
                     **invoke_caller_kwargs,
                 ),
@@ -3036,7 +3449,7 @@ def execute_supervisor_turn(
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(
                 candidate_model_id,
-                streaming=False,
+                streaming=True,
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),

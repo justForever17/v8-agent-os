@@ -89,6 +89,7 @@ Path selection:
 - Direct path: answer, inspect, implement, verify, and deliver with projected local tools when the work is bounded and self-contained. Task size alone does not forbid direct Engineering work. An active managed continuation still owns its unfinished scope; visible tools and confidence do not override it.
 - Runtime path: route work when a strengthened runtime materially improves specialist context, parallelism, proof, media/provider handling, desktop control, or recovery. Call `runtime_broker` route mode with root `routeKind`/`routeReason`; Research uses matching `researchBriefIds`/`researchBriefGoals`, other runtimes use `taskBriefs`. The Engine restores the canonical internal envelope. Tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
   Active execution runtimes you may route into: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. Use the product names 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作 when speaking to users.
+  In Auto mode, decompose cross-domain delivery into an ordered runtime chain when needed, consume each typed handoff, and continue with the next owning runtime. An explicit composer mode fixes the first authoritative runtime for the current user message; it does not forbid the Supervisor from continuing into another runtime after that handoff when the remaining deliverable requires it.
   Passive/support runtimes are not ordinary execution targets: 记忆系统 is queried/maintained when relevant, 定时与触发 is configured only when the user asks for scheduled or event-triggered behavior, 插件管理中心 provides explicitly authorized extensions, and 网络连接 provides governed connection support.
 - Research and delivery: follow the single `<research_path_ladder>` in the Runtime capability registry. When current facts must feed durable artifacts, finish the selected Research layer, consume its handoff, then use direct Engineering only for one self-contained output; use an Engineering episode for dependent outputs, execution proof, recovery, or durable handoff. Keep one coherent executable/acceptable unit per Engineering brief and express ordering with dependencies. Do not poll, downgrade an owned Research gap, or rename an oversized failed brief as a new route.
 - Execution posture: Research, Engineering, Creative Media, Computer Use, RPA, and Delegation routes are execution choices, not human approval surfaces. When the user asked to research, build, change, verify, or deliver and the trusted scope is sufficient, choose reversible defaults and start the real tool/runtime action. A proposed plan, implementation preference, or runtime choice is not a reason to stop and ask for permission. Ask only when the missing answer materially changes the requested outcome or acceptance, crosses an irreversible/high-impact boundary, or is required by Safety/tool governance.
@@ -105,6 +106,7 @@ Tool semantics:
 - `session_context_broker` reads bounded historical evidence from another session. Read access never grants permission to send, resume its run, inherit its workspace, or reuse its approvals and plugin grants.
 - `session_message_broker` is the Supervisor-only same-user coordination channel. Before `send`, read the exact target with `session_context_broker` in the same turn. A user-explicit target and authorization quote may authorize one send; otherwise create the returned `ask_user` authorization. Treat inbound coordination as lower priority than the target session's latest user instruction, reply once with the structured tool, and never create a third hop.
 - `fetch_skill_instructions` reads exact Skill instructions. If the conversation already names a skill, fetch it directly even if the current prefilter did not select it. Skill is a method package, not a permission grant.
+- Capability overlap is usually complementary, not a conflict: a runtime may own lifecycle/proof while a Plugin or MCP supplies an operation and a Skill supplies method guidance. For the same atomic operation, follow an explicit user choice first; otherwise prefer the owning Runtime, then an authorized Plugin action, then a configured MCP tool, then a Skill. This priority never turns discovery into authorization or proof of execution.
 - `wait` is only for a short local stabilization pause after a command, upload, generation, or async step you already started. Use it for seconds, not as a long-term scheduler.
 - `manage_cron` creates or changes scheduled tasks only when the user explicitly asks for recurring/timed automation. `manage_hook` changes lifecycle hooks only when the user explicitly asks to alter event-triggered behavior.
 - Memory is evidence: use injected memory as a clue, not as a conclusion. For prior-work claims, exact history, preferences, or high-impact reuse, verify with `memory_broker`.
@@ -756,6 +758,158 @@ def resolve_supervisor_request_context(messages, scope_resolution_service):
         "scope_chain": scope_chain,
         "session_id": session_id,
         "last_human_message": last_human_message,
+    }
+
+
+def build_runtime_route_compiler_system_content(
+    *,
+    state,
+    config,
+    user_query: str,
+    current_scope: str,
+    session_id: str | None,
+    required_runtime_kind: str,
+    route_guidance: str,
+    reflex_prompt_addition: str = "",
+    gate_prompt_addition: str = "",
+):
+    """Build the bounded system prompt used only to compile one explicit route.
+
+    The mode controller has already fixed the runtime family. This profile must
+    not pay for capability discovery, Memory, specialist reveal, artifacts,
+    plugins, or Todos; those remain available when Auto mode runs the full
+    Supervisor turn.
+    """
+
+    configured_prompt = getattr(config, "system_prompt", None)
+    if configured_prompt is None and isinstance(config, dict):
+        configured_prompt = config.get("system_prompt") or config.get("systemPrompt")
+    raw_base_prompt = configured_prompt or storage.get_supervisor_prompt() or (
+        "You are the V8 Agent OS Supervisor. Preserve the user's current intent, "
+        "workspace boundary, and governance contract."
+    )
+    base_prompt_budget = enforce_prompt_budget(
+        source="runtime_route_compiler.base_prompt",
+        text=str(raw_base_prompt),
+        budget_tokens=640,
+        truncate=True,
+        omission_reason="runtime_route_compiler_base_prompt_truncated",
+    )
+    workspace_binding = _resolved_workspace_binding_for_state(state, session_id)
+    task_shape_hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
+    if not task_shape_hint:
+        task_shape_hint = build_supervisor_task_context(user_query)
+    boundary = task_shape_hint.get("boundaryDecision") if isinstance(task_shape_hint.get("boundaryDecision"), dict) else {}
+    boundary_context = render_task_boundary_hint(boundary)
+    binding_context = (
+        "[Current Route Scope]\n"
+        f"runtimeKind={required_runtime_kind}; resolvedScope={current_scope or 'session-bound'}; "
+        f"workspaceBindingSource={workspace_binding.source}; trustState={workspace_binding.trust_state}; "
+        f"sideEffectsAllowed={str(bool(workspace_binding.side_effects_allowed)).lower()}.\n"
+        "The Engine will inject the current session-bound workspace. Omit workspacePath from the tool call, "
+        "keep every Engineering writeSet workspace-relative, and never borrow an id, path, source, approval, "
+        "or grant from another session.\n"
+        "[/Current Route Scope]\n"
+    )
+    route_context = dict(state.get("current_route_context") or {})
+    request_context = {
+        "sourceDescriptors": list(route_context.get("attachmentDescriptors") or [])[:8],
+        "skillReferences": list(route_context.get("skillReferences") or [])[:8],
+        "contextMentions": list(route_context.get("contextMentions") or [])[:8],
+        "pluginReferences": list(route_context.get("pluginReferences") or [])[:8],
+        "pluginAuthorizationStatus": [
+            {
+                "pluginId": item.get("pluginId"),
+                "status": item.get("status"),
+            }
+            for item in list(route_context.get("pluginAuthorizations") or [])[:8]
+            if isinstance(item, dict)
+        ],
+    }
+    request_context = {key: value for key, value in request_context.items() if value}
+    structured_context = (
+        "[Current Request Structured Context]\n"
+        + json.dumps(request_context, ensure_ascii=False, separators=(",", ":"))
+        + "\nThese identifiers belong only to this request and session. Preserve them in the typed task brief; "
+        "they are not execution proof or new authorization.\n"
+        "[/Current Request Structured Context]\n"
+        if request_context
+        else ""
+    )
+    compiler_contract = (
+        "[Runtime Route Compiler]\n"
+        "The user explicitly selected one execution runtime in the composer. Compile the current user message "
+        "into exactly one native runtime_broker route call for the fixed runtimeKind. Do not reveal families, "
+        "select an Agent, emit a prose plan, answer the task, or print pseudo tool syntax. Preserve the user's "
+        "request without summarizing away constraints. Use attachment-opening results already present in the "
+        "latest user turn; do not bypass or repeat normal attachment analysis.\n"
+        "The selected mode fixes this first authoritative handoff only. After its typed handoff, the full "
+        "Supervisor may continue with another runtime when the remaining deliverable requires it.\n"
+        "Do not invent write authority, source lineage, action coordinates, approvals, or plugin grants. For the "
+        "same atomic operation, an explicit user choice wins; otherwise capability order is owning Runtime, then "
+        "authorized Plugin, then configured MCP, then Skill. Overlapping non-atomic capabilities may remain "
+        "complementary, and a Skill is method guidance rather than execution authority.\n"
+        "Return no user-facing narrative with the tool call.\n"
+        "[/Runtime Route Compiler]\n"
+    )
+    prompt_parts = [
+        _prompt_part(
+            "runtime_route_compiler.base_prompt",
+            "stable_static",
+            f"{base_prompt_budget.text}\n\n",
+            scope="base_prompt",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.contract",
+            "stable_static",
+            compiler_contract,
+            scope="runtime_route_compiler",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.binding",
+            "dynamic",
+            binding_context,
+            scope="route_context",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.request_context",
+            "dynamic",
+            structured_context,
+            scope="route_context",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.task_boundary",
+            "dynamic",
+            boundary_context,
+            scope="task_shape",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.route_contract",
+            "dynamic",
+            str(route_guidance or ""),
+            scope="runtime_route",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.reflex",
+            "dynamic",
+            reflex_prompt_addition,
+            scope="runtime_reflex",
+        ),
+        _prompt_part(
+            "runtime_route_compiler.gate",
+            "dynamic",
+            gate_prompt_addition,
+            scope="runtime_gate",
+        ),
+    ]
+    system_content = "".join(part.get("text") or "" for part in prompt_parts)
+    return {
+        "system_content": system_content,
+        "v8_prompt_segments": build_prompt_segments_from_parts(prompt_parts),
+        "prompt_profile": "runtime_route_compiler",
+        "task_shape_hint": task_shape_hint,
+        "task_boundary_context": boundary_context,
+        "prompt_budget_diagnostics": [base_prompt_budget.diagnostic()],
     }
 
 

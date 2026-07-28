@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "purpose": "V8 adapter-level fixture for Gemini GenerateContent thought summaries mapped by langchain-google-genai to typed thinking content blocks.",
+  "providerId": "gemini-api",
+  "modelIds": [
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash"
+  ],
+  "streamDelta": {
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "先核对约束，再组织答案。",
+        "signature": "opaque-thought-signature"
+      }
+    ]
+  },
+  "terminalOutput": {
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "先核对约束，再组织答案。",
+        "signature": "opaque-thought-signature"
+      },
+      {
+        "type": "text",
+        "text": "已完成。"
+      }
+    ]
+  },
+  "stableField": "content[type=thinking]",
+  "displayKind": "summary"
+}

@@ -234,6 +234,9 @@ class ChatRequestData(BaseModel):
     spec_mode: Optional[bool] = Field(default=None, alias="specMode")
     spec_id: Optional[str] = Field(default=None, alias="specId")
     supervisor_work_mode: Optional[str] = Field(default=None, alias="supervisorWorkMode")
+    supervisor_runtime_mode: Optional[
+        Literal["auto", "engineering", "research", "creative_media", "computer_use", "rpa"]
+    ] = Field(default=None, alias="supervisorRuntimeMode")
     engineering_mode: Optional[str] = Field(default=None, alias="engineeringMode")
     supervisor_reasoning_effort: Optional[str] = Field(default=None, alias="supervisorReasoningEffort")
     safety_approval_mode: Optional[str] = Field(default=None, alias="safetyApprovalMode")

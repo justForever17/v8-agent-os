@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from core.reasoning_payload_contract import REASONING_KEYS
+from core.response_normalizer import extract_reasoning_summary
 
 
 ReasoningSurface = dict[str, Any]
@@ -285,14 +286,15 @@ def resolve_reasoning_surface_for_metadata(metadata: Mapping[str, Any] | None) -
 def _iter_content_blocks(payload: Any) -> list[Any]:
     if payload is None:
         return []
+    content = getattr(payload, "content", None)
+    if content is None and isinstance(payload, Mapping):
+        content = payload.get("content")
+    if isinstance(content, list) and content:
+        return content
+
     content_blocks = getattr(payload, "content_blocks", None)
     if content_blocks is None and isinstance(payload, Mapping):
         content_blocks = payload.get("content_blocks")
-    if content_blocks is None:
-        content = getattr(payload, "content", None)
-        if content is None and isinstance(payload, Mapping):
-            content = payload.get("content")
-        content_blocks = content if isinstance(content, list) else None
     return content_blocks if isinstance(content_blocks, list) else []
 
 
@@ -339,31 +341,22 @@ def reasoning_kind_for_surface(surface: Mapping[str, Any]) -> str:
 def evaluate_reasoning_payload(surface_value: Any, payload: Any) -> dict[str, Any]:
     surface = normalize_reasoning_surface(surface_value)
     mode = _safe_text(surface.get("mode")).lower()
+    trust = _safe_text(surface.get("trust")).lower()
     fields = [str(item).strip() for item in surface.get("responseFields") or [] if str(item).strip()]
-    matched_field = next((field for field in fields if _path_exists(payload, field)), "")
-    accepted = mode != "hidden" and bool(matched_field)
-    if not accepted:
-        unverified_field = "" if is_explicit_reasoning_disabled(surface) else detect_unverified_reasoning_field(payload)
-        if unverified_field:
-            return {
-                "accepted": True,
-                "matchedField": unverified_field,
-                "reasoningKind": "provider_reasoning",
-                "reasoningSurfaceMode": "unverified",
-                "reasoningSurfaceTrust": "unverified",
-                "reasoningDisplayKind": "provider_reasoning",
-                "reasoningRequestStyle": surface.get("requestStyle") or "none",
-                "reasoningUnverified": True,
-                "reasoningSurface": {
-                    **surface,
-                    "mode": "provider_reasoning",
-                    "trust": "unverified",
-                    "displayKind": "provider_reasoning",
-                    "responseFields": [unverified_field],
-                    "notes": "V8 detected a separated reasoning field that is not yet registered in the provider/model contract.",
-                    "unverified": True,
-                },
-            }
+    openai_summary_surface = (
+        mode == "reasoning_summary"
+        and _safe_text(surface.get("requestStyle")).lower() == "openai_reasoning"
+    )
+    if openai_summary_surface:
+        # OpenAI exposes typed summaries, not hidden chain-of-thought. A generic
+        # OpenAI-compatible reasoning_content field is not a summary contract.
+        matched_field = "reasoning.summary" if extract_reasoning_summary(payload) else ""
+    else:
+        matched_field = next((field for field in fields if _path_exists(payload, field)), "")
+
+    trusted = trust in {"official", "adapter_verified"}
+    explicitly_unverified = trust == "unverified" and mode != "hidden"
+    accepted = mode != "hidden" and bool(matched_field) and (trusted or explicitly_unverified)
     reasoning_kind = reasoning_kind_for_surface(surface) if accepted else "hidden"
     return {
         "accepted": accepted,
@@ -373,5 +366,6 @@ def evaluate_reasoning_payload(surface_value: Any, payload: Any) -> dict[str, An
         "reasoningSurfaceTrust": surface.get("trust") or "unknown",
         "reasoningDisplayKind": surface.get("displayKind") or "hidden",
         "reasoningRequestStyle": surface.get("requestStyle") or "none",
+        "reasoningUnverified": bool(accepted and explicitly_unverified),
         "reasoningSurface": surface,
     }

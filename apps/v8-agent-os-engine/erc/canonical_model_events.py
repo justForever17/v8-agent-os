@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from core.chat_output_extractor import extract_text_and_reasoning
 from core.reasoning_surface_contract import evaluate_reasoning_payload, normalize_reasoning_surface
+from core.response_normalizer import extract_reasoning_summary, extract_typed_thinking_text
 
 
 CanonicalModelEventType = Literal[
@@ -325,9 +326,10 @@ class LangChainCanonicalModelEventAdapter:
         if raw_reasoning and not suppress_reasoning:
             reasoning_decision = self._reasoning_payload_decision(event, payload, reasoning_surface)
             if not reasoning_decision.get("accepted"):
+                suppressed_run_key = f"__suppressed__::{normalized_model_run_id(model_run_id)}"
                 suppressed_delta, suppressed_snapshot = consume_canonical_stream_value(
                     reasoning_snapshots,
-                    model_run_id,
+                    suppressed_run_key,
                     raw_reasoning,
                     allow_token_delta=True,
                 )
@@ -354,6 +356,21 @@ class LangChainCanonicalModelEventAdapter:
                         )
                     )
                 return events
+
+            if reasoning_decision.get("reasoningKind") == "summary":
+                request_style = reasoning_decision.get("reasoningRequestStyle")
+                matched_field = reasoning_decision.get("matchedField")
+                if request_style == "openai_reasoning":
+                    # OpenAI's typed summary is public; sibling raw fields are not.
+                    raw_reasoning = extract_reasoning_summary(payload)
+                elif request_style == "gemini_include_thoughts" and matched_field == "content[type=thinking]":
+                    # Gemini maps public thought summaries and opaque signatures
+                    # into the same typed block. Project only the summary text.
+                    raw_reasoning = extract_typed_thinking_text(payload)
+                else:
+                    return events
+                if not raw_reasoning:
+                    return events
 
             reasoning_delta, reasoning_snapshot = consume_canonical_stream_value(
                 reasoning_snapshots,

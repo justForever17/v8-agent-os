@@ -6,7 +6,6 @@ import re
 import math
 from datetime import datetime, timezone
 
-from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 try:
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,6 +19,7 @@ except ImportError:  # pragma: no cover - optional dependency in dev env
 
 from core.storage import storage
 from core.llm_chat_adapter import V8ChatModelAdapter
+from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
 from core.gemini_cli_runtime import GeminiCliRuntimeModel
 from core.openai_codex_runtime import OpenAICodexResponsesRuntimeModel
 from core.model_capability_matrix import build_effective_capability_matrix, normalize_capability_metadata
@@ -1114,6 +1114,18 @@ class LLMFactory:
         for key, value in kwargs.items():
             if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "timeout"}:
                 final_kwargs[key] = value
+
+        reasoning_surface = meta.get("reasoning_surface")
+        if isinstance(reasoning_surface, dict) and (
+            str(reasoning_surface.get("mode") or "").strip() == "reasoning_summary"
+            and str(reasoning_surface.get("trust") or "").strip() == "adapter_verified"
+            and str(reasoning_surface.get("requestStyle") or "").strip() == "gemini_include_thoughts"
+            and "content[type=thinking]" in {
+                str(item or "").strip()
+                for item in list(reasoning_surface.get("responseFields") or [])
+            }
+        ):
+            final_kwargs.setdefault("include_thoughts", True)
         final_kwargs = merge_model_request_patch(
             final_kwargs,
             reasoning_effort_request_patch(
@@ -1225,7 +1237,10 @@ class LLMFactory:
                 role=role,
                 meta={"provider_id": "openai", "provider_name": "openai", "api_standard": "openai"},
                 model_kwargs=provider_kwargs,
-                builder=lambda: ChatOpenAI(**provider_kwargs),
+                builder=lambda: V8OpenAICompatibleChatModel(
+                    v8_model_ref=f"openai::{model_id}",
+                    **provider_kwargs,
+                ),
             )
 
         if meta.get("oauth_error"):
@@ -1328,7 +1343,11 @@ class LLMFactory:
                     request_kind=request_kind,
                     capability_class_override=capability_class_override,
                 )
-                builder = lambda: ChatOpenAI(**provider_kwargs)
+                resolved_model_ref = str(meta.get("model_ref") or model_id)
+                builder = lambda: V8OpenAICompatibleChatModel(
+                    v8_model_ref=resolved_model_ref,
+                    **provider_kwargs,
+                )
             return V8ChatModelAdapter(
                 model_id=wire_model_id,
                 provider_standard=runtime_provider_standard,

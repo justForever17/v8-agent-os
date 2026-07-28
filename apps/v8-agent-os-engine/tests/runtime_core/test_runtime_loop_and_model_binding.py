@@ -315,6 +315,25 @@ def test_provider_hosted_tool_outputs_remain_server_content_not_local_tool_calls
     assert decorated.response_metadata["v8_provider_hosted_tools"] == ["web_search"]
 
 
+def test_decorated_model_chunks_keep_provider_qualified_ref_for_reasoning_contract():
+    adapter = V8ChatModelAdapter(
+        model_id="MiniMax-M3",
+        provider_standard="openai",
+        role="agent:worker",
+        meta={
+            "api_standard": "openai",
+            "model_ref": "minimax-cn::MiniMax-M3",
+        },
+        model_kwargs={},
+        builder=lambda: _NativeModel(),
+    )
+
+    decorated = adapter._decorate_message(AIMessage(content=""))
+
+    assert decorated.response_metadata["v8_model_id"] == "MiniMax-M3"
+    assert decorated.response_metadata["v8_model_ref"] == "minimax-cn::MiniMax-M3"
+
+
 def test_provider_hosted_tools_disable_response_cache_and_hash_exact_schema():
     hosted = prompt_cache_gateway.dry_run(
         messages=[HumanMessage(content="latest release")],

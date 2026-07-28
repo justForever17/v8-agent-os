@@ -1,6 +1,7 @@
 import { buildAdminApiUrl, parseJsonSafe, parseTextSafe, streamNdjson } from "@/src/lib/admin-client";
 import { normalizeSessionHistoryItem, normalizeSessionHistoryList } from "@/src/lib/session-history";
 import { translateCurrent } from "@/src/lib/locale";
+import type { SupervisorRuntimeMode } from "@v8/session-realtime";
 import type {
     ArtifactDetail,
     AuthSessionPayload,
@@ -603,7 +604,7 @@ export async function uploadUserBackground(
 export async function updateConversationPresentation(
     authorizedFetch: AuthorizedFetch,
     id: string,
-    input: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" },
+    input: { title?: string; pinned?: boolean; supervisorRuntimeMode?: SupervisorRuntimeMode },
 ) {
     const payload = await authorizedJson<ConversationSummary>(
         authorizedFetch,
@@ -1229,6 +1230,7 @@ export async function submitChatMessage(
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 specMode: (options.specMode || options.specCommand) ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
+                supervisorRuntimeMode: options.supervisorRuntimeMode || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
@@ -1521,6 +1523,7 @@ type SendChatOptions = {
     specMode?: boolean;
     specCommand?: { action: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex"; specId?: string; stage?: string };
     supervisorReasoningEffort?: string;
+    supervisorRuntimeMode?: SupervisorRuntimeMode;
     safetyApprovalMode?: "manual" | "reduced" | "minimal";
 };
 
@@ -1554,6 +1557,7 @@ export async function sendChatMessageStream(
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 specMode: (options.specMode || options.specCommand) ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
+                supervisorRuntimeMode: options.supervisorRuntimeMode || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({

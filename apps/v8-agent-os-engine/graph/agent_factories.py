@@ -59,6 +59,10 @@ def create_subagent_chat_model(
         raise ValueError("Subagent model_id must be provided")
     model_kwargs = dict(kwargs)
     model_kwargs.pop("max_tokens", None)
+    # Registered workers and their reviewers are user-visible subagent work.
+    # Keep this invariant here so a caller cannot silently drop their
+    # canonical text/reasoning stream by passing a stale non-streaming flag.
+    model_kwargs["streaming"] = True
     model_kwargs.update(subagent_model_kwargs(normalized_model_id))
     return llm_factory.create_chat_model(
         normalized_model_id,
@@ -1298,7 +1302,7 @@ def build_agent_node(
         create_subagent_chat_model(
             agent_model_id,
             role=f"agent:{agent_id}",
-            streaming=False,
+            streaming=True,
             timeout=180,
         )
         if agent_model_id
@@ -1649,7 +1653,7 @@ def build_agent_node(
                         build_model=lambda candidate_model_id: create_subagent_chat_model(
                             candidate_model_id,
                             role=f"agent:{agent_id}",
-                            streaming=False,
+                            streaming=True,
                             timeout=180,
                         ),
                     )
@@ -1770,7 +1774,7 @@ def build_reviewer_node(
         create_subagent_chat_model(
             agent_model_id,
             role=f"reviewer:{agent_id}",
-            streaming=False,
+            streaming=True,
             timeout=180,
         )
         if agent_model_id
@@ -1849,7 +1853,7 @@ def build_reviewer_node(
                     build_model=lambda candidate_model_id: create_subagent_chat_model(
                         candidate_model_id,
                         role=f"reviewer:{agent_id}",
-                        streaming=False,
+                        streaming=True,
                         timeout=180,
                     ),
                 )

@@ -8,7 +8,7 @@ from graph.agent_factories import (
     create_subagent_chat_model,
     subagent_model_kwargs,
 )
-from graph.supervisor_builder import build_supervisor_runtime_bundle
+from graph.supervisor_builder import _is_request_model_override, build_supervisor_runtime_bundle
 
 
 def test_subagent_model_budget_uses_configured_model_limit(monkeypatch):
@@ -18,6 +18,42 @@ def test_subagent_model_budget_uses_configured_model_limit(monkeypatch):
     )
 
     assert subagent_model_kwargs("provider::long-output-model") == {"max_tokens": 131072}
+
+
+def test_request_model_override_compares_provider_qualified_identity(monkeypatch):
+    monkeypatch.setattr(
+        "graph.supervisor_builder.model_control_plane.get_model_record",
+        lambda model_id, *, provider_id=None: {
+            "model_ref": f"{provider_id}::{model_id}",
+        },
+    )
+
+    assert _is_request_model_override(
+        EngineConfig(provider="provider-b", model_name="shared-model"),
+        "provider-a::shared-model",
+    )
+    assert not _is_request_model_override(
+        EngineConfig(provider="provider-a", model_name="shared-model"),
+        "provider-a::shared-model",
+    )
+
+    assert _is_request_model_override(
+        EngineConfig(provider="openai", model_name="shared-model"),
+        "codex::shared-model",
+    )
+
+    monkeypatch.setattr(
+        "graph.supervisor_builder.model_control_plane.get_model_record",
+        lambda *_args, **_kwargs: None,
+    )
+    assert _is_request_model_override(
+        EngineConfig(provider="provider-b", model_name="shared-model"),
+        "provider-a::shared-model",
+    )
+    assert not _is_request_model_override(
+        EngineConfig(provider="provider-a", model_name="shared-model"),
+        "provider-a::shared-model",
+    )
 
 
 def test_subagent_model_budget_omits_unknown_limit(monkeypatch):
@@ -110,7 +146,7 @@ def test_create_subagent_chat_model_enforces_resolved_limit_and_role(monkeypatch
         "model_id": "demo::worker-model",
         "kwargs": {
             "_role": "reviewer:worker",
-            "streaming": False,
+            "streaming": True,
             "timeout": 180,
             "max_tokens": 49152,
         },
@@ -163,12 +199,12 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
         (
             "demo::worker-model",
             "agent:worker",
-            {"streaming": False, "timeout": 180},
+            {"streaming": True, "timeout": 180},
         ),
         (
             "demo::reviewer-model",
             "reviewer:worker",
-            {"streaming": False, "timeout": 180},
+            {"streaming": True, "timeout": 180},
         ),
     ]
 
@@ -196,15 +232,34 @@ def test_reviewer_without_override_reuses_budgeted_default_agent_model(monkeypat
 
 
 @pytest.mark.parametrize(
-    ("config", "role_model", "default_role_model", "default_agent_model", "expected_model"),
+    (
+        "config",
+        "role_model",
+        "role_model_ref",
+        "default_role_model",
+        "default_agent_model",
+        "expected_supervisor_model",
+        "expected_agent_model",
+    ),
     [
-        (EngineConfig(), "shared-model", "shared-model", "shared-model", "shared-model"),
+        (EngineConfig(), "shared-model", "", "shared-model", "shared-model", "shared-model", "shared-model"),
         (
             EngineConfig(provider="custom-provider", model_name="request-override-model"),
             "role-supervisor-model",
+            "",
             "default-role-model",
             "configured-subagent-model",
             "request-override-model",
+            "request-override-model",
+        ),
+        (
+            EngineConfig(),
+            "duplicate-model",
+            "provider-a::duplicate-model",
+            "provider-default::default-model",
+            "provider-sub::subagent-model",
+            "provider-a::duplicate-model",
+            "provider-sub::subagent-model",
         ),
     ],
 )
@@ -212,9 +267,11 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
     monkeypatch,
     config,
     role_model,
+    role_model_ref,
     default_role_model,
     default_agent_model,
-    expected_model,
+    expected_supervisor_model,
+    expected_agent_model,
 ):
     created = []
     default_agent_llm = object()
@@ -223,6 +280,7 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
         lambda _role: {
             "resolution": {
                 "resolvedModelId": role_model,
+                "resolvedModelRef": role_model_ref,
                 "bindingState": "explicit",
             }
         },
@@ -234,7 +292,14 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
         lambda: default_agent_model,
     )
     monkeypatch.setattr("graph.supervisor_builder.storage.get_all_agents", lambda: [])
-    monkeypatch.setattr("graph.supervisor_builder.llm_factory.create_chat_model", lambda *args, **kwargs: object())
+    supervisor_models = []
+
+    def _create_supervisor(model_id, **kwargs):
+        supervisor_models.append((model_id, kwargs))
+        return object()
+
+    monkeypatch.setattr("graph.supervisor_builder.llm_factory.create_chat_model", _create_supervisor)
+    monkeypatch.setattr("graph.supervisor_builder.model_control_plane.get_model_record", lambda *_args, **_kwargs: None)
 
     def _create_default(model_id, *, role, **kwargs):
         created.append((model_id, role, kwargs))
@@ -265,8 +330,9 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
 
     assert created == [
         (
-            expected_model,
+            expected_agent_model,
             "subagent",
-            {"streaming": False, "timeout": 180},
+            {"streaming": True, "timeout": 180},
         )
     ]
+    assert supervisor_models == [(expected_supervisor_model, {"streaming": True, "timeout": 180})]

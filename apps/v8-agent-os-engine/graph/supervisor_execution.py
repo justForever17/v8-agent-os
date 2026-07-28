@@ -42,6 +42,28 @@ def build_supervisor_execution_authority_contract(
     )
 
 
+def build_runtime_route_compiler_authority_contract(
+    *,
+    runtime_kind: str,
+    resolved_scope: str | None,
+) -> str:
+    current_runtime = str(runtime_kind or "chat").strip() or "chat"
+    current_scope = str(resolved_scope or "session-bound").strip() or "session-bound"
+    return (
+        "[Supervisor Route Compilation Authority]\n"
+        "The current composer mode has already fixed the first runtime family. Compile one native, typed "
+        "runtime route from the latest user message without changing its intent, inventing permissions, or "
+        "claiming execution. The tool node, runtime episode, ledger, proof, approvals, and handoff remain the "
+        "execution truth. A successful first handoff may be followed by another owning runtime; the selected "
+        "mode is not an exclusive lock on the rest of the delivery chain.\n"
+        "For identical atomic operations, obey an explicit user choice first; otherwise prefer Runtime, then an "
+        "authorized Plugin, then configured MCP, then Skill. Complementary capabilities may be combined, while "
+        "Skill remains method guidance rather than authority.\n"
+        f"Active runtime={current_runtime}; active scope={current_scope}.\n"
+        "[/Supervisor Route Compilation Authority]"
+    )
+
+
 def _safe_console_text(value) -> str:
     text = str(value)
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
@@ -121,11 +143,19 @@ def prepare_supervisor_messages(
     resolved_scope: str | None,
     scope_chain,
     remaining_steps: int,
+    prompt_profile: str = "full",
 ):
     runtime_kind = str(get_runtime_context().get("runtime_kind") or "chat")
-    authority_contract = build_supervisor_execution_authority_contract(
-        runtime_kind=runtime_kind,
-        resolved_scope=resolved_scope,
+    authority_contract = (
+        build_runtime_route_compiler_authority_contract(
+            runtime_kind=runtime_kind,
+            resolved_scope=resolved_scope,
+        )
+        if str(prompt_profile or "").strip() == "runtime_route_compiler"
+        else build_supervisor_execution_authority_contract(
+            runtime_kind=runtime_kind,
+            resolved_scope=resolved_scope,
+        )
     )
     prepared = [m for m in messages if not isinstance(m, SystemMessage)]
     prepared = [ensure_reasoning_content(message) for message in prepared]

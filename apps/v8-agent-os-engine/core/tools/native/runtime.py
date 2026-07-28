@@ -29,6 +29,7 @@ from core.runtime_tool_access import (
     revoke_runtime_tool_groups,
     runtime_access_from_route_context,
     runtime_kind_available,
+    runtime_tool_names_for_groups,
     runtime_tool_groups_catalog,
 )
 from core.runtime_route_contract import runtime_route_parameter_guidance
@@ -38,6 +39,7 @@ from core.runtime_continuation import (
     validate_runtime_continuation_answers,
 )
 from core.spec_service import spec_service
+from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAMES
 from erc.runtime_context import get_runtime_context
 
 
@@ -3191,6 +3193,222 @@ def _append_runtime_episode(
     if root_run_id:
         bound_need.setdefault("rootRunId", root_run_id)
     inputs = dict(bound_need.get("inputs") or {}) if isinstance(bound_need.get("inputs"), dict) else {}
+    source_descriptors = [
+        dict(item)
+        for item in list(route_context.get("attachmentDescriptors") or [])[:8]
+        if isinstance(item, dict) and str(item.get("sourceId") or "").strip()
+    ]
+    skill_references = [
+        dict(item)
+        for item in list(route_context.get("skillReferences") or [])[:8]
+        if isinstance(item, dict)
+    ]
+    context_mentions = [
+        dict(item)
+        for item in list(route_context.get("contextMentions") or [])[:8]
+        if isinstance(item, dict)
+    ]
+    authorized_plugin_ids = {
+        str(item.get("pluginId") or "").strip().lower()
+        for item in list(route_context.get("pluginAuthorizations") or [])
+        if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "authorized"
+    }
+    plugin_references = [
+        dict(item)
+        for item in list(route_context.get("pluginReferences") or [])[:8]
+        if isinstance(item, dict)
+        and str(item.get("pluginId") or "").strip().lower() in authorized_plugin_ids
+    ]
+    selected_skill_ids = list(dict.fromkeys([
+        *[
+            str(item.get("id") or "").strip()
+            for item in skill_references
+            if str(item.get("id") or "").strip()
+        ],
+        *[
+            str(item or "").strip()
+            for item in list(route_context.get("selectedSkillIds") or [])
+            if str(item or "").strip()
+        ],
+    ]))
+    selected_skill_names = list(dict.fromkeys([
+        *[
+            str(item.get("name") or "").strip()
+            for item in skill_references
+            if str(item.get("name") or "").strip()
+        ],
+        *[
+            str(item or "").strip()
+            for item in list(route_context.get("selectedSkillNames") or [])
+            if str(item or "").strip()
+        ],
+    ]))
+    selected_mcp_tools = list(dict.fromkeys([
+        *[
+            str(item.get("id") or item.get("name") or "").strip()
+            for item in context_mentions
+            if str(item.get("kind") or "").strip().lower() in {"mcp", "mcp_tool"}
+            and str(item.get("id") or item.get("name") or "").strip()
+        ],
+        *[
+            str(item or "").strip()
+            for item in list(route_context.get("selectedMcpTools") or [])
+            if str(item or "").strip()
+        ],
+    ]))
+    selected_runtime_mode = str(
+        route_context.get("supervisorRuntimeMode")
+        or route_context.get("supervisor_runtime_mode")
+        or "auto"
+    ).strip().lower()
+    selectors_authoritative = bool(
+        route_context.get("canvasSupervisorDirect")
+        or route_context.get("canvas_supervisor_direct")
+        or selected_runtime_mode in {"engineering", "research", "creative_media", "computer_use", "rpa"}
+        or skill_references
+        or context_mentions
+        or plugin_references
+        or selected_skill_ids
+        or selected_skill_names
+        or selected_mcp_tools
+    )
+
+    for field_name in (
+        "sourceDescriptors",
+        "sourceIds",
+        "pluginReferences",
+        "selectedSkillIds",
+        "selectedSkillNames",
+        "selectedMcpTools",
+        "extensionSelectorsAuthoritative",
+        "extensionRouteContext",
+        "extensionToolPolicy",
+    ):
+        inputs.pop(field_name, None)
+    if source_descriptors:
+        inputs["sourceDescriptors"] = source_descriptors
+        inputs["sourceIds"] = [item["sourceId"] for item in source_descriptors]
+    if plugin_references:
+        inputs["pluginReferences"] = plugin_references
+    if selected_skill_ids:
+        inputs["selectedSkillIds"] = selected_skill_ids
+    if selected_skill_names:
+        inputs["selectedSkillNames"] = selected_skill_names
+    if selected_mcp_tools:
+        inputs["selectedMcpTools"] = selected_mcp_tools
+    canonical_tool_policy: dict[str, Any] = {}
+    extension_route_context: dict[str, Any] = {}
+    if selectors_authoritative:
+        runtime_groups = [
+            str(item.get("group") if isinstance(item, dict) else item).strip()
+            for item in list(groups or [])
+            if str(item.get("group") if isinstance(item, dict) else item).strip()
+        ]
+        allowed_tools = sorted({
+            *BASELINE_SYSTEM_TOOL_NAMES,
+            "delegation_broker",
+            "plugin_broker",
+            *runtime_tool_names_for_groups(runtime_groups),
+            *selected_mcp_tools,
+        })
+        canonical_tool_policy = {
+            "mode": "allowlist",
+            "allowedTools": allowed_tools,
+            "forbiddenTools": [],
+        }
+        inputs["extensionSelectorsAuthoritative"] = True
+        extension_route_context = {
+            "extensionSelectorsAuthoritative": True,
+            "selectedSkillIds": list(selected_skill_ids),
+            "selectedSkillNames": list(selected_skill_names),
+            "selectedMcpTools": list(selected_mcp_tools),
+        }
+        inputs["extensionRouteContext"] = extension_route_context
+        inputs["extensionToolPolicy"] = canonical_tool_policy
+        inputs.setdefault("selectedSkillIds", [])
+        inputs.setdefault("selectedSkillNames", [])
+        inputs.setdefault("selectedMcpTools", [])
+    task_briefs = [dict(item) for item in list(inputs.get("taskBriefs") or []) if isinstance(item, dict)]
+    if task_briefs:
+        for brief in task_briefs:
+            raw_context = brief.get("context")
+            if isinstance(raw_context, dict):
+                context = dict(raw_context)
+            elif source_descriptors or extension_route_context:
+                context = {
+                    "routeContextNote": str(raw_context or "").strip()
+                }
+            else:
+                context = None
+            if context is not None:
+                for field_name in (
+                    "sourceDescriptors",
+                    "sourceIds",
+                    "pluginReferences",
+                    "selectedSkillIds",
+                    "selectedSkillNames",
+                    "selectedMcpTools",
+                    "extensionRouteContext",
+                ):
+                    context.pop(field_name, None)
+                if source_descriptors:
+                    context["sourceDescriptors"] = source_descriptors
+                    context["sourceIds"] = [item["sourceId"] for item in source_descriptors]
+                if extension_route_context:
+                    context["extensionRouteContext"] = extension_route_context
+                brief["context"] = {
+                    key: value
+                    for key, value in context.items()
+                    if value not in (None, "", [], {})
+                }
+            for field_name in (
+                "pluginReferences",
+                "plugin_references",
+                "selectedSkillIds",
+                "selectedSkillNames",
+                "selectedMcpTools",
+            ):
+                brief.pop(field_name, None)
+            if plugin_references:
+                brief["pluginReferences"] = plugin_references
+            if selected_skill_ids:
+                brief["selectedSkillIds"] = selected_skill_ids
+            if selected_skill_names:
+                brief["selectedSkillNames"] = selected_skill_names
+            if selected_mcp_tools:
+                brief["selectedMcpTools"] = selected_mcp_tools
+            if selectors_authoritative:
+                existing_policy = (
+                    dict(brief.get("toolPolicy") or {})
+                    if isinstance(brief.get("toolPolicy"), dict)
+                    else {}
+                )
+                existing_mode = str(existing_policy.get("mode") or "default").strip().lower()
+                existing_allowed = {
+                    str(item or "").strip()
+                    for item in list(existing_policy.get("allowedTools") or brief.get("allowedTools") or [])
+                    if str(item or "").strip()
+                }
+                allowed_tools = set(canonical_tool_policy["allowedTools"])
+                if existing_mode == "none":
+                    effective_policy = {"mode": "none", "allowedTools": [], "forbiddenTools": []}
+                else:
+                    if existing_mode == "allowlist" and existing_allowed:
+                        allowed_tools &= existing_allowed
+                    forbidden_tools = sorted({
+                        str(item or "").strip()
+                        for item in list(existing_policy.get("forbiddenTools") or brief.get("forbiddenTools") or [])
+                        if str(item or "").strip()
+                    })
+                    effective_policy = {
+                        "mode": "allowlist",
+                        "allowedTools": sorted(allowed_tools),
+                        "forbiddenTools": forbidden_tools,
+                    }
+                brief["toolPolicy"] = effective_policy
+                brief["allowedTools"] = list(effective_policy["allowedTools"])
+                brief["forbiddenTools"] = list(effective_policy["forbiddenTools"])
+        inputs["taskBriefs"] = task_briefs
     if workspace_path:
         bound_need.setdefault("workspacePath", workspace_path)
         bound_need.setdefault("workspace_path", workspace_path)

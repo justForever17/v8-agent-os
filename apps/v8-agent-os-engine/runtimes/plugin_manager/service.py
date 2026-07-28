@@ -1650,6 +1650,7 @@ class PluginManagerService:
                 timeout=spec.timeoutSeconds,
                 env=self._cli_auth_environment(adapter),
                 check=False,
+                creationflags=_background_process_creation_flags(),
             )
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return False

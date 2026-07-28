@@ -1,3 +1,8 @@
+import {
+  normalizeSupervisorRuntimeMode,
+  type SupervisorRuntimeMode,
+} from "./contract.js";
+
 export type SessionHistorySourceGroup = "web" | "channels" | "cron" | "hooks";
 
 export type SessionHistoryControls = {
@@ -35,6 +40,7 @@ export type AuthoritativeSessionHistoryRecord = {
   sessionId?: string;
   title: string;
   supervisorWorkMode?: "daily" | "engineering";
+  supervisorRuntimeMode?: SupervisorRuntimeMode;
   pinned?: boolean;
   pinnedAt?: string;
   projectId?: string;
@@ -352,15 +358,26 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
   const workflowSummary = record.workflowSummary && typeof record.workflowSummary === "object"
     ? record.workflowSummary as SessionHistoryWorkflowSummary
     : undefined;
+  const supervisorWorkMode = (
+    coerceString(record.supervisorWorkMode || record.supervisor_work_mode || parsedMetadata.supervisorWorkMode || parsedMetadata.supervisor_work_mode) === "engineering"
+      ? "engineering"
+      : "daily"
+  );
+  const supervisorRuntimeModeValue = [
+    record.supervisorRuntimeMode,
+    record.supervisor_runtime_mode,
+    parsedMetadata.supervisorRuntimeMode,
+    parsedMetadata.supervisor_runtime_mode,
+  ].map(coerceString).find(Boolean);
 
   return {
     id: canonicalSessionId,
     sessionId: canonicalSessionId,
     title: coerceString(record.title) || "新对话",
-    supervisorWorkMode: (
-      coerceString(record.supervisorWorkMode || record.supervisor_work_mode || parsedMetadata.supervisorWorkMode || parsedMetadata.supervisor_work_mode) === "engineering"
-        ? "engineering"
-        : "daily"
+    supervisorWorkMode,
+    supervisorRuntimeMode: normalizeSupervisorRuntimeMode(
+      supervisorRuntimeModeValue,
+      supervisorRuntimeModeValue ? "auto" : (supervisorWorkMode === "engineering" ? "engineering" : "auto"),
     ),
     pinned: Boolean(record.pinned ?? parsedMetadata.pinned),
     pinnedAt: normalizeUtcTimestamp(record.pinnedAt || record.pinned_at || parsedMetadata.pinnedAt || parsedMetadata.pinned_at),

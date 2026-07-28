@@ -2924,6 +2924,107 @@ def test_runtime_episode_rpa_execute_draft_uses_non_chat_run(monkeypatch):
     assert payload["verification"]["executionStatus"] == "completed"
 
 
+def test_runtime_episode_rpa_executes_typed_task_brief_contract(monkeypatch):
+    from runtimes.rpa.runtime import rpa_runtime
+
+    runner = RuntimeEpisodeRunner()
+    captured: dict = {}
+    monkeypatch.setattr(runner, "_heartbeat", lambda *_args, **_kwargs: None)
+
+    def _fake_run_draft(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "completed",
+            "runId": "run-rpa-typed",
+            "script": {"id": "draft-typed"},
+            "export": {"path": "E:/tmp/draft-typed.robot", "dryRunPassed": True},
+            "outcomeFamily": "success",
+        }
+
+    monkeypatch.setattr(rpa_runtime, "run_draft", _fake_run_draft)
+    handoff = asyncio.run(
+        runner._execute_rpa(
+            {
+                "episodeId": "episode-rpa-typed",
+                "kind": "rpa",
+                "inputs": {
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "rpa-typed-task",
+                            "goal": "Run the approved workflow.",
+                            "context": {
+                                "rpaExecution": {
+                                    "action": "execute",
+                                    "draftId": "draft-typed",
+                                    "variables": {"target": "demo"},
+                                    "timeoutMs": 1234,
+                                }
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    assert captured["script_id"] == "draft-typed"
+    assert captured["variables"] == {"target": "demo"}
+    assert captured["timeout_ms"] == 1234
+    assert captured["trigger_source"] == "runtime_episode_runner"
+    assert captured["non_chat_run"] is True
+    assert handoff["status"] == "ready"
+    assert handoff["runRefs"] == ["rpa_run:run-rpa-typed"]
+
+
+def test_rpa_typed_task_contract_never_overrides_explicit_inputs_or_infers_goal():
+    explicit = RuntimeEpisodeRunner._rpa_inputs_from_task_execution(
+        {
+            "action": "prepare",
+            "draftId": "draft-explicit",
+            "variables": {"source": "explicit"},
+            "taskBriefs": [
+                {
+                    "goal": "Execute draft-from-prose immediately.",
+                    "context": {
+                        "rpaExecution": {
+                            "action": "execute",
+                            "draftId": "draft-nested",
+                            "variables": {"source": "nested"},
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    prose_only = RuntimeEpisodeRunner._rpa_inputs_from_task_execution(
+        {"taskBriefs": [{"goal": "Execute draft-from-prose immediately."}]}
+    )
+    trace_contract = RuntimeEpisodeRunner._rpa_inputs_from_task_execution(
+        {
+            "taskBriefs": [
+                {
+                    "context": {
+                        "rpaExecution": {
+                            "action": "prepare",
+                            "traceRunIds": [" trace-a ", "trace-a", "trace-b"],
+                            "save": False,
+                        }
+                    }
+                }
+            ]
+        }
+    )
+
+    assert explicit["action"] == "prepare"
+    assert explicit["draftId"] == "draft-explicit"
+    assert explicit["variables"] == {"source": "explicit"}
+    assert "action" not in prose_only
+    assert "draftId" not in prose_only
+    assert trace_contract["action"] == "prepare"
+    assert trace_contract["traceRunIds"] == ["trace-a", "trace-b"]
+    assert trace_contract["save"] is False
+
+
 def test_child_capability_need_promotes_to_episode_and_resumes_parent(monkeypatch):
     parent = build_runtime_episode(
         need={
@@ -3328,6 +3429,63 @@ def test_delegation_episode_degrades_when_local_worker_fails(monkeypatch):
     assert payload["failedDelegationCount"] == 1
     assert payload["acceptanceCheck"]["must"]["passed"] is False
     assert "narrow_contract" in payload["recoveryHints"]
+
+
+def test_delegation_episode_inherits_authoritative_extension_route_context(monkeypatch):
+    extension_route_context = {
+        "extensionSelectorsAuthoritative": True,
+        "selectedSkillIds": ["skill:media-method"],
+        "selectedSkillNames": ["Media Method"],
+        "selectedMcpTools": ["inspect_image"],
+    }
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "dispatch one governed worker"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "brief-extension-route",
+                        "goal": "Inspect one media source.",
+                        "context": {"extensionRouteContext": extension_route_context},
+                    }
+                ],
+                "targetCount": 1,
+            }
+        },
+    )
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command
+
+    captured: dict = {}
+
+    def _fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return Command(
+            update={
+                "parallel_results": [
+                    {
+                        "status": "ok",
+                        "delegationId": "delegation-extension-route",
+                        "targetLabel": "Media Worker",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    inherited = captured["state"]["current_route_context"]
+    assert inherited["extensionSelectorsAuthoritative"] is True
+    assert inherited["selectedSkillIds"] == ["skill:media-method"]
+    assert inherited["selectedSkillNames"] == ["Media Method"]
+    assert inherited["selectedMcpTools"] == ["inspect_image"]
+    assert handoff["status"] == "ready"
 
 
 def test_delegation_episode_degrades_when_all_workers_are_child_budget_blocked(monkeypatch):
@@ -3760,6 +3918,67 @@ def test_broker_selected_local_episode_executes_without_redispatch(monkeypatch):
     assert calls[0]["parentDelegationId"] == parent_id
     assert calls[0]["delegationDepth"] == 2
     assert calls[0]["allowChildDelegation"] is False
+
+
+def test_broker_selected_local_episode_rehydrates_extension_selectors_for_worker():
+    from graph.agent_factories import _resolve_inherited_route_context
+
+    extension_route_context = {
+        "extensionSelectorsAuthoritative": True,
+        "selectedSkillIds": ["skill:creative-method"],
+        "selectedSkillNames": ["Creative Method"],
+        "selectedMcpTools": ["inspect_image"],
+    }
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Inspect the selected image.",
+            "inputs": {
+                **extension_route_context,
+                "extensionRouteContext": extension_route_context,
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "inspect-selected-image",
+                        "goal": "Inspect the selected image.",
+                        "context": {"extensionRouteContext": extension_route_context},
+                        "toolPolicy": {
+                            "mode": "allowlist",
+                            "allowedTools": ["inspect_image"],
+                        },
+                    }
+                ],
+            },
+        },
+        kind="delegation",
+        state="queued",
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_extension_route::0::inspect::creative-media-director",
+            "needId": "subagent::delegation_extension_route::0::inspect::creative-media-director",
+            "targetId": "creative-media-director",
+        },
+    )
+
+    command = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode,
+        worker_briefs=episode["inputs"]["workerBriefs"],
+        session_id="session-extension-route",
+        run_id="run-extension-route",
+        workspace_path=r"E:\Projects\media",
+    )
+
+    assert command is not None
+    branch_state = list(command.goto)[0].arg
+    inherited = _resolve_inherited_route_context(
+        branch_state,
+        list(branch_state["messages"]),
+        agent_id="creative-media-director",
+    )
+    assert inherited["selectedSkillIds"] == ["skill:creative-method"]
+    assert inherited["selectedSkillNames"] == ["Creative Method"]
+    assert inherited["selectedMcpTools"] == ["inspect_image"]
+    assert branch_state["delegation_contexts"][0]["extensionSelectorsAuthoritative"] is True
 
 
 def test_broker_selected_direct_child_rehydrates_recursive_policy_from_durable_brief():

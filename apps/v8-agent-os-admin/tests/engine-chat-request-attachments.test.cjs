@@ -6,7 +6,19 @@ const ts = require("typescript");
 
 const adminRoot = path.resolve(__dirname, "..");
 const sourcePath = path.join(adminRoot, "src", "lib", "realtime", "engine-chat-request.ts");
+const runtimeModeSourcePath = path.join(adminRoot, "src", "lib", "realtime", "supervisor-runtime-mode.ts");
 const source = fs.readFileSync(sourcePath, "utf8");
+const runtimeModeSource = fs.readFileSync(runtimeModeSourcePath, "utf8");
+const runtimeModeCompiled = ts.transpileModule(runtimeModeSource, {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2022,
+    esModuleInterop: true,
+  },
+  fileName: runtimeModeSourcePath,
+}).outputText;
+const runtimeModeModule = { exports: {} };
+new Function("require", "module", "exports", runtimeModeCompiled)(require, runtimeModeModule, runtimeModeModule.exports);
 const compiled = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.CommonJS,
@@ -16,8 +28,31 @@ const compiled = ts.transpileModule(source, {
   fileName: sourcePath,
 }).outputText;
 const testModule = { exports: {} };
-new Function("require", "module", "exports", compiled)(require, testModule, testModule.exports);
+const localRequire = (specifier) => specifier === "./supervisor-runtime-mode"
+  ? runtimeModeModule.exports
+  : require(specifier);
+new Function("require", "module", "exports", compiled)(localRequire, testModule, testModule.exports);
 const { buildEngineChatRequestPayload } = testModule.exports;
+
+test("Admin runtime mode boundary mirrors the shared contract", () => {
+  const { SUPERVISOR_RUNTIME_MODES } = require("@v8/session-realtime");
+  assert.deepEqual(runtimeModeModule.exports.ADMIN_SUPERVISOR_RUNTIME_MODES, SUPERVISOR_RUNTIME_MODES);
+});
+
+test("Admin client presentation PATCH returns the normalized shared session contract", () => {
+  const routePath = path.join(
+    adminRoot,
+    "src",
+    "app",
+    "api",
+    "client",
+    "conversations",
+    "[id]",
+    "route.ts",
+  );
+  const routeSource = fs.readFileSync(routePath, "utf8");
+  assert.match(routeSource, /response\.ok \? normalizeAuthoritativeSessionHistoryRecord\(payload\) : payload/);
+});
 
 test("structured voice attachment wins over legacy fileUrls fallback", () => {
   const url = "/api/client/resource/voice.mp3";
@@ -53,10 +88,37 @@ test("structured voice attachment wins over legacy fileUrls fallback", () => {
   assert.deepEqual(result.pythonPayload.attachments, result.attachments);
 });
 
+test("Supervisor runtime mode is allowlisted and remains independent from Canvas privilege", () => {
+  const modes = ["auto", "engineering", "research", "creative_media", "computer_use", "rpa"];
+  for (const supervisorRuntimeMode of modes) {
+    const result = buildEngineChatRequestPayload({
+      data: {
+        conversationId: `session-${supervisorRuntimeMode}`,
+        supervisorRuntimeMode,
+      },
+      messages: [{ role: "user", content: "Run this task." }],
+    }, "owner@example.com");
+
+    assert.equal(result.pythonPayload.data.supervisorRuntimeMode, supervisorRuntimeMode);
+    assert.equal(result.pythonPayload.data.canvasSupervisorDirect, undefined);
+  }
+
+  const invalid = buildEngineChatRequestPayload({
+    data: {
+      conversationId: "session-invalid-runtime-mode",
+      supervisorRuntimeMode: "plugin_manager",
+    },
+    messages: [{ role: "user", content: "Run this task." }],
+  }, "owner@example.com");
+  assert.equal(invalid.pythonPayload.data.supervisorRuntimeMode, undefined);
+  assert.equal(invalid.pythonPayload.data.canvasSupervisorDirect, undefined);
+});
+
 test("canonical Canvas dispatch metadata survives the Admin submit boundary", () => {
   const result = buildEngineChatRequestPayload({
     data: {
       conversationId: "session-canvas",
+      supervisorRuntimeMode: "auto",
       canvasSupervisorDirect: true,
       composerPresentation: { text: "本消息来自画布", references: [] },
       contextMentions: [{
@@ -86,6 +148,7 @@ test("canonical Canvas dispatch metadata survives the Admin submit boundary", ()
   }, "owner@example.com");
 
   assert.equal(result.pythonPayload.data.canvasSupervisorDirect, true);
+  assert.equal(result.pythonPayload.data.supervisorRuntimeMode, "auto");
   assert.deepEqual(result.pythonPayload.data.composerPresentation, {
     text: "本消息来自画布",
     references: [],
@@ -109,6 +172,7 @@ test("non-boolean Canvas flags cannot opt a normal attachment into the privilege
   const result = buildEngineChatRequestPayload({
     data: {
       conversationId: "session-normal-image",
+      supervisorRuntimeMode: "creative_media",
       canvasSupervisorDirect: "true",
     },
     attachments: [{
@@ -122,6 +186,7 @@ test("non-boolean Canvas flags cannot opt a normal attachment into the privilege
   }, "owner@example.com");
 
   assert.equal(result.pythonPayload.data.canvasSupervisorDirect, undefined);
+  assert.equal(result.pythonPayload.data.supervisorRuntimeMode, "creative_media");
   assert.equal(result.pythonPayload.data.contextMentions, undefined);
   assert.equal(result.pythonPayload.attachments.length, 1);
   assert.equal(result.pythonPayload.attachments[0].sourceId, "source-normal");

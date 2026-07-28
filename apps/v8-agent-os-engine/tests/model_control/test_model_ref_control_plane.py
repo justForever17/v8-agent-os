@@ -1737,8 +1737,49 @@ def test_gemini_kwargs_apply_reasoning_effort_controls_without_instantiating_opt
     assert budget_kwargs["thinking_budget"] == 32768
 
 
+def test_gemini_verified_summary_contract_enables_include_thoughts_without_opening_hidden_models():
+    provider = model_provider_catalog.get_provider("gemini-api")
+    assert provider
+    verified_model = model_provider_catalog.normalize_model(provider, "gemini-3.1-pro-preview")
+    verified_surface = verified_model["reasoningSurface"]
+
+    assert verified_surface["mode"] == "reasoning_summary"
+    assert verified_surface["trust"] == "adapter_verified"
+    assert verified_surface["requestStyle"] == "gemini_include_thoughts"
+    assert verified_surface["responseFields"] == ["content[type=thinking]"]
+    assert verified_surface["displayKind"] == "summary"
+
+    verified_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-3.1-pro-preview",
+        {
+            "api_key": "dry-run-key",
+            "reasoning_surface": verified_surface,
+        },
+    )
+    hidden_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-unverified-future-model",
+        {
+            "api_key": "dry-run-key",
+            "reasoning_surface": {
+                "mode": "hidden",
+                "trust": "unknown",
+                "requestStyle": "none",
+                "responseFields": [],
+                "displayKind": "hidden",
+            },
+        },
+    )
+
+    assert verified_kwargs["include_thoughts"] is True
+    assert "include_thoughts" not in hidden_kwargs
+
+
 @pytest.mark.skipif(ChatGoogleGenerativeAI is None, reason="langchain-google-genai is not installed")
 def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai():
+    provider = model_provider_catalog.get_provider("gemini-api")
+    assert provider
+    level_surface = model_provider_catalog.normalize_model(provider, "gemini-3.1-pro-preview")["reasoningSurface"]
+    budget_surface = model_provider_catalog.normalize_model(provider, "gemini-2.5-pro")["reasoningSurface"]
     level_control = resolve_reasoning_effort_control_for_metadata(
         {
             "provider_id": "gemini-api",
@@ -1765,6 +1806,7 @@ def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai()
             "model_id": "gemini-3.1-pro-preview",
             "reasoning_effort_control": level_control,
             "request_reasoning_effort": "medium",
+            "reasoning_surface": level_surface,
         },
         max_tokens=1234,
         timeout=12,
@@ -1778,6 +1820,7 @@ def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai()
             "model_id": "gemini-2.5-pro",
             "reasoning_effort_control": budget_control,
             "request_reasoning_effort": "high",
+            "reasoning_surface": budget_surface,
         },
         max_tokens=1234,
         timeout=12,
@@ -1788,10 +1831,12 @@ def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai()
 
     assert level_client.thinking_level == "medium"
     assert level_client.thinking_budget is None
+    assert level_client.include_thoughts is True
     assert level_client.max_output_tokens == 1234
     assert level_client.timeout == 12
     assert budget_client.thinking_level is None
     assert budget_client.thinking_budget == 32768
+    assert budget_client.include_thoughts is True
 
 
 def test_reasoning_profiles_expose_exact_current_provider_levels_and_disable_rules():

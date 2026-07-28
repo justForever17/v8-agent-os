@@ -20,6 +20,19 @@ from core.provider_compatibility import normalize_provider_error
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls, sanitize_model_tool_calls
 
 
+_V8_CHUNK_IDENTITY_METADATA_KEYS = (
+    "v8_provider_adapter",
+    "v8_model_id",
+    "v8_model_ref",
+    "v8_provider_adapter_label",
+    "v8_tool_calling_mode",
+    "v8_structured_output_mode",
+    "v8_stream_mode",
+    "v8_effective_capability_matrix",
+    "v8_provider_hosted_tools",
+)
+
+
 def _stringify_content(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -552,25 +565,37 @@ class V8ChatModelAdapter(BaseChatModel):
             return model.with_structured_output(schema, include_raw=include_raw, **kwargs)
         return None
 
-    def _decorate_message(self, message: Any, *, tool_mode: str | None = None, structured_mode: str | None = None) -> Any:
+    def _decorate_message(
+        self,
+        message: Any,
+        *,
+        tool_mode: str | None = None,
+        structured_mode: str | None = None,
+        include_identity_metadata: bool = True,
+    ) -> Any:
         normalized = sanitize_model_tool_calls(message, provider_standard=self.provider_standard)
         normalized = self._enforce_bound_tool_surface(normalized)
         response_metadata = dict(getattr(normalized, "response_metadata", {}) or {})
-        response_metadata["v8_provider_adapter"] = self.provider_adapter()
-        response_metadata["v8_model_id"] = self.model_id
-        response_metadata["v8_provider_adapter_label"] = (
-            "Gemini GenerateContent"
-            if self.provider_standard in {"google", "gemini"}
-            else str(self._meta.get("provider_adapter_label") or self.provider_adapter())
-        )
-        response_metadata.setdefault("v8_tool_calling_mode", tool_mode or self._provider_surface.tool_calling_mode())
-        response_metadata.setdefault("v8_structured_output_mode", structured_mode or self._provider_surface.structured_output_mode())
-        response_metadata.setdefault("v8_stream_mode", self.adapter_modes().get("streamMode"))
-        response_metadata.setdefault("v8_effective_capability_matrix", self.effective_capability_matrix())
-        response_metadata.setdefault(
-            "v8_provider_hosted_tools",
-            [str(item.get("type") or "") for item in self._provider_hosted_tools()],
-        )
+        if include_identity_metadata:
+            response_metadata["v8_provider_adapter"] = self.provider_adapter()
+            response_metadata["v8_model_id"] = self.model_id
+            response_metadata["v8_model_ref"] = str(self._meta.get("model_ref") or self.model_id)
+            response_metadata["v8_provider_adapter_label"] = (
+                "Gemini GenerateContent"
+                if self.provider_standard in {"google", "gemini"}
+                else str(self._meta.get("provider_adapter_label") or self.provider_adapter())
+            )
+            response_metadata.setdefault("v8_tool_calling_mode", tool_mode or self._provider_surface.tool_calling_mode())
+            response_metadata.setdefault("v8_structured_output_mode", structured_mode or self._provider_surface.structured_output_mode())
+            response_metadata.setdefault("v8_stream_mode", self.adapter_modes().get("streamMode"))
+            response_metadata.setdefault("v8_effective_capability_matrix", self.effective_capability_matrix())
+            response_metadata.setdefault(
+                "v8_provider_hosted_tools",
+                [str(item.get("type") or "") for item in self._provider_hosted_tools()],
+            )
+        else:
+            for key in _V8_CHUNK_IDENTITY_METADATA_KEYS:
+                response_metadata.pop(key, None)
         if hasattr(normalized, "response_metadata"):
             normalized.response_metadata = response_metadata
         return normalized
@@ -766,11 +791,18 @@ class V8ChatModelAdapter(BaseChatModel):
             force=force_prompt_emulated_tools,
         )
 
-    def _coerce_chunk(self, chunk: Any) -> AIMessageChunk:
+    def _coerce_chunk(self, chunk: Any, *, include_identity_metadata: bool = True) -> AIMessageChunk:
         if isinstance(chunk, AIMessageChunk):
-            normalized = self._decorate_message(chunk)
+            normalized = self._decorate_message(
+                chunk,
+                include_identity_metadata=include_identity_metadata,
+            )
             return normalized if isinstance(normalized, AIMessageChunk) else AIMessageChunk(content=_stringify_content(getattr(normalized, "content", "")))
         if isinstance(chunk, AIMessage):
+            normalized = self._decorate_message(
+                chunk,
+                include_identity_metadata=include_identity_metadata,
+            )
             chunk_tool_calls = [
                 {
                     "name": str(call.get("name") or ""),
@@ -778,18 +810,22 @@ class V8ChatModelAdapter(BaseChatModel):
                     "id": str(call.get("id") or ""),
                     **({"type": call.get("type")} if call.get("type") else {}),
                 }
-                for call in list(chunk.tool_calls or [])
+                for call in list(normalized.tool_calls or [])
                 if isinstance(call, Mapping)
             ]
             return AIMessageChunk(
-                content=chunk.content,
-                additional_kwargs=dict(chunk.additional_kwargs or {}),
-                response_metadata=dict(chunk.response_metadata or {}),
-                tool_call_chunks=list(getattr(chunk, "tool_call_chunks", []) or []),
+                content=normalized.content,
+                additional_kwargs=dict(normalized.additional_kwargs or {}),
+                response_metadata=dict(normalized.response_metadata or {}),
+                tool_call_chunks=list(getattr(normalized, "tool_call_chunks", []) or []),
                 tool_calls=chunk_tool_calls,
-                usage_metadata=chunk.usage_metadata,
+                usage_metadata=normalized.usage_metadata,
             )
-        return AIMessageChunk(content=_stringify_content(chunk))
+        normalized = self._decorate_message(
+            AIMessageChunk(content=_stringify_content(chunk)),
+            include_identity_metadata=include_identity_metadata,
+        )
+        return normalized if isinstance(normalized, AIMessageChunk) else AIMessageChunk(content=_stringify_content(chunk))
 
     def _tool_prompt_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         tool_specs = []
@@ -911,9 +947,18 @@ class V8ChatModelAdapter(BaseChatModel):
         prompt_cache_gateway.store_response(message, prepared.diagnostics)
         return message
 
-    def _decorate_prompt_cache_chunk(self, chunk: AIMessageChunk, diagnostics: Mapping[str, Any]) -> AIMessageChunk:
+    def _decorate_prompt_cache_chunk(
+        self,
+        chunk: AIMessageChunk,
+        diagnostics: Mapping[str, Any],
+        *,
+        include_diagnostics: bool = True,
+    ) -> AIMessageChunk:
         response_metadata = dict(getattr(chunk, "response_metadata", {}) or {})
-        response_metadata.setdefault("v8_prompt_cache", dict(diagnostics or {}))
+        if include_diagnostics:
+            response_metadata.setdefault("v8_prompt_cache", dict(diagnostics or {}))
+        else:
+            response_metadata.pop("v8_prompt_cache", None)
         chunk.response_metadata = response_metadata
         return chunk
 
@@ -1075,13 +1120,22 @@ class V8ChatModelAdapter(BaseChatModel):
                     details={"mode": "stream", "toolMode": "prompt_emulated"},
                 )
         try:
+            include_stream_identity = True
             for chunk in self._get_runtime_model().stream(
                 prepared.messages,
                 config=self._provider_internal_config(),
                 stop=stop,
                 **prepared.kwargs,
             ):
-                ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), prepared.diagnostics)
+                ai_chunk = self._decorate_prompt_cache_chunk(
+                    self._coerce_chunk(
+                        chunk,
+                        include_identity_metadata=include_stream_identity,
+                    ),
+                    prepared.diagnostics,
+                    include_diagnostics=include_stream_identity,
+                )
+                include_stream_identity = False
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),
@@ -1155,13 +1209,22 @@ class V8ChatModelAdapter(BaseChatModel):
                     details={"mode": "astream", "toolMode": "prompt_emulated"},
                 )
         try:
+            include_stream_identity = True
             async for chunk in self._get_runtime_model().astream(
                 prepared.messages,
                 config=self._provider_internal_config(),
                 stop=stop,
                 **prepared.kwargs,
             ):
-                ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), prepared.diagnostics)
+                ai_chunk = self._decorate_prompt_cache_chunk(
+                    self._coerce_chunk(
+                        chunk,
+                        include_identity_metadata=include_stream_identity,
+                    ),
+                    prepared.diagnostics,
+                    include_diagnostics=include_stream_identity,
+                )
+                include_stream_identity = False
                 yield ChatGenerationChunk(
                     message=ai_chunk,
                     text=_message_text(ai_chunk),

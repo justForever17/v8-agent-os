@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
 
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { jsonSizeBytes, readEngineElapsedMs, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveClientSurfaceOriginFromRequest, resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { normalizeMessageForRealtimeSurface, normalizeProcessForRealtimeSurface, normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
 import { applyCanonicalSourceGroup } from "@/lib/server/source-group";
+import { isSupervisorRuntimeMode } from "@/lib/realtime/supervisor-runtime-mode";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 const ENGINE_NOW_HEADER = "x-v8-engine-now";
@@ -219,11 +221,17 @@ export async function PATCH(
                 ...(body?.supervisorWorkMode === "daily" || body?.supervisorWorkMode === "engineering"
                     ? { supervisorWorkMode: body.supervisorWorkMode }
                     : {}),
+                ...(isSupervisorRuntimeMode(body?.supervisorRuntimeMode)
+                    ? { supervisorRuntimeMode: body.supervisorRuntimeMode }
+                    : {}),
                 userId: userEmail,
             }),
         });
         const payload = await response.json().catch(() => ({}));
-        return NextResponse.json(payload, { status: response.status });
+        return NextResponse.json(
+            response.ok ? normalizeAuthoritativeSessionHistoryRecord(payload) : payload,
+            { status: response.status },
+        );
     } catch (error) {
         console.error("[Client Conversations] Update session presentation failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

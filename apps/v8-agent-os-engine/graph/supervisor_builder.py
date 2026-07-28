@@ -10,6 +10,7 @@ from core.engine_config_resolver import resolve_engine_config_for_role
 from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.model_failover_service import model_failover_service
+from core.model_ref import parse_model_ref
 from core.system_tools.native import NATIVE_TOOLS
 from core.agents import build_subagent_registry_snapshot
 from core.model_thinking_control import normalize_reasoning_effort
@@ -58,13 +59,29 @@ def _make_dynamic_agent_node_resolver(*, storage_manager, agent_nodes_map, build
     return resolve
 
 
-def _is_request_model_override(config: EngineConfig, default_role_model: str | None) -> bool:
-    return bool(
-        config.model_name
-        and config.model_name != "gpt-4o"
-        and config.model_name != default_role_model
-        and str(config.provider or "").strip().lower() not in {"", "openai"}
-    )
+def _is_request_model_override(config: EngineConfig, resolved_role_model_ref: str | None) -> bool:
+    request_model_ref = _request_model_target(config)
+    provider_id = str(config.provider or "").strip()
+    model_id = str(config.model_name or "").strip()
+    role_model_ref = str(resolved_role_model_ref or "").strip()
+    if not model_id or model_id == "gpt-4o" or not provider_id:
+        return False
+    if not request_model_ref or request_model_ref == role_model_ref:
+        return False
+    role_identity = parse_model_ref(role_model_ref)
+    request_identity = parse_model_ref(request_model_ref)
+    if role_identity and not request_identity:
+        return (provider_id, model_id) != role_identity
+    return True
+
+
+def _request_model_target(config: EngineConfig) -> str:
+    model_id = str(config.model_name or "").strip()
+    provider_id = str(config.provider or "").strip()
+    if not model_id:
+        return ""
+    record = model_control_plane.get_model_record(model_id, provider_id=provider_id)
+    return str((record or {}).get("model_ref") or model_id)
 
 
 def build_supervisor_runtime_bundle(
@@ -86,15 +103,20 @@ def build_supervisor_runtime_bundle(
 
     sup_config = storage.get_supervisor_config()
     supervisor_resolution = resolve_engine_config_for_role("supervisor")
-    sup_model_name = str(supervisor_resolution["resolution"].get("resolvedModelId") or "")
+    role_resolution = supervisor_resolution["resolution"]
+    sup_model_name = str(
+        role_resolution.get("resolvedModelRef")
+        or role_resolution.get("resolvedModelId")
+        or ""
+    )
     supervisor_binding_state = str(supervisor_resolution["resolution"].get("bindingState") or "")
     default_role_model = storage.get_role_model_id("default")
-    request_model_override = _is_request_model_override(config, default_role_model)
+    request_model_override = _is_request_model_override(config, sup_model_name)
 
     if request_model_override:
-        sup_model_name = config.model_name
+        sup_model_name = _request_model_target(config)
     elif supervisor_binding_state != "explicit" and config.model_name and config.model_name != default_role_model:
-        sup_model_name = config.model_name
+        sup_model_name = _request_model_target(config)
     if not sup_model_name:
         sup_model_name = default_role_model or config.model_name
 
@@ -103,7 +125,11 @@ def build_supervisor_runtime_bundle(
     if supervisor_reasoning_effort != "auto":
         supervisor_model_kwargs["_reasoning_effort"] = supervisor_reasoning_effort
 
-    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **supervisor_model_kwargs)
+    # The chat runtime projects trusted provider reasoning from model stream
+    # callbacks. Keep the Supervisor streaming even though failover uses the
+    # synchronous invoke facade; LangChain aggregates the final AIMessage while
+    # still emitting the provider chunks needed by the Human Surface.
+    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=True, **supervisor_model_kwargs)
     default_agent_model_id = sup_model_name if request_model_override else (storage.get_default_agent_model_id() or sup_model_name)
     if not default_agent_model_id:
         default_agent_llm = supervisor_base_llm
@@ -111,7 +137,7 @@ def build_supervisor_runtime_bundle(
         default_agent_llm = create_subagent_chat_model(
             default_agent_model_id,
             role="subagent",
-            streaming=False,
+            streaming=True,
             **caller_kwargs,
         )
 

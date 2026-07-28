@@ -11,10 +11,15 @@ from core.database import db
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from graph import parallel_support
 from graph.parallel_support import build_parallel_delegate_join_node
-from graph.supervisor_context import resolve_supervisor_request_context
+from graph.supervisor_context import (
+    _SUPERVISOR_OPERATING_CONTRACT,
+    build_runtime_route_compiler_system_content,
+    resolve_supervisor_request_context,
+)
 from graph.supervisor_turn import (
     _authoritative_runtime_route_guidance,
     _authoritative_runtime_route_kinds,
+    _deterministic_authoritative_runtime_route_response,
     _delegation_dispatch_contract_error,
     _explicit_runtime_orchestration_guidance,
     _explicit_runtime_orchestration_kinds,
@@ -24,10 +29,12 @@ from graph.supervisor_turn import (
     _pending_runtime_continuation_kinds,
     _required_orchestration_tool_name,
     _response_has_required_broker_attempt,
+    _runtime_route_compiler_contract_error,
     _response_runtime_route_kinds,
     _runtime_route_correction_message,
     _runtime_handoff_continuation_message,
     _runtime_handoff_requires_continuation,
+    _should_use_runtime_route_compiler,
 )
 from graph.workflow_assembly import build_runtime_episode_wait_node
 
@@ -184,6 +191,164 @@ def test_engineering_continuation_requires_fresh_engineering_route_until_episode
     assert [kind for kind in _authoritative_runtime_route_kinds(state) if kind not in observed] == []
 
 
+@pytest.mark.parametrize(
+    "runtime_mode",
+    ["engineering", "research", "creative_media", "computer_use", "rpa"],
+)
+def test_explicit_supervisor_runtime_mode_is_authoritative(runtime_mode: str) -> None:
+    state = {
+        "current_route_context": {
+            "supervisorRuntimeMode": runtime_mode,
+            "engineeringRequired": runtime_mode != "engineering",
+        }
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == [runtime_mode]
+
+
+def test_auto_supervisor_runtime_mode_adds_no_route_and_preserves_existing_engineering_route() -> None:
+    assert _authoritative_runtime_route_kinds({
+        "current_route_context": {"supervisorRuntimeMode": "auto"}
+    }) == []
+    assert _authoritative_runtime_route_kinds({
+        "current_route_context": {
+            "supervisor_runtime_mode": "auto",
+            "engineeringRequired": True,
+        }
+    }) == ["engineering"]
+
+
+def test_supervisor_cognition_keeps_multi_runtime_continuation_and_atomic_capability_priority() -> None:
+    assert "Auto mode" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "ordered runtime chain" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "does not forbid the Supervisor from continuing into another runtime" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "Capability overlap is usually complementary" in _SUPERVISOR_OPERATING_CONTRACT
+    assert "owning Runtime, then an authorized Plugin action, then a configured MCP tool, then a Skill" in _SUPERVISOR_OPERATING_CONTRACT
+
+
+def test_selected_first_runtime_does_not_block_next_runtime_after_handoff() -> None:
+    state = {
+        "todos": [
+            {"_task_init": True, "name": "game delivery"},
+            {"text": "编程模式完成可运行原型", "status": "completed"},
+            {"text": "多媒体创作生成正式素材", "status": "pending"},
+            {"text": "桌面操作执行视觉验收", "status": "pending"},
+        ],
+        "current_route_context": {
+            "supervisorRuntimeMode": "engineering",
+            "capabilityEpisodes": [
+                {"episodeId": "episode-engineering", "kind": "engineering", "state": "completed"}
+            ],
+            "handoffRefs": [
+                {
+                    "kind": "engineering_artifact_bundle",
+                    "status": "ready",
+                    "producerEpisodeId": "episode-engineering",
+                }
+            ],
+        },
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+    assert _observed_runtime_episode_kinds(state) == {"engineering"}
+    assert _pending_runtime_continuation_kinds(state) == ["creative_media", "computer_use"]
+    assert _runtime_handoff_requires_continuation(state) is True
+
+
+@pytest.mark.parametrize("prior_state", ["completed", "running"])
+def test_selected_runtime_mode_requires_a_new_episode_for_each_guidance_message(
+    prior_state: str,
+) -> None:
+    state = {
+        "current_route_context": {
+            "supervisorRuntimeMode": "research",
+            "capabilityEpisodes": [{
+                "episodeId": "episode-before-guidance",
+                "kind": "research",
+                "state": prior_state,
+            }],
+            "supervisorRuntimeModeRequestScope": {
+                "queueItemId": "queue-guidance-research",
+                "priorEpisodeIds": ["episode-before-guidance"],
+            },
+        }
+    }
+
+    required = _authoritative_runtime_route_kinds(state)
+    observed = _observed_runtime_episode_kinds(state)
+
+    assert required == ["research"]
+    assert observed == set()
+    assert [kind for kind in required if kind not in observed] == ["research"]
+
+    state["current_route_context"]["capabilityEpisodes"].append({
+        "episodeId": "episode-for-guidance",
+        "kind": "research",
+        "state": "queued",
+    })
+
+    assert _observed_runtime_episode_kinds(state) == {"research"}
+
+
+@pytest.mark.parametrize(
+    ("route_context", "expected_after_approval"),
+    [
+        (
+            {
+                "canvasSupervisorDirect": True,
+                "canvasRuntimeRoute": {"routeKind": "creative_media"},
+                "supervisorRuntimeMode": "research",
+                "engineeringRequired": True,
+            },
+            ["creative_media"],
+        ),
+        (
+            {
+                "supervisorRuntimeMode": "research",
+                "engineeringRequired": True,
+            },
+            ["research"],
+        ),
+        ({"supervisorRuntimeMode": "auto", "engineeringRequired": True}, ["engineering"]),
+    ],
+)
+def test_spec_runtime_gate_blocks_authoritative_routes_until_approved(
+    route_context: dict,
+    expected_after_approval: list[str],
+) -> None:
+    state = {
+        "specMode": True,
+        "specBrief": {
+            "specId": "spec-runtime-mode",
+            "pipelineControl": {"runtimeExecutionAllowed": False},
+        },
+        "current_route_context": dict(route_context),
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == []
+
+    state["specBrief"]["pipelineControl"]["runtimeExecutionAllowed"] = True
+
+    assert _authoritative_runtime_route_kinds(state) == expected_after_approval
+
+
+def test_non_engineering_mode_guidance_does_not_invent_engineering_or_canvas_authority() -> None:
+    state = {
+        "current_route_context": {
+            "supervisorRuntimeMode": "research",
+            "workspacePath": "E:/workspace",
+        }
+    }
+
+    guidance = _authoritative_runtime_route_guidance(["research"], state=state)
+
+    assert "composer mode controller" in guidance.content
+    assert "does not create Canvas authority" in guidance.content
+    assert "engineeringContinuation" not in guidance.content
+    assert "server-validated Canvas execution contract" not in guidance.content
+    assert '"researchBriefIds": [' in guidance.content
+
+
 def test_validated_canvas_route_is_authoritative_and_keeps_exact_creative_contract() -> None:
     canvas_route = {
         "mode": "route",
@@ -212,6 +377,7 @@ def test_validated_canvas_route_is_authoritative_and_keeps_exact_creative_contra
         "current_route_context": {
             "canvasSupervisorDirect": True,
             "canvasRuntimeRoute": canvas_route,
+            "supervisorRuntimeMode": "research",
             "engineeringRequired": True,
         }
     }
@@ -234,6 +400,341 @@ def test_validated_canvas_route_is_authoritative_and_keeps_exact_creative_contra
     )
     assert '"canvasOperationId": "canvas-op-1"' in correction.content
     assert "single correction attempt" in correction.content
+
+
+def test_validated_canvas_route_can_emit_exact_native_broker_call_without_model() -> None:
+    canvas_route = {
+        "mode": "route",
+        "routeKind": "creative_media",
+        "routeReason": "validated canvas operation",
+        "taskBriefs": [{
+            "taskBriefId": "canvas-edit-1",
+            "goal": "edit only the validated mask",
+            "context": {"canvasOperationId": "canvas-op-1"},
+            "writeRequired": True,
+            "readOnly": False,
+            "writeSet": [".v8/creative-media/"],
+            "expectedOutputs": ["one derivative image"],
+            "acceptanceContract": ["session lineage is preserved"],
+        }],
+        "proofExpectations": ["artifact proof"],
+    }
+    state = {
+        "run_id": "run-canvas-1",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "sessionId": "session-canvas-1",
+            "canvasSupervisorDirect": True,
+            "canvasOperationId": "canvas-op-1",
+            "canvasRuntimeRoute": canvas_route,
+            "supervisorRuntimeMode": "research",
+        },
+    }
+    response = _deterministic_authoritative_runtime_route_response(
+        state=state,
+        messages=[HumanMessage(content="This message is from Canvas")],
+        user_query="This message is from Canvas",
+        pending_required_runtime_kinds=["creative_media"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=[SimpleNamespace(name="runtime_broker")],
+        gate_decision=SimpleNamespace(status="clarify", diagnostics={}),
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    )
+
+    assert response is not None
+    assert response.tool_calls[0]["name"] == "runtime_broker"
+    assert response.tool_calls[0]["args"] == canvas_route
+    assert response.tool_calls[0]["args"] is not canvas_route
+    assert response.additional_kwargs["v8_authoritative_runtime_direct_route"]["source"] == "validated_canvas_contract"
+
+
+def test_selected_read_only_engineering_uses_compiler_instead_of_guessing_execution_contract() -> None:
+    request = "只读检查 README.md 第一行，不要修改任何文件，也不要启动后台进程。"
+    state = {
+        "run_id": "run-read-only-1",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "sessionId": "session-read-only-1",
+            "workspacePath": "E:/workspace-a",
+            "supervisorRuntimeMode": "engineering",
+            "userRequest": request,
+        },
+    }
+    tools = [SimpleNamespace(name="runtime_broker")]
+    gate = SimpleNamespace(
+        status="clean",
+        diagnostics={"readOnlyExecutionIntent": True},
+    )
+    response = _deterministic_authoritative_runtime_route_response(
+        state=state,
+        messages=[HumanMessage(content=request)],
+        user_query=request,
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    )
+
+    assert response is None
+    assert _should_use_runtime_route_compiler(
+        state=state,
+        messages=[HumanMessage(content=request)],
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is True
+
+    conflicting_request = "先只读分析问题，然后修改 src/app.py 修复它。"
+    assert _deterministic_authoritative_runtime_route_response(
+        state={
+            **state,
+            "current_route_context": {
+                **state["current_route_context"],
+                "userRequest": conflicting_request,
+            },
+        },
+        messages=[HumanMessage(content=conflicting_request)],
+        user_query=conflicting_request,
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is None
+
+
+def test_selected_mode_shortcuts_do_not_guess_write_or_attachment_contracts() -> None:
+    state = {
+        "run_id": "run-write-1",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "sessionId": "session-write-1",
+            "supervisorRuntimeMode": "engineering",
+            "userRequest": "修复这个项目。",
+        },
+    }
+    tools = [SimpleNamespace(name="runtime_broker")]
+    write_gate = SimpleNamespace(status="clean", diagnostics={"readOnlyExecutionIntent": False})
+
+    assert _deterministic_authoritative_runtime_route_response(
+        state=state,
+        messages=[HumanMessage(content="修复这个项目。")],
+        user_query="修复这个项目。",
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=write_gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is None
+    assert _should_use_runtime_route_compiler(
+        state=state,
+        messages=[HumanMessage(content="修复这个项目。")],
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=write_gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is True
+
+    attachment_message = HumanMessage(
+        content=(
+            "分析附件。\n\n[Supervisor attachment opening tool results]\n"
+            "image.png: vision_media_analyzer completed."
+        )
+    )
+    read_only_gate = SimpleNamespace(status="clean", diagnostics={"readOnlyExecutionIntent": True})
+    assert _deterministic_authoritative_runtime_route_response(
+        state=state,
+        messages=[attachment_message],
+        user_query="分析附件。",
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=read_only_gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is None
+
+    referenced_message = HumanMessage(
+        content=(
+            "只读检查项目。\n\n[SKILL REFERENCES]\n"
+            "- name: code-review-excellence\n"
+            "[/SKILL REFERENCES]\n"
+            "[PLUGIN REFERENCES]\n"
+            "- pluginId: github\n"
+            "[/PLUGIN REFERENCES]"
+        )
+    )
+    referenced_state = {
+        **state,
+        "skillReferences": [{"name": "code-review-excellence"}],
+        "current_route_context": {
+            **state["current_route_context"],
+            "pluginReferences": [{"pluginId": "github"}],
+            "userRequest": "只读检查项目。",
+        },
+    }
+    assert _deterministic_authoritative_runtime_route_response(
+        state=referenced_state,
+        messages=[referenced_message],
+        user_query="只读检查项目。",
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=read_only_gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is None
+    assert _should_use_runtime_route_compiler(
+        state=referenced_state,
+        messages=[referenced_message],
+        pending_required_runtime_kinds=["engineering"],
+        required_orchestration_tool="runtime_broker",
+        selected_tools=tools,
+        gate_decision=read_only_gate,
+        runtime_handoff_ready=False,
+        session_coordination={},
+        explicit_coordination_send=False,
+    ) is True
+    assert "[SKILL REFERENCES]" in referenced_message.content
+    assert "[PLUGIN REFERENCES]" in referenced_message.content
+
+
+def test_selected_media_mode_ignores_only_extension_no_candidate_clarification() -> None:
+    state = {
+        "current_route_context": {"supervisorRuntimeMode": "creative_media"},
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+    }
+    kwargs = {
+        "state": state,
+        "messages": [HumanMessage(content="生成一张图片")],
+        "pending_required_runtime_kinds": ["creative_media"],
+        "required_orchestration_tool": "runtime_broker",
+        "selected_tools": [SimpleNamespace(name="runtime_broker")],
+        "runtime_handoff_ready": False,
+        "session_coordination": {},
+        "explicit_coordination_send": False,
+    }
+
+    assert _should_use_runtime_route_compiler(
+        gate_decision=SimpleNamespace(
+            status="clarify",
+            reasons=["route_no_candidate_for_tool_like_query"],
+        ),
+        **kwargs,
+    ) is True
+    assert _should_use_runtime_route_compiler(
+        gate_decision=SimpleNamespace(
+            status="clarify",
+            reasons=["engineering_workset_risk"],
+        ),
+        **kwargs,
+    ) is False
+
+def test_auto_spec_and_handoff_never_use_explicit_route_compiler() -> None:
+    tools = [SimpleNamespace(name="runtime_broker")]
+    gate = SimpleNamespace(status="clean", diagnostics={})
+    base = {
+        "run_id": "run-auto-1",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {"supervisorRuntimeMode": "auto"},
+    }
+    kwargs = {
+        "messages": [HumanMessage(content="do the work")],
+        "pending_required_runtime_kinds": ["engineering"],
+        "required_orchestration_tool": "runtime_broker",
+        "selected_tools": tools,
+        "gate_decision": gate,
+        "session_coordination": {},
+        "explicit_coordination_send": False,
+    }
+    assert _should_use_runtime_route_compiler(
+        state=base,
+        runtime_handoff_ready=False,
+        **kwargs,
+    ) is False
+
+    selected = {
+        **base,
+        "current_route_context": {"supervisorRuntimeMode": "engineering"},
+        "specMode": True,
+        "specBrief": {"specId": "spec-1"},
+    }
+    assert _should_use_runtime_route_compiler(
+        state=selected,
+        runtime_handoff_ready=False,
+        **kwargs,
+    ) is False
+    selected.pop("specMode")
+    selected.pop("specBrief")
+    assert _should_use_runtime_route_compiler(
+        state=selected,
+        runtime_handoff_ready=True,
+        **kwargs,
+    ) is False
+
+
+def test_runtime_route_compiler_prompt_is_bounded_and_omits_discovery_surfaces(tmp_path) -> None:
+    bundle = build_runtime_route_compiler_system_content(
+        state={
+            "workspace_path": str(tmp_path),
+            "workspace_id": "workspace-1",
+            "project_id": "project-1",
+            "task_shape_hint": {
+                "boundaryDecision": {
+                    "primaryRuntime": "creative_media",
+                    "askUserNeeded": False,
+                }
+            },
+            "current_route_context": {
+                "attachmentDescriptors": [
+                    {"sourceId": "source-current", "name": "portrait.png", "mimeType": "image/png"}
+                ],
+                "skillReferences": [{"id": "image-method", "name": "image-method"}],
+                "pluginReferences": [{"pluginId": "media-kit", "componentIds": ["image-edit"]}],
+                "pluginAuthorizations": [{"pluginId": "media-kit", "status": "authorized"}],
+            },
+        },
+        config=SimpleNamespace(system_prompt="Keep the current user instruction authoritative."),
+        user_query="生成一张封面图。",
+        current_scope="workspace:workspace-1",
+        session_id="session-1",
+        required_runtime_kind="creative_media",
+        route_guidance="Use one exact creative_media runtime route.",
+    )
+
+    content = bundle["system_content"]
+    assert bundle["prompt_profile"] == "runtime_route_compiler"
+    assert len(content) < 8_000
+    assert "Runtime Route Compiler" in content
+    assert "capability registry" not in content.lower()
+    assert "SPECIALIST FAMILIES" not in content
+    assert "PLUGIN AUTHORIZATION RESOLUTION" not in content
+    assert "[TASKS]" not in content
+    assert '"sourceId":"source-current"' in content
+    assert '"componentIds":["image-edit"]' in content
+    assert any(
+        segment["source"] == "runtime_route_compiler.route_contract"
+        and segment["type"] == "dynamic"
+        for segment in bundle["v8_prompt_segments"]
+    )
 
 
 def test_unvalidated_canvas_route_context_does_not_override_engineering_requirement() -> None:
@@ -264,6 +765,12 @@ def test_required_runtime_guidance_stays_in_primary_system_message() -> None:
     assert "base supervisor contract" in merged[0].content
     assert "Required Runtime Route" in merged[0].content
     assert merged[0].additional_kwargs["v8_runtime_route_guidance"] is True
+    route_segment = merged[0].additional_kwargs["v8_prompt_segments"][-1]
+    assert route_segment["source"] == "runtime.route_guidance"
+    assert route_segment["type"] == "dynamic"
+    assert merged[0].content[route_segment["startOffset"]:route_segment["endOffset"]].startswith(
+        "[Required Runtime Route]"
+    )
     assert isinstance(merged[1], HumanMessage)
 
 
@@ -312,6 +819,43 @@ def test_response_runtime_route_kinds_reads_runtime_and_delegation_calls() -> No
     )
 
     assert _response_runtime_route_kinds(response) == ["research", "delegation"]
+
+
+def test_runtime_route_compiler_contract_requires_one_exact_selected_runtime_call() -> None:
+    matching = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-matching",
+                "name": "runtime_broker",
+                "args": {"mode": "route", "routeKind": "creative_media"},
+                "type": "tool_call",
+            }
+        ],
+    )
+    wrong_kind = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-wrong-kind",
+                "name": "runtime_broker",
+                "args": {"mode": "route", "routeKind": "research"},
+                "type": "tool_call",
+            }
+        ],
+    )
+    extra_call = AIMessage(
+        content="",
+        tool_calls=[*matching.tool_calls, *wrong_kind.tool_calls],
+    )
+
+    assert _runtime_route_compiler_contract_error(matching, "creative_media") is None
+    assert _runtime_route_compiler_contract_error(wrong_kind, "creative_media") == (
+        "route_kind_mismatch:research:creative_media"
+    )
+    assert _runtime_route_compiler_contract_error(extra_call, "creative_media") == (
+        "expected_exactly_one_tool_call"
+    )
 
 
 def test_runtime_route_kind_normalizes_json_encoded_need_before_execution() -> None:

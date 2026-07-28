@@ -16,6 +16,28 @@ export const SESSION_RUNTIME_IDS = [
 
 export type SessionRuntimeId = (typeof SESSION_RUNTIME_IDS)[number];
 
+export const SUPERVISOR_RUNTIME_MODES = [
+  "auto",
+  "engineering",
+  "research",
+  "creative_media",
+  "computer_use",
+  "rpa",
+] as const;
+
+export type SupervisorRuntimeMode = (typeof SUPERVISOR_RUNTIME_MODES)[number];
+
+export function isSupervisorRuntimeMode(value: unknown): value is SupervisorRuntimeMode {
+  return typeof value === "string" && (SUPERVISOR_RUNTIME_MODES as readonly string[]).includes(value);
+}
+
+export function normalizeSupervisorRuntimeMode(
+  value: unknown,
+  fallback: SupervisorRuntimeMode = "auto",
+): SupervisorRuntimeMode {
+  return isSupervisorRuntimeMode(value) ? value : fallback;
+}
+
 export type SessionRuntimeScope = "session" | "active_run";
 export type SessionRuntimeVisibility = "visible" | "hidden" | "history_only" | "excluded";
 export type SessionRuntimeEventTarget =

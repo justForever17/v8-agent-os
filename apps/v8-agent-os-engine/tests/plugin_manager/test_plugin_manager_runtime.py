@@ -1599,6 +1599,32 @@ def test_github_cli_login_uses_reviewed_browser_adapter_instead_of_mcp_oauth(
     assert service.cancel_cli_login("github", component_id="gh")["status"] == "cancelled"
 
 
+def test_cli_auth_status_poll_uses_windowless_process_flags(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    manifest, profile, adapter = service._cli_browser_auth_contract("github", component_id="gh")
+    captured: dict = {}
+
+    class _Completed:
+        returncode = 0
+
+    def _run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["kwargs"] = dict(kwargs)
+        return _Completed()
+
+    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: 0x08000000)
+    monkeypatch.setattr(service_module.subprocess, "run", _run)
+
+    assert service._run_cli_auth_status(manifest, profile, adapter) is True
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+    assert captured["kwargs"]["shell"] is False
+    assert captured["kwargs"]["stdin"] is service_module.subprocess.DEVNULL
+
+
 def test_github_cli_login_does_not_reopen_browser_when_credential_store_is_ready(
     runtime,
     monkeypatch: pytest.MonkeyPatch,

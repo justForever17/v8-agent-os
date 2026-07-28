@@ -48,6 +48,74 @@ def extract_text_and_reasoning(message: Any) -> Tuple[str, str]:
     return "".join(text_parts), "".join(reasoning_parts)
 
 
+def extract_reasoning_summary(message: Any) -> str:
+    """Extract only provider-declared summary text from typed reasoning payloads."""
+    candidate = _unwrap_message_candidate(message)
+    if candidate is None:
+        return ""
+
+    parts: list[str] = []
+    seen_block_collections: set[int] = set()
+    for field_name in ("content_blocks", "content"):
+        blocks = _read_field(candidate, field_name)
+        if not isinstance(blocks, Iterable) or isinstance(blocks, (str, bytes, dict)):
+            continue
+        collection_id = id(blocks)
+        if collection_id in seen_block_collections:
+            continue
+        seen_block_collections.add(collection_id)
+        for block in blocks:
+            if str(_read_field(block, "type") or "").strip().lower() != "reasoning":
+                continue
+            _append_unique(
+                parts,
+                _extract_reasoning_summary_text(_read_field(block, "summary")),
+            )
+
+    containers = [candidate]
+    for container_name in ("additional_kwargs", "response_metadata", "generation_info"):
+        container = _read_field(candidate, container_name)
+        if isinstance(container, Mapping):
+            containers.append(container)
+    for container in containers:
+        reasoning = _read_field(container, "reasoning")
+        if reasoning is None:
+            continue
+        _append_unique(
+            parts,
+            _extract_reasoning_summary_text(_read_field(reasoning, "summary")),
+        )
+
+    return "".join(parts)
+
+
+def extract_typed_thinking_text(message: Any) -> str:
+    """Extract text only from typed ``thinking`` blocks, never their signatures."""
+    candidate = _unwrap_message_candidate(message)
+    if candidate is None:
+        return ""
+
+    parts: list[str] = []
+    seen_block_collections: set[int] = set()
+    for field_name in ("content_blocks", "content"):
+        blocks = _read_field(candidate, field_name)
+        if not isinstance(blocks, Iterable) or isinstance(blocks, (str, bytes, dict)):
+            continue
+        collection_id = id(blocks)
+        if collection_id in seen_block_collections:
+            continue
+        seen_block_collections.add(collection_id)
+        for block in blocks:
+            if str(_read_field(block, "type") or "").strip().lower() != "thinking":
+                continue
+            _append_unique(
+                parts,
+                _first_string(block, ("thinking", "text", "content", "value")),
+            )
+
+    return "".join(parts)
+
+
 def ensure_reasoning_content(message: Any) -> Any:
     """Keep reasoning_content available for providers that require it with tool calls."""
     tool_calls = _read_field(message, "tool_calls")

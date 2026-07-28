@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from core.audit_logger import audit_logger
 from core.database import db
+from core.process_launch import run_windowless
 from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -609,12 +610,13 @@ def _is_process_running(pid: int) -> bool:
         return False
     if sys.platform.startswith("win"):
         try:
-            result = subprocess.run(
+            result = run_windowless(
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
                 timeout=3,
                 check=False,
+                shell=False,
             )
             output = (result.stdout or "").strip()
             return result.returncode == 0 and str(pid) in output and "INFO:" not in output.upper()
@@ -632,12 +634,13 @@ def _terminate_process(pid: int) -> bool:
         return False
     if sys.platform.startswith("win"):
         try:
-            result = subprocess.run(
+            result = run_windowless(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
                 timeout=5,
                 check=False,
+                shell=False,
             )
             return result.returncode == 0
         except Exception:

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { isSupervisorRuntimeMode } from "./supervisor-runtime-mode";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -21,6 +22,10 @@ function toRecordList(value: unknown) {
 
 function toOptionalRecord(value: unknown) {
     return value && typeof value === "object" ? value as JsonRecord : undefined;
+}
+
+function toSupervisorRuntimeMode(value: unknown) {
+    return isSupervisorRuntimeMode(value) ? value : undefined;
 }
 
 function toAttachmentList(value: unknown, fallbackFileUrls: string[] = []) {
@@ -101,6 +106,12 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const safetyApprovalMode = typeof data.safetyApprovalMode === "string"
         ? data.safetyApprovalMode
         : undefined;
+    const supervisorRuntimeMode = toSupervisorRuntimeMode(
+        data.supervisorRuntimeMode
+        ?? data.supervisor_runtime_mode
+        ?? root.supervisorRuntimeMode
+        ?? root.supervisor_runtime_mode,
+    );
     const canvasSupervisorDirect = data.canvasSupervisorDirect === true ? true : undefined;
     const composerPresentation = toOptionalRecord(data.composerPresentation);
     const contextMentions = toRecordList(data.contextMentions);
@@ -149,6 +160,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 specMode,
                 supervisorReasoningEffort,
                 safetyApprovalMode,
+                supervisorRuntimeMode,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
                 canvasSupervisorDirect,
                 composerPresentation,

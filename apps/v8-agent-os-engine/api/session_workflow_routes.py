@@ -3,6 +3,7 @@ import uuid
 import importlib
 import json
 import hashlib
+import logging
 import time
 from pathlib import Path
 from typing import Optional
@@ -69,6 +70,7 @@ from runtimes.creative_media.governed_media import GovernedMediaError, probe_req
 
 
 router = APIRouter()
+logger = logging.getLogger("v8chat.session_presentation")
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 _WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
@@ -675,6 +677,25 @@ async def patch_session_presentation(session_id: str, data: dict = Body(...)):
             if supervisor_work_mode not in {"daily", "engineering"}:
                 raise HTTPException(status_code=400, detail="session_supervisor_work_mode_invalid")
             updates["supervisorWorkMode"] = supervisor_work_mode
+            if "supervisorRuntimeMode" not in data:
+                logger.info(
+                    "legacy_supervisor_work_mode_used session_id=%s mode=%s replacement=supervisorRuntimeMode",
+                    session_id,
+                    supervisor_work_mode,
+                )
+        if "supervisorRuntimeMode" in data:
+            supervisor_runtime_mode = str(data.get("supervisorRuntimeMode") or "").strip().lower()
+            if supervisor_runtime_mode not in {
+                "auto",
+                "engineering",
+                "research",
+                "creative_media",
+                "computer_use",
+                "rpa",
+            }:
+                raise HTTPException(status_code=400, detail="session_supervisor_runtime_mode_invalid")
+            updates["supervisorRuntimeMode"] = supervisor_runtime_mode
+            updates["supervisorWorkMode"] = "daily"
         if not updates:
             raise HTTPException(status_code=400, detail="session_presentation_update_required")
 

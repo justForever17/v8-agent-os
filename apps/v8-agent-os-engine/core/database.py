@@ -2032,6 +2032,22 @@ class DatabaseManager:
                 work_mode = str(updates.get("supervisorWorkMode") or "").strip().lower()
                 if work_mode in {"daily", "engineering"}:
                     metadata["supervisorWorkMode"] = work_mode
+                    if "supervisorRuntimeMode" not in updates:
+                        metadata["supervisorRuntimeMode"] = (
+                            "engineering" if work_mode == "engineering" else "auto"
+                        )
+            if "supervisorRuntimeMode" in updates:
+                runtime_mode = str(updates.get("supervisorRuntimeMode") or "").strip().lower()
+                if runtime_mode in {
+                    "auto",
+                    "engineering",
+                    "research",
+                    "creative_media",
+                    "computer_use",
+                    "rpa",
+                }:
+                    metadata["supervisorRuntimeMode"] = runtime_mode
+                    metadata["supervisorWorkMode"] = "daily"
 
             conn.execute(
                 """

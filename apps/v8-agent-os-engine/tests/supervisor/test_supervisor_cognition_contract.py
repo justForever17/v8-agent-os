@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, HumanMessage
 
 from core.native_tools import NATIVE_TOOLS
-from core.runtime_route_contract import runtime_route_contract_example
+from core.runtime_route_contract import runtime_route_contract_example, runtime_route_parameter_guidance
 from core.runtime_tool_access import filter_visible_tools_for_actor, grant_runtime_tool_groups
 from core.storage import DEFAULT_SUPERVISOR_PROMPT_OVERLAY
 from core.tools.research_broker import research_broker
@@ -101,6 +101,22 @@ def test_research_web_and_managed_episode_descriptions_form_a_clear_ladder():
     assert engineering_briefs[1]["dependencies"] == ["engineering-implementation"]
     assert len(engineering_briefs[0]["writeSet"]) == 2
     assert len(engineering_briefs[1]["writeSet"]) == 1
+
+    rpa_example = runtime_route_contract_example("rpa")
+    rpa_execution = rpa_example["taskBriefs"][0]["context"]["rpaExecution"]
+    assert rpa_execution == {
+        "action": "execute",
+        "draftId": "<approved RPA draft id>",
+        "variables": {"<variable name>": "<typed value>"},
+        "timeoutMs": 600000,
+    }
+    rpa_guidance = runtime_route_parameter_guidance("rpa")
+    assert "taskBriefs[].context.rpaExecution" in rpa_guidance["requiredPaths"]
+    assert "taskBriefs[].context.rpaExecution.traceRunIds" in rpa_guidance["arrayPaths"]
+    assert "taskBriefs[].context.rpaExecution.runIds" in rpa_guidance["arrayPaths"]
+    assert any("never infers these values from goal prose" in item for item in rpa_guidance["discipline"])
+    validated_rpa = runtime_broker.args_schema.model_validate(rpa_example)
+    assert validated_rpa.taskBriefs[0]["context"]["rpaExecution"] == rpa_execution
 
 
 def test_runtime_broker_rejects_unknown_top_level_brief_fields_instead_of_dropping_them():

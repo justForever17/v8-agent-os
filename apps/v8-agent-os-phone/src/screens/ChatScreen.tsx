@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     AppState,
     ActivityIndicator,
@@ -160,6 +160,7 @@ import {
     type AdminProcessRef,
     type ContextGovernanceView,
     type ContextReferenceItem,
+    type SupervisorRuntimeMode,
     deriveAuthoritativeSessionView,
     contextUsagePercent as resolveContextUsagePercent,
     evaluateSessionRuntimeEvent,
@@ -2165,19 +2166,25 @@ export default function ChatScreen() {
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const sessionIndexReadyRef = useRef(false);
+    const supervisorRuntimeModeRequestSeqRef = useRef<Record<string, number>>({});
+    const supervisorRuntimeModePersistChainRef = useRef<Record<string, Promise<void>>>({});
     useEffect(() => {
         sessionIndexReadyRef.current = false;
     }, [sessionIndexNamespace]);
-    const [supervisorWorkModeDrafts, setSupervisorWorkModeDrafts] = useState<Record<string, "daily" | "engineering">>({});
+    const [supervisorRuntimeModeDrafts, setSupervisorRuntimeModeDrafts] = useState<Record<string, SupervisorRuntimeMode>>({});
     const activeConversationSummary = useMemo(
         () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
         [activeConversationId, conversations],
     );
-    const activeSupervisorWorkModeSessionId = String(activeConversationId || "").trim();
-    const persistedSupervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
-    const supervisorWorkMode = activeSupervisorWorkModeSessionId
-        ? supervisorWorkModeDrafts[activeSupervisorWorkModeSessionId] || persistedSupervisorWorkMode
-        : persistedSupervisorWorkMode;
+    const activeSupervisorRuntimeModeSessionId = String(activeConversationId || "").trim();
+    const persistedSupervisorRuntimeMode = activeConversationSummary?.supervisorRuntimeMode || "auto";
+    const supervisorRuntimeMode = activeSupervisorRuntimeModeSessionId
+        ? supervisorRuntimeModeDrafts[activeSupervisorRuntimeModeSessionId] || persistedSupervisorRuntimeMode
+        : persistedSupervisorRuntimeMode;
+    const supervisorRuntimeModeRef = useRef<SupervisorRuntimeMode>(supervisorRuntimeMode);
+    useLayoutEffect(() => {
+        supervisorRuntimeModeRef.current = supervisorRuntimeMode;
+    }, [activeSupervisorRuntimeModeSessionId, supervisorRuntimeMode]);
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
@@ -2484,7 +2491,7 @@ export default function ChatScreen() {
         tRef.current = t;
     }, [t]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         activeConversationIdRef.current = activeConversationId;
     }, [activeConversationId]);
 
@@ -5438,7 +5445,7 @@ export default function ChatScreen() {
 
     const handleUpdateConversationPresentation = useCallback(async (
         item: ConversationSummary,
-        patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" },
+        patch: { title?: string; pinned?: boolean; supervisorRuntimeMode?: SupervisorRuntimeMode },
     ) => {
         const canonicalSessionId = item.sessionId || item.id;
         try {
@@ -5457,36 +5464,88 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, t]);
 
-    const handleChangeSupervisorWorkMode = useCallback(async (nextMode: "daily" | "engineering") => {
-        const sessionId = String(activeConversationIdRef.current || activeConversationId || "").trim();
-        if (!sessionId || nextMode === supervisorWorkMode) return;
-        setSupervisorWorkModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
+    const handleChangeSupervisorRuntimeMode = useCallback(async (nextMode: SupervisorRuntimeMode) => {
+        const sessionId = String(activeConversationIdRef.current || "").trim();
+        const previousMode = supervisorRuntimeModeRef.current;
+        if (!sessionId || nextMode === previousMode) return;
+        const requestSeq = (supervisorRuntimeModeRequestSeqRef.current[sessionId] || 0) + 1;
+        supervisorRuntimeModeRequestSeqRef.current[sessionId] = requestSeq;
+        supervisorRuntimeModeRef.current = nextMode;
+        setSupervisorRuntimeModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
         setConversations((current) => current.map((conversation) =>
             (conversation.sessionId || conversation.id) === sessionId
-                ? { ...conversation, supervisorWorkMode: nextMode }
+                ? { ...conversation, supervisorRuntimeMode: nextMode }
                 : conversation
         ));
-        try {
-            const updated = await updateConversationPresentation(authorizedFetch, sessionId, { supervisorWorkMode: nextMode });
-            setConversations((current) => sortSessionHistory([
-                updated,
-                ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== sessionId),
-            ]));
-            if (updated.supervisorWorkMode === nextMode) {
-                setSupervisorWorkModeDrafts((current) => {
+        const previousWrite = supervisorRuntimeModePersistChainRef.current[sessionId] || Promise.resolve();
+        const persistPromise = previousWrite.catch(() => undefined).then(async () => {
+            try {
+                const updated = await updateConversationPresentation(authorizedFetch, sessionId, { supervisorRuntimeMode: nextMode });
+                if (updated.supervisorRuntimeMode !== nextMode) {
+                    throw new Error("session_supervisor_runtime_mode_mismatch");
+                }
+                if (supervisorRuntimeModeRequestSeqRef.current[sessionId] !== requestSeq) return;
+                setConversations((current) => sortSessionHistory([
+                    updated,
+                    ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== sessionId),
+                ]));
+                setSupervisorRuntimeModeDrafts((current) => {
                     if (current[sessionId] !== nextMode) return current;
                     const next = { ...current };
                     delete next[sessionId];
                     return next;
                 });
+            } catch {
+                if (supervisorRuntimeModeRequestSeqRef.current[sessionId] !== requestSeq) return;
+                let authoritativeConversation: ConversationSummary | null = null;
+                try {
+                    const refreshed = await listConversations(authorizedFetch);
+                    if (supervisorRuntimeModeRequestSeqRef.current[sessionId] !== requestSeq) return;
+                    authoritativeConversation = refreshed.find(
+                        (conversation) => (conversation.sessionId || conversation.id) === sessionId,
+                    ) || null;
+                } catch {
+                    // Keep the pre-request mode as the local fallback when reconciliation is unavailable.
+                }
+                if (supervisorRuntimeModeRequestSeqRef.current[sessionId] !== requestSeq) return;
+                const rollbackMode = authoritativeConversation?.supervisorRuntimeMode || previousMode;
+                setSupervisorRuntimeModeDrafts((current) => {
+                    if (current[sessionId] !== nextMode) return current;
+                    const next = { ...current };
+                    delete next[sessionId];
+                    return next;
+                });
+                setConversations((current) => {
+                    if (authoritativeConversation) {
+                        return sortSessionHistory([
+                            authoritativeConversation,
+                            ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== sessionId),
+                        ]);
+                    }
+                    return current.map((conversation) =>
+                        (conversation.sessionId || conversation.id) === sessionId
+                            && conversation.supervisorRuntimeMode === nextMode
+                            ? { ...conversation, supervisorRuntimeMode: rollbackMode }
+                            : conversation
+                    );
+                });
+                if (activeConversationIdRef.current !== sessionId) return;
+                supervisorRuntimeModeRef.current = rollbackMode;
+                Alert.alert(
+                    t("shared.conversation.update_failed"),
+                    t("shared.conversation.runtime_mode_sync_failed"),
+                );
             }
-        } catch {
-            Alert.alert(
-                t("shared.conversation.update_failed"),
-                t("shared.conversation.work_mode_sync_failed_detail"),
-            );
+        });
+        supervisorRuntimeModePersistChainRef.current[sessionId] = persistPromise;
+        try {
+            await persistPromise;
+        } finally {
+            if (supervisorRuntimeModePersistChainRef.current[sessionId] === persistPromise) {
+                delete supervisorRuntimeModePersistChainRef.current[sessionId];
+            }
         }
-    }, [activeConversationId, authorizedFetch, supervisorWorkMode, t]);
+    }, [authorizedFetch, t]);
 
     const handleUpdateWorkspacePresentation = useCallback(async (
         group: ConversationWorkspaceGroup,
@@ -6314,6 +6373,7 @@ export default function ChatScreen() {
     ]);
 
     const handleSend = useCallback(async (options: SendComposerOptions = {}) => {
+        const pendingSupervisorRuntimeMode = supervisorRuntimeModeRef.current;
         const hasExplicitFiles = Array.isArray(options.files);
         const preserveComposer = Boolean(options.preserveComposer);
         const displayText = String(options.text ?? input);
@@ -6502,6 +6562,7 @@ export default function ChatScreen() {
                         composerPresentation: pendingComposerPresentation,
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
+                        supervisorRuntimeMode: pendingSupervisorRuntimeMode,
                         safetyApprovalMode: pendingSafetyApprovalMode,
                     },
                 );
@@ -6654,6 +6715,7 @@ export default function ChatScreen() {
                     composerPresentation: pendingComposerPresentation,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
+                    supervisorRuntimeMode: pendingSupervisorRuntimeMode,
                     safetyApprovalMode: pendingSafetyApprovalMode,
                 },
             );
@@ -6805,7 +6867,6 @@ export default function ChatScreen() {
         scopeBinding?.workspaceId,
         scopeBinding?.workspacePath,
         specModeEnabled,
-        supervisorWorkMode,
         t,
         uploadedFiles,
         upsertQueuedMessage,
@@ -7136,8 +7197,8 @@ export default function ChatScreen() {
                     }}
                     specModeEnabled={specModeEnabled}
                     onToggleSpecMode={() => setSpecModeEnabled((current) => !current)}
-                    supervisorWorkMode={supervisorWorkMode}
-                    onChangeSupervisorWorkMode={(mode) => void handleChangeSupervisorWorkMode(mode)}
+                    supervisorRuntimeMode={supervisorRuntimeMode}
+                    onChangeSupervisorRuntimeMode={(mode) => void handleChangeSupervisorRuntimeMode(mode)}
                     safetyApprovalMode={safetyApprovalMode}
                     onChangeSafetyApprovalMode={setSafetyApprovalMode}
                     reasoningEffortVisible={reasoningEffortVisible}

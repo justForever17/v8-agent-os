@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useSession } from "next-auth/react";
+import type { SupervisorRuntimeMode } from "@v8/session-realtime";
 import {
     SessionHistoryItem,
     mergeSessionHistoryOverlay,
@@ -16,6 +17,17 @@ import {
 } from "@/lib/web-conversation-cache";
 
 export type Conversation = SessionHistoryItem;
+
+export interface ConversationPresentationPatch {
+    title?: string;
+    pinned?: boolean;
+    supervisorWorkMode?: "daily" | "engineering";
+    supervisorRuntimeMode?: SupervisorRuntimeMode;
+}
+
+export interface ConversationPresentationOptions {
+    applyResponse?: boolean;
+}
 
 export interface CreateConversationPayload {
     title?: string;
@@ -32,7 +44,11 @@ interface ConversationContextType {
     isLoading: boolean;
     refreshConversations: () => Promise<void>;
     createConversation: (payload?: CreateConversationPayload) => Promise<Conversation | null>;
-    updateConversationPresentation: (id: string, patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" }) => Promise<Conversation | null>;
+    updateConversationPresentation: (
+        id: string,
+        patch: ConversationPresentationPatch,
+        options?: ConversationPresentationOptions,
+    ) => Promise<Conversation | null>;
     patchConversationSummary: (id: string, patch: Partial<Conversation>) => void;
     deleteConversation: (id: string) => Promise<boolean>;
     clearConversations: () => Promise<boolean>;
@@ -145,7 +161,11 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         });
     }, []);
 
-    const updateConversationPresentation = useCallback(async (id: string, patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" }) => {
+    const updateConversationPresentation = useCallback(async (
+        id: string,
+        patch: ConversationPresentationPatch,
+        options: ConversationPresentationOptions = {},
+    ) => {
         try {
             const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
                 method: "PATCH",
@@ -157,13 +177,15 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
             }
             const updated = normalizeSessionHistoryItem(await response.json().catch(() => ({})));
             const sessionId = getConversationSessionId(updated);
-            setConversations((current) => {
-                const next = sortSessionHistory([
-                    updated,
-                    ...current.filter((item) => getConversationSessionId(item) !== sessionId),
-                ]);
-                return isSameConversationList(current, next) ? current : next;
-            });
+            if (options.applyResponse !== false) {
+                setConversations((current) => {
+                    const next = sortSessionHistory([
+                        updated,
+                        ...current.filter((item) => getConversationSessionId(item) !== sessionId),
+                    ]);
+                    return isSameConversationList(current, next) ? current : next;
+                });
+            }
             return updated;
         } catch (error) {
             console.error("Failed to update conversation presentation", error);

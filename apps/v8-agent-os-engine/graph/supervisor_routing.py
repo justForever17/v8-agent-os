@@ -37,7 +37,17 @@ def create_robust_invoke(
         resolved_config = model_control_plane.get_config()
         target_model_id = preferred_model_id or sup_model_name
         def _default_model_builder(candidate_model_id):
-            kwargs = {"streaming": False, "timeout": 180, "_role": role}
+            normalized_role = str(role or "").strip().lower()
+            streams_canonical_agent_events = (
+                normalized_role in {"supervisor", "subagent"}
+                or normalized_role.startswith("agent:")
+                or normalized_role.startswith("reviewer:")
+            )
+            kwargs = {
+                "streaming": streams_canonical_agent_events,
+                "timeout": 180,
+                "_role": role,
+            }
             if role == "supervisor" and supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
                 kwargs["_reasoning_effort"] = supervisor_reasoning_effort
             return llm_factory.create_chat_model(candidate_model_id, **kwargs)

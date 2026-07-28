@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 import graph.supervisor_turn as supervisor_turn_module
@@ -217,7 +217,6 @@ def test_runtime_handoff_retries_missing_delegation_acceptance_once():
             ]
         },
     }
-
     def _robust_invoke(_llm, messages, tools, **_kwargs):
         calls.append({"messages": messages, "tools": tools})
         return AIMessage(content="验收决定：ACCEPT\n依据：父子标题结果一致。")
@@ -1405,6 +1404,151 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
     assert calls == ["invoked"]
     assert response.tool_calls[0]["name"] == "runtime_broker"
+
+
+def test_selected_read_only_engineering_uses_one_bounded_route_compiler_invocation(monkeypatch):
+    emitted: list[tuple[str, object]] = []
+    model_calls: list[list[object]] = []
+    route_bundle = SimpleNamespace(
+        filtered_tools=[SimpleNamespace(name="runtime_broker")],
+        prompt_addition="",
+        selected_skill_ids=[],
+        selected_skill_names=[],
+        exposed_mcp_tool_names=[],
+        skill_root_descriptors=[],
+        candidate_summary={"reason": "authoritative_runtime_route_uses_narrow_tool_surface"},
+    )
+    runtime_service = SimpleNamespace(
+        bind_execution_context=lambda **_kwargs: "token",
+        reset_execution_context=lambda token: emitted.append(("reset", token)),
+        emit_route_selected=lambda **_kwargs: None,
+        emit_supervisor_diagnostics=lambda payload: emitted.append(("diagnostics", payload)),
+        emit_response_tool_calls=lambda response: emitted.append(("tool_calls", response)),
+        emit_execution_completed=lambda **kwargs: emitted.append(("completed", kwargs["response"])),
+    )
+    reflex = SimpleNamespace(as_dict=lambda: {"mode": "bias"})
+    gate = SimpleNamespace(
+        status="clean",
+        diagnostics={"readOnlyExecutionIntent": True},
+        as_dict=lambda: {
+            "status": "clean",
+            "diagnostics": {"readOnlyExecutionIntent": True},
+        },
+    )
+    feedback = SimpleNamespace(as_dict=lambda: {"sourceRuntime": "chat"})
+    monkeypatch.setattr(supervisor_turn_module, "extensions_runtime_service", runtime_service)
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "resolve_supervisor_request_context",
+        lambda _messages, _service: {
+            "user_query": "只读检查 README.md 第一行，不要修改任何文件。",
+            "current_scope": "workspace",
+            "scope_chain": ["workspace"],
+            "session_id": "session-read-only-live",
+        },
+    )
+    monkeypatch.setattr(supervisor_turn_module, "filter_visible_tools_for_actor", lambda tools, **_kwargs: tools)
+    monkeypatch.setattr(supervisor_turn_module, "_filter_spec_tools_for_mode", lambda tools, _state: tools)
+    monkeypatch.setattr(supervisor_turn_module, "_is_network_supervisor_compat_transport", lambda _state: False)
+    monkeypatch.setattr(supervisor_turn_module, "_should_use_spec_narrow_route", lambda _state: False)
+    monkeypatch.setattr(supervisor_turn_module, "_build_neutral_extensions_route", lambda _tools: route_bundle)
+    monkeypatch.setattr(supervisor_turn_module, "_should_include_extensions_prefilter_prompt", lambda **_kwargs: False)
+    monkeypatch.setattr(supervisor_turn_module, "_suppress_extensions_prefilter_prompt", lambda bundle: bundle)
+    monkeypatch.setattr(supervisor_turn_module, "_memory_no_match_since_latest_human", lambda _state: False)
+    monkeypatch.setattr(supervisor_turn_module, "_should_hide_todo_tools_for_direct_writing", lambda *_args: False)
+    monkeypatch.setattr(supervisor_turn_module, "runtime_reflex_service", SimpleNamespace(evaluate=lambda **_kwargs: reflex))
+    monkeypatch.setattr(supervisor_turn_module, "runtime_preflight_gate", SimpleNamespace(evaluate=lambda **_kwargs: gate))
+    monkeypatch.setattr(supervisor_turn_module, "render_reflex_prompt_addition", lambda _decision: "")
+    monkeypatch.setattr(supervisor_turn_module, "render_gate_prompt_addition", lambda _decision: "")
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "runtime_evidence_feedback_service",
+        SimpleNamespace(record=lambda **_kwargs: feedback),
+    )
+    monkeypatch.setattr(supervisor_turn_module, "_attach_route_context_to_response", lambda *_args, **_kwargs: None)
+
+    state = {
+        "run_id": "run-read-only-live",
+        "workspace_path": "E:/workspace",
+        "task_shape_hint": {"boundaryDecision": {"askUserNeeded": False}},
+        "current_route_context": {
+            "sessionId": "session-read-only-live",
+            "runId": "run-read-only-live",
+            "supervisorRuntimeMode": "engineering",
+            "userRequest": "只读检查 README.md 第一行，不要修改任何文件。",
+            "capabilityEpisodes": [],
+        },
+    }
+    context_orchestrator = SimpleNamespace(
+        prepare=lambda **kwargs: SimpleNamespace(
+            messages=[
+                SystemMessage(content=kwargs["leading_system_content"]),
+                *kwargs["messages"],
+            ],
+            audit={},
+        )
+    )
+
+    def compiler_model_call(_invoke_llm, prepared_messages, _tools, **kwargs):
+        assert kwargs["invocation_config"] == {
+            "metadata": {"v8_internal_model_surface": "runtime_route_compiler"}
+        }
+        model_calls.append(list(prepared_messages))
+        return AIMessage(
+            content="internal route explanation that must not reach history",
+            tool_calls=[
+                {
+                    "id": "call-compiler-engineering",
+                    "name": "runtime_broker",
+                    "args": {
+                        "mode": "route",
+                        "routeKind": "engineering",
+                        "routeReason": "The user selected Engineering for this request.",
+                        "taskBriefs": [
+                            {
+                                "taskBriefId": "read-readme",
+                                "goal": "只读检查 README.md 第一行，不要修改任何文件。",
+                                "readOnly": True,
+                                "writeRequired": False,
+                                "writeSet": [],
+                                "expectedOutputs": ["README first line"],
+                                "acceptanceContract": ["No workspace files are modified"],
+                            }
+                        ],
+                    },
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    response = execute_supervisor_turn(
+        state=state,
+        config={},
+        messages=[HumanMessage(content="只读检查 README.md 第一行，不要修改任何文件。")],
+        loaded_agents=[],
+        supervisor_tools=[SimpleNamespace(name="runtime_broker")],
+        memory_runtime=None,
+        scope_resolution_service=None,
+        ensure_reasoning_content=lambda message: message,
+        sanitize_message_chain=lambda messages, **_kwargs: messages,
+        context_orchestrator=context_orchestrator,
+        robust_invoke=compiler_model_call,
+        supervisor_base_llm=object(),
+        sup_model_name="test-model",
+        caller_kwargs={},
+        llm_factory=SimpleNamespace(create_chat_model=lambda *_args, **_kwargs: object()),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert response.tool_calls[0]["name"] == "runtime_broker"
+    assert response.content == ""
+    assert response.tool_calls[0]["args"]["taskBriefs"][0]["readOnly"] is True
+    assert len(model_calls) == 1
+    assert "Runtime Route Compiler" in str(model_calls[0][0].content)
+    diagnostics = next(payload for topic, payload in emitted if topic == "diagnostics")
+    assert diagnostics["promptProfile"] == "runtime_route_compiler"
+    assert diagnostics["modelInvocationRequired"] is True
+    assert [topic for topic, _payload in emitted][-1] == "reset"
 
 
 def test_direct_writing_skill_plan_hides_supervisor_todo_tools():

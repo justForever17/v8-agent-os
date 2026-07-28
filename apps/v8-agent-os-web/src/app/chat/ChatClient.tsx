@@ -90,6 +90,7 @@ import {
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
     type SessionApprovalView,
+    type SupervisorRuntimeMode,
 } from "@v8/session-realtime";
 
 const AskUserModal = dynamic(
@@ -951,7 +952,12 @@ export default function ChatClient() {
 
     const [input, setInput] = useState("");
     const { conversations, refreshConversations, createConversation, patchConversationSummary, updateConversationPresentation } = useConversationContext();
-    const [supervisorWorkModeDrafts, setSupervisorWorkModeDrafts] = useState<Record<string, "daily" | "engineering">>({});
+    const [supervisorRuntimeModeDrafts, setSupervisorRuntimeModeDrafts] = useState<Record<string, SupervisorRuntimeMode>>({});
+    const supervisorRuntimeModeRef = useRef<SupervisorRuntimeMode>("auto");
+    const supervisorRuntimeModeRequestSeqRef = useRef<Record<string, number>>({});
+    const supervisorRuntimeModeConfirmedRef = useRef<Record<string, SupervisorRuntimeMode>>({});
+    const supervisorRuntimeModePersistenceQueueRef = useRef<Record<string, Promise<unknown>>>({});
+    const [supervisorRuntimeModeSyncErrors, setSupervisorRuntimeModeSyncErrors] = useState<Record<string, string>>({});
     const [askUserModalOpen, setAskUserModalOpen] = useState(false);
     const [askUserQuestion, setAskUserQuestion] = useState("");
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
@@ -1447,26 +1453,97 @@ export default function ChatClient() {
         () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
         [activeConversationId, conversations],
     );
-    const activeSupervisorWorkModeSessionId = String(activeConversationId || "").trim();
-    const persistedSupervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
-    const supervisorWorkMode = activeSupervisorWorkModeSessionId
-        ? supervisorWorkModeDrafts[activeSupervisorWorkModeSessionId] || persistedSupervisorWorkMode
-        : persistedSupervisorWorkMode;
-    const handleSupervisorWorkModeChange = useCallback(async (nextMode: "daily" | "engineering") => {
+    const activeSupervisorRuntimeModeSessionId = String(activeConversationId || "").trim();
+    const persistedSupervisorRuntimeMode = activeConversationSummary?.supervisorRuntimeMode || "auto";
+    const supervisorRuntimeMode = activeSupervisorRuntimeModeSessionId
+        ? supervisorRuntimeModeDrafts[activeSupervisorRuntimeModeSessionId] || persistedSupervisorRuntimeMode
+        : persistedSupervisorRuntimeMode;
+    useLayoutEffect(() => {
+        const sessionId = activeSupervisorRuntimeModeSessionId;
+        if (
+            sessionId
+            && !supervisorRuntimeModePersistenceQueueRef.current[sessionId]
+            && supervisorRuntimeModeDrafts[sessionId] === undefined
+        ) {
+            supervisorRuntimeModeConfirmedRef.current[sessionId] = persistedSupervisorRuntimeMode;
+        }
+        supervisorRuntimeModeRef.current = supervisorRuntimeMode;
+    }, [
+        activeSupervisorRuntimeModeSessionId,
+        persistedSupervisorRuntimeMode,
+        supervisorRuntimeMode,
+        supervisorRuntimeModeDrafts,
+    ]);
+    const handleSupervisorRuntimeModeChange = useCallback(async (nextMode: SupervisorRuntimeMode) => {
         const sessionId = activeConversationIdRef.current;
-        if (!sessionId || nextMode === supervisorWorkMode) return;
-        setSupervisorWorkModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
-        patchConversationSummary(sessionId, { supervisorWorkMode: nextMode });
-        const updated = await updateConversationPresentation(sessionId, { supervisorWorkMode: nextMode });
-        if (updated?.supervisorWorkMode === nextMode) {
-            setSupervisorWorkModeDrafts((current) => {
+        if (!sessionId || nextMode === supervisorRuntimeModeRef.current) return;
+        if (!Object.prototype.hasOwnProperty.call(supervisorRuntimeModeConfirmedRef.current, sessionId)) {
+            supervisorRuntimeModeConfirmedRef.current[sessionId] = persistedSupervisorRuntimeMode;
+        }
+        const requestSeq = (supervisorRuntimeModeRequestSeqRef.current[sessionId] || 0) + 1;
+        supervisorRuntimeModeRequestSeqRef.current[sessionId] = requestSeq;
+        setSupervisorRuntimeModeSyncErrors((current) => {
+            if (current[sessionId] === undefined) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+        });
+        supervisorRuntimeModeRef.current = nextMode;
+        setSupervisorRuntimeModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
+        patchConversationSummary(sessionId, { supervisorRuntimeMode: nextMode });
+
+        const previousPersistence = supervisorRuntimeModePersistenceQueueRef.current[sessionId] || Promise.resolve();
+        const persistence = previousPersistence
+            .catch(() => undefined)
+            .then(() => updateConversationPresentation(
+                sessionId,
+                { supervisorRuntimeMode: nextMode },
+                { applyResponse: false },
+            ));
+        supervisorRuntimeModePersistenceQueueRef.current[sessionId] = persistence;
+        const updated = await persistence;
+        if (supervisorRuntimeModePersistenceQueueRef.current[sessionId] === persistence) {
+            delete supervisorRuntimeModePersistenceQueueRef.current[sessionId];
+        }
+
+        const confirmedMode = updated?.supervisorRuntimeMode;
+        if (confirmedMode) {
+            supervisorRuntimeModeConfirmedRef.current[sessionId] = confirmedMode;
+        }
+        const isLatestRequest = supervisorRuntimeModeRequestSeqRef.current[sessionId] === requestSeq;
+        if (confirmedMode === nextMode) {
+            if (!isLatestRequest) return;
+            setSupervisorRuntimeModeDrafts((current) => {
                 if (current[sessionId] !== nextMode) return current;
                 const next = { ...current };
                 delete next[sessionId];
                 return next;
             });
+            return;
         }
-    }, [patchConversationSummary, supervisorWorkMode, updateConversationPresentation]);
+        if (!isLatestRequest) return;
+
+        const fallbackMode = supervisorRuntimeModeConfirmedRef.current[sessionId] || "auto";
+        if (activeConversationIdRef.current === sessionId) {
+            supervisorRuntimeModeRef.current = fallbackMode;
+        }
+        setSupervisorRuntimeModeDrafts((current) => {
+            if (current[sessionId] !== nextMode) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+        });
+        patchConversationSummary(sessionId, { supervisorRuntimeMode: fallbackMode });
+        setSupervisorRuntimeModeSyncErrors((current) => ({
+            ...current,
+            [sessionId]: t("web.chat.runtimeMode.syncFailed"),
+        }));
+        console.error("[ChatClient] Failed to persist Supervisor runtime mode", {
+            sessionId,
+            nextMode,
+            fallbackMode,
+        });
+    }, [patchConversationSummary, persistedSupervisorRuntimeMode, t, updateConversationPresentation]);
     const localConversationLoading = Boolean(
         isLoading
         && streamingConversationIdRef.current === activeConversationId,
@@ -3284,6 +3361,7 @@ export default function ChatClient() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleSend = async (e: React.FormEvent<HTMLFormElement>, options?: { data?: any }) => {
         e.preventDefault();
+        const supervisorRuntimeModeSnapshot = supervisorRuntimeModeRef.current;
         const optionData = { ...(options?.data || {}) };
         const messageOverride = typeof optionData.messageOverride === "string" ? optionData.messageOverride : null;
         delete optionData.messageOverride;
@@ -3305,6 +3383,7 @@ export default function ChatClient() {
 
         const submissionData = {
             ...optionData,
+            supervisorRuntimeMode: supervisorRuntimeModeSnapshot,
             ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
         if (messageOverride === null) setInput(""); // Clear the visible Composer only for Composer submissions.
@@ -3499,7 +3578,7 @@ export default function ChatClient() {
         }));
     };
 
-    const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
+    const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; supervisorRuntimeMode?: SupervisorRuntimeMode; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
         const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
         if (status !== 'authenticated' || !hasFiles) return;
         if (!activeConversationIdRef.current) {
@@ -3511,6 +3590,7 @@ export default function ChatClient() {
         }
         const submissionData = {
             ...data,
+            supervisorRuntimeMode: supervisorRuntimeModeRef.current,
             ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
         if (activeConversationRunning) {
@@ -4018,7 +4098,13 @@ export default function ChatClient() {
                                 </div>
                             ) : null}
                             {activeConversationId ? (
-                                <InputArea
+                                <>
+                                    {supervisorRuntimeModeSyncErrors[activeConversationId] ? (
+                                        <div role="alert" className="mx-auto mb-1 w-full max-w-4xl rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                            {supervisorRuntimeModeSyncErrors[activeConversationId]}
+                                        </div>
+                                    ) : null}
+                                    <InputArea
                                     key={activeConversationId || "new-session"}
                                     input={input}
                                     handleInputChange={handleInputChange}
@@ -4041,8 +4127,8 @@ export default function ChatClient() {
                                     onReasoningEffortChange={handleReasoningEffortChange}
                                     contextSessionRefs={pendingContextSessionRefs}
                                     contextUsagePercent={projectionContextUsagePercent}
-                                    supervisorWorkMode={supervisorWorkMode}
-                                    onSupervisorWorkModeChange={handleSupervisorWorkModeChange}
+                                    supervisorRuntimeMode={supervisorRuntimeMode}
+                                    onSupervisorRuntimeModeChange={handleSupervisorRuntimeModeChange}
                                     onManualMemory={handleManualMemory}
                                     uploadScope={{
                                         sessionId: activeConversationId,
@@ -4059,7 +4145,8 @@ export default function ChatClient() {
                                             return next;
                                         });
                                     }}
-                                />
+                                    />
+                                </>
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">
                                     {t("web.generated.40e41202b3")}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
+import { isSupervisorRuntimeMode } from "@/lib/realtime/supervisor-runtime-mode";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
@@ -120,6 +121,9 @@ export async function PATCH(
                 ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
                 ...(body?.supervisorWorkMode === "daily" || body?.supervisorWorkMode === "engineering"
                     ? { supervisorWorkMode: body.supervisorWorkMode }
+                    : {}),
+                ...(isSupervisorRuntimeMode(body?.supervisorRuntimeMode)
+                    ? { supervisorRuntimeMode: body.supervisorRuntimeMode }
                     : {}),
                 userId: userEmail,
             }),

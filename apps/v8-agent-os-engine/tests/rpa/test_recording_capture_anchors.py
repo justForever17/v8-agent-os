@@ -25,6 +25,27 @@ def _manager(tmp_path: Path) -> tuple[RPARecordingManager, _TraceStoreStub]:
     return RPARecordingManager(trace_store_instance=store, root_dir=tmp_path), store
 
 
+def test_windows_capture_process_polling_uses_windowless_runner(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = '"capture.exe","4242","Console","1","1 K"'
+
+    def _run(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return _Completed()
+
+    monkeypatch.setattr(rpa_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(rpa_runtime, "run_windowless", _run)
+
+    assert rpa_runtime._is_process_running(4242) is True
+    assert rpa_runtime._terminate_process(4242) is True
+    assert calls[0][0] == ["tasklist", "/FI", "PID eq 4242", "/FO", "CSV", "/NH"]
+    assert calls[1][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert all(call_kwargs["shell"] is False for _, call_kwargs in calls)
+
+
 def test_coordinate_fallback_uses_window_client_relative_anchor(tmp_path: Path) -> None:
     manager, store = _manager(tmp_path)
     session = manager.start({"name": "coordinate fallback", "targetMode": "desktop_window", "appId": "qqmusic"})

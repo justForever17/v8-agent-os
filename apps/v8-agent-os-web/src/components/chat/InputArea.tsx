@@ -11,12 +11,12 @@ import {
     stripComposerReferences,
     type ComposerInlineReference,
 } from "@v8/session-realtime/composer-inline-references";
-import type { PluginReferenceSummary } from "@v8/session-realtime";
+import type { PluginReferenceSummary, SupervisorRuntimeMode } from "@v8/session-realtime";
 import { ReasoningEffortControl } from "@v8/product-ui";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck, Code2, MessageCircle } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck, Code2, Sparkles, Search, Palette, MonitorCog, Workflow } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -24,6 +24,8 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuRadioGroup,
+    DropdownMenuRadioItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -186,8 +188,8 @@ interface InputAreaProps {
     contextSessionRefs?: ContextSessionReference[];
     onRemoveContextSessionRef?: (sessionId: string) => void;
     contextUsagePercent?: number | null;
-    supervisorWorkMode?: "daily" | "engineering";
-    onSupervisorWorkModeChange?: (mode: "daily" | "engineering") => void | Promise<void>;
+    supervisorRuntimeMode?: SupervisorRuntimeMode;
+    onSupervisorRuntimeModeChange?: (mode: SupervisorRuntimeMode) => void | Promise<void>;
     onManualMemory?: () => Promise<{ accepted: boolean; message: string }>;
     uploadScope?: {
         sessionId?: string | null;
@@ -224,6 +226,7 @@ interface ReasoningEffortControl {
 interface VoiceAudioMessageData {
     fileUrls: string[];
     attachments: Array<Record<string, unknown>>;
+    supervisorRuntimeMode: SupervisorRuntimeMode;
     safetyApprovalMode?: SafetyApprovalMode;
 }
 
@@ -348,8 +351,8 @@ export function InputArea({
     contextSessionRefs = [],
     onRemoveContextSessionRef,
     contextUsagePercent = null,
-    supervisorWorkMode = "daily",
-    onSupervisorWorkModeChange,
+    supervisorRuntimeMode = "auto",
+    onSupervisorRuntimeModeChange,
     onManualMemory,
     uploadScope,
 }: InputAreaProps) {
@@ -368,6 +371,7 @@ export function InputArea({
     const [selectedPlugins, setSelectedPlugins] = React.useState<PluginReferenceSummary[]>([]);
     const [specModeEnabled, setSpecModeEnabled] = React.useState(false);
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
+    const [supervisorRuntimeModeOpen, setSupervisorRuntimeModeOpen] = React.useState(false);
     const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
     const [safetyApprovalModeOpen, setSafetyApprovalModeOpen] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
@@ -417,6 +421,48 @@ export function InputArea({
         () => buildComposerInlineSegments(input, composerReferences),
         [composerReferences, input],
     );
+
+    const supervisorRuntimeModeOptions = React.useMemo(() => ([
+        {
+            mode: "auto" as const,
+            title: t("web.chat.runtimeMode.auto.title"),
+            description: t("web.chat.runtimeMode.auto.description"),
+            icon: Sparkles,
+        },
+        {
+            mode: "engineering" as const,
+            title: t("web.chat.runtimeMode.engineering.title"),
+            description: t("web.chat.runtimeMode.engineering.description"),
+            icon: Code2,
+        },
+        {
+            mode: "research" as const,
+            title: t("web.chat.runtimeMode.research.title"),
+            description: t("web.chat.runtimeMode.research.description"),
+            icon: Search,
+        },
+        {
+            mode: "creative_media" as const,
+            title: t("web.chat.runtimeMode.creativeMedia.title"),
+            description: t("web.chat.runtimeMode.creativeMedia.description"),
+            icon: Palette,
+        },
+        {
+            mode: "computer_use" as const,
+            title: t("web.chat.runtimeMode.computerUse.title"),
+            description: t("web.chat.runtimeMode.computerUse.description"),
+            icon: MonitorCog,
+        },
+        {
+            mode: "rpa" as const,
+            title: t("web.chat.runtimeMode.rpa.title"),
+            description: t("web.chat.runtimeMode.rpa.description"),
+            icon: Workflow,
+        },
+    ]), [t]);
+    const activeSupervisorRuntimeModeOption = supervisorRuntimeModeOptions.find((option) => option.mode === supervisorRuntimeMode)
+        || supervisorRuntimeModeOptions[0]!;
+    const ActiveSupervisorRuntimeModeIcon = activeSupervisorRuntimeModeOption.icon;
 
     const safetyApprovalOptions = React.useMemo(() => ([
         {
@@ -1068,6 +1114,7 @@ export function InputArea({
                 resourceRef: payload?.resourceRef,
                 source: "os_web_voice_upload",
             }],
+            supervisorRuntimeMode,
             safetyApprovalMode,
         };
         try {
@@ -1080,7 +1127,7 @@ export function InputArea({
             const message = error instanceof Error ? error.message : t("web.generated.accc20bbec");
             showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
         }
-    }, [onVoiceAudioMessage, safetyApprovalMode, showInlineNotice, t, uploadScope]);
+    }, [onVoiceAudioMessage, safetyApprovalMode, showInlineNotice, supervisorRuntimeMode, t, uploadScope]);
 
     const transcribeAudio = React.useCallback(async (blob: Blob) => {
         try {
@@ -1263,6 +1310,7 @@ export function InputArea({
                 }
                 const nextData: Record<string, unknown> = {};
                 const pendingSpecMode = specModeEnabled;
+                nextData.supervisorRuntimeMode = supervisorRuntimeMode;
                 nextData.safetyApprovalMode = safetyApprovalMode;
                 if (contextSessionRefs.length > 0) {
                     nextData.contextSessionRefs = contextSessionRefs;
@@ -1618,25 +1666,60 @@ export function InputArea({
 
                 <div className="flex items-center justify-between px-3 pb-2 pt-0">
                     <div className="flex items-center gap-1.5">
-                        <Button
-                            type="button"
-                            variant={supervisorWorkMode === "engineering" ? "secondary" : "ghost"}
-                            size="icon"
-                            onClick={() => void onSupervisorWorkModeChange?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
-                            aria-pressed={supervisorWorkMode === "engineering"}
-                            aria-label={supervisorWorkMode === "engineering" ? t("web.chat.workMode.switchDaily") : t("web.chat.workMode.switchEngineering")}
-                            className={cn(
-                                "h-[28px] w-[28px] rounded-lg transition-colors",
-                                supervisorWorkMode === "engineering"
-                                    ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
-                                    : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
-                            )}
-                            title={supervisorWorkMode === "engineering" ? t("web.chat.workMode.engineering") : t("web.chat.workMode.daily")}
-                        >
-                            {supervisorWorkMode === "engineering"
-                                ? <Code2 className="h-4 w-4" />
-                                : <MessageCircle className="h-4 w-4" />}
-                        </Button>
+                        <DropdownMenu open={supervisorRuntimeModeOpen} onOpenChange={setSupervisorRuntimeModeOpen}>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={activeSupervisorRuntimeModeOption.title}
+                                    title={activeSupervisorRuntimeModeOption.title}
+                                    className={cn(
+                                        "h-[28px] w-[28px] rounded-lg transition-colors",
+                                        supervisorRuntimeModeOpen || supervisorRuntimeMode !== "auto"
+                                            ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
+                                            : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
+                                    )}
+                                >
+                                    <ActiveSupervisorRuntimeModeIcon className="h-4 w-4" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                                side="top"
+                                align="start"
+                                sideOffset={8}
+                                collisionPadding={12}
+                                className="z-[90] max-h-[min(65vh,420px)] w-72 overflow-y-auto rounded-2xl border-zinc-200/70 bg-white/95 p-1.5 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95"
+                            >
+                                <DropdownMenuRadioGroup
+                                    value={supervisorRuntimeMode}
+                                    onValueChange={(value) => void onSupervisorRuntimeModeChange?.(value as SupervisorRuntimeMode)}
+                                >
+                                    {supervisorRuntimeModeOptions.map((option) => {
+                                        const active = option.mode === supervisorRuntimeMode;
+                                        const RuntimeModeIcon = option.icon;
+                                        return (
+                                            <DropdownMenuRadioItem
+                                                key={option.mode}
+                                                value={option.mode}
+                                                className={cn(
+                                                    "cursor-pointer items-start gap-2 rounded-xl py-2 pl-8 pr-2.5 text-left",
+                                                    active
+                                                        ? "bg-violet-500/10 text-violet-800 focus:bg-violet-500/15 dark:bg-violet-400/12 dark:text-violet-100"
+                                                        : "text-zinc-600 focus:bg-zinc-100/80 dark:text-zinc-300 dark:focus:bg-zinc-800/80"
+                                                )}
+                                            >
+                                                <RuntimeModeIcon className={cn("mt-0.5 h-4 w-4 shrink-0", active ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground")} />
+                                                <span className="min-w-0 flex-1">
+                                                    <span className="block text-[12px] font-semibold">{option.title}</span>
+                                                    <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                                                </span>
+                                            </DropdownMenuRadioItem>
+                                        );
+                                    })}
+                                </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                             type="button"
                             variant={specModeEnabled ? "secondary" : "ghost"}

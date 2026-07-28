@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from core.context.delegation import build_delegation_context
 from core.database import db
 from core.delegation_broker import normalize_task_briefs, task_brief_query_text
 from core.delegation_result_contract import build_delegation_result_contract
@@ -60,6 +61,41 @@ class CreativeMediaExecutionContractError(ValueError):
 _EPISODE_CANCEL_POLL_SECONDS = 0.25
 _EPISODE_CANCEL_SETTLE_SECONDS = 1.0
 _CREATIVE_MEDIA_EPISODE_DEADLINE_SECONDS = 300.0
+
+
+def _episode_extension_route_context(inputs: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(inputs or {})
+    nested = (
+        dict(payload.get("extensionRouteContext") or {})
+        if isinstance(payload.get("extensionRouteContext"), dict)
+        else {}
+    )
+    if nested:
+        payload = {**nested, **payload}
+    selected_skill_ids = [
+        str(item or "").strip()
+        for item in list(payload.get("selectedSkillIds") or [])
+        if str(item or "").strip()
+    ]
+    selected_skill_names = [
+        str(item or "").strip()
+        for item in list(payload.get("selectedSkillNames") or [])
+        if str(item or "").strip()
+    ]
+    selected_mcp_tools = [
+        str(item or "").strip()
+        for item in list(payload.get("selectedMcpTools") or [])
+        if str(item or "").strip()
+    ]
+    authoritative = bool(payload.get("extensionSelectorsAuthoritative"))
+    if not authoritative and not (selected_skill_ids or selected_skill_names or selected_mcp_tools):
+        return {}
+    return {
+        "extensionSelectorsAuthoritative": authoritative,
+        "selectedSkillIds": list(dict.fromkeys(selected_skill_ids)),
+        "selectedSkillNames": list(dict.fromkeys(selected_skill_names)),
+        "selectedMcpTools": list(dict.fromkeys(selected_mcp_tools)),
+    }
 
 
 def _normalize_typed_continuation_request(
@@ -4705,9 +4741,33 @@ class RuntimeEpisodeRunner:
         self._heartbeat(episode_id, "creative_media: prepare execution")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
+        source_task_briefs = [
+            dict(item)
+            for item in list(inputs.get("taskBriefs") or [])
+            if isinstance(item, dict)
+        ]
+        source_task_brief = next(
+            (
+                item
+                for item in source_task_briefs
+                if str(item.get("goal") or "").strip()
+            ),
+            source_task_briefs[0] if source_task_briefs else {},
+        )
+        source_goal = str(source_task_brief.get("goal") or "").strip()
+        source_context = source_task_brief.get("context")
+        if isinstance(source_context, dict):
+            source_context = dict(source_context)
+        elif not isinstance(source_context, str):
+            source_context = None
         request = dict(inputs.get("request") or {})
         request.setdefault("modality", inputs.get("modality") or need.get("modality") or "image")
-        request.setdefault("prompt", inputs.get("prompt") or need.get("reason") or "Create supporting visual asset.")
+        if source_goal:
+            request["prompt"] = source_goal
+        else:
+            request.setdefault("prompt", inputs.get("prompt") or need.get("reason") or "Create supporting visual asset.")
+        if source_context not in (None, "", {}):
+            request["taskBriefContext"] = source_context
         resume_token = dict(episode.get("resumeToken") or episode.get("resume_token") or {})
         continuation_inputs = (
             dict(resume_token.get("continuationInputs") or {})
@@ -4770,7 +4830,8 @@ class RuntimeEpisodeRunner:
                     }
 
             goal = str(
-                inputs.get("brief")
+                source_goal
+                or inputs.get("brief")
                 or need.get("reason")
                 or episode.get("reason")
                 or request.get("prompt")
@@ -4793,6 +4854,7 @@ class RuntimeEpisodeRunner:
                     "continuationInputs": continuation_inputs,
                     "parentRuntimeEpisodeId": episode_id,
                     "resumePolicy": "same_episode",
+                    **({"sourceTaskBriefs": source_task_briefs} if source_task_briefs else {}),
                 },
                 "readOnly": False,
                 "writeRequired": False,
@@ -4810,6 +4872,22 @@ class RuntimeEpisodeRunner:
                 "executionLaneHint": "creative_media",
                 "allowChildDelegation": False,
             }
+            plugin_references = [
+                dict(item)
+                for item in list(inputs.get("pluginReferences") or [])
+                if isinstance(item, dict)
+            ]
+            if plugin_references:
+                task_brief["pluginReferences"] = plugin_references
+            extension_tool_policy = (
+                dict(source_task_brief.get("toolPolicy") or {})
+                if isinstance(source_task_brief.get("toolPolicy"), dict)
+                else dict(inputs.get("extensionToolPolicy") or {})
+                if isinstance(inputs.get("extensionToolPolicy"), dict)
+                else {}
+            )
+            if extension_tool_policy:
+                task_brief["toolPolicy"] = extension_tool_policy
             delegated_episode = {
                 **episode,
                 "kind": "delegation",
@@ -5093,10 +5171,80 @@ class RuntimeEpisodeRunner:
             extra={"observationRefs": [f"computer_use_observation:{episode_id}"]},
         )
 
+    @staticmethod
+    def _rpa_inputs_from_task_execution(inputs: dict[str, Any]) -> dict[str, Any]:
+        """Project one typed taskBrief.context.rpaExecution into runner inputs."""
+
+        normalized = dict(inputs or {})
+        execution: dict[str, Any] = {}
+        for item in list(normalized.get("taskBriefs") or []):
+            if not isinstance(item, dict):
+                continue
+            context = item.get("context") if isinstance(item.get("context"), dict) else {}
+            candidate = context.get("rpaExecution")
+            if isinstance(candidate, dict):
+                execution = dict(candidate)
+                break
+        if not execution:
+            return normalized
+
+        if not any(normalized.get(key) not in (None, "") for key in ("action", "mode", "executionMode")):
+            action = execution.get("action")
+            if isinstance(action, str) and action.strip():
+                normalized["action"] = action.strip()
+
+        target_fields = (
+            "draftId",
+            "scriptId",
+            "templateId",
+            "robotFile",
+            "traceRunId",
+            "traceRunIds",
+            "runIds",
+        )
+        if not any(normalized.get(key) not in (None, "", []) for key in target_fields):
+            for key in target_fields[:5]:
+                value = execution.get(key)
+                if isinstance(value, str) and value.strip():
+                    normalized[key] = value.strip()
+            for key in ("traceRunIds", "runIds"):
+                trace_run_ids = execution.get(key)
+                if not isinstance(trace_run_ids, list):
+                    continue
+                normalized_ids = [
+                    str(item).strip()
+                    for item in trace_run_ids
+                    if isinstance(item, str) and item.strip()
+                ]
+                if normalized_ids:
+                    normalized[key] = list(dict.fromkeys(normalized_ids))
+
+        variables = execution.get("variables")
+        if "variables" not in normalized and isinstance(variables, dict):
+            normalized["variables"] = dict(variables)
+
+        for key in ("cwd", "outputDir"):
+            value = execution.get(key)
+            if key not in normalized and isinstance(value, str) and value.strip():
+                normalized[key] = value.strip()
+        timeout_ms = execution.get("timeoutMs")
+        if (
+            "timeoutMs" not in normalized
+            and isinstance(timeout_ms, int)
+            and not isinstance(timeout_ms, bool)
+            and timeout_ms > 0
+        ):
+            normalized["timeoutMs"] = timeout_ms
+        for key in ("execute", "save"):
+            value = execution.get(key)
+            if key not in normalized and isinstance(value, bool):
+                normalized[key] = value
+        return normalized
+
     async def _execute_rpa(self, episode: dict[str, Any]) -> dict[str, Any]:
         episode_id = str(episode.get("episodeId") or "")
         self._heartbeat(episode_id, "rpa: route")
-        inputs = dict(episode.get("inputs") or {})
+        inputs = self._rpa_inputs_from_task_execution(dict(episode.get("inputs") or {}))
         from runtimes.rpa.runtime import rpa_runtime
 
         action = str(inputs.get("action") or inputs.get("mode") or inputs.get("executionMode") or "prepare").strip().lower()
@@ -5441,6 +5589,17 @@ class RuntimeEpisodeRunner:
             for item in list(inputs.get("workerBriefs") or inputs.get("tasks") or [])
             if isinstance(item, dict)
         ]
+        extension_route_context = _episode_extension_route_context(inputs)
+        if not extension_route_context:
+            for brief in worker_briefs:
+                brief_context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
+                extension_route_context = _episode_extension_route_context(
+                    brief_context.get("extensionRouteContext")
+                    if isinstance(brief_context.get("extensionRouteContext"), dict)
+                    else None
+                )
+                if extension_route_context:
+                    break
         target_count = int(inputs.get("targetCount") or len(worker_briefs) or 1)
         if target_count > int(inputs.get("maxChildren") or 10):
             return build_handoff_ref(
@@ -5594,6 +5753,7 @@ class RuntimeEpisodeRunner:
                                 "activeCapabilityEpisodeId": episode.get("episodeId"),
                                 "capabilityEpisodes": [episode],
                                 "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
+                                **extension_route_context,
                                 **({"parentDelegationId": parent_episode_id, "delegationId": parent_episode_id, "delegationDepth": 1} if recursive_dispatch else {}),
                                 **({"taskBrief": parent_task_brief} if parent_task_brief else {}),
                                 **(
@@ -6022,6 +6182,13 @@ class RuntimeEpisodeRunner:
             "runtimeAccess": task_runtime_access,
         }
         task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        extension_route_context = _episode_extension_route_context(inputs)
+        if not extension_route_context:
+            extension_route_context = _episode_extension_route_context(
+                task_context.get("extensionRouteContext")
+                if isinstance(task_context.get("extensionRouteContext"), dict)
+                else None
+            )
         ephemeral_info = task_context.get("ephemeralMirror") if isinstance(task_context.get("ephemeralMirror"), dict) else {}
         ephemeral_agent_id = str(ephemeral_info.get("agentId") or task_brief.get("ephemeralAgentId") or "").strip()
         ephemeral_mirror = bool(ephemeral_info or task_brief.get("ephemeralMirror"))
@@ -6039,6 +6206,7 @@ class RuntimeEpisodeRunner:
             "taskBrief": task_brief,
             "delegationId": episode_id,
             "delegationDepth": delegation_depth,
+            **extension_route_context,
             "runtimeToolGrants": (
                 [{"group": "delegation.recursive", "runtimeKind": "subagent"}]
                 if allow_child_delegation
@@ -6047,6 +6215,25 @@ class RuntimeEpisodeRunner:
             **({"parentDelegationId": parent_episode_id} if parent_episode_id else {}),
             **({"workspacePath": workspace_path, "workspace_path": workspace_path} if workspace_path else {}),
             **engineering_workspace,
+        }
+        delegation_context = {
+            **build_delegation_context(
+                agent_id=target_id,
+                agent_name=target_label,
+                query=task_query,
+                mode="serial",
+                source_runtime_kind="delegation",
+                selected_skill_ids=extension_route_context.get("selectedSkillIds"),
+                selected_skill_names=extension_route_context.get("selectedSkillNames"),
+                selected_mcp_tools=extension_route_context.get("selectedMcpTools"),
+                invocation_id=invocation_id,
+                task_brief=task_brief,
+            ),
+            **extension_route_context,
+            "delegationId": episode_id,
+            "delegationDepth": delegation_depth,
+            "runtimeAccess": task_runtime_access,
+            **({"parentDelegationId": parent_episode_id} if parent_episode_id else {}),
         }
         branch_state = {
             "messages": [
@@ -6060,7 +6247,7 @@ class RuntimeEpisodeRunner:
                 )
             ],
             "todos": [],
-            "delegation_contexts": [],
+            "delegation_contexts": [delegation_context],
             "current_route_context": route_context,
             "parallel_branch": {
                 "invocationId": invocation_id,

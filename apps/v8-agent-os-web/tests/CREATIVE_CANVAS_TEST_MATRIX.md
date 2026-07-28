@@ -109,7 +109,39 @@ Real-live 时限：
 | UI-09 | BROWSER | 其他产物以微缩图留在素材抽屉，拉出才成节点 | PASS |
 | UI-10 | BROWSER | 运行中拖动、删除、连线、蒙版、上传全部禁用 | PASS |
 
-### 5.1 音视频时间选区
+### 5.1 Supervisor 模式控制器
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| MODE-01 | CONTRACT | Web / Phone / Shared 六态合同 | 仅允许 `auto / engineering / research / creative_media / computer_use / rpa`，非法值 fail closed | PASS（Shared 47） |
+| MODE-02 | STATIC | 双端模式菜单与中英文本 | 智能/编程/调研/媒体创作/桌面操作/RPA 六项完整；Web 当前项具单选读屏语义 | PASS |
+| MODE-03 | CONTRACT | 普通、排队、语音、文件点评与 Canvas 发送 | 每条消息保存发送瞬间模式；Canvas 特权仍是独立字段 | PASS（Web 93；Phone 6） |
+| MODE-04 | RUNTIME | 智能模式 | 不新增强制路由，保留 Supervisor 自主选择和原 Engineering 触发 | PASS |
+| MODE-05 | RUNTIME | 五种显式模式 | 首个持久动作必须进入所选权威 Runtime，并沿用 episode / ledger / proof / recovery / artifact 主链 | PASS |
+| MODE-06 | RUNTIME | Canvas 与普通媒体附件 | 合法 Canvas 合同优先于菜单模式；普通媒体创作附件仍先走正常 Vision preflight | PASS |
+| MODE-07 | RUNTIME | Spec 未批准 / 已批准 | 未批准时所有执行 Runtime 被 gate；批准后恢复 Canvas > 显式模式 > Engineering 优先级 | PASS |
+| MODE-08 | INTEGRATION | 延迟队列与 promoted guidance | 入队模式不回写新的 Session 默认；同模式旧 episode 不吞掉新消息，新 episode 建立后停止重复路由 | PASS（Engine chat_runtime 390） |
+| MODE-09 | INTEGRATION | 快速连续选择与跨会话失败 | Web / Phone 按 Session 串行 PATCH；旧响应、A 会话失败均不能覆盖 B；失败回到服务端确认值 | PASS（合同/类型检查） |
+| MODE-10 | COMPAT | 旧版日常/编程客户端 | 旧 `daily` 明确迁移为 `auto`，旧 `engineering` 迁移为 `engineering`，不会被历史 research/rpa 静默遮蔽 | PASS |
+| MODE-11 | RUNTIME | Human Surface 事件 | 显式模式/Canvas 不显示伪“编程未命中”；仅 auto 下真实 Engineering 决策可见且 payload 真相扁平 | PASS |
+| MODE-12 | BROWSER | 延迟 PATCH、刷新与切会话 | 最终选择等于最后一次点击，刷新后保持，会话间不漂移 | NOT-RUN |
+| MODE-13 | REAL-LIVE | 新会话显式定向 | 消息区可见正常 Supervisor 进度，且建立所选 Runtime episode 与终态 proof | PASS（Auto 21.09s；Engineering 57.16s） |
+
+兼容债务：旧 `supervisorWorkMode` 只保留两个完整客户端迁移周期；单独使用旧字段时 Engine 记录
+`legacy_supervisor_work_mode_used`，调用量降至可忽略后删除。新客户端不得再写旧字段。
+
+### 5.2 Canonical reasoning 与模型身份
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| REASON-01 | CONTRACT | Supervisor / 直接子 Agent 模型调用 | 使用真实 provider stream；内部 Memory/工具模型不被误改为流式 | PASS |
+| REASON-02 | CONTRACT | OpenAI-compatible 累积 reasoning 流 | 累积快照转增量且不重复；工具续接只回放同一 provider/modelRef 的官方字段 | PASS（241 项 reasoning/model/ERC/chat 广泛回归） |
+| REASON-03 | REAL-LIVE | `minimax-cn::MiniMax-M3` Supervisor | 60 秒内出现 canonical reasoning 与正文；终态 snapshot 和重载保留 ThinkingCard | PASS（21.39s；11 个 delta；历史重载可展开思考卡） |
+| REASON-04 | REAL-LIVE | `custom-sub-285ee689::gpt-5.6-sol` Supervisor | 同名跨 Provider 仍保持精确 modelRef；仅展示 provider 返回的公开 summary，不推测闭源隐藏 CoT | PASS（Chat Completions 15.66s；未返回公开 summary，未伪造卡片） |
+| REASON-05 | ROLLBACK | 临时切换 Supervisor 到 GPT 后撤销 | `config_broker` 精确事务回滚，Supervisor 恢复原 MiniMax 绑定 | PASS |
+| REASON-06 | REAL-LIVE | SUB GPT OpenAI Responses summary | `/responses` 原始 SSE 必须返回 `response.reasoning_summary_*`，随后产生 canonical reasoning 与思考卡片 | BLOCKED（Web 18.49s 完成；`summary=auto/detailed` 原始 SSE 均无 summary 事件） |
+
+### 5.3 音视频时间选区
 
 | ID | 模式 | 断言 | 状态 |
 |---|---|---|---|
@@ -174,18 +206,18 @@ Real-live 时限：
 | GOV-04 | INTEGRATION | cancel 同步取消父/子 episode、lease 与命令进程 | PASS（当前候选；首轮曾 FAIL） |
 | WIN-01 | UNIT | Windows 同步命令使用 `CREATE_NO_WINDOW` | PASS |
 | WIN-02 | UNIT | Windows command-session fallback 使用 `CREATE_NO_WINDOW` | PASS |
-| WIN-03 | DESKTOP | Live 期间无 PowerShell/cmd/Windows Terminal 弹窗 | PASS（当前候选；首轮曾 FAIL） |
+| WIN-03 | DESKTOP | Live 期间无 PowerShell/cmd/Windows Terminal 弹窗 | PASS（12 秒高频采样：Engine `skills list` 的 cmd/conhost 窗口句柄均为 0；首轮曾 FAIL） |
 | WIN-04 | DESKTOP | 后台进程仍可被日志和终端面板观察 | PASS |
 
 ## 10. 构建、性能、回滚与提交门禁
 
 | ID | 模式 | 通过标准 | 状态 |
 |---|---|---|---|
-| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS |
-| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS |
-| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（隔离补丁 465） |
-| BUILD-04 | STATIC | Admin 合同、session-realtime build/verify 通过 | PASS（3 + 10） |
-| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS |
+| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS（93 项合同测试 + production build） |
+| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS（6 项合同测试） |
+| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（reasoning/model/ERC 241；chat 390；core/supervisor 969 通过、2 项既有基线失败） |
+| BUILD-04 | STATIC | Admin 合同、session-realtime build/verify 通过 | PASS（Admin 定向 6；共享契约 47；Admin production build；完整 Admin 套件另有 3 项既有源码断言失败） |
+| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS（171.7s；9530/9527/9528 均 200；聚焦画布 1320x925；控制台零错误） |
 | PERF-01 | BROWSER | 100 节点/200 边相对基线退化不超过 10% | NOT-RUN |
 | PERF-02 | BROWSER | 30 次 Canvas/消息/3D 切换无持续内存增长 | NOT-RUN |
 | SAFE-01 | STATIC | scoped `git diff --check` 通过 | PASS |

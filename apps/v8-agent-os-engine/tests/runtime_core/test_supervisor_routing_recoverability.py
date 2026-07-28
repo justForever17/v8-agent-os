@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
 from core.native_tools import _detect_session_preferred_command, run_system_command
 from core.storage import _sanitize_stock_supervisor_prompt_text
+from graph.supervisor_routing import create_robust_invoke
 
 
 def test_scaffold_command_is_not_allowed_in_sync_mode() -> None:
@@ -37,3 +40,32 @@ def test_stock_supervisor_prompt_sanitizer_removes_default_english_planning_bias
     assert "preferred user-visible language" in sanitized
     assert "## Multi-Runtime Orchestration" in sanitized
     assert "New project creation is a routing choice for Supervisor" in sanitized
+
+
+def test_robust_invoke_streams_visible_agents_but_not_internal_models() -> None:
+    built = []
+
+    def _create(model_id, **kwargs):
+        built.append((model_id, kwargs))
+        return object()
+
+    def _invoke_with_failover(**kwargs):
+        kwargs["build_model"]("fallback-model")
+        return object()
+
+    invoke = create_robust_invoke(
+        sup_model_name="supervisor-model",
+        llm_factory=SimpleNamespace(create_chat_model=_create),
+        model_control_plane=SimpleNamespace(get_config=lambda: {}),
+        model_failover_service=SimpleNamespace(invoke_with_failover=_invoke_with_failover),
+    )
+
+    invoke(object(), [], role="supervisor")
+    invoke(object(), [], role="agent:worker")
+    invoke(object(), [], role="reviewer:worker")
+    invoke(object(), [], role="memory")
+
+    assert built[0][1]["streaming"] is True
+    assert built[1][1]["streaming"] is True
+    assert built[2][1]["streaming"] is True
+    assert built[3][1]["streaming"] is False

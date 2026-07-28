@@ -109,7 +109,7 @@ def test_reasoning_repair_prefers_known_official_contract(tmp_path):
         "mode": "reasoning_summary",
         "trust": "official",
         "requestStyle": "openai_reasoning",
-        "responseFields": ["additional_kwargs.reasoning"],
+        "responseFields": ["reasoning.summary"],
         "displayKind": "summary",
     }
     service = _service(tmp_path, _base_config(official_surface))
@@ -117,7 +117,12 @@ def test_reasoning_repair_prefers_known_official_contract(tmp_path):
         "elapsedMs": 12,
         "streamingUsed": True,
         "reasoningTokens": 0,
-        "payloads": [{"additional_kwargs": {"reasoning": "summary"}, "content": "OK"}],
+        "payloads": [
+            {
+                "additional_kwargs": {"reasoning": {"summary": "summary"}},
+                "content": "OK",
+            }
+        ],
     }
 
     result = service.repair_reasoning_surface(model_id="demo-reasoner", provider_id="demo")
@@ -126,4 +131,4 @@ def test_reasoning_repair_prefers_known_official_contract(tmp_path):
     assert result["saveStatus"] == "saved"
     assert result["newReasoningSurface"]["mode"] == "reasoning_summary"
     assert result["newReasoningSurface"]["trust"] == "official"
-    assert result["matchedField"] == "additional_kwargs.reasoning"
+    assert result["matchedField"] == "reasoning.summary"

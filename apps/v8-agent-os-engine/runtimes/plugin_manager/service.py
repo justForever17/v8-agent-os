@@ -710,29 +710,6 @@ class PluginManagerService:
         skill_items: list[dict[str, Any]] = []
         for skill in policy["skills"]:
             expected_names = list(skill.skillNames)
-            if expected_names:
-                candidate_names = expected_names
-            else:
-                candidate_names = sorted(
-                    name
-                    for name, entry in lock_entries.items()
-                    if self._skill_source_matches(entry, skill)
-                )
-            detected_names: list[str] = []
-            conflicts: list[str] = []
-            paths: list[str] = []
-            for name in candidate_names:
-                installed = inventory_by_name.get(name)
-                if not installed:
-                    continue
-                if self._skill_source_matches(lock_entries.get(name) or {}, skill):
-                    detected_names.append(name)
-                    path = str(installed.get("path") or "").strip()
-                    if path:
-                        paths.append(path)
-                elif name in expected_names:
-                    conflicts.append(name)
-            missing_names = [name for name in expected_names if name not in detected_names and name not in conflicts]
             registered_row = component_rows.get(skill.id)
             registered = registered_row is not None
             registered_metadata = _loads((registered_row or {}).get("metadata_json"), {})
@@ -741,6 +718,22 @@ class PluginManagerService:
                 for name in list(registered_metadata.get("skillNames") or [])
                 if str(name).strip()
             }
+            managed_names = {
+                str(name).strip()
+                for name in list(registered_metadata.get("managedSkillNames") or [])
+                if str(name).strip()
+            }
+            if expected_names:
+                candidate_names = expected_names
+            else:
+                candidate_names = sorted(
+                    registered_names
+                    | {
+                        name
+                        for name, entry in lock_entries.items()
+                        if self._skill_source_matches(entry, skill)
+                    }
+                )
             registered_paths = [
                 Path(str(path)).expanduser()
                 for path in list(registered_metadata.get("skillPaths") or [])
@@ -748,6 +741,36 @@ class PluginManagerService:
             ]
             if not registered_paths and str((registered_row or {}).get("owned_path") or "").strip():
                 registered_paths = [Path(str(registered_row["owned_path"])).expanduser()]
+            registered_path_keys = {
+                os.path.normcase(os.path.abspath(str(path)))
+                for path in registered_paths
+            }
+            detected_names: list[str] = []
+            conflicts: list[str] = []
+            paths: list[str] = []
+            receipt_version_fallback = False
+            for name in candidate_names:
+                installed = inventory_by_name.get(name)
+                if not installed:
+                    continue
+                installed_path = str(installed.get("path") or "").strip()
+                source_matches = self._skill_source_matches(lock_entries.get(name) or {}, skill)
+                receipt_owns_installed_path = bool(
+                    registered
+                    and name in managed_names
+                    and name in registered_names
+                    and installed_path
+                    and os.path.normcase(os.path.abspath(installed_path)) in registered_path_keys
+                )
+                if source_matches or receipt_owns_installed_path:
+                    detected_names.append(name)
+                    if installed_path:
+                        paths.append(installed_path)
+                    if receipt_owns_installed_path and not source_matches:
+                        receipt_version_fallback = True
+                elif name in expected_names:
+                    conflicts.append(name)
+            missing_names = [name for name in expected_names if name not in detected_names and name not in conflicts]
             registered_present = bool(
                 registered
                 and (
@@ -785,11 +808,13 @@ class PluginManagerService:
                 for name in detected_names
             }
             installed_revisions.discard("")
-            installed_version = (
-                next(iter(installed_revisions))
-                if len(installed_revisions) == 1
-                else str((registered_row or {}).get("source_version") or "").strip()
-            )
+            registered_version = str((registered_row or {}).get("source_version") or "").strip()
+            if receipt_version_fallback:
+                installed_version = registered_version
+            elif len(installed_revisions) == 1:
+                installed_version = next(iter(installed_revisions))
+            else:
+                installed_version = registered_version
             available_version = str(skill.revision or "").strip()
             update_supported = bool(
                 skills_inventory.get("ok")

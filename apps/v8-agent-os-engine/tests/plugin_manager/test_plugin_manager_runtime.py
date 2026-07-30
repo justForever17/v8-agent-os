@@ -605,6 +605,135 @@ def test_machine_discovery_projects_reviewed_cli_and_skill_updates_with_member_d
     assert plan["steps"]["skills"][0]["action"] == "update"
 
 
+def test_machine_discovery_keeps_managed_skill_upgradeable_when_lock_source_shape_changes(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("cloudflare")
+    skill = manifest.skills[0]
+    skill_name = skill.skillNames[0]
+    skill_root = service_module.AGENT_SKILLS_ROOT / skill_name
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+    old_revision = "0" * 40
+    service._upsert_installation(
+        manifest,
+        state="installed",
+        health={"ok": True, "online": True, "checks": []},
+        external=False,
+    )
+    service._register_component(
+        manifest.id,
+        skill.id,
+        "skill",
+        owned_path=str(skill_root),
+        source_url=skill.repository,
+        source_version=old_revision,
+        ownership="skills_cli",
+        metadata={
+            "skillNames": [skill_name],
+            "skillPaths": [str(skill_root)],
+            "managedSkillNames": [skill_name],
+            "adoptedSkillNames": [],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "toolVersion": "1.5.19",
+            "toolProbeOk": True,
+            "items": [{"name": skill_name, "path": str(skill_root), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {
+                skill_name: {
+                    "source": "normalized-by-new-skills-cli",
+                    "ref": skill.revision,
+                }
+            },
+            "error": "",
+        },
+    )
+
+    projection = service.discover_machine_components(manifest.id, force=True)["skills"][0]
+
+    assert projection["state"] == "registered"
+    assert projection["conflicts"] == []
+    assert projection["detectedNames"] == [skill_name]
+    assert projection["installedVersion"] == old_revision
+    assert projection["availableVersion"] == skill.revision
+    assert projection["versionState"] == "available"
+    assert projection["updateSupported"] is True
+    assert projection["action"] == "update"
+
+
+def test_machine_discovery_uses_receipt_names_for_dynamic_skill_packages(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("lark")
+    skill = manifest.skills[0]
+    assert skill.skillNames == []
+    skill_name = "lark-docs"
+    skill_root = service_module.AGENT_SKILLS_ROOT / skill_name
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+    old_revision = "0" * 40
+    service._upsert_installation(
+        manifest,
+        state="installed",
+        health={"ok": True, "online": True, "checks": []},
+        external=False,
+    )
+    service._register_component(
+        manifest.id,
+        skill.id,
+        "skill",
+        owned_path=str(skill_root),
+        source_url=skill.repository,
+        source_version=old_revision,
+        ownership="skills_cli",
+        metadata={
+            "skillNames": [skill_name],
+            "skillPaths": [str(skill_root)],
+            "managedSkillNames": [skill_name],
+            "adoptedSkillNames": [],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "toolVersion": "1.5.19",
+            "toolProbeOk": True,
+            "items": [{"name": skill_name, "path": str(skill_root), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {
+                skill_name: {
+                    "source": "normalized-by-new-skills-cli",
+                    "ref": skill.revision,
+                }
+            },
+            "error": "",
+        },
+    )
+
+    projection = service.discover_machine_components(manifest.id, force=True)["skills"][0]
+
+    assert projection["state"] == "registered"
+    assert projection["conflicts"] == []
+    assert projection["detectedNames"] == [skill_name]
+    assert projection["installedVersion"] == old_revision
+    assert projection["availableVersion"] == skill.revision
+    assert projection["versionState"] == "available"
+    assert projection["updateSupported"] is True
+    assert projection["action"] == "update"
+
+
 def test_machine_discovery_projects_mcp_handshake_version_protocol_and_tools(
     runtime,
     monkeypatch: pytest.MonkeyPatch,

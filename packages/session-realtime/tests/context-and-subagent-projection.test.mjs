@@ -33,6 +33,7 @@ test("subagent returns keep direct lineage and nest grandchild truth without an 
             invocationId: "invocation-parent",
             delegationDepth: 1,
             subagentName: "Codebase Researcher",
+            subagentRoleLabel: "Researcher",
             subagentFamily: "research",
             subagentAvatar: "https://example.test/avatar.png",
             taskGoal: "Find the cause",
@@ -62,6 +63,7 @@ test("subagent returns keep direct lineage and nest grandchild truth without an 
 
   assert.equal(projection.length, 1);
   assert.equal(projection[0].name, "Codebase Researcher");
+  assert.equal(projection[0].roleLabel, "Researcher");
   assert.equal(projection[0].avatar, "https://example.test/avatar.png");
   assert.deepEqual(projection[0].artifactRefs, ["artifact://proof"]);
   assert.equal(projection[0].children.length, 1);

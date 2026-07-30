@@ -696,10 +696,7 @@ function extractComposerPresentation(message: ChatMessage): ComposerPresentation
 
 function hasCanvasUserMessageMetadata(message: ChatMessage): boolean {
     const content = String(message.content || "");
-    if (
-        content.includes("[CANVAS EXECUTION CONTRACT v1]")
-        || content.includes("[CANVAS OPERATION]")
-    ) {
+    if (content.includes("[CANVAS EXECUTION CONTRACT v1]")) {
         return true;
     }
     const metadata = message.metadata && typeof message.metadata === "object"

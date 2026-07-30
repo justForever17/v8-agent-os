@@ -29,7 +29,7 @@ test("Phone user bubbles mask canonical Canvas messages behind one Human Surface
   assert.match(bubble, /t\("src\.components\.chat\.messagebubble\.canvasMessage"\)/);
   assert.match(bubble, /"plugin", "canvas_resource"/);
   assert.match(canvasMetadataGuard, /\[CANVAS EXECUTION CONTRACT v1\]/);
-  assert.match(canvasMetadataGuard, /\[CANVAS OPERATION\]/);
+  assert.doesNotMatch(canvasMetadataGuard, /\[CANVAS OPERATION\]/);
   assert.match(canvasMetadataGuard, /=== "canvas_resource"/);
   assert.match(canvasMetadataGuard, /=== "canvas_operation"/);
   assert.match(userSurface, /isCanvasUserMessage \? \[\] : extractUserAttachments/);

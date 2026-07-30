@@ -4,6 +4,9 @@ import hashlib
 import json
 import math
 import subprocess
+import threading
+from collections import OrderedDict
+from copy import deepcopy
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -14,6 +17,10 @@ from core.workspace_media_library import workspace_media_library
 
 
 MAX_TIMELINE_UNITS = 300_000
+MAX_PROBE_CACHE_ENTRIES = 16
+_PROBE_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+_PROBE_CACHE_LOCK = threading.Lock()
+_PROBE_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
 
 
 class GovernedMediaError(ValueError):
@@ -217,6 +224,40 @@ def _video_timeline(ffprobe: str, path: Path, stream: dict[str, Any]) -> dict[st
         "keyframeIndices": keyframes,
         "durationSeconds": _decimal(Fraction(boundaries[-1], 1) * time_base),
         "displayPrecision": min(9, max(3, len(str(time_base.denominator)))),
+        "approximate": False,
+    }
+
+
+def _video_preview_timeline(stream: dict[str, Any], format_payload: dict[str, Any]) -> dict[str, Any]:
+    time_base = _fraction(stream.get("time_base"))
+    if time_base <= 0:
+        raise GovernedMediaError("Video stream has no usable time base")
+    avg_rate = _fraction(stream.get("avg_frame_rate"))
+    nominal_rate = _fraction(stream.get("r_frame_rate"))
+    rate = avg_rate or nominal_rate
+    duration = _fraction(stream.get("duration"))
+    if duration <= 0:
+        duration = _fraction(format_payload.get("duration"))
+    declared_count = int(stream.get("nb_frames") or 0) if str(stream.get("nb_frames") or "").isdigit() else 0
+    estimated_count = declared_count or (math.ceil(float(duration * rate)) if duration > 0 and rate > 0 else 0)
+    if estimated_count <= 0 or duration <= 0:
+        raise GovernedMediaError("Video stream has no usable preview timeline")
+    if estimated_count > MAX_TIMELINE_UNITS:
+        raise GovernedMediaError(
+            f"Video timeline exceeds the governed limit of {MAX_TIMELINE_UNITS} frames"
+        )
+    if rate <= 0:
+        rate = Fraction(estimated_count, 1) / duration
+    return {
+        "unit": "frame",
+        "count": estimated_count,
+        "timeBase": _rational_payload(time_base),
+        "averageFrameRate": _rational_payload(rate),
+        "nominalFrameRate": _rational_payload(nominal_rate or rate),
+        "variableFrameRate": None,
+        "durationSeconds": _decimal(duration),
+        "displayPrecision": min(9, max(3, len(str(time_base.denominator)))),
+        "approximate": True,
     }
 
 
@@ -240,44 +281,87 @@ def _audio_timeline(stream: dict[str, Any], format_payload: dict[str, Any]) -> d
         "timeBase": _rational_payload(Fraction(1, sample_rate)),
         "durationSeconds": _decimal(Fraction(sample_count, sample_rate)),
         "displayPrecision": min(9, max(5, len(str(sample_rate)))),
+        "approximate": False,
     }
 
 
 def probe_request(request: dict[str, Any]) -> dict[str, Any]:
     _, ffprobe, version = _ffmpeg_pair()
     path, resource = _resource_path(request)
-    payload = _stream_header(ffprobe, path)
-    streams = [dict(item) for item in list(payload.get("streams") or []) if isinstance(item, dict)]
-    video_streams = [item for item in streams if item.get("codec_type") == "video"]
-    audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
-    if video_streams:
-        selected = video_streams[0]
-        timeline = _video_timeline(ffprobe, path, selected)
-        kind = "video"
-    elif audio_streams:
-        selected = audio_streams[0]
-        timeline = _audio_timeline(selected, dict(payload.get("format") or {}))
-        kind = "audio"
-    else:
-        raise GovernedMediaError("Selected resource has no supported audio or video stream")
-    return {
-        "schema": "v8.governed_media_probe.v1",
-        "fingerprint": _fingerprint(path),
-        "resource": resource,
-        "kind": kind,
-        "timeline": timeline,
-        "stream": {
-            "index": int(selected.get("index") or 0),
-            "codec": str(selected.get("codec_name") or ""),
-            "hasAudio": bool(audio_streams),
-            "audioStreamIndex": int(audio_streams[0].get("index") or 0) if audio_streams else None,
-        },
-        "format": {
-            "name": str(dict(payload.get("format") or {}).get("format_name") or ""),
-            "size": path.stat().st_size,
-        },
-        "engine": {"ffmpegVersion": version, "timelineAuthority": "ffprobe"},
-    }
+    fingerprint = _fingerprint(path)
+    cache_key = (str(path.resolve()), fingerprint)
+    preview_only = str(request.get("detail") or "").strip().lower() == "preview"
+    wait_for: threading.Event | None = None
+    owns_exact_probe = False
+    with _PROBE_CACHE_LOCK:
+        cached = _PROBE_CACHE.get(cache_key)
+        if cached is not None:
+            _PROBE_CACHE.move_to_end(cache_key)
+            return {**deepcopy(cached), "resource": resource}
+        if not preview_only:
+            wait_for = _PROBE_INFLIGHT.get(cache_key)
+            if wait_for is None:
+                wait_for = threading.Event()
+                _PROBE_INFLIGHT[cache_key] = wait_for
+                owns_exact_probe = True
+    if wait_for is not None and not owns_exact_probe:
+        if not wait_for.wait(timeout=370):
+            raise GovernedMediaError("Timed out waiting for the governed media timeline index")
+        with _PROBE_CACHE_LOCK:
+            cached = _PROBE_CACHE.get(cache_key)
+            if cached is None:
+                raise GovernedMediaError("The governed media timeline index could not be created")
+            _PROBE_CACHE.move_to_end(cache_key)
+            return {**deepcopy(cached), "resource": resource}
+    try:
+        payload = _stream_header(ffprobe, path)
+        streams = [dict(item) for item in list(payload.get("streams") or []) if isinstance(item, dict)]
+        video_streams = [item for item in streams if item.get("codec_type") == "video"]
+        audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
+        if video_streams:
+            selected = video_streams[0]
+            timeline = (
+                _video_preview_timeline(selected, dict(payload.get("format") or {}))
+                if preview_only
+                else _video_timeline(ffprobe, path, selected)
+            )
+            kind = "video"
+        elif audio_streams:
+            selected = audio_streams[0]
+            timeline = _audio_timeline(selected, dict(payload.get("format") or {}))
+            kind = "audio"
+        else:
+            raise GovernedMediaError("Selected resource has no supported audio or video stream")
+        result = {
+            "schema": "v8.governed_media_probe.v1",
+            "fingerprint": fingerprint,
+            "kind": kind,
+            "timeline": timeline,
+            "stream": {
+                "index": int(selected.get("index") or 0),
+                "codec": str(selected.get("codec_name") or ""),
+                "hasAudio": bool(audio_streams),
+                "audioStreamIndex": int(audio_streams[0].get("index") or 0) if audio_streams else None,
+            },
+            "format": {
+                "name": str(dict(payload.get("format") or {}).get("format_name") or ""),
+                "size": path.stat().st_size,
+            },
+            "engine": {"ffmpegVersion": version, "timelineAuthority": "ffprobe"},
+        }
+        if not preview_only or kind == "audio":
+            with _PROBE_CACHE_LOCK:
+                _PROBE_CACHE[cache_key] = deepcopy(result)
+                _PROBE_CACHE.move_to_end(cache_key)
+                while len(_PROBE_CACHE) > MAX_PROBE_CACHE_ENTRIES:
+                    _PROBE_CACHE.popitem(last=False)
+        return {**result, "resource": resource}
+    finally:
+        if owns_exact_probe:
+            with _PROBE_CACHE_LOCK:
+                completed = _PROBE_INFLIGHT.pop(cache_key, None)
+                if completed is not None:
+                    completed.set()
 
 
 def trim_exact(

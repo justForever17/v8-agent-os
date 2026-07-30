@@ -121,23 +121,36 @@ export function buildCreativeCanvasExecutionContract(input: {
     const binding = input.operation.binding;
     if (binding?.kind === "creative_media") {
         const operationKind = canonicalCreativeMediaOperation(binding.capability);
-        const governedParameters = canonicalGovernedMediaParameters(operationKind, input.operation.parameters);
+        const parameters = recordOf(input.operation.parameters);
+        const governedParameters = canonicalGovernedMediaParameters(operationKind, parameters);
+        const graphExecution = operationKind === "canvas.graph.execute";
+        if (graphExecution && (!String(parameters.graphId || "").trim() || !Number.isInteger(parameters.graphRevision) || Number(parameters.graphRevision) < 1)) {
+            throw new Error("Canvas graph execution requires a persisted graph id and revision.");
+        }
         contract.execution = {
             tool: "creative_media_jobs",
             arguments: {
                 action: "create",
                 request: {
-                    modality: modalityForOperation(operationKind),
+                    modality: graphExecution ? "workflow" : modalityForOperation(operationKind),
                     operationKind,
-                    prompt: input.instruction.trim(),
                     canvasOperationId: input.operation.operationId,
-                    ...(sourceIds[0] ? { sourceId: sourceIds[0] } : {}),
-                    ...(sourceIds.length > 1 ? { sourceIds } : {}),
-                    ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
-                    ...(artifactIds.length > 1 ? { artifactIds } : {}),
-                    ...(workspaceAssetIds[0] ? { workspaceAssetId: workspaceAssetIds[0] } : {}),
-                    ...(workspaceAssetIds.length > 1 ? { workspaceAssetIds } : {}),
-                    ...(maskSourceId ? { maskSourceId } : {}),
+                    ...(graphExecution ? {
+                        graphId: String(parameters.graphId || ""),
+                        graphRevision: Number(parameters.graphRevision || 0),
+                        targetNodeIds: Array.isArray(parameters.targetNodeIds)
+                            ? parameters.targetNodeIds.map(String).filter(Boolean)
+                            : [],
+                    } : {
+                        prompt: input.instruction.trim(),
+                        ...(sourceIds[0] ? { sourceId: sourceIds[0] } : {}),
+                        ...(sourceIds.length > 1 ? { sourceIds } : {}),
+                        ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
+                        ...(artifactIds.length > 1 ? { artifactIds } : {}),
+                        ...(workspaceAssetIds[0] ? { workspaceAssetId: workspaceAssetIds[0] } : {}),
+                        ...(workspaceAssetIds.length > 1 ? { workspaceAssetIds } : {}),
+                        ...(maskSourceId ? { maskSourceId } : {}),
+                    }),
                     ...(governedParameters || {}),
                 },
             },
@@ -179,7 +192,7 @@ export function isCreativeCanvasCanonicalMessage(
     metadata: unknown,
 ): boolean {
     const text = String(content || "");
-    if (text.includes(CREATIVE_CANVAS_CONTRACT_START) || text.includes("[CANVAS OPERATION]")) {
+    if (text.includes(CREATIVE_CANVAS_CONTRACT_START)) {
         return true;
     }
     const meta = recordOf(metadata);

@@ -1,6 +1,6 @@
 # Creative Artifact Canvas 测试矩阵
 
-更新：2026-07-28
+更新：2026-07-29
 范围：V8OS Web / Phone / Workbench / Creative Media runtime
 原则：`Supervisor First, Runtime Grounded`。STATIC、MOCK、REAL-LIVE 与桌面 Preview 的结果分开记录，未跑项不得写成通过。
 
@@ -18,7 +18,11 @@ Workspace
     └── Components
         ├── Web / Phone 消息区
         ├── Workbench 标签与预览
-        └── Canvas 节点、边、占位卡、素材抽屉与运行锁
+        └── Canvas Graph
+            ├── Session Graph / Revision / Run Lock
+            ├── 素材、动作、持久结果槽（成功后呈现为可继续处理的素材卡）
+            ├── 结果版本与 Run/Tool/Artifact lineage
+            └── Workspace Workflow Templates（资源转待绑定输入）
 ```
 
 硬约束：
@@ -30,6 +34,7 @@ Workspace
 5. 节点、边、选区、缩放、本地存储、文件标签、运行锁和迟到事件全部以 Session 为边界。
 6. 工作区素材跨 Session 使用必须先建立目标 Session 的显式采用边；不同物理 Workspace 一律拒绝。
 7. 普通 Human Surface 不投影 `include_unbound` 数据，不显示本地路径、内部 ID、binding 或执行合同。
+8. Graph 保存、运行和恢复必须同时匹配当前 Session、Workspace authority、graphId 与 revision；前端不得成为执行计划真相。
 
 ## 2. 结果状态与时限
 
@@ -84,8 +89,9 @@ Real-live 时限：
 | EVT-05 | REAL-LIVE | 宽屏同时观察消息区和 Canvas | 同一时点可见 Supervisor 进度、Canvas 锁和占位卡 | PASS |
 | EVT-06 | REAL-LIVE | 成功终态 | 对应占位卡填充、消息区终态、Canvas 5 秒内解锁 | PASS |
 | EVT-07 | REAL-LIVE | failed/cancelled/timeout | 错误可见、无伪产物、Canvas 5 秒内解锁 | PARTIAL |
-| EVT-08 | INTEGRATION | 快速双击/Enter+按钮/网络重试 | idempotency 阻止重复消息和 Run | NOT-RUN |
+| EVT-08 | UNIT / CONTRACT | 快速双击/同帧重复点击/另一 operation 抢占 | 前端同步门禁阻止重复提交；Engine 原子拒绝同 Session 第二个 active Graph Run | PASS（Graph 10；Web 10） |
 | EVT-09 | RUNTIME | Supervisor 终态 Human Surface | 精确 artifact/source/mask/job/operation ID 与绝对路径只留结构化 Runtime Surface | PASS（回归；未重复付费 Live） |
+| EVT-10 | CONTRACT | 失败状态从实时事件切换到历史重载 | `recoverable_failed` 保持失败图标，不因状态从瞬时 `failed` 细化后消失 | PASS（Web 10；指定 V8ID 持久证据） |
 
 同步截图至少保留：
 
@@ -108,8 +114,46 @@ Real-live 时限：
 | UI-08 | BROWSER | 边 hover 出现评论按钮和小输入框 | PASS |
 | UI-09 | BROWSER | 其他产物以微缩图留在素材抽屉，拉出才成节点 | PASS |
 | UI-10 | BROWSER | 运行中拖动、删除、连线、蒙版、上传全部禁用 | PASS |
+| UI-11 | CONTRACT | 抽帧、分割和生成结果 | 结果槽解析为真实 Artifact 媒体类型，可继续蒙版、连动作或在文件管理器中定位；不生成预览/下载终点卡 | PASS（Web 10；Shell 1） |
+| UI-12 | BROWSER | 画布级滚轮始终以鼠标位置缩放，不再上下/横向平移；菜单、抽屉、时间轴和编辑器保持自身滚动 | PASS（当前源码浏览器；桌面待复跑） |
 
-### 5.1 Supervisor 模式控制器
+### 5.0 十维交互审计
+
+| 维度 | V8OS 落地断言 | 当前源码证据 | 状态 |
+|---|---|---|---|
+| 画布导航 | 滚轮以指针为中心缩放；空格/中键/手形工具平移；显示全部、聚焦选区、缩放数值与小地图互相一致 | 浏览器 `scale(0.55) -> scale(0.888841)`；菜单滚动时 viewport 不变；小地图/聚焦合同存在 | PASS |
+| 节点操作 | 单选、框选、多选、拖拽、复制、粘贴、重复、对齐、分布和拓扑整理全部可撤销；运行中锁定修改 | 浏览器框选 3 项、节点拖动后 Undo 可用且 Ctrl+Z 恢复；history/graph 纯模块定向契约 | PASS |
+| 连线交互 | 左右 typed ports、多线、合法性说明、环路/重复/容量拒绝；普通边可重连或断开，固定动作结果边不可拆 | 浏览器普通边 `2 -> 1 -> Ctrl+Z -> 2`，固定边拖拽后仍为 2；全程无 message/run/task POST | PASS |
+| 右键菜单 | 按选区/节点/边/空白过滤；首层最多 5 项，其余搜索展开；菜单滚轮不驱动画布 | 浏览器菜单 `scrollTop=30` 且 viewport 不变；overlay 合同校验首层限制 | PASS |
+| 状态反馈 | 配置真相、输入数量、治理来源、运行/等待/失败/过期、进度、重试和预检原因均可见；禁止仅靠 prompt 猜“已配置” | 当前动作卡显示“已完成 / 已配置 / video 1/1 / 受治理 / 本地”；Engine validate 预检可打开且不触发执行 | PASS |
+| 素材预览 | 图片/视频/音频/3D/PSD 使用对应查看器；离屏暂停、URL 就绪缓存和稳定占位避免重开白屏；时间轴媒体只预载 metadata | 当前源码连续 5 次概览/画布切换恢复 85/61/60/58/52ms，视频均 readyState=4、图片 1920x1080、零新增媒体请求；3D 复用 ModelViewer | PASS |
+| 效率工具 | 快捷键、框选后浮动工具条、批量对齐/分布、拓扑整理、小地图、工作区模板和“运行到此”服务重度使用 | typecheck/合同通过；当前源码浏览器验证框选工具条与 Undo | PASS |
+| 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | 11 项 Web Canvas 契约、25 项 Engine Graph/Creative 定向测试；断线/撤销实测零执行请求 | PASS |
+| 视觉动效 | 数据类型线色、关系虚线、选中高亮/非相关降噪、拖线反馈与运行状态过渡明确，并尊重 reduced-motion | 当前源码浏览器视觉 smoke；连接颜色/透明度/`motion-reduce` 合同 | PASS |
+| 生成业务 | Session 可恢复 Graph、显式运行、动作持久结果槽、旧版本缩略图、素材/动作分层、Engine 权威编译与模板去 Session 化 | Graph/Creative Engine 定向 25 项；当前源码预检与结果槽浏览器 smoke | PASS |
+
+说明：十维 PASS 表示当前源码在对应定向合同/浏览器 harness 下成立；Web production build、桌面 Preview、100 节点/200 边性能基准仍按第 10 节独立门禁，不能由本表替代。
+
+### 5.1 可恢复执行图与工作区模板
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| GRAPH-01 | UNIT | 保存草稿后重载 Session | 节点、边、关系说明、参数、viewport 与 revision 从 Engine 恢复 | PASS（Graph 10） |
+| GRAPH-02 | UNIT | `运行到此` 且画布含无关未配置动作 | 只编译目标祖先子图；无关草稿不阻断 | PASS |
+| GRAPH-03 | UNIT | S-B 提交 S-A graphId/revision/source | Engine fail closed；旧 revision 返回冲突 | PASS |
+| GRAPH-04 | UNIT | 动作重复运行 | 固定结果槽更新最新 Artifact，同时按 version 保留历史缩略图 | PASS |
+| GRAPH-05 | CONTRACT | 前端执行提交 | 只提交 graphId/revision/targets；Engine 从持久图重新编译资源、关系和精确动作 | PASS（Web 10；Engine Creative 20） |
+| GRAPH-06 | BROWSER | 框选素材/动作/结果 | 仅选区存在实际动作时出现“运行到此”；配置、连线和关系说明永不自动发送/执行 | PASS（当前源码浏览器；桌面待复跑） |
+| GRAPH-07 | BROWSER | 从左右类型端口拖线 | 输入/输出方向与媒体类型受约束；空白落线只显示兼容动作或上传/选择素材，不再建立预览/下载终点 | PASS（合同；桌面待复跑） |
+| GRAPH-08 | BROWSER | 已连接边端点附近拖拽 | 可重连；空白释放即断开；动作到所属结果槽的内部边不可拆 | PASS（当前源码浏览器；桌面待复跑） |
+| GRAPH-09 | UNIT | 保存工作区模板 | 至少含一个动作；Session resource 转为 typed input，不保存 source/artifact/session URL | PASS |
+| GRAPH-10 | UNIT | 同工作区另一 Session 实例化模板 | 图可恢复但未绑定输入不可执行；显式绑定素材后才可运行 | PASS |
+| GRAPH-11 | UNIT | 不同物理工作区读取/删除模板 | workspace_key authority 拒绝；同工作区删除后双方均不可见 | PASS |
+| GRAPH-12 | MIGRATION | 从已发布 v2 Session 本地画布迁移 | 首次写入 Engine/v3 后删除 v2 key，旧图不能在清缓存后复活 | PASS（合同；桌面待复跑） |
+
+兼容债务：旧 Graph `sink` 节点只在 Engine 输入解析层保留两个完整客户端迁移周期；当前 Web 加载时直接丢弃，且不再创建或渲染。迁移期须补旧 Graph 读取量观测，降至可忽略后删除 Engine parser 分支。
+
+### 5.2 Supervisor 模式控制器
 
 | ID | 模式 | 场景 | 硬断言 | 状态 |
 |---|---|---|---|---|
@@ -130,7 +174,7 @@ Real-live 时限：
 兼容债务：旧 `supervisorWorkMode` 只保留两个完整客户端迁移周期；单独使用旧字段时 Engine 记录
 `legacy_supervisor_work_mode_used`，调用量降至可忽略后删除。新客户端不得再写旧字段。
 
-### 5.2 Canonical reasoning 与模型身份
+### 5.3 Canonical reasoning 与模型身份
 
 | ID | 模式 | 场景 | 硬断言 | 状态 |
 |---|---|---|---|---|
@@ -141,7 +185,7 @@ Real-live 时限：
 | REASON-05 | ROLLBACK | 临时切换 Supervisor 到 GPT 后撤销 | `config_broker` 精确事务回滚，Supervisor 恢复原 MiniMax 绑定 | PASS |
 | REASON-06 | REAL-LIVE | SUB GPT OpenAI Responses summary | `/responses` 原始 SSE 必须返回 `response.reasoning_summary_*`，随后产生 canonical reasoning 与思考卡片 | BLOCKED（Web 18.49s 完成；`summary=auto/detailed` 原始 SSE 均无 summary 事件） |
 
-### 5.3 音视频时间选区
+### 5.4 音视频时间选区
 
 | ID | 模式 | 断言 | 状态 |
 |---|---|---|---|
@@ -151,8 +195,30 @@ Real-live 时限：
 | TIME-04 | LOCAL | 视频按 PTS/time base 建立 frame boundary；输出 postflight 帧数等于 `[start,end)` | PASS（24fps 真实短片，12/12 帧） |
 | TIME-05 | LOCAL | 音频按 sample index 分割；无损输出 postflight 样本数等于 `[start,end)` | PASS（48kHz 真实音频，12000/12000 样本） |
 | TIME-06 | LOCAL | 视频按 `frameIndex` 抽取单帧；产出正式 PNG artifact，postflight 仅 1 帧 | PASS（真实短片第 9 帧，PNG 签名与 1/1 帧） |
-| TIME-06 | BROWSER | 当前位置吸附到最近真实边界、显示实际边界时间、滚动隔离与窄窗口不溢出 | NOT-RUN |
-| TIME-07 | REAL-LIVE | 新片段按当前 Session/Run/tool/operation lineage 登记并回填目标空卡 | NOT-RUN |
+| TIME-07 | CONTRACT | 首次打开先用 ffprobe stream header 返回近似 FPS/time base/帧数；后台逐帧 probe 完成前禁止保存或执行动作 | PASS（Engine 5；当前源码浏览器；桌面待复跑） |
+| TIME-08 | BROWSER | 独立播放头与开始/结束手柄拖动时合并为约 20Hz 快速 seek，视频帧合成后回写实际位置；松手才做精确 seek，保存按钮才写入 Graph 参数 | PASS（Web 10；桌面待复跑） |
+| TIME-09 | BROWSER | 完整 frame boundary 到达后保留用户已选秒数并吸附到最近真实边界，显示实际边界时间；首次读取已有 Graph 参数时保留 frame/sample index | PASS（当前源码 `F602 -> F602 / 20.06667s`；桌面待复跑） |
+| TIME-10 | REAL-LIVE | 新片段按当前 Session/Run/tool/operation lineage 登记并回填持久结果槽 | NOT-RUN |
+| TIME-11 | UNIT | 同一未变文件的并发精确 probe | 共享一个 ffprobe 任务；每个调用仍保留自己的 Session resource truth，文件指纹变化后不复用 | PASS（Engine exact 6） |
+| TIME-12 | BROWSER | 时间轴初次打开和拖动 seek | 媒体使用 Range 友好的 metadata preload，不先下载整段文件；精确边界仍由受治理 ffprobe 提供 | PASS（合同；桌面网络证据待复跑） |
+
+### 5.5 Admin 身份投影
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| ID-01 | UNIT | Admin 修改 Supervisor 昵称、身份标签和头像后读取历史消息 | canonical `agentId=supervisor` 使用当前 Admin 展示资料，不回退成 `Supervisor / SUPERVISOR` | PASS（Engine projection 17） |
+| ID-02 | UNIT | 实时 `agent.started` 使用自定义昵称 | Supervisor 判定只依赖 canonical agent id，不拿可配置文案猜角色 | PASS（Engine projection 17） |
+| ID-03 | UNIT / SHARED | 自定义 Subagent 结束并恢复会话 | terminal event 与共享投影保留注册 Agent 的昵称、身份标签和头像，不被 Supervisor 资料覆盖 | PASS（Engine identity 5；Shared 10） |
+| ID-04 | WEB / PHONE | 右侧概览和详情 | Web 与 Phone 同时显示 Subagent 昵称和身份标签，长文本不撑破布局 | PASS（typecheck；桌面/真机待复跑） |
+
+### 5.6 PSD 分层操作
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| PSD-01 | UNIT | 读取 PSD | 受治理 helper 返回画布尺寸、可见图层树、层级、边界和合成预览，不把绝对路径投影到 Human Surface | PASS（Engine Creative 定向） |
+| PSD-02 | UNIT | 多张图片合成 PSD | 图层顺序、位置、缩放、透明度和可见性写入新 Artifact，原素材不变 | PASS（Engine Creative 定向） |
+| PSD-03 | UNIT | 编辑已有 PSD 图层 | 只接受结构化图层变更并生成新 Artifact/version；lineage 绑定当前 Session/Run/tool/operation | PASS（Engine Creative 定向） |
+| PSD-04 | BROWSER | Canvas 操作 PSD | 图层树、拖拽位置、层级调整和参数编辑由专用浮层表达，动作仍需“运行全部/运行到此”才执行 | PASS（typecheck；桌面待复跑） |
 
 ## 6. 蒙版局部编辑 Real-live
 
@@ -213,20 +279,31 @@ Real-live 时限：
 
 | ID | 模式 | 通过标准 | 状态 |
 |---|---|---|---|
-| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS（93 项合同测试 + production build） |
-| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS（6 项合同测试） |
-| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（reasoning/model/ERC 241；chat 390；core/supervisor 969 通过、2 项既有基线失败） |
+| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS（Canvas 合同 11、typecheck、1025 个 i18n 键与 production build 通过） |
+| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS（当前 Canvas Human Surface 合同 1、typecheck、i18n 通过） |
+| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（Graph、Creative Media、PSD、时间轴、身份投影定向 40） |
 | BUILD-04 | STATIC | Admin 合同、session-realtime build/verify 通过 | PASS（Admin 定向 6；共享契约 47；Admin production build；完整 Admin 套件另有 3 项既有源码断言失败） |
-| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS（171.7s；9530/9527/9528 均 200；聚焦画布 1320x925；控制台零错误） |
+| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS（当前 Graph 候选 136s；Engine/Admin/Web/Shell 拉起，9530/9528/9527 均为 200） |
 | PERF-01 | BROWSER | 100 节点/200 边相对基线退化不超过 10% | NOT-RUN |
 | PERF-02 | BROWSER | 30 次 Canvas/消息/3D 切换无持续内存增长 | NOT-RUN |
+| PERF-03 | CONTRACT | 画布包含 idle 动作卡但无运行任务 | 不启动素材目录轮询；只有 Session 运行或结果槽处于 reserved/running/waiting 才每 3.5 秒对账 | PASS（Web 10；网络面板待复跑） |
 | SAFE-01 | STATIC | scoped `git diff --check` 通过 | PASS |
-| SAFE-02 | ROLLBACK | scoped patch apply/reverse-apply check 通过 | PASS |
-| SAFE-03 | ROLLBACK | 隔离副本实际回滚与再应用 smoke 通过 | PASS |
-| SAFE-04 | GIT | staged hunk 不含 Memory/Research/Plugin 等旁线 | PASS |
+| SAFE-02 | ROLLBACK | scoped patch apply/reverse-apply check 通过 | PASS（当前 52 文件 staged patch） |
+| SAFE-03 | ROLLBACK | 隔离副本实际回滚与再应用 smoke 通过 | PASS（detached worktree 两轮 apply -> rollback，均恢复干净） |
+| SAFE-04 | GIT | staged hunk 不含 Memory/Research/Plugin 等旁线 | PASS（`database.py` 仅暂存 Canvas 建表 hunk；Research lease hunk留在工作树） |
 | SAFE-05 | GIT | scoped commit 完成且无 secret/日志/本地生成物 | NOT-RUN |
 
 ## 11. 当前证据
+
+当前源码十维浏览器 smoke：
+
+- 独立 Web dev 实例运行在 `localhost:9547`，复用当前 Engine，但不替代 production build 或桌面 Preview。
+- 画布滚轮按指针缩放；菜单内部滚轮只滚菜单；节点拖动、框选、撤销、预检和窄屏 Composer 边界均通过。
+- 普通边拖到空白后边数 `2 -> 1`，Ctrl+Z 后恢复为 2；固定动作结果边拖拽后仍为 2；过程无消息、Run 或 Canvas task POST。
+- 精确时间轴加载期保留 `frameIndex=602` 且禁用输入，不显示临时伪时间；完整 boundary 到达后仍为 `F602 / 20.06667s` 并恢复编辑。
+- 连续 5 次“概览 -> 画布”切换，媒体恢复耗时为 85/61/60/58/52ms；视频每次 `readyState=4`，结果图每次为 1920x1080，无等待占位且没有新增媒体内容请求。该证据不替代 PERF-02 的 30 次内存测试。
+- 当前 `/chat` 在不挂载 Canvas 时也会出现 React `Maximum update depth exceeded` 告警；已确认属于全局聊天页既存基线，本轮未用画布通过结论掩盖，production/preview 阶段仍须单列观察。
+- 当前 production preview 中打开既有 Canvas 会话，消息终态、视频素材卡、动作卡、持久结果素材卡、缩略图、受治理状态和“运行全部”均恢复；该次 Chromium smoke 无 console error 或 page error。
 
 文件产物 Live：
 

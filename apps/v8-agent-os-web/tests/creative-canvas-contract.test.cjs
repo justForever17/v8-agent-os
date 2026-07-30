@@ -11,7 +11,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
-function loadTypeScriptModule(relativePath) {
+function loadTypeScriptModule(relativePath, requireOverrides = {}) {
   const filename = path.join(repoRoot, relativePath);
   const source = fs.readFileSync(filename, "utf8");
   const output = ts.transpileModule(source, {
@@ -22,7 +22,10 @@ function loadTypeScriptModule(relativePath) {
     fileName: filename,
   }).outputText;
   const module = { exports: {} };
-  new Function("module", "exports", "require", output)(module, module.exports, require);
+  const localRequire = (specifier) => Object.hasOwn(requireOverrides, specifier)
+    ? requireOverrides[specifier]
+    : require(specifier);
+  new Function("module", "exports", "require", output)(module, module.exports, localRequire);
   return module.exports;
 }
 
@@ -97,6 +100,8 @@ test("canvas event projection proves lineage and isolates two sessions", () => {
 
 test("canvas action catalog locks mutation and capability-gates MediaKit", () => {
   const actions = loadTypeScriptModule("apps/v8-agent-os-web/src/lib/creative-canvas-actions.ts");
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const engineGraph = read("apps/v8-agent-os-engine/core/creative_canvas_graph.py");
   const selection = [{ id: "image-1", mediaType: "image", order: 0 }];
   const running = actions.getCreativeCanvasActions({
     target: "node",
@@ -105,7 +110,7 @@ test("canvas action catalog locks mutation and capability-gates MediaKit", () =>
     pluginAvailable: true,
     pluginGranted: true,
   });
-  assert.deepEqual(running.map((item) => item.actionId).sort(), ["local.download", "local.view"]);
+  assert.deepEqual(running.map((item) => item.actionId).sort(), ["local.download", "local.open_in_file_manager", "local.view"]);
 
   const unavailable = actions.getCreativeCanvasActions({
     target: "node",
@@ -128,10 +133,18 @@ test("canvas action catalog locks mutation and capability-gates MediaKit", () =>
   assert.equal(explicitRequest.some((item) => item.actionId === "mediakit.image.remove-image-background"), true);
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.length, 36);
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.some((item) => item.actionId === "mediakit.editing.trim-video"), false);
+  assert.equal(actions.LOCAL_CREATIVE_CANVAS_ACTIONS.some((item) => item.actionId === "local.create_preview_card"), false);
+  assert.equal(actions.LOCAL_CREATIVE_CANVAS_ACTIONS.some((item) => item.actionId === "local.create_download_card"), false);
+  assert.equal(actions.LOCAL_CREATIVE_CANVAS_ACTIONS.some((item) => item.actionId === "local.open_in_file_manager"), true);
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.extract_video_frame_exact")?.parameterEditor, "frame_pick");
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.parameterEditor, "time_range");
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.networkRequired, false);
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.video.probe-video-metadata")?.requiresPrompt, false);
+  assert.match(canvas, /actionDefinitions\.some\(\(definition\) => definition\.actionId === action\.actionId\)/);
+  assert.match(canvas, /if \(!definition \|\| sessionRunningRef\.current\) return;/);
+  for (const action of actions.CREATIVE_MEDIA_NATIVE_ACTIONS) {
+    assert.match(engineGraph, new RegExp(`['"]${action.actionId.replaceAll(".", "\\.")}['"]`));
+  }
 });
 
 test("canvas is one floating surface and reuses normal chat plus lazy 3D preview", () => {
@@ -139,14 +152,23 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   const chat = read("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   const shell = read("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
   const media = read("apps/v8-agent-os-web/src/components/workbench/CreativeCanvasMedia.tsx");
+  const serialization = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts");
+  const timelineEditor = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/time-range-editor.tsx");
   const model = read("apps/v8-agent-os-web/src/components/chat/ModelViewer.tsx");
   const zh = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json"));
+  const en = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/en.json"));
 
   assert.match(canvas, /data-testid="creative-artifact-canvas"/);
   assert.match(canvas, /selectionRect/);
   assert.match(canvas, /message\.comment_connection/);
   assert.match(canvas, /CreativeCanvasMaskEditor/);
   assert.match(canvas, /rasterizeCreativeCanvasMask/);
+  assert.match(canvas, /const resource = displayResourceForNode\(node\)/);
+  assert.match(canvas, /const maskResource = maskNode \? displayResourceForNode\(maskNode\) : null/);
+  assert.match(serialization, /if \(storedKind === "sink"\) return \[\]/);
+  assert.doesNotMatch(canvas, /kind: "resource" \| "input" \| "action" \| "result" \| "sink"/);
+  assert.doesNotMatch(serialization, /sinkKind/);
+  assert.match(canvas, /<CreativeCanvasMaskOverlay mask=\{node\.mask\} \/>/);
   const maskEditor = read("apps/v8-agent-os-web/src/components/workbench/CreativeCanvasMaskEditor.tsx");
   assert.match(maskEditor, /destination-out/);
   assert.match(maskEditor, /transparent mask pixels as the editable region/);
@@ -155,7 +177,7 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(canvas, /<textarea[^>]+taskPlaceholder/);
   assert.match(shell, /sessionRunning=\{props\.sessionRunning\}/);
   assert.match(shell, /dynamic\([\s\S]*import\("\.\/CreativeArtifactCanvas"\)/);
-  assert.match(chat, /if \(activeConversationRunning\) return false/);
+  assert.match(chat, /if \(activeConversationRunning \|\| activeConversationIdRef\.current !== canvasSessionId\) return false/);
   assert.match(chat, /composerPresentation/);
   assert.match(chat, /t\("web\.workbench\.canvas\.humanMessage"\)/);
   assert.match(chat, /canvasSupervisorDirect: true/);
@@ -167,18 +189,28 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   );
   assert.equal((canvasSubmit.match(/handleSend\(syntheticEvent/g) || []).length, 1);
   assert.match(media, /dynamic\(/);
-  assert.match(media, /preload="auto"/);
+  assert.match(media, /preload="metadata"/);
+  assert.doesNotMatch(media, /preload="auto"/);
   assert.match(media, /pointer-events-none h-full w-full object-contain/);
-  assert.match(media, /暂停视频/);
+  assert.match(media, /web\.workbench\.canvas\.media\.pauseVideo/);
+  assert.equal(zh["web.workbench.canvas.media.pauseVideo"], "暂停视频");
+  assert.equal(en["web.workbench.canvas.media.pauseVideo"], "Pause video");
   assert.match(canvas, /onWheel=\{\(event\) => event\.stopPropagation\(\)\}/);
+  const wheelHandler = canvas.slice(canvas.indexOf("const handleWheel"), canvas.indexOf("const processPointerMove"));
+  assert.match(wheelHandler, /addEventListener\("wheel", handleWheel, \{ passive: false \}\)/);
+  assert.match(wheelHandler, /closest\("\[data-canvas-wheel-isolation\]"\)/);
+  assert.match(wheelHandler, /const factor = Math\.exp\(-deltaY \* 0\.002\)/);
+  assert.match(wheelHandler, /x: point\.x - worldX \* scale, y: point\.y - worldY \* scale/);
+  assert.doesNotMatch(wheelHandler, /event\.ctrlKey|event\.metaKey|viewport\.x - event\.deltaX|viewport\.y - event\.deltaY/);
   assert.match(canvas, /pendingConnectionDrop/);
   assert.match(canvas, /adoptWorkspaceResource\(dropped\)/);
   assert.match(canvas, /catalogAbortRef\.current\?\.abort\(\)/);
   assert.match(canvas, /sessionIdRef\.current !== sessionId/);
-  assert.match(canvas, /onChangeRef\.current\(/);
-  assert.match(canvas, /\[mode, resource\?\.id, resource\?\.origin, sessionId, t\]/);
+  assert.match(timelineEditor, /onChangeRef\.current\(/);
+  assert.match(timelineEditor, /\[mode, resource\?\.id, resource\?\.origin, sessionId, t\]/);
   assert.match(canvas, /kind: "reconnect"/);
   assert.match(canvas, /handleEdgePointerDown/);
+  assert.match(canvas, /from\.kind === "action" && to\.kind === "result" && to\.producerActionNodeId === from\.nodeId/);
   assert.match(canvas, /current\.edges\.filter\(\(edge\) => edge\.edgeId !== interaction\.edgeId\)/);
   assert.match(canvas, /cursor-default/);
   assert.doesNotMatch(canvas, /cursor-crosshair/);
@@ -186,15 +218,17 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(model, /environment="city"/);
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.segment-scenes.label"], "按场景切分视频");
   assert.equal(zh["web.creativeCanvas.actions.local.fit_view.label"], "显示全部");
+  assert.equal(zh["web.creativeCanvas.actions.local.open_in_file_manager.label"], "在文件管理器中打开");
+  assert.equal(zh["web.creativeCanvas.actions.creative_media.compose_psd.label"], "合成分层 PSD");
   assert.equal(zh["web.creativeCanvas.actions.mediakit.editing.trim-video.label"], "分割视频片段");
   assert.equal(zh["web.creativeCanvas.actions.mediakit.video.probe-video-metadata.label"], "读取视频参数");
 });
 
 test("canvas resource URLs never depend on worktree or physical source paths", () => {
-  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
-  const normalizeSlice = canvas.slice(
-    canvas.indexOf("function normalizeResource"),
-    canvas.indexOf("function sanitizeMask"),
+  const serialization = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts");
+  const normalizeSlice = serialization.slice(
+    serialization.indexOf("export function normalizeResource"),
+    serialization.indexOf("function sanitizeMask"),
   );
 
   assert.match(
@@ -368,6 +402,89 @@ test("canvas task contract gives Supervisor exact native, mask, tool and edge bi
   });
 });
 
+test("canvas graph edits stay inert until one explicit run enters the normal message pipeline", () => {
+  const contractModule = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/lib/creative-canvas-task-contract.ts",
+  );
+  const graphContract = contractModule.buildCreativeCanvasExecutionContract({
+    instruction: "运行到此",
+    refs: [
+      { id: "source-image", origin: "source", mediaType: "image" },
+      { id: "artifact-video", origin: "artifact", mediaType: "video" },
+      { id: "workspace-audio", origin: "workspace_asset", mediaType: "audio" },
+    ],
+    operation: {
+      operationId: "operation-graph",
+      actionId: "canvas.graph.run_to_here",
+      outputKind: "artifacts",
+      outputSlot: "canvas_graph",
+      binding: { kind: "creative_media", capability: "canvas.graph.execute" },
+      parameters: {
+        graphId: "canvas-graph-a",
+        graphRevision: 7,
+        targetNodeIds: ["result-a"],
+      },
+    },
+  });
+  assert.deepEqual(graphContract.execution.arguments.request, {
+    modality: "workflow",
+    operationKind: "canvas.graph.execute",
+    canvasOperationId: "operation-graph",
+    graphId: "canvas-graph-a",
+    graphRevision: 7,
+    targetNodeIds: ["result-a"],
+  });
+  assert.deepEqual(graphContract.resources, {
+    sourceIds: ["source-image"],
+    artifactIds: ["artifact-video"],
+    workspaceAssetIds: ["workspace-audio"],
+  });
+  assert.equal("prompt" in graphContract.execution.arguments.request, false);
+  assert.throws(() => contractModule.buildCreativeCanvasExecutionContract({
+    instruction: "运行全部",
+    refs: [],
+    operation: {
+      operationId: "operation-missing-graph",
+      actionId: "canvas.graph.run_all",
+      outputKind: "artifacts",
+      outputSlot: "canvas_graph",
+      binding: { kind: "creative_media", capability: "canvas.graph.execute" },
+      parameters: {},
+    },
+  }), /persisted graph id and revision/);
+
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const graphOperations = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/graph-operations.ts");
+  const timeline = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/timeline.ts");
+  const timelineEditor = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/time-range-editor.tsx");
+  const conversationGroups = read("apps/v8-agent-os-web/src/lib/conversation-groups.ts");
+  const configSlice = canvas.slice(canvas.indexOf("const submitComposer"), canvas.indexOf("const runGraph"));
+  const runSlice = canvas.slice(canvas.indexOf("const runGraph"), canvas.indexOf("const refreshTemplates"));
+  assert.doesNotMatch(configSlice, /onSubmitTask/);
+  assert.match(runSlice, /onSubmitTask\(\{/);
+  assert.match(runSlice, /sessionId,/);
+  assert.match(runSlice, /sessionIdRef\.current !== sessionId/);
+  assert.match(runSlice, /graphSubmittingRef\.current/);
+  assert.match(canvas, /const selectedExecutableTargetIds/);
+  assert.match(canvas, /canvasTargetHasAction\(snapshot, nodeId\)/);
+  assert.match(graphOperations, /export function canvasPortsForNode/);
+  assert.match(canvas, /const displayResourceForNode = useCallback/);
+  assert.doesNotMatch(canvas, /const createSinkCard/);
+  assert.match(timelineEditor, /onInput=\{\(event\) => setBoundary\("start", Number\(event\.currentTarget\.value\), false, true\)\}/);
+  assert.match(timelineEditor, /const queueScrubPreview/);
+  assert.match(timelineEditor, /requestVideoFrameCallback/);
+  assert.match(timelineEditor, /preload="metadata"/);
+  assert.match(canvas, /const hasPendingResult = snapshot\.nodes\.some/);
+  assert.match(canvas, /\["reserved", "running", "waiting"\]\.includes/);
+  assert.doesNotMatch(canvas, /hasPendingPlaceholder/);
+  assert.match(timelineEditor, /requestProbe\("preview"\)/);
+  assert.match(timeline, /range\.exact !== false/);
+  assert.match(timelineEditor, /exact: !approximate/);
+  assert.match(timelineEditor, /onPointerUp=\{\(\) => commitDraftRange\("start"\)\}/);
+  assert.match(canvas, /window\.localStorage\.removeItem\(legacyStorageKey\)/);
+  assert.match(conversationGroups, /\["failed", "recoverable_failed", "cancelled", "degraded"\]/);
+});
+
 test("canvas Human Surface stays one opaque product message after authoritative replay", () => {
   const contractModule = loadTypeScriptModule(
     "apps/v8-agent-os-web/src/lib/creative-canvas-task-contract.ts",
@@ -383,29 +500,34 @@ test("canvas Human Surface stays one opaque product message after authoritative 
   assert.equal(contractModule.isCreativeCanvasCanonicalMessage("opaque replay", {
     attachments: [{ metadata: { canvasOperationId: "operation-a" } }],
   }), true);
+  assert.equal(contractModule.isCreativeCanvasCanonicalMessage("[CANVAS OPERATION]", {}), false);
 
   const chatMessage = read("apps/v8-agent-os-web/src/components/chat/ChatMessage.tsx");
+  const chatClient = read("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   const stream = read("apps/v8-agent-os-web/src/hooks/use-langgraph-stream.ts");
   assert.match(chatMessage, /isCreativeCanvasCanonicalMessage\(message\.content, message\.metadata\)/);
   assert.match(chatMessage, /canvasHumanSurface \? \[\] : extractMessageAttachments\(message\)/);
   assert.match(chatMessage, /canvasHumanSurface \? \[\] : Array\.from/);
   assert.match(chatMessage, /return text \? \{ text, references \} : null/);
+  assert.match(chatClient, /activeConversationIdRef\.current !== canvasSessionId/);
   assert.match(stream, /if \(presentationText\) \{/);
 });
 
 test("canvas cards preserve media proportions and connect through reusable edge ports", () => {
   const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
   const media = read("apps/v8-agent-os-web/src/components/workbench/CreativeCanvasMedia.tsx");
+  const types = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/types.ts");
+  const graphOperations = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/graph-operations.ts");
 
-  assert.match(canvas, /const NODE_WIDTH = 280/);
-  assert.match(canvas, /const NODE_HEIGHT = 190/);
-  assert.match(canvas, /type CanvasPort = "left" \| "right"/);
-  assert.match(canvas, /fromPort: CanvasPort/);
-  assert.match(canvas, /toPort: CanvasPort/);
+  assert.match(types, /export const NODE_WIDTH = 280/);
+  assert.match(types, /export const NODE_HEIGHT = 190/);
+  assert.match(types, /export type CanvasPort = "left" \| "right"/);
+  assert.match(types, /fromPort: CanvasPort/);
+  assert.match(types, /toPort: CanvasPort/);
   assert.match(canvas, /kind: "connect"/);
   assert.match(canvas, /data-canvas-port=\{port\}/);
-  assert.match(canvas, /edge\.fromPort === fromPort && edge\.toPort === toPort/);
-  assert.match(canvas, /portPoint\(from, edge\.fromPort\)/);
+  assert.match(graphOperations, /edge\.fromPort === "right" && edge\.toPort === "left"/);
+  assert.match(graphOperations, /portPoint\(from, edge\.fromPort\)/);
   assert.match(canvas, /mediaNodeDimensions\(dimensions\.width, dimensions\.height\)/);
   assert.match(canvas, /data-canvas-title=\{node\.nodeId\}/);
   assert.match(canvas, /group-hover\/title/);
@@ -415,16 +537,128 @@ test("canvas cards preserve media proportions and connect through reusable edge 
   assert.match(media, /videoHeight/);
 });
 
+test("canvas interaction layers expose reversible graph editing, contextual feedback, and bounded media work", () => {
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const history = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/history.ts");
+  const graphSource = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/graph-operations.ts");
+  const overlays = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/overlays.tsx");
+  const media = read("apps/v8-agent-os-web/src/components/workbench/CreativeCanvasMedia.tsx");
+  const graph = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/components/workbench/creative-canvas/graph-operations.ts",
+    { "./types": { MAX_EDGES: 320 } },
+  );
+  const timeline = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/components/workbench/creative-canvas/timeline.ts",
+  );
+
+  assert.match(history, /export function useCanvasHistory/);
+  assert.match(history, /beginTransaction/);
+  assert.match(history, /finishTransaction[\s\S]*setHistoryVersion/);
+  assert.match(canvas, /event\.code === "Space"/);
+  assert.match(canvas, /event\.key\.toLowerCase\(\) === "z"/);
+  assert.match(canvas, /event\.key\.toLowerCase\(\) === "d"/);
+  assert.match(canvas, /layoutCanvasGraph/);
+  assert.match(canvas, /alignCanvasNodes/);
+  assert.match(canvas, /<CanvasMiniMap/);
+  assert.match(overlays, /filtered\.slice\(0, 5\)/);
+  assert.match(overlays, /onWheel=\{\(event\) => event\.stopPropagation\(\)\}/);
+  assert.match(overlays, /export function CanvasPreflightPanel/);
+  assert.match(graphSource, /"cycle"/);
+  assert.match(graphSource, /getCanvasPreflight/);
+  assert.match(graphSource, /"missing-configuration"/);
+  assert.match(canvas, /\/api\/workbench\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/canvas\/graph\/validate/);
+  assert.match(canvas, /requestGraphRun/);
+  assert.match(media, /IntersectionObserver/);
+  assert.match(media, /preload=\{effectiveVisible \? "metadata" : "none"\}/);
+  assert.match(media, /document\.hidden/);
+  assert.match(media, /readyResourceUrls/);
+
+  const snapshot = {
+    schema: "v8.creative_canvas_graph.v1",
+    version: 3,
+    graphId: "graph-cycle",
+    viewport: { x: 0, y: 0, scale: 1 },
+    nodes: [
+      { nodeId: "action-a", kind: "action", origin: "placeholder", actionDefinitionId: "edit-a", x: 0, y: 0, width: 280, height: 190 },
+      { nodeId: "result-a", kind: "result", origin: "artifact", producerActionNodeId: "action-a", mediaType: "image", x: 320, y: 0, width: 280, height: 190 },
+      { nodeId: "action-b", kind: "action", origin: "placeholder", actionDefinitionId: "edit-b", x: 640, y: 0, width: 280, height: 190 },
+      { nodeId: "result-b", kind: "result", origin: "artifact", producerActionNodeId: "action-b", mediaType: "image", x: 960, y: 0, width: 280, height: 190 },
+    ],
+    edges: [{ edgeId: "edge-a-b", from: "result-a", to: "action-b", fromPort: "right", toPort: "left", fromPortId: "output", toPortId: "image", dataType: "image", role: "data", order: 0, note: "" }],
+  };
+  const definitions = ["edit-a", "edit-b"].map((actionId) => ({
+    actionId,
+    inputs: [{ portId: "image", mediaTypes: ["image"], min: 1, max: 1, ordered: false }],
+    output: { portId: "output", slot: "image", mediaTypes: ["image"] },
+    requiresPrompt: false,
+  }));
+  assert.equal(graph.getConnectionVerdict(snapshot, definitions, "result-b", "action-a").issue, "cycle");
+  assert.equal(graph.getConnectionVerdict(snapshot, definitions, "result-a", "action-b").issue, "duplicate");
+  assert.equal(graph.getCanvasPreflight(snapshot, definitions, { status: "idle", nodeStates: {}, outputs: {} })
+    .some((issue) => issue.nodeId === "action-a" && issue.code === "missing-input"), true);
+  const configuredSnapshot = {
+    ...snapshot,
+    nodes: snapshot.nodes.map((node) => node.nodeId === "action-b" ? { ...node, parameters: {} } : node),
+  };
+  const configuredDefinitions = definitions.map((definition) => definition.actionId === "edit-b"
+    ? { ...definition, parameterEditor: "frame_pick" }
+    : definition);
+  assert.equal(graph.getCanvasPreflight(configuredSnapshot, configuredDefinitions, { status: "idle", nodeStates: {}, outputs: {} })
+    .some((issue) => issue.nodeId === "action-b" && issue.code === "missing-configuration"), true);
+  const frameAction = configuredSnapshot.nodes.find((node) => node.nodeId === "action-b");
+  const frameDefinition = configuredDefinitions.find((definition) => definition.actionId === "edit-b");
+  assert.equal(graph.isCanvasActionConfigured(frameAction, frameDefinition), false);
+  assert.equal(graph.isCanvasActionConfigured({ ...frameAction, parameters: { frameIndex: 12 } }, frameDefinition), true);
+  const storedFramePick = {
+    unit: "frame",
+    count: 0,
+    startIndex: 602,
+    endIndexExclusive: 0,
+    durationSeconds: "0",
+    timeBaseNumerator: 1,
+    timeBaseDenominator: 1,
+    displayPrecision: 6,
+    loading: true,
+  };
+  const previewTimeline = {
+    ...storedFramePick,
+    count: 688,
+    startIndex: 0,
+    endIndexExclusive: 688,
+    durationSeconds: "27.52",
+    timeBaseNumerator: 1,
+    timeBaseDenominator: 25,
+    averageFrameRateNumerator: 25,
+    averageFrameRateDenominator: 1,
+  };
+  const previewReconciled = timeline.reconcileCanvasTimeRange(storedFramePick, previewTimeline, "frame");
+  assert.equal(previewReconciled.startIndex, 602);
+  assert.equal(previewReconciled.endIndexExclusive, 603);
+  const exactTimeline = {
+    ...previewTimeline,
+    boundaryTicks: Array.from({ length: 689 }, (_, index) => index),
+    probeFingerprint: "probe-1",
+    exact: true,
+    loading: false,
+  };
+  const exactReconciled = timeline.reconcileCanvasTimeRange(previewReconciled, exactTimeline, "frame");
+  assert.equal(exactReconciled.startIndex, 602);
+  assert.equal(exactReconciled.endIndexExclusive, 603);
+  assert.match(canvas, /const composerPanelWidth = Math\.min/);
+  assert.match(canvas, /setPreflightOpen\(false\);[\s\S]*setTemplateOpen\(false\);[\s\S]*setTrayOpen\(false\);[\s\S]*setContextMenu\(null\);/);
+});
+
 test("canvas source catalog includes unsent uploads and projects Admin preview URLs to Web", () => {
   const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const serialization = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts");
   const uploadRoute = read("apps/v8-agent-os-web/src/app/api/upload/route.ts");
   const webSources = read("apps/v8-agent-os-web/src/app/api/sources/route.ts");
   const adminSources = read("apps/v8-agent-os-admin/src/app/api/client/sources/route.ts");
   const engineSources = read("apps/v8-agent-os-engine/api/session_workflow_routes.py");
 
   assert.match(canvas, /params\.set\("includeUnbound", "true"\)/);
-  assert.match(canvas, /\/api\/client\/workspace\/resource/);
-  assert.match(canvas, /`\/api\/workspace\/resource\$\{url\.slice/);
+  assert.match(serialization, /\/api\/client\/workspace\/resource/);
+  assert.match(serialization, /`\/api\/workspace\/resource\$\{url\.slice/);
   assert.match(uploadRoute, /previewUrl: toWebResourceUrl/);
   assert.match(webSources, /query\.set\("includeUnbound", "true"\)/);
   assert.match(adminSources, /query\.set\("include_unbound", "true"\)/);
@@ -433,7 +667,7 @@ test("canvas source catalog includes unsent uploads and projects Admin preview U
   assert.match(engineSources, /include_internal: bool = False/);
   assert.match(engineSources, /canvas_mask/);
   assert.match(canvas, /sourceKind", "canvas_mask"/);
-  assert.match(canvas, /sourceKind === "canvas_mask"/);
+  assert.match(serialization, /sourceKind === "canvas_mask"/);
   const submit = read("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   assert.match(submit, /reference\.mediaType !== "mask"/);
   assert.match(submit, /reference\.sourceKind !== "canvas_mask"/);

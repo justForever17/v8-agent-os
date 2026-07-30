@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, Palette, Plus, X } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
@@ -253,6 +253,10 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,
         [activeDocumentId, tabs],
     );
+    const canvasTab = useMemo(
+        () => tabs.find((tab) => tab.document.kind === "creative_canvas") || null,
+        [tabs],
+    );
     if (!activeTab || boundSessionId !== props.sessionId) return null;
 
     const shouldShow = mode !== "closed";
@@ -275,14 +279,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
-        if (document.kind === "creative_canvas") return (
-            <CreativeArtifactCanvas
-                document={document}
-                messages={props.messages}
-                sessionRunning={props.sessionRunning}
-                onSubmitTask={props.onSubmitCanvasTask}
-            />
-        );
+        if (document.kind === "creative_canvas") return null;
         return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.browserExternal")}</div>;
     })();
 
@@ -314,40 +311,43 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                     {mode === "focus" ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
                 </button>
             </div>
-            <div role="tabpanel" className="min-h-0 flex-1 overflow-hidden">{content}</div>
+            <div role="tabpanel" className="relative min-h-0 flex-1 overflow-hidden">
+                <div className={cn("absolute inset-0", document.kind === "creative_canvas" && "invisible pointer-events-none")}>{content}</div>
+                {canvasTab?.document.kind === "creative_canvas" ? (
+                    <div className={cn("absolute inset-0", document.kind !== "creative_canvas" && "invisible pointer-events-none")}>
+                        <CreativeArtifactCanvas
+                            document={canvasTab.document}
+                            messages={props.messages}
+                            workspacePath={props.workspacePath}
+                            sessionRunning={props.sessionRunning}
+                            onSubmitTask={props.onSubmitCanvasTask}
+                        />
+                    </div>
+                ) : null}
+            </div>
         </aside>
     );
 
     return (
         <>
-        <AnimatePresence initial={false} mode="sync">
-            {shouldShow ? effectiveMode === "focus" ? (
-                <motion.div
-                    key="workbench-focus"
-                    data-workbench-motion-shell
-                    className="absolute inset-0 z-[70]"
-                    initial={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(16px)" }}
-                    animate={{ opacity: 1, transform: "translateX(0)" }}
-                    exit={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(12px)" }}
-                    transition={{ duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] }}
-                >
-                    {panel}
-                </motion.div>
-            ) : (
-                <motion.div
-                    key="workbench-split"
-                    data-workbench-motion-shell
-                    className="relative flex h-full shrink-0 overflow-hidden"
-                    initial={{ width: shouldReduceMotion ? panelWidth + 6 : 0, opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(16px)" }}
-                    animate={{ width: panelWidth + 6, opacity: 1, transform: "translateX(0)" }}
-                    exit={{ width: shouldReduceMotion ? panelWidth + 6 : 0, opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(12px)" }}
-                    transition={{
-                        width: { duration: isResizing ? 0 : shouldReduceMotion ? 0.12 : 0.22, ease: [0.32, 0.72, 0, 1] },
-                        opacity: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
-                        transform: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
-                    }}
-                >
-                    <div
+        <motion.div
+            data-workbench-motion-shell
+            aria-hidden={!shouldShow}
+            className={cn(
+                "z-[70] overflow-hidden",
+                effectiveMode === "focus" ? "absolute inset-0" : "relative flex h-full shrink-0",
+                !shouldShow && "invisible pointer-events-none",
+            )}
+            style={effectiveMode === "split" ? { width: shouldShow ? panelWidth + 6 : 0 } : undefined}
+            initial={false}
+            animate={{
+                opacity: shouldShow ? 1 : 0,
+                transform: shouldShow || shouldReduceMotion ? "translateX(0)" : "translateX(12px)",
+            }}
+            transition={{ duration: isResizing ? 0 : shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] }}
+        >
+            {effectiveMode === "split" ? (
+                <div
                         role="separator"
                         aria-orientation="vertical"
                         aria-label={t("web.workbench.resize")}
@@ -372,11 +372,10 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                             window.addEventListener("pointerup", handleUp, { once: true });
                             window.addEventListener("pointercancel", handleUp, { once: true });
                         }}
-                    />
-                    {panel}
-                </motion.div>
+                />
             ) : null}
-        </AnimatePresence>
+            {panel}
+        </motion.div>
         <WorkbenchFilePicker sessionId={props.sessionId} open={filePickerOpen} onOpenChange={setFilePickerOpen} />
         </>
     );

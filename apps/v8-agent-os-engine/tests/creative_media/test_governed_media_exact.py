@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
+from threading import Event, Lock
 
 import pytest
 
@@ -23,6 +25,168 @@ def _ffmpeg_pair_or_skip() -> tuple[str, str, str]:
 def _run(command: list[str]) -> None:
     result = run_windowless(command, capture_output=True, text=True, check=False, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+def test_probe_cache_rechecks_session_authority_but_reuses_unchanged_media_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"media")
+    resources = iter([
+        {"kind": "source", "id": "source-session-a"},
+        {"kind": "workspace_asset", "id": "asset-session-b"},
+    ])
+    calls = {"resource": 0, "header": 0, "timeline": 0}
+
+    def resolve(_request: dict):
+        calls["resource"] += 1
+        return source, next(resources)
+
+    def header(_ffprobe: str, _path: Path):
+        calls["header"] += 1
+        return {
+            "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}],
+            "format": {"format_name": "mp4"},
+        }
+
+    def timeline(_ffprobe: str, _path: Path, _stream: dict):
+        calls["timeline"] += 1
+        return {
+            "unit": "frame",
+            "count": 2,
+            "timeBase": {"numerator": 1, "denominator": 24, "value": "1/24"},
+            "boundaryTicks": [0, 1, 2],
+            "durationSeconds": "0.083333333",
+            "displayPrecision": 6,
+        }
+
+    governed_media._PROBE_CACHE.clear()
+    monkeypatch.setattr(governed_media, "_ffmpeg_pair", lambda: ("ffmpeg", "ffprobe", "7.0"))
+    monkeypatch.setattr(governed_media, "_resource_path", resolve)
+    monkeypatch.setattr(governed_media, "_stream_header", header)
+    monkeypatch.setattr(governed_media, "_video_timeline", timeline)
+
+    first = governed_media.probe_request({"sessionId": "session-a", "sourceId": "source-session-a"})
+    second = governed_media.probe_request({"sessionId": "session-b", "workspaceAssetId": "asset-session-b"})
+
+    assert first["resource"] == {"kind": "source", "id": "source-session-a"}
+    assert second["resource"] == {"kind": "workspace_asset", "id": "asset-session-b"}
+    assert calls == {"resource": 2, "header": 1, "timeline": 1}
+
+
+def test_video_preview_probe_returns_header_timeline_without_scanning_frames(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"media")
+    calls = {"header": 0, "timeline": 0}
+
+    def header(_ffprobe: str, _path: Path):
+        calls["header"] += 1
+        return {
+            "streams": [{
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "time_base": "1/90000",
+                "avg_frame_rate": "30000/1001",
+                "r_frame_rate": "30000/1001",
+                "duration": "N/A",
+            }],
+            "format": {"duration": "10.01", "format_name": "mp4"},
+        }
+
+    def timeline(_ffprobe: str, _path: Path, _stream: dict):
+        calls["timeline"] += 1
+        return {
+            "unit": "frame",
+            "count": 300,
+            "timeBase": {"numerator": 1, "denominator": 90000, "value": "1/90000"},
+            "boundaryTicks": list(range(301)),
+            "durationSeconds": "10.01",
+            "displayPrecision": 6,
+            "approximate": False,
+        }
+
+    governed_media._PROBE_CACHE.clear()
+    monkeypatch.setattr(governed_media, "_ffmpeg_pair", lambda: ("ffmpeg", "ffprobe", "7.0"))
+    monkeypatch.setattr(
+        governed_media,
+        "_resource_path",
+        lambda _request: (source, {"kind": "source", "id": "source-video"}),
+    )
+    monkeypatch.setattr(governed_media, "_stream_header", header)
+    monkeypatch.setattr(governed_media, "_video_timeline", timeline)
+
+    preview = governed_media.probe_request({
+        "sessionId": "session-a",
+        "sourceId": "source-video",
+        "detail": "preview",
+    })
+    assert preview["timeline"]["approximate"] is True
+    assert preview["timeline"]["count"] == 300
+    assert "boundaryTicks" not in preview["timeline"]
+    assert calls == {"header": 1, "timeline": 0}
+
+    exact = governed_media.probe_request({"sessionId": "session-a", "sourceId": "source-video"})
+    assert exact["timeline"]["approximate"] is False
+    assert calls == {"header": 2, "timeline": 1}
+
+
+def test_exact_probe_coalesces_concurrent_requests_without_losing_session_resource_truth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "shared.mp4"
+    source.write_bytes(b"media")
+    timeline_started = Event()
+    release_timeline = Event()
+    call_lock = Lock()
+    calls = {"header": 0, "timeline": 0}
+
+    def resolve(request: dict):
+        return source, {"kind": "source", "id": str(request["sourceId"])}
+
+    def header(_ffprobe: str, _path: Path):
+        with call_lock:
+            calls["header"] += 1
+        return {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}], "format": {"format_name": "mp4"}}
+
+    def timeline(_ffprobe: str, _path: Path, _stream: dict):
+        with call_lock:
+            calls["timeline"] += 1
+        timeline_started.set()
+        assert release_timeline.wait(timeout=5)
+        return {
+            "unit": "frame",
+            "count": 2,
+            "timeBase": {"numerator": 1, "denominator": 24, "value": "1/24"},
+            "boundaryTicks": [0, 1, 2],
+            "durationSeconds": "0.083333333",
+            "displayPrecision": 6,
+            "approximate": False,
+        }
+
+    governed_media._PROBE_CACHE.clear()
+    governed_media._PROBE_INFLIGHT.clear()
+    monkeypatch.setattr(governed_media, "_ffmpeg_pair", lambda: ("ffmpeg", "ffprobe", "7.0"))
+    monkeypatch.setattr(governed_media, "_resource_path", resolve)
+    monkeypatch.setattr(governed_media, "_stream_header", header)
+    monkeypatch.setattr(governed_media, "_video_timeline", timeline)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(governed_media.probe_request, {"sessionId": "session-a", "sourceId": "source-a"})
+        assert timeline_started.wait(timeout=5)
+        second = pool.submit(governed_media.probe_request, {"sessionId": "session-b", "sourceId": "source-b"})
+        release_timeline.set()
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert calls == {"header": 1, "timeline": 1}
+    assert first_result["resource"]["id"] == "source-a"
+    assert second_result["resource"]["id"] == "source-b"
 
 
 def test_video_trim_uses_frame_indices_and_postflight_count(

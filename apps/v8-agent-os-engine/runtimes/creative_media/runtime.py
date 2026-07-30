@@ -129,8 +129,16 @@ EXECUTABLE_OPERATION_KINDS = {
     "video.extract_frame_exact",
     "video.trim_exact",
     "audio.trim_exact",
+    "image.compose_psd",
+    "image.edit_psd_layers",
 }
-GOVERNED_LOCAL_OPERATION_KINDS = {"video.extract_frame_exact", "video.trim_exact", "audio.trim_exact"}
+GOVERNED_LOCAL_OPERATION_KINDS = {
+    "video.extract_frame_exact",
+    "video.trim_exact",
+    "audio.trim_exact",
+    "image.compose_psd",
+    "image.edit_psd_layers",
+}
 DASHSCOPE_VIDEO_OPERATION_KINDS = {
     "video.text_to_video",
     "video.image_to_video",
@@ -3171,6 +3179,8 @@ class CreativeMediaRuntime:
             "video.extract_frame_exact": ["session_source_or_workspace_media_asset"],
             "video.trim_exact": ["session_source_or_workspace_media_asset"],
             "audio.trim_exact": ["session_source_or_workspace_media_asset"],
+            "image.compose_psd": ["ordered_canvas_image_or_psd_inputs"],
+            "image.edit_psd_layers": ["canvas_psd_input"],
         }
         return list(mapping.get(str(operation_kind or ""), []))
 
@@ -3320,6 +3330,10 @@ class CreativeMediaRuntime:
         return result
 
     async def create_job(self, request: dict[str, Any]) -> dict[str, Any]:
+        if str(request.get("operationKind") or "").strip() == "canvas.graph.execute":
+            from core.creative_canvas_graph import creative_canvas_graph_service
+
+            return await creative_canvas_graph_service.execute_as_creative_job(self, request)
         modality = str(request.get("modality") or "").strip().lower()
         if modality not in SUPPORTED_MODALITIES:
             raise ValueError(f"Unsupported creative media modality: {modality or 'missing'}")
@@ -3392,9 +3406,15 @@ class CreativeMediaRuntime:
         operation_kind: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        expected_modality = "video" if operation_kind.startswith("video.") else "voice"
+        expected_modality = "image" if operation_kind.startswith("image.") else "video" if operation_kind.startswith("video.") else "voice"
         if modality != expected_modality:
             raise ValueError(f"operationKind={operation_kind} requires modality={expected_modality}")
+        if operation_kind in {"image.compose_psd", "image.edit_psd_layers"}:
+            return await self._create_governed_psd_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
         job = self._new_job(
             modality=modality,
             adapter="governed_ffmpeg",
@@ -3442,6 +3462,125 @@ class CreativeMediaRuntime:
                     output_path.unlink()
                 except OSError:
                     pass
+        return self._save_job(job)
+
+    @staticmethod
+    def _canvas_input_path(*, session_id: str, item: dict[str, Any]) -> Path:
+        origin = str(item.get("origin") or "").strip()
+        resource_id = str(item.get("id") or "").strip()
+        if not session_id or not origin or not resource_id:
+            raise ValueError("Canvas PSD input is missing its session-bound resource reference")
+        if origin == "source":
+            return workspace_media_library.resolve_source_path(session_id=session_id, source_id=resource_id)
+        if origin == "artifact":
+            return workspace_media_library.resolve_artifact_path(session_id=session_id, artifact_id=resource_id)
+        if origin == "workspace_asset":
+            return workspace_media_library.resolve_asset_path(
+                session_id=session_id,
+                asset_id=resource_id,
+                require_session_use=True,
+            )
+        raise ValueError("Canvas PSD input origin is not governed")
+
+    async def _create_governed_psd_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        from core.tools.native.creative_media_psd import compose_psd_document, edit_psd_document
+
+        session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+        canvas_inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
+        job = self._new_job(
+            modality=modality,
+            adapter="governed_psd_tools",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        output_path = self._output_path(job, "layered-document", ".psd")
+        preview_path = output_path.with_name(f"{output_path.stem}-preview.png")
+        try:
+            if operation_kind == "image.compose_psd":
+                layer_inputs = sorted(
+                    (item for item in canvas_inputs if str(item.get("portId") or "") == "layers"),
+                    key=lambda item: (int(item.get("order") or 0), str(item.get("sourceNodeId") or "")),
+                )
+                if not layer_inputs:
+                    raise ValueError("PSD composition requires connected image or PSD layer inputs")
+                configured_layers = [dict(item) for item in list(request.get("layers") or []) if isinstance(item, dict)]
+                configured_by_node = {
+                    str(item.get("sourceNodeId") or ""): item
+                    for item in configured_layers
+                    if str(item.get("sourceNodeId") or "")
+                }
+                resolved_layers: list[dict[str, Any]] = []
+                for index, item in enumerate(layer_inputs):
+                    source_path = self._canvas_input_path(session_id=session_id, item=item)
+                    configured = dict(configured_by_node.get(str(item.get("sourceNodeId") or "")) or (configured_layers[index] if index < len(configured_layers) else {}))
+                    resolved_layers.append({
+                        **configured,
+                        "source": source_path,
+                        "name": str(configured.get("name") or source_path.stem),
+                        "order": int(configured.get("order") if configured.get("order") is not None else index),
+                    })
+                resolved_layers.sort(key=lambda item: int(item.get("order") or 0))
+                manifest = await asyncio.to_thread(
+                    compose_psd_document,
+                    output_path=output_path,
+                    preview_path=preview_path,
+                    canvas=dict(request.get("canvas") or {}),
+                    layers=resolved_layers,
+                )
+            else:
+                psd_inputs = [item for item in canvas_inputs if str(item.get("portId") or "") == "psd"]
+                if len(psd_inputs) != 1:
+                    raise ValueError("PSD layer editing requires exactly one connected PSD input")
+                source_path = self._canvas_input_path(session_id=session_id, item=psd_inputs[0])
+                if source_path.suffix.lower() != ".psd":
+                    raise ValueError("PSD layer editing requires a .psd input")
+                manifest = await asyncio.to_thread(
+                    edit_psd_document,
+                    source_path=source_path,
+                    output_path=output_path,
+                    preview_path=preview_path,
+                    edits=[dict(item) for item in list(request.get("edits") or []) if isinstance(item, dict)],
+                )
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind="document",
+                mime_type="image/vnd.adobe.photoshop",
+                metadata={
+                    "origin": "governed_local_psd",
+                    "providerInvoked": False,
+                    "psdManifestSchema": manifest.get("schema"),
+                    "psdLayerCount": manifest.get("layerCount"),
+                    "psdPreviewPath": str(preview_path),
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "governed_psd_tools",
+                "manifestSchema": manifest.get("schema"),
+                "layerCount": manifest.get("layerCount"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = "passed"
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            for path in (output_path, preview_path):
+                if path.exists():
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
         return self._save_job(job)
 
     async def retry_job(self, job_id: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -5440,6 +5579,11 @@ class CreativeMediaRuntime:
         return artifact
 
     def _record_local_artifact(self, *, file_path: Path, job: dict[str, Any], kind: str, mime_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = Path(str(job.get("workspacePath") or "")).expanduser()
+        try:
+            workspace_relative_path = file_path.resolve().relative_to(workspace_root.resolve()).as_posix() if str(job.get("workspacePath") or "").strip() else ""
+        except ValueError:
+            workspace_relative_path = ""
         artifact = artifact_store.record_artifact(
             artifact_kind=kind,
             mime_type=mime_type,
@@ -5462,6 +5606,7 @@ class CreativeMediaRuntime:
                 "projectId": job.get("projectId") or "",
                 "workspaceId": job.get("workspaceId") or "",
                 "workspacePath": job.get("workspacePath") or "",
+                "workspaceRelativePath": workspace_relative_path,
                 "pathPlane": "runtime",
                 "storageClass": "runtime_artifact",
                 "surfaceVisible": True,

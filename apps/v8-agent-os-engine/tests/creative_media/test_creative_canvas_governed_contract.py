@@ -190,6 +190,85 @@ def test_validated_canvas_request_starts_supervisor_without_blocking_attachment_
     ] == ["vision_media_analyzer"]
 
 
+def test_canvas_graph_direct_route_recompiles_persisted_resources_and_rejects_drift(monkeypatch) -> None:
+    operation_id = "canvas-op-graph"
+    source_id = "source-visible"
+    contract = {
+        "schema": "v8.creative_canvas_task.v1",
+        "canvasOperationId": operation_id,
+        "actionId": "canvas.graph.run_to_here",
+        "resources": {"sourceIds": [source_id]},
+        "execution": {
+            "tool": "creative_media_jobs",
+            "arguments": {
+                "action": "create",
+                "request": {
+                    "modality": "workflow",
+                    "operationKind": "canvas.graph.execute",
+                    "canvasOperationId": operation_id,
+                    "graphId": "canvas-graph-a",
+                    "graphRevision": 4,
+                    "targetNodeIds": ["result-a"],
+                },
+            },
+        },
+    }
+    request = ChatRequest.model_validate({
+        "session_id": "session-graph",
+        "messages": [{
+            "role": "user",
+            "content": (
+                "本消息来自画布\n"
+                "[CANVAS EXECUTION CONTRACT v1]\n"
+                f"{json.dumps(contract)}\n"
+                "[/CANVAS EXECUTION CONTRACT]"
+            ),
+        }],
+        "attachments": [{
+            "id": source_id,
+            "sourceId": source_id,
+            "url": "https://example.test/source.png",
+            "mimeType": "image/png",
+            "mediaKind": "image",
+            "metadata": {"canvasOperationId": operation_id},
+        }],
+        "data": {
+            "canvasSupervisorDirect": True,
+            "contextMentions": [{"kind": "canvas_operation", "id": operation_id}],
+        },
+    })
+    calls: list[dict] = []
+
+    def compile_plan(**kwargs):
+        calls.append(kwargs)
+        return {"resourceRefs": [{"origin": "source", "id": source_id, "mediaType": "image"}]}
+
+    monkeypatch.setattr(
+        "core.creative_canvas_graph.creative_canvas_graph_service.execution_contract_summary",
+        compile_plan,
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.get_session_source",
+        lambda **kwargs: {"sourceId": kwargs["source_id"], "sourceKind": "web_upload"},
+    )
+    runtime = ChatRuntime()
+    runtime._normalize_request_attachments(request)
+    assert runtime._validate_canvas_supervisor_direct(request, canvas_operation_id=operation_id) is True
+    assert calls == [{
+        "session_id": "session-graph",
+        "graph_id": "canvas-graph-a",
+        "graph_revision": 4,
+        "target_node_ids": ["result-a"],
+    }]
+
+    monkeypatch.setattr(
+        "core.creative_canvas_graph.creative_canvas_graph_service.execution_contract_summary",
+        lambda **_kwargs: {"resourceRefs": [{"origin": "source", "id": "source-other", "mediaType": "image"}]},
+    )
+    with pytest.raises(ValueError, match="persisted execution plan"):
+        runtime._validate_canvas_supervisor_direct(request, canvas_operation_id=operation_id)
+
+
 def test_canvas_workspace_asset_requires_explicit_current_session_use_without_vision_attachment(
     monkeypatch,
     tmp_path: Path,

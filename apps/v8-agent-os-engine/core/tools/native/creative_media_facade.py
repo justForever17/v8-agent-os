@@ -16,6 +16,7 @@ _ID_FIELDS = {
     "candidateArtifactId",
     "characterBibleId",
     "editPlanId",
+    "graphId",
     "jobId",
     "keyframeId",
     "planId",
@@ -48,6 +49,7 @@ _LIST_FIELDS = {
     "sampleArtifactRefs",
     "sourceRefs",
     "subtitleSegments",
+    "targetNodeIds",
     "videoAssetIds",
 }
 _BOOL_FIELDS = {
@@ -70,6 +72,7 @@ _INT_FIELDS = {
     "endSampleIndexExclusive",
     "frameIndex",
     "fps",
+    "graphRevision",
     "height",
     "limit",
     "maxLayers",
@@ -131,6 +134,8 @@ _GENERATION_FIELDS = frozenset(
         "audioUrl",
         "brief",
         "canvasOperationId",
+        "graphId",
+        "graphRevision",
         "costLimit",
         "coverFeatureId",
         "durationSeconds",
@@ -188,6 +193,7 @@ _GENERATION_FIELDS = frozenset(
         "startSampleIndex",
         "subtitleEnable",
         "targetImageUrl",
+        "targetNodeIds",
         "timeoutSeconds",
         "title",
         "voiceDescription",
@@ -1142,7 +1148,7 @@ async def creative_media_jobs(
 ) -> str:
     """Create, query, list, and retry governed 多媒体创作 jobs through one job facade.
 
-    action='create' requires request.modality and request.operationKind. Base operations include image/video
+    action='create' requires request.modality and request.operationKind. Base provider-backed operations include image/video
     generation, voice.tts, voice.design, music.generate, music.cover, model3d.generate, plus local
     video.extract_frame_exact/video.trim_exact/audio.trim_exact with a probe fingerprint and exact frame/sample
     indices. Poll with action='get'

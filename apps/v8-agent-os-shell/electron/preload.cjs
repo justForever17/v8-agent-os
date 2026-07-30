@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("v8osShell", {
   openWeb: () => ipcRenderer.send("v8os-shell:open-web"),
   openAdmin: () => ipcRenderer.send("v8os-shell:open-admin"),
   openWorkspaceFolder: (workspacePath) => ipcRenderer.invoke("v8os-shell:open-workspace-folder", workspacePath),
+  revealWorkspaceFile: (workspaceRelativePath, workspacePath) => ipcRenderer.invoke("v8os-shell:reveal-workspace-file", workspaceRelativePath, workspacePath),
   selectGodotExecutable: () => ipcRenderer.invoke("v8os-shell:select-godot-executable"),
   selectGodotProjectDirectory: () => ipcRenderer.invoke("v8os-shell:select-godot-project-directory"),
   reportActiveSession: (sessionId) => ipcRenderer.send("v8os-shell:active-session", sessionId || null),

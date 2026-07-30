@@ -47,6 +47,7 @@ export type SubagentReturnProjection = {
   parentInvocationId: string | null;
   depth: number;
   name: string;
+  roleLabel: string | null;
   avatar: string | null;
   family: string | null;
   taskGoal: string | null;
@@ -236,6 +237,7 @@ function baseProjection(input: {
   parentInvocationId?: string | null;
   depth?: number;
   name?: string;
+  roleLabel?: string | null;
   taskGoal?: string | null;
   timestamp?: number;
 }): SubagentReturnProjection {
@@ -247,6 +249,7 @@ function baseProjection(input: {
     parentInvocationId: input.parentInvocationId || null,
     depth: input.depth || (input.parentDelegationId || input.parentInvocationId ? 2 : 1),
     name: input.name || "Subagent",
+    roleLabel: input.roleLabel || null,
     avatar: null,
     family: null,
     taskGoal: input.taskGoal || null,
@@ -410,6 +413,7 @@ function mergeTerminalProjection(
     ? null
     : selfCheckCandidate;
   item.name = text(payload.subagentName || payload.subagent_name || payload.targetLabel || payload.target_label || payload.subagentId || payload.subagent_id) || item.name;
+  item.roleLabel = text(payload.subagentRoleLabel || payload.subagent_role_label || payload.roleLabel || payload.role_label) || item.roleLabel;
   item.avatar = item.depth > 1 ? null : text(payload.subagentAvatar || payload.subagent_avatar) || item.avatar;
   item.family = text(payload.subagentFamily || payload.subagent_family || payload.family) || item.family;
   item.taskGoal = compactTruth(payload.taskGoal || payload.task_goal, 360) || item.taskGoal;
@@ -476,6 +480,7 @@ export function buildSubagentReturnProjection(
       if (input.parentDelegationId) existing.parentDelegationId = input.parentDelegationId;
       if (input.parentInvocationId) existing.parentInvocationId = input.parentInvocationId;
       if (input.name && existing.name === "Subagent") existing.name = input.name;
+      if (input.roleLabel) existing.roleLabel = input.roleLabel;
       if (input.taskGoal && !existing.taskGoal) existing.taskGoal = input.taskGoal;
       existing.depth = Math.max(existing.depth, input.depth || 1);
       existing.timestamp = Math.max(existing.timestamp, input.timestamp || 0);
@@ -511,6 +516,7 @@ export function buildSubagentReturnProjection(
         name: text(progress.agentName || progress.agent_name || episode.targetLabel || episode.target_label || episode.targetId || episode.target_id || inputs.agentName || inputs.agentId)
           || humanNameFromEpisodeId(episodeId)
           || "Subagent",
+        roleLabel: text(progress.agentRoleLabel || progress.agent_role_label || payload.subagentRoleLabel || payload.subagent_role_label),
         taskGoal: compactTruth(taskBrief.goal || episode.reason || inputs.taskGoal || inputs.reason || node.label || node.content, 360),
         timestamp: eventTimestampOf(node, index + 1),
       });
@@ -595,6 +601,7 @@ export function buildSubagentReturnProjection(
       parentInvocationId,
       depth: numberValue(payload.delegationDepth || payload.delegation_depth, parentDelegationId || parentInvocationId ? 2 : 1),
       name: text(payload.subagentName || payload.targetLabel || payload.ownerAgentId || node.ownerAgentId || context.subagent_id || context.subagentId) || "Subagent",
+      roleLabel: text(payload.subagentRoleLabel || payload.subagent_role_label || payload.roleLabel || payload.role_label),
       taskGoal: compactTruth(payload.taskGoal || payload.task_goal, 360),
       timestamp: eventTimestampOf(node, index + 1),
     });

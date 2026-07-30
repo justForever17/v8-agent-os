@@ -7,6 +7,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 const ALLOWED_PATHS = [
     /^sessions\/[A-Za-z0-9_-]+\/files(?:\/(?:resolve|read))?$/,
     /^sessions\/[A-Za-z0-9_-]+\/media\/(?:reconcile|probe|assets(?:\/[A-Za-z0-9_-]+\/(?:use|placement|content))?|folders(?:\/[A-Za-z0-9_-]+)?)$/,
+    /^sessions\/[A-Za-z0-9_-]+\/canvas\/(?:actions|graph(?:\/validate)?|templates(?:\/[A-Za-z0-9_.:-]+(?:\/instantiate)?)?)$/,
 ];
 
 function enginePath(segments: string[]) {
@@ -19,6 +20,9 @@ function enginePath(segments: string[]) {
         const [sessions, sessionId, resource, ...rest] = decoded;
         if (resource === "media") {
             return `/${sessions}/${encodeURIComponent(sessionId)}/media${rest.length ? `/${rest.map(encodeURIComponent).join("/")}` : ""}`;
+        }
+        if (resource === "canvas") {
+            return `/${sessions}/${encodeURIComponent(sessionId)}/canvas${rest.length ? `/${rest.map(encodeURIComponent).join("/")}` : ""}`;
         }
         return `/${sessions}/${encodeURIComponent(sessionId)}/workbench/${resource}${rest.length ? `/${rest.map(encodeURIComponent).join("/")}` : ""}`;
     }

@@ -2123,15 +2123,74 @@ class ChatRuntime:
                 raise ValueError("canvasSupervisorDirect Creative Media execution must create one governed job")
             if str(execution_request.get("canvasOperationId") or "").strip() != canvas_operation_id:
                 raise ValueError("canvasSupervisorDirect Creative Media operation lineage does not match")
+            validation_request = execution_request
+            operation_kind = str(execution_request.get("operationKind") or "").strip()
+            if operation_kind == "canvas.graph.execute":
+                from core.creative_canvas_graph import creative_canvas_graph_service
+
+                graph_id = str(execution_request.get("graphId") or "").strip()
+                graph_revision = execution_request.get("graphRevision")
+                target_node_ids = execution_request.get("targetNodeIds")
+                if not graph_id or not isinstance(graph_revision, int) or isinstance(graph_revision, bool) or graph_revision < 1:
+                    raise ValueError("canvasSupervisorDirect graph execution requires a persisted graph id and revision")
+                if not isinstance(target_node_ids, list) or any(not isinstance(item, str) for item in target_node_ids):
+                    raise ValueError("canvasSupervisorDirect graph targets must be a list of node ids")
+                plan = creative_canvas_graph_service.execution_contract_summary(
+                    session_id=str(request.session_id or ""),
+                    graph_id=graph_id,
+                    graph_revision=graph_revision,
+                    target_node_ids=target_node_ids,
+                )
+                plan_refs = [item for item in list(plan.get("resourceRefs") or []) if isinstance(item, dict)]
+                planned_source_ids = {
+                    str(item.get("id") or "").strip()
+                    for item in plan_refs
+                    if item.get("origin") == "source" and item.get("mediaType") != "mask"
+                } - {""}
+                planned_mask_ids = {
+                    str(item.get("id") or "").strip()
+                    for item in plan_refs
+                    if item.get("origin") == "source" and item.get("mediaType") == "mask"
+                } - {""}
+                planned_artifact_ids = {
+                    str(item.get("id") or "").strip()
+                    for item in plan_refs
+                    if item.get("origin") == "artifact"
+                } - {""}
+                planned_workspace_asset_ids = {
+                    str(item.get("id") or "").strip()
+                    for item in plan_refs
+                    if item.get("origin") == "workspace_asset"
+                } - {""}
+                if len(planned_mask_ids) > 1:
+                    raise ValueError("canvasSupervisorDirect graph execution supports one governed mask source")
+                if planned_source_ids != contract_source_ids:
+                    raise ValueError("canvasSupervisorDirect graph sources do not match its persisted execution plan")
+                if planned_artifact_ids != contract_artifact_ids:
+                    raise ValueError("canvasSupervisorDirect graph artifacts do not match its persisted execution plan")
+                if planned_workspace_asset_ids != contract_workspace_asset_ids:
+                    raise ValueError("canvasSupervisorDirect graph workspace assets do not match its persisted execution plan")
+                planned_mask_id = next(iter(planned_mask_ids), "")
+                if planned_mask_id != str(resources.get("maskSourceId") or "").strip():
+                    raise ValueError("canvasSupervisorDirect graph mask does not match its persisted execution plan")
+                if attachment_source_ids != contract_source_ids:
+                    raise ValueError("canvasSupervisorDirect graph attachments must exactly match its visible sources")
+                validation_request = {
+                    **execution_request,
+                    "sourceIds": sorted(contract_source_ids),
+                    "artifactIds": sorted(contract_artifact_ids),
+                    "workspaceAssetIds": sorted(contract_workspace_asset_ids),
+                    "maskSourceId": planned_mask_id,
+                }
             execution_source_ids = (
-                list(execution_request.get("sourceIds") or [])
-                if isinstance(execution_request.get("sourceIds"), list)
+                list(validation_request.get("sourceIds") or [])
+                if isinstance(validation_request.get("sourceIds"), list)
                 else []
             )
             requested_source_ids = {
                 str(item).strip()
                 for item in [
-                    execution_request.get("sourceId"),
+                    validation_request.get("sourceId"),
                     *execution_source_ids,
                 ]
                 if str(item or "").strip()
@@ -2139,30 +2198,30 @@ class ChatRuntime:
             if requested_source_ids != contract_source_ids:
                 raise ValueError("canvasSupervisorDirect Creative Media sources must match the Canvas resource contract")
             execution_artifact_ids = (
-                list(execution_request.get("artifactIds") or [])
-                if isinstance(execution_request.get("artifactIds"), list)
+                list(validation_request.get("artifactIds") or [])
+                if isinstance(validation_request.get("artifactIds"), list)
                 else []
             )
             requested_artifact_ids = {
                 str(item).strip()
-                for item in [execution_request.get("artifactId"), *execution_artifact_ids]
+                for item in [validation_request.get("artifactId"), *execution_artifact_ids]
                 if str(item or "").strip()
             }
             if requested_artifact_ids != contract_artifact_ids:
                 raise ValueError("canvasSupervisorDirect Creative Media artifacts must match the Canvas resource contract")
             execution_workspace_asset_ids = (
-                list(execution_request.get("workspaceAssetIds") or [])
-                if isinstance(execution_request.get("workspaceAssetIds"), list)
+                list(validation_request.get("workspaceAssetIds") or [])
+                if isinstance(validation_request.get("workspaceAssetIds"), list)
                 else []
             )
             requested_workspace_asset_ids = {
                 str(item).strip()
-                for item in [execution_request.get("workspaceAssetId"), *execution_workspace_asset_ids]
+                for item in [validation_request.get("workspaceAssetId"), *execution_workspace_asset_ids]
                 if str(item or "").strip()
             }
             if requested_workspace_asset_ids != contract_workspace_asset_ids:
                 raise ValueError("canvasSupervisorDirect Creative Media workspace assets must match the Canvas resource contract")
-            if str(execution_request.get("maskSourceId") or "").strip() != str(resources.get("maskSourceId") or "").strip():
+            if str(validation_request.get("maskSourceId") or "").strip() != str(resources.get("maskSourceId") or "").strip():
                 raise ValueError("canvasSupervisorDirect Creative Media mask must match the Canvas resource contract")
         for source_id in attachment_source_ids:
             source = db.get_session_source(session_id=request.session_id or "", source_id=source_id)
@@ -9639,6 +9698,12 @@ class ChatRuntime:
                 else {}
             )
             configured_avatar = str(configured_agent.get("avatar") or "").strip() if delegation_depth <= 1 else ""
+            configured_name = str(configured_agent.get("name") or "").strip()
+            configured_role_label = str(
+                configured_agent.get("roleLabel")
+                or configured_agent.get("description")
+                or ""
+            ).strip()
             specialist_family = str(
                 configured_agent.get("specialistFamily")
                 or configured_agent.get("family")
@@ -9680,7 +9745,8 @@ class ChatRuntime:
                     "taskBriefId": task_brief_id,
                     "taskGoal": item.get("taskGoal"),
                     "subagentId": agent_id,
-                    "subagentName": item.get("agentName") or item.get("targetLabel") or agent_id,
+                    "subagentName": configured_name or item.get("agentName") or item.get("targetLabel") or agent_id,
+                    "subagentRoleLabel": configured_role_label or None,
                     "subagentAvatar": configured_avatar or None,
                     "subagentFamily": specialist_family or None,
                     "status": status,

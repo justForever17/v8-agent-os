@@ -1360,7 +1360,7 @@ async def get_runtime_artifact_content(artifact_id: str):
             raise HTTPException(status_code=404, detail="Artifact source file not found")
         filename = path.name
         media_type = str(normalized.get("mimeType") or "application/octet-stream")
-        return FileResponse(path, media_type=media_type, filename=filename)
+        return FileResponse(path, media_type=media_type, filename=filename, content_disposition_type="inline")
     except HTTPException:
         raise
     except Exception as e:

@@ -22,7 +22,7 @@ export function getConversationActivityState(item: Conversation): ConversationAc
     if (["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(status)) {
         return "active";
     }
-    if (["failed", "cancelled", "degraded"].includes(status)) {
+    if (["failed", "recoverable_failed", "cancelled", "degraded"].includes(status)) {
         return "failed";
     }
     return null;

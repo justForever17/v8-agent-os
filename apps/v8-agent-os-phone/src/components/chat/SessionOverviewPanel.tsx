@@ -93,7 +93,10 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
                     </View>
                 )}
                 <View style={styles.subagentBody}>
-                    <Text numberOfLines={1} style={[styles.subagentName, { color: colors.text }]}>{item.name}</Text>
+                    <View style={styles.subagentIdentityRow}>
+                        <Text numberOfLines={1} style={[styles.subagentName, { color: colors.text }]}>{item.name}</Text>
+                        {item.roleLabel ? <Text numberOfLines={1} style={[styles.subagentRoleLabel, { color: colors.textMuted, borderColor: colors.border }]}>{item.roleLabel}</Text> : null}
+                    </View>
                     <Text numberOfLines={1} style={[styles.subagentSummary, { color: colors.textMuted }]}>{item.taskGoal || failureDetail || statusLabel}</Text>
                 </View>
                 <Text style={[styles.subagentStatus, { color: colors.textMuted }]}>{statusLabel}</Text>
@@ -491,7 +494,9 @@ const styles = StyleSheet.create({
     subagentAvatarClip: { width: 30, height: 30, borderRadius: 10, overflow: "hidden" },
     subagentAvatarText: { color: "white", fontSize: 12, fontWeight: "700" },
     subagentBody: { flex: 1, minWidth: 0, gap: 3 },
+    subagentIdentityRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
     subagentName: { fontSize: 13, fontWeight: "700" },
+    subagentRoleLabel: { maxWidth: 110, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, fontSize: 9 },
     subagentSummary: { fontSize: 11 },
     subagentStatus: { fontSize: 10 },
     subagentDetail: { borderTopWidth: StyleSheet.hairlineWidth, padding: spacing.md, gap: spacing.sm },

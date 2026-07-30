@@ -1328,6 +1328,101 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_session_media_asset_uses_asset
                 ON session_media_asset_uses(asset_id, updated_at DESC)
             ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS creative_canvas_graphs (
+                    graph_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL UNIQUE,
+                    workspace_key TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 3,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    graph_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_creative_canvas_graphs_workspace
+                ON creative_canvas_graphs(workspace_key, updated_at DESC)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS creative_canvas_graph_runs (
+                    graph_run_id TEXT PRIMARY KEY,
+                    graph_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    chat_run_id TEXT,
+                    canvas_operation_id TEXT NOT NULL,
+                    graph_revision INTEGER NOT NULL,
+                    target_node_ids_json TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    node_states_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    current_node_id TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE (session_id, canvas_operation_id),
+                    FOREIGN KEY (graph_id) REFERENCES creative_canvas_graphs(graph_id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (chat_run_id) REFERENCES run_records(id) ON DELETE SET NULL
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_creative_canvas_graph_runs_session
+                ON creative_canvas_graph_runs(session_id, updated_at DESC)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS creative_canvas_node_outputs (
+                    output_version_id TEXT PRIMARY KEY,
+                    graph_run_id TEXT NOT NULL,
+                    graph_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    action_node_id TEXT NOT NULL,
+                    result_node_id TEXT NOT NULL,
+                    version_index INTEGER NOT NULL,
+                    artifact_id TEXT,
+                    job_id TEXT,
+                    media_type TEXT,
+                    output_slot TEXT,
+                    config_digest TEXT NOT NULL,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (graph_id, result_node_id, version_index),
+                    FOREIGN KEY (graph_run_id) REFERENCES creative_canvas_graph_runs(graph_run_id) ON DELETE CASCADE,
+                    FOREIGN KEY (graph_id) REFERENCES creative_canvas_graphs(graph_id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_creative_canvas_node_outputs_result
+                ON creative_canvas_node_outputs(graph_id, result_node_id, created_at DESC)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS workspace_canvas_templates (
+                    template_id TEXT PRIMARY KEY,
+                    workspace_key TEXT NOT NULL,
+                    workspace_id TEXT,
+                    project_id TEXT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    template_json TEXT NOT NULL,
+                    created_from_session_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_canvas_template_title
+                ON workspace_canvas_templates(workspace_key, title COLLATE NOCASE)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_workspace_canvas_templates_workspace
+                ON workspace_canvas_templates(workspace_key, updated_at DESC)
+            ''')
             
             # Indexes for fast querying
             conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages (session_id)')

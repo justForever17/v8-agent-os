@@ -3,6 +3,7 @@ export type CreativeCanvasMediaType =
     | "video"
     | "audio"
     | "model_3d"
+    | "psd"
     | "document"
     | "text"
     | "mask"
@@ -17,7 +18,7 @@ export type CreativeCanvasExecutionClass =
     | "chat_task"
     | "agent_projection"
     | "governance_projection";
-export type CreativeCanvasParameterEditor = "frame_pick" | "time_range";
+export type CreativeCanvasParameterEditor = "frame_pick" | "time_range" | "psd_composition" | "psd_layers";
 export type CreativeCanvasOutputKind =
     | "none"
     | "canvas_state"
@@ -115,6 +116,7 @@ const ALL_MEDIA_TYPES: readonly CreativeCanvasMediaType[] = [
     "video",
     "audio",
     "model_3d",
+    "psd",
     "document",
     "text",
     "mask",
@@ -169,6 +171,7 @@ const ONE_ANY = selection(["node", "selection"], 1, 1, ALL_MEDIA_TYPES);
 const ONE_IMAGE = selection(["node", "selection"], 1, 1, ["image"]);
 const ONE_VIDEO = selection(["node", "selection"], 1, 1, ["video"]);
 const ONE_AUDIO = selection(["node", "selection"], 1, 1, ["audio"]);
+const ONE_PSD = selection(["node", "selection"], 1, 1, ["psd"]);
 const ONE_AUDIO_OR_VIDEO = selection(["node", "selection"], 1, 1, ["audio", "video"]);
 const ANY_SELECTION = selection(["node", "selection"], 1, undefined, ALL_MEDIA_TYPES, { ordered: true });
 const ANY_CONTEXT = selection(["canvas", "node", "selection", "edge"], 0, undefined, ALL_MEDIA_TYPES);
@@ -197,6 +200,14 @@ export const LOCAL_CREATIVE_CANVAS_ACTIONS: readonly CreativeCanvasAction[] = [
         actionId: "local.download",
         selection: selection(["node", "selection"], 1, undefined, DOWNLOADABLE_MEDIA_TYPES, { ordered: true }),
         output: output("none", "download"),
+        executionClass: "local_read",
+        availableWhileRunning: true,
+    }),
+    defineAction({
+        ...LOCAL_DEFAULTS,
+        actionId: "local.open_in_file_manager",
+        selection: ONE_ANY,
+        output: output("none", "file_manager"),
         executionClass: "local_read",
         availableWhileRunning: true,
     }),
@@ -347,7 +358,7 @@ const OPTIONAL_REFERENCES = selection(
     ["canvas", "node", "selection"],
     0,
     8,
-    ["image", "video", "audio", "model_3d", "document", "text"],
+    ["image", "video", "audio", "model_3d", "psd", "document", "text"],
     { ordered: true },
 );
 
@@ -427,6 +438,26 @@ export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
         selection: selection(["canvas", "node", "selection"], 0, 4, ["image", "model_3d", "text"], { ordered: true }),
         requiresPrompt: true,
         output: output("artifact", "model_3d", ["model_3d"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.compose_psd",
+        capability: "image.compose_psd",
+        selection: selection(["node", "selection"], 1, 60, ["image", "psd"], { ordered: true }),
+        requiresPrompt: false,
+        parameterEditor: "psd_composition",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "psd_document", ["psd"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.edit_psd_layers",
+        capability: "image.edit_psd_layers",
+        selection: ONE_PSD,
+        requiresPrompt: false,
+        parameterEditor: "psd_layers",
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "psd_document", ["psd"]),
     }),
     creativeMediaAction({
         actionId: "creative_media.extract_video_frame_exact",

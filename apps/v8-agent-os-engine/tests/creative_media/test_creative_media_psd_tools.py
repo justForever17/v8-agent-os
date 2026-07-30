@@ -124,3 +124,49 @@ def test_psd_compose_template_writes_psd_and_preview_when_dependency_exists(tmp_
     assert (tmp_path / ".v8" / "creative-media" / "psd").exists()
     assert any(path.suffix.lower() == ".psd" and path.exists() for path in recorded)
     assert any(path.suffix.lower() == ".png" and path.exists() for path in recorded)
+
+
+def test_canvas_psd_helpers_preserve_and_edit_layer_truth(tmp_path: Path) -> None:
+    pytest.importorskip("psd_tools")
+    subject = tmp_path / "subject.png"
+    title = tmp_path / "title.png"
+    composed = tmp_path / "composed.psd"
+    composed_preview = tmp_path / "composed-preview.png"
+    edited = tmp_path / "edited.psd"
+    edited_preview = tmp_path / "edited-preview.png"
+    Image.new("RGBA", (24, 20), (255, 0, 0, 255)).save(subject)
+    Image.new("RGBA", (32, 12), (0, 0, 255, 180)).save(title)
+
+    manifest = psd_tools.compose_psd_document(
+        output_path=composed,
+        preview_path=composed_preview,
+        canvas={"width": 96, "height": 64, "background": "transparent"},
+        layers=[
+            {"source": subject, "name": "Subject", "x": 8, "y": 7, "order": 0},
+            {"source": title, "name": "Title", "x": 28, "y": 40, "opacityPercent": 70, "order": 1},
+        ],
+    )
+
+    assert composed.is_file() and composed_preview.is_file()
+    assert manifest["layerCount"] == 2
+    subject_layer = next(layer for layer in manifest["layers"] if layer["name"] == "Subject")
+    edited_manifest = psd_tools.edit_psd_document(
+        source_path=composed,
+        output_path=edited,
+        preview_path=edited_preview,
+        edits=[{
+            "layerPath": subject_layer["layerPath"],
+            "name": "Hero",
+            "visible": False,
+            "opacityPercent": 45,
+            "x": 17,
+            "y": 13,
+            "order": 1,
+        }],
+    )
+
+    assert edited.is_file() and edited_preview.is_file()
+    hero = next(layer for layer in edited_manifest["layers"] if layer["name"] == "Hero")
+    assert hero["visible"] is False
+    assert hero["opacityPercent"] == pytest.approx(45, abs=0.5)
+    assert (hero["left"], hero["top"]) == (17, 13)

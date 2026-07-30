@@ -613,6 +613,36 @@ ipcMain.handle('v8os-shell:open-workspace-folder', async (_event, workspacePath)
   return error ? { ok: false, error } : { ok: true };
 });
 
+ipcMain.handle('v8os-shell:reveal-workspace-file', async (_event, workspaceRelativePath, workspacePath) => {
+  const requestedRelativePath = String(workspaceRelativePath || '').trim();
+  const requestedRoot = String(workspacePath || '').trim();
+  if (
+    !requestedRelativePath
+    || !requestedRoot
+    || requestedRelativePath.length > 4096
+    || requestedRoot.length > 4096
+    || path.isAbsolute(requestedRelativePath)
+    || !path.isAbsolute(requestedRoot)
+  ) {
+    return { ok: false, error: 'invalid_workspace_file_path' };
+  }
+  const resolvedRoot = path.resolve(requestedRoot);
+  const resolvedFile = path.resolve(resolvedRoot, requestedRelativePath);
+  const relative = path.relative(resolvedRoot, resolvedFile);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return { ok: false, error: 'workspace_file_outside_root' };
+  }
+  try {
+    if (!fs.statSync(resolvedRoot).isDirectory() || !fs.statSync(resolvedFile).isFile()) {
+      return { ok: false, error: 'workspace_file_not_found' };
+    }
+  } catch {
+    return { ok: false, error: 'workspace_file_not_found' };
+  }
+  shell.showItemInFolder(resolvedFile);
+  return { ok: true };
+});
+
 ipcMain.handle('v8os-shell:select-godot-executable', async () => {
   if (!mainWindow) return { ok: false, error: 'shell_window_unavailable' };
   const result = await dialog.showOpenDialog(mainWindow, {

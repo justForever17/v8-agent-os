@@ -20,11 +20,18 @@ __all__ = [
     "creative_media_psd_inspect",
     "creative_media_psd_export_preview",
     "creative_media_psd_compose_template",
+    "compose_psd_document",
+    "edit_psd_document",
+    "inspect_psd_manifest",
+    "render_psd_preview_image",
 ]
 
 _PS_COMPATIBLE_MIME = "image/vnd.adobe.photoshop"
 _DEFAULT_PSD_DIR = ".v8/creative-media/psd"
 _MAX_MARKDOWN_ITEMS = 8
+_MAX_PSD_LAYERS = 200
+_MAX_PSD_DIMENSION = 32768
+_MAX_PSD_PIXELS = 268_435_456
 
 
 def _runtime_context() -> dict[str, Any]:
@@ -133,6 +140,243 @@ def _psd_tools_status() -> tuple[Any | None, Any | None, Any | None, str | None]
     except Exception:
         Compression = None
     return PSDImage, PixelLayer, Compression, None
+
+
+def _bounded_dimension(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    return max(1, min(parsed, _MAX_PSD_DIMENSION))
+
+
+def _bounded_percent(value: Any, default: float = 100.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    return max(0.0, min(parsed, 100.0))
+
+
+def _assert_canvas_bounds(width: int, height: int) -> None:
+    if width * height > _MAX_PSD_PIXELS:
+        raise ValueError("PSD canvas exceeds the governed pixel limit")
+
+
+def _layer_children(layer: Any) -> list[Any]:
+    try:
+        return list(layer) if bool(layer.is_group()) else []
+    except (AttributeError, TypeError):
+        return []
+
+
+def _layer_manifest(layer: Any, *, layer_path: str, parent_path: str, index: int, counter: list[int], limit: int) -> dict[str, Any]:
+    if counter[0] >= limit:
+        raise ValueError(f"PSD exceeds the governed layer limit of {limit}")
+    counter[0] += 1
+    bbox = getattr(layer, "bbox", None)
+    bounds = [int(value) for value in bbox] if bbox is not None else [0, 0, 0, 0]
+    children = [
+        _layer_manifest(
+            child,
+            layer_path=f"{layer_path}/{child_index}",
+            parent_path=layer_path,
+            index=child_index,
+            counter=counter,
+            limit=limit,
+        )
+        for child_index, child in enumerate(_layer_children(layer))
+    ]
+    blend_mode = getattr(layer, "blend_mode", "")
+    return {
+        "layerPath": layer_path,
+        "parentPath": parent_path,
+        "index": index,
+        "layerId": getattr(layer, "layer_id", None),
+        "name": _clean_layer_name(getattr(layer, "name", ""), index),
+        "kind": "group" if children or bool(getattr(layer, "is_group", lambda: False)()) else str(getattr(layer, "kind", "pixel") or "pixel"),
+        "visible": bool(getattr(layer, "visible", True)),
+        "opacityPercent": round(float(getattr(layer, "opacity", 255) or 0) * 100.0 / 255.0, 2),
+        "left": bounds[0],
+        "top": bounds[1],
+        "right": bounds[2],
+        "bottom": bounds[3],
+        "width": max(0, bounds[2] - bounds[0]),
+        "height": max(0, bounds[3] - bounds[1]),
+        "blendMode": str(getattr(blend_mode, "value", blend_mode) or "normal"),
+        "children": children,
+    }
+
+
+def inspect_psd_manifest(source: Path, *, max_layers: int = _MAX_PSD_LAYERS) -> dict[str, Any]:
+    """Return a bounded, structured PSD layer tree for trusted UI/runtime consumers."""
+
+    PSDImage, _PixelLayer, _Compression, dependency_error = _psd_tools_status()
+    if dependency_error or PSDImage is None:
+        raise RuntimeError(dependency_error or "psd-tools is unavailable")
+    psd = PSDImage.open(str(source))
+    width = int(getattr(psd, "width", 0) or 0)
+    height = int(getattr(psd, "height", 0) or 0)
+    _assert_canvas_bounds(width, height)
+    limit = max(1, min(int(max_layers or _MAX_PSD_LAYERS), _MAX_PSD_LAYERS))
+    counter = [0]
+    layers = [
+        _layer_manifest(layer, layer_path=str(index), parent_path="", index=index, counter=counter, limit=limit)
+        for index, layer in enumerate(list(psd))
+    ]
+    return {
+        "schema": "v8.creative_media.psd_manifest.v1",
+        "width": width,
+        "height": height,
+        "colorMode": str(getattr(getattr(psd, "color_mode", ""), "name", getattr(psd, "color_mode", "")) or ""),
+        "depth": int(getattr(psd, "depth", 0) or 0),
+        "layerCount": counter[0],
+        "layers": layers,
+    }
+
+
+def render_psd_preview_image(source: Path) -> Image.Image:
+    image = _open_preview_image(source)
+    _assert_canvas_bounds(image.width, image.height)
+    return image
+
+
+def _layer_image(raw_layer: dict[str, Any]) -> Image.Image:
+    image = _open_preview_image(Path(raw_layer["source"]))
+    requested_width = raw_layer.get("width")
+    requested_height = raw_layer.get("height")
+    scale_percent = _bounded_percent(raw_layer.get("scalePercent"), 100.0)
+    if requested_width in (None, "") and requested_height in (None, ""):
+        width = _bounded_dimension(round(image.width * scale_percent / 100.0), image.width)
+        height = _bounded_dimension(round(image.height * scale_percent / 100.0), image.height)
+    elif requested_width in (None, ""):
+        height = _bounded_dimension(requested_height, image.height)
+        width = _bounded_dimension(round(image.width * height / max(1, image.height)), image.width)
+    elif requested_height in (None, ""):
+        width = _bounded_dimension(requested_width, image.width)
+        height = _bounded_dimension(round(image.height * width / max(1, image.width)), image.height)
+    else:
+        width = _bounded_dimension(requested_width, image.width)
+        height = _bounded_dimension(requested_height, image.height)
+    _assert_canvas_bounds(width, height)
+    if (width, height) != image.size:
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+    opacity = _bounded_percent(raw_layer.get("opacityPercent"), 100.0)
+    if opacity < 100.0:
+        alpha = image.getchannel("A").point(lambda value: round(value * opacity / 100.0))
+        image.putalpha(alpha)
+    return image
+
+
+def compose_psd_document(
+    *,
+    output_path: Path,
+    preview_path: Path,
+    canvas: dict[str, Any],
+    layers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compose ordered raster sources into a real PSD and flattened preview."""
+
+    if not layers or len(layers) > 60:
+        raise ValueError("PSD composition requires between 1 and 60 layers")
+    width = _bounded_dimension(canvas.get("width"), 1920)
+    height = _bounded_dimension(canvas.get("height"), 1080)
+    _assert_canvas_bounds(width, height)
+    background = _hex_to_rgba(canvas.get("background"), (0, 0, 0, 0))
+    PSDImage, PixelLayer, Compression, dependency_error = _psd_tools_status()
+    if dependency_error or PSDImage is None or PixelLayer is None:
+        raise RuntimeError(dependency_error or "psd-tools is unavailable")
+    psd = PSDImage.new(mode="RGBA", size=(width, height), color=background)
+    compression = getattr(Compression, "RLE", None) if Compression is not None else None
+    for index, raw_layer in enumerate(layers):
+        image = _layer_image(raw_layer)
+        x = max(-_MAX_PSD_DIMENSION, min(int(raw_layer.get("x") or 0), _MAX_PSD_DIMENSION))
+        y = max(-_MAX_PSD_DIMENSION, min(int(raw_layer.get("y") or 0), _MAX_PSD_DIMENSION))
+        kwargs: dict[str, Any] = {"top": y, "left": x}
+        if compression is not None:
+            kwargs["compression"] = compression
+        layer = PixelLayer.frompil(image, psd, **kwargs)
+        layer.name = _clean_layer_name(raw_layer.get("name"), index)
+        layer.visible = bool(raw_layer.get("visible", True))
+        layer.opacity = round(_bounded_percent(raw_layer.get("opacityPercent"), 100.0) * 255.0 / 100.0)
+        psd.append(layer)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    psd.save(str(output_path))
+    psd.composite().convert("RGBA").save(preview_path, format="PNG")
+    return inspect_psd_manifest(output_path)
+
+
+def _index_psd_layers(psd: Any) -> dict[str, tuple[Any, Any]]:
+    indexed: dict[str, tuple[Any, Any]] = {}
+
+    def visit(container: Any, prefix: str) -> None:
+        for index, layer in enumerate(list(container)):
+            path = f"{prefix}/{index}" if prefix else str(index)
+            indexed[path] = (layer, container)
+            if _layer_children(layer):
+                visit(layer, path)
+
+    visit(psd, "")
+    return indexed
+
+
+def edit_psd_document(
+    *,
+    source_path: Path,
+    output_path: Path,
+    preview_path: Path,
+    edits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply bounded, non-destructive layer property and hierarchy edits to a PSD copy."""
+
+    if not edits or len(edits) > _MAX_PSD_LAYERS:
+        raise ValueError("PSD layer editing requires between 1 and 200 edits")
+    PSDImage, _PixelLayer, _Compression, dependency_error = _psd_tools_status()
+    if dependency_error or PSDImage is None:
+        raise RuntimeError(dependency_error or "psd-tools is unavailable")
+    psd = PSDImage.open(str(source_path))
+    indexed = _index_psd_layers(psd)
+    resolved: list[tuple[dict[str, Any], Any, Any]] = []
+    for raw_edit in edits:
+        edit = dict(raw_edit or {})
+        layer_path = str(edit.get("layerPath") or "").strip().strip("/")
+        if layer_path not in indexed:
+            raise ValueError(f"PSD layer path is unavailable: {layer_path}")
+        layer, parent = indexed[layer_path]
+        resolved.append((edit, layer, parent))
+    for edit, layer, _parent in resolved:
+        if "name" in edit:
+            layer.name = _clean_layer_name(edit.get("name"), 0)
+        if "visible" in edit:
+            layer.visible = bool(edit.get("visible"))
+        if "opacityPercent" in edit:
+            layer.opacity = round(_bounded_percent(edit.get("opacityPercent"), 100.0) * 255.0 / 100.0)
+        if "x" in edit or "y" in edit:
+            x = int(edit.get("x") if "x" in edit else getattr(layer, "left", 0))
+            y = int(edit.get("y") if "y" in edit else getattr(layer, "top", 0))
+            layer.offset = (
+                max(-_MAX_PSD_DIMENSION, min(x, _MAX_PSD_DIMENSION)),
+                max(-_MAX_PSD_DIMENSION, min(y, _MAX_PSD_DIMENSION)),
+            )
+    for edit, layer, current_parent in resolved:
+        if "order" not in edit and "targetParentPath" not in edit:
+            continue
+        target_parent_path = str(edit.get("targetParentPath") or "").strip().strip("/")
+        if target_parent_path and target_parent_path.startswith(f"{str(edit.get('layerPath')).strip().strip('/')}/"):
+            raise ValueError("A PSD group cannot be moved into its own descendant")
+        target_parent = psd if not target_parent_path else indexed.get(target_parent_path, (None, None))[0]
+        if target_parent is None or (target_parent is not psd and not _layer_children(target_parent) and not bool(getattr(target_parent, "is_group", lambda: False)())):
+            raise ValueError(f"PSD target parent is not a group: {target_parent_path}")
+        if layer in list(current_parent):
+            current_parent.remove(layer)
+        target_order = max(0, min(int(edit.get("order") or 0), len(list(target_parent))))
+        target_parent.insert(target_order, layer)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    psd.save(str(output_path))
+    psd.composite().convert("RGBA").save(preview_path, format="PNG")
+    return inspect_psd_manifest(output_path)
 
 
 def _open_preview_image(source: Path) -> Image.Image:
@@ -292,29 +536,29 @@ def creative_media_psd_inspect(path: str = "", artifact_id: str = "", max_layers
         return _compact_error("Creative Media PSD Inspect", error or "Source was not resolved.", next_action="Provide a PSD path or artifact id.")
     if not source.exists():
         return _compact_error("Creative Media PSD Inspect", f"`{label}` does not exist.", next_action="Create or provide a PSD first.")
-    PSDImage, _PixelLayer, _Compression, dependency_error = _psd_tools_status()
-    if dependency_error or PSDImage is None:
-        return _compact_error("Creative Media PSD Inspect", dependency_error or "psd-tools is unavailable.", next_action="Install psd-tools, then rerun the inspection.")
     try:
-        psd = PSDImage.open(str(source))
         layer_limit = max(1, min(int(max_layers or 40), 200))
+        manifest = inspect_psd_manifest(source, max_layers=layer_limit)
         layer_lines: list[str] = []
-        for index, layer in enumerate(psd.descendants()):
-            if index >= layer_limit:
-                layer_lines.append(f"... {len(list(psd.descendants())) - layer_limit} more layers omitted")
-                break
-            name = _clean_layer_name(getattr(layer, "name", ""), index)
-            visible = "visible" if getattr(layer, "visible", True) else "hidden"
-            bbox = getattr(layer, "bbox", None)
-            layer_lines.append(f"{index + 1}. {name} ({visible}, bbox={bbox})")
+
+        def collect(items: list[dict[str, Any]], depth: int = 0) -> None:
+            for layer in items:
+                visible = "visible" if layer.get("visible") else "hidden"
+                layer_lines.append(
+                    f"{'  ' * depth}{layer.get('layerPath')}. {layer.get('name')} "
+                    f"({visible}, bbox=({layer.get('left')}, {layer.get('top')}, {layer.get('right')}, {layer.get('bottom')}))"
+                )
+                collect(list(layer.get("children") or []), depth + 1)
+
+        collect(list(manifest.get("layers") or []))
     except Exception as exc:
         return _compact_error("Creative Media PSD Inspect", f"Could not parse `{label}`: {exc}", next_action="Verify the file is a valid PSD.")
     return _markdown_kv(
         "Creative Media PSD Inspect",
         [
             ("source", label),
-            ("canvas", f"{getattr(psd, 'width', '?')}x{getattr(psd, 'height', '?')}"),
-            ("layers", len(list(psd.descendants()))),
+            ("canvas", f"{manifest.get('width')}x{manifest.get('height')}"),
+            ("layers", manifest.get("layerCount")),
             ("layer preview", "\n  " + "\n  ".join(layer_lines[:layer_limit])),
         ],
         status="readable",
@@ -404,7 +648,18 @@ def creative_media_psd_compose_template(request: dict[str, Any]) -> str:
             return _compact_error("Creative Media PSD Compose Template", f"Layer `{name}` was not resolved: {error}", next_action="Fix the layer source path/artifact id and retry.")
         if not source.exists():
             return _compact_error("Creative Media PSD Compose Template", f"Layer `{name}` source `{label}` does not exist.", next_action="Generate or attach the layer source first.")
-        resolved_layers.append({"name": name, "source": source, "label": label, "x": x, "y": y, "visible": bool(raw_layer.get("visible", True))})
+        resolved_layers.append({
+            "name": name,
+            "source": source,
+            "label": label,
+            "x": x,
+            "y": y,
+            "width": raw_layer.get("width"),
+            "height": raw_layer.get("height"),
+            "scalePercent": raw_layer.get("scalePercent", raw_layer.get("scale")),
+            "opacityPercent": raw_layer.get("opacityPercent", raw_layer.get("opacity", 100)),
+            "visible": bool(raw_layer.get("visible", True)),
+        })
 
     output_path = str(payload.get("outputPath") or payload.get("output_path") or "").strip()
     preview_path = str(payload.get("previewPath") or payload.get("preview_path") or "").strip()
@@ -429,32 +684,13 @@ def creative_media_psd_compose_template(request: dict[str, Any]) -> str:
             next_items=["Run again with dryRun=false after alpha inspection passes for each source layer."],
         )
 
-    PSDImage, PixelLayer, Compression, dependency_error = _psd_tools_status()
-    if dependency_error or PSDImage is None or PixelLayer is None:
-        return _compact_error("Creative Media PSD Compose Template", dependency_error or "psd-tools is unavailable.", next_action="Install psd-tools, then run this tool again.")
-
     try:
-        preview = Image.new("RGBA", (width, height), background)
-        psd = PSDImage.new(mode="RGBA", size=(width, height), color=background)
-        compression = getattr(Compression, "RLE", None) if Compression is not None else None
-        for layer in resolved_layers:
-            image = _open_preview_image(Path(layer["source"]))
-            if not layer.get("visible", True):
-                continue
-            preview.alpha_composite(image, (int(layer["x"]), int(layer["y"])))
-            kwargs: dict[str, Any] = {
-                "layer_name": layer["name"],
-                "top": int(layer["y"]),
-                "left": int(layer["x"]),
-            }
-            if compression is not None:
-                kwargs["compression"] = compression
-            psd.append(PixelLayer.frompil(image, psd, **kwargs))
-
-        psd_target.parent.mkdir(parents=True, exist_ok=True)
-        png_target.parent.mkdir(parents=True, exist_ok=True)
-        psd.save(str(psd_target))
-        preview.save(png_target, format="PNG")
+        compose_psd_document(
+            output_path=psd_target,
+            preview_path=png_target,
+            canvas={"width": width, "height": height, "background": canvas.get("background")},
+            layers=resolved_layers,
+        )
         workspace_path = str(getattr(binding, "active_workspace_root", "")) or None
         psd_artifact = _record_artifact(
             psd_target,

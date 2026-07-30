@@ -172,6 +172,7 @@ export function SubagentActivityRenderer({
                         <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                                 <h2 className="truncate text-sm font-semibold text-foreground">{item.name}</h2>
+                                {item.roleLabel ? <span className="rounded-full border border-border/65 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground">{item.roleLabel}</span> : null}
                                 <span className="inline-flex items-center gap-1 rounded-full border border-border/65 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${statusTone(item.status)}`} />{statusLabel(item.status, t)}</span>
                             </div>
                             {item.taskGoal ? <p className="mt-1 line-clamp-4 break-words text-[11px] leading-5 text-muted-foreground" title={item.taskGoal}>{item.taskGoal}</p> : null}

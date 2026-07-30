@@ -3496,8 +3496,8 @@ export default function ChatClient() {
         return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
     };
 
-    const handleCanvasTask = async ({ text: instruction, refs, operation }: CanvasTaskRequest) => {
-        if (activeConversationRunning) return false;
+    const handleCanvasTask = async ({ sessionId: canvasSessionId, text: instruction, refs, operation }: CanvasTaskRequest) => {
+        if (activeConversationRunning || activeConversationIdRef.current !== canvasSessionId) return false;
         const boundedRefs = refs.slice(0, 100);
         const normalizedInstruction = instruction.trim() || operation.label;
         const executionContract = buildCreativeCanvasExecutionContract({
@@ -3552,6 +3552,7 @@ export default function ChatClient() {
                 componentIds: [operation.binding.componentId],
             }]
             : undefined;
+        if (activeConversationIdRef.current !== canvasSessionId) return false;
         const syntheticEvent = { preventDefault() {} } as React.FormEvent<HTMLFormElement>;
         return Boolean(await handleSend(syntheticEvent, {
             data: {

@@ -67,8 +67,8 @@ def apply_supervisor_identity_to_profile(
 ) -> dict[str, Any]:
     identity = resolve_supervisor_identity(preferences)
     projected = dict(profile or {})
-    projected["name"] = identity.self_name
-    projected["roleLabel"] = identity.canonical_role
+    projected["name"] = _valid_assistant_name(projected.get("name")) or identity.self_name
+    projected["roleLabel"] = _single_line(projected.get("roleLabel")) or identity.canonical_role
     return projected
 
 

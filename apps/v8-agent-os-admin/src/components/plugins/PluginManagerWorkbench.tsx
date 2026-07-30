@@ -1,18 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
     Activity,
     Check,
+    ChevronDown,
     ChevronRight,
     CircleAlert,
     Cloud,
     Download,
     ExternalLink,
+    FolderOpen,
+    Gamepad2,
     HardDrive,
     KeyRound,
     Loader2,
+    MonitorPlay,
+    PackageCheck,
     RefreshCw,
     Search,
     Settings2,
@@ -47,28 +52,42 @@ type Plugin = {
     componentCounts: { cli: number; skills: number; mcp: number; uiAdapters: number; providerAdapters?: number };
     governance: { sideEffects: string[]; approvalClasses: string[]; paidOperations: boolean; workspaceAccess: string };
     installation: InstallState;
+    setupAdapter?: "godot_v1";
 };
 
 type MachineComponent = {
     componentId: string;
+    componentType?: "cli" | "skill" | "mcp";
+    displayName?: string;
+    description?: string;
     state: "registered" | "detected" | "partial" | "missing" | "unknown" | "conflict";
-    action: "keep" | "adopt" | "complete" | "install" | "review";
+    action: "keep" | "adopt" | "complete" | "install" | "update" | "review";
     commands?: string[];
     detectedNames?: string[];
     missingNames?: string[];
     conflicts?: string[];
+    installedVersion?: string;
+    availableVersion?: string;
+    runtimeVersion?: string;
+    protocolVersion?: string;
+    versionState?: "current" | "available" | "unknown" | "unsupported" | "review_required";
+    updateSupported?: boolean;
+    members?: Array<{ name: string; description?: string }>;
 };
 type MachineDiscovery = {
     pluginId: string;
-    skillsCli: { available: boolean; package: string; error?: string };
+    skillsCli: { available: boolean; package: string; version?: string; probeOk?: boolean; error?: string };
     cli: MachineComponent[];
     skills: MachineComponent[];
+    mcp: MachineComponent[];
+    components: MachineComponent[];
     ordinaryMcp: Array<{ componentId: string; serverName: string; enabled: boolean; managedBy: "extensions_runtime" }>;
     summary: {
         detected: number;
         needsCompletion: number;
         conflicts: number;
         ordinaryMcp: number;
+        updatesAvailable?: number;
         presentUnits?: number;
         totalUnits?: number;
         missingUnits?: number;
@@ -77,7 +96,40 @@ type MachineDiscovery = {
 };
 
 type RequirementKind = "secret" | "text" | "url" | "enum" | "boolean" | "oauth" | "cli_login" | "file";
-const FEATURED_PLUGIN_ORDER = ["office-suite"] as const;
+const FEATURED_PLUGIN_ORDER = ["office-suite", "godot"] as const;
+
+type GodotSetupStep = {
+    state: "missing" | "invalid" | "blocked" | "unchecked" | "offline" | "ready";
+    detail?: string;
+    path?: string;
+    version?: string;
+    rawVersion?: string;
+    upgradeRecommended?: boolean;
+    recommendedVersion?: string;
+    value?: string;
+    endpoint?: string;
+    serverName?: string;
+    toolCount?: number;
+};
+type GodotSetup = {
+    pluginId: string;
+    adapter: "godot_v1";
+    godotExecutable: string;
+    projectPath: string;
+    scenario: string;
+    status: {
+        steps: {
+            application: GodotSetupStep;
+            project: GodotSetupStep;
+            scenario: GodotSetupStep;
+            mcp: GodotSetupStep;
+        };
+        readyForInstall: boolean;
+        editorOnline: boolean;
+        offlinePrerequisitesReady: boolean;
+        blockingReasons: string[];
+    };
+};
 type Requirement = {
     id: string;
     kind: RequirementKind;
@@ -110,6 +162,7 @@ type Job = {
         steps?: {
             cli?: Array<{ componentId: string; action?: string; requiresElevation?: boolean; mayRestart?: boolean }>;
             skills?: Array<{ id: string; action?: string; detectedNames?: string[]; missingNames?: string[] }>;
+            mcp?: Array<{ id: string; action?: string; serverName?: string }>;
         };
     };
     error?: string;
@@ -193,6 +246,8 @@ export function PluginManagerWorkbench() {
     const [previewJob, setPreviewJob] = useState<Job | null>(null);
     const [installJob, setInstallJob] = useState<Job | null>(null);
     const [machineDiscovery, setMachineDiscovery] = useState<MachineDiscovery | null>(null);
+    const [godotSetup, setGodotSetup] = useState<GodotSetup | null>(null);
+    const godotSetupRequest = useRef(0);
 
     const load = useCallback(async (refreshCatalog = false, force = false) => {
         setError("");
@@ -239,22 +294,36 @@ export function PluginManagerWorkbench() {
         );
         setMachineDiscovery(data);
     }, []);
+    const loadGodotSetup = useCallback(async (pluginId: string, refresh = false) => {
+        if (!pluginId) return;
+        const requestId = ++godotSetupRequest.current;
+        const data = await jsonRequest<GodotSetup>(
+            `/api/plugins/${pluginId}/setup${refresh ? "/refresh" : ""}`,
+            refresh ? { method: "POST" } : undefined,
+        );
+        if (requestId === godotSetupRequest.current) setGodotSetup(data);
+    }, []);
     const selectedInstalled = Boolean(
         plugins.find((item) => item.id === selectedId)?.installation.installed,
     );
+    const selectedSetupAdapter = plugins.find((item) => item.id === selectedId)?.setupAdapter;
 
     useEffect(() => { void load(); }, [load]);
     useEffect(() => {
         setValues({});
         setAuthorization(null);
         setMachineDiscovery(null);
+        setGodotSetup(null);
         void loadMachineDiscovery(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
+        if (selectedSetupAdapter === "godot_v1") {
+            void loadGodotSetup(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
+        }
         if (!selectedInstalled) {
             setRequirements(null);
             return;
         }
         void loadRequirements(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
-    }, [loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled]);
+    }, [loadGodotSetup, loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled, selectedSetupAdapter]);
     useEffect(() => {
         if (!installJob || TERMINAL_JOBS.has(installJob.state)) return;
         let cancelled = false;
@@ -328,10 +397,14 @@ export function PluginManagerWorkbench() {
     const selectedDiscovery = machineDiscovery?.pluginId === selected?.id ? machineDiscovery : null;
     const selectedMissingUnits = selectedDiscovery?.summary.missingUnits ?? selectedDiscovery?.summary.needsCompletion ?? 0;
     const selectedPresentUnits = selectedDiscovery?.summary.presentUnits ?? selectedDiscovery?.summary.detected ?? 0;
-    const selectedNeedsInstall = Boolean(selected && (!selected.installation.installed || selectedMissingUnits > 0));
+    const selectedUpdatesAvailable = selectedDiscovery?.summary.updatesAvailable ?? 0;
+    const selectedNeedsInstall = Boolean(selected && (!selected.installation.installed || selectedMissingUnits > 0 || selectedUpdatesAvailable > 0));
     const selectedNeedsCompletion = selectedPresentUnits > 0 && selectedMissingUnits > 0;
+    const selectedNeedsUpdate = Boolean(selected?.installation.installed && selectedMissingUnits === 0 && selectedUpdatesAvailable > 0);
     const selectedInstallJob = installJob?.pluginId === selected?.id ? installJob : null;
     const selectedInstallActive = Boolean(selectedInstallJob && !TERMINAL_JOBS.has(selectedInstallJob.state));
+    const selectedSetupReady = selected?.setupAdapter !== "godot_v1"
+        || Boolean(godotSetup?.pluginId === selected.id && godotSetup.status.readyForInstall);
     const selectedHasEditableConfiguration = Boolean(
         requirements
         && selected
@@ -347,6 +420,55 @@ export function PluginManagerWorkbench() {
             setError(nextError instanceof Error ? nextError.message : t("components.plugins.PluginManagerWorkbench.error.action"));
         } finally { setBusy(""); }
     };
+
+    const persistGodotSetup = async (values: Partial<Pick<GodotSetup, "godotExecutable" | "projectPath" | "scenario">>) => {
+        if (!selected || selected.setupAdapter !== "godot_v1") return;
+        const requestId = ++godotSetupRequest.current;
+        const setup = await jsonRequest<GodotSetup>(`/api/plugins/${selected.id}/setup`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ values }),
+        });
+        if (requestId !== godotSetupRequest.current) return;
+        setGodotSetup(setup);
+        setPreviewJob(null);
+        await loadMachineDiscovery(selected.id, true);
+        await load(false, true);
+        setNotice(t("components.plugins.PluginManagerWorkbench.godot.saved"));
+    };
+
+    const updateGodotSetup = (values: Partial<Pick<GodotSetup, "godotExecutable" | "projectPath" | "scenario">>) => runAction("godot:setup", () => persistGodotSetup(values));
+
+    const pickGodotExecutable = () => runAction("godot:application", async () => {
+        const shell = window.v8osShell;
+        if (!shell?.isShell || !shell.selectGodotExecutable) {
+            throw new Error(t("components.plugins.PluginManagerWorkbench.godot.desktopRequired"));
+        }
+        const result = await shell.selectGodotExecutable();
+        if (result.cancelled) return;
+        if (!result.ok || !result.path) throw new Error(result.error || t("components.plugins.PluginManagerWorkbench.error.action"));
+        await persistGodotSetup({ godotExecutable: result.path });
+    });
+
+    const pickGodotProject = () => runAction("godot:project", async () => {
+        const shell = window.v8osShell;
+        if (!shell?.isShell || !shell.selectGodotProjectDirectory) {
+            throw new Error(t("components.plugins.PluginManagerWorkbench.godot.desktopRequired"));
+        }
+        const result = await shell.selectGodotProjectDirectory();
+        if (result.cancelled) return;
+        if (!result.ok || !result.path) throw new Error(result.error || t("components.plugins.PluginManagerWorkbench.error.action"));
+        await persistGodotSetup({ projectPath: result.path });
+    });
+
+    const refreshGodotMcp = () => runAction("godot:mcp", async () => {
+        if (!selected || selected.setupAdapter !== "godot_v1") return;
+        const requestId = ++godotSetupRequest.current;
+        const setup = await jsonRequest<GodotSetup>(`/api/plugins/${selected.id}/setup/refresh`, { method: "POST" });
+        if (requestId !== godotSetupRequest.current) return;
+        setGodotSetup(setup);
+        if (setup.status.editorOnline) setNotice(t("components.plugins.PluginManagerWorkbench.godot.connectionReady"));
+    });
 
     const previewInstall = (plugin: Plugin) => runAction(`plan:${plugin.id}`, async () => {
         const job = await jsonRequest<Job>(`/api/plugins/${plugin.id}/install`, {
@@ -473,20 +595,26 @@ export function PluginManagerWorkbench() {
                     <aside className="bg-muted/[0.14] p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:[scrollbar-gutter:stable]">
                         {selected ? <div className="space-y-5">
                             <div className="flex items-start gap-3"><Image src={`/api/plugins/${selected.id}/logo`} alt="" width={40} height={40} unoptimized className="size-10 object-contain" /><div className="min-w-0 flex-1"><h2 className="text-base font-semibold">{selected.displayName}</h2><p className="mt-1 text-sm leading-5 text-muted-foreground">{selected.description}</p></div></div>
-                            <div className="flex border-y border-border/60 py-3 text-center">{[["CLI", selected.componentCounts.cli], ["Skill", selected.componentCounts.skills], ["MCP", selected.componentCounts.mcp], ["UI", selected.componentCounts.uiAdapters], ["Adapter", selected.componentCounts.providerAdapters || 0]].filter(([, count]) => Number(count) > 0).map(([label, count]) => <div key={String(label)} className="min-w-0 flex-1 border-r border-border/50 last:border-0"><div className="text-sm font-medium">{count}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>)}</div>
-                            {selectedDiscovery ? <MachineDiscoveryPanel discovery={selectedDiscovery} pluginId={selected.id} requirements={requirements} busy={busy} onRefresh={() => void loadMachineDiscovery(selected.id, true)} t={t} /> : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
+                            <ComponentVersionStrip plugin={selected} discovery={selectedDiscovery} busy={busy} installActive={selectedInstallActive} onUpdate={() => void executeInstall(selected)} t={t} />
+                            {selected.setupAdapter === "godot_v1"
+                                ? godotSetup?.pluginId === selected.id
+                                    ? <GodotSetupPanel setup={godotSetup} discovery={selectedDiscovery} busy={busy} onPickApplication={() => void pickGodotExecutable()} onPickProject={() => void pickGodotProject()} onScenarioChange={(scenario) => void updateGodotSetup({ scenario })} onRefreshMcp={() => void refreshGodotMcp()} t={t} />
+                                    : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.godot.loading")}</div>
+                                : selectedDiscovery
+                                    ? <MachineDiscoveryPanel discovery={selectedDiscovery} pluginId={selected.id} requirements={requirements} busy={busy} onRefresh={() => void loadMachineDiscovery(selected.id, true)} t={t} />
+                                    : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
                             <div><h3 className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.capabilities")}</h3><div className="flex flex-wrap gap-1.5">{selected.capabilities.map((item) => <span key={item} className="border border-border/70 bg-background px-2 py-1 text-xs">{item}</span>)}</div></div>
 
-                            {selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">
+                            {selected.setupAdapter !== "godot_v1" && selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">
                                 <div className="flex items-center justify-between gap-2"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.configuration.title")}</h3><p className="text-xs text-muted-foreground">{t(selected.id === "volcengine-mediakit" ? "components.plugins.PluginManagerWorkbench.mediaKit.configurationSummary" : "components.plugins.PluginManagerWorkbench.configuration.description")}</p></div><Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void detect(selected)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.detect")}</Button></div>
                                 {selected.id === "volcengine-mediakit" ? <MediaKitConfigurationPanel requirements={requirements.requirements} values={values} localEnabled={Boolean(selectedDiscovery?.cli.some((item) => item.state === "registered" || item.state === "detected"))} onChange={(requirementId, value) => setValues((current) => ({ ...current, [requirementId]: value }))} t={t} /> : requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} authorization={authorization} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCliLogin={() => void startCliLogin(selected, requirement)} onCancelAuthorization={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
                                 {!requirements.requirements.length ? <div className="border border-border/70 bg-background p-3 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.none")} <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">{t("components.plugins.PluginManagerWorkbench.officialDocs")}</a></div> : null}
                             </div> : null}
 
-                            {selectedInstallJob ? <InstallProgressCard job={selectedInstallJob} t={t} /> : previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div><div className="divide-y divide-border/50 border-y border-border/50">{(previewJob.plan.steps?.cli || []).map((step) => <div key={step.componentId} className="flex items-center justify-between gap-3 py-2"><span>CLI</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.skills || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>Skill</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}</div><div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
+                            {selectedInstallJob ? <InstallProgressCard job={selectedInstallJob} t={t} /> : previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div><div className="divide-y divide-border/50 border-y border-border/50">{(previewJob.plan.steps?.cli || []).map((step) => <div key={step.componentId} className="flex items-center justify-between gap-3 py-2"><span>CLI</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.skills || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>Skill</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.mcp || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>MCP</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}</div><div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
 
                             <div className="flex flex-wrap gap-2 border-t border-border/60 pt-4">
-                                {selectedNeedsInstall ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy) || selectedInstallActive}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || selectedInstallActive || Boolean(selectedDiscovery?.summary.conflicts)}>{busy === `install:${selected.id}` || selectedInstallActive ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t(selectedNeedsCompletion ? "components.plugins.PluginManagerWorkbench.complete" : "components.plugins.PluginManagerWorkbench.install")}</Button></> : null}
+                                {selectedNeedsInstall ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy) || selectedInstallActive || !selectedSetupReady}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || selectedInstallActive || Boolean(selectedDiscovery?.summary.conflicts) || !selectedSetupReady}>{busy === `install:${selected.id}` || selectedInstallActive ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t(selectedNeedsCompletion ? "components.plugins.PluginManagerWorkbench.complete" : selectedNeedsUpdate ? "components.plugins.PluginManagerWorkbench.update" : "components.plugins.PluginManagerWorkbench.install")}</Button></> : null}
                                 {selected.installation.installed ? <>{selectedHasEditableConfiguration ? <Button size="sm" className="min-h-10 rounded-md" onClick={() => void configure(selected)} disabled={Boolean(busy) || !Object.keys(values).length}><Settings2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configure")}</Button> : null}<Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void doctor(selected)} disabled={Boolean(busy)}><Activity className="mr-2 size-3.5" />Doctor</Button><Button size="sm" variant="ghost" className="min-h-10 rounded-md text-destructive hover:text-destructive" onClick={() => void uninstall(selected)} disabled={Boolean(busy)}><Trash2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.uninstall")}</Button></> : null}
                                 <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="ml-auto inline-flex min-h-10 items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground">{t("components.plugins.PluginManagerWorkbench.officialDocs")}<ExternalLink className="size-3" /></a>
                             </div>
@@ -506,10 +634,115 @@ export function PluginManagerWorkbench() {
     );
 }
 
+function GodotSetupPanel({ setup, discovery, busy, onPickApplication, onPickProject, onScenarioChange, onRefreshMcp, t }: { setup: GodotSetup; discovery: MachineDiscovery | null; busy: string; onPickApplication: () => void; onPickProject: () => void; onScenarioChange: (scenario: string) => void; onRefreshMcp: () => void; t: ReturnType<typeof useT> }) {
+    const steps = setup.status.steps;
+    const localCliReady = Boolean(discovery?.cli.some((item) => item.state === "registered" || item.state === "detected"));
+    const mcpPrerequisitesReady = steps.application.state === "ready" && steps.project.state === "ready" && steps.scenario.state === "ready";
+    const scenarioOptions = ["2d", "2.5d", "3d"];
+    const statusLabel = (step: GodotSetupStep) => t(`components.plugins.PluginManagerWorkbench.godot.state.${step.state}`);
+    return <section className="border border-border/70 bg-background">
+        <div className="flex items-start justify-between gap-3 border-b border-border/60 p-3">
+            <div><h3 className="flex items-center gap-2 text-sm font-medium"><Gamepad2 className="size-4" />{t("components.plugins.PluginManagerWorkbench.godot.title")}</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.godot.description")}</p></div>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.godot.stepCount")}</span>
+        </div>
+        <div className="divide-y divide-border/55">
+            <div className="grid gap-2 p-3 sm:grid-cols-[24px_minmax(0,1fr)_auto] sm:items-center">
+                <span className="text-xs font-medium text-muted-foreground">1</span>
+                <div><div className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.godot.downloadTitle")}</div><p className="mt-0.5 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.godot.downloadHelp")}</p></div>
+                <a href="https://godotengine.org/download/windows/" target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-muted"><Download className="size-3.5" />{t("components.plugins.PluginManagerWorkbench.godot.download")}</a>
+            </div>
+            <div className="grid gap-2 p-3 sm:grid-cols-[24px_minmax(0,1fr)_auto] sm:items-center">
+                <span className="text-xs font-medium text-muted-foreground">2</span>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.godot.applicationTitle")}</span><CompactState active={steps.application.state === "ready"} activeLabel={steps.application.version ? `Godot ${steps.application.version}` : statusLabel(steps.application)} inactiveLabel={statusLabel(steps.application)} /></div><p className="mt-1 truncate text-xs text-muted-foreground" title={setup.godotExecutable}>{setup.godotExecutable || t("components.plugins.PluginManagerWorkbench.godot.applicationEmpty")}</p>{steps.application.upgradeRecommended ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t("components.plugins.PluginManagerWorkbench.godot.upgradeRecommended", { version: steps.application.recommendedVersion || "4.7" })}</p> : null}</div>
+                <Button type="button" variant="outline" size="sm" className="min-h-11 rounded-md" onClick={onPickApplication} disabled={Boolean(busy)}>{busy === "godot:application" ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <FolderOpen className="mr-1.5 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.godot.chooseApplication")}</Button>
+            </div>
+            <div className="grid gap-2 p-3 sm:grid-cols-[24px_minmax(0,1fr)_auto] sm:items-center">
+                <span className="text-xs font-medium text-muted-foreground">3</span>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.godot.projectTitle")}</span><CompactState active={steps.project.state === "ready"} activeLabel={statusLabel(steps.project)} inactiveLabel={statusLabel(steps.project)} /></div><p className="mt-1 truncate text-xs text-muted-foreground" title={setup.projectPath}>{setup.projectPath || t("components.plugins.PluginManagerWorkbench.godot.projectEmpty")}</p></div>
+                <Button type="button" variant="outline" size="sm" className="min-h-11 rounded-md" onClick={onPickProject} disabled={Boolean(busy) || steps.application.state !== "ready"}>{busy === "godot:project" ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <FolderOpen className="mr-1.5 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.godot.chooseProject")}</Button>
+            </div>
+            <div className="grid gap-2 p-3 sm:grid-cols-[24px_minmax(0,1fr)]">
+                <span className="pt-3 text-xs font-medium text-muted-foreground">4</span>
+                <div><div className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.godot.scenarioTitle")}</div><div className="mt-2 grid grid-cols-3 gap-1 rounded-md bg-muted/60 p-1" role="group" aria-label={t("components.plugins.PluginManagerWorkbench.godot.scenarioTitle")}>{scenarioOptions.map((scenario) => <button key={scenario} type="button" aria-pressed={setup.scenario === scenario} onClick={() => onScenarioChange(scenario)} disabled={Boolean(busy) || steps.project.state !== "ready"} className={cn("min-h-11 rounded px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", setup.scenario === scenario ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{scenario.toUpperCase()}</button>)}</div></div>
+            </div>
+            <div className="grid gap-2 p-3 sm:grid-cols-[24px_minmax(0,1fr)_auto] sm:items-center">
+                <span className="text-xs font-medium text-muted-foreground">5</span>
+                <div><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.godot.mcpTitle")}</span><CompactState active={steps.mcp.state === "ready"} activeLabel={statusLabel(steps.mcp)} inactiveLabel={statusLabel(steps.mcp)} /></div><p className="mt-1 text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.godot.mcpHelp")} <a href="https://github.com/hi-godot/godot-ai" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">godot-ai<ExternalLink className="ml-1 inline size-3" /></a></p>{steps.mcp.state === "offline" ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t("components.plugins.PluginManagerWorkbench.godot.mcpOffline")}</p> : null}</div>
+                <Button type="button" variant="outline" size="sm" className="min-h-11 rounded-md" onClick={onRefreshMcp} disabled={Boolean(busy) || !mcpPrerequisitesReady}>{busy === "godot:mcp" ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.godot.checkConnection")}</Button>
+            </div>
+        </div>
+        <div className="grid gap-2 border-t border-border/60 p-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2.5"><span className="flex items-center gap-2 text-xs font-medium"><MonitorPlay className="size-4" />{t("components.plugins.PluginManagerWorkbench.godot.onlineMode")}</span><CompactState active={setup.status.editorOnline} activeLabel={t("components.plugins.PluginManagerWorkbench.godot.available")} inactiveLabel={t("components.plugins.PluginManagerWorkbench.godot.unavailable")} /></div>
+            <div className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2.5"><span className="flex items-center gap-2 text-xs font-medium"><PackageCheck className="size-4" />{t("components.plugins.PluginManagerWorkbench.godot.offlineMode")}</span><CompactState active={localCliReady} activeLabel={t("components.plugins.PluginManagerWorkbench.godot.available")} inactiveLabel={t(setup.status.offlinePrerequisitesReady ? "components.plugins.PluginManagerWorkbench.godot.readyToInstall" : "components.plugins.PluginManagerWorkbench.godot.unavailable")} /></div>
+        </div>
+        {discovery ? <details className="border-t border-border/60 px-3 py-2.5 text-xs"><summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">{t("components.plugins.PluginManagerWorkbench.machine.technicalDetails")}</summary><div className="mt-2 space-y-1 text-muted-foreground"><div>{t("components.plugins.PluginManagerWorkbench.godot.cliComponents", { count: discovery.cli.length })}</div><div>{t("components.plugins.PluginManagerWorkbench.godot.skillComponents", { count: discovery.skills.length })}</div></div></details> : null}
+    </section>;
+}
+
+function compactVersion(value?: string) {
+    const normalized = String(value || "").trim().replace(/^v(?=\d)/i, "");
+    if (!normalized) return "";
+    if (/^[a-f0-9]{12,}$/i.test(normalized)) return normalized.slice(0, 8);
+    return normalized.length > 16 ? `${normalized.slice(0, 14)}…` : normalized;
+}
+
+function ComponentVersionStrip({ plugin, discovery, busy, installActive, onUpdate, t }: { plugin: Plugin; discovery: MachineDiscovery | null; busy: string; installActive: boolean; onUpdate: () => void; t: ReturnType<typeof useT> }) {
+    const entries = [
+        { label: "CLI", count: plugin.componentCounts.cli, components: discovery?.cli || [] },
+        { label: "Skill", count: plugin.componentCounts.skills, components: discovery?.skills || [] },
+        { label: "MCP", count: plugin.componentCounts.mcp, components: discovery?.mcp || [] },
+        { label: "UI", count: plugin.componentCounts.uiAdapters, components: [] as MachineComponent[] },
+        { label: "Adapter", count: plugin.componentCounts.providerAdapters || 0, components: [] as MachineComponent[] },
+    ].filter((item) => Number(item.count) > 0);
+
+    return <div className="relative flex border-y border-border/60 py-3 text-center">
+        {entries.map((entry, index) => {
+            const installedVersions = [...new Set(entry.components.map((item) => item.runtimeVersion || item.installedVersion).filter(Boolean))];
+            const availableVersions = [...new Set(entry.components.map((item) => item.availableVersion).filter(Boolean))];
+            const version = installedVersions.length === 1
+                ? compactVersion(installedVersions[0])
+                : installedVersions.length > 1
+                    ? t("components.plugins.PluginManagerWorkbench.machine.version.multiple")
+                    : t("components.plugins.PluginManagerWorkbench.machine.version.unknown");
+            const updateAvailable = entry.components.some((item) => item.action === "update" && item.updateSupported);
+            const members = new Map<string, string>();
+            entry.components.forEach((component) => {
+                const componentMembers = component.members?.length
+                    ? component.members
+                    : [{ name: component.displayName || component.componentId, description: component.description }];
+                componentMembers.forEach((member) => {
+                    if (member.name && !members.has(member.name)) members.set(member.name, member.description || component.description || "");
+                });
+            });
+            const popupAlignment = index === 0 ? "left-0" : index === entries.length - 1 ? "right-0" : "left-1/2 -translate-x-1/2";
+            if (!entry.components.length) {
+                return <div key={entry.label} className="min-w-0 flex-1 border-r border-border/50 last:border-0"><div className="text-sm font-medium">{entry.count}</div><div className="text-[11px] text-muted-foreground">{entry.label}</div></div>;
+            }
+            return <details key={entry.label} className="group relative min-w-0 flex-1 border-r border-border/50 last:border-0">
+                <summary className="list-none cursor-pointer select-none rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden" aria-label={t("components.plugins.PluginManagerWorkbench.machine.version.open", { type: entry.label })}>
+                    <div className="text-sm font-medium">{entry.count}</div>
+                    <div className="flex items-center justify-center gap-1 text-[11px] text-muted-foreground"><span>{entry.label}</span><span className={cn("max-w-16 truncate text-[9px] tabular-nums", updateAvailable && "text-primary")}>{version}</span><ChevronDown className="size-3 transition-transform group-open:rotate-180" /></div>
+                </summary>
+                <div className={cn("invisible absolute top-[calc(100%+10px)] z-50 w-[min(320px,calc(100vw-40px))] rounded-md border border-border bg-popover p-3 text-left text-popover-foreground opacity-0 shadow-lg transition-opacity group-open:visible group-open:opacity-100 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100", popupAlignment)}>
+                    <div className="mb-2 flex items-center justify-between gap-3"><span className="text-xs font-medium">{t("components.plugins.PluginManagerWorkbench.machine.version.title", { type: entry.label })}</span><span className="text-[10px] text-muted-foreground">{version}</span></div>
+                    <div className="max-h-64 divide-y divide-border/55 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                        {[...members.entries()].map(([name, description]) => <div key={name} className="py-2 first:pt-0 last:pb-0"><div className="break-all text-xs font-medium">{name}</div>{description ? <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{description}</p> : null}</div>)}
+                    </div>
+                    {entry.components.map((component) => <div key={component.componentId} className="mt-2 flex min-w-0 items-center justify-between gap-2 text-[10px] text-muted-foreground"><span className="truncate">{component.displayName || component.componentId}</span><span className="shrink-0 tabular-nums">{compactVersion(component.runtimeVersion || component.installedVersion) || "—"}{component.availableVersion && component.availableVersion !== component.installedVersion ? ` → ${compactVersion(component.availableVersion)}` : ""}</span></div>)}
+                    {entry.label === "Skill" && discovery?.skillsCli.version ? <p className="mt-2 text-[10px] text-muted-foreground">skills CLI {compactVersion(discovery.skillsCli.version)}</p> : null}
+                    {entry.label === "MCP" && entry.components.some((item) => item.protocolVersion) ? <p className="mt-2 text-[10px] text-muted-foreground">MCP {entry.components.map((item) => item.protocolVersion).filter(Boolean).join(" · ")}</p> : null}
+                    {updateAvailable ? <Button type="button" size="sm" className="mt-3 min-h-9 w-full rounded-md" onClick={onUpdate} disabled={Boolean(busy) || installActive}>{Boolean(busy) || installActive ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 size-3.5" />}{availableVersions.length === 1 ? t("components.plugins.PluginManagerWorkbench.machine.version.updateTo", { version: compactVersion(availableVersions[0]) }) : t("components.plugins.PluginManagerWorkbench.update")}</Button> : null}
+                </div>
+            </details>;
+        })}
+    </div>;
+}
+
 function MachineDiscoveryPanel({ discovery, pluginId, requirements, busy, onRefresh, t }: { discovery: MachineDiscovery; pluginId: string; requirements: RequirementResponse | null; busy: string; onRefresh: () => void; t: ReturnType<typeof useT> }) {
     const rows = [
         ...discovery.cli.map((item) => ({ kind: "CLI", item })),
         ...discovery.skills.map((item) => ({ kind: "Skill", item })),
+        ...(discovery.mcp || []).map((item) => ({ kind: "MCP", item })),
     ];
     const localEnabled = discovery.cli.some((item) => item.state === "registered" || item.state === "detected");
     const mediaKitRequirements = requirements?.pluginId === pluginId ? requirements.requirements : [];
@@ -518,7 +751,9 @@ function MachineDiscoveryPanel({ discovery, pluginId, requirements, busy, onRefr
         {rows.map(({ kind, item }) => {
             const names = kind === "CLI"
                 ? item.commands || []
-                : [...new Set([...(item.detectedNames || []), ...(item.missingNames || []), ...(item.conflicts || [])])];
+                : kind === "MCP"
+                    ? item.members?.map((member) => member.name) || []
+                    : [...new Set([...(item.detectedNames || []), ...(item.missingNames || []), ...(item.conflicts || [])])];
             return <div key={`${kind}-${item.componentId}`} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 truncate"><span className="font-medium">{kind}</span>{names.length ? <span className="text-muted-foreground"> · {names.join("、")}</span> : null}</span><span className={cn("shrink-0", item.state === "conflict" ? "text-destructive" : item.state === "detected" || item.state === "registered" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>{t(`components.plugins.PluginManagerWorkbench.machine.state.${item.state}`)}</span></div>;
         })}
         {discovery.ordinaryMcp.map((item) => <div key={item.componentId} className="py-2 text-xs"><div className="flex items-center justify-between gap-3"><span className="font-medium">MCP · {item.serverName}</span><span className="text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcp")}</span></div></div>)}

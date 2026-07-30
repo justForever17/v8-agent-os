@@ -74,9 +74,14 @@ test('desktop traffic lights follow Windows action order and reflect maximize st
   assert.match(preloadSource, /getWindowState/);
   assert.match(preloadSource, /onWindowStateChange/);
   assert.match(preloadSource, /openWorkspaceFolder/);
+  assert.match(preloadSource, /selectGodotExecutable/);
+  assert.match(preloadSource, /selectGodotProjectDirectory/);
   assert.match(mainSource, /v8os-shell:get-window-state/);
   assert.match(mainSource, /v8os-shell:open-workspace-folder/);
   assert.match(mainSource, /shell\.openPath\(resolvedPath\)/);
+  assert.match(mainSource, /v8os-shell:select-godot-executable/);
+  assert.match(mainSource, /v8os-shell:select-godot-project-directory/);
+  assert.match(mainSource, /properties: \['openDirectory'\]/);
   assert.match(mainSource, /mainWindow\.on\('maximize', emitWindowState\)/);
 });
 

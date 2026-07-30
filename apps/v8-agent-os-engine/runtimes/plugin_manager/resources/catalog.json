@@ -1,9 +1,9 @@
 {
   "schemaVersion": "v8.plugin.catalog.v1",
-  "revision": 10,
-  "sequence": 10,
+  "revision": 13,
+  "sequence": 13,
   "keyId": "v8os-plugin-catalog-2026-07-r5",
-  "generatedAt": "2026-07-26T16:00:00Z",
+  "generatedAt": "2026-07-29T14:30:00Z",
   "expiresAt": "2027-07-11T00:00:00Z",
   "revocations": [],
   "plugins": [
@@ -111,6 +111,9 @@
             "usage",
             "video"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -829,6 +832,9 @@
             "get",
             "describe"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -947,6 +953,9 @@
             "login",
             "whoami"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1087,6 +1096,9 @@
             "tail",
             "types"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1249,6 +1261,9 @@
             "inspect",
             "secrets"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1432,6 +1447,9 @@
             "inspect",
             "rollback"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1595,6 +1613,9 @@
             "slides",
             "tasks"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1732,6 +1753,9 @@
             "search",
             "status"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -1896,6 +1920,12 @@
             "bedrock",
             "organizations"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1",
+            "helpArguments": [
+              "help"
+            ]
+          },
           "outputProtocol": "json"
         }
       ],
@@ -2051,6 +2081,13 @@
             "media",
             "site"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1",
+            "helpArguments": [
+              "help"
+            ],
+            "helpPlacement": "prefix"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -2210,6 +2247,9 @@
             "deployment",
             "monitor"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -2471,6 +2511,9 @@
             "skills",
             "assets"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -2598,6 +2641,9 @@
             "status",
             "config"
           ],
+          "capabilitySync": {
+            "adapter": "reviewed_help_v1"
+          },
           "outputProtocol": "json"
         }
       ],
@@ -2664,169 +2710,6 @@
       ],
       "artifacts": [
         "支付对象、Webhook 事件与调试结果"
-      ]
-    },
-    {
-      "schemaVersion": "v8.plugin.v1",
-      "id": "docker",
-      "displayName": "Docker",
-      "version": "1",
-      "publisher": "Docker",
-      "category": "开发基础设施",
-      "description": "通过 Docker CLI 管理容器、镜像、Compose 与 Desktop 状态。",
-      "officialDomains": [
-        "docker.com",
-        "docker.io"
-      ],
-      "officialOrganizations": [
-        "docker"
-      ],
-      "officialLinks": {
-        "homepage": "https://www.docker.com/",
-        "documentation": "https://docs.docker.com/reference/cli/docker/",
-        "repository": "https://github.com/docker/cli"
-      },
-      "brand": {
-        "file": "logos/docker.ico",
-        "source": "https://www.docker.com/favicon.ico",
-        "license": "Docker brand asset; use subject to Docker trademark guidelines",
-        "sha256": "70e80a1aaffb492f02d51758ad86300b96416dbf6af75b0cbc6d1d69e4123f1f"
-      },
-      "cliProfiles": [
-        {
-          "id": "docker-cli",
-          "commands": [
-            "docker"
-          ],
-          "platforms": [
-            "windows"
-          ],
-          "ownership": "external",
-          "install": {
-            "argv": [
-              "winget",
-              "install",
-              "--id",
-              "Docker.DockerDesktop",
-              "--exact",
-              "--accept-source-agreements",
-              "--accept-package-agreements"
-            ],
-            "timeoutSeconds": 2400,
-            "requiresElevation": true,
-            "mayRestart": true,
-            "estimatedDownloadMb": 650
-          },
-          "detect": {
-            "argv": [
-              "where.exe",
-              "docker"
-            ]
-          },
-          "version": {
-            "argv": [
-              "docker",
-              "version",
-              "--format",
-              "{{json .}}"
-            ]
-          },
-          "start": {
-            "argv": [
-              "docker",
-              "desktop",
-              "start"
-            ],
-            "timeoutSeconds": 600
-          },
-          "stop": {
-            "argv": [
-              "docker",
-              "desktop",
-              "stop"
-            ],
-            "timeoutSeconds": 600
-          },
-          "allowedArguments": [
-            "--help",
-            "version",
-            "info",
-            "login",
-            "ps",
-            "images",
-            "run",
-            "exec",
-            "logs",
-            "build",
-            "compose",
-            "container",
-            "image",
-            "network",
-            "volume",
-            "desktop",
-            "mcp"
-          ],
-          "outputProtocol": "json"
-        }
-      ],
-      "skills": [],
-      "mcpServers": [
-        {
-          "id": "docker-mcp-gateway",
-          "serverName": "docker-mcp",
-          "repository": "https://github.com/docker/mcp-gateway",
-          "transport": "stdio",
-          "configTemplate": {
-            "command": "docker",
-            "args": [
-              "mcp",
-              "gateway",
-              "run"
-            ],
-            "disabled": true
-          },
-          "authFields": [],
-          "allowedTools": [],
-          "officialOrganization": "docker"
-        }
-      ],
-      "uiAdapters": [],
-      "governance": {
-        "permissions": [
-          "network",
-          "workspace-write",
-          "system-install",
-          "process-control"
-        ],
-        "sideEffects": [
-          "container-run",
-          "image-build",
-          "delete",
-          "system-service"
-        ],
-        "paidOperations": false,
-        "networkRequired": false,
-        "workspaceAccess": "write",
-        "approvalClasses": [
-          "system-install",
-          "run",
-          "delete"
-        ],
-        "healthChecks": [
-          "cli-version",
-          "daemon-online",
-          "desktop-status"
-        ],
-        "outputProtocols": [
-          "json",
-          "text"
-        ]
-      },
-      "capabilities": [
-        "容器、镜像、Compose、Docker Desktop 与 MCP Catalog"
-      ],
-      "artifacts": [
-        "镜像、容器、Compose 状态与运行日志"
       ]
     },
     {
@@ -3233,6 +3116,306 @@
       ],
       "artifacts": [
         "地图状态、路线方案、POI 列表与交互事件"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "godot",
+      "displayName": "Godot 游戏开发工作台",
+      "version": "1",
+      "publisher": "V8OS 精选",
+      "category": "游戏开发",
+      "description": "外部 Godot 编辑器、godot-ai 在线 MCP、gda 离线 CLI 与按 2D、2.5D、3D 场景审查的 Skill 包。编辑器关闭后仍可分析、批处理和正式导出。",
+      "officialDomains": [
+        "godotengine.org"
+      ],
+      "officialOrganizations": [
+        "godotengine"
+      ],
+      "reviewedOrganizations": [
+        "hi-godot",
+        "aigengame",
+        "gamedev-skills"
+      ],
+      "officialLinks": {
+        "homepage": "https://godotengine.org/download/windows/",
+      "documentation": "https://docs.godotengine.org/en/stable/",
+        "repository": "https://github.com/godotengine/godot"
+      },
+      "brand": {
+        "file": "logos/godot.svg",
+        "source": "https://godotengine.org/assets/press/icon_color.svg",
+        "license": "CC BY 4.0; Godot Engine logo",
+        "sha256": "7e2f17cf43a151e26736468544023ced8c07210c57b9d238264a1f1b28af9868"
+      },
+      "setupAdapter": "godot_v1",
+      "cliProfiles": [
+        {
+          "id": "gda-cli",
+          "commands": [
+            "gda"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "{enginePython}",
+              "{engineRoot}/runtimes/plugin_manager/gda_installer.py",
+              "install",
+              "--plugin-root",
+              "{pluginRoot}"
+            ],
+            "timeoutSeconds": 1200,
+            "estimatedDownloadMb": 80
+          },
+          "detect": {
+            "argv": [
+              "{enginePython}",
+              "{engineRoot}/runtimes/plugin_manager/gda_installer.py",
+              "version",
+              "--plugin-root",
+              "{pluginRoot}"
+            ],
+            "timeoutSeconds": 30
+          },
+          "version": {
+            "argv": [
+              "{enginePython}",
+              "{engineRoot}/runtimes/plugin_manager/gda_installer.py",
+              "version",
+              "--plugin-root",
+              "{pluginRoot}"
+            ],
+            "timeoutSeconds": 30
+          },
+          "shimCommand": [
+            "{gdaExecutable}"
+          ],
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "info",
+            "skill",
+            "schema",
+            "scene",
+            "node",
+            "script",
+            "resource",
+            "export",
+            "project",
+            "shader",
+            "theme",
+            "game",
+            "diag",
+            "logger",
+            "perf",
+            "input",
+            "screen",
+            "daemon"
+          ],
+          "outputProtocol": "json",
+          "capabilitySync": {
+            "adapter": "gda_cli_v1",
+            "snapshotPath": "capabilities/gda-cli.json",
+            "blockBreakingUpgrade": true
+          },
+          "environment": {
+            "PYTHONUTF8": "1"
+          },
+          "actions": []
+        }
+      ],
+      "skills": [
+        {
+          "id": "gda-versioned-skill",
+          "sourceKind": "managed_cli",
+          "sourceComponentId": "gda-cli",
+          "repository": "https://github.com/aigengame/godot-agent",
+          "path": "gda-skill",
+          "revision": "9a6b8451804459721bd541c0acc16b0c4ff5448b",
+          "officialOrganization": "aigengame",
+          "targetDirectory": "v8-plugin-godot-gda",
+          "skillNames": [
+            "gda"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "MIT",
+          "reviewNote": "固定 gda v0.8.1 提交；Skill 由同版本 CLI 生成，覆盖编辑器关闭时的分析、批处理和正式导出。"
+        },
+        {
+          "id": "godot-scene-core-skills",
+          "repository": "https://github.com/gamedev-skills/awesome-gamedev-agent-skills",
+          "path": "skills/godot",
+          "revision": "01b3eb41b359a6386e7d27c8a704baaa2a2fcfd9",
+          "officialOrganization": "gamedev-skills",
+          "targetDirectory": "v8-plugin-godot-core",
+          "skillNames": [
+            "godot-animation",
+            "godot-audio",
+            "godot-export",
+            "godot-gdscript",
+            "godot-nodes-scenes",
+            "godot-physics",
+            "godot-resources",
+            "godot-shaders",
+            "godot-signals-groups",
+            "godot-ui-control"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "Apache-2.0",
+          "reviewNote": "逐文件审查并固定提交；仅选取 Godot 通用场景、脚本、资源、动画、音频、物理、着色器、UI 和导出 Skill。"
+        },
+        {
+          "id": "godot-scene-2d-skills",
+          "repository": "https://github.com/gamedev-skills/awesome-gamedev-agent-skills",
+          "path": "skills/godot",
+          "revision": "01b3eb41b359a6386e7d27c8a704baaa2a2fcfd9",
+          "officialOrganization": "gamedev-skills",
+          "targetDirectory": "v8-plugin-godot-2d",
+          "skillNames": [
+            "godot-2d-movement",
+            "godot-tilemap"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "Apache-2.0",
+          "reviewNote": "逐文件审查并固定提交；为 2D 与 2.5D 场景补充移动和 TileMap 实践。",
+          "setupScenarios": [
+            "2d",
+            "2.5d"
+          ]
+        },
+        {
+          "id": "godot-scene-3d-skills",
+          "repository": "https://github.com/gamedev-skills/awesome-gamedev-agent-skills",
+          "path": "skills/godot",
+          "revision": "01b3eb41b359a6386e7d27c8a704baaa2a2fcfd9",
+          "officialOrganization": "gamedev-skills",
+          "targetDirectory": "v8-plugin-godot-3d",
+          "skillNames": [
+            "godot-3d-essentials"
+          ],
+          "sourceTrust": "reviewed_community",
+          "sourceLicense": "Apache-2.0",
+          "reviewNote": "逐文件审查并固定提交；为 2.5D 与 3D 场景补充相机、空间、光照和 3D 节点实践。",
+          "setupScenarios": [
+            "2.5d",
+            "3d"
+          ]
+        }
+      ],
+      "mcpServers": [
+        {
+          "id": "godot-ai-mcp",
+          "serverName": "godot-ai",
+          "repository": "https://github.com/hi-godot/godot-ai",
+          "transport": "http",
+          "configTemplate": {
+            "url": "http://127.0.0.1:8000/mcp"
+          },
+          "authFields": [],
+          "allowedTools": [
+            "editor_state",
+            "node_get_properties",
+            "scene_get_hierarchy",
+            "session_activate",
+            "session_manage",
+            "animation_create",
+            "animation_manage",
+            "api_manage",
+            "audio_manage",
+            "autoload_manage",
+            "batch_execute",
+            "camera_manage",
+            "client_manage",
+            "editor_manage",
+            "editor_reload_plugin",
+            "editor_screenshot",
+            "logs_read",
+            "filesystem_manage",
+            "game_manage",
+            "input_map_manage",
+            "material_manage",
+            "node_create",
+            "node_find",
+            "node_manage",
+            "node_set_property",
+            "particle_manage",
+            "project_manage",
+            "project_run",
+            "resource_manage",
+            "scene_manage",
+            "scene_open",
+            "scene_save",
+            "script_attach",
+            "script_create",
+            "script_manage",
+            "script_patch",
+            "signal_manage",
+            "test_manage",
+            "test_run",
+            "theme_manage",
+            "tilemap_manage",
+            "tileset_manage",
+            "ui_manage"
+          ],
+          "officialOrganization": "hi-godot",
+          "sourceTrust": "reviewed_community",
+          "revision": "e642402d179e48173f4774492cfe2e11181cd1fa",
+          "sourceLicense": "MIT",
+          "reviewNote": "逐文件审查并固定提交；仅连接本机 Godot 编辑器公开的 MCP 端点，安装前以工具指纹核验服务身份。"
+        }
+      ],
+      "uiAdapters": [],
+      "providerAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "process-control",
+          "workspace-read",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "edit-godot-project",
+          "control-live-editor",
+          "run-project",
+          "export-game-build",
+          "install-global-skills"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "workspace-write",
+          "process-control",
+          "dependency-install"
+        ],
+        "healthChecks": [
+          "godot-version",
+          "godot-project",
+          "godot-ai-mcp",
+          "gda-schema",
+          "formal-export"
+        ],
+        "outputProtocols": [
+          "json",
+          "artifact_ref",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "godot-ai 在线编辑器场景、节点、资源、脚本和运行控制",
+        "gda 编辑器关闭时的工程分析与批处理",
+        "gda 无编辑器正式导出与结构化诊断",
+        "按 2D、2.5D、3D 场景加载受审开发 Skill"
+      ],
+      "artifacts": [
+        "Godot 场景、脚本、资源和工程配置",
+        "游戏导出包与结构化验证结果",
+        "编辑器截图、运行诊断和测试结果"
       ]
     },
     {

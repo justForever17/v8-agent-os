@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -36,8 +37,12 @@ from .cli_capability_sync import (
     actions_from_snapshot,
     merge_discovered_actions,
     read_snapshot,
+    resolve_reviewed_help_capability,
+    sync_gda_capabilities,
     sync_mediakit_capabilities,
+    sync_reviewed_help_capabilities,
 )
+from .godot_setup import evaluate_godot_setup, stable_godot_setup_projection
 from .cli_auth import CliBrowserAuthAdapter, browser_auth_adapter, open_system_browser
 from .requirements import (
     compile_plugin_requirements,
@@ -52,6 +57,9 @@ SKILLS_CLI_PACKAGE = "skills@1.5.19"
 SKILLS_CLI_CACHE_SECONDS = 30.0
 SECRET_KEY_RE = re.compile(r"(token|secret|password|api[_-]?key|authorization|credential)", re.I)
 SAFE_COMPONENT_ID_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,160}$")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])v?(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)")
+PINNED_PACKAGE_VERSION_RE = re.compile(r"@(?P<version>\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)$")
 CODE_OWNED_PROVIDER_ADAPTERS = {
     "creative_media.aliyun_bailian_dashscope",
 }
@@ -238,6 +246,16 @@ class PluginManagerService:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plugin_setup_state (
+                    plugin_id TEXT PRIMARY KEY,
+                    adapter TEXT NOT NULL,
+                    values_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_jobs_idempotency ON plugin_install_jobs(plugin_id, idempotency_key) WHERE idempotency_key IS NOT NULL")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_plugin_steps_job ON plugin_install_steps(job_id, ordinal)")
             conn.execute(
@@ -288,6 +306,7 @@ class PluginManagerService:
 
     def _invalidate_machine_discovery_cache(self, plugin_id: str | None = None) -> None:
         with self._cache_lock:
+            self._catalog_projection_cache = None
             if plugin_id:
                 self._machine_discovery_cache.pop(str(plugin_id).strip().lower(), None)
             else:
@@ -357,6 +376,15 @@ class PluginManagerService:
             if not force and cached is not None and now - cached[0] <= SKILLS_CLI_CACHE_SECONDS:
                 return cached[1]
 
+        version_result = self._run_skills_cli(["--version"], timeout_seconds=15)
+        version_output = "\n".join(
+            item
+            for item in (
+                str(version_result.get("stdoutTail") or ""),
+                str(version_result.get("stderrTail") or ""),
+            )
+            if item
+        )
         result = self._run_skills_cli(["list", "--global", "--json"], timeout_seconds=30)
         items: list[dict[str, Any]] = []
         error = ""
@@ -386,6 +414,8 @@ class PluginManagerService:
         inventory = {
             "ok": not error,
             "tool": SKILLS_CLI_PACKAGE,
+            "toolVersion": self._normalized_version(version_output),
+            "toolProbeOk": version_result["returnCode"] == 0,
             "items": items,
             "lockEntries": lock_entries,
             "error": error,
@@ -459,6 +489,107 @@ class PluginManagerService:
             if (path := shutil.which(command, path=search_path))
         }
 
+    @staticmethod
+    def _normalized_version(value: Any) -> str:
+        text = ANSI_ESCAPE_RE.sub("", str(value or "")).strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"[0-9a-fA-F]{40}", text):
+            return text.lower()
+        match = VERSION_TOKEN_RE.search(text)
+        return str(match.group(1) if match else "").strip()
+
+    @staticmethod
+    def _catalog_cli_version(profile: CliProfile) -> str:
+        if profile.ownership != "managed":
+            return ""
+        for token in reversed(profile.install.argv):
+            match = PINNED_PACKAGE_VERSION_RE.search(str(token or ""))
+            if match:
+                return str(match.group("version"))
+        for value in (profile.install.downloadUrl, *profile.install.argv):
+            text = str(value or "")
+            for pattern in (
+                r"/download/v?(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)/",
+                r"[-_]v?(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)\.(?:zip|exe|phar|tar|gz)$",
+            ):
+                match = re.search(pattern, text, re.I)
+                if match:
+                    return str(match.group(1))
+        return ""
+
+    def _probe_cli_version(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        *,
+        detected_commands: dict[str, str] | None = None,
+        plugin_root: Path | None = None,
+    ) -> dict[str, Any]:
+        version_spec = profile.version
+        detected_executable = str((detected_commands or {}).get(profile.commands[0]) or "").strip()
+        if detected_executable:
+            version_argv = list(version_spec.argv)
+            if version_argv:
+                version_argv[0] = detected_executable
+            version_spec = version_spec.model_copy(update={"argv": version_argv})
+        result = self._execute_spec(manifest, version_spec, plugin_root=plugin_root)
+        output = "\n".join(
+            item for item in (str(result.get("stdoutTail") or ""), str(result.get("stderrTail") or "")) if item
+        )
+        return {
+            "ok": int(result.get("returnCode") or 0) == 0,
+            "version": self._normalized_version(output),
+            "returnCode": int(result.get("returnCode") or 0),
+            "durationMs": int(result.get("durationMs") or 0),
+        }
+
+    @staticmethod
+    def _version_state(installed: str, catalog: str, *, update_supported: bool) -> str:
+        if not installed:
+            return "unknown"
+        if not catalog:
+            return "unsupported"
+        if installed.lower() == catalog.lower():
+            return "current"
+        return "available" if update_supported else "review_required"
+
+    @staticmethod
+    def _cached_extension_skill_metadata() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        try:
+            from runtimes.extensions.runtime import extensions_runtime_service
+
+            items = extensions_runtime_service.list_skills(
+                force_refresh=False,
+                prefer_cached_ready_inventory=True,
+                include_scoped=False,
+            )
+        except Exception:
+            items = []
+        by_name: dict[str, dict[str, Any]] = {}
+        by_root: dict[str, dict[str, Any]] = {}
+        for raw in items:
+            item = dict(raw or {})
+            name = str(item.get("skillName") or item.get("name") or "").strip()
+            root = str(item.get("skillRoot") or item.get("path") or "").strip()
+            if name:
+                by_name[name] = item
+            if root:
+                by_root[str(Path(root).expanduser().resolve()).lower()] = item
+        return by_name, by_root
+
+    @staticmethod
+    def _cached_mcp_status() -> dict[str, dict[str, Any]]:
+        try:
+            from runtimes.extensions.runtime import extensions_runtime_service
+
+            return {
+                str(name): dict(payload or {})
+                for name, payload in extensions_runtime_service.get_mcp_status().items()
+            }
+        except Exception:
+            return {}
+
     def discover_machine_components(self, plugin_id: str, *, force: bool = False) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
         cache_key = manifest.id.lower()
@@ -489,14 +620,76 @@ class PluginManagerService:
                 )
             )
             state = "registered" if registered_present else "detected" if detected_commands else "missing"
+            probe = {
+                "ok": False,
+                "version": "",
+                "returnCode": None,
+                "durationMs": 0,
+            }
+            if state in {"registered", "detected"}:
+                try:
+                    probe = self._probe_cli_version(
+                        manifest,
+                        profile,
+                        detected_commands=detected_commands,
+                    )
+                except Exception as exc:
+                    probe = {
+                        **probe,
+                        "error": str(exc).strip() or exc.__class__.__name__,
+                    }
+            installed_version = str(
+                probe.get("version")
+                or (registered_row or {}).get("source_version")
+                or ""
+            ).strip()
+            available_version = self._catalog_cli_version(profile)
+            update_supported = bool(profile.ownership == "managed" and available_version)
+            version_state = self._version_state(
+                installed_version,
+                available_version,
+                update_supported=update_supported,
+            ) if state != "missing" else "unknown"
+            action = "keep" if registered_present else "adopt" if detected_commands else "install"
+            if action == "keep" and version_state == "available":
+                action = "update"
             cli_items.append(
                 {
                     "componentId": profile.id,
+                    "componentType": "cli",
+                    "displayName": profile.commands[0],
+                    "description": next(
+                        (
+                            str(item.description).strip()
+                            for item in profile.actions
+                            if str(item.description or "").strip()
+                        ),
+                        manifest.description,
+                    ),
                     "state": state,
-                    "action": "keep" if registered_present else "adopt" if detected_commands else "install",
+                    "action": action,
                     "commands": list(profile.commands),
                     "detectedCommands": detected_commands,
                     "ownership": "plugin" if registered_present else "external" if detected_commands else profile.ownership,
+                    "installedVersion": installed_version,
+                    "availableVersion": available_version,
+                    "versionState": version_state,
+                    "updateSupported": update_supported,
+                    "probe": probe,
+                    "members": [
+                        {
+                            "name": command,
+                            "description": next(
+                                (
+                                    str(item.description).strip()
+                                    for item in profile.actions
+                                    if str(item.description or "").strip()
+                                ),
+                                manifest.description,
+                            ),
+                        }
+                        for command in profile.commands
+                    ],
                 }
             )
 
@@ -513,6 +706,7 @@ class PluginManagerService:
             if str(item.get("name") or "").strip()
         }
         lock_entries = dict(skills_inventory.get("lockEntries") or {})
+        skill_metadata_by_name, skill_metadata_by_root = self._cached_extension_skill_metadata()
         skill_items: list[dict[str, Any]] = []
         for skill in policy["skills"]:
             expected_names = list(skill.skillNames)
@@ -581,9 +775,64 @@ class PluginManagerService:
             else:
                 state = "missing" if skills_inventory.get("ok") else "unknown"
                 action = "install" if skills_inventory.get("ok") else "review"
+            installed_revisions = {
+                str(
+                    (lock_entries.get(name) or {}).get("ref")
+                    or (lock_entries.get(name) or {}).get("revision")
+                    or (lock_entries.get(name) or {}).get("commit")
+                    or ""
+                ).strip()
+                for name in detected_names
+            }
+            installed_revisions.discard("")
+            installed_version = (
+                next(iter(installed_revisions))
+                if len(installed_revisions) == 1
+                else str((registered_row or {}).get("source_version") or "").strip()
+            )
+            available_version = str(skill.revision or "").strip()
+            update_supported = bool(
+                skills_inventory.get("ok")
+                and not conflicts
+                and available_version
+            )
+            version_state = self._version_state(
+                installed_version,
+                available_version,
+                update_supported=update_supported,
+            ) if state not in {"missing", "unknown"} else "unknown"
+            if action in {"keep", "adopt", "complete"} and version_state == "available":
+                action = "update"
+            members = []
+            for name in expected_names or detected_names:
+                metadata = dict(skill_metadata_by_name.get(name) or {})
+                if not metadata:
+                    installed = inventory_by_name.get(name) or {}
+                    path = str(installed.get("path") or "").strip()
+                    if path:
+                        try:
+                            metadata = dict(
+                                skill_metadata_by_root.get(str(Path(path).expanduser().resolve()).lower())
+                                or {}
+                            )
+                        except OSError:
+                            metadata = {}
+                members.append(
+                    {
+                        "name": name,
+                        "description": str(
+                            metadata.get("description")
+                            or skill.reviewNote
+                            or manifest.description
+                        ).strip(),
+                    }
+                )
             skill_items.append(
                 {
                     "componentId": skill.id,
+                    "componentType": "skill",
+                    "displayName": expected_names[0] if len(expected_names) == 1 else skill.id,
+                    "description": str(skill.reviewNote or manifest.description).strip(),
                     "state": state,
                     "action": action,
                     "expectedNames": expected_names,
@@ -592,29 +841,121 @@ class PluginManagerService:
                     "conflicts": conflicts,
                     "paths": paths,
                     "installer": SKILLS_CLI_PACKAGE,
+                    "installedVersion": installed_version,
+                    "availableVersion": available_version,
+                    "versionState": version_state,
+                    "updateSupported": update_supported,
+                    "members": members,
                 }
             )
 
         mcp_config = dict(storage.get_mcp_config().get("mcpServers") or {})
+        mcp_status = self._cached_mcp_status()
+        mcp_items: list[dict[str, Any]] = []
         ordinary_mcp: list[dict[str, Any]] = []
+        selected_mcp_servers = list(policy["mcpServers"])
+        selected_mcp_ids = {server.id for server in selected_mcp_servers}
         for server in manifest.mcpServers:
-            config = dict(mcp_config.get(server.serverName) or {})
-            if not config or str(config.get("x-v8-plugin-owner") or "") == manifest.id:
+            if server.id in selected_mcp_ids:
                 continue
-            ordinary_mcp.append(
+            config = dict(mcp_config.get(server.serverName) or {})
+            owner = str(config.get("x-v8-plugin-owner") or "").strip()
+            if config and owner != manifest.id:
+                ordinary_mcp.append(
+                    {
+                        "componentId": server.id,
+                        "serverName": server.serverName,
+                        "enabled": not bool(config.get("disabled", False)),
+                        "managedBy": "extensions_runtime",
+                        "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+                    }
+                )
+        for server in selected_mcp_servers:
+            config = dict(mcp_config.get(server.serverName) or {})
+            owner = str(config.get("x-v8-plugin-owner") or "").strip()
+            registered_row = component_rows.get(server.id)
+            target_version = str(server.revision or manifest.version or "").strip()
+            installed_version = str((registered_row or {}).get("source_version") or "").strip()
+            live = dict(mcp_status.get(server.serverName) or {})
+            if config and owner and owner != manifest.id:
+                state = "conflict"
+                action = "review"
+                ordinary_mcp.append(
+                    {
+                        "componentId": server.id,
+                        "serverName": server.serverName,
+                        "enabled": not bool(config.get("disabled", False)),
+                        "managedBy": "extensions_runtime",
+                        "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+                    }
+                )
+            elif config and not owner:
+                state = "conflict"
+                action = "review"
+                ordinary_mcp.append(
+                    {
+                        "componentId": server.id,
+                        "serverName": server.serverName,
+                        "enabled": not bool(config.get("disabled", False)),
+                        "managedBy": "extensions_runtime",
+                        "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+                    }
+                )
+            elif config:
+                state = "registered" if registered_row else "detected"
+                action = "keep" if registered_row else "adopt"
+            else:
+                state = "missing"
+                action = "install"
+            update_supported = bool(config and owner == manifest.id and target_version)
+            version_state = self._version_state(
+                installed_version,
+                target_version,
+                update_supported=update_supported,
+            ) if state in {"registered", "detected"} else "unknown"
+            if action == "keep" and version_state == "available":
+                action = "update"
+            live_tools = [
+                {
+                    "name": str(item.get("name") or "").strip(),
+                    "description": str(item.get("description") or manifest.description).strip(),
+                }
+                for item in list(live.get("tools") or [])
+                if str(item.get("name") or "").strip()
+            ]
+            members = live_tools or [
+                {"name": name, "description": manifest.description}
+                for name in server.allowedTools
+            ] or [{"name": server.serverName, "description": manifest.description}]
+            mcp_items.append(
                 {
                     "componentId": server.id,
+                    "componentType": "mcp",
+                    "displayName": server.serverName,
+                    "description": manifest.description,
                     "serverName": server.serverName,
-                    "enabled": not bool(config.get("disabled", False)),
-                    "managedBy": "extensions_runtime",
-                    "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+                    "state": state,
+                    "action": action,
+                    "installedVersion": installed_version,
+                    "availableVersion": target_version,
+                    "runtimeVersion": str(live.get("serverInfoVersion") or "").strip(),
+                    "protocolVersion": str(live.get("protocolVersion") or "").strip(),
+                    "versionState": version_state,
+                    "updateSupported": update_supported,
+                    "members": members,
                 }
             )
 
-        conflicts = sum(1 for item in skill_items if item["state"] == "conflict")
-        missing = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"missing", "partial", "unknown"})
-        detected = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"registered", "detected"})
-        total_units = len(cli_items) + sum(max(1, len(item.get("expectedNames") or [])) for item in skill_items)
+        all_components = [*cli_items, *skill_items, *mcp_items]
+        conflicts = sum(1 for item in all_components if item["state"] == "conflict")
+        missing = sum(1 for item in all_components if item["state"] in {"missing", "partial", "unknown"})
+        detected = sum(1 for item in all_components if item["state"] in {"registered", "detected"})
+        updates_available = sum(1 for item in all_components if item.get("action") == "update")
+        total_units = (
+            len(cli_items)
+            + sum(max(1, len(item.get("expectedNames") or [])) for item in skill_items)
+            + len(mcp_items)
+        )
         present_units = sum(1 for item in cli_items if item["state"] in {"registered", "detected"})
         present_units += sum(
             len(item.get("expectedNames") or [])
@@ -624,6 +965,7 @@ class PluginManagerService:
             else 1 if item["state"] in {"registered", "detected"} else 0
             for item in skill_items
         )
+        present_units += sum(1 for item in mcp_items if item["state"] in {"registered", "detected"})
         missing_units = max(0, total_units - present_units)
         coverage = (
             "blocked"
@@ -639,16 +981,21 @@ class PluginManagerService:
             "skillsCli": {
                 "available": bool(skills_inventory.get("ok")),
                 "package": SKILLS_CLI_PACKAGE,
+                "version": str(skills_inventory.get("toolVersion") or ""),
+                "probeOk": bool(skills_inventory.get("toolProbeOk")),
                 "error": str(skills_inventory.get("error") or ""),
             },
             "cli": cli_items,
             "skills": skill_items,
+            "mcp": mcp_items,
+            "components": all_components,
             "ordinaryMcp": ordinary_mcp,
             "summary": {
                 "detected": detected,
                 "needsCompletion": missing,
                 "conflicts": conflicts,
                 "ordinaryMcp": len(ordinary_mcp),
+                "updatesAvailable": updates_available,
                 "presentUnits": present_units,
                 "totalUnits": total_units,
                 "missingUnits": missing_units,
@@ -729,7 +1076,11 @@ class PluginManagerService:
                         "providerAdapters": len(manifest.providerAdapters),
                     },
                     "componentPolicy": {
-                        "mode": "official_cli_first",
+                        "mode": (
+                            "setup_gated_cli_mcp"
+                            if manifest.setupAdapter == "godot_v1"
+                            else "official_cli_first"
+                        ),
                         "transport": policy["transport"],
                         "installable": policy["installable"],
                         "blockingReasons": list(policy["blockingReasons"]),
@@ -796,8 +1147,8 @@ class PluginManagerService:
             raise PluginManagerError(f"未知插件：{plugin_id}", code="plugin_not_found", status_code=404)
         return manifest
 
-    @staticmethod
     def _component_policy(
+        self,
         manifest: PluginManifest,
         *,
         platform_name: str | None = None,
@@ -818,7 +1169,10 @@ class PluginManagerService:
             if current_platform in profile.platforms
             and (not profile.architectures or current_architecture in profile.architectures)
         ]
-        if selected_cli:
+        if manifest.setupAdapter == "godot_v1":
+            selected_mcp = list(manifest.mcpServers)
+            transport = "cli_mcp"
+        elif selected_cli:
             selected_mcp = []
             transport = "cli"
         elif manifest.mcpServers:
@@ -830,9 +1184,16 @@ class PluginManagerService:
 
         selected_cli_ids = {item.id for item in selected_cli}
         selected_mcp_ids = {item.id for item in selected_mcp}
+        setup_scenario = ""
+        if manifest.setupAdapter == "godot_v1":
+            setup_scenario = str(self._setup_values(manifest.id).get("scenario") or "").strip().lower()
         selected_skills = []
         blocked_skills = []
+        skipped_scenario_skills = []
         for skill in manifest.skills:
+            if skill.setupScenarios and setup_scenario not in set(skill.setupScenarios):
+                skipped_scenario_skills.append(skill.id)
+                continue
             if skill.sourceKind == "managed_cli" and str(skill.sourceComponentId or "") not in selected_cli_ids:
                 blocked_skills.append(skill.id)
                 continue
@@ -870,9 +1231,64 @@ class PluginManagerService:
                     *[item.id for item in manifest.cliProfiles if item.id not in selected_cli_ids],
                     *[item.id for item in manifest.mcpServers if item.id not in selected_mcp_ids],
                     *blocked_skills,
+                    *skipped_scenario_skills,
                 }
             ),
         }
+
+    def _setup_values(self, plugin_id: str) -> dict[str, Any]:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT values_json FROM plugin_setup_state WHERE plugin_id=?",
+                (str(plugin_id or "").strip().lower(),),
+            ).fetchone()
+        return dict(_loads(row["values_json"], {})) if row else {}
+
+    def plugin_setup(self, plugin_id: str, *, probe: bool = False) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        if manifest.setupAdapter != "godot_v1":
+            raise PluginManagerError(
+                "插件没有分步接入流程",
+                code="plugin_setup_unavailable",
+                status_code=404,
+            )
+        values = self._setup_values(manifest.id)
+        status = evaluate_godot_setup(values, probe_mcp=probe)
+        return {"pluginId": manifest.id, **stable_godot_setup_projection(values, status)}
+
+    def update_plugin_setup(self, plugin_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        if manifest.setupAdapter != "godot_v1":
+            raise PluginManagerError(
+                "插件没有分步接入流程",
+                code="plugin_setup_unavailable",
+                status_code=404,
+            )
+        current = self._setup_values(manifest.id)
+        allowed = {"godotExecutable", "projectPath", "scenario"}
+        for key, value in dict(values or {}).items():
+            if key not in allowed:
+                raise PluginManagerError("接入字段不受支持", code="plugin_setup_field_invalid")
+            if not isinstance(value, str):
+                raise PluginManagerError("接入字段必须是文本", code="plugin_setup_value_invalid")
+            current[key] = value.strip()
+        now = utc_now_iso()
+        with db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO plugin_setup_state (plugin_id, adapter, values_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(plugin_id) DO UPDATE SET
+                    adapter=excluded.adapter,
+                    values_json=excluded.values_json,
+                    updated_at=excluded.updated_at
+                """,
+                (manifest.id, manifest.setupAdapter, _json(current), now),
+            )
+            conn.commit()
+        self._invalidate_machine_discovery_cache(manifest.id)
+        self._event(manifest.id, "setup_updated", "ok", details={"fields": sorted(values)})
+        return self.plugin_setup(manifest.id, probe=False)
 
     def _active_installed_component_ids(self, manifest: PluginManifest) -> set[str]:
         policy = self._component_policy(manifest)
@@ -948,32 +1364,63 @@ class PluginManagerService:
         target_path = self._cli_capability_snapshot_path(manifest, profile, plugin_root=plugin_root)
         if contract is None or target_path is None:
             return None
-        if contract.adapter != "mediakit_cli_v1":
-            raise PluginManagerError(
-                f"不支持 CLI capability adapter：{contract.adapter}",
-                code="plugin_cli_capability_adapter_unsupported",
-            )
         version_spec = profile.version
         if plugin_root is None:
             version_spec = self._effective_cli_spec(manifest, profile, version_spec)
         expanded = self._expand_argv(manifest, version_spec, plugin_root=plugin_root)
         if not expanded:
             raise PluginManagerError("CLI capability sync 缺少可执行文件", code="plugin_cli_capability_executable_missing")
+        capability_executable = expanded[0]
+        if contract.adapter == "gda_cli_v1":
+            capability_executable = self._command_context(
+                manifest,
+                plugin_root=plugin_root,
+            )["gdaExecutable"]
         previous_path = (
             self._cli_capability_snapshot_path(manifest, profile, plugin_root=previous_root)
             if previous_root is not None
             else target_path
         )
         try:
-            result = sync_mediakit_capabilities(
-                executable=expanded[0],
-                plugin_id=manifest.id,
-                profile_id=profile.id,
-                target_path=target_path,
-                previous_path=previous_path,
-                block_breaking_upgrade=contract.blockBreakingUpgrade,
-                force_refresh=force_refresh,
-            )
+            if contract.adapter == "reviewed_help_v1":
+                result = sync_reviewed_help_capabilities(
+                    executable=capability_executable,
+                    canonical_command=profile.commands[0],
+                    version_arguments=expanded[1:],
+                    plugin_id=manifest.id,
+                    profile_id=profile.id,
+                    reviewed_roots=profile.allowedArguments,
+                    help_arguments=contract.helpArguments,
+                    help_placement=contract.helpPlacement,
+                    target_path=target_path,
+                    previous_path=previous_path,
+                    block_breaking_upgrade=contract.blockBreakingUpgrade,
+                    force_refresh=force_refresh,
+                )
+            else:
+                sync_adapter = {
+                    "mediakit_cli_v1": sync_mediakit_capabilities,
+                    "gda_cli_v1": sync_gda_capabilities,
+                }.get(contract.adapter)
+                if sync_adapter is None:
+                    raise PluginManagerError(
+                        f"不支持 CLI capability adapter：{contract.adapter}",
+                        code="plugin_cli_capability_adapter_unsupported",
+                    )
+                result = sync_adapter(
+                    executable=capability_executable,
+                    plugin_id=manifest.id,
+                    profile_id=profile.id,
+                    target_path=target_path,
+                    previous_path=previous_path,
+                    block_breaking_upgrade=contract.blockBreakingUpgrade,
+                    force_refresh=force_refresh,
+                )
+            if result is None:
+                raise PluginManagerError(
+                    f"不支持 CLI capability adapter：{contract.adapter}",
+                    code="plugin_cli_capability_adapter_unsupported",
+                )
         except CliCapabilitySyncError as exc:
             raise PluginManagerError(
                 str(exc),
@@ -997,6 +1444,71 @@ class PluginManagerService:
         if result is None:
             raise PluginManagerError("CLI profile 未声明 schema 同步合同", code="plugin_cli_capability_sync_unavailable")
         return result
+
+    def resolve_cli_action(
+        self,
+        plugin_id: str,
+        profile_id: str,
+        command_path: Iterable[str],
+    ) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        profile = next((item for item in manifest.cliProfiles if item.id == profile_id), None)
+        if profile is None:
+            raise PluginManagerError("CLI profile 不存在", code="plugin_cli_profile_not_found", status_code=404)
+        contract = profile.capabilitySync
+        if contract is None or contract.adapter != "reviewed_help_v1":
+            raise PluginManagerError(
+                "该 CLI 使用固定或供应商 schema，不需要按 help 解析动作",
+                code="plugin_cli_action_resolution_unavailable",
+            )
+        if profile.id not in self._active_installed_component_ids(manifest):
+            raise PluginManagerError("CLI 组件尚未安装", code="plugin_cli_component_not_installed", status_code=409)
+        normalized_path = [str(item or "").strip() for item in command_path if str(item or "").strip()]
+        if not normalized_path:
+            raise PluginManagerError("command_path 不能为空", code="plugin_cli_command_path_required")
+        self._sync_cli_profile_capabilities(manifest, profile, force_refresh=False)
+        target_path = self._cli_capability_snapshot_path(manifest, profile)
+        if target_path is None:
+            raise PluginManagerError("CLI capability snapshot 不存在", code="plugin_cli_capability_snapshot_missing")
+        version_spec = self._effective_cli_spec(manifest, profile, profile.version)
+        expanded = self._expand_argv(manifest, version_spec)
+        if not expanded:
+            raise PluginManagerError("CLI capability sync 缺少可执行文件", code="plugin_cli_capability_executable_missing")
+        try:
+            result = resolve_reviewed_help_capability(
+                executable=expanded[0],
+                canonical_command=profile.commands[0],
+                command_path=normalized_path,
+                help_arguments=contract.helpArguments,
+                help_placement=contract.helpPlacement,
+                target_path=target_path,
+                max_cached_actions=contract.maxCachedActions,
+                block_breaking_upgrade=contract.blockBreakingUpgrade,
+            )
+        except CliCapabilitySyncError as exc:
+            raise PluginManagerError(str(exc), code="plugin_cli_action_resolution_failed") from exc
+        self._cli_capability_profile_cache.clear()
+        if result.get("kind") == "group":
+            return {
+                "pluginId": manifest.id,
+                "profileId": profile.id,
+                "kind": "group",
+                "commandPath": list(result.get("commandPath") or []),
+                "children": list(result.get("children") or []),
+            }
+        action = dict(result.get("action") or {})
+        return {
+            "pluginId": manifest.id,
+            "profileId": profile.id,
+            "kind": "action",
+            "commandPath": list(result.get("commandPath") or []),
+            "action": {
+                "id": action.get("id"),
+                "description": action.get("description"),
+                "mutating": bool(action.get("mutating")),
+                "inputSchema": dict(action.get("inputSchema") or {}),
+            },
+        }
 
     def _bin_root(self) -> Path:
         configured = str(storage.get_plugin_manager_config().get("binRoot") or "").strip()
@@ -1169,20 +1681,30 @@ class PluginManagerService:
         for profile in policy["cliProfiles"]:
             if profile.id not in active_ids:
                 continue
-            help_spec = self._effective_cli_spec(
-                manifest,
-                profile,
-                CommandSpec(argv=[profile.commands[0], "--help"], timeoutSeconds=15),
-            )
-            result = self._execute_spec(manifest, help_spec)
-            help_text = str(result.get("stdoutTail") or result.get("stderrTail") or "").strip()
-            help_text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", help_text)
+            sync_error = ""
+            if profile.capabilitySync is not None:
+                try:
+                    self._sync_cli_profile_capabilities(manifest, profile, force_refresh=False)
+                except PluginManagerError as exc:
+                    sync_error = exc.code
+            snapshot_path = self._cli_capability_snapshot_path(manifest, profile)
+            snapshot = read_snapshot(snapshot_path) if snapshot_path else None
+            effective_profile = self._effective_cli_profile(manifest, profile)
             cli_items.append(
                 {
                     "componentId": profile.id,
                     "command": profile.commands[0],
-                    "help": help_text[:3000],
-                    "available": result.get("returnCode") == 0,
+                    "available": not sync_error,
+                    "rootCommands": list((snapshot or {}).get("rootCommands") or []),
+                    "actions": [
+                        {
+                            "id": action.id,
+                            "description": action.description or "",
+                            "mutating": action.mutating,
+                        }
+                        for action in effective_profile.actions
+                    ],
+                    **({"errorCode": sync_error} if sync_error else {}),
                 }
             )
 
@@ -1898,6 +2420,35 @@ class PluginManagerService:
             "pluginRoot": str(root),
             "pluginBin": str(root / "node_modules" / ".bin"),
             "shimRoot": str(self._bin_root()),
+            "enginePython": sys.executable,
+            "engineRoot": str(Path(__file__).resolve().parents[2]),
+            "gdaExecutable": str(root / "bin" / ("gda.exe" if os.name == "nt" else "gda")),
+        }
+
+    def _setup_environment(
+        self,
+        manifest: PluginManifest,
+        *,
+        plugin_root: Path | None = None,
+    ) -> dict[str, str]:
+        if manifest.setupAdapter != "godot_v1":
+            return {}
+        setup = self.plugin_setup(manifest.id, probe=False)
+        values = self._setup_values(manifest.id)
+        if not bool((setup.get("status") or {}).get("offlinePrerequisitesReady")):
+            raise PluginManagerError(
+                "Godot 应用、项目和场景尚未完成验证",
+                code="plugin_setup_incomplete",
+                status_code=409,
+            )
+        root = plugin_root or self._plugin_root(manifest.id)
+        return {
+            "PYTHONUTF8": "1",
+            "GDA_GODOT": str(values.get("godotExecutable") or ""),
+            "GDA_PROJECT": str(values.get("projectPath") or ""),
+            "UV_TOOL_DIR": str(root / "uv-tools"),
+            "UV_TOOL_BIN_DIR": str(root / "bin"),
+            "UV_PYTHON_INSTALL_DIR": str(root / "python"),
         }
 
     def _expand_argv(
@@ -1928,6 +2479,10 @@ class PluginManagerService:
         discovered_skills = {
             str(item.get("componentId") or ""): item
             for item in list(machine_discovery.get("skills") or [])
+        }
+        discovered_mcp = {
+            str(item.get("componentId") or ""): item
+            for item in list(machine_discovery.get("mcp") or [])
         }
         cli_steps = []
         approval_classes = set(manifest.governance.approvalClasses)
@@ -1972,8 +2527,28 @@ class PluginManagerService:
                     "paths": list(discovery.get("paths") or []),
                 }
             )
+        mcp_steps = []
+        for server in component_policy["mcpServers"]:
+            discovery = dict(discovered_mcp.get(server.id) or {})
+            mcp_steps.append(
+                {
+                    **server.model_dump(mode="json"),
+                    "action": str(discovery.get("action") or "install"),
+                    "state": str(discovery.get("state") or "missing"),
+                    "installedVersion": str(discovery.get("installedVersion") or ""),
+                    "availableVersion": str(discovery.get("availableVersion") or ""),
+                }
+            )
 
+        setup_projection: dict[str, Any] | None = None
         blocking_reasons = list(component_policy["blockingReasons"])
+        if manifest.setupAdapter == "godot_v1":
+            setup_projection = self.plugin_setup(manifest.id, probe=True)
+            if not bool((setup_projection.get("status") or {}).get("readyForInstall")):
+                blocking_reasons.extend(
+                    f"godot_setup_{item}"
+                    for item in list((setup_projection.get("status") or {}).get("blockingReasons") or [])
+                )
         if component_policy["skills"] and not bool((machine_discovery.get("skillsCli") or {}).get("available")):
             blocking_reasons.append("skills_cli_unavailable")
         if any(item.get("state") == "conflict" for item in skill_steps):
@@ -1993,15 +2568,16 @@ class PluginManagerService:
             "binRoot": str(self._bin_root()),
             "steps": {
                 "preflight": True,
+                "setup": setup_projection,
                 "cli": cli_steps,
                 "skills": skill_steps,
-                "mcp": [item.model_dump(mode="json") for item in component_policy["mcpServers"]],
+                "mcp": mcp_steps,
                 "uiAdapters": [item.model_dump(mode="json") for item in manifest.uiAdapters],
                 "providerAdapters": [item.model_dump(mode="json") for item in manifest.providerAdapters],
                 "health": list(manifest.governance.healthChecks),
             },
             "componentPolicy": {
-                "mode": "official_cli_first",
+                "mode": "setup_gated_cli_mcp" if manifest.setupAdapter == "godot_v1" else "official_cli_first",
                 "transport": component_policy["transport"],
                 "installable": installable,
                 "blockingReasons": blocking_reasons,
@@ -2351,6 +2927,14 @@ class PluginManagerService:
                 str(item.get("componentId") or ""): dict(item)
                 for item in list((current_plan.get("steps") or {}).get("cli") or [])
             }
+            skill_plan_steps = {
+                str(item.get("id") or ""): dict(item)
+                for item in list((current_plan.get("steps") or {}).get("skills") or [])
+            }
+            mcp_plan_steps = {
+                str(item.get("id") or ""): dict(item)
+                for item in list((current_plan.get("steps") or {}).get("mcp") or [])
+            }
             root = self._plugin_root(manifest.id)
             staging = root.parent / ".staging" / job_id
             backup = root.parent / ".staging" / f"{job_id}.previous"
@@ -2423,7 +3007,12 @@ class PluginManagerService:
                             if version_argv:
                                 version_argv[0] = detected_executable
                             version_spec = version_spec.model_copy(update={"argv": version_argv})
-                        result = await asyncio.to_thread(self._execute_spec, manifest, version_spec)
+                        result = await asyncio.to_thread(
+                            self._execute_spec,
+                            manifest,
+                            version_spec,
+                            env_overlay=self._setup_environment(manifest),
+                        )
                     elif profile.ownership == "external":
                         external_started = True
                         if profile.install.requiresElevation:
@@ -2438,6 +3027,7 @@ class PluginManagerService:
                             manifest,
                             profile.install,
                             plugin_root=staging,
+                            env_overlay=self._setup_environment(manifest, plugin_root=staging),
                         )
                     if result["returnCode"] != 0:
                         raise PluginManagerError(
@@ -2467,7 +3057,7 @@ class PluginManagerService:
                         continue
                     target_root = (
                         staging
-                        if profile.ownership == "managed" and action == "install"
+                        if profile.ownership == "managed" and action in {"install", "update"}
                         else root
                     )
                     sync_result = await asyncio.to_thread(
@@ -2493,7 +3083,7 @@ class PluginManagerService:
                         )
                 self._set_job_state(job_id, "committing", step_type="atomic_commit")
                 if any(
-                    profile.ownership == "managed" and action == "install"
+                    profile.ownership == "managed" and action in {"install", "update"}
                     for profile, _, action, _ in profile_results
                 ):
                     backup.parent.mkdir(parents=True, exist_ok=True)
@@ -2502,6 +3092,39 @@ class PluginManagerService:
                     if root.exists():
                         root.replace(backup)
                     staging.replace(root)
+
+                    for profile, _, action, _ in profile_results:
+                        if (
+                            manifest.setupAdapter != "godot_v1"
+                            or profile.ownership != "managed"
+                            or action not in {"install", "update"}
+                        ):
+                            continue
+                        self._append_job_step(
+                            job_id,
+                            "cli_relink",
+                            "running",
+                            {"componentId": profile.id},
+                        )
+                        relink_result = await asyncio.to_thread(
+                            self._execute_spec,
+                            manifest,
+                            profile.install,
+                            plugin_root=root,
+                            env_overlay=self._setup_environment(manifest, plugin_root=root),
+                        )
+                        if relink_result["returnCode"] != 0:
+                            raise PluginManagerError(
+                                f"CLI 原子切换后重绑定失败：{profile.id}: "
+                                f"{relink_result['stderrTail'] or relink_result['stdoutTail']}",
+                                code="cli_relink_failed",
+                            )
+                        self._append_job_step(
+                            job_id,
+                            "cli_relink",
+                            "completed",
+                            {"componentId": profile.id},
+                        )
 
                 for profile, result, action, detected_commands in profile_results:
                     commands_for_registration = detected_commands or None
@@ -2514,25 +3137,54 @@ class PluginManagerService:
                             adopted=action == "adopt",
                         )
                     )
-                    if action == "install":
+                    if action in {"install", "update"}:
                         created_components.extend(self._ensure_cli_shims(manifest, profile))
+                skill_update_names = sorted(
+                    {
+                        str(name).strip()
+                        for skill in selected_skills
+                        if str((skill_plan_steps.get(skill.id) or {}).get("action") or "install") == "update"
+                        for name in (
+                            list(skill.skillNames)
+                            or list((skill_plan_steps.get(skill.id) or {}).get("detectedNames") or [])
+                        )
+                        if str(name).strip()
+                    }
+                )
+                if skill_update_names:
+                    skill_backup = root.parent / ".staging" / f"{job_id}.skills.previous"
+                    snapshot["skillBackup"] = self._snapshot_skill_state(
+                        skill_update_names,
+                        backup_root=skill_backup,
+                    )
+                    self._persist_job_snapshot(job_id, snapshot)
+                    self._append_job_step(
+                        job_id,
+                        "skill_snapshot",
+                        "completed",
+                        {"count": len(skill_update_names)},
+                    )
                 for skill in selected_skills:
+                    skill_step = dict(skill_plan_steps.get(skill.id) or {})
+                    action = str(skill_step.get("action") or "install")
                     current_component = {
                         "componentType": "skill",
                         "componentId": skill.id,
-                        "action": "install",
+                        "action": action,
                     }
                     self._append_component_job_step(
                         job_id,
                         component_type="skill",
                         component_id=skill.id,
                         state="running",
+                        action=action,
                     )
                     created_components.extend(
                         await asyncio.to_thread(
                             self._install_skill_component,
                             manifest,
                             skill.model_dump(mode="json"),
+                            action=action,
                         )
                     )
                     self._append_component_job_step(
@@ -2540,19 +3192,23 @@ class PluginManagerService:
                         component_type="skill",
                         component_id=skill.id,
                         state="completed",
+                        action=action,
                     )
                     current_component = None
                 for server in selected_mcp_servers:
+                    mcp_step = dict(mcp_plan_steps.get(server.id) or {})
+                    action = str(mcp_step.get("action") or "install")
                     current_component = {
                         "componentType": "mcp",
                         "componentId": server.id,
-                        "action": "install",
+                        "action": action,
                     }
                     self._append_component_job_step(
                         job_id,
                         component_type="mcp",
                         component_id=server.id,
                         state="running",
+                        action=action,
                     )
                     created_components.extend(self._install_mcp_components(manifest, [server]))
                     self._append_component_job_step(
@@ -2560,6 +3216,7 @@ class PluginManagerService:
                         component_type="mcp",
                         component_id=server.id,
                         state="completed",
+                        action=action,
                     )
                     current_component = None
                 for adapter in manifest.uiAdapters:
@@ -2653,6 +3310,7 @@ class PluginManagerService:
                 self._append_job_step(job_id, "complete", "ready", {"state": install_state})
                 if backup.exists():
                     shutil.rmtree(backup, ignore_errors=True)
+                self._cleanup_skill_snapshot(snapshot.get("skillBackup"))
                 if staging.exists():
                     shutil.rmtree(staging, ignore_errors=True)
                 self._event(manifest.id, "install_completed", "ok", job_id=job_id, details=result)
@@ -2707,6 +3365,7 @@ class PluginManagerService:
             encoding="utf-8",
             errors="replace",
             timeout=spec.timeoutSeconds,
+            creationflags=_background_process_creation_flags(),
         )
         return {
             "argv": ["winget", "<approved-external-install>"],
@@ -2724,6 +3383,118 @@ class PluginManagerService:
             "components": self._component_rows(manifest.id),
             "installation": self._installation_rows().get(manifest.id),
         }
+
+    @staticmethod
+    def _persist_job_snapshot(job_id: str, snapshot: dict[str, Any]) -> None:
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE plugin_install_jobs SET snapshot_json=?, updated_at=? WHERE id=?",
+                (_json(snapshot), utc_now_iso(), job_id),
+            )
+            conn.commit()
+
+    def _snapshot_skill_state(self, names: Iterable[str], *, backup_root: Path) -> dict[str, Any]:
+        selected = sorted({str(name).strip() for name in names if str(name).strip()})
+        inventory = self._skills_cli_inventory(force=True)
+        if not inventory.get("ok"):
+            raise PluginManagerError(
+                str(inventory.get("error") or "skills CLI inventory failed"),
+                code="skills_cli_unavailable",
+                status_code=503,
+            )
+        inventory_by_name = {
+            str(item.get("name") or ""): dict(item)
+            for item in list(inventory.get("items") or [])
+            if str(item.get("name") or "").strip()
+        }
+        skills_root = AGENT_SKILLS_ROOT.expanduser().absolute()
+        if backup_root.exists():
+            shutil.rmtree(backup_root)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        entries: list[dict[str, str]] = []
+        try:
+            for index, name in enumerate(selected):
+                source_text = str((inventory_by_name.get(name) or {}).get("path") or "").strip()
+                if not source_text:
+                    raise PluginManagerError(
+                        f"无法定位待更新 Skill：{name}",
+                        code="skill_update_source_missing",
+                    )
+                source = Path(source_text).expanduser().absolute()
+                if not source.is_relative_to(skills_root) or not source.is_dir():
+                    raise PluginManagerError(
+                        f"待更新 Skill 不属于受管全局目录：{name}",
+                        code="skill_update_path_unmanaged",
+                    )
+                backup = backup_root / "skills" / f"{index:03d}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(source, backup, symlinks=True)
+                entries.append({"name": name, "target": str(source), "backup": str(backup)})
+
+            lock_path = AGENT_SKILLS_ROOT.parent / ".skill-lock.json"
+            lock_existed = lock_path.is_file()
+            lock_backup = backup_root / "skill-lock.json"
+            if lock_existed:
+                shutil.copy2(lock_path, lock_backup)
+            return {
+                "backupRoot": str(backup_root),
+                "names": selected,
+                "entries": entries,
+                "lockPath": str(lock_path),
+                "lockBackup": str(lock_backup),
+                "lockExisted": lock_existed,
+            }
+        except Exception:
+            shutil.rmtree(backup_root, ignore_errors=True)
+            raise
+
+    def _restore_skill_snapshot(self, snapshot: Any) -> dict[str, Any]:
+        payload = dict(snapshot or {}) if isinstance(snapshot, dict) else {}
+        if not payload:
+            return {"ok": True, "restored": [], "errors": []}
+        restored: list[str] = []
+        errors: list[str] = []
+        skills_root = AGENT_SKILLS_ROOT.expanduser().absolute()
+        for entry in list(payload.get("entries") or []):
+            name = str(entry.get("name") or "").strip()
+            target = Path(str(entry.get("target") or "")).expanduser().absolute()
+            backup = Path(str(entry.get("backup") or "")).expanduser().absolute()
+            try:
+                if not target.is_relative_to(skills_root) or not backup.is_dir():
+                    raise ValueError("snapshot path is outside the managed Skill root")
+                if target.exists():
+                    shutil.rmtree(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(backup, target, symlinks=True)
+                restored.append(name)
+            except Exception as exc:
+                errors.append(f"skill:{name}: {exc}")
+        lock_path = Path(str(payload.get("lockPath") or AGENT_SKILLS_ROOT.parent / ".skill-lock.json"))
+        lock_backup = Path(str(payload.get("lockBackup") or "")) if payload.get("lockBackup") else None
+        try:
+            if bool(payload.get("lockExisted")):
+                if lock_backup is None or not lock_backup.is_file():
+                    raise FileNotFoundError("Skill lock snapshot is missing")
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(lock_backup, lock_path)
+            elif lock_path.exists():
+                lock_path.unlink()
+        except Exception as exc:
+            errors.append(f"skill lock restore: {exc}")
+        self._invalidate_skills_inventory_cache()
+        self._cleanup_skill_snapshot(payload)
+        return {"ok": not errors, "restored": restored, "errors": errors}
+
+    @staticmethod
+    def _cleanup_skill_snapshot(snapshot: Any) -> None:
+        payload = dict(snapshot or {}) if isinstance(snapshot, dict) else {}
+        backup_text = str(payload.get("backupRoot") or "").strip()
+        if not backup_text:
+            return
+        backup = Path(backup_text).expanduser().absolute()
+        staging_root = (PLUGIN_MANAGER_ROOT / ".staging").expanduser().absolute()
+        if backup.is_relative_to(staging_root):
+            shutil.rmtree(backup, ignore_errors=True)
 
     def _execute_spec(
         self,
@@ -2809,6 +3580,7 @@ class PluginManagerService:
                     "PATH": f"{self._bin_root()}{os.pathsep}{search_path}",
                     **dict(env_overlay or {}),
                 },
+                creationflags=_background_process_creation_flags(),
             )
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
@@ -2869,19 +3641,35 @@ class PluginManagerService:
     ) -> dict[str, Any]:
         root = self._plugin_root(manifest.id)
         detected = dict(adopted_commands or {})
+        probe: dict[str, Any] = {}
+        try:
+            probe = self._probe_cli_version(
+                manifest,
+                profile,
+                detected_commands=detected,
+                plugin_root=root,
+            )
+        except Exception as exc:
+            probe = {"ok": False, "version": "", "error": str(exc).strip() or exc.__class__.__name__}
+        installed_version = str(
+            probe.get("version")
+            or self._catalog_cli_version(profile)
+            or manifest.version
+        ).strip()
         return self._register_component(
             manifest.id,
             profile.id,
             "cli",
             owned_path=str(root) if profile.ownership == "managed" and not detected else "",
             source_url=manifest.officialLinks.documentation,
-            source_version=manifest.version,
+            source_version=installed_version,
             ownership="external" if detected else profile.ownership,
             metadata={
                 "commands": profile.commands,
                 "detectedCommands": detected,
                 "adopted": adopted,
                 "declaredOwnership": profile.ownership,
+                "versionProbe": probe,
                 "installResult": _redact(result),
             },
         )
@@ -2939,7 +3727,7 @@ class PluginManagerService:
                     "cli",
                     owned_path=str(shim),
                     source_url=manifest.officialLinks.documentation,
-                    source_version=manifest.version,
+                    source_version=self._catalog_cli_version(profile) or manifest.version,
                     metadata={"command": command, "target": source_description},
                 )
             )
@@ -2959,6 +3747,7 @@ class PluginManagerService:
                     stderr=stderr_file,
                     timeout=timeout_seconds,
                     env=environment,
+                    creationflags=_background_process_creation_flags(),
                 )
             except FileNotFoundError as exc:
                 raise PluginManagerError("Skill 安装需要受支持的 Git 可执行文件", code="skill_git_unavailable") from exc
@@ -2998,7 +3787,13 @@ class PluginManagerService:
                 names.append(name)
         return names
 
-    def _install_skill_component(self, manifest: PluginManifest, skill: dict[str, Any]) -> list[dict[str, Any]]:
+    def _install_skill_component(
+        self,
+        manifest: PluginManifest,
+        skill: dict[str, Any],
+        *,
+        action: str = "install",
+    ) -> list[dict[str, Any]]:
         source_kind = str(skill.get("sourceKind") or "git").strip().lower()
         temp_root: Path | None = None
         if source_kind == "managed_cli":
@@ -3071,6 +3866,35 @@ class PluginManagerService:
                 if str(item.get("name") or "").strip()
             }
             lock_entries = dict(before.get("lockEntries") or {})
+            registered_component = next(
+                (
+                    row
+                    for row in self._component_rows(manifest.id)
+                    if str(row.get("component_id") or "") == str(skill["id"])
+                    and str(row.get("component_type") or "") == "skill"
+                ),
+                None,
+            )
+            registered_metadata = _loads(
+                (registered_component or {}).get("metadata_json"),
+                {},
+            )
+            registered_names = {
+                str(name).strip()
+                for name in list(registered_metadata.get("skillNames") or [])
+                if str(name).strip()
+            }
+            registered_paths = {
+                os.path.normcase(os.path.abspath(str(path)))
+                for path in list(registered_metadata.get("skillPaths") or [])
+                if str(path).strip()
+            }
+            registered_source_matches = bool(
+                registered_component
+                and str(registered_component.get("ownership") or "") == "skills_cli"
+                and self._repository_identity(str(registered_component.get("source_url") or ""))
+                == self._repository_identity(str(skill.get("repository") or ""))
+            )
             adopted_names: list[str] = []
             adopted_paths: list[str] = []
             conflicts: list[str] = []
@@ -3078,11 +3902,21 @@ class PluginManagerService:
                 installed = inventory_by_name.get(name)
                 if not installed:
                     continue
-                if source_kind == "git" and self._skill_source_matches(lock_entries.get(name) or {}, skill):
+                installed_path = str(installed.get("path") or "").strip()
+                receipt_owns_installed_path = bool(
+                    action == "update"
+                    and registered_source_matches
+                    and name in registered_names
+                    and installed_path
+                    and os.path.normcase(os.path.abspath(installed_path)) in registered_paths
+                )
+                if (
+                    source_kind == "git"
+                    and self._skill_source_matches(lock_entries.get(name) or {}, skill)
+                ) or receipt_owns_installed_path:
                     adopted_names.append(name)
-                    path = str(installed.get("path") or "").strip()
-                    if path:
-                        adopted_paths.append(path)
+                    if installed_path:
+                        adopted_paths.append(installed_path)
                 else:
                     conflicts.append(name)
             if conflicts:
@@ -3093,18 +3927,20 @@ class PluginManagerService:
                 )
 
             missing_names = [name for name in selected_names if name not in adopted_names]
-            if missing_names:
+            install_names = selected_names if action == "update" else missing_names
+            if install_names:
+                source_locator = str(source_root)
                 install_result = self._run_skills_cli(
                     [
                         "add",
-                        str(source_root),
+                        source_locator,
                         "--global",
                         "--agent",
                         "codex",
                         "--copy",
                         "--yes",
                         "--skill",
-                        *missing_names,
+                        *install_names,
                     ],
                     timeout_seconds=600,
                 )
@@ -3126,9 +3962,13 @@ class PluginManagerService:
                     "skills CLI 未登记预期 Skill：" + ", ".join(missing_after),
                     code="skill_install_incomplete",
                 )
-            managed_paths = [str(after_by_name[name].get("path") or "") for name in missing_names]
-            skill_paths = [*adopted_paths, *[item for item in managed_paths if item]]
-            ownership = "skills_cli" if missing_names else "external"
+            managed_paths = [str(after_by_name[name].get("path") or "") for name in install_names]
+            skill_paths = [
+                str(after_by_name[name].get("path") or "")
+                for name in selected_names
+                if str(after_by_name[name].get("path") or "").strip()
+            ]
+            ownership = "skills_cli" if install_names else "external"
             return [
                 self._register_component(
                     manifest.id,
@@ -3149,8 +3989,9 @@ class PluginManagerService:
                         "installer": SKILLS_CLI_PACKAGE,
                         "skillNames": selected_names,
                         "skillPaths": skill_paths,
-                        "managedSkillNames": missing_names,
-                        "adoptedSkillNames": adopted_names,
+                        "managedSkillNames": install_names,
+                        "adoptedSkillNames": [name for name in adopted_names if name not in install_names],
+                        "installAction": action,
                     },
                 )
             ]
@@ -3179,7 +4020,7 @@ class PluginManagerService:
                     status_code=409,
                 )
             config = self._expand_template(manifest, server.configTemplate)
-            config["disabled"] = True
+            config["disabled"] = manifest.setupAdapter != "godot_v1"
             config["x-v8-plugin-owner"] = manifest.id
             config["x-v8-plugin-component"] = server.id
             if bool(config.get("oauth")) or any(str(field).lower() == "oauth" for field in server.authFields):
@@ -3192,7 +4033,7 @@ class PluginManagerService:
                     server.id,
                     "mcp",
                     source_url=server.repository or server.url or "",
-                    source_version=manifest.version,
+                    source_version=str(server.revision or manifest.version),
                     metadata={"serverName": server.serverName, "allowedTools": server.allowedTools, "configSha256": _hash_value(config)},
                 )
             )
@@ -3378,11 +4219,17 @@ class PluginManagerService:
     def _rollback(self, manifest: PluginManifest, snapshot: dict[str, Any], components: list[dict[str, Any]]) -> dict[str, Any]:
         removed = []
         errors = []
+        snapshotted_skill_names = {
+            str(name).strip()
+            for name in list((snapshot.get("skillBackup") or {}).get("names") or [])
+            if str(name).strip()
+        }
         for component in reversed(components):
             metadata = dict(component.get("metadata") or {})
             managed_skill_names = list(metadata.get("managedSkillNames") or [])
             if component.get("type") == "skill" and managed_skill_names:
-                removal = self._remove_skills_cli_names(managed_skill_names)
+                removable_names = [name for name in managed_skill_names if name not in snapshotted_skill_names]
+                removal = self._remove_skills_cli_names(removable_names)
                 if removal["ok"]:
                     removed.extend(f"skill:{name}" for name in removal["removed"])
                 else:
@@ -3401,6 +4248,10 @@ class PluginManagerService:
                     removed.append(path_text)
             except Exception as exc:
                 errors.append(f"{path_text}: {exc}")
+        skill_restore = self._restore_skill_snapshot(snapshot.get("skillBackup"))
+        if not skill_restore["ok"]:
+            errors.extend(skill_restore["errors"])
+        removed.extend(f"skill-restored:{name}" for name in skill_restore["restored"])
         try:
             storage.save_mcp_config(dict(snapshot.get("mcpConfig") or {}))
         except Exception as exc:
@@ -3683,7 +4534,12 @@ class PluginManagerService:
                         }
                     )
             version_spec = self._effective_cli_spec(manifest, profile, profile.version)
-            result = await asyncio.to_thread(self._execute_spec, manifest, version_spec)
+            result = await asyncio.to_thread(
+                self._execute_spec,
+                manifest,
+                version_spec,
+                env_overlay=self._setup_environment(manifest),
+            )
             checks.append(
                 {
                     "componentId": profile.id,
@@ -4520,8 +5376,18 @@ class PluginManagerService:
                     )
             for profile in manifest.cliProfiles:
                 if profile.id in components:
-                    effective_profile = self._effective_cli_profile(manifest, profile)
-                    cli_entries.append({"pluginId": manifest.id, "pluginName": manifest.displayName, "grantId": grant["grantId"], **effective_profile.model_dump(mode="json")})
+                    # Runtime projection only proves that the exact component is
+                    # granted. Action schemas are loaded through plugin_broker on
+                    # demand so large CLI inventories do not pollute every turn.
+                    cli_entries.append(
+                        {
+                            "pluginId": manifest.id,
+                            "pluginName": manifest.displayName,
+                            "grantId": grant["grantId"],
+                            "id": profile.id,
+                            "command": profile.commands[0],
+                        }
+                    )
             for adapter in manifest.uiAdapters:
                 if adapter.id in components:
                     adapters.append({"pluginId": manifest.id, "grantId": grant["grantId"], **adapter.model_dump(mode="json")})
@@ -4824,6 +5690,15 @@ class PluginManagerService:
             raise PluginManagerError("当前任务未授权该 CLI", code="plugin_cli_not_granted", status_code=403)
         manifest = self._manifest(plugin_id)
         declared_profile = next(item for item in manifest.cliProfiles if item.id == profile_id)
+        # Installed CLIs may be upgraded outside V8OS. Revalidate the versioned
+        # capability contract before every invocation and keep the last known
+        # good snapshot when a breaking change is detected.
+        if declared_profile.capabilitySync is not None:
+            self._sync_cli_profile_capabilities(
+                manifest,
+                declared_profile,
+                force_refresh=False,
+            )
         profile = self._effective_cli_profile(manifest, declared_profile)
         self.validate_grant_for_invocation(
             grant_id=str(profile_payload.get("grantId") or ""),
@@ -5003,6 +5878,7 @@ class PluginManagerService:
         requirements = [item for item in compile_plugin_requirements(manifest) if item.componentId == profile.id]
         bindings = self._credential_bindings(manifest.id)
         result: dict[str, str] = dict(profile.environment)
+        result.update(self._setup_environment(manifest))
         for requirement in requirements:
             if requirement.target != "env" or not requirement.targetName:
                 continue

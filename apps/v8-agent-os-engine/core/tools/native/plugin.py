@@ -6,19 +6,79 @@ from typing import Annotated, Literal
 from langchain_core.tools import InjectedToolCallId, tool
 
 
+def _cli_resolution_surface(payload: dict, *, authorized: bool) -> dict:
+    command_path = " ".join(str(item) for item in list(payload.get("commandPath") or []))
+    if payload.get("kind") == "group":
+        details = ["Available subcommands:"]
+        details.extend(
+            f"- {str(item.get('id') or '').strip()}: {str(item.get('description') or '').strip()}"
+            for item in list(payload.get("children") or [])[:24]
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        )
+        next_action = "Continue with plugin_broker(action) and append one exact subcommand to command_path."
+    else:
+        action = dict(payload.get("action") or {})
+        schema = dict(action.get("inputSchema") or {})
+        properties = dict(schema.get("properties") or {})
+        required = {str(item) for item in list(schema.get("required") or [])}
+        details = [
+            f"Action ID: {str(action.get('id') or command_path)}",
+            f"Effect: {'mutating' if action.get('mutating') else 'read-only'}",
+        ]
+        if action.get("description"):
+            details.append(f"Purpose: {str(action.get('description'))}")
+        if properties:
+            details.append("Typed parameters:")
+            details.extend(
+                f"- {name}: {str((definition or {}).get('type') or 'string')}, "
+                f"{'required' if str(name) in required else 'optional'}"
+                for name, definition in list(properties.items())[:24]
+            )
+        next_action = (
+            "Call plugin_cli with this exact actionId and typed parameters."
+            if authorized
+            else "Authorize the CLI component, then call plugin_cli with this exact actionId and typed parameters."
+        )
+    payload["items"] = [
+        {
+            "pluginId": payload.get("pluginId"),
+            "name": command_path,
+            "status": "authorized" if authorized else "needs_authorization",
+            "authorized": authorized,
+            "usage": {
+                "cli": [
+                    {
+                        "componentId": payload.get("profileId"),
+                        "command": command_path,
+                        "available": authorized,
+                        "help": "\n".join(details),
+                    }
+                ]
+            },
+        }
+    ]
+    payload["count"] = 1
+    payload["nextAction"] = next_action
+    return payload
+
+
 @tool
 async def plugin_broker(
-    mode: Literal["list", "status", "authorize", "request"] = "list",
+    mode: Literal["list", "status", "action", "authorize", "request"] = "list",
     plugin_id: str = "",
     component_ids: list[str] | None = None,
+    profile_id: str = "",
+    command_path: list[str] | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Discover, inspect, request, or authorize governed plugins.
 
     ``@插件`` is a strong user hint, not the only authorization path. Use
     ``list`` to inspect installed/available plugin components and ``status`` for
-    a named plugin. A named status returns bounded CLI help plus the real Skill
-    and MCP names/descriptions from their registered metadata. Component IDs are
+    a named plugin. A named status returns bounded CLI roots plus the real Skill
+    and MCP names/descriptions from their registered metadata. Use ``action``
+    with a CLI component ``profile_id`` and a literal ``command_path`` to load
+    one exact subcommand group or typed action contract on demand. Component IDs are
     grant identifiers, never CLI actions, Skill names, or MCP tool names. Use
     ``authorize`` for the smallest component set needed by the current run, then
     invoke authorized CLI actions through ``plugin_cli`` with ``actionId`` plus
@@ -46,7 +106,7 @@ async def plugin_broker(
     normalized_mode = str(mode or "list").strip().lower()
     normalized_plugin_id = str(plugin_id or "").strip().lower()
     try:
-        if normalized_mode not in {"list", "status", "authorize", "request"}:
+        if normalized_mode not in {"list", "status", "action", "authorize", "request"}:
             raise PluginManagerError("不支持的 plugin_broker mode", code="plugin_broker_mode_invalid")
         if not actor.is_collaboration_actor:
             raise PluginManagerError("当前内部 actor 不在插件协作授权面。", code="plugin_actor_not_supported", status_code=403)
@@ -76,6 +136,37 @@ async def plugin_broker(
                         "nextAction": "把这项插件需求作为结构化 blocker 回传父 Agent；不得自行安装、配置、读取密钥或扩大组件范围。",
                         "error": {"code": "plugin_parent_authorization_required", "message": "需要父级已有授权后再通过委派合同投影。"},
                     },
+                    ensure_ascii=False,
+                )
+            if normalized_mode == "action":
+                normalized_profile_id = str(profile_id or "").strip()
+                if not normalized_plugin_id or not normalized_profile_id or not list(command_path or []):
+                    raise PluginManagerError(
+                        "action 需要 plugin_id、profile_id 和 command_path。",
+                        code="plugin_action_request_incomplete",
+                    )
+                authorized_components = {
+                    str(component_id or "").strip()
+                    for grant in grants
+                    if str(grant.get("pluginId") or "").strip().lower() == normalized_plugin_id
+                    for component_id in list(grant.get("componentIds") or [])
+                }
+                if normalized_profile_id not in authorized_components:
+                    raise PluginManagerError(
+                        "当前委派没有该 CLI 组件授权。",
+                        code="plugin_cli_not_granted",
+                        status_code=403,
+                    )
+                payload = plugin_manager_service.resolve_cli_action(
+                    normalized_plugin_id,
+                    normalized_profile_id,
+                    list(command_path or []),
+                )
+                return json.dumps(
+                    _cli_resolution_surface(
+                        {"ok": True, "mode": "action", **payload},
+                        authorized=True,
+                    ),
                     ensure_ascii=False,
                 )
             visible_grants = [
@@ -136,6 +227,37 @@ async def plugin_broker(
             )
             payload["ok"] = True
             return json.dumps(payload, ensure_ascii=False)
+
+        if normalized_mode == "action":
+            normalized_profile_id = str(profile_id or "").strip()
+            if not normalized_plugin_id or not normalized_profile_id or not list(command_path or []):
+                raise PluginManagerError(
+                    "action 需要 plugin_id、profile_id 和 command_path。",
+                    code="plugin_action_request_incomplete",
+                )
+            payload = plugin_manager_service.resolve_cli_action(
+                normalized_plugin_id,
+                normalized_profile_id,
+                list(command_path or []),
+            )
+            active_components = {
+                str(component_id or "").strip()
+                for grant in plugin_manager_service.active_grants(
+                    session_id=session_id,
+                    run_id=run_id or None,
+                    grantee_type="supervisor",
+                    grantee_id=agent_id,
+                )
+                if str(grant.get("pluginId") or "").strip().lower() == normalized_plugin_id
+                for component_id in list(grant.get("componentIds") or [])
+            } if session_id else set()
+            return json.dumps(
+                _cli_resolution_surface(
+                    {"ok": True, "mode": "action", **payload},
+                    authorized=normalized_profile_id in active_components,
+                ),
+                ensure_ascii=False,
+            )
 
         if normalized_mode == "authorize":
             if not normalized_plugin_id:

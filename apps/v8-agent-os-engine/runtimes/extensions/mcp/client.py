@@ -26,6 +26,33 @@ MCP_SERVER_INIT_TIMEOUT_SECONDS = float(
 )
 
 
+def _initialization_metadata(initialization: Any) -> dict[str, str | None]:
+    server_info = (
+        getattr(initialization, "serverInfo", None)
+        or getattr(initialization, "server_info", None)
+    )
+    server_info_name = str(
+        getattr(server_info, "name", None)
+        or (server_info.get("name") if isinstance(server_info, dict) else "")
+        or ""
+    ).strip()
+    server_info_version = str(
+        getattr(server_info, "version", None)
+        or (server_info.get("version") if isinstance(server_info, dict) else "")
+        or ""
+    ).strip()
+    protocol_version = str(
+        getattr(initialization, "protocolVersion", None)
+        or getattr(initialization, "protocol_version", None)
+        or ""
+    ).strip()
+    return {
+        "serverInfoName": server_info_name or None,
+        "serverInfoVersion": server_info_version or None,
+        "protocolVersion": protocol_version or None,
+    }
+
+
 @dataclass(slots=True)
 class _ManagedServerTask:
     name: str
@@ -467,7 +494,8 @@ class MCPManager:
                 raise ValueError(f"Unknown transport type: {transport_type}")
 
             session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            initialization = await session.initialize()
+            initialization_metadata = _initialization_metadata(initialization)
 
             server_tools = await load_mcp_tools(session)
             apps_discovery = await self._discover_apps_for_server(name, session)
@@ -493,6 +521,7 @@ class MCPManager:
                 appsSupported=bool(apps_discovery.get("appsSupported")),
                 appToolCount=int(apps_discovery.get("appToolCount") or 0),
                 uiResourceCount=int(apps_discovery.get("uiResourceCount") or 0),
+                **initialization_metadata,
                 lastAppsError=apps_discovery.get("lastAppsError"),
                 lastError=None,
                 lastErrorKind=None,
@@ -846,6 +875,9 @@ class MCPManager:
                 "appsSupported": bool(server_state.get("appsSupported", False)),
                 "appToolCount": int(server_state.get("appToolCount") or 0),
                 "uiResourceCount": int(server_state.get("uiResourceCount") or 0),
+                "serverInfoName": server_state.get("serverInfoName"),
+                "serverInfoVersion": server_state.get("serverInfoVersion"),
+                "protocolVersion": server_state.get("protocolVersion"),
                 "lastAppsError": server_state.get("lastAppsError"),
             }
             if server_state.get("status"):

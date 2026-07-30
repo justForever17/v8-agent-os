@@ -22,12 +22,38 @@ test("plugin manager routes CLI login separately from MCP OAuth", () => {
   assert.match(source, /Boolean\(\s*requirements\s*&&\s*selected\s*&&\s*requirements\.pluginId === selected\.id/);
 });
 
-test("plugin component summary omits zero counts, counts Skills, and pins the daily bundle", () => {
-  assert.match(source, /\.filter\(\(\[, count\]\) => Number\(count\) > 0\)/);
-  assert.match(source, /\["Skill", selected\.componentCounts\.skills\]/);
-  assert.match(source, /FEATURED_PLUGIN_ORDER = \["office-suite"\]/);
+test("plugin component summary omits zero counts, counts Skills, and pins curated bundles", () => {
+  assert.match(source, /function ComponentVersionStrip/);
+  assert.match(source, /count: plugin\.componentCounts\.skills/);
+  assert.match(source, /\.filter\(\(item\) => Number\(item\.count\) > 0\)/);
+  assert.match(source, /FEATURED_PLUGIN_ORDER = \["office-suite", "godot"\]/);
   assert.match(source, /FEATURED_PLUGIN_ORDER\.map\(\(id\) =>/);
   assert.match(source, /\.sort\(\(left, right\) =>/);
+});
+
+test("CLI, Skill, and MCP summaries expose member details and reviewed updates", () => {
+  assert.match(source, /components: discovery\?\.cli \|\| \[\]/);
+  assert.match(source, /components: discovery\?\.skills \|\| \[\]/);
+  assert.match(source, /components: discovery\?\.mcp \|\| \[\]/);
+  assert.match(source, /component\.members\?\.length/);
+  assert.match(source, /group-hover:visible/);
+  assert.match(source, /max-h-64[^\n]*overflow-y-auto/);
+  assert.match(source, /item\.action === "update" && item\.updateSupported/);
+  assert.match(source, /PluginManagerWorkbench\.machine\.version\.updateTo/);
+  assert.match(source, /selectedUpdatesAvailable/);
+  assert.match(source, /selectedNeedsUpdate/);
+});
+
+test("Godot setup unlocks installation only after native paths, scenario, and live MCP verification", () => {
+  assert.match(source, /function GodotSetupPanel/);
+  assert.match(source, /https:\/\/godotengine\.org\/download\/windows\//);
+  assert.match(source, /selectGodotExecutable/);
+  assert.match(source, /selectGodotProjectDirectory/);
+  assert.match(source, /godotSetup\.status\.readyForInstall/);
+  assert.match(source, /selectedInstallActive \|\| !selectedSetupReady/);
+  assert.match(source, /setup\/refresh/);
+  assert.match(source, /setup\.status\.editorOnline/);
+  assert.match(source, /setup\.status\.offlinePrerequisitesReady/);
 });
 
 test("plugin installs expose targeted progress instead of silently reloading the full catalog", () => {
@@ -49,5 +75,5 @@ test("MediaKit presents local and cloud configuration as separate concise surfac
   assert.match(source, /MEDIAKIT_API_KEY/);
   assert.match(source, /MEDIAKIT_OUTPUT_PATH/);
   assert.match(source, /console\.volcengine\.com\/imp\/ai-mediakit\/settings/);
-  assert.match(source, /selectedNeedsCompletion \? "components\.plugins\.PluginManagerWorkbench\.complete" : "components\.plugins\.PluginManagerWorkbench\.install"/);
+  assert.match(source, /selectedNeedsCompletion \? "components\.plugins\.PluginManagerWorkbench\.complete" : selectedNeedsUpdate \? "components\.plugins\.PluginManagerWorkbench\.update" : "components\.plugins\.PluginManagerWorkbench\.install"/);
 });

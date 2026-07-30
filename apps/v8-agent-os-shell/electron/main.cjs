@@ -613,6 +613,29 @@ ipcMain.handle('v8os-shell:open-workspace-folder', async (_event, workspacePath)
   return error ? { ok: false, error } : { ok: true };
 });
 
+ipcMain.handle('v8os-shell:select-godot-executable', async () => {
+  if (!mainWindow) return { ok: false, error: 'shell_window_unavailable' };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select Godot executable',
+    properties: ['openFile'],
+    filters: process.platform === 'win32'
+      ? [{ name: 'Godot', extensions: ['exe'] }]
+      : [{ name: 'Godot', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+  return { ok: true, path: path.resolve(result.filePaths[0]) };
+});
+
+ipcMain.handle('v8os-shell:select-godot-project-directory', async () => {
+  if (!mainWindow) return { ok: false, error: 'shell_window_unavailable' };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select Godot project',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: false, cancelled: true };
+  return { ok: true, path: path.resolve(result.filePaths[0]) };
+});
+
 ipcMain.handle('v8os-shell:get-desktop-pet-state', async () => {
   await refreshStatus();
   return currentDesktopPetStatus();

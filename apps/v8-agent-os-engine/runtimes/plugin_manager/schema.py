@@ -118,9 +118,12 @@ class CliAction(StrictModel):
 
 
 class CliCapabilitySync(StrictModel):
-    adapter: Literal["mediakit_cli_v1"]
+    adapter: Literal["mediakit_cli_v1", "gda_cli_v1", "reviewed_help_v1"]
     snapshotPath: str = "capabilities/cli-schema.json"
     blockBreakingUpgrade: bool = True
+    helpArguments: list[str] = Field(default_factory=lambda: ["--help"], min_length=1, max_length=4)
+    helpPlacement: Literal["suffix", "prefix"] = "suffix"
+    maxCachedActions: int = Field(default=256, ge=1, le=1024)
 
     @field_validator("snapshotPath")
     @classmethod
@@ -129,6 +132,19 @@ class CliCapabilitySync(StrictModel):
         if normalized.is_absolute() or ".." in normalized.parts or not normalized.parts:
             raise ValueError("CLI capability snapshot path must be a safe relative path")
         return normalized.as_posix()
+
+    @field_validator("helpArguments")
+    @classmethod
+    def validate_help_arguments(cls, value: list[str]) -> list[str]:
+        normalized = [str(item or "").strip() for item in value]
+        if any(
+            not item
+            or len(item) > 64
+            or not re.fullmatch(r"(?:--?[A-Za-z][A-Za-z0-9-]*|[A-Za-z][A-Za-z0-9_-]*)", item)
+            for item in normalized
+        ):
+            raise ValueError("CLI help arguments must be short literal command tokens")
+        return normalized
 
 
 class CliProfile(StrictModel):
@@ -184,6 +200,7 @@ class SkillComponent(StrictModel):
     sourceTrust: Literal["official", "reviewed_community"] = "official"
     sourceLicense: str | None = None
     reviewNote: str | None = None
+    setupScenarios: list[Literal["2d", "2.5d", "3d"]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "SkillComponent":
@@ -226,6 +243,10 @@ class McpComponent(StrictModel):
     configRequirements: list[PluginConfigRequirement] = Field(default_factory=list)
     allowedTools: list[str] = Field(default_factory=list)
     officialOrganization: str
+    sourceTrust: Literal["official", "reviewed_community"] = "official"
+    revision: str | None = None
+    sourceLicense: str | None = None
+    reviewNote: str | None = None
 
     @model_validator(mode="after")
     def require_source(self) -> "McpComponent":
@@ -238,6 +259,11 @@ class McpComponent(StrictModel):
             raise ValueError("MCP allowedTools must enumerate exact reviewed tool names; wildcard is forbidden")
         if len(normalized_tools) != len(set(normalized_tools)):
             raise ValueError("MCP allowedTools entries must be unique")
+        if self.sourceTrust == "reviewed_community":
+            if not re.fullmatch(r"[0-9a-f]{40}", str(self.revision or "").lower()):
+                raise ValueError("reviewed community MCP revisions must be pinned full commit SHAs")
+            if not str(self.sourceLicense or "").strip() or not str(self.reviewNote or "").strip():
+                raise ValueError("reviewed community MCPs require license and review note provenance")
         self.allowedTools = normalized_tools
         return self
 
@@ -285,6 +311,7 @@ class PluginManifest(StrictModel):
     reviewedOrganizations: list[str] = Field(default_factory=list)
     officialLinks: OfficialLinks
     brand: BrandAsset
+    setupAdapter: Literal["godot_v1"] | None = None
     cliProfiles: list[CliProfile] = Field(default_factory=list)
     skills: list[SkillComponent] = Field(default_factory=list)
     mcpServers: list[McpComponent] = Field(default_factory=list)
@@ -337,11 +364,24 @@ class PluginManifest(StrictModel):
                 if source_profile is None or source_profile.ownership != "managed":
                     raise ValueError(f"skill {skill.id} must reference a managed CLI component")
         for mcp in self.mcpServers:
-            if mcp.officialOrganization.lower() not in organizations:
-                raise ValueError(f"MCP {mcp.id} official organization is not declared")
-            for source in (mcp.repository, mcp.url):
-                if source and not official_url(source):
-                    raise ValueError(f"MCP {mcp.id} source is not official: {source}")
+            if mcp.sourceTrust == "official":
+                if mcp.officialOrganization.lower() not in organizations:
+                    raise ValueError(f"MCP {mcp.id} official organization is not declared")
+                for source in (mcp.repository, mcp.url):
+                    if source and not official_url(source):
+                        raise ValueError(f"MCP {mcp.id} source is not official: {source}")
+            else:
+                source = str(mcp.repository or "")
+                parsed = urlparse(source)
+                path_parts = [part for part in parsed.path.split("/") if part]
+                source_organization = mcp.officialOrganization.lower()
+                if (
+                    (parsed.hostname or "").lower() != "github.com"
+                    or len(path_parts) < 2
+                    or path_parts[0].lower() != source_organization
+                    or source_organization not in reviewed_organizations
+                ):
+                    raise ValueError(f"MCP {mcp.id} is not declared as a reviewed community source")
         for profile in self.cliProfiles:
             for command in (profile.install, profile.detect, profile.version, profile.login, profile.start, profile.stop, profile.uninstall):
                 if command and command.downloadUrl and not official_url(command.downloadUrl):

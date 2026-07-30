@@ -212,6 +212,34 @@ async def get_events(pluginId: str | None = None, limit: int = 100):
     return plugin_manager_service.list_events(plugin_id=pluginId, limit=limit)
 
 
+@router.get("/{plugin_id}/setup")
+async def get_plugin_setup(plugin_id: str, refresh: bool = Query(default=False)):
+    try:
+        return await asyncio.to_thread(plugin_manager_service.plugin_setup, plugin_id, probe=refresh)
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
+@router.put("/{plugin_id}/setup")
+async def update_plugin_setup(plugin_id: str, payload: dict[str, Any] = Body(default={})):
+    try:
+        return await asyncio.to_thread(
+            plugin_manager_service.update_plugin_setup,
+            plugin_id,
+            dict(payload.get("values") or payload),
+        )
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
+@router.post("/{plugin_id}/setup/refresh")
+async def refresh_plugin_setup(plugin_id: str):
+    try:
+        return await asyncio.to_thread(plugin_manager_service.plugin_setup, plugin_id, probe=True)
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
 @router.get("/{plugin_id}/configuration-requirements")
 async def get_configuration_requirements(plugin_id: str):
     try:

@@ -5,6 +5,8 @@ import copy
 import hashlib
 import io
 import json
+import os
+import sys
 import threading
 import time
 import zipfile
@@ -20,6 +22,7 @@ from core.security.credentials import CredentialRefStore, MemoryCredentialBacken
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from erc.runtime_context import bind_runtime_context
 from runtimes.plugin_manager.catalog import plugin_catalog_service
+from runtimes.plugin_manager import cli_capability_sync as capability_sync_module
 from runtimes.plugin_manager.requirements import compile_plugin_requirements
 from runtimes.plugin_manager.service import PluginManagerError, PluginManagerService
 from runtimes.plugin_manager.schema import CommandSpec
@@ -144,6 +147,68 @@ def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
         conn.commit()
 
 
+def _seed_reviewed_cli_action(
+    service: PluginManagerService,
+    plugin_id: str,
+    *,
+    action_id: str,
+    command_path: list[str],
+) -> None:
+    manifest = service._manifest(plugin_id)
+    profile = manifest.cliProfiles[0]
+    target = service._cli_capability_snapshot_path(manifest, profile)
+    assert target is not None
+    payload = {
+        "schemaVersion": capability_sync_module.SNAPSHOT_SCHEMA_VERSION,
+        "adapter": "reviewed_help_v1",
+        "pluginId": manifest.id,
+        "profileId": profile.id,
+        "cliVersion": "test-1.0.0",
+        "reviewedRoots": sorted({command_path[0]}),
+        "helpArguments": list(profile.capabilitySync.helpArguments),
+        "helpPlacement": profile.capabilitySync.helpPlacement,
+        "rootCommands": [{"id": command_path[0], "description": "Reviewed root"}],
+        "missingRoots": [],
+        "commandGroups": {},
+        "refreshErrors": [],
+        "actionCount": 1,
+        "actions": [
+            {
+                "id": action_id,
+                "commandPath": command_path,
+                "argv": [profile.commands[0], *command_path],
+                "description": "Reviewed typed action",
+                "parameters": [],
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+                "outputSchema": {"type": "object"},
+                "mutating": False,
+                "source": "discovered_schema",
+            }
+        ],
+    }
+    payload["digest"] = capability_sync_module._digest(payload)
+    capability_sync_module._atomic_write(target, payload)
+
+
+def _godot_setup_projection(values: dict, *, probe_mcp: bool) -> dict:
+    scenario = str(values.get("scenario") or "")
+    prerequisites_ready = bool(values.get("godotExecutable") and values.get("projectPath") and scenario)
+    editor_online = bool(probe_mcp and prerequisites_ready)
+    return {
+        "adapter": "godot_v1",
+        "steps": {
+            "application": {"state": "ready" if values.get("godotExecutable") else "missing"},
+            "project": {"state": "ready" if values.get("projectPath") else "missing"},
+            "scenario": {"state": "ready" if scenario else "missing", "value": scenario},
+            "mcp": {"state": "ready" if editor_online else "unchecked"},
+        },
+        "readyForInstall": editor_online,
+        "editorOnline": editor_online,
+        "offlinePrerequisitesReady": prerequisites_ready,
+        "blockingReasons": [] if editor_online else ["mcp"],
+    }
+
+
 def test_skills_cli_runs_without_a_console_window_on_windows(
     runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -169,6 +234,29 @@ def test_skills_cli_runs_without_a_console_window_on_windows(
     assert captured["kwargs"]["capture_output"] is True
 
 
+def test_skills_cli_inventory_probes_the_installed_tool_version(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    calls: list[list[str]] = []
+
+    def fake_skills_cli(arguments, **_kwargs):
+        call = [str(item) for item in arguments]
+        calls.append(call)
+        if call == ["--version"]:
+            return {"returnCode": 0, "stdoutTail": "skills 1.5.19", "stderrTail": ""}
+        return {"returnCode": 0, "stdoutTail": "[]", "stderrTail": ""}
+
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
+
+    inventory = PluginManagerService._skills_cli_inventory(service, force=True)
+
+    assert calls == [["--version"], ["list", "--global", "--json"]]
+    assert inventory["toolVersion"] == "1.5.19"
+    assert inventory["toolProbeOk"] is True
+
+
 def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
     service, _, _ = runtime
     catalog = plugin_catalog_service.load()
@@ -178,13 +266,14 @@ def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
     assert {plugin.id for plugin in catalog.plugins} == {
         "aliyun-bailian", "volcengine-mediakit", "volcengine", "lark", "cloudflare", "supabase",
         "vercel", "google-workspace", "github", "aws", "wordpress",
-        "azure", "figma", "hyperframes", "stripe", "docker", "amap", "office-suite",
+        "azure", "figma", "hyperframes", "stripe", "amap", "godot", "office-suite",
     }
     assert [plugin.id for plugin in catalog.plugins[:3]] == [
         "aliyun-bailian",
         "volcengine-mediakit",
         "volcengine",
     ]
+    assert not (Path(service_module.__file__).parent / "resources" / "logos" / "docker.ico").exists()
     assert all(plugin.artifacts for plugin in catalog.plugins)
     assert all(service.verify_brand_asset(plugin)["ok"] for plugin in catalog.plugins)
     assert all(
@@ -200,9 +289,21 @@ def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
         for skill in plugin.skills
     )
     assert all(
-        server.officialOrganization.lower() in {item.lower() for item in plugin.officialOrganizations}
+        (
+            server.sourceTrust == "official"
+            and server.officialOrganization.lower() in {item.lower() for item in plugin.officialOrganizations}
+        )
+        or (
+            server.sourceTrust == "reviewed_community"
+            and server.officialOrganization.lower() in {item.lower() for item in plugin.reviewedOrganizations}
+        )
         for plugin in catalog.plugins
         for server in plugin.mcpServers
+    )
+    assert all(
+        profile.actions or profile.capabilitySync is not None
+        for plugin in catalog.plugins
+        for profile in plugin.cliProfiles
     )
 
     office = next(plugin for plugin in catalog.plugins if plugin.id == "office-suite")
@@ -221,6 +322,11 @@ def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
     projected_office = next(item for item in service.list_catalog()["plugins"] if item["id"] == "office-suite")
     assert projected_office["componentCounts"]["skills"] == 7
     assert projected_office["declaredComponentCounts"]["skills"] == 7
+
+    godot = next(plugin for plugin in catalog.plugins if plugin.id == "godot")
+    assert godot.setupAdapter == "godot_v1"
+    assert godot.mcpServers[0].sourceTrust == "reviewed_community"
+    assert godot.mcpServers[0].revision == "e642402d179e48173f4774492cfe2e11181cd1fa"
 
 
 def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,6 +348,84 @@ def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypa
     assert office_plan["steps"]["cli"] == []
     assert office_plan["steps"]["mcp"] == []
     assert [item["id"] for item in office_plan["steps"]["skills"]] == ["anthropic-daily-skills"]
+
+
+def test_godot_setup_selects_scenario_skills_and_gates_install_on_live_mcp(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    probe_calls: list[bool] = []
+
+    def fake_evaluate(values: dict, *, probe_mcp: bool = True) -> dict:
+        probe_calls.append(probe_mcp)
+        return _godot_setup_projection(values, probe_mcp=probe_mcp)
+
+    monkeypatch.setattr(service_module, "evaluate_godot_setup", fake_evaluate)
+    before = next(item for item in service.list_catalog()["plugins"] if item["id"] == "godot")
+    assert before["componentCounts"]["skills"] == 11
+
+    saved = service.update_plugin_setup(
+        "godot",
+        {
+            "godotExecutable": "C:/Tools/Godot.exe",
+            "projectPath": "C:/Projects/MyGame",
+            "scenario": "2.5d",
+        },
+    )
+    assert saved["status"]["offlinePrerequisitesReady"] is True
+    assert saved["status"]["readyForInstall"] is False
+    assert probe_calls[-1] is False
+
+    after = next(item for item in service.list_catalog()["plugins"] if item["id"] == "godot")
+    assert after["componentCounts"]["skills"] == 14
+    policy = service._component_policy(service._manifest("godot"))
+    assert {item.id for item in policy["skills"]} == {
+        "gda-versioned-skill",
+        "godot-scene-core-skills",
+        "godot-scene-2d-skills",
+        "godot-scene-3d-skills",
+    }
+
+    environment = service._setup_environment(service._manifest("godot"))
+    assert environment["GDA_GODOT"] == "C:/Tools/Godot.exe"
+    assert environment["GDA_PROJECT"] == "C:/Projects/MyGame"
+
+    plan = service.build_install_plan("godot")
+    assert probe_calls[-1] is True
+    assert plan["installable"] is True
+    assert plan["componentPolicy"]["transport"] == "cli_mcp"
+    assert [item["componentId"] for item in plan["steps"]["cli"]] == ["gda-cli"]
+    assert [item["id"] for item in plan["steps"]["mcp"]] == ["godot-ai-mcp"]
+
+
+def test_godot_capability_sync_uses_managed_gda_binary(
+    runtime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("godot")
+    profile = next(item for item in manifest.cliProfiles if item.id == "gda-cli")
+    plugin_root = tmp_path / "godot-plugin"
+    captured: dict[str, object] = {}
+
+    def fake_sync_gda_capabilities(**kwargs):
+        captured.update(kwargs)
+        return {"accepted": True, "actionCount": 48}
+
+    monkeypatch.setattr(service_module, "sync_gda_capabilities", fake_sync_gda_capabilities)
+
+    result = service._sync_cli_profile_capabilities(
+        manifest,
+        profile,
+        plugin_root=plugin_root,
+    )
+
+    expected = plugin_root / "bin" / ("gda.exe" if os.name == "nt" else "gda")
+    assert Path(str(captured["executable"])) == expected
+    assert Path(str(captured["executable"])) != Path(sys.executable)
+    assert result == {"accepted": True, "actionCount": 48}
 
 
 def test_machine_discovery_adopts_existing_cli_and_official_skill_without_claiming_user_mcp(
@@ -331,6 +515,144 @@ def test_machine_discovery_uses_cached_startup_snapshot_until_explicit_refresh(
     assert refreshed["summary"]["totalUnits"] == 2
     assert refreshed["summary"]["missingUnits"] == 1
     assert refreshed["summary"]["coverage"] == "partial"
+
+
+def test_machine_discovery_projects_reviewed_cli_and_skill_updates_with_member_details(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("cloudflare")
+    profile = manifest.cliProfiles[0]
+    skill = manifest.skills[0]
+    skill_name = skill.skillNames[0]
+    skill_root = service_module.AGENT_SKILLS_ROOT / skill_name
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+    service._upsert_installation(
+        manifest,
+        state="installed",
+        health={"ok": True, "online": True, "checks": []},
+        external=False,
+    )
+    service._register_component(
+        manifest.id,
+        profile.id,
+        "cli",
+        source_version="4.0.0",
+        ownership="managed",
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_cli_commands",
+        lambda _profile: {"wrangler": "C:/v8/plugins/cloudflare/wrangler.cmd"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_probe_cli_version",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "version": "4.0.0",
+            "returnCode": 0,
+            "durationMs": 3,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "toolVersion": "1.5.19",
+            "toolProbeOk": True,
+            "items": [{"name": skill_name, "path": str(skill_root), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {
+                skill_name: {
+                    "sourceUrl": skill.repository,
+                    "skillPath": f"{skill.path}/SKILL.md",
+                    "ref": "0" * 40,
+                }
+            },
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_cached_extension_skill_metadata",
+        lambda: ({skill_name: {"description": "Reviewed Wrangler workflow guidance."}}, {}),
+    )
+
+    discovery = service.discover_machine_components(manifest.id, force=True)
+
+    cli = discovery["cli"][0]
+    assert cli["action"] == "update"
+    assert cli["installedVersion"] == "4.0.0"
+    assert cli["availableVersion"] == "4.110.0"
+    assert cli["versionState"] == "available"
+    assert cli["members"][0]["name"] == "wrangler"
+    skill_projection = discovery["skills"][0]
+    assert skill_projection["action"] == "update"
+    assert skill_projection["installedVersion"] == "0" * 40
+    assert skill_projection["availableVersion"] == skill.revision
+    assert skill_projection["members"] == [
+        {"name": skill_name, "description": "Reviewed Wrangler workflow guidance."}
+    ]
+    assert discovery["skillsCli"]["version"] == "1.5.19"
+    assert discovery["summary"]["updatesAvailable"] == 2
+    assert [item["componentType"] for item in discovery["components"]] == ["cli", "skill"]
+    plan = service.build_install_plan(manifest.id)
+    assert plan["steps"]["cli"][0]["action"] == "update"
+    assert plan["steps"]["skills"][0]["action"] == "update"
+
+
+def test_machine_discovery_projects_mcp_handshake_version_protocol_and_tools(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, test_storage = runtime
+    manifest = service._manifest("figma")
+    server = manifest.mcpServers[0]
+    test_storage.mcp_config["mcpServers"][server.serverName] = {
+        "url": server.url,
+        "disabled": False,
+        "x-v8-plugin-owner": manifest.id,
+        "x-v8-plugin-component": server.id,
+    }
+    service._upsert_installation(
+        manifest,
+        state="installed",
+        health={"ok": True, "online": True, "checks": []},
+        external=False,
+    )
+    service._register_component(
+        manifest.id,
+        server.id,
+        "mcp",
+        source_url=server.url,
+        source_version="0",
+    )
+    monkeypatch.setattr(
+        service,
+        "_cached_mcp_status",
+        lambda: {
+            server.serverName: {
+                "serverInfoName": "Figma MCP",
+                "serverInfoVersion": "2.3.4",
+                "protocolVersion": "2025-06-18",
+                "tools": [{"name": "get_design_context", "description": "Read selected design context."}],
+            }
+        },
+    )
+
+    projection = service.discover_machine_components(manifest.id, force=True)["mcp"][0]
+
+    assert projection["state"] == "registered"
+    assert projection["action"] == "update"
+    assert projection["runtimeVersion"] == "2.3.4"
+    assert projection["protocolVersion"] == "2025-06-18"
+    assert projection["members"] == [
+        {"name": "get_design_context", "description": "Read selected design context."}
+    ]
 
 
 def test_machine_discovery_trusts_registered_skill_receipt_when_public_lock_is_missing(runtime) -> None:
@@ -967,9 +1289,13 @@ def test_plugin_broker_authorizes_with_supervisor_and_projects_exact_subagent_gr
     assert json.loads(denied_output)["error"]["code"] == "plugin_authorize_supervisor_only"
 
 
-def test_cli_requires_exact_grant_and_structured_manifest_action(runtime) -> None:
+def test_cli_requires_exact_grant_and_structured_manifest_action(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, _, _ = runtime
     _mark_ready(service, "github")
+    monkeypatch.setattr(service, "_sync_cli_profile_capabilities", lambda *_args, **_kwargs: None)
     with pytest.raises(PluginManagerError) as missing:
         asyncio.run(service.execute_cli(
             plugin_id="github",
@@ -1006,6 +1332,13 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
 ) -> None:
     service, _, _ = runtime
     _mark_ready(service, "github")
+    _seed_reviewed_cli_action(
+        service,
+        "github",
+        action_id="repo.view",
+        command_path=["repo", "view"],
+    )
+    monkeypatch.setattr(service, "_sync_cli_profile_capabilities", lambda *_args, **_kwargs: None)
     skill_root = service_module.AGENT_SKILLS_ROOT / "gh"
     from runtimes.extensions.runtime import extensions_runtime_service
 
@@ -1020,34 +1353,23 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
             }
         ],
     )
-    help_calls: list[list[str]] = []
-
-    def fake_execute(_manifest, spec, **_kwargs):
-        help_calls.append(list(spec.argv))
-        return {
-            "returnCode": 0,
-            "stdoutTail": "Work seamlessly with GitHub from the command line.",
-            "stderrTail": "",
-            "durationMs": 1,
-        }
-
-    monkeypatch.setattr(service, "_execute_spec", fake_execute)
     refreshed_path = str(service_module.AGENT_SKILLS_ROOT.parent / "cli-bin")
     monkeypatch.setattr(service, "_cli_search_path", lambda: refreshed_path)
 
     payload = service.supervisor_catalog(plugin_id="github", session_id="s1", run_id="r1")
     usage = payload["items"][0]["usage"]
 
-    assert help_calls and help_calls[0][-1] == "--help"
     assert usage["transport"] == "cli"
-    assert usage["cli"] == [
-        {
-            "componentId": "gh",
-            "command": "gh",
-            "help": "Work seamlessly with GitHub from the command line.",
-            "available": True,
-        }
+    assert usage["cli"][0]["componentId"] == "gh"
+    assert usage["cli"][0]["command"] == "gh"
+    assert usage["cli"][0]["available"] is True
+    assert usage["cli"][0]["rootCommands"] == [
+        {"id": "repo", "description": "Reviewed root"}
     ]
+    assert usage["cli"][0]["actions"] == [
+        {"id": "repo.view", "description": "Reviewed typed action", "mutating": False}
+    ]
+    assert "stdoutTail" not in json.dumps(usage)
     assert usage["skills"] == [
         {
             "componentId": "github-cli-skill",
@@ -1060,6 +1382,138 @@ def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_dem
     assert "Never bypass the plugin grant with run_system_command" in payload["nextAction"]
     assert "does not need a plugin grant" not in payload["nextAction"]
     assert service_module.os.environ["PATH"] == refreshed_path
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "action_id", "command_path", "expected_ownership"),
+    [
+        ("cloudflare", "d1.list", ["d1", "list"], "managed"),
+        ("github", "repo.view", ["repo", "view"], "external"),
+    ],
+)
+def test_installed_cli_plugins_reach_governed_typed_invocation_for_managed_and_external_ownership(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_id: str,
+    action_id: str,
+    command_path: list[str],
+    expected_ownership: str,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, plugin_id)
+    manifest = service._manifest(plugin_id)
+    profile = manifest.cliProfiles[0]
+    assert profile.ownership == expected_ownership
+    _seed_reviewed_cli_action(
+        service,
+        plugin_id,
+        action_id=action_id,
+        command_path=command_path,
+    )
+    monkeypatch.setattr(service, "_sync_cli_profile_capabilities", lambda *_args, **_kwargs: None)
+    grant = service.create_grant(
+        plugin_id=plugin_id,
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=[profile.id],
+    )
+    projection = service.projection_for(session_id="s1", run_id="r1")
+    assert projection["cliProfiles"] == [
+        {
+            "pluginId": manifest.id,
+            "pluginName": manifest.displayName,
+            "grantId": grant["grantId"],
+            "id": profile.id,
+            "command": profile.commands[0],
+        }
+    ]
+
+    captured: dict[str, object] = {}
+
+    def fake_execute(_manifest, spec, **_kwargs):
+        captured["argv"] = list(spec.argv)
+        return {
+            "returnCode": 0,
+            "stdoutTail": "ok",
+            "stderrTail": "",
+            "durationMs": 1,
+        }
+
+    monkeypatch.setattr(service, "_execute_spec", fake_execute)
+    from core.tools.native import tool_governance
+    from erc.safety_guardian import safety_guardian
+
+    monkeypatch.setattr(
+        tool_governance,
+        "_enforce_safety_decision",
+        lambda *_args, **_kwargs: (True, None),
+    )
+    monkeypatch.setattr(safety_guardian, "assess_system_command", lambda *_args, **_kwargs: {})
+
+    result = asyncio.run(
+        service.execute_cli(
+            plugin_id=plugin_id,
+            profile_id=profile.id,
+            action_id=action_id,
+            parameters={},
+            session_id="s1",
+            run_id="r1",
+        )
+    )
+    assert result["status"] == "completed"
+    assert list(captured["argv"])[-len(command_path):] == command_path
+
+
+def test_mcp_only_and_skill_only_plugins_project_only_the_granted_transport(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "figma")
+    _mark_ready(service, "office-suite")
+
+    figma_manifest = service._manifest("figma")
+    figma_server = figma_manifest.mcpServers[0]
+    monkeypatch.setattr(figma_server, "allowedTools", ["get_repository"])
+
+    @tool
+    async def get_repository(name: str) -> str:
+        """Read a repository."""
+        return name
+
+    get_repository.metadata = {"server_name": figma_server.serverName}
+    from runtimes.extensions.mcp.client import mcp_manager
+
+    monkeypatch.setattr(mcp_manager, "get_tools", lambda: [get_repository])
+    service.create_grant(
+        plugin_id="figma",
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=[figma_server.id],
+    )
+    figma_projection = service.projection_for(session_id="s1", run_id="r1")
+    assert len(figma_projection["mcpTools"]) == 1
+    assert figma_projection["cliProfiles"] == []
+    assert figma_projection["skills"] == []
+
+    office_manifest = service._manifest("office-suite")
+    office_skill = office_manifest.skills[0]
+    service.create_grant(
+        plugin_id="office-suite",
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=[office_skill.id],
+    )
+    combined_projection = service.projection_for(session_id="s1", run_id="r1")
+    office_projection = [
+        item for item in combined_projection["skills"] if item["pluginId"] == "office-suite"
+    ]
+    assert len(office_projection) == 1
+    assert office_projection[0]["installedRoots"]
+    assert combined_projection["cliProfiles"] == []
 
 
 def test_plugin_catalog_list_does_not_probe_cli_help(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1372,15 +1826,27 @@ def test_concurrent_job_creation_allows_only_one_active_transaction(runtime, mon
 def test_run_install_job_is_single_claim_and_external_installer_runs_once(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
     monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
-    calls = 0
+    install_calls = 0
+    version_probe_calls = 0
     calls_lock = threading.Lock()
 
-    def execute(*_args, **_kwargs):
-        nonlocal calls
+    def execute(_manifest, spec, **_kwargs):
+        nonlocal install_calls, version_probe_calls
+        executable = str(spec.argv[0] if spec.argv else "").lower()
         with calls_lock:
-            calls += 1
-        time.sleep(0.05)
-        return {"argv": ["winget"], "returnCode": 0, "stdoutTail": "ok", "stderrTail": "", "durationMs": 1}
+            if "winget" in executable:
+                install_calls += 1
+            else:
+                version_probe_calls += 1
+        if "winget" in executable:
+            time.sleep(0.05)
+        return {
+            "argv": list(spec.argv),
+            "returnCode": 0,
+            "stdoutTail": "gh version 2.80.0" if "winget" not in executable else "ok",
+            "stderrTail": "",
+            "durationMs": 1,
+        }
 
     async def doctor(*_args, **_kwargs):
         return {"ok": True, "online": True, "checks": []}
@@ -1390,8 +1856,13 @@ def test_run_install_job_is_single_claim_and_external_installer_runs_once(runtim
     monkeypatch.setattr(service, "doctor", doctor)
     monkeypatch.setattr(
         service,
+        "_sync_cli_profile_capabilities",
+        lambda *_args, **_kwargs: {"ok": True, "accepted": True, "actionCount": 1},
+    )
+    monkeypatch.setattr(
+        service,
         "_install_skill_component",
-        lambda manifest, skill: [
+        lambda manifest, skill, **_kwargs: [
             service._register_component(
                 manifest.id,
                 str(skill["id"]),
@@ -1404,7 +1875,7 @@ def test_run_install_job_is_single_claim_and_external_installer_runs_once(runtim
     monkeypatch.setattr(
         service,
         "_discover_cli_commands",
-        lambda _profile: {"gh": "C:/Program Files/GitHub CLI/gh.exe"} if calls else {},
+        lambda _profile: {"gh": "C:/Program Files/GitHub CLI/gh.exe"} if install_calls else {},
     )
     plan = service.build_install_plan("github")
     job = service.create_install_job(
@@ -1421,12 +1892,22 @@ def test_run_install_job_is_single_claim_and_external_installer_runs_once(runtim
         )
 
     first, second = asyncio.run(run_twice())
-    assert first["state"] == "ready"
+    assert first["state"] == "ready", json.dumps(
+        {
+            "first": first,
+            "second": second,
+            "installCalls": install_calls,
+            "versionProbeCalls": version_probe_calls,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
     assert second["state"] in {
         "staging", "verifying", "installing", "waiting_for_elevation",
         "reconciling", "validating", "committing", "ready",
     }
-    assert calls == 1
+    assert install_calls == 1
+    assert version_probe_calls >= 1
 
 
 def test_install_journal_uses_declared_state_order(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1436,6 +1917,11 @@ def test_install_journal_uses_declared_state_order(runtime, monkeypatch: pytest.
         "argv": ["npm"], "returnCode": 0, "stdoutTail": "ok", "stderrTail": "", "durationMs": 1,
     })
     monkeypatch.setattr(service, "_install_skill_component", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_sync_cli_profile_capabilities",
+        lambda *_args, **_kwargs: {"ok": True, "accepted": True, "actionCount": 1},
+    )
 
     async def doctor(*_args, **_kwargs):
         return {"ok": True, "online": True, "checks": []}
@@ -1931,6 +2417,9 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     manifest = service._manifest("aliyun-bailian")
     skill = manifest.skills[0].model_dump(mode="json")
     calls: list[tuple[list[str], dict]] = []
+    skills_cli_calls: list[list[str]] = []
+    create_no_window = 0x08000000
+    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
 
     def fake_run(argv, **kwargs):
         command = [str(item) for item in argv]
@@ -1947,7 +2436,7 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     inventory = {"ok": True, "tool": service_module.SKILLS_CLI_PACKAGE, "items": [], "lockEntries": {}, "error": ""}
 
     def fake_skills_cli(arguments, **_kwargs):
-        assert arguments[:2] == ["add", arguments[1]]
+        skills_cli_calls.append([str(item) for item in arguments])
         target = service_module.AGENT_SKILLS_ROOT / "bailian-cli"
         target.mkdir(parents=True, exist_ok=True)
         (target / "SKILL.md").write_text("---\nname: bailian-cli\n---\n", encoding="utf-8")
@@ -1978,8 +2467,189 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     ]
     assert all(kwargs["shell"] is False for _, kwargs in calls)
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for _, kwargs in calls)
+    assert all(kwargs["creationflags"] == create_no_window for _, kwargs in calls)
+    assert len(skills_cli_calls) == 1
+    assert skills_cli_calls[0][0] == "add"
+    reviewed_source = Path(skills_cli_calls[0][1])
+    assert reviewed_source.name == Path(skill["path"]).name
+    assert reviewed_source.is_relative_to(Path(repo_root))
+    assert "#" not in skills_cli_calls[0][1]
+    assert skills_cli_calls[0][2:] == [
+        "--global",
+        "--agent",
+        "codex",
+        "--copy",
+        "--yes",
+        "--skill",
+        "bailian-cli",
+    ]
     assert not any("clone" in command or "--branch" in command for command in commands)
     assert (service_module.AGENT_SKILLS_ROOT / "bailian-cli" / "SKILL.md").is_file()
+
+
+def test_reviewed_skill_update_reinstalls_the_exact_pinned_revision(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("aliyun-bailian")
+    skill = manifest.skills[0].model_dump(mode="json")
+    name = skill["skillNames"][0]
+    target = service_module.AGENT_SKILLS_ROOT / name
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    inventory = {
+        "ok": True,
+        "tool": service_module.SKILLS_CLI_PACKAGE,
+        "items": [{"name": name, "path": str(target), "scope": "global", "agents": ["Codex"]}],
+        "lockEntries": {
+            name: {
+                "sourceUrl": "file:///previous/v8-reviewed-checkout",
+                "skillPath": f"{skill['path']}/SKILL.md",
+                "ref": "0" * 40,
+            }
+        },
+        "error": "",
+    }
+    monkeypatch.setattr(
+        service,
+        "_component_rows",
+        lambda _plugin_id=None: [
+            {
+                "component_id": str(skill["id"]),
+                "component_type": "skill",
+                "source_url": str(skill["repository"]),
+                "source_version": "0" * 40,
+                "ownership": "skills_cli",
+                "metadata_json": json.dumps({"skillNames": [name], "skillPaths": [str(target)]}),
+            }
+        ],
+    )
+    cli_arguments: list[str] = []
+
+    def fake_git_step(argv, **_kwargs):
+        command = [str(item) for item in argv]
+        if command[:2] == ["git", "init"]:
+            source = Path(command[2]) / skill["path"]
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        return {
+            "returnCode": 0,
+            "stdoutTail": skill["revision"] if command[-2:] == ["rev-parse", "HEAD"] else "",
+            "stderrTail": "",
+        }
+
+    def fake_skills_cli(arguments, **_kwargs):
+        cli_arguments.extend(str(item) for item in arguments)
+        return {"returnCode": 0, "stdoutTail": "updated", "stderrTail": ""}
+
+    monkeypatch.setattr(service, "_run_skill_git_step", fake_git_step)
+    monkeypatch.setattr(service, "_skills_cli_inventory", lambda force=False: copy.deepcopy(inventory))
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
+    monkeypatch.setattr(
+        service,
+        "_register_component",
+        lambda _plugin_id, component_id, component_type, **_kwargs: {"id": component_id, "type": component_type},
+    )
+
+    service._install_skill_component(manifest, skill, action="update")
+
+    assert cli_arguments[0] == "add"
+    reviewed_source = Path(cli_arguments[1])
+    assert reviewed_source.name == Path(skill["path"]).name
+    assert "#" not in cli_arguments[1]
+    assert cli_arguments[2:] == [
+        "--global",
+        "--agent",
+        "codex",
+        "--copy",
+        "--yes",
+        "--skill",
+        name,
+    ]
+
+
+def test_reviewed_skill_update_rejects_an_unowned_same_name_skill(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("aliyun-bailian")
+    skill = manifest.skills[0].model_dump(mode="json")
+    name = skill["skillNames"][0]
+    target = service_module.AGENT_SKILLS_ROOT / name
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    inventory = {
+        "ok": True,
+        "tool": service_module.SKILLS_CLI_PACKAGE,
+        "items": [{"name": name, "path": str(target), "scope": "global", "agents": ["Codex"]}],
+        "lockEntries": {
+            name: {
+                "sourceUrl": "https://github.com/example/unrelated",
+                "skillPath": f"{skill['path']}/SKILL.md",
+            }
+        },
+        "error": "",
+    }
+
+    def fake_git_step(argv, **_kwargs):
+        command = [str(item) for item in argv]
+        if command[:2] == ["git", "init"]:
+            source = Path(command[2]) / skill["path"]
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        return {
+            "returnCode": 0,
+            "stdoutTail": skill["revision"] if command[-2:] == ["rev-parse", "HEAD"] else "",
+            "stderrTail": "",
+        }
+
+    monkeypatch.setattr(service, "_run_skill_git_step", fake_git_step)
+    monkeypatch.setattr(service, "_skills_cli_inventory", lambda force=False: copy.deepcopy(inventory))
+    monkeypatch.setattr(
+        service,
+        "_run_skills_cli",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unowned Skill must not be replaced")),
+    )
+
+    with pytest.raises(PluginManagerError) as failure:
+        service._install_skill_component(manifest, skill, action="update")
+
+    assert failure.value.code == "skill_name_conflict"
+
+
+def test_skill_update_snapshot_restores_content_and_lock(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    name = "reviewed-skill"
+    target = service_module.AGENT_SKILLS_ROOT / name
+    target.mkdir(parents=True, exist_ok=True)
+    skill_file = target / "SKILL.md"
+    skill_file.write_text("old skill", encoding="utf-8")
+    lock_path = service_module.AGENT_SKILLS_ROOT.parent / ".skill-lock.json"
+    lock_path.write_text(json.dumps({"skills": {name: {"ref": "old"}}}), encoding="utf-8")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "items": [{"name": name, "path": str(target)}],
+            "lockEntries": {name: {"ref": "old"}},
+            "error": "",
+        },
+    )
+    backup = service_module.PLUGIN_MANAGER_ROOT / ".staging" / "job.skills.previous"
+
+    snapshot = service._snapshot_skill_state([name], backup_root=backup)
+    skill_file.write_text("new skill", encoding="utf-8")
+    lock_path.write_text(json.dumps({"skills": {name: {"ref": "new"}}}), encoding="utf-8")
+
+    restored = service._restore_skill_snapshot(snapshot)
+
+    assert restored == {"ok": True, "restored": [name], "errors": []}
+    assert skill_file.read_text(encoding="utf-8") == "old skill"
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["skills"][name]["ref"] == "old"
+    assert not backup.exists()
 
 
 def test_daily_bundle_installs_all_seven_skills_in_one_reviewed_cli_transaction(

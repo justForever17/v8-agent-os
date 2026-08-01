@@ -133,6 +133,31 @@ def test_explicit_runtime_orchestration_recognizes_engineering_execution_plan_wo
     ) == ["research", "engineering", "delegation"]
 
 
+def test_explicit_runtime_orchestration_honors_single_user_selected_research_runtime() -> None:
+    state = {
+        "task_shape_hint": {
+            "boundaryDecision": {
+                "primaryRuntime": "",
+                "supportingRuntimes": [],
+                "askUserNeeded": False,
+            }
+        }
+    }
+
+    assert _explicit_runtime_orchestration_kinds(
+        state,
+        "这是纯调研任务，请交给深度调研回答，并在证据回流后直接交付。",
+    ) == ["research"]
+    assert _explicit_runtime_orchestration_kinds(
+        state,
+        "请解释深度调研与普通网页搜索的产品差异。",
+    ) == []
+    assert _explicit_runtime_orchestration_kinds(
+        state,
+        "不要交给深度调研，只解释现有文本。",
+    ) == []
+
+
 def test_explicit_runtime_orchestration_honors_user_runtime_broker_denial() -> None:
     state = {
         "task_shape_hint": {
@@ -1176,7 +1201,9 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
     assert projected["continuationPolicy"]["retryExhaustedAction"] == "continue_with_explicit_evidence_gaps"
     assert projected["coverageComplete"] is False
     assert projected["detailRef"] == ""
-    assert projected["results"][0]["result"].startswith("Only one secondary source")
+    assert projected["results"][0]["result"].startswith("Delegated result was not accepted")
+    assert projected["results"][0]["acceptancePassed"] is False
+    assert projected["results"][0]["evidenceComplete"] is False
     assert projected["results"][0]["sourceUrls"] == ["https://example.test/jsonb"]
     assert projected["results"][0]["detailTool"] == (
         "research_broker(mode='get_evidence', evidenceBundleId='jsonb-partial')"
@@ -1187,6 +1214,177 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
     assert "explicit_critical_evidence_gap" in str(message.content)
     assert "research:// is evidence lineage, not a toolobs:// rawRef" in str(message.content)
     assert "never pass research:// to tool_observation_detail" in str(message.content)
+
+
+def test_runtime_episode_wait_node_preserves_full_high_quality_research_delivery() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_research_delivery_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "research", "reason": "deliver accepted research"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    answer = "这是经过八个来源交叉验证的完整研究答案，包含事实、时效、差异、限制和可执行结论。[S1][S2][S3][S4][S5][S6][S7][S8]" * 100
+    sources = [
+        {
+            "sourceId": f"src_{index}",
+            "citationKey": f"S{index}",
+            "url": f"https://research-{index}.example/source",
+            "retrievedAt": "2026-07-28T12:00:00Z",
+            "publishedAt": f"2026-07-{10 + index:02d}T00:00:00Z",
+        }
+        for index in range(1, 9)
+    ]
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary="Accepted research answer is ready.",
+        status="ready",
+        extra={
+            "taskBriefIds": ["research-answer"],
+            "coveredTaskBriefIds": ["research-answer"],
+            "missingTaskBriefIds": [],
+            "coverageComplete": True,
+            "taskBriefResults": [
+                {
+                    "taskBriefId": "research-answer",
+                    "status": "ready",
+                    "answer": answer,
+                    "acceptancePassed": True,
+                    "reviewDecision": "accept",
+                    "qualityTier": "high_quality",
+                    "qualityMetrics": {"effectiveAnswerChars": len(answer), "selectedSourceCount": 8},
+                    "asOf": "2026-07-28T12:00:00Z",
+                    "researchRef": "research://bundle/research-high-quality",
+                    "evidenceBundleId": "research-high-quality",
+                    "sources": sources,
+                    "sourceUrls": [source["url"] for source in sources],
+                    "sourceCount": 8,
+                    "claimCount": 8,
+                }
+            ],
+            "terminalEpisode": True,
+            "remainingHandoffsExpected": 0,
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected_result = message.additional_kwargs["v8_runtime_handoffs"][0]["results"][0]
+    projected_handoff = message.additional_kwargs["v8_runtime_handoffs"][0]
+    assert projected_result["result"] == answer
+    assert len(projected_result["result"]) > 3000
+    assert projected_result["evidenceComplete"] is True
+    assert projected_result["deliveryVisible"] is True
+    assert projected_result["answerProjection"] == "full"
+    assert projected_result["qualityTier"] == "high_quality"
+    assert len(projected_result["sourceUrls"]) == 8
+    assert len(projected_result["sources"]) == 8
+    assert projected_handoff["projectionLimited"] is False
+    assert projected_handoff["coverageComplete"] is True
+    assert projected_handoff["deliveryComplete"] is True
+    assert answer in str(message.content)
+
+
+@pytest.mark.parametrize(("brief_count", "omitted_answer_count"), [(5, 4), (9, 8)])
+def test_runtime_episode_wait_node_marks_multi_brief_research_answer_projection(
+    brief_count: int,
+    omitted_answer_count: int,
+) -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_research_multi_{brief_count}_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "research", "reason": "deliver multiple accepted briefs"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    answers = [
+        f"UNIQUE-ANSWER-BODY-{index}\n" + (f"Evidence-backed detail for brief {index}. " * 140).rstrip()
+        for index in range(1, brief_count + 1)
+    ]
+    brief_ids = [f"brief-{index}" for index in range(1, brief_count + 1)]
+    task_brief_results = [
+        {
+            "taskBriefId": brief_ids[index - 1],
+            "status": "ready",
+            "answer": answers[index - 1],
+            "acceptancePassed": True,
+            "reviewDecision": "accept",
+            "qualityTier": "high_quality",
+            "qualityMetrics": {"effectiveAnswerChars": len(answers[index - 1]), "selectedSourceCount": 8},
+            "asOf": "2026-07-29T00:00:00Z",
+            "researchRef": f"research://bundle/research-multi-{index}",
+            "evidenceBundleId": f"research-multi-{index}",
+            "sourceUrls": [f"https://research-{index}.example/source-{source}" for source in range(1, 9)],
+            "sourceCount": 8,
+            "claimCount": 8,
+        }
+        for index in range(1, brief_count + 1)
+    ]
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary=f"{brief_count} accepted research briefs are ready.",
+        status="ready",
+        extra={
+            "taskBriefIds": brief_ids,
+            "coveredTaskBriefIds": brief_ids,
+            "missingTaskBriefIds": [],
+            "taskBriefCount": brief_count,
+            "coverageComplete": True,
+            "deliveryComplete": True,
+            "taskBriefResults": task_brief_results,
+            "terminalEpisode": True,
+            "remainingHandoffsExpected": 0,
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]
+    projected_results = projected["results"]
+    content = str(message.content)
+    assert projected["resultCount"] == brief_count
+    assert projected["projectedResultCount"] == brief_count
+    assert projected["omittedResultCount"] == 0
+    assert projected["visibleResearchAnswerCount"] == 1
+    assert projected["omittedResearchAnswerCount"] == omitted_answer_count
+    assert projected["projectionLimited"] is True
+    assert projected["evidenceCoverageComplete"] is True
+    assert projected["coverageComplete"] is False
+    assert projected["deliveryComplete"] is False
+    assert [result["taskBriefId"] for result in projected_results] == brief_ids
+    assert projected_results[0]["result"] == answers[0]
+    assert projected_results[0]["deliveryVisible"] is True
+    assert projected_results[0]["answerProjection"] == "full"
+    for index, result in enumerate(projected_results[1:], start=2):
+        assert result["result"] == ""
+        assert result["deliveryVisible"] is False
+        assert result["answerProjection"] == "omitted_bounded_multi_brief"
+        assert result["evidenceBundleId"] == f"research-multi-{index}"
+        assert result["detailTool"] == (
+            "research_broker(mode='get_evidence', "
+            f"evidenceBundleId='research-multi-{index}')"
+        )
+        assert f"UNIQUE-ANSWER-BODY-{index}\n" not in content
+    for brief_id in brief_ids:
+        assert f"  - {brief_id} ·" in content
+    assert content.count("UNIQUE-ANSWER-BODY-") == 1
+    assert "UNIQUE-ANSWER-BODY-1\n" in content
+    assert f"omittedAnswers={omitted_answer_count}" in content
+    assert "deliveryComplete=False; coverageComplete=False" in content
+    assert projected_results[-1]["evidenceBundleId"] == f"research-multi-{brief_count}"
+    assert projected_results[-1]["detailTool"] in content
 
 
 def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss() -> None:

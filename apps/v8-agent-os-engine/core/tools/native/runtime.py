@@ -175,6 +175,10 @@ class RuntimeRouteInputs(BaseModel):
         default=None,
         description="Current bound workspace root. Do not borrow a workspace from another session.",
     )
+    forceRefresh: bool = Field(
+        default=False,
+        description="Research only: bypass durable experience reuse and collect fresh evidence for this episode.",
+    )
     researchBriefs: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -284,6 +288,8 @@ class RuntimeRouteNeed(BaseModel):
             raise ValueError("Invalid provider route transport: " + ", ".join(str(item) for item in transport_errors[:8]))
         if self.kind != "research" and self.inputs.researchBriefs:
             raise ValueError("researchBriefs is only valid for Research routes")
+        if self.kind != "research" and self.inputs.forceRefresh:
+            raise ValueError("forceRefresh is only valid for Research routes")
         legacy_inputs = dict(self.inputs.model_extra or {})
         has_legacy_briefs = any(
             isinstance(legacy_inputs.get(key), list) and legacy_inputs.get(key)
@@ -310,6 +316,10 @@ class RuntimeRoutePublicNeed(BaseModel):
     workspacePath: str | None = Field(
         default=None,
         description="Current bound workspace root; omit when the session binding already supplies it.",
+    )
+    forceRefresh: bool | None = Field(
+        default=None,
+        description="Research only: set true when the user explicitly requires fresh evidence rather than reuse.",
     )
     researchBriefs: dict[str, str] = Field(
         default_factory=dict,
@@ -376,6 +386,10 @@ class RuntimeBrokerArgs(BaseModel):
     workspacePath: str | None = Field(
         default=None,
         description="For mode=route: current bound workspace root; omit when session binding already supplies it.",
+    )
+    forceRefresh: bool | None = Field(
+        default=None,
+        description="Research route only: set true only when the user explicitly requires fresh evidence.",
     )
     researchBriefIds: list[str] = Field(
         default_factory=list,
@@ -466,6 +480,7 @@ def _model_payload(value: Any) -> Any:
 
 _PUBLIC_ROUTE_INPUT_FIELDS = (
     "workspacePath",
+    "forceRefresh",
     "researchBriefs",
     "researchBriefContexts",
     "taskBriefs",
@@ -505,6 +520,7 @@ def _route_need_from_public_transport(
     route_kind: Any = None,
     route_reason: Any = None,
     workspace_path: Any = None,
+    force_refresh: Any = None,
     research_brief_ids: Any = None,
     research_brief_goals: Any = None,
     research_brief_contexts: Any = None,
@@ -518,6 +534,7 @@ def _route_need_from_public_transport(
         route_kind,
         route_reason,
         workspace_path,
+        force_refresh,
         research_brief_ids,
         research_brief_goals,
         research_brief_contexts,
@@ -551,6 +568,13 @@ def _route_need_from_public_transport(
     inputs: dict[str, Any] = {}
     if str(workspace_path or "").strip():
         inputs["workspacePath"] = str(workspace_path).strip()
+    if str(route_kind or "").strip().lower() == "research":
+        # Public Supervisor Research briefs are facets of one user answer.
+        # Keep the legacy per-brief executor available only to explicit
+        # internal callers that already own separate evidence-unit semantics.
+        inputs["researchExecutionMode"] = "single_bundle"
+    if force_refresh is not None:
+        inputs["forceRefresh"] = bool(force_refresh)
     if brief_ids and len(brief_ids) == len(brief_goals) and not transport_errors:
         inputs["researchBriefs"] = dict(zip(brief_ids, brief_goals))
         if brief_contexts:
@@ -3481,6 +3505,10 @@ def runtime_broker(
     ] = None,
     routeReason: Annotated[Optional[str], "For mode=route: one short routing reason."] = None,
     workspacePath: Annotated[Optional[str], "Current bound workspace root; normally omit it."] = None,
+    forceRefresh: Annotated[
+        Optional[bool],
+        "Research only: true bypasses durable reuse and requires fresh evidence for this episode.",
+    ] = None,
     researchBriefIds: Annotated[
         Optional[list[str]],
         "Research only: complete ordered stable-ID list. Enumerate every known domain before optional detail.",
@@ -3541,7 +3569,7 @@ def runtime_broker(
     final expectedArtifacts covered by that writeSet, expectedOutputs, and acceptanceContract. Repair only an exact
     reported contract or execution gap once; delegation is not an alternate spelling for an Engineering episode.
 
-    Research shape: `{"mode":"route","routeKind":"research","routeReason":"verify known domains","researchBriefIds":["domain-a","domain-b"],"researchBriefGoals":["verify A","verify B"]}`.
+    Research shape: `{"mode":"route","routeKind":"research","routeReason":"verify known domains","forceRefresh":true,"researchBriefIds":["domain-a","domain-b"],"researchBriefGoals":["verify A","verify B"]}`. Omit forceRefresh unless the user requires fresh evidence.
     Engineering shape: `{"mode":"route","routeKind":"engineering","routeReason":"implement and verify","taskBriefs":[{"taskBriefId":"implementation","goal":"implement the bounded change","writeRequired":true,"writeSet":["src/feature.py"],"expectedArtifacts":["src/feature.py"],"expectedOutputs":["working implementation"],"acceptanceContract":["the requirement is implemented"]},{"taskBriefId":"verification","goal":"persist proof","writeRequired":true,"writeSet":["reports/verification.json"],"expectedArtifacts":["reports/verification.json"],"expectedOutputs":["verification report"],"acceptanceContract":["checks pass and the report records them"],"dependencies":["implementation"]}]}`.
 
     New Research calls use researchBriefIds + researchBriefGoals; other routes use taskBriefs. Preserve JSON array/object types. Use `list` only for a compact catalog and `grant`
@@ -3555,6 +3583,7 @@ def runtime_broker(
         route_kind=routeKind,
         route_reason=routeReason,
         workspace_path=workspacePath,
+        force_refresh=forceRefresh,
         research_brief_ids=researchBriefIds,
         research_brief_goals=researchBriefGoals,
         research_brief_contexts=researchBriefContexts,

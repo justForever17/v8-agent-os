@@ -273,6 +273,35 @@ def build_runtime_episode_wait_node():
         return updated, available
 
     def _compact_handoff_projection(handoff: dict) -> dict:
+        def _is_research_result(item: dict) -> bool:
+            return bool(
+                item.get("answer")
+                or item.get("researchRef")
+                or item.get("evidenceBundleId")
+                or item.get("sourceUrls")
+            )
+
+        def _is_accepted_research_result(item: dict) -> bool:
+            return bool(
+                _is_research_result(item)
+                and item.get("acceptancePassed") is True
+                and str(item.get("qualityTier") or "").strip() == "high_quality"
+                and _string_value(item.get("answer"))
+            )
+
+        def _research_detail_tool(item: dict) -> str:
+            detail_tool = _string_value(item.get("detailTool"))
+            if detail_tool:
+                return detail_tool
+            evidence_bundle_id = _string_value(item.get("evidenceBundleId"))
+            if not evidence_bundle_id:
+                return ""
+            escaped_bundle_id = evidence_bundle_id.replace("\\", "\\\\").replace("'", "\\'")
+            return (
+                "research_broker(mode='get_evidence', "
+                f"evidenceBundleId='{escaped_bundle_id}')"
+            )
+
         def _collect_results(value: object, *, depth: int = 0) -> list[dict]:
             if depth > 8 or not isinstance(value, dict):
                 return []
@@ -300,8 +329,26 @@ def build_runtime_episode_wait_node():
                 continue
             result_keys.add(key)
             results.append(item)
+        research_handoff = bool(
+            _string_value(handoff.get("kind")).strip().lower() == "research"
+            or any(_is_research_result(item) for item in results)
+        )
+        projected_result_limit = 24 if research_handoff else 8
+        projected_results = results[:projected_result_limit]
+        omitted_result_count = max(0, len(results) - len(projected_results))
+        accepted_research_result_count = sum(
+            1 for item in results if _is_accepted_research_result(item)
+        )
+        visible_research_result_index = next(
+            (
+                index
+                for index, item in enumerate(projected_results)
+                if _is_accepted_research_result(item)
+            ),
+            None,
+        )
         compact_results: list[dict] = []
-        for item in results[:8]:
+        for result_index, item in enumerate(projected_results):
             raw_artifact_refs = list(item.get("artifactRefs") or item.get("artifacts") or [])[:8]
             proof_refs = list(item.get("proofRefs") or [])[:8]
             status = _string_value(item.get("status"))
@@ -318,15 +365,16 @@ def build_runtime_episode_wait_node():
                 "dependency_failed",
                 "cancelled",
             }
-            research_result = bool(
-                item.get("answer")
-                or item.get("researchRef")
-                or item.get("evidenceBundleId")
-                or item.get("sourceUrls")
+            is_research_result = _is_research_result(item)
+            accepted_research_result = _is_accepted_research_result(item)
+            research_answer_visible = bool(
+                accepted_research_result
+                and result_index == visible_research_result_index
             )
             blocking_result = bool(
                 status_lower in blocking_statuses
-                or (status_lower == "degraded" and not research_result)
+                or (is_research_result and not accepted_research_result)
+                or (status_lower == "degraded" and not accepted_research_result)
                 or item.get("error")
                 or str(sandbox_evidence.get("state") or "").strip().lower() in {"failed", "merge_failed"}
                 or item.get("artifactRefsAccepted") is False
@@ -371,15 +419,14 @@ def build_runtime_episode_wait_node():
             evidence_complete = bool(
                 not blocking_result
                 and status_lower in {"ok", "completed", "ready", "success"}
-                and (artifact_refs or verification_passed)
+                and (artifact_refs or verification_passed or accepted_research_result)
                 and not item.get("error")
                 and not item.get("missingArtifactEvidence")
                 and not item.get("blockers")
             )
             # Research results use `answer` rather than delegation's
-            # resultText/localSelfCheck.  Keep the bounded answer in the
-            # agent-facing projection; the full evidence bundle remains in
-            # the Research ledger.
+            # resultText/localSelfCheck. Keep one accepted answer intact and
+            # project additional briefs as bounded ledger references.
             if blocking_result:
                 result_text = _string_value(
                     item.get("error"),
@@ -390,14 +437,22 @@ def build_runtime_episode_wait_node():
                 if not result_text:
                     result_text = "Delegated result was not accepted because its execution contract or evidence failed."
             else:
-                result_text = _string_value(
-                    item.get("answer"),
-                    item.get("resultText"),
-                    item.get("summary"),
-                    item.get("localSelfCheck"),
-                )[:1800]
+                if accepted_research_result and not research_answer_visible:
+                    result_text = ""
+                elif research_answer_visible:
+                    result_text = _string_value(item.get("answer"))
+                else:
+                    result_text = _string_value(
+                        item.get("resultText"),
+                        item.get("summary"),
+                        item.get("localSelfCheck"),
+                    )[:1800]
             if verification_lines:
-                result_text = ("; ".join(verification_lines) + (f"; {result_text}" if result_text else ""))[:1800]
+                verification_prefix = "; ".join(verification_lines)
+                if research_answer_visible:
+                    result_text = verification_prefix + (f"; {result_text}" if result_text else "")
+                elif not accepted_research_result:
+                    result_text = (verification_prefix + (f"; {result_text}" if result_text else ""))[:1800]
             verification_summary: list[str] = []
             if blocking_result:
                 verification_summary.append("accepted=false; candidate evidence is quarantined and unmerged")
@@ -475,21 +530,58 @@ def build_runtime_episode_wait_node():
                     "evidenceComplete": evidence_complete,
                     "researchRef": _string_value(item.get("researchRef"), item.get("evidenceBundleId")),
                     "evidenceBundleId": _string_value(item.get("evidenceBundleId")),
-                    "detailTool": _string_value(item.get("detailTool")),
+                    "detailTool": _research_detail_tool(item) if is_research_result else _string_value(item.get("detailTool")),
+                    "deliveryVisible": research_answer_visible if accepted_research_result else bool(result_text),
+                    "answerProjection": (
+                        "full"
+                        if research_answer_visible
+                        else "omitted_bounded_multi_brief"
+                        if accepted_research_result
+                        else "rejected"
+                        if is_research_result
+                        else "bounded"
+                    ),
                     "sourceUrls": [
                         str(value).strip()
-                        for value in list(item.get("sourceUrls") or [])[:6]
+                        for value in list(item.get("sourceUrls") or [])[:8]
                         if str(value).strip()
+                    ],
+                    "sources": [
+                        dict(value)
+                        for value in list(item.get("sources") or [])[:8]
+                        if isinstance(value, dict)
                     ],
                     "sourceCount": int(item.get("sourceCount") or 0),
                     "claimCount": int(item.get("claimCount") or 0),
+                    "acceptancePassed": bool(item.get("acceptancePassed")),
+                    "reviewDecision": _string_value(item.get("reviewDecision")),
+                    "qualityTier": _string_value(item.get("qualityTier")),
+                    "qualityMetrics": dict(item.get("qualityMetrics") or {}) if isinstance(item.get("qualityMetrics"), dict) else {},
+                    "asOf": _string_value(item.get("asOf")),
                     "limitations": [str(value)[:500] for value in list(item.get("limitations") or [])[:6]],
+                    "criticalMissingEvidence": [
+                        str(value)[:500] for value in list(item.get("criticalMissingEvidence") or [])[:8]
+                    ],
+                    "recommendedNextQueries": [
+                        str(value)[:500] for value in list(item.get("recommendedNextQueries") or [])[:8]
+                    ],
                     "evidenceStatusReasons": [
                         str(value)[:160]
                         for value in list(item.get("evidenceStatusReasons") or [])[:6]
                     ],
                 }
             )
+        visible_research_answer_count = sum(
+            1
+            for item in compact_results
+            if item.get("acceptancePassed") is True
+            and item.get("answerProjection") == "full"
+        )
+        omitted_research_answer_count = max(
+            0,
+            accepted_research_result_count - visible_research_answer_count,
+        )
+        projection_limited = bool(omitted_result_count or omitted_research_answer_count)
         blocking_results_present = any(
             str(item.get("status") or "").strip().lower()
             in {"error", "failed", "blocked", "dependency_failed", "cancelled", "degraded"}
@@ -506,6 +598,20 @@ def build_runtime_episode_wait_node():
         runtime_only_ref_values = bool(
             isinstance(handoff.get("creativeExecutionEvidence"), dict)
             or _string_value(handoff.get("kind")).strip().lower() in {"creative_media", "asset_bundle"}
+        )
+        evidence_coverage_complete = bool(handoff.get("coverageComplete"))
+        declared_delivery_complete = (
+            bool(handoff.get("deliveryComplete"))
+            if "deliveryComplete" in handoff
+            else evidence_coverage_complete
+        )
+        projected_coverage_complete = bool(
+            evidence_coverage_complete and not (research_handoff and projection_limited)
+        )
+        projected_delivery_complete = bool(
+            declared_delivery_complete
+            and not (research_handoff and projection_limited)
+            and (not research_handoff or evidence_coverage_complete)
         )
         return {
             "handoffRefId": _string_value(handoff.get("handoffRefId"), handoff.get("handoffId")),
@@ -535,6 +641,12 @@ def build_runtime_episode_wait_node():
             "proofRefs": list(handoff.get("proofRefs") or handoff.get("verificationRefs") or nested_proof_refs)[:10],
             "researchRefs": list(handoff.get("researchRefs") or [])[:10],
             "results": compact_results,
+            "resultCount": len(results),
+            "projectedResultCount": len(compact_results),
+            "omittedResultCount": omitted_result_count,
+            "visibleResearchAnswerCount": visible_research_answer_count,
+            "omittedResearchAnswerCount": omitted_research_answer_count,
+            "projectionLimited": projection_limited,
             "consumerHint": _string_value(handoff.get("consumerHint"), handoff.get("recommendedNextAction"))[:600],
             "recommendedNextAction": _string_value(handoff.get("recommendedNextAction"))[:160],
             "taskBriefIds": [
@@ -584,7 +696,9 @@ def build_runtime_episode_wait_node():
                 if isinstance(handoff.get("continuationPolicy"), dict)
                 else {}
             ),
-            "coverageComplete": bool(handoff.get("coverageComplete")),
+            "evidenceCoverageComplete": evidence_coverage_complete,
+            "coverageComplete": projected_coverage_complete,
+            "deliveryComplete": projected_delivery_complete,
             "taskBriefCount": int(handoff.get("taskBriefCount") or 0),
             "sourceCount": int(handoff.get("sourceCount") or 0),
             "limitations": [str(item)[:500] for item in list(handoff.get("limitations") or [])[:6]],
@@ -691,6 +805,16 @@ def build_runtime_episode_wait_node():
                             f"missing={', '.join(missing_ids) or 'none'}; "
                             f"complete={bool(handoff.get('coverageComplete'))}"
                         )
+                if handoff.get("projectionLimited"):
+                    lines.append(
+                        "  bounded Research delivery projection: "
+                        f"results={handoff.get('projectedResultCount', 0)}/{handoff.get('resultCount', 0)}; "
+                        f"visibleAnswers={handoff.get('visibleResearchAnswerCount', 0)}; "
+                        f"omittedAnswers={handoff.get('omittedResearchAnswerCount', 0)}; "
+                        f"deliveryComplete={bool(handoff.get('deliveryComplete'))}; "
+                        f"coverageComplete={bool(handoff.get('coverageComplete'))}. "
+                        "Omitted answer bodies remain available only through each brief's governed detail call."
+                    )
                 if missing_ids:
                     lines.append(
                         "  next action: retry only the missing brief IDs once through a new managed Research episode; "
@@ -716,12 +840,40 @@ def build_runtime_episode_wait_node():
                         "  execution results remain structured Runtime Surface evidence: "
                         f"results={result_count}; semanticallyVerified={verified_count}."
                     )
-                for result in ([] if runtime_only_ref_values else list(handoff.get("results") or [])[:4]):
+                handoff_results = list(handoff.get("results") or [])
+                research_projection = any(
+                    result.get("researchRef") or result.get("evidenceBundleId")
+                    for result in handoff_results
+                    if isinstance(result, dict)
+                )
+                visible_results = (
+                    []
+                    if runtime_only_ref_values
+                    else handoff_results
+                    if research_projection
+                    else handoff_results[:4]
+                )
+                for result in visible_results:
                     task_id = _string_value(result.get("taskBriefId"), "task")
                     target = _string_value(result.get("targetLabel"), "worker")
                     result_status = _string_value(result.get("status"), "unknown")
-                    result_text = _string_value(result.get("result"))[:1600]
-                    lines.append(f"  - {task_id} · {target} · {result_status}: {result_text or '已回传结构化结果。'}")
+                    accepted_research_result = bool(
+                        result.get("acceptancePassed") is True
+                        and _string_value(result.get("qualityTier")) == "high_quality"
+                    )
+                    result_text = _string_value(result.get("result"))
+                    if not accepted_research_result:
+                        result_text = result_text[:1600]
+                    result_display = result_text
+                    if accepted_research_result and result.get("deliveryVisible") is False:
+                        result_display = (
+                            "Answer body omitted from this bounded multi-brief projection; "
+                            "use the governed detail call below for this brief."
+                        )
+                    lines.append(
+                        f"  - {task_id} · {target} · {result_status}: "
+                        f"{result_display or '已回传结构化结果。'}"
+                    )
                     if result.get("delegationDepth") or result.get("parentDelegationId"):
                         lines.append(
                             "    lineage: "
@@ -761,13 +913,15 @@ def build_runtime_episode_wait_node():
                         lines.append(
                             "    research: "
                             f"evidenceRef={_string_value(result.get('researchRef')) or 'none'}; "
+                            f"evidenceBundleId={_string_value(result.get('evidenceBundleId')) or 'none'}; "
                             f"sources={int(result.get('sourceCount') or 0)}; "
                             f"claims={int(result.get('claimCount') or 0)}; "
+                            f"answerProjection={_string_value(result.get('answerProjection')) or 'unknown'}; "
                             f"evidenceStatus={','.join(list(result.get('evidenceStatusReasons') or [])) or 'ready'}"
                         )
                         source_urls = [str(value).strip() for value in list(result.get("sourceUrls") or []) if str(value).strip()]
-                        if source_urls:
-                            lines.append("    sources: " + ", ".join(source_urls[:4]))
+                        if source_urls and result.get("deliveryVisible") is not False:
+                            lines.append("    sources: " + ", ".join(source_urls[:8]))
                         detail_tool = _string_value(result.get("detailTool"))
                         if detail_tool:
                             lines.append("    detail: " + detail_tool)

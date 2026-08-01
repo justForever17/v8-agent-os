@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -11,6 +12,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.tools.research_quality import (
+    research_acceptance_metrics,
+    research_as_of,
+    research_bundle_is_high_quality,
+    research_high_quality_issues,
+    research_quality_tier,
+    research_requires_dated_sources,
+    research_review_decision,
+    research_selected_sources,
+)
 from core.v8_agent_os_paths import runtime_private_root
 
 
@@ -18,6 +29,8 @@ _LOCK = threading.RLock()
 _VERSION = 1
 _DEFAULT_EXPERIENCE_MAX_AGE_DAYS = 180
 _FRESHNESS_WARNING_RATIO = 0.75
+_EXPERIENCE_SOURCE_FLOOR = 8
+_EXPERIENCE_SOURCE_DIGEST_LIMIT = 16
 
 
 def _utc_now_iso() -> str:
@@ -150,7 +163,29 @@ def _experience_freshness(item: dict[str, Any], *, now: datetime | None = None) 
 
 
 def _visible_experience(item: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
-    return {**_visible(item), **_experience_freshness(item, now=now)}
+    visible = {**_visible(item), **_experience_freshness(item, now=now)}
+    accepted = _has_reusable_answer_pack(item)
+    stored_status = _safe_text(item.get("status")).lower() or "draft"
+    visible["qualityAccepted"] = accepted
+    visible["reuseEligible"] = bool(
+        accepted
+        and stored_status == "active"
+        and visible.get("freshnessState") not in {"stale", "expired"}
+    )
+    if not accepted:
+        effective_status = "archived" if stored_status == "archived" else "draft"
+        visible["storedStatus"] = stored_status
+        visible["status"] = effective_status
+        visible["effectiveStatus"] = effective_status
+        visible["qualityStatus"] = "refresh_required"
+        issues = _experience_acceptance_issues(item)
+        existing = _safe_text(visible.get("invalidationReason"))
+        visible["invalidationReason"] = ", ".join(
+            dict.fromkeys([part for part in (existing, *issues) if part])
+        )
+    else:
+        visible["effectiveStatus"] = stored_status
+    return visible
 
 
 def _not_expired(item: dict[str, Any], now: float | None = None) -> bool:
@@ -183,20 +218,54 @@ def _question_tokens(value: str) -> set[str]:
     }
 
 
-def _source_digest(bundle: dict[str, Any], *, limit: int = 6) -> list[dict[str, Any]]:
+def _topic_fingerprint(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", _safe_text(value).lower())
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", normalized).strip()
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _source_retrieved_at(item: dict[str, Any]) -> str:
+    temporal = item.get("temporalEvidence") if isinstance(item.get("temporalEvidence"), dict) else {}
+    return _safe_text(item.get("retrievedAt") or item.get("fetchedAt") or temporal.get("retrievedAt"))
+
+
+def _source_has_reuse_metadata(item: dict[str, Any]) -> bool:
+    return bool(
+        _safe_text(item.get("citationKey"))
+        and _source_retrieved_at(item)
+    )
+
+
+def _source_digest(bundle: dict[str, Any], *, limit: int = _EXPERIENCE_SOURCE_DIGEST_LIMIT) -> list[dict[str, Any]]:
     digest: list[dict[str, Any]] = []
-    for item in _as_list(bundle.get("sourceMatrix"))[:limit]:
+    for item in research_selected_sources(bundle)[:limit]:
         if not isinstance(item, dict):
             continue
-        digest.append(
-            {
+        temporal = item.get("temporalEvidence") if isinstance(item.get("temporalEvidence"), dict) else {}
+        source = {
+            key: value
+            for key, value in {
+                "sourceId": item.get("sourceId"),
+                "citationKey": item.get("citationKey"),
                 "title": item.get("title"),
-                "url": item.get("url"),
+                "url": item.get("url") or item.get("sourceUrl"),
                 "host": item.get("host"),
                 "authorityScore": item.get("authorityScore"),
                 "tier": item.get("tier"),
-            }
-        )
+                "authorityTier": item.get("authorityTier"),
+                "selectedForEvidence": True,
+                "retrievedAt": _source_retrieved_at(item),
+                "publishedAt": item.get("publishedAt") or temporal.get("publishedAt"),
+                "updatedAt": item.get("updatedAt") or temporal.get("updatedAt"),
+                "sourceDate": item.get("sourceDate") or temporal.get("sourceDate"),
+                "version": item.get("version") or temporal.get("version"),
+                "contentChars": item.get("contentChars"),
+                "readEvidence": item.get("readEvidence"),
+                "temporalEvidence": temporal or None,
+            }.items()
+            if value not in (None, "", [], {})
+        }
+        digest.append(source)
     return digest
 
 
@@ -220,7 +289,6 @@ _LOW_QUALITY_RESEARCH_MARKERS = (
 
 _RESEARCH_KIND_VALUES = {"research_question", "task_request", "spec_task", "runtime_handoff"}
 _TASK_LIKE_KINDS = {"task_request", "spec_task"}
-_REUSABLE_ANSWER_QUALITIES = {"usable_answer", "usable_with_limitations"}
 _DEFAULT_EXCLUDED_PACK_QUALITIES = {
     "draft",
     "low_quality_pack",
@@ -281,28 +349,25 @@ def _normalize_bundle_kinds(bundle: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _answer_pack_quality(bundle: dict[str, Any]) -> str:
-    answer_pack = bundle.get("researchAnswerPack")
-    if not isinstance(answer_pack, dict):
-        return ""
-    score = answer_pack.get("score")
-    return _safe_text(score.get("qualityStatus")).lower() if isinstance(score, dict) else ""
+def _experience_acceptance_issues(bundle: dict[str, Any]) -> list[str]:
+    bundle = _normalize_bundle_kinds(bundle)
+    issues: list[str] = []
+    if bundle.get("questionKind") in _TASK_LIKE_KINDS or bundle.get("sourceKind") in _TASK_LIKE_KINDS:
+        issues.append("task_kind_not_reusable")
+    issues.extend(research_high_quality_issues(bundle))
+    complete_sources = sum(1 for source in research_selected_sources(bundle) if _source_has_reuse_metadata(source))
+    if complete_sources < _EXPERIENCE_SOURCE_FLOOR:
+        issues.append(f"experience_source_metadata_floor_not_met:{_EXPERIENCE_SOURCE_FLOOR}")
+    return list(dict.fromkeys(issues))
 
 
 def _has_reusable_answer_pack(bundle: dict[str, Any]) -> bool:
     bundle = _normalize_bundle_kinds(bundle)
     if bundle.get("questionKind") in _TASK_LIKE_KINDS or bundle.get("sourceKind") in _TASK_LIKE_KINDS:
         return False
-    answer_pack = bundle.get("researchAnswerPack")
-    if not isinstance(answer_pack, dict):
+    if not research_bundle_is_high_quality(bundle):
         return False
-    if _answer_pack_quality(bundle) not in _REUSABLE_ANSWER_QUALITIES:
-        return False
-    if not _valid_research_text(answer_pack.get("answer"), min_chars=16):
-        return False
-    if not _as_list(answer_pack.get("sources")):
-        return False
-    return True
+    return sum(1 for source in research_selected_sources(bundle) if _source_has_reuse_metadata(source)) >= _EXPERIENCE_SOURCE_FLOOR
 
 
 def _valid_research_text(value: Any, *, min_chars: int = 24) -> str:
@@ -321,9 +386,74 @@ def _valid_research_text(value: Any, *, min_chars: int = 24) -> str:
     return text
 
 
+def _final_research_pack(bundle: dict[str, Any]) -> dict[str, Any]:
+    for key in ("finalExperiencePack", "researchResult"):
+        value = bundle.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _full_research_result(bundle: dict[str, Any]) -> str:
+    final_pack = _final_research_pack(bundle)
+    answer_pack = bundle.get("researchAnswerPack") if isinstance(bundle.get("researchAnswerPack"), dict) else {}
+    candidates = (
+        final_pack.get("researchResult"),
+        answer_pack.get("answer"),
+        final_pack.get("answer"),
+        bundle.get("researchResult") if isinstance(bundle.get("researchResult"), str) else "",
+        bundle.get("answer"),
+    )
+    for value in candidates:
+        raw = _safe_text(value)
+        if raw and _valid_research_text(raw):
+            return raw
+    return ""
+
+
+def _review_reasons(bundle: dict[str, Any]) -> list[str]:
+    final_pack = _final_research_pack(bundle)
+    answer_pack = bundle.get("researchAnswerPack") if isinstance(bundle.get("researchAnswerPack"), dict) else {}
+    review = bundle.get("researchReview") if isinstance(bundle.get("researchReview"), dict) else {}
+    reasons: list[str] = []
+    for values in (
+        bundle.get("reviewReasons"),
+        review.get("reviewReasons") or review.get("reasons"),
+        answer_pack.get("reviewReasons"),
+        final_pack.get("reviewReasons"),
+    ):
+        candidates = values if isinstance(values, list) else [values] if isinstance(values, str) else []
+        for value in candidates:
+            text = _safe_text(value)
+            if text and text not in reasons:
+                reasons.append(text)
+    return reasons
+
+
+def _quality_tier(bundle: dict[str, Any]) -> str:
+    return research_quality_tier(bundle)
+
+
+def _quality_metrics(bundle: dict[str, Any]) -> dict[str, Any]:
+    final_pack = _final_research_pack(bundle)
+    answer_pack = bundle.get("researchAnswerPack") if isinstance(bundle.get("researchAnswerPack"), dict) else {}
+    review = bundle.get("researchReview") if isinstance(bundle.get("researchReview"), dict) else {}
+    metrics: dict[str, Any] = {}
+    for candidate in (
+        final_pack.get("qualityMetrics"),
+        answer_pack.get("qualityMetrics"),
+        review.get("qualityMetrics"),
+        bundle.get("qualityMetrics"),
+    ):
+        if isinstance(candidate, dict):
+            metrics.update(candidate)
+    metrics.update(research_acceptance_metrics(bundle))
+    return metrics
+
+
 def _claim_digest_from_pack(pack: dict[str, Any]) -> list[dict[str, Any]]:
     claim_digest: list[dict[str, Any]] = []
-    for item in _as_list(pack.get("claimTable"))[:8]:
+    for item in _as_list(pack.get("claimTable"))[:12]:
         if not isinstance(item, dict):
             continue
         claim = _valid_research_text(item.get("claim"), min_chars=8)
@@ -331,16 +461,25 @@ def _claim_digest_from_pack(pack: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         claim_digest.append(
             {
-                "claim": claim[:400],
-                "supportingSources": _as_list(item.get("supportingSources"))[:3],
+                "claim": claim[:320],
+                "claimType": item.get("claimType") or item.get("claimKind"),
+                "normativeCue": _safe_text(item.get("normativeCue"))[:160],
+                "evidenceExcerptKey": item.get("evidenceExcerptKey"),
+                "supportingSources": _as_list(item.get("supportingSources"))[:4],
                 "confidence": item.get("confidence"),
+                "evidenceExcerpt": _safe_text(item.get("evidenceExcerpt"))[:600],
+                "evidenceExcerptSha256": item.get("evidenceExcerptSha256"),
+                "evidenceVerified": item.get("evidenceVerified") is True,
             }
         )
     return claim_digest
 
 
 def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str:
-    final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
+    full_result = _full_research_result(bundle)
+    if full_result:
+        return full_result[:limit]
+    final_pack = _final_research_pack(bundle)
     for key in ("researchResult", "answer", "result", "findings"):
         value = _valid_research_text(final_pack.get(key) or bundle.get(key))
         if value:
@@ -363,65 +502,96 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
     pack_id = f"rxp_{uuid.uuid5(uuid.NAMESPACE_URL, bundle_id).hex[:16]}"
     created_at = _utc_now_iso()
     result_preview = _research_result_preview(bundle)
-    final_pack = bundle.get("finalExperiencePack") if isinstance(bundle.get("finalExperiencePack"), dict) else {}
-    answer_pack = bundle.get("researchAnswerPack") if isinstance(bundle.get("researchAnswerPack"), dict) else {}
-    research_result = _valid_research_text(answer_pack.get("answer") or final_pack.get("researchResult") or final_pack.get("answer") or bundle.get("answer") or result_preview)
-    source_urls = []
-    def add_source_url(value: Any) -> None:
-        if isinstance(value, dict):
-            text = _safe_text(value.get("url"))
-        else:
-            text = _safe_text(value)
-        if text and text not in source_urls:
-            source_urls.append(text)
-
-    for source in list(answer_pack.get("sources") or []):
-        add_source_url(source)
-    for source in list(final_pack.get("sourceUrls") or []):
-        add_source_url(source)
-    for url in list(bundle.get("sourceUrls") or []):
-        add_source_url(url)
-    for source in list(bundle.get("sourceMatrix") or []):
-        if isinstance(source, dict):
-            add_source_url(source)
-    claim_digest = _claim_digest_from_pack({"claimTable": bundle.get("claimTable")}) or _claim_digest_from_pack(final_pack)
+    final_pack = _final_research_pack(bundle)
+    answer_pack = dict(bundle.get("researchAnswerPack")) if isinstance(bundle.get("researchAnswerPack"), dict) else {}
+    research_result = _full_research_result(bundle)
+    reviewed_sources = [
+        dict(source)
+        for source in research_selected_sources(bundle)
+        if isinstance(source, dict)
+    ]
+    if reviewed_sources:
+        # sourceMatrixDigest is intentionally compact, but the governed answer
+        # pack must retain the exact source set bound into its Reviewer receipt.
+        # Truncating that set makes an accepted pack fail its own revalidation.
+        answer_pack["sources"] = reviewed_sources
+    source_urls = [
+        _safe_text(source.get("url"))
+        for source in source_digest
+        if _safe_text(source.get("url"))
+    ]
+    claim_digest = (
+        _claim_digest_from_pack({"claimTable": bundle.get("claimTable")})
+        or _claim_digest_from_pack(answer_pack)
+        or _claim_digest_from_pack(final_pack)
+    )
     missing_evidence = []
-    for value in _as_list(final_pack.get("missingEvidence") or bundle.get("missingEvidence")):
+    for value in _as_list(final_pack.get("missingEvidence") or answer_pack.get("missingEvidence") or bundle.get("missingEvidence")):
         text = _safe_text(value)
         if text:
             missing_evidence.append(text[:260])
     limitations = []
-    for value in _as_list(final_pack.get("limitations") or bundle.get("limitations") or bundle.get("assumptions")):
+    for value in _as_list(final_pack.get("limitations") or answer_pack.get("limitations") or bundle.get("limitations") or bundle.get("assumptions")):
         text = _safe_text(value)
         if text:
             limitations.append(text[:260])
-    quality_reasons: list[str] = []
-    if not research_result and not claim_digest:
-        quality_reasons.append("missing_final_research_result")
-    if not source_urls and not source_digest:
-        quality_reasons.append("missing_sources")
-    answer_quality = _safe_text((answer_pack.get("score") or {}).get("qualityStatus")).lower() if isinstance(answer_pack.get("score"), dict) else ""
-    if answer_quality in {"refresh_required", "low_quality_pack"}:
-        quality_reasons.append(answer_quality)
+    quality_reasons = _experience_acceptance_issues(bundle)
+    accepted = not quality_reasons
+    requested_status = _safe_text(status).lower() or "draft"
+    effective_status = requested_status if requested_status in {"archived", "draft"} else ("active" if accepted else "draft")
     rejected_evidence = _as_list(answer_pack.get("rejectedEvidence"))
     source_quality_score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
     if not result_preview and not claim_digest:
         missing_evidence.append("No reliable source-backed research result was synthesized.")
-    quality_status = "low_quality_pack" if quality_reasons else "reusable_candidate"
+    quality_status = "high_quality" if accepted else "refresh_required"
     topic_fingerprint = _safe_text(bundle.get("topicFingerprint"))
     if not topic_fingerprint:
         normalized_topic = re.sub(r"\s+", " ", _safe_text(bundle.get("question") or topic).lower()).strip()
         topic_fingerprint = uuid.uuid5(uuid.NAMESPACE_URL, normalized_topic).hex[:16]
+    review_decision = research_review_decision(bundle)
+    review_reasons = _review_reasons(bundle)
+    independent_review = (
+        dict(bundle.get("independentReview"))
+        if isinstance(bundle.get("independentReview"), dict)
+        else dict(final_pack.get("independentReview"))
+        if isinstance(final_pack.get("independentReview"), dict)
+        else dict(answer_pack.get("independentReview"))
+        if isinstance(answer_pack.get("independentReview"), dict)
+        else {}
+    )
+    as_of = research_as_of(bundle)
+    quality_metrics = _quality_metrics(bundle)
+    quality_tier = _quality_tier(bundle)
+    applicability = _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240]
+    requested_freshness = _safe_text(bundle.get("freshness")) or "auto"
+    effective_freshness = requested_freshness
+    if requested_freshness.lower() in {"", "auto"} and research_requires_dated_sources(bundle):
+        effective_freshness = "current"
     return {
         "experiencePackId": pack_id,
-        "status": status,
+        "status": effective_status,
         "title": topic,
         "query": bundle.get("question"),
         "summary": result_preview[:600],
         "resultPreview": result_preview,
-        "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
+        "applicability": applicability,
         "researchResult": research_result,
         "researchAnswerPack": answer_pack,
+        "reviewDecision": review_decision,
+        "reviewReasons": review_reasons,
+        "independentReview": independent_review,
+        "asOf": as_of,
+        "qualityMetrics": quality_metrics,
+        "qualityTier": quality_tier,
+        "briefCoverageRequired": bundle.get("briefCoverageRequired") is True,
+        "briefCoverageComplete": bundle.get("briefCoverageComplete") is True,
+        "briefCoverage": [
+            dict(item)
+            for item in _as_list(bundle.get("briefCoverage"))
+            if isinstance(item, dict)
+        ],
+        "coveredTaskBriefIds": _as_list(bundle.get("coveredTaskBriefIds")),
+        "missingTaskBriefIds": _as_list(bundle.get("missingTaskBriefIds")),
         "claimDigest": claim_digest,
         "qualityStatus": quality_status,
         "questionKind": bundle.get("questionKind") or "research_question",
@@ -430,14 +600,25 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "rejectedEvidence": rejected_evidence[:8],
         "topicFingerprint": topic_fingerprint,
         "sourcePolicy": bundle.get("sourcePolicy"),
-        "freshnessWindow": bundle.get("freshness"),
+        "freshness": requested_freshness,
+        "freshnessWindow": effective_freshness,
+        "requestedFreshness": requested_freshness,
         "sourceUrls": source_urls[:16],
         "reusableExperiencePack": {
-            "summary": result_preview[:900] if quality_status != "low_quality_pack" else "",
-            "researchResult": research_result,
-            "applicability": _safe_text(bundle.get("deliverable") or bundle.get("researchIntent") or "general_research")[:240],
+            "summary": result_preview[:900] if accepted else "",
+            "researchResult": research_result if accepted else "",
+            "applicability": applicability,
             "sourceUrls": source_urls[:16],
+            "sourceMatrixDigest": source_digest,
             "claimDigest": claim_digest,
+            "reviewDecision": review_decision,
+            "reviewReasons": review_reasons,
+            "independentReview": independent_review,
+            "asOf": as_of,
+            "qualityMetrics": quality_metrics,
+            "qualityTier": quality_tier,
+            "briefCoverageRequired": bundle.get("briefCoverageRequired") is True,
+            "briefCoverageComplete": bundle.get("briefCoverageComplete") is True,
         },
         "invalidationReason": ", ".join(quality_reasons),
         "missingEvidence": missing_evidence[:8],
@@ -454,7 +635,7 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         ],
         "sourceMatrixDigest": source_digest,
         "createdFromBundleId": bundle_id,
-        "evidenceCheckedAt": _safe_text(bundle.get("completedAt") or bundle.get("createdAt")) or created_at,
+        "evidenceCheckedAt": _safe_text(bundle.get("completedAt") or as_of or bundle.get("createdAt")) or created_at,
         "createdAt": created_at,
         "updatedAt": created_at,
         "lastUsedAt": None,
@@ -482,7 +663,7 @@ def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: st
         items.insert(0, stored)
         payload["evidenceBundles"] = items[:500]
 
-        if _has_reusable_answer_pack(stored) and stored.get("confidence") in {"medium", "high"} and _as_list(stored.get("sourceMatrix")):
+        if _has_reusable_answer_pack(stored):
             candidate = _experience_from_bundle(stored, status="active")
             packs = [item for item in payload["experiencePacks"] if _safe_text(item.get("experiencePackId")) != candidate["experiencePackId"]]
             packs.insert(0, candidate)
@@ -500,6 +681,8 @@ def _pack_excluded_from_default_search(item: dict[str, Any]) -> bool:
     answer_quality = _safe_text(score.get("qualityStatus")).lower() if isinstance(score, dict) else ""
     question_kind = _infer_question_kind(item.get("query") or item.get("title"), item)
     source_kind = _infer_source_kind(item)
+    if not _has_reusable_answer_pack(item):
+        return True
     if status == "draft":
         return True
     if quality in _DEFAULT_EXCLUDED_PACK_QUALITIES or answer_quality in _DEFAULT_EXCLUDED_PACK_QUALITIES:
@@ -539,6 +722,7 @@ def _search_experience_packs(
     include_archived: bool,
 ) -> list[dict[str, Any]]:
     q_tokens = _question_tokens(query)
+    query_fingerprint = _topic_fingerprint(query)
     tag_set = {str(item).strip().lower() for item in list(tags or []) if str(item).strip()}
     confidence_rank = {"low": 1, "medium": 2, "high": 3}
     min_rank = confidence_rank.get(_safe_text(min_confidence).lower(), 0)
@@ -575,7 +759,24 @@ def _search_experience_packs(
             overlap = len(q_tokens.intersection(tokens)) if q_tokens else 0
             if q_tokens and overlap == 0:
                 continue
-            scored.append((_experience_search_score(item, overlap=overlap, now=now), _visible_experience(item, now=now)))
+            topic_haystack = " ".join(
+                [
+                    _safe_text(item.get("title")),
+                    _safe_text(item.get("query")),
+                    _safe_text(item.get("applicability")),
+                    " ".join(item_tags),
+                ]
+            ).lower()
+            topic_overlap = len(q_tokens.intersection(_question_tokens(topic_haystack))) if q_tokens else 0
+            if q_tokens and topic_overlap == 0:
+                continue
+            exact_topic_bonus = 1_000.0 if _safe_text(item.get("topicFingerprint")) == query_fingerprint else 0.0
+            scored.append(
+                (
+                    exact_topic_bonus + _experience_search_score(item, overlap=overlap, now=now),
+                    _visible_experience(item, now=now),
+                )
+            )
     scored.sort(key=lambda pair: (pair[0], _safe_text(pair[1].get("createdAt"))), reverse=True)
     return [item for _, item in scored[: max(1, min(int(limit or 10), 50))]]
 
@@ -695,7 +896,16 @@ def restore_experience_pack(experience_pack_id: str, *, initiated_by: str = "adm
         now = _utc_now_iso()
         for item in payload["experiencePacks"]:
             if _safe_text(item.get("experiencePackId")) == target:
-                item["status"] = "active" if _safe_text(item.get("status")).lower() == "archived" else (_safe_text(item.get("status")) or "active")
+                issues = _experience_acceptance_issues(item)
+                item["status"] = "draft" if issues else "active"
+                if issues:
+                    item["restoreQualityIssues"] = issues
+                    existing = _safe_text(item.get("invalidationReason"))
+                    item["invalidationReason"] = ", ".join(
+                        dict.fromkeys([part for part in (existing, *issues) if part])
+                    )
+                else:
+                    item.pop("restoreQualityIssues", None)
                 item["restoredAt"] = now
                 item["restoredBy"] = _safe_text(initiated_by) or "admin"
                 item["updatedAt"] = now
@@ -772,7 +982,16 @@ def bulk_update_experience_packs(
                     item["updatedAt"] = now
                     updated.append(_visible_experience(item))
             elif current_status == "archived":
-                item["status"] = "active"
+                issues = _experience_acceptance_issues(item)
+                item["status"] = "draft" if issues else "active"
+                if issues:
+                    item["restoreQualityIssues"] = issues
+                    existing = _safe_text(item.get("invalidationReason"))
+                    item["invalidationReason"] = ", ".join(
+                        dict.fromkeys([part for part in (existing, *issues) if part])
+                    )
+                else:
+                    item.pop("restoreQualityIssues", None)
                 item["restoredAt"] = now
                 item["restoredBy"] = _safe_text(initiated_by) or "admin"
                 item["updatedAt"] = now

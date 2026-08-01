@@ -12,6 +12,7 @@ from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 import graph.supervisor_turn as supervisor_turn_module
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
+    _ensure_supervisor_narrative_contract,
     _filter_tool_names,
     _latest_message_is_true_user_input,
     _runtime_episode_handoff_ready,
@@ -44,6 +45,68 @@ from graph.supervisor_turn import (
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
 from runtimes.chat.runtime import ChatRuntime, _delegation_acceptance_from_final_text
+
+
+def test_silent_supervisor_response_gets_one_real_action_retry_before_terminal_text():
+    calls = []
+    runtime_tool = SimpleNamespace(name="runtime_broker")
+    corrected = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-research",
+                "name": "runtime_broker",
+                "args": {"mode": "route", "need": {"kind": "research"}},
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    def robust_invoke(_invoke_llm, messages, tools, **_kwargs):
+        calls.append((messages, tools))
+        return corrected
+
+    result = _ensure_supervisor_narrative_contract(
+        AIMessage(content=""),
+        prepared_messages=[HumanMessage(content="请交给深度调研。")],
+        invoke_llm=object(),
+        filtered_tools=[runtime_tool],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result.tool_calls[0]["name"] == "runtime_broker"
+    assert len(calls) == 1
+    assert calls[0][1] == [runtime_tool]
+    assert "Take the next concrete action now" in calls[0][0][-1].content
+
+
+def test_silent_action_retry_falls_back_to_no_tool_terminal_visibility_once():
+    calls = []
+    runtime_tool = SimpleNamespace(name="runtime_broker")
+    responses = iter([AIMessage(content=""), AIMessage(content="当前没有可验证结果。")])
+
+    def robust_invoke(_invoke_llm, messages, tools, **_kwargs):
+        calls.append((messages, tools))
+        return next(responses)
+
+    result = _ensure_supervisor_narrative_contract(
+        AIMessage(content=""),
+        prepared_messages=[HumanMessage(content="回答当前问题。")],
+        invoke_llm=object(),
+        filtered_tools=[runtime_tool],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result.content == "当前没有可验证结果。"
+    assert len(calls) == 2
+    assert calls[0][1] == [runtime_tool]
+    assert calls[1][1] == []
 
 
 def test_subagent_waiting_child_projection_is_progress_not_failure():
@@ -780,6 +843,76 @@ def test_degraded_research_handoff_projects_exact_gap_and_one_managed_retry():
         "priorEvidenceReasons": ["explicit_critical_evidence_gap"],
         "priorLimitations": ["Missing official SQLite documentation."],
     }
+
+
+def test_bundled_research_gap_preserves_all_briefs_sources_and_targeted_repair_context():
+    state = {
+        "current_route_context": {
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "episode-research-bundle",
+                    "kind": "research",
+                    "inputs": {
+                        "taskBriefs": [
+                            {
+                                "taskBriefId": "stdlib",
+                                "goal": "Verify current stdlib path behavior.",
+                                "context": {
+                                    "routeContextNote": "Use https://docs.python.org/3/library/pathlib.html"
+                                },
+                            },
+                            {
+                                "taskBriefId": "click",
+                                "goal": "Verify current Click path behavior.",
+                                "context": {
+                                    "routeContextNote": "Use https://click.palletsprojects.com/en/stable/parameter-types/"
+                                },
+                            },
+                        ]
+                    },
+                }
+            ],
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-research-bundle",
+                    "producerEpisodeId": "episode-research-bundle",
+                    "kind": "research_evidence_bundle",
+                    "status": "degraded",
+                    "missingTaskBriefIds": ["stdlib", "click"],
+                    "taskBriefResults": [
+                        {
+                            "taskBriefId": "stdlib",
+                            "taskBriefIds": ["stdlib", "click"],
+                            "status": "degraded",
+                            "evidenceStatusReasons": ["research_brief_coverage_incomplete"],
+                            "criticalMissingEvidence": ["Verify one missing version boundary."],
+                            "recommendedNextQueries": ["site:docs.python.org pathlib version boundary"],
+                            "seedUrls": [
+                                "https://docs.python.org/3/library/pathlib.html",
+                                "https://click.palletsprojects.com/en/stable/parameter-types/",
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+
+    gap = _runtime_research_gap_state(state)
+    assert gap["missingTaskBriefIds"] == ["stdlib", "click"]
+    assert gap["attempts"] == {"stdlib": 1, "click": 1}
+    assert gap["details"]["click"]["criticalMissingEvidence"] == [
+        "Verify one missing version boundary."
+    ]
+
+    retry = _managed_research_retry_need(gap)
+    contexts = [json.loads(item) for item in retry["researchBriefContexts"]]
+    assert "https://docs.python.org/3/library/pathlib.html" in contexts[0]["seedUrls"]
+    assert "https://click.palletsprojects.com/en/stable/parameter-types/" in contexts[1]["seedUrls"]
+    assert contexts[0]["criticalMissingEvidence"] == ["Verify one missing version boundary."]
+    assert contexts[1]["recommendedNextQueries"] == [
+        "site:docs.python.org pathlib version boundary"
+    ]
 
 
 def test_research_retry_correction_requires_exact_runtime_tool_call():

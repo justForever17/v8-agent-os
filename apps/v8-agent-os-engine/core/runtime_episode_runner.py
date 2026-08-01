@@ -26,6 +26,22 @@ from core.runtime_continuation import (
 )
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
+from core.tools.research_quality import (
+    TARGET_RESEARCH_SOURCE_COUNT,
+    research_acceptance_metrics,
+    research_answer_text,
+    research_as_of,
+    research_bundle_is_high_quality,
+    research_high_quality_issues,
+    research_independent_review,
+    research_claims,
+    research_critical_missing_evidence,
+    research_missing_evidence,
+    research_quality_tier,
+    research_review_decision,
+    research_selected_sources,
+)
+from core.tools.research_ledger import get_evidence_bundle
 from core.engineering_capsule import (
     derive_grandchild_engineering_task,
     engineering_capsule_mode,
@@ -247,7 +263,16 @@ def _research_seed_urls(*values: Any) -> list[str]:
             return
         if isinstance(value, dict):
             for key, item in value.items():
-                if str(key) in {"url", "href", "ref", "detailRef", "detailRefs", "seedUrl", "seedUrls"}:
+                if str(key) in {
+                    "url",
+                    "href",
+                    "ref",
+                    "detailRef",
+                    "detailRefs",
+                    "seedUrl",
+                    "seedUrls",
+                    "routeContextNote",
+                }:
                     visit(item)
             return
         if isinstance(value, (list, tuple, set)):
@@ -297,6 +322,38 @@ def _research_freshness(
     if any(marker in lowered for marker in ("当前", "最新", "现状", "目前", "截至", "今年")):
         return "current"
     return "auto"
+
+
+def _research_brief_is_synthesis_deliverable(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    synthesis = bool(
+        re.search(
+            r"(?:综合(?:(?:上述|以上|前述|这些)?(?:结论|发现|证据)|前\s*\d+\s*项)|"
+            r"基于(?:上述|以上|前述)(?:结论|发现|证据)|"
+            r"synthesi[sz]e|based on (?:the )?(?:above|findings|evidence))",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    deliverable = bool(
+        re.search(
+            r"(?:清单|行动项|建议|路线图|优先级|"
+            r"checklist|recommendations?|roadmap|action items?|deliverable)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    artifact_request = bool(
+        re.search(
+            r"(?:生成|形成|制定|整理|给出|输出|"
+            r"produce|create|generate|draft|prepare|provide)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    return deliverable and (synthesis or artifact_request)
 
 
 _RESEARCH_CRITICAL_GAP_MARKERS = (
@@ -353,7 +410,6 @@ _RESEARCH_CRITICAL_GAP_PATTERNS = (
     re.compile(r"(?:missing|no)\s+(?:official|authoritative|primary).{0,60}?(?:information|source|documentation|evidence)"),
 )
 
-
 def _research_source_host(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -395,7 +451,204 @@ def _research_expected_source_floor(brief: dict[str, Any], source_policy: str) -
         chinese_counts = {"二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
         raw_count = match.group(1)
         return int(raw_count) if raw_count.isdigit() else chinese_counts[raw_count]
-    return 1
+    return TARGET_RESEARCH_SOURCE_COUNT
+
+
+def _research_handoff_source(source: dict[str, Any]) -> dict[str, Any]:
+    temporal = source.get("temporalEvidence") if isinstance(source.get("temporalEvidence"), dict) else {}
+    read_evidence = source.get("readEvidence") if isinstance(source.get("readEvidence"), dict) else {}
+    compact = {
+        "sourceId": source.get("sourceId"),
+        "citationKey": source.get("citationKey"),
+        "title": source.get("title") or source.get("sourceTitle"),
+        "url": source.get("url") or source.get("sourceUrl"),
+        "host": source.get("host"),
+        # Callers pass only the output of research_selected_sources(), which
+        # also treats researchEvidenceBank.selectedSources as a trusted list.
+        "selectedForEvidence": True,
+        "tier": source.get("tier") or source.get("authorityTier"),
+        "authorityScore": source.get("authorityScore"),
+        "publishedAt": source.get("publishedAt") or temporal.get("publishedAt"),
+        "updatedAt": source.get("updatedAt") or temporal.get("updatedAt"),
+        "sourceDate": source.get("sourceDate") or temporal.get("sourceDate"),
+        "version": source.get("version") or temporal.get("version"),
+        "retrievedAt": source.get("retrievedAt") or source.get("fetchedAt") or temporal.get("retrievedAt"),
+        "contentChars": source.get("contentChars"),
+        "readEvidence": dict(read_evidence),
+        "temporalEvidence": dict(temporal),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
+def _research_recommended_queries(payload: dict[str, Any]) -> list[str]:
+    answer_pack = payload.get("researchAnswerPack") if isinstance(payload.get("researchAnswerPack"), dict) else {}
+    final_pack = payload.get("finalExperiencePack") if isinstance(payload.get("finalExperiencePack"), dict) else {}
+    if not final_pack and isinstance(payload.get("researchResult"), dict):
+        final_pack = payload.get("researchResult") or {}
+    queries: list[str] = []
+    for container in (payload, answer_pack, final_pack):
+        for key in ("recommendedNextQueries", "nextQueries"):
+            values = container.get(key)
+            if isinstance(values, str):
+                values = [values]
+            for value in list(values or []):
+                normalized = str(value or "").strip()
+                if normalized and normalized not in queries:
+                    queries.append(normalized)
+    return queries[:8]
+
+
+def _normalized_research_question(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _hydrate_research_run_payload(
+    payload: dict[str, Any],
+    *,
+    expected_question: str,
+    expected_scope: str,
+) -> dict[str, Any]:
+    """Restore the canonical internal bundle behind a compact broker surface.
+
+    The broker intentionally bounds its Agent Surface for both successful and
+    unsuccessful runs. Episode quality gates must evaluate the complete
+    persisted proof rather than mistake that projection for Runtime truth.
+    Hydration is internal-only and never upgrades the transport gate decision.
+    """
+
+    transport = dict(payload or {})
+    evidence_id = str(transport.get("evidenceBundleId") or "").strip()
+    if not evidence_id:
+        return transport
+    try:
+        stored = get_evidence_bundle(evidence_id)
+    except Exception as exc:  # noqa: BLE001 - ledger failure must stay degraded.
+        logger.warning(
+            "Research evidence hydration failed for %s: %s",
+            evidence_id,
+            type(exc).__name__,
+        )
+        return transport
+    if not isinstance(stored, dict):
+        return transport
+    if str(stored.get("evidenceBundleId") or "").strip() != evidence_id:
+        return transport
+
+    normalized_expected_question = _normalized_research_question(expected_question)
+    normalized_stored_question = _normalized_research_question(stored.get("question"))
+    if (
+        normalized_expected_question
+        and normalized_stored_question != normalized_expected_question
+    ):
+        return transport
+
+    normalized_expected_scope = str(expected_scope or "global").strip() or "global"
+    normalized_stored_scope = str(stored.get("scope") or "global").strip() or "global"
+    if normalized_stored_scope != normalized_expected_scope:
+        return transport
+
+    effective = {**transport, **stored}
+    # These fields describe the current broker attempt and may never be
+    # promoted merely because the ledger contains a richer evidence body.
+    for key in (
+        "ok",
+        "deliveryReady",
+        "reviewDecision",
+        "reviewReasons",
+        "independentReview",
+        "qualityTier",
+    ):
+        if key in transport:
+            effective[key] = transport[key]
+    effective["evidenceBundleId"] = evidence_id
+    effective["_runtimeHydratedFromEvidenceBundle"] = True
+    effective["_transportDeliveryReady"] = transport.get("deliveryReady")
+    return effective
+
+
+def _research_experience_reuse_proof(
+    run_payload: dict[str, Any],
+    search_payload: dict[str, Any],
+) -> dict[str, Any]:
+    raw: dict[str, Any] = {}
+    for value in (
+        run_payload.get("experienceReuse"),
+        search_payload.get("experienceReuse"),
+        search_payload.get("reuseDecision"),
+    ):
+        if isinstance(value, dict):
+            raw = value
+            break
+        if str(value or "").strip():
+            raw = {
+                "reuseDecision": str(value).strip(),
+                "reason": "search_experience_result",
+            }
+            break
+    if not raw:
+        return {}
+    proof_keys = (
+        "reuseDecision",
+        "reason",
+        "matchReason",
+        "candidatePackId",
+        "candidateTitle",
+        "candidateConfidence",
+        "skippedSearches",
+        "topicFingerprint",
+        "refreshSuggested",
+        "supervisorContentNote",
+        "freshnessState",
+        "ageDays",
+        "staleAt",
+        "expiresAt",
+        "requestedAsOf",
+        "candidateAsOf",
+        "qualityReasons",
+    )
+    proof = {key: raw.get(key) for key in proof_keys if raw.get(key) not in (None, "", [], {})}
+    pack = raw.get("pack") if isinstance(raw.get("pack"), dict) else {}
+    if pack:
+        answer_pack = pack.get("researchAnswerPack") if isinstance(pack.get("researchAnswerPack"), dict) else {}
+        pack_answer = str(
+            answer_pack.get("answer")
+            or pack.get("researchResult")
+            or pack.get("resultPreview")
+            or ""
+        ).strip()
+        pack_sources = list(
+            answer_pack.get("sources")
+            or pack.get("sourceMatrixDigest")
+            or pack.get("sourceUrls")
+            or []
+        )
+        pack_claims = list(answer_pack.get("claimTable") or pack.get("claimDigest") or [])
+        proof["reusedPackProof"] = {
+            key: value
+            for key, value in {
+                "experiencePackId": pack.get("experiencePackId") or raw.get("candidatePackId"),
+                "createdFromBundleId": pack.get("createdFromBundleId"),
+                "topicFingerprint": pack.get("topicFingerprint") or raw.get("topicFingerprint"),
+                "asOf": answer_pack.get("asOf") or pack.get("asOf"),
+                "qualityStatus": pack.get("qualityStatus"),
+                "confidence": pack.get("confidence"),
+                "sourceCount": len(pack_sources),
+                "claimCount": len(pack_claims),
+                "answerSha256": hashlib.sha256(pack_answer.encode("utf-8")).hexdigest() if pack_answer else "",
+            }.items()
+            if value not in (None, "", [], {})
+        }
+    return proof
+
+
+def _research_handoff_consumer_hint(experience_reuse: dict[str, Any] | None) -> str:
+    hint = (
+        "Use the complete accepted Research answer directly for the user or downstream runtime; "
+        "do not repeat web search unless the handoff limitations or update note materially require it."
+    )
+    reuse = experience_reuse if isinstance(experience_reuse, dict) else {}
+    note = str(reuse.get("supervisorContentNote") or "").strip()
+    return f"{hint} Supervisor update note: {note}" if note else hint
 
 
 def _research_evidence_status(
@@ -415,6 +668,11 @@ def _research_evidence_status(
     """Validate one Research brief without asking a classifier to judge the topic."""
 
     reasons: list[str] = []
+    if run_payload.get("_transportDeliveryReady") is False:
+        reasons.append("research_delivery_gate_not_ready")
+    quality_accepted = research_bundle_is_high_quality(run_payload)
+    if not quality_accepted:
+        reasons.extend(research_high_quality_issues(run_payload))
     if not bool(run_payload.get("ok")):
         reasons.append("research_broker_failed")
     if not research_ref:
@@ -425,18 +683,6 @@ def _research_evidence_status(
         reasons.append("source_evidence_missing")
     if not claim_items:
         reasons.append("claim_table_missing")
-
-    score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
-    quality_status = str(score.get("qualityStatus") or "").strip().lower()
-    if quality_status in {"refresh_required", "evidence_missing", "missing"}:
-        reasons.append("answer_quality_requires_refresh")
-    missing_reasons = [
-        str(item or "").strip()
-        for item in list(answer_pack.get("missingOrStaleReasons") or [])
-        if str(item or "").strip()
-    ]
-    if missing_reasons:
-        reasons.append("answer_pack_reports_missing_evidence")
 
     limitations = [
         str(item or "").strip()
@@ -486,14 +732,15 @@ def _research_evidence_status(
             if years and max(years) < current_year - 1:
                 reasons.append("freshness_claim_stale")
 
-    source_urls = [
-        str(item.get("url") or item.get("sourceUrl") or "").strip()
-        for item in source_items
-        if str(item.get("url") or item.get("sourceUrl") or "").strip()
-    ]
-    unique_source_urls = list(dict.fromkeys(source_urls))
+    source_identities = list(
+        dict.fromkeys(
+            str(item.get("url") or item.get("sourceUrl") or item.get("sourceId") or "").strip()
+            for item in source_items
+            if str(item.get("url") or item.get("sourceUrl") or item.get("sourceId") or "").strip()
+        )
+    )
     expected_source_floor = _research_expected_source_floor(brief, source_policy)
-    if len(unique_source_urls) < expected_source_floor:
+    if len(source_identities) < expected_source_floor:
         reasons.append(f"source_floor_not_met:{expected_source_floor}")
 
     normalized_policy = str(source_policy or "").strip().lower()
@@ -508,7 +755,14 @@ def _research_evidence_status(
         )
     )
     if normalized_policy in {"official", "authoritative", "primary", "official_docs_first"} and expected_hosts:
-        source_hosts = [_research_source_host(url) for url in unique_source_urls]
+        source_hosts = list(
+            dict.fromkeys(
+                str(item.get("host") or "").strip().lower().removeprefix("www.")
+                or _research_source_host(item.get("url") or item.get("sourceUrl"))
+                for item in source_items
+                if str(item.get("host") or item.get("url") or item.get("sourceUrl") or "").strip()
+            )
+        )
         if not any(
             _research_domain_matches(source_host, expected_host)
             for source_host in source_hosts
@@ -516,7 +770,7 @@ def _research_evidence_status(
         ):
             reasons.append("authoritative_source_scope_missing")
 
-    return not reasons, list(dict.fromkeys(reasons))
+    return quality_accepted and not reasons, list(dict.fromkeys(reasons))
 
 
 def _runtime_surface_id_for_episode(episode: dict[str, Any]) -> str:
@@ -1410,6 +1664,12 @@ class RuntimeEpisodeRunner:
         return child_handoffs
 
     async def _execute_research(self, episode: dict[str, Any]) -> dict[str, Any]:
+        # Research performs synchronous provider calls and web retrieval. Keep
+        # that blocking work off the EpisodeRunner event loop so the durable
+        # lease heartbeat and cancellation watchdog can continue to run.
+        return await asyncio.to_thread(self._execute_research_sync, episode)
+
+    def _execute_research_sync(self, episode: dict[str, Any]) -> dict[str, Any]:
         self._heartbeat(str(episode.get("episodeId")), "research: experience lookup")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
@@ -1417,13 +1677,21 @@ class RuntimeEpisodeRunner:
         final_repair_attempt = bool(research_repair.get("finalRepairAttempt"))
         task_briefs = [dict(item) for item in list(inputs.get("taskBriefs") or inputs.get("tasks") or []) if isinstance(item, dict)]
         brief_queries: list[tuple[str, str]] = []
+        synthesis_requirements: list[tuple[str, str]] = []
         for brief in task_briefs:
             task_brief_id = str(brief.get("taskBriefId") or brief.get("id") or "").strip()
             for key in ("routeQuery", "query", "question", "goal", "title"):
                 value = str(brief.get(key) or "").strip()
                 if value:
-                    brief_queries.append((task_brief_id, value))
+                    target = (
+                        synthesis_requirements
+                        if _research_brief_is_synthesis_deliverable(value)
+                        else brief_queries
+                    )
+                    target.append((task_brief_id, value))
                     break
+        if not brief_queries and synthesis_requirements:
+            brief_queries, synthesis_requirements = synthesis_requirements, []
         explicit_query = str(inputs.get("query") or inputs.get("question") or need.get("query") or "").strip()
         unique_queries: list[tuple[str, str]] = []
         seen_queries: set[str] = set()
@@ -1433,16 +1701,26 @@ class RuntimeEpisodeRunner:
                 continue
             seen_queries.add(dedupe_key)
             unique_queries.append((task_brief_id, value))
-        if len(unique_queries) > 1:
+        if len(unique_queries) > 1 or synthesis_requirements:
             query_lines = [
                 "Research every item below as one evidence bundle. Cover each item explicitly with sources, findings, and limitations; do not stop after the first item."
             ]
-            if explicit_query:
+            if explicit_query and explicit_query.casefold() not in {
+                value.casefold() for _task_brief_id, value in unique_queries
+            }:
                 query_lines.append(f"Overall request: {explicit_query}")
             query_lines.extend(
                 f"{index}. [{task_brief_id or f'brief-{index}'}] {value}"
                 for index, (task_brief_id, value) in enumerate(unique_queries, start=1)
             )
+            if synthesis_requirements:
+                query_lines.append(
+                    "Deliverable requirements: synthesize these from the verified evidence above; they are not separate source-search facets."
+                )
+                query_lines.extend(
+                    f"- {task_brief_id or 'deliverable'}: {value}"
+                    for task_brief_id, value in synthesis_requirements
+                )
             query = "\n".join(query_lines)
         elif explicit_query:
             query = explicit_query
@@ -1532,13 +1810,29 @@ class RuntimeEpisodeRunner:
                 },
             )
 
-        # One managed Research episode may contain several independent briefs,
-        # but a single giant broker query lets a provider stop after the first
-        # topic while still producing a superficially plausible answer. Execute
-        # each brief as a bounded evidence unit and aggregate the units into one
-        # terminal handoff. The Supervisor still sees one episode, one progress
-        # chain, and one typed result.
-        run_units = list(unique_queries) if len(unique_queries) > 1 else []
+        # One managed Research episode may contain several facets. Public
+        # Supervisor routes keep one shared quality floor and one final answer;
+        # the broker recognizes the structured brief lines and retrieves those
+        # facets as separate parallel shards into the shared evidence pool.
+        # Explicit internal per-brief mode remains available for callers that
+        # truly own separate evidence-unit semantics.
+        single_bundle_mode = (
+            str(inputs.get("researchExecutionMode") or "").strip().lower() == "single_bundle"
+        )
+        if single_bundle_mode and len(unique_queries) > 1:
+            # Public Supervisor Research routes describe facets of one user
+            # question. The 5-source/3000-character rejection floor applies to
+            # the complete answer, not independently to every facet. Let the
+            # Research Architect plan the combined question and return one
+            # evidence bundle while preserving every stable brief ID below.
+            run_units = [
+                (
+                    task_brief_ids[0] if task_brief_ids else "research-bundle",
+                    query,
+                )
+            ]
+        else:
+            run_units = list(unique_queries) if len(unique_queries) > 1 else []
         if not run_units:
             unit_id = task_brief_ids[0] if task_brief_ids else "research-1"
             run_units = [(unit_id, query)]
@@ -1552,32 +1846,69 @@ class RuntimeEpisodeRunner:
         }
         for index, (raw_task_brief_id, unit_query) in enumerate(run_units, start=1):
             task_brief_id = str(raw_task_brief_id or f"research-{index}").strip() or f"research-{index}"
-            brief = dict(briefs_by_id.get(task_brief_id) or {})
+            bundled_task_brief_ids = (
+                list(task_brief_ids)
+                if single_bundle_mode and task_brief_ids
+                else [task_brief_id]
+            )
+            brief = (
+                {}
+                if single_bundle_mode and len(unique_queries) > 1
+                else dict(briefs_by_id.get(task_brief_id) or {})
+            )
             freshness = _research_freshness(brief=brief, inputs=inputs, need=need, query=unit_query)
             source_policy = str(
                 _research_brief_option(brief, inputs, need, "sourcePolicy", "source_policy")
                 or "authoritative"
             ).strip()
-            seed_urls = _research_seed_urls(
-                brief.get("seedUrls"),
-                brief.get("detailRefs"),
-                inputs.get("seedUrls"),
-                inputs.get("detailRefs"),
-                need.get("seedUrls"),
-                need.get("detailRefs"),
-            )
-            allowed_domains_value = _research_brief_option(
+            force_refresh_value = _research_brief_option(
                 brief,
                 inputs,
                 need,
-                "allowedDomains",
-                "allowed_domains",
+                "forceRefresh",
+                "force_refresh",
             )
-            allowed_domain_items = (
-                re.split(r"[,\s]+", allowed_domains_value)
-                if isinstance(allowed_domains_value, str)
-                else list(allowed_domains_value or [])
+            force_refresh = bool(
+                force_refresh_value is True
+                or str(force_refresh_value or "").strip().lower() in {"1", "true", "yes", "on"}
             )
+            bundled_briefs = task_briefs if single_bundle_mode and len(unique_queries) > 1 else [brief]
+            seed_urls = _research_seed_urls(
+                *[
+                    value
+                    for bundled_brief in bundled_briefs
+                    for value in (
+                        bundled_brief.get("seedUrls"),
+                        bundled_brief.get("detailRefs"),
+                        bundled_brief.get("context"),
+                        bundled_brief.get("constraints"),
+                    )
+                ],
+                inputs.get("seedUrls"),
+                inputs.get("detailRefs"),
+                inputs.get("researchBriefContexts"),
+                need.get("seedUrls"),
+                need.get("detailRefs"),
+            )
+            allowed_domain_values = [
+                _research_brief_option(
+                    bundled_brief,
+                    {},
+                    {},
+                    "allowedDomains",
+                    "allowed_domains",
+                )
+                for bundled_brief in bundled_briefs
+            ]
+            allowed_domain_values.append(
+                _research_brief_option({}, inputs, need, "allowedDomains", "allowed_domains")
+            )
+            allowed_domain_items: list[Any] = []
+            for allowed_domains_value in allowed_domain_values:
+                if isinstance(allowed_domains_value, str):
+                    allowed_domain_items.extend(re.split(r"[,\s]+", allowed_domains_value))
+                else:
+                    allowed_domain_items.extend(list(allowed_domains_value or []))
             allowed_domains = [str(item).strip() for item in allowed_domain_items if str(item).strip()]
             self._heartbeat(episode_id, f"research: brief {index}/{len(run_units)}")
             search_result = research_broker.func(
@@ -1590,7 +1921,6 @@ class RuntimeEpisodeRunner:
                 state=state,
                 tool_call_id=f"episode:{episode_id}:brief:{index}:search_experience",
             )
-            search_visible = _first_tool_message_content(search_result)
             search_payload = _tool_result_payload(search_result)
             run_result = research_broker.func(
                 mode="run",
@@ -1600,26 +1930,57 @@ class RuntimeEpisodeRunner:
                 sourcePolicy=source_policy,
                 seedUrls=seed_urls,
                 allowedDomains=allowed_domains,
+                forceRefresh=force_refresh,
                 state=state,
                 tool_call_id=f"episode:{episode_id}:brief:{index}:research_run",
             )
-            run_payload = _tool_result_payload(run_result)
+            transport_run_payload = _tool_result_payload(run_result)
+            run_payload = _hydrate_research_run_payload(
+                transport_run_payload,
+                expected_question=unit_query,
+                expected_scope=session_id or run_id or "global",
+            )
             answer_pack = (
                 dict(run_payload.get("researchAnswerPack") or {})
                 if isinstance(run_payload.get("researchAnswerPack"), dict)
                 else {}
             )
-            source_items = [
+            source_items = research_selected_sources(run_payload)
+            claim_items = research_claims(run_payload)
+            answer = research_answer_text(run_payload)
+            quality_metrics = research_acceptance_metrics(run_payload)
+            review_decision = research_review_decision(run_payload)
+            independent_review = research_independent_review(run_payload)
+            as_of = research_as_of(run_payload)
+            missing_evidence = research_missing_evidence(run_payload)
+            critical_missing_evidence = research_critical_missing_evidence(run_payload)
+            recommended_queries = _research_recommended_queries(run_payload)
+            brief_coverage = [
                 dict(item)
-                for item in list(answer_pack.get("sources") or run_payload.get("sourceMatrix") or [])
+                for item in list(run_payload.get("briefCoverage") or [])
                 if isinstance(item, dict)
             ]
-            claim_items = [
-                dict(item)
-                for item in list(answer_pack.get("claimTable") or run_payload.get("claimTable") or [])
-                if isinstance(item, dict)
-            ]
-            answer = str(answer_pack.get("answer") or run_payload.get("summary") or "").strip()
+            evaluated_freshness = str(run_payload.get("freshness") or freshness).strip() or freshness
+            final_pack = (
+                dict(run_payload.get("finalExperiencePack") or {})
+                if isinstance(run_payload.get("finalExperiencePack"), dict)
+                else dict(run_payload.get("researchResult") or {})
+                if isinstance(run_payload.get("researchResult"), dict)
+                else {}
+            )
+            model_synthesis = (
+                dict(final_pack.get("modelSynthesis") or {})
+                if isinstance(final_pack.get("modelSynthesis"), dict)
+                else dict(run_payload.get("modelSynthesis") or {})
+                if isinstance(run_payload.get("modelSynthesis"), dict)
+                else {}
+            )
+            temporal_assessment = (
+                dict(final_pack.get("temporalAssessment") or {})
+                if isinstance(final_pack.get("temporalAssessment"), dict)
+                else {}
+            )
+            experience_reuse = _research_experience_reuse_proof(run_payload, search_payload)
             evidence_id = str(run_payload.get("evidenceBundleId") or "").strip()
             experience_pack_id = str(run_payload.get("experiencePackId") or "").strip()
             research_ref = (
@@ -1647,38 +2008,80 @@ class RuntimeEpisodeRunner:
                 seed_urls=seed_urls,
                 allowed_domains=allowed_domains,
             )
+            quality_tier = research_quality_tier(run_payload)
+            handoff_sources = [_research_handoff_source(item) for item in source_items]
+            handoff_sources = [item for item in handoff_sources if item.get("url") or item.get("sourceId")]
+            handoff_claims = [dict(item) for item in claim_items]
+            answer_sha256 = hashlib.sha256(answer.encode("utf-8")).hexdigest() if answer else ""
             unit_results.append(
                 {
                     "taskBriefId": task_brief_id,
+                    "taskBriefIds": bundled_task_brief_ids,
                     "status": "ready" if ready else "degraded",
                     "query": unit_query,
-                    "answer": _preview(
-                        answer or _first_tool_message_content(run_result) or search_visible,
-                        limit=1400,
-                    ),
-                    "evidenceBundleId": evidence_id or None,
-                    "experiencePackId": experience_pack_id or None,
-                    "researchRef": research_ref,
+                    # The complete accepted answer is the handoff payload. A rejected
+                    # model draft, search response, summary, or raw claim never becomes
+                    # a substitute answer.
+                    "answer": answer if ready else "",
+                    "evidenceBundleId": (evidence_id or None) if ready else None,
+                    "experiencePackId": (experience_pack_id or None) if ready else None,
+                    "researchRef": research_ref if ready else None,
                     "detailTool": (
                         f"research_broker(mode='get_evidence', evidenceBundleId='{evidence_id}')"
-                        if evidence_id
+                        if ready and evidence_id
                         else None
                     ),
-                    "freshness": freshness,
+                    "freshness": evaluated_freshness,
+                    "requestedFreshness": freshness,
+                    "forceRefreshRequested": force_refresh,
                     "sourcePolicy": source_policy,
                     "seedUrls": seed_urls,
-                    "experienceReuse": run_payload.get("experienceReuse") or search_payload.get("reuseDecision") or {},
-                    "sourceCount": len(source_items),
-                    "claimCount": len(claim_items),
-                    "sourceUrls": source_urls[:6],
-                    "limitations": list(answer_pack.get("limitations") or run_payload.get("limitations") or [])[:6],
+                    "experienceReuse": experience_reuse,
+                    "acceptancePassed": ready,
+                    "reviewDecision": review_decision,
+                    "independentReview": independent_review,
+                    "modelSynthesis": model_synthesis,
+                    "temporalAssessment": temporal_assessment,
+                    "qualityTier": quality_tier,
+                    "qualityMetrics": quality_metrics,
+                    "asOf": as_of,
+                    "answerSha256": answer_sha256 if ready else "",
+                    "sourceCount": int(quality_metrics.get("selectedSourceCount") or len(source_items)),
+                    "claimCount": int(quality_metrics.get("claimCount") or len(claim_items)),
+                    "claimTable": handoff_claims if ready else [],
+                    "sources": handoff_sources if ready else [],
+                    "sourceUrls": source_urls if ready else [],
+                    "limitations": missing_evidence[:8],
+                    "criticalMissingEvidence": critical_missing_evidence[:8],
+                    "recommendedNextQueries": recommended_queries,
                     "evidenceStatusReasons": evidence_status_reasons,
+                    "briefCoverage": brief_coverage,
+                    "briefCoverageComplete": run_payload.get("briefCoverageComplete") is True,
                 }
             )
 
         ready_units = [item for item in unit_results if item["status"] == "ready"]
-        missing_task_brief_ids = [item["taskBriefId"] for item in unit_results if item["status"] != "ready"]
-        covered_task_brief_ids = [item["taskBriefId"] for item in ready_units]
+        all_task_brief_ids = list(task_brief_ids) or list(
+            dict.fromkeys(
+                str(brief_id or "").strip()
+                for item in unit_results
+                for brief_id in list(item.get("taskBriefIds") or [item.get("taskBriefId")])
+                if str(brief_id or "").strip()
+            )
+        )
+        covered_task_brief_ids = list(
+            dict.fromkeys(
+                str(brief_id or "").strip()
+                for item in ready_units
+                for brief_id in list(item.get("taskBriefIds") or [item.get("taskBriefId")])
+                if str(brief_id or "").strip()
+            )
+        )
+        missing_task_brief_ids = [
+            brief_id
+            for brief_id in all_task_brief_ids
+            if brief_id not in covered_task_brief_ids
+        ]
         research_refs = list(dict.fromkeys(str(item["researchRef"]) for item in ready_units if item.get("researchRef")))
         ready_evidence_ids = list(
             dict.fromkeys(
@@ -1693,12 +2096,52 @@ class RuntimeEpisodeRunner:
             for url in list(item.get("sourceUrls") or [])
             if str(url).strip()
         ))
-        source_count = sum(int(item.get("sourceCount") or 0) for item in unit_results)
-        claim_count = sum(int(item.get("claimCount") or 0) for item in unit_results)
+        source_count = sum(int(item.get("sourceCount") or 0) for item in ready_units)
+        claim_count = sum(int(item.get("claimCount") or 0) for item in ready_units)
         compact_answers = [
-            f"[{item['taskBriefId']}] {_preview(item.get('answer') or 'No source-backed answer.', limit=240)}"
+            (
+                f"[{item['taskBriefId']}] {_preview(item.get('answer'), limit=240)}"
+                if item.get("answer")
+                else f"[{item['taskBriefId']}] Research evidence did not pass acceptance."
+            )
             for item in unit_results
         ]
+        as_of_by_brief = {
+            str(brief_id or "").strip(): str(item.get("asOf") or "")
+            for item in ready_units
+            for brief_id in list(item.get("taskBriefIds") or [item.get("taskBriefId")])
+            if str(brief_id or "").strip() and str(item.get("asOf") or "").strip()
+        }
+        accepted_as_of_values = list(dict.fromkeys(as_of_by_brief.values()))
+        handoff_as_of = accepted_as_of_values[0] if len(accepted_as_of_values) == 1 else ""
+        aggregate_recommended_queries = list(
+            dict.fromkeys(
+                str(query).strip()
+                for item in unit_results
+                for query in list(item.get("recommendedNextQueries") or [])
+                if str(query).strip()
+            )
+        )[:8]
+        if missing_task_brief_ids:
+            aggregate_quality_tier = "insufficient"
+            unit_review_decisions = {
+                str(item.get("reviewDecision") or "").strip().lower()
+                for item in unit_results
+            }
+            aggregate_review_decision = (
+                "reject"
+                if "reject" in unit_review_decisions or final_repair_attempt
+                else "retry"
+            )
+        elif ready_units and all(item.get("qualityTier") == "high_quality" for item in ready_units):
+            aggregate_quality_tier = "high_quality"
+            aggregate_review_decision = "accept"
+        else:
+            # `ready_units` is currently high-quality-only. Keep the aggregate
+            # fail-closed if that invariant ever drifts instead of promoting a
+            # minimum-qualified unit to an accepted handoff.
+            aggregate_quality_tier = "insufficient"
+            aggregate_review_decision = "retry"
         coverage_extra = {
             **terminal_metadata,
             "query": query,
@@ -1708,18 +2151,38 @@ class RuntimeEpisodeRunner:
                     key: item.get(key)
                     for key in (
                         "taskBriefId",
+                        "taskBriefIds",
                         "status",
+                        "query",
                         "answer",
+                        "answerSha256",
+                        "acceptancePassed",
+                        "reviewDecision",
+                        "independentReview",
+                        "modelSynthesis",
+                        "temporalAssessment",
+                        "qualityTier",
+                        "qualityMetrics",
+                        "asOf",
                         "evidenceBundleId",
                         "researchRef",
                         "detailTool",
+                        "experienceReuse",
+                        "claimTable",
+                        "sources",
                         "sourceUrls",
                         "freshness",
+                        "requestedFreshness",
+                        "forceRefreshRequested",
                         "sourcePolicy",
                         "sourceCount",
                         "claimCount",
                         "limitations",
+                        "criticalMissingEvidence",
+                        "recommendedNextQueries",
                         "evidenceStatusReasons",
+                        "briefCoverage",
+                        "briefCoverageComplete",
                     )
                 }
                 for item in unit_results
@@ -1730,11 +2193,27 @@ class RuntimeEpisodeRunner:
             "researchRefs": research_refs,
             "sourceCount": source_count,
             "claimCount": claim_count,
+            "answer": ready_units[0].get("answer") if len(ready_units) == 1 and not missing_task_brief_ids else "",
+            "answerSha256": ready_units[0].get("answerSha256") if len(ready_units) == 1 and not missing_task_brief_ids else "",
+            "claimTable": ready_units[0].get("claimTable") if len(ready_units) == 1 and not missing_task_brief_ids else [],
+            "sources": ready_units[0].get("sources") if len(ready_units) == 1 and not missing_task_brief_ids else [],
+            "sourceUrls": source_urls,
+            "asOf": handoff_as_of,
+            "asOfByBrief": as_of_by_brief,
+            "reviewDecision": aggregate_review_decision,
+            "qualityTier": aggregate_quality_tier,
+            "recommendedNextQueries": aggregate_recommended_queries,
+            "qualityMetrics": ready_units[0].get("qualityMetrics") if len(ready_units) == 1 and not missing_task_brief_ids else {},
+            "independentReview": unit_results[0].get("independentReview") if len(unit_results) == 1 else {},
+            "modelSynthesis": unit_results[0].get("modelSynthesis") if len(unit_results) == 1 else {},
+            "temporalAssessment": unit_results[0].get("temporalAssessment") if len(unit_results) == 1 else {},
+            "experienceReuse": unit_results[0].get("experienceReuse") if len(unit_results) == 1 else {},
+            "forceRefreshRequested": unit_results[0].get("forceRefreshRequested") if len(unit_results) == 1 else False,
         }
         if missing_task_brief_ids:
             evidence_gaps = [
                 {
-                    "taskBriefId": str(item.get("taskBriefId") or "").strip(),
+                    "taskBriefId": str(brief_id or "").strip(),
                     "status": "unverified",
                     "blocksClaim": True,
                     # A missing source-backed claim is not automatically a
@@ -1743,11 +2222,17 @@ class RuntimeEpisodeRunner:
                     # the claim out of its user-facing assertions.
                     "blocksDownstream": False,
                     "limitations": list(item.get("limitations") or [])[:6],
-                    "evidenceStatusReasons": list(item.get("evidenceStatusReasons") or [])[:6],
+                    "criticalMissingEvidence": list(item.get("criticalMissingEvidence") or [])[:8],
+                    "recommendedNextQueries": list(item.get("recommendedNextQueries") or [])[:8],
+                    "reviewDecision": item.get("reviewDecision"),
+                    "qualityTier": item.get("qualityTier"),
+                    "asOf": item.get("asOf"),
+                    "evidenceStatusReasons": list(item.get("evidenceStatusReasons") or [])[:12],
                 }
                 for item in unit_results
                 if str(item.get("status") or "").strip().lower() != "ready"
-                and str(item.get("taskBriefId") or "").strip()
+                for brief_id in list(item.get("taskBriefIds") or [item.get("taskBriefId")])
+                if str(brief_id or "").strip()
             ]
             retry_exhausted = final_repair_attempt
             has_downstream_evidence = bool(ready_units)
@@ -1803,16 +2288,19 @@ class RuntimeEpisodeRunner:
                     },
                 },
             )
+        consumer_hint = _research_handoff_consumer_hint(
+            unit_results[0].get("experienceReuse") if len(unit_results) == 1 else {}
+        )
         return build_handoff_ref(
             producer_episode_id=episode_id,
             kind="research",
             compact_summary=_preview("\n".join(compact_answers)),
             status="ready",
             confidence="medium",
-            consumer_hint="Use this research handoff as evidence refs input for Engineering/Creative episodes.",
+            consumer_hint=consumer_hint,
             extra={
                 **coverage_extra,
-                "refs": [*research_refs, *source_urls[:6]],
+                "refs": [*research_refs, *source_urls[:TARGET_RESEARCH_SOURCE_COUNT]],
                 "proofRefs": research_refs,
                 "evidenceBundleId": ready_evidence_ids[0] if len(ready_evidence_ids) == 1 else "",
                 "evidenceBundleIds": ready_evidence_ids,

@@ -18,6 +18,7 @@ from core.tools.web_fetcher import (
     _WEB_BROKER_CONTEXT_COUNTS,
     WebPagePayload,
     _active_agent_browser_cdp_context,
+    _assess_search_result_relevance,
     web_broker,
     web_extract,
     web_read,
@@ -543,6 +544,108 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertEqual(payload["attemptedProviders"][0]["failureClass"], "credential_missing")
         self.assertEqual(payload["sourceCapability"]["region"], "cn")
 
+    def test_search_relevance_guard_is_permissive_for_entity_and_chinese_partial_matches(self):
+        entity = _assess_search_result_relevance(
+            "OpenAI",
+            [{"title": "OpenAI API documentation", "url": "https://platform.openai.com/docs"}],
+        )
+        chinese = _assess_search_result_relevance(
+            "中国象棋规则",
+            [{"title": "象棋竞赛规则详解", "url": "https://example.cn/chess"}],
+        )
+
+        self.assertTrue(entity["relevant"])
+        self.assertTrue(chinese["relevant"])
+        self.assertGreaterEqual(chinese["matchedSignalCount"], 2)
+
+    def test_web_search_auto_rejects_polluted_bing_results_and_reaches_metaso(self):
+        config = {
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+            "sourceRouter": {"globalPreferred": ["bing", "metaso"], "cnPreferred": ["metaso"]},
+            "providers": {
+                "bing": {"enabled": True},
+                "metaso": {"authEnv": "METASO_API_KEY", "apiKey": "metaso-test-key", "enabled": True},
+            },
+        }
+        polluted = {
+            "ok": True,
+            "statusCode": 200,
+            "finalUrl": "https://cn.bing.com/search?q=regulation",
+            "elapsedMs": 20,
+            "results": [
+                {
+                    "title": "Global Partnership on Artificial Intelligence (GPAI)",
+                    "url": "https://oecd.example/about-gpai",
+                    "snippet": "The international partnership expanded its membership in 2025.",
+                }
+            ],
+        }
+        metaso = {
+            "ok": True,
+            "scope": "webpage",
+            "results": [
+                {
+                    "title": "The General-Purpose AI Code of Practice",
+                    "url": "https://digital-strategy.ec.europa.eu/general-purpose-ai-code-practice",
+                    "snippet": "Commission endorsement and compliance guidance for general-purpose AI models.",
+                }
+            ],
+        }
+        with patch("core.tools.web_fetcher.get_web_fetch_config", return_value=config), patch(
+            "core.tools.web_fetcher._html_search_public",
+            return_value=polluted,
+        ), patch(
+            "core.tools.web_fetcher._metaso_api_search",
+            return_value=metaso,
+        ) as mocked_metaso:
+            payload = json.loads(
+                web_search.func(
+                    query="GPAI Code of Practice July 2025 Commission endorsement legal effect signatories",
+                    limit=5,
+                    search_engine="auto",
+                )
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "metaso")
+        self.assertEqual(payload["attemptedProviders"][0]["status"], "irrelevant")
+        self.assertEqual(payload["attemptedProviders"][0]["failureClass"], "irrelevant_results")
+        mocked_metaso.assert_called_once()
+
+    def test_web_search_explicit_bing_preserves_low_relevance_results(self):
+        config = {
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+            "providers": {"bing": {"enabled": True}},
+        }
+        with patch("core.tools.web_fetcher.get_web_fetch_config", return_value=config), patch(
+            "core.tools.web_fetcher._html_search_public",
+            return_value={
+                "ok": True,
+                "statusCode": 200,
+                "finalUrl": "https://cn.bing.com/search?q=regulation",
+                "elapsedMs": 20,
+                "results": [
+                    {
+                        "title": "Regulation definition and meaning",
+                        "url": "https://dictionary.example/regulation",
+                        "snippet": "A dictionary definition of regulation.",
+                    }
+                ],
+            },
+        ):
+            payload = json.loads(
+                web_search.func(
+                    query="Regulation EU 2024 1689 GPAI obligations 2025",
+                    search_engine="bing",
+                )
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "bing")
+        self.assertFalse(payload["searchRelevance"]["relevant"])
+
     def test_web_search_source_router_skips_missing_global_api_key(self):
         config = {
             "sourceRouter": {"globalPreferred": ["brave", "duckduckgo"], "cnPreferred": ["metaso"]},
@@ -550,19 +653,24 @@ class WebAndS3BrokerTests(unittest.TestCase):
             "useAgentBrowserProfile": False,
             "agentBrowserProfileAllowlist": [],
         }
-        html = """
-        <html><body>
-          <div class="result"><a class="result__a" href="https://docs.example.com/api">Official API</a>
-          <a class="result__snippet">Official documentation for the API.</a></div>
-        </body></html>
-        """
         with patch("core.tools.web_fetcher.get_web_fetch_config", return_value=config), patch.dict(
             "os.environ",
             {"BRAVE_SEARCH_API_KEY": ""},
             clear=False,
         ), patch(
-            "core.tools.web_fetcher._fetch_with_scrapling_internal",
-            return_value=self._page(html=html, url="https://html.duckduckgo.com/html/?q=api"),
+            "core.tools.web_fetcher._html_search_public",
+            return_value={
+                "ok": True,
+                "statusCode": 200,
+                "finalUrl": "https://html.duckduckgo.com/html/?q=api",
+                "results": [
+                    {
+                        "title": "Official API",
+                        "url": "https://docs.example.com/api",
+                        "snippet": "Official documentation for the API.",
+                    }
+                ],
+            },
         ):
             payload = json.loads(web_search.func(query="official API docs", search_engine="auto"))
 

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+import pytest
 from bs4 import BeautifulSoup
 
 from core.tools import web_fetcher
@@ -10,6 +14,450 @@ from core.tools import web_fetcher
 
 def _soup(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "html.parser")
+
+
+def test_search_result_extraction_resolves_provider_redirect_urls() -> None:
+    duckduckgo = _soup(
+        """
+        <div class="result">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Feur-lex.europa.eu%2Feli%2Freg%2F2024%2F1689%2Foj%2Feng&amp;rut=abc">EU AI Act</a>
+          <div class="result__snippet">Official legal text.</div>
+        </div>
+        """
+    )
+    google = _soup(
+        """
+        <div class="g">
+          <a href="/url?q=https%3A%2F%2Fdigital-strategy.ec.europa.eu%2Fen%2Fpolicies%2Fgeneral-purpose-ai&amp;sa=U">GPAI guidance</a>
+          <div class="VwiC3b">Official guidance.</div>
+        </div>
+        """
+    )
+    yahoo = _soup(
+        """
+        <div class="sw-Card Algo">
+          <a class="sw-Card__titleInner" href="https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng">
+            Regulation (EU) 2024/1689
+          </a>
+          <div class="sw-Card__summary">Official Journal AI Act text.</div>
+        </div>
+        """
+    )
+
+    assert web_fetcher._extract_search_results(duckduckgo, provider="duckduckgo", limit=5)[0]["url"] == (
+        "https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng"
+    )
+    assert web_fetcher._extract_search_results(google, provider="google", limit=5)[0]["url"] == (
+        "https://digital-strategy.ec.europa.eu/en/policies/general-purpose-ai"
+    )
+    assert web_fetcher._extract_search_results(yahoo, provider="yahoo", limit=5)[0] == {
+        "title": "Regulation (EU) 2024/1689",
+        "url": "https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng",
+        "snippet": "Official Journal AI Act text.",
+    }
+
+
+def test_yahoo_search_url_normalizes_caret_exponents() -> None:
+    url = web_fetcher._provider_search_url(
+        "yahoo",
+        "GPAI systemic risk threshold 10^25 FLOPs",
+    )
+
+    assert url.startswith("https://search.yahoo.co.jp/search?p=")
+    assert "10e25" in url
+    assert "%5E" not in url
+
+
+def test_configured_provider_preferences_adopt_new_registry_order_for_untouched_legacy_default(monkeypatch) -> None:
+    legacy_order = list(web_fetcher._LEGACY_GLOBAL_SOURCE_PROVIDERS_V1)
+    current_order = (
+        *web_fetcher._LEGACY_GLOBAL_SOURCE_PROVIDERS_V1[:3],
+        "yahoo",
+        *web_fetcher._LEGACY_GLOBAL_SOURCE_PROVIDERS_V1[3:],
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {"sourceRouter": {"globalPreferred": legacy_order}},
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "DEFAULT_GLOBAL_SOURCE_PROVIDERS",
+        current_order,
+    )
+
+    assert web_fetcher._configured_source_provider_order("global") == list(current_order)
+
+
+def test_configured_cn_preferences_append_new_fallback_only_for_untouched_legacy_default(monkeypatch) -> None:
+    legacy_order = list(web_fetcher._LEGACY_CN_SOURCE_PROVIDERS_V1)
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {"sourceRouter": {"cnPreferred": legacy_order}},
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "DEFAULT_CN_SOURCE_PROVIDERS",
+        (*web_fetcher._LEGACY_CN_SOURCE_PROVIDERS_V1[:3], "yahoo", *web_fetcher._LEGACY_CN_SOURCE_PROVIDERS_V1[3:]),
+    )
+
+    assert web_fetcher._configured_source_provider_order("cn") == [
+        *legacy_order[:3],
+        "yahoo",
+        *legacy_order[3:],
+    ]
+
+
+def test_configured_provider_preferences_preserve_a_user_curated_legacy_superset(monkeypatch) -> None:
+    curated_order = [*web_fetcher._LEGACY_GLOBAL_SOURCE_PROVIDERS_V1, "custom-search"]
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {"sourceRouter": {"globalPreferred": curated_order}},
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "DEFAULT_GLOBAL_SOURCE_PROVIDERS",
+        ("brave", "tavily", "exa", "yahoo", "duckduckgo", "google", "bing"),
+    )
+
+    assert web_fetcher._configured_source_provider_order("global") == curated_order
+
+
+def test_configured_provider_preferences_do_not_restore_user_removed_sources(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {"sourceRouter": {"globalPreferred": ["bing"]}},
+    )
+    monkeypatch.setattr(web_fetcher, "DEFAULT_GLOBAL_SOURCE_PROVIDERS", ("bing", "yahoo"))
+
+    assert web_fetcher._configured_source_provider_order("global") == ["bing"]
+
+
+def test_auto_search_failure_preserves_operational_error_and_has_no_selected_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {"globalPreferred": ["bing", "metaso"]},
+            "providers": {"bing": {"enabled": True}, "metaso": {"enabled": True}},
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    monkeypatch.setattr(web_fetcher, "DEFAULT_GLOBAL_SOURCE_PROVIDERS", ())
+    monkeypatch.setattr(
+        web_fetcher,
+        "_html_search_public",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "failureClass": "no_results",
+            "reason": "bing_no_results",
+            "statusCode": 200,
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_agent_browser_profile_search_skip",
+        lambda provider, _url: (
+            {
+                "provider": provider,
+                "status": "skipped",
+                "failureClass": "needs_agent_browser_login",
+                "reason": "agent_browser_profile_not_enabled_or_domain_not_allowlisted",
+                "recommendedNextAction": "use another provider",
+            }
+            if provider == "metaso"
+            else None
+        ),
+    )
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="EU AI Act GPAI official evidence",
+            search_engine="auto",
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["failureClass"] == "no_results"
+    assert payload["error"] == "bing_no_results"
+    assert payload["sourceRouter"]["selectedProvider"] is None
+    assert payload["sourceCapability"] == {}
+
+
+def test_search_relevance_ignores_task_verbs_and_rejects_ambiguous_topic_pollution() -> None:
+    query = "确认 EU AI Act 对 GPAI 提供者的合规时间，并核实 2026 年是否延期"
+    signals = web_fetcher._search_query_relevance_signals(query)
+
+    assert "确认" not in signals["signals"]
+    assert "核实" not in signals["signals"]
+    assert "gpai" in signals["signals"]
+
+    polluted = web_fetcher._assess_search_result_relevance(
+        query,
+        [
+            {
+                "title": "沙特确认参加 Global Partnership on AI 峰会",
+                "snippet": "The GPAI event discussed artificial intelligence cooperation in 2026.",
+                "url": "https://news.example/gpai-summit",
+            }
+        ],
+    )
+    relevant = web_fetcher._assess_search_result_relevance(
+        query,
+        [
+            {
+                "title": "EU AI Act GPAI provider compliance timeline",
+                "snippet": "General-purpose AI obligations and the 2026 application milestone.",
+                "url": "https://digital-strategy.ec.europa.eu/general-purpose-ai",
+            }
+        ],
+    )
+
+    assert polluted["relevant"] is False
+    assert polluted["matchedDistinctiveSignalCount"] < 2
+    assert relevant["relevant"] is True
+
+
+def test_search_relevance_treats_chinese_recency_words_as_context_not_topic() -> None:
+    query = (
+        "截至 2026-07-29 欧盟 AI Act 对 GPAI 提供者的关键合规日期线，"
+        "核实适用时间、义务和官方更新"
+    )
+    signals = web_fetcher._search_query_relevance_signals(query)
+
+    assert "截至" in signals["signals"]
+    assert "日期" in signals["signals"]
+    assert "截至" not in signals["distinctiveSignals"]
+    assert "日期" not in signals["distinctiveSignals"]
+    assert "者的" not in signals["distinctiveSignals"]
+
+    polluted = web_fetcher._assess_search_result_relevance(
+        query,
+        [
+            {
+                "title": "截止与截至的区别",
+                "snippet": "截止和截至都与日期、时间有关，本文说明两者的用法。",
+                "url": "https://dict.example.cn/jiezhi",
+            }
+        ],
+    )
+
+    assert polluted["relevant"] is False
+    assert polluted["matchedDistinctiveSignalCount"] == 0
+
+
+def test_extract_main_text_supports_research_depth_without_changing_the_default_limit() -> None:
+    late_marker = "LATE_OFFICIAL_API_CONTRACT_MARKER"
+    html = (
+        "<html><body><main><p>"
+        + ("early documentation detail " * 650)
+        + "</p><p>"
+        + late_marker
+        + " records the authoritative behavior and version boundary.</p></main></body></html>"
+    )
+
+    default_text = web_fetcher._extract_main_text(_soup(html), "https://docs.example.com/reference")
+    research_text = web_fetcher._extract_main_text(
+        _soup(html),
+        "https://docs.example.com/reference",
+        max_chars=32_000,
+    )
+
+    assert late_marker not in default_text
+    assert "...[TRUNCATED]" in default_text
+    assert late_marker in research_text
+    assert "...[TRUNCATED]" not in research_text
+
+
+def test_web_fetch_cache_write_probe_is_unique_across_parallel_shards(tmp_path, monkeypatch) -> None:
+    probe_names: list[str] = []
+    real_named_temporary_file = web_fetcher.tempfile.NamedTemporaryFile
+
+    def recording_named_temporary_file(*args, **kwargs):
+        handle = real_named_temporary_file(*args, **kwargs)
+        probe_names.append(handle.name)
+        return handle
+
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {"cacheDir": str(tmp_path)},
+    )
+    monkeypatch.setattr(
+        web_fetcher.tempfile,
+        "NamedTemporaryFile",
+        recording_named_temporary_file,
+    )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        resolved = list(executor.map(lambda _index: web_fetcher._web_fetch_cache_dir(), range(32)))
+
+    assert resolved == [tmp_path] * 32
+    assert len(probe_names) == 32
+    assert len(set(probe_names)) == 32
+    assert list(tmp_path.glob(".write-test-*")) == []
+
+
+def test_static_fetch_does_not_restart_tls_attempt_after_budget_is_exhausted(monkeypatch) -> None:
+    calls: list[float] = []
+
+    class _SlowFailingFetcher:
+        @staticmethod
+        def get(_url: str, **kwargs: object) -> object:
+            calls.append(float(kwargs["timeout"]))
+            time.sleep(0.6)
+            raise TimeoutError("simulated network timeout")
+
+    monkeypatch.setattr(web_fetcher, "_try_import_static_fetcher", lambda: (_SlowFailingFetcher, None))
+    monkeypatch.setattr(
+        web_fetcher,
+        "_resolve_verify_candidates",
+        lambda: [("certifi", True), ("system", "system-ca.pem")],
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=r"attempted=\['static'\]"):
+        web_fetcher._fetch_with_scrapling_internal(
+            "https://example.com/search",
+            mode="static",
+            timeout_seconds=1.5,
+        )
+    elapsed = time.monotonic() - started
+
+    assert len(calls) == 1
+    assert 1.0 <= calls[0] <= 1.5
+    assert elapsed < 1.2
+
+
+def test_auto_search_preserves_budget_for_a_later_working_provider(monkeypatch) -> None:
+    timeouts: list[tuple[str, float]] = []
+
+    def fake_html_search(_url: str, **kwargs: object):
+        provider = str(kwargs["provider"])
+        timeouts.append((provider, float(kwargs["timeout_seconds"])))
+        if provider != "bing":
+            return {
+                "ok": False,
+                "failureClass": "network_timeout",
+                "reason": f"{provider} unavailable",
+                "retryable": True,
+            }
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "finalUrl": _url,
+            "results": [
+                {
+                    "title": "Official source",
+                    "url": "https://example.com/official",
+                    "snippet": "Current official evidence.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "globalPreferred": ["duckduckgo", "google", "bing"],
+                "cnPreferred": ["bing"],
+            },
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    monkeypatch.setattr(web_fetcher, "_html_search_public", fake_html_search)
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="EU AI Act GPAI Article 113 official",
+            search_engine="auto",
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "bing"
+    assert [provider for provider, _timeout in timeouts] == ["duckduckgo", "google", "bing"]
+    assert all(timeout <= web_fetcher.WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS for _provider, timeout in timeouts)
+
+
+def test_html_search_public_uses_one_bounded_request_and_existing_bing_parser(monkeypatch) -> None:
+    request_timeouts: list[float] = []
+
+    class _Response:
+        status_code = 200
+        url = "https://cn.bing.com/search?q=gpai"
+        text = (
+            "<html><head><title>Bing</title></head><body>"
+            "<li class='b_algo'><h2><a href='https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng'>"
+            "Regulation (EU) 2024/1689</a></h2><div class='b_caption'><p>Official AI Act text.</p></div></li>"
+            "</body></html>"
+        )
+
+    def fake_get(_url: str, **kwargs: object):
+        request_timeouts.append(float(kwargs["timeout"]))
+        return _Response()
+
+    monkeypatch.setattr(web_fetcher.requests, "get", fake_get)
+
+    payload = web_fetcher._html_search_public(
+        "https://cn.bing.com/search?q=gpai",
+        provider="bing",
+        limit=5,
+        timeout_seconds=7.5,
+    )
+
+    assert payload["ok"] is True
+    assert payload["results"][0]["url"] == "https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng"
+    assert request_timeouts == [7.5]
+
+
+def test_yahoo_html_search_serializes_parallel_anonymous_requests(monkeypatch) -> None:
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    class _Response:
+        status_code = 200
+        url = "https://search.yahoo.co.jp/search?p=gpai"
+        text = (
+            "<div class='sw-Card Algo'><a class='sw-Card__titleInner' "
+            "href='https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng'>AI Act</a>"
+            "<div class='sw-Card__summary'>Official GPAI evidence.</div></div>"
+        )
+
+    def fake_get(_url: str, **_kwargs: object):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return _Response()
+
+    monkeypatch.setattr(web_fetcher.requests, "get", fake_get)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        payloads = list(
+            executor.map(
+                lambda index: web_fetcher._html_search_public(
+                    f"https://search.yahoo.co.jp/search?p=gpai-{index}",
+                    provider="yahoo",
+                    limit=5,
+                    timeout_seconds=2.0,
+                ),
+                range(4),
+            )
+        )
+
+    assert peak == 1
+    assert all(payload["ok"] is True for payload in payloads)
 
 
 def test_wikipedia_profile_keeps_article_and_removes_chrome() -> None:
@@ -69,6 +517,28 @@ def test_github_profile_keeps_readme_and_preserves_star_metadata() -> None:
     assert metadata["githubRepository"] == "owner/repo"
     assert metadata["githubStars"] == 1200
     assert "1.2k" in metadata["githubStarsText"]
+
+
+def test_pep_profile_preserves_created_date_and_python_version_metadata() -> None:
+    html = """
+    <html><head><title>PEP 428</title></head><body>
+      <dl class="field-list simple">
+        <dt class="field-even">Created<span class="colon">:</span></dt>
+        <dd class="field-even">30-Jul-2012</dd>
+        <dt class="field-odd">Python-Version<span class="colon">:</span></dt>
+        <dd class="field-odd">3.4</dd>
+        <dt class="field-even">Post-History<span class="colon">:</span></dt>
+        <dd class="field-even">05-Oct-2012</dd>
+      </dl>
+    </body></html>
+    """
+
+    metadata = web_fetcher._extract_metadata(_soup(html), "https://peps.python.org/pep-0428/")
+
+    assert metadata["date"] == "30-Jul-2012"
+    assert metadata["version"] == "3.4"
+    assert metadata["pepCreated"] == "30-Jul-2012"
+    assert metadata["pepPostHistory"] == "05-Oct-2012"
 
 
 def test_p0_site_profiles_are_registered() -> None:
@@ -600,3 +1070,57 @@ def test_auto_fetch_uses_reader_fallback_after_static_challenge_and_browser_unav
     assert "React is a JavaScript library" in payload["text"]
     reader_get.assert_called_once()
     assert reader_get.call_args.args[0] == "https://r.jina.ai/https://www.npmjs.com/package/react"
+
+
+def test_reader_fallback_honors_research_text_depth_without_expanding_default_surface() -> None:
+    late_marker = "LATE_CLICK_PATH_TYPE_CONTRACT"
+
+    class _StaticFetcher:
+        @staticmethod
+        def get(_url: str, **_kwargs: object) -> object:
+            return type(
+                "Response",
+                (),
+                {
+                    "html_content": "<html><head><title>Just a moment...</title></head><body></body></html>",
+                    "url": "https://docs.example.com/reference",
+                    "status": 403,
+                },
+            )()
+
+    class _ReaderResponse:
+        status_code = 200
+        text = (
+            "Title: Deep reference\n\n"
+            "URL Source: https://docs.example.com/reference\n\n"
+            "Markdown Content:\n"
+            + ("early API detail " * 1_000)
+            + late_marker
+            + " records path_type=pathlib.Path."
+        )
+
+    with patch("core.tools.web_fetcher._try_import_static_fetcher", return_value=(_StaticFetcher, None)), patch(
+        "core.tools.web_fetcher._try_import_dynamic_fetcher",
+        return_value=(None, "playwright browser missing"),
+    ), patch(
+        "core.tools.web_fetcher._try_import_stealth_fetcher",
+        return_value=(None, "playwright browser missing"),
+    ), patch(
+        "core.tools.web_fetcher.requests.get",
+        return_value=_ReaderResponse(),
+    ):
+        default_payload = json.loads(
+            web_fetcher.web_read.func(url="https://docs.example.com/reference", mode="auto")
+        )
+        research_payload = json.loads(
+            web_fetcher.web_read.func(
+                url="https://docs.example.com/reference",
+                mode="auto",
+                maxTextChars=32_000,
+            )
+        )
+
+    assert late_marker not in default_payload["text"]
+    assert "...[TRUNCATED]" in default_payload["text"]
+    assert late_marker in research_payload["text"]
+    assert "path_type=pathlib.Path" in research_payload["text"]

@@ -11,6 +11,19 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from core.tools.research_quality import (
+    TARGET_RESEARCH_SOURCE_COUNT,
+    research_answer_text,
+    research_as_of,
+    research_bundle_is_high_quality,
+    research_critical_missing_evidence,
+    research_missing_evidence,
+    research_high_quality_issues,
+    research_quality_tier,
+    research_review_decision,
+    research_selected_sources,
+)
+
 
 DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 MAX_TOOL_OUTPUT_LENGTH = DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS
@@ -19,6 +32,7 @@ DEFAULT_OUTPUT_RESERVE_TOKENS = 2048
 CONTEXT_SAFETY_BUFFER_RATIO = 0.2
 CHARS_PER_TOKEN_ESTIMATE = 4
 MIN_TOOL_OUTPUT_BUDGET_CHARS = 1200
+MAX_RESEARCH_DELIVERY_SURFACE_CHARS = 24000
 
 
 @dataclass(slots=True)
@@ -1088,6 +1102,93 @@ def _render_session_coordination_surface(payload: dict[str, Any], raw_ref: str, 
     return rendered if len(rendered) <= budget else _head_tail_truncate_text(rendered, budget, "session coordination surface truncated")
 
 
+def _research_surface_issue_text(issue: Any) -> str:
+    normalized = str(issue or "").strip()
+    code, _, threshold = normalized.partition(":")
+    threshold_text = threshold or "the required"
+    messages = {
+        "architect_review_not_accepted": "Independent Research review did not accept the answer.",
+        "independent_semantic_review_not_accepted": "A separate semantic and freshness review did not accept the answer.",
+        "detailed_answer_floor_not_met": f"The answer is below the {threshold_text}-effective-character rejection floor.",
+        "evidence_source_floor_not_met": f"Fewer than {threshold_text} selected, readable sources support the answer.",
+        "independent_host_floor_not_met": f"Fewer than {threshold_text} independent source hosts are represented.",
+        "retrieval_evidence_floor_not_met": f"Fewer than {threshold_text} selected sources have retrieval evidence.",
+        "read_evidence_floor_not_met": f"Fewer than {threshold_text} selected sources retain proof of a readable body.",
+        "research_as_of_missing": "The answer has no explicit as-of date.",
+        "research_as_of_invalid": "The answer's as-of date is invalid or implausible.",
+        "research_as_of_stale": "The answer's as-of date is too old for this time-sensitive question.",
+        "fresh_retrieval_evidence_floor_not_met": f"Fewer than {threshold_text} selected sources were freshly retrieved for this time-sensitive question.",
+        "dated_source_floor_not_met": f"Fewer than {threshold_text} selected sources have dated evidence for this time-sensitive question.",
+        "claim_floor_not_met": f"Fewer than {threshold_text} substantive conclusions were evaluated.",
+        "distinct_claim_floor_not_met": f"Fewer than {threshold_text} materially distinct conclusions were established.",
+        "unsupported_claim_present": "At least one substantive conclusion lacks selected-source support.",
+        "unverified_claim_excerpt_present": "At least one conclusion lacks an excerpt verified against a retrieved source body.",
+        "claim_source_coverage_floor_not_met": f"The conclusions cover fewer than {threshold_text} selected sources.",
+        "answer_citation_floor_not_met": f"The answer cites fewer than {threshold_text} selected sources.",
+        "answer_citation_spread_floor_not_met": f"Fewer than {threshold_text} substantive answer sections carry source citations.",
+        "process_or_failure_text_used_as_answer": "The submitted answer contains process or failure text instead of a usable result.",
+        "answer_repetition_excessive": "Repeated wording makes the nominal answer length larger than its effective content.",
+        "critical_evidence_gap": "A critical evidence gap remains unresolved.",
+        "target_answer_depth_not_met": f"The answer has not reached the {threshold_text}-effective-character normal Research depth target.",
+        "target_source_count_not_met": f"Fewer than {threshold_text} selected sources support a normal Research delivery.",
+        "target_independent_host_count_not_met": f"Fewer than {threshold_text} independent hosts are represented for a normal Research delivery.",
+        "target_retrieval_evidence_not_met": f"Fewer than {threshold_text} selected sources retain retrieval evidence.",
+        "target_fresh_retrieval_evidence_not_met": f"Fewer than {threshold_text} selected sources were freshly retrieved for this time-sensitive question.",
+        "target_read_evidence_not_met": f"Fewer than {threshold_text} selected sources retain proof of a readable body.",
+        "target_dated_source_count_not_met": f"Fewer than {threshold_text} sources carry dated/version evidence for this current question.",
+        "target_claim_depth_not_met": f"Fewer than {threshold_text} substantive conclusions were established.",
+        "target_distinct_claim_depth_not_met": f"Fewer than {threshold_text} materially distinct conclusions were established.",
+        "target_verified_claim_evidence_not_met": f"Fewer than {threshold_text} conclusions retain verified source excerpts.",
+        "target_claim_source_coverage_not_met": f"The conclusions cover fewer than {threshold_text} distinct selected sources.",
+        "target_answer_citation_count_not_met": f"The answer cites fewer than {threshold_text} selected sources.",
+        "target_answer_citation_spread_not_met": f"Fewer than {threshold_text} substantive answer sections carry source citations.",
+    }
+    return messages.get(code, normalized.replace("_", " "))
+
+
+def _research_surface_recommended_queries(
+    payload: dict[str, Any],
+    *,
+    answer_pack: dict[str, Any],
+    pack: dict[str, Any],
+) -> list[str]:
+    queries: list[str] = []
+    for container in (payload, answer_pack, pack):
+        for key in ("recommendedNextQueries", "suggestedSearchQueries", "nextQueries"):
+            value = container.get(key)
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, dict):
+                    item = item.get("query") or item.get("searchQuery")
+                query = str(item or "").strip()
+                if query and query not in queries:
+                    queries.append(query)
+    return queries[:8]
+
+
+def _research_surface_quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Resolve compact Agent output to the governed proof used for acceptance."""
+
+    evidence_bundle_id = str(payload.get("evidenceBundleId") or "").strip()
+    if not evidence_bundle_id:
+        return payload
+    try:
+        from core.tools.research_ledger import get_evidence_bundle
+
+        stored = get_evidence_bundle(evidence_bundle_id)
+    except Exception:  # noqa: BLE001 - a missing proof keeps the surface degraded.
+        return payload
+    if not isinstance(stored, dict):
+        return payload
+    if str(stored.get("evidenceBundleId") or "").strip() != evidence_bundle_id:
+        return payload
+    payload_question = str(payload.get("question") or "").strip()
+    stored_question = str(stored.get("question") or "").strip()
+    if payload_question and stored_question and payload_question != stored_question:
+        return payload
+    return stored
+
+
 def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str | None:
     mode = str(payload.get("mode") or "").strip()
     kind = str(payload.get("kind") or "").strip()
@@ -1096,61 +1197,80 @@ def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, bu
         pack = payload.get("finalExperiencePack") or payload.get("researchResult") or {}
         if not isinstance(pack, dict):
             pack = {}
-        lines = ["Research result pack"]
-        lines.append("Agent: Web Research Architect")
         question = pack.get("question") or payload.get("question")
-        if question:
-            lines.append(f"Question: {_short_text(question, 220)}")
-        answer = answer_pack.get("answer") or pack.get("researchResult") or pack.get("answer")
-        if answer:
-            lines.append("Result:")
-            lines.append(_content_excerpt(answer, max(1200, min(4800, budget // 3))))
+        quality_payload = _research_surface_quality_payload(payload)
+        transport_answer = research_answer_text(payload)
+        canonical_answer = research_answer_text(quality_payload)
+        review_decision = research_review_decision(payload) or "not_accepted"
+        accepted = bool(
+            payload.get("ok") is True
+            and payload.get("deliveryReady") is not False
+            and review_decision == "accept"
+            and transport_answer
+            and transport_answer == canonical_answer
+            and research_bundle_is_high_quality(quality_payload)
+        )
+        as_of = research_as_of(quality_payload)
+        sources = research_selected_sources(payload)
+        if not sources and quality_payload is not payload:
+            sources = research_selected_sources(quality_payload)
+        quality_tier = research_quality_tier(quality_payload if accepted else payload)
+
+        if accepted:
+            answer = transport_answer
+            lines = ["Research answer", answer]
+            if question:
+                lines.append(f"Question: {_short_text(question, 220)}")
+            if as_of:
+                lines.append(f"As of: {_short_text(as_of, 120)}")
+            lines.append(f"Quality: {quality_tier}; review={review_decision}")
+            if sources:
+                lines.append("Sources:")
+                for item in sources[:TARGET_RESEARCH_SOURCE_COUNT]:
+                    url = item.get("url") or item.get("sourceUrl")
+                    source_id = item.get("sourceId")
+                    locator = url or source_id
+                    if not locator:
+                        continue
+                    title = item.get("title") or item.get("sourceTitle") or item.get("host") or locator
+                    source_date = item.get("updatedAt") or item.get("publishedAt") or item.get("sourceDate")
+                    date_suffix = f" ({_short_text(source_date, 40)})" if source_date else ""
+                    lines.append(f"- {_short_text(title, 110)}{date_suffix}: {_short_text(locator, 180)}")
+            limitations = research_missing_evidence(payload)
+            if limitations:
+                lines.append("Limitations:")
+                for item in limitations[:4]:
+                    lines.append(f"- {_short_text(item, 260)}")
         else:
-            lines.append("Result: refresh required; no reliable source-backed answer was synthesized.")
-        score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
-        if score:
-            lines.append(f"Score: {_short_text(score.get('label') or score, 220)}")
-        limitations = answer_pack.get("limitations") or pack.get("limitations") or payload.get("missingEvidence")
-        if isinstance(limitations, list) and limitations:
-            lines.append("Limitations / refresh notes:")
-            for item in limitations[:4]:
-                lines.append(f"- {_short_text(item, 220)}")
-        rejected = answer_pack.get("rejectedEvidence") or payload.get("rejectedSources")
-        if isinstance(rejected, list) and rejected:
-            lines.append("Rejected evidence:")
-            for item in rejected[:3]:
-                if isinstance(item, dict):
-                    title = item.get("title") or item.get("url") or item.get("sourceId")
-                    reason = item.get("reason") or item.get("rejectedReason")
-                    lines.append(f"- {_short_text(title, 110)}: {_short_text(reason, 140)}")
-                else:
-                    lines.append(f"- {_short_text(item, 220)}")
-        findings = pack.get("keyFindings")
-        if isinstance(findings, list) and findings:
-            lines.append("Key findings:")
-            for item in findings[:5]:
-                if isinstance(item, dict):
-                    claim = item.get("claim") or item.get("summary")
-                    source_title = item.get("sourceTitle") or item.get("title")
-                    suffix = f" ({_short_text(source_title, 90)})" if source_title else ""
-                    lines.append(f"- {_content_excerpt(claim, 360)}{suffix}")
-                else:
-                    lines.append(f"- {_content_excerpt(item, 360)}")
-        sources = answer_pack.get("sources") or pack.get("sourceUrls") or payload.get("sourceMatrix")
-        if isinstance(sources, list) and sources:
-            lines.append("Sources:")
-            for item in sources[:8]:
-                if not isinstance(item, dict):
-                    continue
-                url = item.get("url")
-                if not url:
-                    continue
-                title = item.get("title") or item.get("sourceTitle") or item.get("host") or url
-                lines.append(f"- {_short_text(title, 110)}: {_short_text(url, 180)}")
-        next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
-        if next_action:
-            lines.append(f"Next: {_short_text(next_action, 160)}")
-        lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+            lines = ["Research evidence incomplete"]
+            if question:
+                lines.append(f"Question: {_short_text(question, 220)}")
+            if as_of:
+                lines.append(f"As of: {_short_text(as_of, 120)}")
+            lines.append(f"Review: {review_decision}; quality={quality_tier}")
+            gaps = [*research_critical_missing_evidence(payload), *research_missing_evidence(payload)]
+            if payload.get("ok") is not True:
+                gaps.insert(0, "Research execution did not report a successful evidence bundle.")
+            gaps.extend(_research_surface_issue_text(issue) for issue in research_high_quality_issues(payload))
+            gaps = list(dict.fromkeys(str(item).strip() for item in gaps if str(item).strip()))
+            if gaps:
+                lines.append("Blocking evidence gaps:")
+                for item in gaps[:8]:
+                    lines.append(f"- {_short_text(item, 280)}")
+            queries = _research_surface_recommended_queries(payload, answer_pack=answer_pack, pack=pack)
+            if queries:
+                lines.append("Suggested follow-up searches:")
+                for query in queries[:8]:
+                    lines.append(f"- {_short_text(query, 260)}")
+            else:
+                lines.append("Next: rerun Research for the missing evidence; do not use the rejected draft as an answer.")
+        lines.extend(
+            _surface_ref_lines(
+                raw_ref,
+                payload.get("detailTool") if accepted else None,
+                include_raw=False,
+            )
+        )
         return "\n".join(line for line in lines if line).strip()
 
     if mode != "plan" and kind != "research_plan":
@@ -2270,7 +2390,8 @@ def _decision_agent_visible_surface(
         renderer_result = _render_generic_json_surface(tool_name, payload_any, raw_ref, budget=budget)
     if renderer_result is None:
         return None
-    if len(renderer_result) > budget:
+    preserve_full_research = tool_name == "research_broker" and renderer_result.startswith("Research answer\n")
+    if len(renderer_result) > budget and not preserve_full_research:
         return _head_tail_truncate_text(renderer_result, budget, f"decision surface truncated; rawRef={raw_ref}")
     return renderer_result
 
@@ -2790,17 +2911,25 @@ def apply_tool_surface_budget(
         budget=budget,
     )
     if decision_surface is not None:
-        was_truncated = len(decision_surface) > budget
+        preserve_full_research = tool_name == "research_broker" and decision_surface.startswith("Research answer\n")
+        decision_limit = MAX_RESEARCH_DELIVERY_SURFACE_CHARS if preserve_full_research else budget
+        was_truncated = len(decision_surface) > decision_limit
         if was_truncated:
             decision_surface = _head_tail_truncate_text(
                 decision_surface,
-                budget,
-                f"decision surface truncated; rawRef={raw_ref}",
+                decision_limit,
+                (
+                    f"research delivery surface truncated at {MAX_RESEARCH_DELIVERY_SURFACE_CHARS} chars; rawRef={raw_ref}"
+                    if preserve_full_research
+                    else f"decision surface truncated; rawRef={raw_ref}"
+                ),
             )
         budget_meta.update(
             {
                 "wasBudgetTruncated": was_truncated,
-                "semanticTruncationStrategy": "decision_summary_surface",
+                "semanticTruncationStrategy": (
+                    "research_bounded_delivery_surface" if preserve_full_research else "decision_summary_surface"
+                ),
                 "originalChars": len(original_content_str),
                 "visibleChars": len(decision_surface),
             }

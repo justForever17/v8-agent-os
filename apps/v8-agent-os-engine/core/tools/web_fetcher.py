@@ -12,8 +12,10 @@ from pathlib import Path
 import ssl
 import tempfile
 import time
+from threading import BoundedSemaphore
+from types import SimpleNamespace
 from typing import Annotated, Any, Dict, List, Literal
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 import certifi
@@ -1518,12 +1520,19 @@ OFFICIAL_DOCS_GENERIC_SITE_PROFILE: dict[str, Any] = {
 }
 
 MAX_TEXT_CHARS = 12000
+# Research reads long statutes and standards into process memory, then keeps
+# only query-focused excerpts in its evidence ledger. The public web_read
+# default remains small; callers must opt in explicitly to this larger bound.
+MAX_RESEARCH_TEXT_CHARS = 640_000
 MAX_LINKS = 20
 MAX_MEDIA = 12
 WEB_READ_TIMEOUT_SECONDS = 45.0
 WEB_READER_FALLBACK_ENDPOINT = "https://r.jina.ai/"
-WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 20.0
-WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 45.0
+WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 10.0
+WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 40.0
+# Anonymous HTML search is shared by parallel Research shards. Yahoo accepts
+# sequential requests reliably but responds with 429 to short request bursts.
+_YAHOO_SEARCH_SEMAPHORE = BoundedSemaphore(1)
 METASO_HOME_URL = "https://metaso.cn/"
 METASO_API_SEARCH_ENDPOINT = "https://metaso.cn/api/v1/search"
 METASO_SEARCH_ENDPOINT = "https://metaso.cn/api/searchV2"
@@ -1555,6 +1564,7 @@ SEARCH_PROVIDER_URLS: dict[str, str] = {
     "google": "https://www.google.com/search?q={query}&hl=en",
     "baidu": "https://www.baidu.com/s?wd={query}",
     "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
+    "yahoo": "https://search.yahoo.co.jp/search?p={query}",
 }
 # Prefer MetaSo and scrape-friendly lightweight HTML endpoints first. Bing is
 # frequently unavailable behind some VPN/proxy routes; Google/Baidu may return
@@ -1569,6 +1579,7 @@ IMPLEMENTED_SEARCH_PROVIDERS = (
     "google",
     "bing",
     "baidu",
+    "yahoo",
     "searxng",
 )
 SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
@@ -1701,6 +1712,16 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "outputFormats": ["search_results"],
         "implemented": True,
     },
+    "yahoo": {
+        "region": "global",
+        "role": "discovery",
+        "supports": ["search", "lightweight_html"],
+        "costTier": "free_public",
+        "latencyTier": "medium",
+        "requiresProxy": "auto",
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
     "searxng": {
         "region": "self_host",
         "role": "discovery",
@@ -1712,8 +1733,28 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "implemented": True,
     },
 }
-DEFAULT_CN_SOURCE_PROVIDERS = ("bocha", "metaso", "baidu", "duckduckgo", "google", "bing", "searxng")
-DEFAULT_GLOBAL_SOURCE_PROVIDERS = ("brave", "tavily", "exa", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng")
+DEFAULT_CN_SOURCE_PROVIDERS = ("bocha", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng")
+DEFAULT_GLOBAL_SOURCE_PROVIDERS = ("brave", "tavily", "exa", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng")
+_LEGACY_CN_SOURCE_PROVIDERS_V1 = (
+    "bocha",
+    "metaso",
+    "baidu",
+    "duckduckgo",
+    "google",
+    "bing",
+    "searxng",
+)
+_LEGACY_GLOBAL_SOURCE_PROVIDERS_V1 = (
+    "brave",
+    "tavily",
+    "exa",
+    "duckduckgo",
+    "google",
+    "bing",
+    "metaso",
+    "baidu",
+    "searxng",
+)
 _SOURCE_PROVIDER_REGISTRY = get_source_provider_capabilities()
 if _SOURCE_PROVIDER_REGISTRY:
     SOURCE_PROVIDER_CAPABILITIES = _SOURCE_PROVIDER_REGISTRY
@@ -1958,6 +1999,10 @@ def _searxng_base_url() -> str:
 
 
 def _provider_search_url(provider: str, query: str) -> str:
+    if provider == "yahoo":
+        # Yahoo intermittently returns HTTP 500 for caret exponent syntax
+        # (for example 10^25). Scientific notation preserves the query intent.
+        query = re.sub(r"(?<=\d)\^(?=\d)", "e", query)
     quoted = quote_plus(query)
     if provider == "brave":
         return f"https://api.search.brave.com/res/v1/web/search?q={quoted}"
@@ -2017,12 +2062,19 @@ def _configured_source_provider_order(locale: str) -> list[str]:
     router = config.get("sourceRouter") if isinstance(config.get("sourceRouter"), dict) else {}
     key = "cnPreferred" if locale == "cn" else "globalPreferred"
     configured = router.get(key) if isinstance(router, dict) else None
+    defaults = list(DEFAULT_CN_SOURCE_PROVIDERS if locale == "cn" else DEFAULT_GLOBAL_SOURCE_PROVIDERS)
     if isinstance(configured, list) and configured:
-        return _ordered_unique(configured)
+        ordered = _ordered_unique(configured)
+        # Migrate only untouched legacy defaults. A user-curated provider list
+        # is authoritative and must not regain removed sources.
+        if locale == "cn" and ordered == list(_LEGACY_CN_SOURCE_PROVIDERS_V1):
+            return _ordered_unique(defaults)
+        if locale == "global" and ordered == list(_LEGACY_GLOBAL_SOURCE_PROVIDERS_V1):
+            return _ordered_unique(defaults)
+        return ordered
 
     legacy = config.get("searchProviderOrder")
     legacy_order = _ordered_unique(legacy) if isinstance(legacy, list) else []
-    defaults = list(DEFAULT_CN_SOURCE_PROVIDERS if locale == "cn" else DEFAULT_GLOBAL_SOURCE_PROVIDERS)
     return _ordered_unique([*legacy_order, *defaults])
 
 
@@ -2131,10 +2183,14 @@ def _source_router_plan(
 def _source_router_payload_fields(
     plan: dict[str, Any],
     *,
-    selected_provider: str = "",
+    selected_provider: str | None = None,
     attempted_providers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    provider = selected_provider or _safe_text((plan.get("providers") or [""])[0] if isinstance(plan.get("providers"), list) else "")
+    provider = (
+        _safe_text((plan.get("providers") or [""])[0] if isinstance(plan.get("providers"), list) else "")
+        if selected_provider is None
+        else _safe_text(selected_provider)
+    )
     locale = plan.get("locale") or "global"
     network_route = _provider_network_route(provider, str(locale)) if provider else (plan.get("networkRoute") or "auto")
     return {
@@ -2329,14 +2385,29 @@ def _web_fetch_cache_dir() -> Path:
     for candidate in candidates:
         if not str(candidate):
             continue
+        probe_path: Path | None = None
         try:
             candidate.mkdir(parents=True, exist_ok=True)
-            test_file = candidate / ".write-test"
-            test_file.write_text("ok", encoding="utf-8")
-            test_file.unlink(missing_ok=True)
+            # Shards resolve this directory concurrently. A shared `.write-test`
+            # file lets one thread unlink another thread's open probe on Windows.
+            # A closed, uniquely named probe preserves the writability check.
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".write-test-",
+                dir=candidate,
+                delete=False,
+            ) as probe:
+                probe.write(b"ok")
+                probe_path = Path(probe.name)
+            probe_path.unlink(missing_ok=True)
             return candidate
         except Exception as exc:
             last_error = exc
+            if probe_path is not None:
+                try:
+                    probe_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             continue
     raise RuntimeError(f"无法创建网页抓取缓存目录：{last_error}")
 
@@ -2511,6 +2582,26 @@ def _fetch_with_scrapling_internal(
     warnings: list[str] = []
     available_modes = _dependency_status()
     started_at = time.monotonic()
+    total_timeout = max(1.0, float(timeout_seconds or WEB_READ_TIMEOUT_SECONDS))
+    deadline_at = started_at + total_timeout
+    active_mode_deadline = deadline_at
+
+    def _remaining_fetch_timeout() -> float:
+        remaining = min(deadline_at, active_mode_deadline) - time.monotonic()
+        # Scrapling requires a timeout of at least one second. Do not start a
+        # new TLS/mode attempt when the remaining budget cannot satisfy that
+        # contract; doing so previously let one provider overrun its deadline.
+        if remaining < 1.0:
+            raise TimeoutError("web_fetch_attempt_budget_exhausted")
+        return remaining
+
+    def _current_fetch_options() -> tuple[dict[str, Any], dict[str, Any]]:
+        return _build_fetch_options(
+            headless=headless,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            timeout_seconds=_remaining_fetch_timeout(),
+        )
 
     def _fetch_static() -> WebPagePayload:
         fetcher, error = _try_import_static_fetcher()
@@ -2523,6 +2614,7 @@ def _fetch_with_scrapling_internal(
         with _bypass_proxy_env(bypass_proxy_env):
             for verify_label, verify_target in verify_candidates:
                 try:
+                    static_fetch_options, _browser_fetch_options = _current_fetch_options()
                     response = fetcher.get(url, verify=verify_target, **static_fetch_options)
                     return _build_payload(
                         response=response,
@@ -2549,6 +2641,7 @@ def _fetch_with_scrapling_internal(
                 warnings.append(
                     "静态抓取证书链探测失败：" + " | ".join(verify_errors[:3])
                 )
+            static_fetch_options, _browser_fetch_options = _current_fetch_options()
             response = fetcher.get(url, verify=False, **static_fetch_options)
             return _build_payload(
                 response=response,
@@ -2621,7 +2714,7 @@ def _fetch_with_scrapling_internal(
             referer_url=referer_url,
             attempted_modes=list(attempted_modes),
             available_modes=available_modes,
-            timeout_seconds=per_mode_timeout,
+            timeout_seconds=_remaining_fetch_timeout(),
             warnings=list(warnings),
         )
 
@@ -2646,8 +2739,7 @@ def _fetch_with_scrapling_internal(
         plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
         if not plans:
             raise RuntimeError("agent_browser_profile_requires_browser_mode: use dynamic/stealth/auto when useAgentBrowserProfile=true.")
-    total_timeout = float(timeout_seconds or WEB_READ_TIMEOUT_SECONDS)
-    per_mode_timeout = max(5.0, total_timeout / max(len(plans), 1))
+    per_mode_timeout = max(1.0, total_timeout / max(len(plans), 1))
     agent_browser_profile_dir = ""
     agent_browser_profile_host = ""
     agent_browser_kind = ""
@@ -2660,15 +2752,9 @@ def _fetch_with_scrapling_internal(
                 " and a matching agentBrowserProfileAllowlist domain."
             )
         agent_browser_profile_host = matched_host or auto_matched_host or ""
-    static_fetch_options, browser_fetch_options = _build_fetch_options(
-        headless=headless,
-        referer_mode=referer_mode,
-        referer_url=referer_url,
-        timeout_seconds=per_mode_timeout,
-    )
-
     def _effective_browser_fetch_options() -> dict[str, Any]:
         nonlocal agent_browser_profile_dir, agent_browser_kind
+        _static_fetch_options, browser_fetch_options = _current_fetch_options()
         options = dict(browser_fetch_options)
         if effective_agent_browser_profile:
             context = _active_agent_browser_cdp_context()
@@ -2681,9 +2767,11 @@ def _fetch_with_scrapling_internal(
     auto_degraded_pages: list[tuple[str, WebPagePayload, str]] = []
 
     for label, runner in plans:
-        if time.monotonic() - started_at >= total_timeout:
+        now = time.monotonic()
+        if now >= deadline_at:
             errors[label] = f"deadline_exceeded_after_{round(time.monotonic() - started_at, 2)}s"
             break
+        active_mode_deadline = min(deadline_at, now + per_mode_timeout)
         attempted_modes.append(label)
         try:
             page = runner()
@@ -2750,8 +2838,13 @@ def _fetch_with_reader_fallback(
 
     raw_text = _safe_text(getattr(response, "text", ""))
     title, markdown_text, reader_metadata = _parse_reader_fallback_text(raw_text, url)
-    if len(markdown_text) > MAX_TEXT_CHARS:
-        markdown_text = markdown_text[:MAX_TEXT_CHARS] + f"\n\n...[TRUNCATED] ({len(markdown_text)} chars total)"
+    # Preserve the deeper body promised to Research Runtime. The ordinary
+    # 12k surface is applied later by `_render_page_summary`; truncating here
+    # made an explicit Research read ineffective whenever Jina was the fallback.
+    if len(markdown_text) > MAX_RESEARCH_TEXT_CHARS:
+        markdown_text = markdown_text[:MAX_RESEARCH_TEXT_CHARS] + (
+            f"\n\n...[TRUNCATED] ({len(markdown_text)} chars total)"
+        )
 
     metadata = {
         "readerFallbackProvider": "jina",
@@ -3038,15 +3131,19 @@ def _build_payload(
     )
 
 
-def _extract_main_text(soup: BeautifulSoup, url: str = "") -> str:
+def _extract_main_text(soup: BeautifulSoup, url: str = "", max_chars: int = MAX_TEXT_CHARS) -> str:
     candidate = _profiled_article_container(soup, url=url) or soup.find("main") or soup.find("article") or soup.body or soup
     candidate = BeautifulSoup(str(candidate), "html.parser")
     _apply_site_profile_cleanup(candidate, url=url, extract="article")
     for tag in candidate(["script", "style", "noscript", "svg", "canvas", "nav", "footer", "header"]):
         tag.decompose()
     text = _html_to_markdown(candidate)
-    if len(text) > MAX_TEXT_CHARS:
-        return text[:MAX_TEXT_CHARS] + f"\n\n...[TRUNCATED] ({len(text)} chars total)"
+    bounded_max_chars = max(
+        1_000,
+        min(_as_int(max_chars, MAX_TEXT_CHARS), MAX_RESEARCH_TEXT_CHARS),
+    )
+    if len(text) > bounded_max_chars:
+        return text[:bounded_max_chars] + f"\n\n...[TRUNCATED] ({len(text)} chars total)"
     return text
 
 
@@ -3222,7 +3319,34 @@ def _extract_site_profile_metadata(soup: BeautifulSoup, url: str) -> dict[str, A
     host = (parsed.netloc or "").lower()
     if host == "github.com" or host.endswith(".github.com"):
         return _extract_github_metadata(soup, parsed.path or "")
+    if host == "peps.python.org" or host.endswith(".peps.python.org"):
+        return _extract_pep_metadata(soup)
     return {}
+
+
+def _extract_pep_metadata(soup: BeautifulSoup) -> dict[str, Any]:
+    fields: dict[str, str] = {}
+    for term in soup.select("dl.field-list dt"):
+        label = _safe_text(term.get_text(" ", strip=True)).rstrip(":").strip().lower()
+        value_node = term.find_next_sibling("dd")
+        value = _safe_text(value_node.get_text(" ", strip=True) if value_node else "")
+        if label and value and label not in fields:
+            fields[label] = value
+
+    created = fields.get("created", "")
+    python_version = fields.get("python-version", "")
+    post_history = fields.get("post-history", "")
+    return {
+        key: value
+        for key, value in {
+            "date": created,
+            "version": python_version,
+            "pepCreated": created,
+            "pepPythonVersion": python_version,
+            "pepPostHistory": post_history,
+        }.items()
+        if value
+    }
 
 
 def _extract_github_metadata(soup: BeautifulSoup, path: str) -> dict[str, Any]:
@@ -3870,14 +3994,28 @@ def _build_vision_candidates(page: WebPagePayload, *, limit: int = 6) -> list[di
     return candidates
 
 
-def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
+def _render_page_summary(page: WebPagePayload, *, max_text_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
     vision_candidates = _build_vision_candidates(page)
     text = page.text
-    if not text and page.html:
+    bounded_max_chars = max(
+        1_000,
+        min(_as_int(max_text_chars, MAX_TEXT_CHARS), MAX_RESEARCH_TEXT_CHARS),
+    )
+    if page.html and (not text or bounded_max_chars > MAX_TEXT_CHARS):
         try:
-            text = _extract_main_text(BeautifulSoup(page.html, "html.parser"), page.final_url or page.url)
+            text = _extract_main_text(
+                BeautifulSoup(page.html, "html.parser"),
+                page.final_url or page.url,
+                bounded_max_chars,
+            )
         except Exception:
             text = page.text
+    if len(text) > bounded_max_chars:
+        original_chars = len(text)
+        truncated_match = re.search(r"\.\.\.\[TRUNCATED\]\s*\((\d+)\s+chars total\)", text)
+        if truncated_match:
+            original_chars = max(original_chars, _as_int(truncated_match.group(1), original_chars))
+        text = text[:bounded_max_chars] + f"\n\n...[TRUNCATED] ({original_chars} chars total)"
     result = {
         "ok": True,
         "url": page.url,
@@ -4128,20 +4266,13 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
 
 
 def _search_relevance_score(query: str, result: dict[str, Any]) -> int:
-    haystack = " ".join(
-        _safe_text(result.get(key)).lower()
-        for key in ("title", "snippet", "url")
-    )
-    query_text = _safe_text(query).lower()
-    if not query_text or not haystack:
+    query_signals = _search_query_relevance_signals(query)
+    if not query_signals["signals"] and not query_signals["phrases"] and not query_signals["siteHosts"]:
         return 0
-    latin_terms = [term for term in re.split(r"[^a-z0-9]+", query_text) if len(term) >= 3]
-    cjk_terms = re.findall(r"[\u4e00-\u9fff]{2,}", query_text)
-    terms = latin_terms + cjk_terms
-    if not terms:
-        return 0
-    hits = sum(1 for term in terms if term in haystack)
-    return int(round((hits / max(len(terms), 1)) * 100))
+    match = _match_search_result_relevance(query_signals, result)
+    if match["strongMatch"]:
+        return 100
+    return int(round((len(match["matches"]) / max(len(query_signals["signals"]), 1)) * 100))
 
 
 def _compact_web_broker_payload(payload: dict[str, Any], *, requested_mode: str, debug: bool) -> dict[str, Any]:
@@ -4331,6 +4462,44 @@ def _looks_like_url(value: str) -> bool:
     return normalized.startswith("http://") or normalized.startswith("https://")
 
 
+def _search_result_destination_url(href: str, *, provider: str) -> str:
+    """Resolve provider-owned redirect links to the public result URL.
+
+    Search result pages commonly wrap destinations in links owned by the
+    provider.  Passing those wrappers downstream makes authority scoring use
+    the search engine host and wastes a read on an avoidable redirect.
+    """
+
+    raw_href = _safe_text(href)
+    if not raw_href:
+        return ""
+    provider_base = {
+        "duckduckgo": "https://duckduckgo.com/",
+        "google": "https://www.google.com/",
+        "bing": "https://www.bing.com/",
+        "baidu": "https://www.baidu.com/",
+        "yahoo": "https://search.yahoo.co.jp/",
+    }.get(provider, "")
+    absolute = urljoin(provider_base, raw_href) if provider_base else raw_href
+    parsed = urlparse(absolute)
+    query = parse_qs(parsed.query)
+    redirect_keys: tuple[str, ...] = ()
+    if provider == "duckduckgo" and parsed.path.startswith("/l/"):
+        redirect_keys = ("uddg",)
+    elif provider == "google" and parsed.path == "/url":
+        redirect_keys = ("q", "url")
+    for key in redirect_keys:
+        destination = _safe_text((query.get(key) or [""])[0])
+        if _looks_like_url(destination):
+            return destination
+    if provider == "yahoo":
+        match = re.search(r"(?:^|/)RU=([^/]+)(?:/RK=|$)", parsed.path)
+        destination = unquote(match.group(1)) if match else ""
+        if _looks_like_url(destination):
+            return destination
+    return absolute
+
+
 def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -> list[dict[str, str]]:
     selectors = {
         "bing": [
@@ -4345,6 +4514,10 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
         "duckduckgo": [
             (".result", ".result__a", ".result__snippet"),
         ],
+        "yahoo": [
+            ("div.sw-Card.Algo", ".sw-Card__titleInner", ".sw-Card__summary"),
+            ("div.algo", "h3 a", ".compText, .fc-falcon, p"),
+        ],
     }.get(provider, [])
     results: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -4353,7 +4526,7 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
             anchor = result_node.select_one(anchor_selector) or result_node.select_one("a[href]")
             if not anchor:
                 continue
-            href = _safe_text(anchor.get("href"))
+            href = _search_result_destination_url(_safe_text(anchor.get("href")), provider=provider)
             title = _safe_text(anchor.get_text(" ", strip=True))
             if not href or href in seen:
                 continue
@@ -4366,6 +4539,415 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
         if results:
             return results
     return results
+
+
+_SEARCH_RELEVANCE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+        "about",
+        "please",
+        "find",
+        "search",
+        "check",
+        "confirm",
+        "determine",
+        "identify",
+        "investigate",
+        "research",
+        "analyze",
+        "analyse",
+        "compare",
+        "assess",
+        "explain",
+        "verify",
+        "provide",
+        "produce",
+        "create",
+        "generate",
+        "draft",
+        "prepare",
+        "latest",
+        "source",
+        "sources",
+        "什么",
+        "如何",
+        "为什么",
+        "请问",
+        "查询",
+        "搜索",
+        "查找",
+        "确认",
+        "核实",
+        "验证",
+        "调查",
+        "研究",
+        "分析",
+        "比较",
+        "评估",
+        "说明",
+        "生成",
+        "形成",
+        "制定",
+        "整理",
+        "梳理",
+        "给出",
+        "输出",
+        "提供",
+        "资料",
+        "来源",
+        "最新",
+        "是否",
+    }
+)
+_SEARCH_RELEVANCE_WEAK_SIGNALS = frozenset(
+    {
+        "application",
+        "article",
+        "act",
+        "ai",
+        "date",
+        "docs",
+        "document",
+        "guide",
+        "information",
+        "official",
+        "page",
+        "provider",
+        "regulation",
+        "release",
+        "report",
+        "rule",
+        "rules",
+        "截至",
+        "截止",
+        "日期",
+        "时间",
+        "update",
+        "web",
+    }
+)
+
+
+def _canonical_search_relevance_token(value: str) -> str:
+    token = _safe_text(value).lower()
+    if len(token) > 5 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 5 and token.endswith("es"):
+        return token[:-2]
+    if len(token) > 4 and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _normalized_search_relevance_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", _safe_text(value).lower()).strip()
+
+
+def _is_search_relevance_stopword(value: str) -> bool:
+    token = _safe_text(value)
+    if token in _SEARCH_RELEVANCE_STOPWORDS:
+        return True
+    return bool(
+        re.fullmatch(r"[\u4e00-\u9fff]+", token)
+        and len(token) > 2
+        and token[0] in {"请", "并", "再"}
+        and token[1:] in _SEARCH_RELEVANCE_STOPWORDS
+    )
+
+
+def _is_search_relevance_weak_signal(value: str) -> bool:
+    token = _safe_text(value)
+    if token in _SEARCH_RELEVANCE_WEAK_SIGNALS:
+        return True
+    # Sliding Chinese bigrams preserve recall for fuzzy queries, but fragments
+    # joined by a grammatical character (for example ``者的`` or ``和官``)
+    # are context only and cannot establish topical relevance by themselves.
+    return bool(
+        re.fullmatch(r"[\u4e00-\u9fff]{2}", token)
+        and any(char in token for char in "的了和与及在于为对或并")
+    )
+
+
+def _search_query_relevance_signals(query: str) -> dict[str, Any]:
+    raw_query = _safe_text(query)
+    normalized = _normalized_search_relevance_text(raw_query)
+    signals: list[str] = []
+    for token in re.findall(r"[a-z][a-z0-9]*|\d{2,}|[\u4e00-\u9fff]{2,}", normalized):
+        canonical = _canonical_search_relevance_token(token)
+        if _is_search_relevance_stopword(canonical):
+            continue
+        if canonical.isascii() and canonical.isalpha() and len(canonical) < 3:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", canonical):
+            signals.extend(
+                gram
+                for index in range(len(canonical) - 1)
+                for gram in [canonical[index : index + 2]]
+                if not _is_search_relevance_stopword(gram)
+            )
+        else:
+            signals.append(canonical)
+
+    phrases: list[str] = []
+    for match in re.finditer(r'"([^"\r\n]{3,80})"|“([^”\r\n]{3,80})”', raw_query):
+        phrase = _normalized_search_relevance_text(match.group(1) or match.group(2) or "")
+        if phrase:
+            phrases.append(phrase)
+
+    site_hosts = [
+        _safe_text(host).lower().strip("./")
+        for host in re.findall(r"(?i)(?:^|\s)site:([^\s]+)", raw_query)
+        if _safe_text(host).strip("./")
+    ]
+    ordered_signals = list(dict.fromkeys(signals))
+    return {
+        "signals": ordered_signals,
+        "distinctiveSignals": [
+            signal
+            for signal in ordered_signals
+            if not _is_search_relevance_weak_signal(signal)
+            and not re.fullmatch(r"(?:19|20)\d{2}", signal)
+        ],
+        "phrases": list(dict.fromkeys(phrases)),
+        "siteHosts": list(dict.fromkeys(site_hosts)),
+    }
+
+
+def _match_search_result_relevance(query_signals: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    result_text = _normalized_search_relevance_text(
+        " ".join(
+            [
+                _safe_text(item.get("title")),
+                _safe_text(item.get("snippet") or item.get("text") or item.get("summary")),
+                _safe_text(item.get("url")),
+            ]
+        )
+    )
+    result_tokens = {
+        _canonical_search_relevance_token(token)
+        for token in re.findall(r"[a-z][a-z0-9]*|\d{2,}", result_text)
+    }
+    signals = list(query_signals["signals"])
+    distinctive = set(query_signals["distinctiveSignals"])
+    matches = [
+        signal
+        for signal in signals
+        if (
+            signal in result_text
+            if re.search(r"[\u4e00-\u9fff]", signal)
+            else signal in result_tokens
+        )
+    ]
+    matching_phrase = next(
+        (phrase for phrase in query_signals["phrases"] if phrase in result_text),
+        "",
+    )
+    matching_host = next(
+        (
+            host
+            for host in query_signals["siteHosts"]
+            if host in _safe_text(item.get("url")).lower()
+        ),
+        "",
+    )
+    return {
+        "matches": matches,
+        "distinctiveCount": sum(1 for signal in matches if signal in distinctive),
+        "strongMatch": matching_phrase or matching_host,
+    }
+
+
+def _assess_search_result_relevance(query: str, results: list[Any]) -> dict[str, Any]:
+    """Reject only clearly unrelated result sets so auto routing can continue.
+
+    This is deliberately a permissive discovery guard, not a semantic quality
+    scorer. The Research Runtime still reads and verifies accepted candidates.
+    """
+
+    if not results:
+        return {
+            "relevant": False,
+            "reason": "no_results",
+            "evaluatedResultCount": 0,
+            "querySignalCount": 0,
+            "matchedSignals": [],
+        }
+
+    query_signals = _search_query_relevance_signals(query)
+    signals = list(query_signals["signals"])
+    distinctive = set(query_signals["distinctiveSignals"])
+    phrases = list(query_signals["phrases"])
+    site_hosts = list(query_signals["siteHosts"])
+    if not signals and not phrases and not site_hosts:
+        return {
+            "relevant": True,
+            "reason": "no_query_signals_fail_open",
+            "evaluatedResultCount": len(results),
+            "querySignalCount": 0,
+            "matchedSignals": [],
+        }
+
+    best_matches: list[str] = []
+    best_distinctive_count = 0
+    strong_match = ""
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        match = _match_search_result_relevance(query_signals, item)
+        matches = list(match["matches"])
+        matched_distinctive_count = int(match["distinctiveCount"])
+        if len(matches) > len(best_matches):
+            best_matches = matches
+            best_distinctive_count = matched_distinctive_count
+
+        if match["strongMatch"]:
+            strong_match = _safe_text(match["strongMatch"])
+            best_matches = list(dict.fromkeys([*matches, strong_match]))
+            break
+
+    relevant = bool(strong_match)
+    if not relevant and best_distinctive_count >= 2:
+        relevant = True
+    non_temporal_matches = [
+        signal
+        for signal in best_matches
+        if not re.fullmatch(r"(?:19|20)\d{2}", signal)
+    ]
+    has_temporal_match = any(
+        re.fullmatch(r"(?:19|20)\d{2}", signal) for signal in best_matches
+    )
+    has_weak_context_match = any(
+        _is_search_relevance_weak_signal(signal) for signal in non_temporal_matches
+    )
+    if not relevant and best_distinctive_count >= 1 and has_weak_context_match and has_temporal_match:
+        relevant = True
+    if not relevant and best_distinctive_count >= 1 and len(non_temporal_matches) >= 3:
+        relevant = True
+    if not relevant and len(distinctive) == 1 and best_distinctive_count == 1:
+        relevant = True
+    if not relevant and not distinctive:
+        relevant = len(best_matches) >= min(2, len(signals))
+    return {
+        "relevant": relevant,
+        "reason": "matched_query_signals" if relevant else "irrelevant_results",
+        "evaluatedResultCount": len(results),
+        "querySignalCount": len(signals),
+        "matchedSignalCount": len(best_matches),
+        "matchedDistinctiveSignalCount": best_distinctive_count,
+        "matchedSignals": best_matches[:8],
+        "strongMatch": strong_match,
+    }
+
+
+def _html_search_public(
+    search_url: str,
+    *,
+    provider: str,
+    limit: int,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Fetch a public HTML search page with one hard network timeout.
+
+    Search discovery does not need the read pipeline's dynamic/stealth/reader
+    fallbacks. Running those modes for every parallel Research shard caused a
+    single provider attempt to exceed its budget and starve later providers.
+    """
+
+    started_at = time.monotonic()
+    yahoo_slot = False
+    try:
+        if provider == "yahoo":
+            yahoo_slot = _YAHOO_SEARCH_SEMAPHORE.acquire(timeout=max(1.0, float(timeout_seconds)))
+            if not yahoo_slot:
+                return {
+                    "ok": False,
+                    "failureClass": "network_timeout",
+                    "reason": "yahoo_concurrency_slot_timeout",
+                    "retryable": True,
+                }
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.get(
+                search_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/147.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.8,zh-CN;q=0.6",
+                },
+                timeout=max(1.0, float(timeout_seconds)),
+                allow_redirects=True,
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "failureClass": _classify_web_fetch_failure(str(exc)),
+            "reason": str(exc)[:1000],
+            "retryable": True,
+            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+        }
+    finally:
+        if yahoo_slot:
+            _YAHOO_SEARCH_SEMAPHORE.release()
+
+    html = _safe_text(getattr(response, "text", ""))
+    soup = BeautifulSoup(html, "html.parser")
+    results = _extract_search_results(soup, provider=provider, limit=limit)
+    title = _safe_text(soup.title.get_text(" ", strip=True) if soup.title else "")
+    page_failure = _search_page_failure(
+        SimpleNamespace(
+            final_url=_safe_text(getattr(response, "url", "")) or search_url,
+            url=search_url,
+            title=title,
+            status=getattr(response, "status_code", None),
+        ),
+        soup,
+        provider=provider,
+        result_count=len(results),
+    )
+    if page_failure:
+        return {
+            "ok": False,
+            "failureClass": page_failure["failureClass"],
+            "reason": page_failure["reason"],
+            "retryable": page_failure["failureClass"] in {"provider_challenge", "no_results"},
+            "statusCode": getattr(response, "status_code", None),
+            "finalUrl": _safe_text(getattr(response, "url", "")) or search_url,
+            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+        }
+    return {
+        "ok": True,
+        "results": results,
+        "statusCode": getattr(response, "status_code", None),
+        "finalUrl": _safe_text(getattr(response, "url", "")) or search_url,
+        "elapsedMs": int((time.monotonic() - started_at) * 1000),
+    }
 
 
 def _searxng_search_public(search_url: str, *, limit: int, timeout_seconds: float) -> dict[str, Any]:
@@ -4766,6 +5348,8 @@ def _search_page_failure(payload: WebPagePayload, soup: BeautifulSoup, *, provid
     text_preview = _safe_text(soup.get_text(" ", strip=True))[:1000].lower()
     if int(payload.status or 0) in {403, 429}:
         return {"status": "challenge", "failureClass": "provider_challenge", "reason": f"http_status_{payload.status}"}
+    if int(payload.status or 0) >= 500:
+        return {"status": "error", "failureClass": "provider_server_error", "reason": f"http_status_{payload.status}"}
     if provider == "google" and (
         "/sorry/" in final_url
         or "/httpservice/retry/enablejs" in text_preview
@@ -5001,6 +5585,7 @@ def web_read(
     headless: bool = True,
     referer_mode: WebRefererMode = "none",
     referer_url: str = "",
+    maxTextChars: int = MAX_TEXT_CHARS,
     useAgentBrowserProfile: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
@@ -5016,6 +5601,9 @@ def web_read(
     - static: 仅静态抓取
     - dynamic: 仅动态页面抓取
     - stealth: 仅反反爬抓取
+
+    maxTextChars keeps the normal 12,000-character surface by default. Research Runtime may explicitly request
+    a larger in-memory cleaned body, capped at 640,000 characters, before retaining only query-focused evidence.
 
     useAgentBrowserProfile:
     - Admin 已开启 systemBase.webFetch.useAgentBrowserProfile 且目标域名命中 allowlist 时，
@@ -5044,7 +5632,11 @@ def web_read(
         )
         if _detect_login_wall(payload):
             return _render_needs_login_payload(page=payload, use_agent_browser_profile=bool(useAgentBrowserProfile))
-        return json.dumps(_render_page_summary(payload), ensure_ascii=False, indent=2)
+        return json.dumps(
+            _render_page_summary(payload, max_text_chars=maxTextChars),
+            ensure_ascii=False,
+            indent=2,
+        )
     except Exception as exc:
         error = str(exc)
         return _render_error_payload(
@@ -5241,6 +5833,67 @@ def web_search(
     started_at = time.monotonic()
     last_error = ""
 
+    def _assess_provider_results(
+        provider: str,
+        results: list[Any],
+        *,
+        final_url: str = "",
+    ) -> tuple[bool, str | None, dict[str, Any]]:
+        nonlocal last_error
+        relevance = _assess_search_result_relevance(query, results)
+        # Bing's public HTML endpoint is known to return a normal-looking result
+        # page for an unrelated localized query. Keep this failover narrow:
+        # explicit provider requests and other adapters retain their established
+        # discovery semantics, while Research auto-routing can reach the next
+        # configured source instead of accepting that polluted page.
+        should_reject = (
+            requested_provider == "auto"
+            and provider == "bing"
+            and "cn.bing.com" in _safe_text(final_url).lower()
+        )
+        if bool(relevance.get("relevant")) or not should_reject:
+            return True, None, relevance
+        failure_class = _safe_text(relevance.get("reason")) or "irrelevant_results"
+        attempted_providers.append(
+            {
+                "provider": provider,
+                "status": "empty" if failure_class == "no_results" else "irrelevant",
+                "failureClass": failure_class,
+                "reason": failure_class,
+                "resultCount": len(results),
+                "relevance": relevance,
+            }
+        )
+        last_error = failure_class
+        if requested_provider == "auto":
+            return False, None, relevance
+        return (
+            False,
+            json.dumps(
+                {
+                    "ok": False,
+                    "query": query,
+                    "requestedProvider": requested_provider,
+                    "searchVertical": requested_vertical,
+                    "attemptedProviders": attempted_providers,
+                    "failureClass": failure_class,
+                    "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                    "retryable": True,
+                    "recommendedNextAction": "该搜索源返回空结果或与查询明显无关；请让 auto 继续降级，或改用其他 provider。",
+                    "error": last_error,
+                    "searchRelevance": relevance,
+                    **_source_router_payload_fields(
+                        router_plan,
+                        selected_provider=provider,
+                        attempted_providers=attempted_providers,
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            relevance,
+        )
+
     if not providers:
         first_failure = attempted_providers[0] if attempted_providers else {}
         failure_class = _safe_text(first_failure.get("failureClass")) or "unsupported_operation"
@@ -5300,7 +5953,11 @@ def web_search(
         profile_skip = _agent_browser_profile_search_skip(provider, search_url)
         if profile_skip:
             attempted_providers.append(profile_skip)
-            last_error = str(profile_skip.get("reason") or profile_skip.get("failureClass") or "")
+            # A login-only candidate is an expected fallback skip. Preserve the
+            # first real provider failure so the aggregate error explains what
+            # actually made discovery fail.
+            if not last_error:
+                last_error = str(profile_skip.get("reason") or profile_skip.get("failureClass") or "")
             if requested_provider == "auto":
                 continue
             return json.dumps(
@@ -5364,7 +6021,12 @@ def web_search(
                         indent=2,
                     )
                 results = api_result.get("results") if isinstance(api_result.get("results"), list) else []
-                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
+                accepted, rejection, relevance = _assess_provider_results(provider, results)
+                if not accepted:
+                    if rejection:
+                        return rejection
+                    continue
+                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results), "relevance": relevance})
                 response = {
                     "ok": True,
                     "query": query,
@@ -5375,6 +6037,7 @@ def web_search(
                     "searchUrl": search_url,
                     "resultCount": len(results),
                     "results": results,
+                    "searchRelevance": relevance,
                     **_source_router_payload_fields(
                         router_plan,
                         selected_provider=provider,
@@ -5418,7 +6081,12 @@ def web_search(
                         indent=2,
                     )
                 results = searxng_result.get("results") if isinstance(searxng_result.get("results"), list) else []
-                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
+                accepted, rejection, relevance = _assess_provider_results(provider, results)
+                if not accepted:
+                    if rejection:
+                        return rejection
+                    continue
+                attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results), "relevance": relevance})
                 response = {
                     "ok": True,
                     "query": query,
@@ -5429,6 +6097,7 @@ def web_search(
                     "searchUrl": search_url,
                     "resultCount": len(results),
                     "results": results,
+                    "searchRelevance": relevance,
                     **_source_router_payload_fields(
                         router_plan,
                         selected_provider=provider,
@@ -5489,6 +6158,11 @@ def web_search(
                             indent=2,
                         )
                     results = metaso_result.get("results") if isinstance(metaso_result.get("results"), list) else []
+                    accepted, rejection, relevance = _assess_provider_results(provider, results)
+                    if not accepted:
+                        if rejection:
+                            return rejection
+                        continue
                     attempted_providers.append(
                         {
                             "provider": provider,
@@ -5497,6 +6171,7 @@ def web_search(
                             "searchVertical": requested_vertical,
                             "scope": metaso_result.get("scope"),
                             "resultId": metaso_result.get("resultId"),
+                            "relevance": relevance,
                         }
                     )
                     response = {
@@ -5509,6 +6184,7 @@ def web_search(
                         "searchUrl": search_url,
                         "resultCount": len(results),
                         "results": results,
+                        "searchRelevance": relevance,
                         "metaso": {
                             "engineType": metaso_result.get("engineType"),
                             "scope": metaso_result.get("scope"),
@@ -5527,6 +6203,100 @@ def web_search(
             effective_use_agent_browser_profile = bool(useAgentBrowserProfile) or bool(
                 _provider_prefers_agent_browser_profile(provider) and _agent_browser_profile_allowed(search_url)[0]
             )
+            if (
+                provider in {"duckduckgo", "google", "bing", "baidu", "yahoo"}
+                and not effective_use_agent_browser_profile
+                and mode in {"auto", "static"}
+            ):
+                html_result = _html_search_public(
+                    search_url,
+                    provider=provider,
+                    limit=limit,
+                    timeout_seconds=provider_timeout,
+                )
+                if not bool(html_result.get("ok")):
+                    attempted_providers.append(
+                        {
+                            "provider": provider,
+                            "status": (
+                                "challenge"
+                                if html_result.get("failureClass") == "provider_challenge"
+                                else "error"
+                            ),
+                            "failureClass": html_result.get("failureClass") or "search_failed",
+                            "reason": html_result.get("reason") or f"{provider}_html_search_failed",
+                            "statusCode": html_result.get("statusCode"),
+                            "elapsedMs": html_result.get("elapsedMs"),
+                        }
+                    )
+                    last_error = _safe_text(html_result.get("reason") or html_result.get("failureClass"))
+                    if requested_provider == "auto":
+                        continue
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "query": query,
+                            "requestedProvider": requested_provider,
+                            "searchVertical": requested_vertical,
+                            "attemptedProviders": attempted_providers,
+                            "failureClass": html_result.get("failureClass") or "search_failed",
+                            "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                            "retryable": bool(html_result.get("retryable")),
+                            "recommendedNextAction": "该搜索源当前没有可抽取结果；请换 provider 或让 auto 继续降级。",
+                            "error": last_error,
+                            **_source_router_payload_fields(
+                                router_plan,
+                                selected_provider=provider,
+                                attempted_providers=attempted_providers,
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                results = html_result.get("results") if isinstance(html_result.get("results"), list) else []
+                accepted, rejection, relevance = _assess_provider_results(
+                    provider,
+                    results,
+                    final_url=_safe_text(html_result.get("finalUrl")),
+                )
+                if not accepted:
+                    if rejection:
+                        return rejection
+                    continue
+                attempted_providers.append(
+                    {
+                        "provider": provider,
+                        "status": "ok",
+                        "resultCount": len(results),
+                        "statusCode": html_result.get("statusCode"),
+                        "elapsedMs": html_result.get("elapsedMs"),
+                        "relevance": relevance,
+                    }
+                )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "query": query,
+                        "provider": provider,
+                        "requestedProvider": requested_provider,
+                        "searchVertical": requested_vertical,
+                        "attemptedProviders": attempted_providers,
+                        "searchUrl": search_url,
+                        "finalUrl": html_result.get("finalUrl"),
+                        "statusCode": html_result.get("statusCode"),
+                        "fetchMode": "http",
+                        "resultCount": len(results),
+                        "results": results,
+                        "searchRelevance": relevance,
+                        **_source_router_payload_fields(
+                            router_plan,
+                            selected_provider=provider,
+                            attempted_providers=attempted_providers,
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             payload = _fetch_with_scrapling_internal(
                 search_url,
                 mode=mode,
@@ -5575,9 +6345,12 @@ def web_search(
                     ensure_ascii=False,
                     indent=2,
                 )
-            attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results)})
-            if not results and requested_provider == "auto":
+            accepted, rejection, relevance = _assess_provider_results(provider, results)
+            if not accepted:
+                if rejection:
+                    return rejection
                 continue
+            attempted_providers.append({"provider": provider, "status": "ok", "resultCount": len(results), "relevance": relevance})
 
             response = {
                 "ok": True,
@@ -5610,6 +6383,7 @@ def web_search(
                 ),
                 "resultCount": len(results),
                 "results": results,
+                "searchRelevance": relevance,
                 **_source_router_payload_fields(
                     router_plan,
                     selected_provider=provider,
@@ -5630,16 +6404,23 @@ def web_search(
             })
 
     aggregate_failure = "search_failed"
-    non_blocked_attempts = [item for item in attempted_providers if item.get("status") != "blocked"]
-    if non_blocked_attempts and all(item.get("failureClass") == "network_timeout" for item in non_blocked_attempts):
+    operational_attempts = [
+        item
+        for item in attempted_providers
+        if item.get("status") not in {"skipped", "blocked"}
+        and item.get("failureClass") not in {"credential_missing", "provider_unconfigured", "needs_agent_browser_login"}
+    ]
+    if not operational_attempts:
+        operational_attempts = [item for item in attempted_providers if item.get("status") != "blocked"]
+    if operational_attempts and all(item.get("failureClass") == "network_timeout" for item in operational_attempts):
         aggregate_failure = "network_timeout"
-    elif any(item.get("failureClass") == "tool_configuration_error" for item in attempted_providers):
+    elif any(item.get("failureClass") == "tool_configuration_error" for item in operational_attempts):
         aggregate_failure = "tool_configuration_error"
-    elif any(item.get("failureClass") == "tool_context_unavailable" for item in attempted_providers):
+    elif any(item.get("failureClass") == "tool_context_unavailable" for item in operational_attempts):
         aggregate_failure = "tool_context_unavailable"
-    elif any(item.get("failureClass") == "provider_challenge" for item in attempted_providers):
+    elif operational_attempts and all(item.get("failureClass") == "provider_challenge" for item in operational_attempts):
         aggregate_failure = "provider_challenge"
-    elif attempted_providers and all(item.get("failureClass") == "no_results" for item in attempted_providers):
+    elif operational_attempts and all(item.get("failureClass") == "no_results" for item in operational_attempts):
         aggregate_failure = "no_results"
     elif any(item.get("status") == "blocked" for item in attempted_providers):
         aggregate_failure = "blocked_by_safety"
@@ -5660,7 +6441,11 @@ def web_search(
                 else "检查工具配置/安全审批上下文；不要继续盲等 watchdog。"
             ),
             "error": last_error or "No search provider returned usable results.",
-            **_source_router_payload_fields(router_plan, attempted_providers=attempted_providers),
+            **_source_router_payload_fields(
+                router_plan,
+                selected_provider="",
+                attempted_providers=attempted_providers,
+            ),
         },
         ensure_ascii=False,
         indent=2,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+from core.tools.research_quality import build_research_review_binding
 
 
 def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: str = "worker") -> Send:
@@ -38,6 +40,179 @@ def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: s
             }
         },
     )
+
+
+def _accepted_research_payload(
+    bundle_id: str,
+    question: str,
+    *,
+    primary_url: str = "https://docs.example.com/official",
+) -> dict:
+    urls = [
+        primary_url,
+        "https://standards.example.org/reference",
+        "https://research.example.net/analysis",
+        "https://archive.example.edu/record",
+        "https://data.example.io/dataset",
+        "https://review.example.dev/assessment",
+        "https://evidence.example.info/report",
+        "https://catalog.example.tech/source",
+    ]
+    sources = [
+        {
+            "sourceId": f"source-{index}",
+            "citationKey": f"[S{index}]",
+            "title": f"Selected source {index}",
+            "url": url,
+            "selectedForEvidence": True,
+            "retrievedAt": "2026-07-28T08:00:00Z",
+            "updatedAt": "2026-07-27",
+            "contentChars": 6000,
+            "readEvidence": {
+                "verified": True,
+                "contentChars": 6000,
+                "contentSha256": "c" * 64,
+                "retrievedAt": "2026-07-28T08:00:00Z",
+            },
+        }
+        for index, url in enumerate(urls, start=1)
+    ]
+    claim_topics = (
+        "Scope definition",
+        "Runtime mechanism",
+        "Source authority",
+        "Data evidence",
+        "Freshness changes",
+        "Conflicting evidence",
+        "Operational risks",
+        "Decision impact",
+    )
+    claims = []
+    for index in range(1, 9):
+        excerpt = f"Selected source {index} records a distinct runtime fact, its operating condition, and the evidence boundary used here."
+        claims.append({
+            "claim": f"{claim_topics[index - 1]} is directly supported with explicit conditions and evidence boundaries.",
+            "supportingSources": [{"sourceId": f"source-{index}"}],
+            "evidenceExcerpt": excerpt,
+            "evidenceExcerptSha256": hashlib.sha256(excerpt.lower().encode("utf-8")).hexdigest(),
+            "evidenceVerified": True,
+        })
+    independent_review = {
+        "reviewDecision": "accept",
+        "reviewReasons": ["Question coverage, claim entailment, and freshness were independently verified."],
+        "questionCoverage": True,
+        "claimEntailment": True,
+        "freshnessAdequacy": True,
+        "unsupportedClaims": [],
+        "criticalMissingEvidence": [],
+        "recommendedNextQueries": [],
+    }
+    citations = " ".join(source["citationKey"] for source in sources)
+    subjects = ("scope", "mechanism", "dataset", "comparison", "risk", "verification")
+    aspects = ("source authority", "time boundary", "applicability", "counterevidence", "user impact", "failure mode")
+    paragraphs = [
+        (
+            f"{subject.title()} through {aspect}: the retrieved sources establish a concrete fact, identify the "
+            f"conditions that change the {subject} conclusion, distinguish direct observation from synthesis, "
+            f"and state how {aspect} affects the decision and its next verification step."
+        )
+        for subject in subjects
+        for aspect in aspects
+    ]
+    paragraphs = [
+        f"{paragraph.rstrip('.')} {sources[index % len(sources)]['citationKey']}."
+        for index, paragraph in enumerate(paragraphs)
+    ]
+    answer = f"Answer for {question}. {citations}\n\n" + "\n\n".join(paragraphs)
+    assert len("".join(answer.split())) > 5000
+    payload = {
+        "ok": True,
+        "question": question,
+        "freshness": "current",
+        "asOf": "2026-07-28",
+        "reviewDecision": "accept",
+        "independentReview": independent_review,
+        "experienceReuse": {
+            "reuseDecision": "ignore",
+            "reason": "no_matching_experience_pack",
+            "candidatePackId": None,
+            "topicFingerprint": "runner-test-topic",
+        },
+        "evidenceBundleId": bundle_id,
+        "researchAnswerPack": {
+            "answer": answer,
+            "sources": sources,
+            "claimTable": claims,
+            "limitations": [],
+            "asOf": "2026-07-28",
+            "reviewDecision": "accept",
+            "independentReview": independent_review,
+        },
+        "finalExperiencePack": {
+            "question": question,
+            "asOf": "2026-07-28",
+            "reviewDecision": "accept",
+            "independentReview": independent_review,
+            "temporalAssessment": {
+                "asOf": "2026-07-28",
+                "summary": "Current evidence was retrieved and independently reviewed for the requested date.",
+            },
+            "modelSynthesis": {
+                "used": True,
+                "agentId": "web-research-architect",
+                "agentName": "Web Research Architect",
+                "writerModelId": "runner-test-writer",
+                "reviewerModelId": "runner-test-reviewer",
+                "reviewerConsensusCount": 2,
+                "reviewerConsensusModelIds": [
+                    "runner-test-reviewer",
+                    "runner-test-adversarial-reviewer",
+                ],
+                "writerMode": "segmented",
+                "writerSectionCount": 4,
+                "writerRevisionCount": 0,
+            },
+            "recommendedNextQueries": [],
+        },
+    }
+    consensus_reviews = []
+    for review_mode, reviewer_model_id in (
+        ("semantic", "runner-test-reviewer"),
+        ("adversarial", "runner-test-adversarial-reviewer"),
+    ):
+        review = {**independent_review, "reviewMode": review_mode}
+        review.update(
+            build_research_review_binding(
+                payload,
+                reviewer_model_id=reviewer_model_id,
+                reviewed_at="2026-07-28T08:00:00Z",
+            )
+        )
+        consensus_reviews.append(review)
+    independent_review.clear()
+    independent_review.update(
+        {
+            **consensus_reviews[0],
+            "consensusAccepted": True,
+            "consensusReviewCount": 2,
+            "consensusReviewerModelIds": [review["reviewerModelId"] for review in consensus_reviews],
+            "consensusReviews": consensus_reviews,
+        }
+    )
+    return payload
+
+
+def _rebind_accepted_research_review(payload: dict) -> None:
+    independent_review = payload["independentReview"]
+    for review in independent_review["consensusReviews"]:
+        review.update(
+            build_research_review_binding(
+                payload,
+                reviewer_model_id=review["reviewerModelId"],
+                reviewed_at=review["reviewedAt"],
+            )
+        )
+    independent_review.update(independent_review["consensusReviews"][0])
 
 
 def test_child_target_repair_uses_parent_identity_not_goal_keywords():
@@ -2067,8 +2242,74 @@ def test_runtime_episode_typed_handoff_artifact_for_research(monkeypatch):
     assert handoffs[-1]["payload"]["artifactId"].startswith("artifact_")
 
 
+def test_research_handoff_compacts_reused_pack_to_auditable_proof():
+    reused_answer = "A complete previously accepted research answer."
+    proof = runtime_episode_runner_module._research_experience_reuse_proof(
+        {
+            "experienceReuse": {
+                "reuseDecision": "reuse",
+                "reason": "high_confidence_pack_matches_topic_and_policy",
+                "candidatePackId": "pack-1",
+                "skippedSearches": True,
+                "topicFingerprint": "topic-1",
+                "freshnessState": "stale",
+                "refreshSuggested": True,
+                "supervisorContentNote": "Reused evidence is stale; decide whether to refresh it.",
+                "pack": {
+                    "experiencePackId": "pack-1",
+                    "createdFromBundleId": "bundle-1",
+                    "topicFingerprint": "topic-1",
+                    "asOf": "2026-07-28",
+                    "qualityStatus": "high_quality",
+                    "confidence": "high",
+                    "researchAnswerPack": {
+                        "answer": reused_answer,
+                        "sources": [{"sourceId": "source-1"}],
+                        "claimTable": [{"claim": "A supported claim"}],
+                    },
+                },
+            }
+        },
+        {},
+    )
+
+    assert proof["reuseDecision"] == "reuse"
+    assert proof["skippedSearches"] is True
+    assert proof["freshnessState"] == "stale"
+    assert proof["refreshSuggested"] is True
+    assert proof["supervisorContentNote"] == "Reused evidence is stale; decide whether to refresh it."
+    assert "pack" not in proof
+    assert proof["reusedPackProof"] == {
+        "experiencePackId": "pack-1",
+        "createdFromBundleId": "bundle-1",
+        "topicFingerprint": "topic-1",
+        "asOf": "2026-07-28",
+        "qualityStatus": "high_quality",
+        "confidence": "high",
+        "sourceCount": 1,
+        "claimCount": 1,
+        "answerSha256": hashlib.sha256(reused_answer.encode("utf-8")).hexdigest(),
+    }
+
+
+def test_research_handoff_consumer_hint_injects_only_a_short_refresh_decision_note():
+    note = "Reused Research experience is stale (as of 2026-01-01). Decide whether to refresh it."
+    hint = runtime_episode_runner_module._research_handoff_consumer_hint(
+        {"reuseDecision": "reuse", "supervisorContentNote": note}
+    )
+
+    assert "complete accepted Research answer" in hint
+    assert "do not repeat web search" in hint
+    assert hint.endswith(note)
+
+
 def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypatch):
     calls: list[dict] = []
+    expected_payload = _accepted_research_payload(
+        "research_march7",
+        "调研《崩坏：星穹铁道》三月七官方设定与剧情台词",
+        primary_url="https://example.com/official",
+    )
 
     def _fake_research_broker(**kwargs):
         calls.append(dict(kwargs))
@@ -2077,22 +2318,7 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
 
         content = f"mode={kwargs.get('mode')} query={kwargs.get('query')}"
         if kwargs.get("mode") == "run":
-            content = json.dumps(
-                {
-                    "ok": True,
-                    "evidenceBundleId": "research_march7",
-                    "researchAnswerPack": {
-                        "answer": "官方资料与多源证据已汇总。",
-                        "sources": [
-                            {"title": "Official", "url": "https://example.com/official"},
-                            {"title": "Independent", "url": "https://example.org/independent"},
-                        ],
-                        "claimTable": [{"claim": "supported", "confidence": "high"}],
-                        "limitations": [],
-                    },
-                },
-                ensure_ascii=False,
-            )
+            content = json.dumps(expected_payload, ensure_ascii=False)
         return Command(
             update={
                 "messages": [
@@ -2119,7 +2345,10 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
                         "taskBriefId": "task-1",
                         "goal": "Collect real evidence for 三月七.",
                         "routeQuery": "调研《崩坏：星穹铁道》三月七官方设定与剧情台词",
-                        "context": {"sourcePolicy": "multi_source_full_read_required"},
+                        "context": {
+                            "sourcePolicy": "multi_source_full_read_required",
+                            "forceRefresh": True,
+                        },
                         "requiredCapabilities": ["web_research", "evidence_bundle", "claim_table"],
                     }
                 ]
@@ -2131,18 +2360,39 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
 
     assert calls[0]["mode"] == "search_experience"
     assert calls[1]["mode"] == "run"
+    assert calls[1]["forceRefresh"] is True
     assert "三月七" in calls[0]["query"]
     assert calls[0]["query"] != "skill_driven_writing_requires_source_evidence"
     assert handoff["status"] == "ready"
     assert handoff["runMode"] == "run"
     assert handoff["researchRefs"] == ["research://bundle/research_march7"]
-    assert handoff["sourceCount"] == 2
+    assert handoff["sourceCount"] == 8
+    assert handoff["answer"] == expected_payload["researchAnswerPack"]["answer"]
+    assert handoff["asOf"] == "2026-07-28"
+    assert handoff["reviewDecision"] == "accept"
+    assert handoff["qualityTier"] == "high_quality"
+    assert handoff["answerSha256"] == hashlib.sha256(
+        expected_payload["researchAnswerPack"]["answer"].encode("utf-8")
+    ).hexdigest()
+    assert handoff["claimTable"] == expected_payload["researchAnswerPack"]["claimTable"]
+    assert handoff["independentReview"] == expected_payload["independentReview"]
+    assert handoff["modelSynthesis"]["writerMode"] == "segmented"
+    assert handoff["modelSynthesis"]["writerSectionCount"] == 4
+    assert handoff["experienceReuse"]["reuseDecision"] == "ignore"
+    assert handoff["forceRefreshRequested"] is True
+    assert len(handoff["sources"]) == 8
+    assert all(source["readEvidence"]["verified"] is True for source in handoff["sources"])
+    assert all(source["selectedForEvidence"] is True for source in handoff["sources"])
     result = handoff["taskBriefResults"][0]
-    assert result["answer"] == "官方资料与多源证据已汇总。"
-    assert result["sourceUrls"] == [
-        "https://example.com/official",
-        "https://example.org/independent",
-    ]
+    assert result["answer"] == expected_payload["researchAnswerPack"]["answer"]
+    assert result["answerSha256"] == handoff["answerSha256"]
+    assert result["claimTable"] == handoff["claimTable"]
+    assert result["independentReview"] == handoff["independentReview"]
+    assert result["modelSynthesis"] == handoff["modelSynthesis"]
+    assert result["forceRefreshRequested"] is True
+    assert len(result["answer"]) > 5000
+    assert result["sourceUrls"][0] == "https://example.com/official"
+    assert len(result["sourceUrls"]) == 8
     assert result["detailTool"] == (
         "research_broker(mode='get_evidence', evidenceBundleId='research_march7')"
     )
@@ -2150,6 +2400,235 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert handoff["detailTool"] == (
         "research_broker(mode='get_evidence', evidenceBundleId='research_march7')"
     )
+    from tests.scripts.run_supervisor_runtime_skill_live_audit import _research_handoff_assessment
+
+    assessment = _research_handoff_assessment(
+        handoff,
+        question="调研《崩坏：星穹铁道》三月七官方设定与剧情台词",
+    )
+    assert assessment["highQuality"] is True, assessment
+    assert assessment["qualityIssues"] == []
+    assert assessment["advertisedMetricMismatches"] == {}
+
+
+def test_research_episode_hydrates_compact_nonready_payload_for_internal_truth(
+    monkeypatch,
+):
+    question = "Verify the complete current Research Runtime evidence chain."
+    full_bundle = _accepted_research_payload("research_compact_internal", question)
+    full_bundle["scope"] = "global"
+    compact_payload = {
+        "ok": True,
+        "question": question,
+        "evidenceBundleId": "research_compact_internal",
+        "deliveryReady": False,
+        "reviewDecision": "retry",
+        "reviewReasons": ["The current attempt still requires its governed review gate."],
+        "criticalMissingEvidence": ["Governed review is not accepted yet."],
+        "researchAnswerPack": {
+            "answer": "",
+            "sources": full_bundle["researchAnswerPack"]["sources"][:2],
+            "claimTable": full_bundle["researchAnswerPack"]["claimTable"][:1],
+            "limitations": ["Compact non-delivery projection."],
+        },
+    }
+    broker_calls: list[str] = []
+    ledger_reads: list[str] = []
+
+    def _fake_research_broker(**kwargs):
+        broker_calls.append(str(kwargs.get("mode") or ""))
+        if kwargs.get("mode") == "run":
+            return json.dumps(compact_payload)
+        return json.dumps({"ok": True, "items": []})
+
+    def _fake_get_evidence_bundle(evidence_bundle_id: str):
+        ledger_reads.append(evidence_bundle_id)
+        return full_bundle
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    monkeypatch.setattr(
+        runtime_episode_runner_module,
+        "get_evidence_bundle",
+        _fake_get_evidence_bundle,
+    )
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": question},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {"taskBriefId": "compact-internal", "goal": question}
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert broker_calls == ["search_experience", "run"]
+    assert ledger_reads == ["research_compact_internal"]
+    assert handoff["status"] == "degraded"
+    result = handoff["taskBriefResults"][0]
+    assert result["sourceCount"] == 8
+    assert result["claimCount"] == 8
+    assert result["sources"] == []
+    assert result["claimTable"] == []
+    assert result["evidenceBundleId"] is None
+    assert "research_delivery_gate_not_ready" in result["evidenceStatusReasons"]
+
+
+def test_research_episode_hydrates_compact_ready_payload_for_quality_truth(monkeypatch):
+    question = "Verify the accepted Research Runtime delivery projection."
+    full_bundle = _accepted_research_payload("research_compact_ready", question)
+    full_bundle["scope"] = "global"
+    compact_payload = {
+        "ok": True,
+        "question": question,
+        "evidenceBundleId": "research_compact_ready",
+        "deliveryReady": True,
+        "qualityTier": "high_quality",
+        "reviewDecision": "accept",
+        "researchAnswerPack": {
+            "answer": full_bundle["researchAnswerPack"]["answer"],
+            "sources": [
+                {
+                    key: source.get(key)
+                    for key in ("sourceId", "citationKey", "title", "url")
+                    if source.get(key)
+                }
+                for source in full_bundle["researchAnswerPack"]["sources"]
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        runtime_episode_runner_module,
+        "get_evidence_bundle",
+        lambda _bundle_id: full_bundle,
+    )
+
+    effective = runtime_episode_runner_module._hydrate_research_run_payload(
+        compact_payload,
+        expected_question=question,
+        expected_scope="global",
+    )
+
+    assert effective["_runtimeHydratedFromEvidenceBundle"] is True
+    assert effective["_transportDeliveryReady"] is True
+    assert effective["deliveryReady"] is True
+    assert len(effective["researchAnswerPack"]["sources"]) == 8
+    assert len(effective["researchAnswerPack"]["claimTable"]) == 8
+    assert effective["researchAnswerPack"]["independentReview"]["consensusAccepted"] is True
+
+
+@pytest.mark.parametrize(
+    ("stored_question", "stored_scope"),
+    [
+        ("A different research question.", "session-1"),
+        ("Verify the requested contract.", "session-2"),
+    ],
+)
+def test_compact_research_hydration_rejects_question_or_scope_mismatch(
+    monkeypatch,
+    stored_question,
+    stored_scope,
+):
+    transport = {
+        "evidenceBundleId": "research-lineage-mismatch",
+        "deliveryReady": False,
+        "question": "Verify the requested contract.",
+        "researchAnswerPack": {
+            "sources": [{"sourceId": "visible-1"}, {"sourceId": "visible-2"}],
+            "claimTable": [{"claim": "Visible compact claim."}],
+        },
+    }
+    monkeypatch.setattr(
+        runtime_episode_runner_module,
+        "get_evidence_bundle",
+        lambda _bundle_id: {
+            "evidenceBundleId": "research-lineage-mismatch",
+            "question": stored_question,
+            "scope": stored_scope,
+            "researchAnswerPack": {
+                "sources": [{"sourceId": f"full-{index}"} for index in range(8)],
+                "claimTable": [{"claim": f"Full claim {index}"} for index in range(8)],
+            },
+        },
+    )
+
+    effective = runtime_episode_runner_module._hydrate_research_run_payload(
+        transport,
+        expected_question="Verify the requested contract.",
+        expected_scope="session-1",
+    )
+
+    assert "_runtimeHydratedFromEvidenceBundle" not in effective
+    assert len(effective["researchAnswerPack"]["sources"]) == 2
+    assert len(effective["researchAnswerPack"]["claimTable"]) == 1
+
+
+def test_research_episode_preserves_selected_source_id_only_evidence(monkeypatch):
+    payload = _accepted_research_payload(
+        "research_source_ids",
+        "Verify a stable historical contract.",
+    )
+    sources = payload["researchAnswerPack"]["sources"]
+    for index, source in enumerate(sources, start=1):
+        source.pop("url")
+        source["host"] = f"source-id-{index}.example"
+    for source in sources:
+        source.pop("selectedForEvidence")
+    payload["researchEvidenceBank"] = {"selectedSources": sources}
+    payload["researchAnswerPack"]["sources"] = []
+    _rebind_accepted_research_review(payload)
+
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") == "run":
+            return json.dumps(payload)
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify historical contract"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "source-id-only",
+                        "goal": "Verify a stable historical contract.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "ready"
+    assert handoff["qualityTier"] == "high_quality"
+    assert handoff["sourceCount"] == 8
+    assert len(handoff["sources"]) == 8
+    assert handoff["sourceUrls"] == []
+    assert [source["sourceId"] for source in handoff["sources"]] == [
+        "source-1",
+        "source-2",
+        "source-3",
+        "source-4",
+        "source-5",
+        "source-6",
+        "source-7",
+        "source-8",
+    ]
 
 
 def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
@@ -2185,6 +2664,82 @@ def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
     assert handoff["status"] == "degraded"
     assert handoff["degradedReason"] == "research_run_missing_evidence"
     assert handoff["researchRefs"] == []
+    assert handoff["taskBriefResults"][0]["answer"] == ""
+    assert "Research started but returned no sources." not in handoff["compactSummary"]
+
+
+@pytest.mark.parametrize("review_decision", ["retry", "reject"])
+def test_research_episode_rejected_review_never_promotes_draft_or_summary(
+    monkeypatch,
+    review_decision,
+):
+    rejected_payload = _accepted_research_payload(
+        "research_review_retry",
+        "Verify the current API behavior.",
+    )
+    rejected_payload["reviewDecision"] = review_decision
+    rejected_payload["summary"] = "RAW SEARCH SUMMARY MUST NOT BECOME THE ANSWER"
+    rejected_payload["researchAnswerPack"]["reviewDecision"] = review_decision
+    rejected_payload["researchAnswerPack"]["criticalMissingEvidence"] = [
+        "The official version boundary is not yet verified."
+    ]
+    rejected_payload["finalExperiencePack"]["reviewDecision"] = review_decision
+    rejected_payload["finalExperiencePack"]["recommendedNextQueries"] = [
+        "site:docs.example.com current API version boundary"
+    ]
+
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") == "run":
+            return json.dumps(rejected_payload)
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "verify current API behavior"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "api-review-retry",
+                        "goal": "Verify the current API behavior.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["researchRefs"] == []
+    assert handoff["answer"] == ""
+    assert handoff["sourceCount"] == 0
+    assert handoff["claimCount"] == 0
+    assert handoff["asOf"] == ""
+    assert handoff["asOfByBrief"] == {}
+    assert handoff["reviewDecision"] == review_decision
+    assert handoff["qualityTier"] == "insufficient"
+    assert "RAW SEARCH SUMMARY" not in handoff["compactSummary"]
+    result = handoff["taskBriefResults"][0]
+    assert result["answer"] == ""
+    assert result["evidenceBundleId"] is None
+    assert result["researchRef"] is None
+    assert result["detailTool"] is None
+    assert result["sources"] == []
+    assert result["sourceUrls"] == []
+    assert result["reviewDecision"] == review_decision
+    assert result["qualityTier"] == "insufficient"
+    assert "architect_review_not_accepted" in result["evidenceStatusReasons"]
+    assert result["criticalMissingEvidence"] == ["The official version boundary is not yet verified."]
+    assert result["recommendedNextQueries"] == [
+        "site:docs.example.com current API version boundary"
+    ]
 
 
 def test_research_episode_combines_every_task_brief_into_one_evidence_contract(monkeypatch):
@@ -2194,35 +2749,12 @@ def test_research_episode_combines_every_task_brief_into_one_evidence_contract(m
         calls.append(dict(kwargs))
         if kwargs.get("mode") == "run":
             query = str(kwargs.get("query") or "")
-            bundle_id = (
-                "research_fts5"
-                if "FTS5" in query
-                else "research_jsonb"
-                if "JSONB" in query
-                else "research_python_win"
-            )
             return json.dumps(
-                {
-                    "ok": True,
-                    "evidenceBundleId": bundle_id,
-                    "researchAnswerPack": {
-                        "answer": f"Covered: {query}",
-                        "sources": [
-                            {
-                                "title": "Official",
-                                "url": (
-                                    "https://sqlite.org/fts5.html"
-                                    if bundle_id == "research_fts5"
-                                    else "https://sqlite.org/json1.html"
-                                    if bundle_id == "research_jsonb"
-                                    else "https://docs.python.org/3/using/windows.html"
-                                ),
-                            }
-                        ],
-                        "claimTable": [{"claim": "covered", "confidence": "high"}],
-                        "limitations": ["One source is illustrative in this contract test."],
-                    },
-                }
+                _accepted_research_payload(
+                    "research_combined",
+                    query,
+                    primary_url="https://sqlite.org/fts5.html",
+                )
             )
         return json.dumps({"ok": True, "items": []})
 
@@ -2238,6 +2770,7 @@ def test_research_episode_combines_every_task_brief_into_one_evidence_contract(m
             "inputs": {
                 "mode": "run",
                 "query": "Assess the current compatibility baseline.",
+                "researchExecutionMode": "single_bundle",
                 "taskBriefs": [
                     {
                         "taskBriefId": "fts5",
@@ -2247,7 +2780,11 @@ def test_research_episode_combines_every_task_brief_into_one_evidence_contract(m
                     {
                         "taskBriefId": "jsonb",
                         "routeQuery": "Check current SQLite JSONB support.",
-                        "detailRefs": ["https://sqlite.org/json1.html"],
+                        "context": {
+                            "routeContextNote": (
+                                "Use the explicit seed https://sqlite.org/json1.html when public search is unavailable."
+                            )
+                        },
                     },
                     {
                         "taskBriefId": "python-win",
@@ -2263,30 +2800,23 @@ def test_research_episode_combines_every_task_brief_into_one_evidence_contract(m
 
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
 
-    assert [item["mode"] for item in calls] == [
-        "search_experience",
-        "run",
-        "search_experience",
-        "run",
-        "search_experience",
-        "run",
-    ]
+    assert [item["mode"] for item in calls] == ["search_experience", "run"]
     run_queries = [item["query"] for item in calls if item["mode"] == "run"]
-    assert run_queries == [
-        "Check current SQLite FTS5 support.",
-        "Check current SQLite JSONB support.",
-        "Check current Python support on Windows.",
-    ]
+    assert len(run_queries) == 1
+    assert "Overall request: Assess the current compatibility baseline." in run_queries[0]
+    assert "[fts5] Check current SQLite FTS5 support." in run_queries[0]
+    assert "[jsonb] Check current SQLite JSONB support." in run_queries[0]
+    assert "[python-win] Check current Python support on Windows." in run_queries[0]
     for call in calls:
         assert call["freshness"] == "current"
         assert call["sourcePolicy"] == "authoritative"
         assert call["state"]["run_id"] == "run-research-scope"
         assert call["state"]["session_id"] == "session-research-scope"
-    assert [item["seedUrls"] for item in calls if item["mode"] == "run"] == [
-        ["https://sqlite.org/fts5.html"],
-        ["https://sqlite.org/json1.html"],
-        ["https://docs.python.org/3/using/windows.html"],
-    ]
+    assert [item["seedUrls"] for item in calls if item["mode"] == "run"] == [[
+        "https://sqlite.org/fts5.html",
+        "https://sqlite.org/json1.html",
+        "https://docs.python.org/3/using/windows.html",
+    ]]
     assert handoff["taskBriefIds"] == ["fts5", "jsonb", "python-win"]
     assert handoff["taskBriefCount"] == 3
     assert handoff["terminalEpisode"] is True
@@ -2294,18 +2824,78 @@ def test_research_episode_combines_every_task_brief_into_one_evidence_contract(m
     assert handoff["coverageComplete"] is True
     assert handoff["coveredTaskBriefIds"] == ["fts5", "jsonb", "python-win"]
     assert handoff["missingTaskBriefIds"] == []
-    assert handoff["researchRefs"] == [
-        "research://bundle/research_fts5",
-        "research://bundle/research_jsonb",
-        "research://bundle/research_python_win",
+    assert handoff["researchRefs"] == ["research://bundle/research_combined"]
+    assert handoff["evidenceBundleId"] == "research_combined"
+    assert handoff["evidenceBundleIds"] == ["research_combined"]
+    assert handoff["answer"]
+    assert handoff["taskBriefResults"][0]["taskBriefId"] == "fts5"
+    assert handoff["taskBriefResults"][0]["taskBriefIds"] == ["fts5", "jsonb", "python-win"]
+
+
+def test_research_episode_keeps_synthesis_deliverable_out_of_source_facets(monkeypatch):
+    calls: list[dict] = []
+
+    def _fake_research_broker(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("mode") == "run":
+            query = str(kwargs.get("query") or "")
+            return json.dumps(
+                _accepted_research_payload(
+                    "research-with-checklist",
+                    query,
+                    primary_url="https://example.com/official-evidence",
+                )
+            )
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "research with a synthesis deliverable"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "researchExecutionMode": "single_bundle",
+                "taskBriefs": [
+                    {"taskBriefId": "timeline", "goal": "Verify the official GPAI compliance timeline."},
+                    {"taskBriefId": "threshold", "goal": "Verify the official GPAI systemic-risk threshold."},
+                    {"taskBriefId": "penalties", "goal": "Verify the official GPAI penalties."},
+                    {
+                        "taskBriefId": "h2-checklist",
+                        "goal": "综合前6项形成面向 2026 年下半年的可执行清单。",
+                    },
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    run_query = next(item["query"] for item in calls if item["mode"] == "run")
+    assert "[timeline] Verify the official GPAI compliance timeline." in run_query
+    assert "[threshold] Verify the official GPAI systemic-risk threshold." in run_query
+    assert "[penalties] Verify the official GPAI penalties." in run_query
+    assert "[h2-checklist]" not in run_query
+    assert "Deliverable requirements:" in run_query
+    assert "h2-checklist: 综合前6项" in run_query
+    assert handoff["status"] == "ready"
+    assert handoff["taskBriefIds"] == [
+        "timeline",
+        "threshold",
+        "penalties",
+        "h2-checklist",
     ]
-    assert handoff["evidenceBundleId"] == ""
-    assert handoff["evidenceBundleIds"] == [
-        "research_fts5",
-        "research_jsonb",
-        "research_python_win",
-    ]
-    assert "detailTool" not in handoff
+    assert handoff["taskBriefResults"][0]["taskBriefIds"] == handoff["taskBriefIds"]
+
+
+def test_research_episode_recognizes_english_artifact_brief_as_synthesis_deliverable():
+    assert runtime_episode_runner_module._research_brief_is_synthesis_deliverable(
+        "Produce an actionable compliance checklist for a model team preparing for H2 2026."
+    )
 
 
 def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_coverage(monkeypatch):
@@ -2314,18 +2904,25 @@ def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_co
             return json.dumps({"ok": True, "items": []})
         query = str(kwargs.get("query") or "")
         if "JSONB" in query:
-            return json.dumps({"ok": True, "summary": "Provider returned no official evidence."})
+            rejected = _accepted_research_payload(
+                "jsonb-rejected",
+                query,
+                primary_url="https://example.com/jsonb-rejected",
+            )
+            rejected["reviewDecision"] = "retry"
+            rejected["asOf"] = "2026-08-01"
+            rejected["researchAnswerPack"]["reviewDecision"] = "retry"
+            rejected["researchAnswerPack"]["asOf"] = "2026-08-01"
+            rejected["finalExperiencePack"]["reviewDecision"] = "retry"
+            rejected["finalExperiencePack"]["asOf"] = "2026-08-01"
+            return json.dumps(rejected)
         bundle_id = "fts5" if "FTS5" in query else "python-win"
         return json.dumps(
-            {
-                "ok": True,
-                "evidenceBundleId": bundle_id,
-                "researchAnswerPack": {
-                    "answer": f"Covered {query}",
-                    "sources": [{"title": "Official", "url": f"https://example.com/{bundle_id}"}],
-                    "claimTable": [{"claim": "covered"}],
-                },
-            }
+            _accepted_research_payload(
+                bundle_id,
+                query,
+                primary_url=f"https://example.com/{bundle_id}",
+            )
         )
 
     import core.native_tools as native_tools
@@ -2339,6 +2936,7 @@ def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_co
         extra={
             "inputs": {
                 "mode": "run",
+                "researchExecutionMode": "per_brief",
                 "taskBriefs": [
                     {"taskBriefId": "fts5", "goal": "Check FTS5."},
                     {"taskBriefId": "jsonb", "goal": "Check JSONB."},
@@ -2355,6 +2953,10 @@ def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_co
     assert handoff["coverageComplete"] is False
     assert handoff["coveredTaskBriefIds"] == ["fts5", "python-win"]
     assert handoff["missingTaskBriefIds"] == ["jsonb"]
+    assert handoff["sourceCount"] == 16
+    assert handoff["claimCount"] == 16
+    assert handoff["asOf"] == "2026-07-28"
+    assert set(handoff["asOfByBrief"]) == {"fts5", "python-win"}
     assert handoff["recommendedNextAction"] == "retry_missing_research_briefs"
     assert "ad-hoc chain of web calls" in handoff["consumerHint"]
     assert handoff["claimBlockers"] == ["jsonb"]
@@ -2364,6 +2966,13 @@ def test_research_episode_reports_exact_missing_briefs_without_hiding_partial_co
     assert handoff["evidenceGaps"][0]["blocksClaim"] is True
     assert handoff["evidenceGaps"][0]["blocksDownstream"] is False
     assert handoff["evidenceGaps"][0]["evidenceStatusReasons"]
+    rejected_result = next(
+        item for item in handoff["taskBriefResults"] if item["taskBriefId"] == "jsonb"
+    )
+    assert rejected_result["sourceCount"] == 8
+    assert rejected_result["asOf"] == "2026-08-01"
+    assert rejected_result["sources"] == []
+    assert rejected_result["researchRef"] is None
 
 
 def test_research_episode_does_not_mark_explicitly_unanswered_brief_ready(monkeypatch):
@@ -2792,6 +3401,8 @@ def test_research_episode_enforces_explicit_source_count_contract(monkeypatch):
     assert handoff["status"] == "degraded"
     result = handoff["taskBriefResults"][0]
     assert "source_floor_not_met:2" in result["evidenceStatusReasons"]
+    assert "evidence_source_floor_not_met:5" in result["evidenceStatusReasons"]
+    assert "detailed_answer_floor_not_met:3000" in result["evidenceStatusReasons"]
 
 
 def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):

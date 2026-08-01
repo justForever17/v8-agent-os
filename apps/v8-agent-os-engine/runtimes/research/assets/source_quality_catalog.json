@@ -1,20 +1,162 @@
 {
-  "version": 1,
-  "updatedAt": "2026-05-03",
+  "version": 5,
+  "updatedAt": "2026-08-01",
   "description": "Research source quality catalog. This is not a network allowlist; it ranks public sources by authority and task fit.",
+  "hostQueryAliases": {
+    "platform.openai.com": ["openai", "codex", "codex cli", "chatgpt"],
+    "learn.chatgpt.com": ["openai", "codex", "codex cli", "chatgpt"],
+    "help.openai.com": ["openai", "codex", "codex cli", "chatgpt"],
+    "docs.anthropic.com": ["anthropic", "claude", "claude code"],
+    "docs.claude.com": ["anthropic", "claude", "claude code"],
+    "code.claude.com": ["anthropic", "claude", "claude code"],
+    "support.claude.com": ["anthropic", "claude", "claude code"],
+    "ai.google.dev": ["google", "gemini", "gemini cli"],
+    "geminicli.com": ["google", "gemini", "gemini cli"],
+    "docs.github.com": ["github", "copilot", "copilot cli"],
+    "github.blog": ["github", "copilot", "copilot cli"]
+  },
+  "officialEntitySeeds": [
+    {
+      "entityId": "openai-codex-cli",
+      "aliases": ["OpenAI Codex CLI", "Codex CLI"],
+      "dimension": "setup",
+      "url": "https://learn.chatgpt.com/docs/codex/cli"
+    },
+    {
+      "entityId": "openai-codex-cli",
+      "aliases": ["OpenAI Codex CLI", "Codex CLI"],
+      "dimension": "models_tools",
+      "url": "https://learn.chatgpt.com/docs/codex/cli"
+    },
+    {
+      "entityId": "openai-codex-cli",
+      "aliases": ["OpenAI Codex CLI", "Codex CLI"],
+      "dimension": "extensions_workflow",
+      "url": "https://learn.chatgpt.com/docs/extend/mcp?surface=cli"
+    },
+    {
+      "entityId": "openai-codex-cli",
+      "aliases": ["OpenAI Codex CLI", "Codex CLI"],
+      "dimension": "accounts_pricing",
+      "url": "https://learn.chatgpt.com/docs/pricing"
+    },
+    {
+      "entityId": "openai-codex-cli",
+      "aliases": ["OpenAI Codex CLI", "Codex CLI"],
+      "dimension": "privacy_limits",
+      "url": "https://learn.chatgpt.com/docs/agent-approvals-security"
+    },
+    {
+      "entityId": "claude-code",
+      "aliases": ["Claude Code"],
+      "dimension": "setup",
+      "url": "https://code.claude.com/docs/en/installation"
+    },
+    {
+      "entityId": "claude-code",
+      "aliases": ["Claude Code"],
+      "dimension": "models_tools",
+      "url": "https://code.claude.com/docs/en/model-config"
+    },
+    {
+      "entityId": "claude-code",
+      "aliases": ["Claude Code"],
+      "dimension": "extensions_workflow",
+      "url": "https://code.claude.com/docs/en/mcp"
+    },
+    {
+      "entityId": "claude-code",
+      "aliases": ["Claude Code"],
+      "dimension": "accounts_pricing",
+      "url": "https://code.claude.com/docs/en/costs"
+    },
+    {
+      "entityId": "claude-code",
+      "aliases": ["Claude Code"],
+      "dimension": "privacy_limits",
+      "url": "https://code.claude.com/docs/en/data-usage"
+    },
+    {
+      "entityId": "gemini-cli",
+      "aliases": ["Gemini CLI"],
+      "dimension": "setup",
+      "url": "https://geminicli.com/docs/get-started/installation/"
+    },
+    {
+      "entityId": "gemini-cli",
+      "aliases": ["Gemini CLI"],
+      "dimension": "models_tools",
+      "url": "https://geminicli.com/docs/cli/model/"
+    },
+    {
+      "entityId": "gemini-cli",
+      "aliases": ["Gemini CLI"],
+      "dimension": "extensions_workflow",
+      "url": "https://geminicli.com/docs/cli/tutorials/mcp-setup/"
+    },
+    {
+      "entityId": "gemini-cli",
+      "aliases": ["Gemini CLI"],
+      "dimension": "accounts_pricing",
+      "url": "https://geminicli.com/docs/resources/quota-and-pricing/"
+    },
+    {
+      "entityId": "gemini-cli",
+      "aliases": ["Gemini CLI"],
+      "dimension": "privacy_limits",
+      "url": "https://geminicli.com/docs/resources/tos-privacy/"
+    },
+    {
+      "entityId": "github-copilot-cli",
+      "aliases": ["GitHub Copilot CLI"],
+      "dimension": "setup",
+      "url": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"
+    },
+    {
+      "entityId": "github-copilot-cli",
+      "aliases": ["GitHub Copilot CLI"],
+      "dimension": "models_tools",
+      "url": "https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli"
+    },
+    {
+      "entityId": "github-copilot-cli",
+      "aliases": ["GitHub Copilot CLI"],
+      "dimension": "extensions_workflow",
+      "url": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/overview"
+    },
+    {
+      "entityId": "github-copilot-cli",
+      "aliases": ["GitHub Copilot CLI"],
+      "dimension": "accounts_pricing",
+      "url": "https://github.com/features/copilot/plans"
+    },
+    {
+      "entityId": "github-copilot-cli",
+      "aliases": ["GitHub Copilot CLI"],
+      "dimension": "privacy_limits",
+      "url": "https://docs.github.com/en/copilot/how-tos/manage-your-account/manage-policies"
+    }
+  ],
   "entries": [
     {
       "id": "official_vendor_docs",
       "category": "official_docs",
       "displayName": "Official Vendor Documentation",
       "hosts": [
+        "learn.chatgpt.com",
         "platform.openai.com",
+        "help.openai.com",
         "docs.anthropic.com",
+        "docs.claude.com",
+        "code.claude.com",
+        "support.claude.com",
         "ai.google.dev",
+        "geminicli.com",
         "cloud.google.com",
         "learn.microsoft.com",
         "docs.aws.amazon.com",
         "docs.nvidia.com",
+        "docs.github.com",
         "docs.fireworks.ai",
         "docs.cerebras.ai",
         "inference-docs.cerebras.ai",
@@ -36,12 +178,118 @@
       "notes": "Prefer these for API behavior, model names, limits, breaking changes, and official capability claims."
     },
     {
+      "id": "official_language_framework_docs",
+      "category": "official_docs",
+      "displayName": "Official Language and Framework Documentation",
+      "hosts": [
+        "docs.python.org",
+        "packaging.python.org",
+        "peps.python.org",
+        "sqlite.org",
+        "nodejs.org",
+        "doc.rust-lang.org",
+        "go.dev",
+        "docs.oracle.com",
+        "developer.mozilla.org",
+        "react.dev",
+        "nextjs.org",
+        "docs.djangoproject.com",
+        "flask.palletsprojects.com",
+        "click.palletsprojects.com",
+        "docs.pydantic.dev",
+        "fastapi.tiangolo.com",
+        "typer.tiangolo.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 35,
+      "bestFor": ["language_contract", "standard_library", "framework_api", "release_behavior", "official_examples"],
+      "notes": "Use for language and framework contracts. A docs-like subdomain outside this catalog is not automatically authoritative."
+    },
+    {
+      "id": "eu_public_institutions",
+      "category": "public_institution",
+      "displayName": "European Union Public Institutions",
+      "hosts": [
+        "europa.eu",
+        "europarl.europa.eu",
+        "consilium.europa.eu",
+        "curia.europa.eu",
+        "edpb.europa.eu",
+        "enisa.europa.eu"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 35,
+      "bestFor": ["regulation", "official_guidance", "legislative_timeline", "enforcement", "public_policy"],
+      "notes": "Use EU institutions for legal text, official guidance, legislative status, implementation dates and enforcement facts. Distinguish binding law from guidance and explanatory pages."
+    },
+    {
+      "id": "international_public_institutions",
+      "category": "public_institution",
+      "displayName": "International Public Institutions",
+      "hosts": [
+        "un.org",
+        "who.int",
+        "oecd.org",
+        "oecd.ai",
+        "worldbank.org",
+        "imf.org",
+        "wto.org"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 30,
+      "bestFor": ["official_report", "public_dataset", "policy", "methodology", "institutional_position"],
+      "notes": "Primary for each institution's own reports, datasets, standards and stated positions; not automatically dispositive for claims outside that mandate."
+    },
+    {
+      "id": "developer_education_secondary",
+      "category": "developer_education",
+      "displayName": "Established Developer Education Sources",
+      "hosts": [
+        "realpython.com",
+        "note.nkmk.me",
+        "treyhunner.com",
+        "pythonmorsels.com",
+        "pbpython.com",
+        "simonwillison.net",
+        "pythonspeed.com",
+        "hynek.me",
+        "snarky.ca"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["implementation_guidance", "worked_examples", "comparisons", "operational_caveats"],
+      "notes": "Use as corroborating implementation guidance. Prefer primary documentation for normative API behavior."
+    },
+    {
+      "id": "legal_policy_analysis_secondary",
+      "category": "legal_policy_analysis",
+      "displayName": "Established Legal and Policy Analysis",
+      "hosts": [
+        "iapp.org",
+        "lawfaremedia.org",
+        "artificialintelligenceact.eu",
+        "whitecase.com",
+        "cliffordchance.com",
+        "twobirds.com",
+        "hoganlovells.com",
+        "dlapiper.com",
+        "freshfields.com",
+        "bakermckenzie.com",
+        "gibsondunn.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["legal_analysis", "implementation_comparison", "compliance_interpretation", "open_question"],
+      "notes": "Use to compare interpretations and operational implications. Binding legal duties and dates still require legislation or official institutional guidance."
+    },
+    {
       "id": "official_provider_blogs",
       "category": "official_blog",
       "displayName": "Official Provider Blogs and Release Notes",
       "hosts": [
         "openai.com",
         "anthropic.com",
+        "github.blog",
         "blog.google",
         "developers.googleblog.com",
         "aws.amazon.com",

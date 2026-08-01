@@ -397,6 +397,15 @@ _RUNTIME_ORCHESTRATION_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("rpa", ("自动流程", "rpa")),
     ("delegation", ("子代理", "协作 worker", "delegation", "subagent")),
 )
+_EXPLICIT_RUNTIME_SELECTION_PREFIX_RE = re.compile(
+    r"(?:请(?:先|直接)?(?:交给|使用|调用|启用|通过|用|让|切换到|进入|改用)|交给|使用|调用|启用|通过|"
+    r"切换到|进入|改用|route\s+(?:this\s+)?to|hand\s+off\s+to|use|run|invoke)",
+    re.IGNORECASE,
+)
+_EXPLICIT_RUNTIME_SELECTION_DENY_RE = re.compile(
+    r"(?:不要|不准|禁止|无需|别|不再|do\s+not|don't|must\s+not|never|without)",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_session_coordination_request(
@@ -607,6 +616,26 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
         flags=re.IGNORECASE,
     ):
         return []
+    strongly_selected: set[str] = set()
+    for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
+        for marker in markers:
+            for marker_match in re.finditer(re.escape(marker.lower()), query):
+                prefix = query[max(0, marker_match.start() - 28) : marker_match.start()]
+                selector_matches = list(_EXPLICIT_RUNTIME_SELECTION_PREFIX_RE.finditer(prefix))
+                if not selector_matches:
+                    continue
+                selector = selector_matches[-1]
+                between = prefix[selector.end() :]
+                if len(between) > 16:
+                    continue
+                deny_window = prefix[max(0, selector.start() - 12) : selector.end()]
+                if _EXPLICIT_RUNTIME_SELECTION_DENY_RE.search(deny_window):
+                    continue
+                strongly_selected.add(kind)
+                break
+            if kind in strongly_selected:
+                break
+    allowed.update(strongly_selected)
     positions: list[tuple[int, str]] = []
     for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
         if kind not in allowed:
@@ -615,7 +644,10 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
         if marker_positions:
             positions.append((min(marker_positions), kind))
     ordered = [kind for _, kind in sorted(positions)]
-    return list(dict.fromkeys(ordered)) if len(set(ordered)) >= 2 else []
+    unique_ordered = list(dict.fromkeys(ordered))
+    if len(set(unique_ordered)) >= 2 or any(kind in strongly_selected for kind in unique_ordered):
+        return unique_ordered
+    return []
 
 
 def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
@@ -1905,17 +1937,20 @@ def _runtime_research_gap_state(state) -> dict:
         results = [dict(item) for item in list(handoff.get("taskBriefResults") or []) if isinstance(item, dict)]
         covered_ids = [str(item).strip() for item in list(handoff.get("coveredTaskBriefIds") or []) if str(item).strip()]
         missing_ids = [str(item).strip() for item in list(handoff.get("missingTaskBriefIds") or []) if str(item).strip()]
+        result_brief_ids: set[str] = set()
         for result in results:
-            brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
-            if not brief_id:
+            primary_brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+            brief_ids = list(
+                dict.fromkeys(
+                    str(value or "").strip()
+                    for value in [primary_brief_id, *list(result.get("taskBriefIds") or [])]
+                    if str(value or "").strip()
+                )
+            )
+            if not brief_ids:
                 continue
             status = str(result.get("status") or "").strip().lower()
-            if status in {"ready", "completed", "success", "ok"}:
-                _append_unique(ready_task_brief_ids, brief_id)
-                _append_unique(research_refs, result.get("researchRef"), limit=12)
-            if status not in {"ready", "completed", "success", "ok"}:
-                attempts[brief_id] = attempts.get(brief_id, 0) + 1
-            latest[brief_id] = {
+            result_detail = {
                 "status": status or "degraded",
                 "limitations": [str(value) for value in list(result.get("limitations") or []) if str(value).strip()][:6],
                 "evidenceStatusReasons": [
@@ -1923,15 +1958,38 @@ def _runtime_research_gap_state(state) -> dict:
                     for value in list(result.get("evidenceStatusReasons") or [])
                     if str(value).strip()
                 ][:6],
+                "criticalMissingEvidence": [
+                    str(value)
+                    for value in list(result.get("criticalMissingEvidence") or [])
+                    if str(value).strip()
+                ][:6],
+                "recommendedNextQueries": [
+                    str(value)
+                    for value in list(result.get("recommendedNextQueries") or [])
+                    if str(value).strip()
+                ][:6],
+                "seedUrls": [
+                    str(value)
+                    for value in list(result.get("seedUrls") or [])
+                    if str(value).strip()
+                ][:12],
                 "researchRef": str(result.get("researchRef") or "").strip(),
             }
-            producer_by_brief[brief_id] = producer_id
+            for brief_id in brief_ids:
+                result_brief_ids.add(brief_id)
+                if status in {"ready", "completed", "success", "ok"}:
+                    _append_unique(ready_task_brief_ids, brief_id)
+                    _append_unique(research_refs, result.get("researchRef"), limit=12)
+                else:
+                    attempts[brief_id] = attempts.get(brief_id, 0) + 1
+                latest[brief_id] = dict(result_detail)
+                producer_by_brief[brief_id] = producer_id
         for brief_id in covered_ids:
             latest.setdefault(brief_id, {})
             latest[brief_id]["status"] = "ready"
             producer_by_brief[brief_id] = producer_id
         for brief_id in missing_ids:
-            if not any(str(item.get("taskBriefId") or item.get("taskId") or "").strip() == brief_id for item in results):
+            if brief_id not in result_brief_ids:
                 attempts[brief_id] = attempts.get(brief_id, 0) + 1
                 latest[brief_id] = {"status": "degraded", "limitations": [], "evidenceStatusReasons": []}
             producer_by_brief[brief_id] = producer_id
@@ -1978,6 +2036,36 @@ def _managed_research_retry_need(gap: dict[str, Any]) -> dict[str, Any]:
     retry to read-only, and attach the previous evidence gap as bounded
     context. Raw provider answers/tool payloads never cross this boundary.
     """
+
+    def _bounded_seed_urls(*values: Any) -> list[str]:
+        urls: list[str] = []
+        total_chars = 0
+
+        def visit(value: Any) -> None:
+            nonlocal total_chars
+            if isinstance(value, str):
+                for match in re.findall(r"https?://[^\s<>'\"\]\[()]+", value):
+                    cleaned = match.rstrip(".,;:!?，。；：！？")
+                    if (
+                        cleaned
+                        and cleaned not in urls
+                        and len(urls) < 8
+                        and total_chars + len(cleaned) <= 720
+                    ):
+                        urls.append(cleaned)
+                        total_chars += len(cleaned)
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    visit(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    visit(item)
+
+        for value in values:
+            visit(value)
+        return urls
 
     missing_ids = [
         str(item).strip()
@@ -2066,6 +2154,28 @@ def _managed_research_retry_need(gap: dict[str, Any]) -> dict[str, Any]:
                 if str(item).strip()
             ],
         }
+        seed_urls = _bounded_seed_urls(
+            original.get("seedUrls"),
+            original.get("detailRefs"),
+            original.get("context"),
+            detail.get("seedUrls"),
+        )
+        if seed_urls:
+            retry_brief["context"]["seedUrls"] = seed_urls
+        critical_missing = [
+            str(item)[:300]
+            for item in list(detail.get("criticalMissingEvidence") or [])[:4]
+            if str(item).strip()
+        ]
+        if critical_missing:
+            retry_brief["context"]["criticalMissingEvidence"] = critical_missing
+        recommended_queries = [
+            str(item)[:240]
+            for item in list(detail.get("recommendedNextQueries") or [])[:4]
+            if str(item).strip()
+        ]
+        if recommended_queries:
+            retry_brief["context"]["recommendedNextQueries"] = recommended_queries
         task_briefs.append(retry_brief)
 
     research_ids = [str(item.get("taskBriefId") or "").strip() for item in task_briefs]
@@ -2490,29 +2600,56 @@ def _model_narrative_correction_message(*, terminal: bool) -> SystemMessage:
     return SystemMessage(content=content, additional_kwargs={"v8_internal": True, "v8_visibility_contract": True})
 
 
+def _model_action_correction_message() -> SystemMessage:
+    return SystemMessage(
+        content=(
+            "[V8OS action contract correction]\n"
+            "Your previous response exhausted itself in internal reasoning and emitted neither ordinary assistant text nor a tool call. "
+            "Do not repeat the analysis or restate a plan. Take the next concrete action now. "
+            "If the request needs a governed runtime, external evidence, or another available tool, emit the real tool call now; "
+            "do not merely describe or promise that call. If no tool is needed, return the concise final answer. "
+            "You may include at most one short user-facing sentence before a tool call."
+        ),
+        additional_kwargs={"v8_internal": True, "v8_action_contract": True},
+    )
+
+
 def _ensure_supervisor_narrative_contract(
     response,
     *,
     prepared_messages,
     invoke_llm,
+    filtered_tools,
     robust_invoke,
     preferred_model_id: str,
     build_model,
     sanitize_response_tool_calls,
 ):
-    """Repair a genuinely silent terminal response without duplicating tools.
+    """Repair a silent response without turning an unfinished action into prose.
 
     A response that already contains a tool call is an executable Supervisor
     decision, even when its narrative is empty. Re-invoking the model merely
-    to add prose can duplicate a route or side effect (especially on a
-    recoverable failure), so only an empty terminal response receives the
-    no-tool visibility correction.
+    to add prose can duplicate a route or side effect. A genuinely empty
+    response first receives one bounded action correction with the original
+    tool surface. Only if that also remains empty do we fall back to a no-tool
+    terminal visibility correction.
     """
 
     has_tools = _response_has_tool_calls(response)
     has_text = _response_has_visible_narrative(response)
     if has_text or has_tools:
         return response
+    action_corrected = robust_invoke(
+        invoke_llm,
+        [*prepared_messages, _model_action_correction_message()],
+        filtered_tools,
+        role="supervisor",
+        preferred_model_id=preferred_model_id,
+        build_model=build_model,
+    )
+    action_corrected = sanitize_response_tool_calls(action_corrected)
+    if _response_has_tool_calls(action_corrected) or _response_has_visible_narrative(action_corrected):
+        return action_corrected
     corrected = robust_invoke(
         invoke_llm,
         [*prepared_messages, _model_narrative_correction_message(terminal=True)],
@@ -3445,6 +3582,7 @@ def execute_supervisor_turn(
             response,
             prepared_messages=prepared_messages,
             invoke_llm=invoke_llm,
+            filtered_tools=filtered_supervisor_tools,
             robust_invoke=robust_invoke,
             preferred_model_id=sup_model_name,
             build_model=lambda candidate_model_id: llm_factory.create_chat_model(

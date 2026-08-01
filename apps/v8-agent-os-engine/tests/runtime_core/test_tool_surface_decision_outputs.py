@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from langchain_core.messages import ToolMessage
 
-from core.tool_surface import apply_tool_surface_budget
+from core.tool_surface import MAX_RESEARCH_DELIVERY_SURFACE_CHARS, apply_tool_surface_budget
+from core.tools.research_quality import build_research_review_binding
 from runtimes.extensions.skills.loader import _read_skill_text_file
 
 
@@ -28,6 +30,152 @@ def _assert_not_json_wrapper(text: str) -> None:
     assert "_v8ToolSurface" not in text
     assert '"ok"' not in text
     assert "recommendedNextAction" not in text
+
+
+def _bind_accepted_research_consensus(payload: dict) -> dict:
+    reviews = []
+    for index, mode in enumerate(("semantic", "adversarial"), start=1):
+        reviewer_model_id = f"surface-test-reviewer-{mode}"
+        reviewed_at = f"2026-07-28T08:00:0{index}Z"
+        review = {
+            "reviewDecision": "accept",
+            "reviewReasons": [
+                f"The {mode} review confirms question coverage, source entailment, and temporal adequacy."
+            ],
+            "questionCoverage": True,
+            "claimEntailment": True,
+            "freshnessAdequacy": True,
+            "unsupportedClaims": [],
+            "criticalMissingEvidence": [],
+            "recommendedNextQueries": [],
+            "reviewMode": mode,
+            "reviewCallId": f"surface-test-review-call-{mode}",
+            "reviewInvocationId": f"surface-test-review-invocation-{mode}",
+        }
+        review.update(
+            build_research_review_binding(
+                payload,
+                reviewer_model_id=reviewer_model_id,
+                reviewed_at=reviewed_at,
+            )
+        )
+        reviews.append(review)
+
+    consensus = {
+        **reviews[0],
+        "consensusAccepted": True,
+        "consensusReviewCount": len(reviews),
+        "consensusReviewerModelIds": [review["reviewerModelId"] for review in reviews],
+        "consensusReviews": reviews,
+    }
+    payload["independentReview"] = consensus
+    payload["researchAnswerPack"]["independentReview"] = consensus
+    payload["finalExperiencePack"]["independentReview"] = consensus
+    return consensus
+
+
+def _accepted_research_surface_payload() -> dict:
+    sources = [
+        {
+            "sourceId": f"source-{index}",
+            "citationKey": f"[S{index}]",
+            "title": f"Selected source {index}",
+            "url": f"https://source{index}.example.com/report",
+            "selectedForEvidence": True,
+            "retrievedAt": "2026-07-28T08:00:00Z",
+            "updatedAt": "2026-07-27",
+            "contentChars": 6000,
+            "readEvidence": {
+                "verified": True,
+                "contentChars": 6000,
+                "contentSha256": "d" * 64,
+                "retrievedAt": "2026-07-28T08:00:00Z",
+            },
+        }
+        for index in range(1, 9)
+    ]
+    sources[-1].pop("url")
+    sources[-1]["host"] = "source-id-8.example.com"
+    claim_topics = (
+        "Scope definition",
+        "Authentication behavior",
+        "Retry semantics",
+        "Error handling",
+        "Service limits",
+        "Freshness changes",
+        "Operational risks",
+        "Deployment verification",
+    )
+    claims = []
+    for index in range(1, 9):
+        excerpt = f"Selected source {index} states an explicit API fact, applicability condition, and evidence boundary for deployment."
+        claims.append({
+            "claim": f"{claim_topics[index - 1]} is supported by a selected source with explicit applicability boundaries.",
+            "supportingSources": [{"sourceId": f"source-{index}"}],
+            "evidenceExcerpt": excerpt,
+            "evidenceExcerptSha256": hashlib.sha256(excerpt.lower().encode("utf-8")).hexdigest(),
+            "evidenceVerified": True,
+        })
+    independent_review: dict = {}
+    citations = " ".join(source["citationKey"] for source in sources)
+    subjects = (
+        ("scope", "The scope section separates supported endpoints from adjacent product features and records which operations remain outside the reviewed contract"),
+        ("authentication", "The authentication section distinguishes credential issuance, header transport, rotation, revocation, and the permissions checked at each request boundary"),
+        ("retries", "The retry section identifies idempotent operations, backoff signals, duplicate side effects, retry budgets, and the point where an error must surface to the caller"),
+        ("errors", "The error section maps transport failures, validation responses, provider faults, and partial results to concrete handling and observability requirements"),
+        ("limits", "The limits section records request size, concurrency, rate windows, pagination, retention, and the conditions under which published quotas may change"),
+        ("verification", "The verification section defines contract tests, negative cases, deployment probes, audit evidence, and refresh triggers for future API revisions"),
+    )
+    aspects = (
+        ("source authority", "Official reference text is treated as contract evidence while examples and community reports are used only to explain implementation consequences"),
+        ("time boundary", "Version labels, publication dates, retrieval timestamps, and superseding notices establish exactly when the recommendation is valid"),
+        ("applicability", "Runtime, account tier, region, request shape, and client-library assumptions are stated so the reader can decide whether the finding applies"),
+        ("counterevidence", "Conflicting statements and failed cases are compared against the primary source, with an explicit condition that would overturn the conclusion"),
+        ("user impact", "The operational consequence is translated into latency, reliability, security, cost, and maintenance decisions instead of remaining an abstract fact"),
+        ("failure mode", "A reproducible failure signal, visible status, recovery action, and follow-up check show how the recommendation behaves when its assumptions break"),
+    )
+    paragraphs = [
+        (
+            f"{subject.title()} through {aspect}: {subject_detail}, and {aspect_detail}; together these facts identify the decision, its boundary, and the exact verification needed before deployment."
+        )
+        for subject, subject_detail in subjects
+        for aspect, aspect_detail in aspects
+    ]
+    paragraphs = [
+        f"{paragraph.rstrip('.')} {sources[index % len(sources)]['citationKey']}."
+        for index, paragraph in enumerate(paragraphs)
+    ]
+    answer = "ACCEPTED ANSWER START " + citations + "\n\n" + "\n\n".join(paragraphs)
+    assert len("".join(answer.split())) > 5000
+    payload = {
+        "ok": True,
+        "kind": "research_evidence_bundle",
+        "question": "如何接入官方 API?",
+        "freshness": "current",
+        "asOf": "2026-07-28",
+        "reviewDecision": "accept",
+        "independentReview": independent_review,
+        "researchAnswerPack": {
+            "answer": answer,
+            "sources": sources,
+            "claimTable": claims,
+            "reviewDecision": "accept",
+            "independentReview": independent_review,
+            "asOf": "2026-07-28",
+            "limitations": ["需要结合当前项目中的 SDK 版本继续核对。"],
+        },
+        "finalExperiencePack": {
+            "question": "如何接入官方 API?",
+            "reviewDecision": "accept",
+            "independentReview": independent_review,
+            "asOf": "2026-07-28",
+        },
+        "sourceMatrix": [{"snippet": "provider-only diagnostic"}],
+        "loopReport": {"rounds": [{"query": "raw process log"}]},
+        "architectPrompt": "diagnostic prompt must not leak",
+    }
+    _bind_accepted_research_consensus(payload)
+    return payload
 
 
 def test_runtime_broker_default_is_decision_summary():
@@ -78,57 +226,127 @@ def test_research_plan_hides_shard_defaults():
     _assert_not_json_wrapper(visible)
 
 
-def test_research_result_pack_exposes_answer_sources_and_score_not_process_logs():
-    visible = _visible(
-        "research_broker",
-        {
-            "ok": True,
-            "kind": "research_evidence_bundle",
-            "question": "如何接入官方 API?",
-            "researchAnswerPack": {
-                "answer": "应优先使用官方 SDK，并按官方文档配置鉴权、重试和错误处理。",
-                "sources": [
-                    {
-                        "title": "Official API Guide",
-                        "url": "https://docs.example.com/api",
-                        "host": "docs.example.com",
-                    }
-                ],
-                "score": {"label": "high confidence; official source backed", "confidence": "high"},
-                "limitations": ["缺少当前项目版本约束，需要结合本地 package 继续核对。"],
-            },
-            "finalExperiencePack": {
-                "question": "如何接入官方 API?",
-                "keyFindings": [
-                    {
-                        "claim": "官方 SDK 负责基础鉴权封装，但业务层仍需处理速率限制。",
-                        "sourceTitle": "Official API Guide",
-                    }
-                ],
-            },
-            "sourceMatrix": [
-                {
-                    "title": "Search provider raw result",
-                    "url": "https://search.example.com/raw",
-                    "snippet": "provider-only diagnostic",
-                }
-            ],
-            "loopReport": {"rounds": [{"query": "raw process log"}]},
-            "architectPrompt": "diagnostic prompt must not leak",
-        },
-    )
+def test_research_result_pack_exposes_accepted_answer_sources_and_as_of_not_process_logs():
+    visible = _visible("research_broker", _accepted_research_surface_payload(), budget=12000)
 
-    assert "Research result pack" in visible
-    assert "应优先使用官方 SDK" in visible
-    assert "官方 SDK 负责基础鉴权封装" in visible
-    assert "Official API Guide" in visible
-    assert "https://docs.example.com/api" in visible
-    assert "high confidence" in visible
+    assert visible.startswith("Research answer\nACCEPTED ANSWER START")
+    assert "Selected source 1" in visible
+    assert "https://source1.example.com/report" in visible
+    assert "Selected source 8" in visible
+    assert "source-8" in visible
+    assert "As of: 2026-07-28" in visible
+    assert "Quality: high_quality; review=accept" in visible
+    assert "Limitations:" in visible
     assert "sourceMatrix" not in visible
     assert "loopReport" not in visible
     assert "architectPrompt" not in visible
     assert "provider-only diagnostic" not in visible
     _assert_not_json_wrapper(visible)
+
+
+def test_research_surface_validates_compact_delivery_against_runtime_ledger(monkeypatch):
+    full_payload = _accepted_research_surface_payload()
+    full_payload["evidenceBundleId"] = "research-surface-compact"
+    compact_payload = {
+        "ok": True,
+        "kind": "research_evidence_bundle",
+        "question": full_payload["question"],
+        "evidenceBundleId": "research-surface-compact",
+        "deliveryReady": True,
+        "qualityTier": "high_quality",
+        "reviewDecision": "accept",
+        "researchAnswerPack": {
+            "reviewDecision": "accept",
+            "answer": full_payload["researchAnswerPack"]["answer"],
+            "sources": [
+                {
+                    key: source.get(key)
+                    for key in (
+                        "sourceId",
+                        "citationKey",
+                        "title",
+                        "url",
+                        "host",
+                        "selectedForEvidence",
+                    )
+                    if source.get(key) not in (None, "")
+                }
+                for source in full_payload["researchAnswerPack"]["sources"]
+            ],
+        },
+    }
+    from core.tools import research_ledger
+
+    monkeypatch.setattr(
+        research_ledger,
+        "get_evidence_bundle",
+        lambda _bundle_id: full_payload,
+    )
+
+    visible = _visible("research_broker", compact_payload, budget=12000)
+
+    assert visible.startswith("Research answer\nACCEPTED ANSWER START")
+    assert "Selected source 8" in visible
+    assert "Quality: high_quality; review=accept" in visible
+
+
+def test_research_accepted_surface_preserves_full_delivery_under_small_budget():
+    visible = _visible("research_broker", _accepted_research_surface_payload(), budget=1200)
+
+    assert visible.startswith("Research answer\nACCEPTED ANSWER START")
+    assert len(visible) >= 5000
+    assert "Selected source 8" in visible
+    assert "decision surface truncated" not in visible
+
+
+def test_research_delivery_surface_has_a_hard_context_bound():
+    payload = _accepted_research_surface_payload()
+    payload["researchAnswerPack"]["answer"] += "\n\n" + ("Additional bounded appendix content with cited evidence [S1].\n" * 600)
+    _bind_accepted_research_consensus(payload)
+
+    visible = _visible("research_broker", payload, budget=1200)
+
+    assert len(visible) <= MAX_RESEARCH_DELIVERY_SURFACE_CHARS
+    assert "research delivery surface truncated" in visible
+
+
+def test_research_rejected_surface_shows_gaps_and_queries_without_draft_answer():
+    payload = _accepted_research_surface_payload()
+    payload["reviewDecision"] = "retry"
+    payload["researchAnswerPack"]["reviewDecision"] = "retry"
+    payload["researchAnswerPack"]["answer"] = "REJECTED DRAFT MUST STAY HIDDEN " + payload["researchAnswerPack"]["answer"]
+    payload["researchAnswerPack"]["sources"] = payload["researchAnswerPack"]["sources"][:5]
+    payload["researchAnswerPack"]["claimTable"] = payload["researchAnswerPack"]["claimTable"][:5]
+    payload["criticalMissingEvidence"] = ["Official current-version evidence remains unresolved."]
+    payload["recommendedNextQueries"] = ["site:source1.example.com current API version"]
+    payload["detailTool"] = "research_broker(mode='get_evidence', evidenceBundleId='rejected')"
+
+    visible = _visible("research_broker", payload, budget=5000)
+
+    assert visible.startswith("Research evidence incomplete")
+    assert "Review: retry; quality=insufficient" in visible
+    assert "Official current-version evidence remains unresolved." in visible
+    assert "Fewer than 8 selected sources support a normal Research delivery." in visible
+    assert "Suggested follow-up searches:" in visible
+    assert "site:source1.example.com current API version" in visible
+    assert "REJECTED DRAFT MUST STAY HIDDEN" not in visible
+    assert "get_evidence" not in visible
+    assert "target_source_count_not_met" not in visible
+    assert "provider-only diagnostic" not in visible
+    _assert_not_json_wrapper(visible)
+
+
+def test_research_surface_requires_explicit_boolean_success_before_showing_answer():
+    payload = _accepted_research_surface_payload()
+    payload["ok"] = 0
+    payload["detailTool"] = "research_broker(mode='get_evidence', evidenceBundleId='not-successful')"
+
+    visible = _visible("research_broker", payload, budget=5000)
+
+    assert visible.startswith("Research evidence incomplete")
+    assert "Research execution did not report a successful evidence bundle." in visible
+    assert "ACCEPTED ANSWER START" not in visible
+    assert "get_evidence" not in visible
 
 
 def test_computer_use_route_hides_matches_and_manual_controls():

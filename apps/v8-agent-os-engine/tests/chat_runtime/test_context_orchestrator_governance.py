@@ -325,6 +325,25 @@ class ContextOrchestratorGovernanceTests(unittest.TestCase):
         ]
         self.assertGreater(len(background_chunks), 1)
 
+    def test_background_guard_chunks_reconstruct_material_without_losing_boundary_spaces(self):
+        material = ("evidence sentence. [S1] " * 90).strip()
+        messages = build_background_guard_messages(
+            system_prompt="system",
+            instruction="review",
+            materials=[{"title": "Exact answer", "kind": "candidate", "content": material}],
+            chunk_chars=800,
+        )
+        chunks: list[str] = []
+        for message in messages:
+            content = str(getattr(message, "content", ""))
+            if not content.startswith("[BACKGROUND MATERIAL: Exact answer |"):
+                continue
+            _header, body = content.split("\n", 1)
+            chunks.append(body.rsplit("\n[/BACKGROUND MATERIAL]", 1)[0])
+
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), material)
+
     def test_background_guard_compacts_material_without_dropping_final_instruction(self):
         persisted: list[dict] = []
 

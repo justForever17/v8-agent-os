@@ -697,6 +697,7 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
         mode="route",
         routeKind="research",
         routeReason=route_reason,
+        forceRefresh=True,
         researchBriefIds=["source-a", "source-b"],
         researchBriefGoals=["Verify source A.", "Verify source B."],
         state={"current_route_context": {}},
@@ -718,6 +719,8 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert runtime_access_from_route_context(updated_context) == ["research.core"]
     assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
     assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
+    assert updated_context["capabilityEpisodes"][-1]["inputs"]["forceRefresh"] is True
+    assert updated_context["capabilityEpisodes"][-1]["inputs"]["researchExecutionMode"] == "single_bundle"
     assert updated_context["capabilityEpisodes"][-1]["reason"] == route_reason
     assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
@@ -1069,6 +1072,7 @@ def test_runtime_broker_advertises_provider_safe_research_arrays_and_typed_task_
     assert "need" not in public_fields
     assert public_fields["researchBriefIds"]["items"]["type"] == "string"
     assert public_fields["researchBriefGoals"]["items"]["type"] == "string"
+    assert any(item.get("type") == "boolean" for item in public_fields["forceRefresh"]["anyOf"])
     assert "complete ordered list" in public_fields["researchBriefIds"]["description"]
     assert "equal length" in public_fields["researchBriefGoals"]["description"]
     assert public_fields["taskBriefs"]["items"]["type"] == "object"
@@ -1086,6 +1090,7 @@ def test_runtime_broker_zips_research_brief_arrays_to_internal_task_briefs():
         mode="route",
         routeKind="research",
         routeReason="verify two independent domains",
+        forceRefresh=True,
         researchBriefIds=["sqlite-fts5", "python-windows"],
         researchBriefGoals=[
             "Verify current SQLite FTS5 support.",
@@ -1101,6 +1106,8 @@ def test_runtime_broker_zips_research_brief_arrays_to_internal_task_briefs():
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
     assert "researchBriefs" not in episode["inputs"]
     assert "researchBriefContexts" not in episode["inputs"]
+    assert episode["inputs"]["forceRefresh"] is True
+    assert episode["inputs"]["researchExecutionMode"] == "single_bundle"
     task_briefs = episode["inputs"]["taskBriefs"]
     assert [brief["taskBriefId"] for brief in task_briefs] == ["sqlite-fts5", "python-windows"]
     assert [brief["goal"] for brief in task_briefs] == [

@@ -3,8 +3,8 @@
   "sourceRouterDefaults": {
     "enabled": true,
     "defaultNetworkRoute": "auto",
-    "cnPreferred": ["bocha", "metaso", "baidu", "duckduckgo", "google", "bing", "searxng"],
-    "globalPreferred": ["brave", "tavily", "exa", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
+    "cnPreferred": ["bocha", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng"],
+    "globalPreferred": ["brave", "tavily", "exa", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
   },
   "providers": {
     "brave": {
@@ -191,6 +191,18 @@
       "region": "global",
       "role": "discovery",
       "supports": ["search"],
+      "costTier": "free_public",
+      "latencyTier": "medium",
+      "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "yahoo": {
+      "displayName": "Yahoo Search HTML",
+      "region": "global",
+      "role": "discovery",
+      "supports": ["search", "lightweight_html"],
       "costTier": "free_public",
       "latencyTier": "medium",
       "requiresProxy": "auto",

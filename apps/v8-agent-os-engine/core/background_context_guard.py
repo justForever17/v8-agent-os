@@ -35,8 +35,12 @@ def _chunk_text(text: str, *, max_chars: int) -> list[str]:
             )
             if boundary > start + max_chars // 3:
                 end = boundary + 1
-        chunk = normalized[start:end].strip()
-        if chunk:
+        # Keep boundary whitespace so concatenating the material chunks is
+        # lossless. Stripping every part can turn ``fact. [S1]`` into
+        # ``fact.[S1]`` when a boundary lands after the period, which means a
+        # reviewer no longer sees the exact answer later bound by its digest.
+        chunk = normalized[start:end]
+        if chunk.strip():
             chunks.append(chunk)
         start = end
     return chunks
@@ -128,4 +132,3 @@ def prepare_background_model_messages(
             agent_id=target_role,
         )
     return prepared
-

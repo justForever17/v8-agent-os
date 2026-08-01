@@ -350,5 +350,33 @@ def test_research_source_quality_catalog_contains_authority_and_video_popularity
     assert "official_vendor_docs" in entries
     assert "video_platform_popularity" in entries
     assert "platform.openai.com" in entries["official_vendor_docs"]["hosts"]
+    assert "help.openai.com" in entries["official_vendor_docs"]["hosts"]
+    assert "code.claude.com" in entries["official_vendor_docs"]["hosts"]
+    assert "support.claude.com" in entries["official_vendor_docs"]["hosts"]
+    assert "geminicli.com" in entries["official_vendor_docs"]["hosts"]
+    seed_urls = {
+        item["url"]
+        for item in payload["officialEntitySeeds"]
+        if isinstance(item, dict) and item.get("url")
+    }
+    assert len(payload["officialEntitySeeds"]) == 20
+    assert "https://learn.chatgpt.com/docs/codex/cli" in seed_urls
+    assert "https://learn.chatgpt.com/docs/extend/mcp?surface=cli" in seed_urls
+    assert "https://learn.chatgpt.com/docs/pricing" in seed_urls
+    assert "https://learn.chatgpt.com/docs/agent-approvals-security" in seed_urls
+    assert "https://code.claude.com/docs/en/model-config" in seed_urls
+    assert "https://code.claude.com/docs/en/mcp" in seed_urls
+    assert "https://code.claude.com/docs/en/costs" in seed_urls
+    assert "https://code.claude.com/docs/en/data-usage" in seed_urls
+    assert "https://geminicli.com/docs/get-started/installation/" in seed_urls
+    assert "https://geminicli.com/docs/cli/model/" in seed_urls
+    assert "https://geminicli.com/docs/cli/tutorials/mcp-setup/" in seed_urls
+    assert "https://geminicli.com/docs/resources/quota-and-pricing/" in seed_urls
+    assert "https://geminicli.com/docs/resources/tos-privacy/" in seed_urls
+    assert (
+        "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/overview"
+        in seed_urls
+    )
+    assert "https://github.com/features/copilot/plans" in seed_urls
     assert "youtube.com" in entries["video_platform_popularity"]["hosts"]
     assert {"views", "likes", "rank", "trending"} & set(entries["video_platform_popularity"]["popularitySignals"])

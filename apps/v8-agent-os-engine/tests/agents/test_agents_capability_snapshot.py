@@ -7,6 +7,7 @@ from core.agents import (
     dump_agent_md,
     parse_agent_md,
 )
+from core.research_runtime_prompts import build_research_runtime_system_prompt
 from core.tools.native.creative_media_facade import (
     CREATIVE_MEDIA_ACTION_REGISTRY,
     creative_media_assets,
@@ -163,6 +164,31 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertIn(
+            "Research orchestration, quality policy, stage schemas, and delivery gates are owned and injected by Research Runtime",
+            research_agent.system_prompt,
+        )
+        for runtime_owned_detail in (
+            "hard rejection floor",
+            "3000",
+            "at least 8 selected sources",
+            "5000",
+            "Independent review is a separate consumer stage",
+        ):
+            self.assertNotIn(runtime_owned_detail, research_agent.system_prompt)
+
+        runtime_prompt = build_research_runtime_system_prompt(
+            stage="evidence_plan",
+            stage_prompt="Return the verified evidence plan.",
+        )
+        self.assertIn("Hard rejection floor: 5 readable selected sources", runtime_prompt)
+        self.assertIn("3000 effective non-URL answer characters", runtime_prompt)
+        self.assertIn("Normal delivery target: at least 8 sources", runtime_prompt)
+        self.assertIn("8 supported conclusions", runtime_prompt)
+        self.assertIn("5000 effective answer characters", runtime_prompt)
+        self.assertIn("Never pad with repetition", runtime_prompt)
+        self.assertIn("Research Runtime owns search", runtime_prompt)
+        self.assertIn("explicitly undated source paired with retrieval time", runtime_prompt)
 
     def test_creative_media_facade_descriptions_and_registry_explain_job_flow(self):
         self.assertIn("action='describe'", creative_media_capabilities.description)

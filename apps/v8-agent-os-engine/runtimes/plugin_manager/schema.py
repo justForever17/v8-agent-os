@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 ComponentType = Literal["cli", "skill", "mcp", "ui_adapter", "provider_adapter"]
+ComponentExposure = Literal["agent", "runtime_support"]
 ConfigRequirementKind = Literal["secret", "text", "url", "enum", "boolean", "oauth", "cli_login", "file"]
 ConfigRequirementSource = Literal["manifest", "mcp_schema", "cli_adapter", "hint"]
 ConfigRequirementConfidence = Literal["authoritative", "reviewed", "hint"]
@@ -152,6 +153,7 @@ class CliProfile(StrictModel):
     commands: list[str] = Field(min_length=1)
     platforms: list[Literal["windows", "macos", "linux"]] = Field(min_length=1)
     architectures: list[Literal["amd64", "arm64"]] = Field(default_factory=list)
+    exposure: ComponentExposure = "agent"
     ownership: Literal["managed", "external"] = "managed"
     install: CommandSpec
     detect: CommandSpec
@@ -179,6 +181,13 @@ class CliProfile(StrictModel):
         action_ids = [item.id for item in self.actions]
         if len(action_ids) != len(set(action_ids)):
             raise ValueError("CLI action ids must be unique within a profile")
+        if self.exposure == "runtime_support":
+            if self.allowedArguments or self.actions or self.capabilitySync is not None:
+                raise ValueError("runtime-support components cannot declare Agent CLI actions")
+            if self.login is not None or self.configRequirements:
+                raise ValueError("runtime-support credentials must be owned by the runtime controller")
+            if self.shimCommand:
+                raise ValueError("runtime-support components cannot create Agent-visible command shims")
         for name, value in self.environment.items():
             if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", str(name)):
                 raise ValueError("CLI environment names must use uppercase ASCII identifiers")

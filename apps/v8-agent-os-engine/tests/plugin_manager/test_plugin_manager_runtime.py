@@ -25,7 +25,7 @@ from runtimes.plugin_manager.catalog import plugin_catalog_service
 from runtimes.plugin_manager import cli_capability_sync as capability_sync_module
 from runtimes.plugin_manager.requirements import compile_plugin_requirements
 from runtimes.plugin_manager.service import PluginManagerError, PluginManagerService
-from runtimes.plugin_manager.schema import CommandSpec
+from runtimes.plugin_manager.schema import CliProfile, CommandSpec
 from runtimes.plugin_manager.schema import CliAction, CliActionParameter
 import runtimes.plugin_manager.service as service_module
 
@@ -145,6 +145,33 @@ def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
             (plugin_id,),
         )
         conn.commit()
+
+
+def _cloudflare_manifest_with_runtime_support(service: PluginManagerService):
+    manifest = service._manifest("cloudflare").model_copy(deep=True)
+    manifest.cliProfiles.append(
+        CliProfile(
+            id="cloudflared-windows-amd64",
+            commands=["cloudflared"],
+            platforms=["windows"],
+            architectures=["amd64"],
+            exposure="runtime_support",
+            ownership="managed",
+            install=CommandSpec(
+                argv=["v8-managed-download"],
+                timeoutSeconds=900,
+                downloadUrl=(
+                    "https://github.com/cloudflare/cloudflared/releases/download/"
+                    "2026.7.2/cloudflared-windows-amd64.exe"
+                ),
+                downloadTarget="{pluginRoot}/cloudflared.exe",
+                downloadSha256="cdb5d4432f6ae1595654a692a51308b69d2bf7af961f5578d9391837cf072df9",
+            ),
+            detect=CommandSpec(argv=["{pluginRoot}/cloudflared.exe", "--version"]),
+            version=CommandSpec(argv=["{pluginRoot}/cloudflared.exe", "--version"]),
+        )
+    )
+    return manifest.__class__.model_validate(manifest.model_dump(mode="json"))
 
 
 def _seed_reviewed_cli_action(
@@ -301,7 +328,7 @@ def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
         for server in plugin.mcpServers
     )
     assert all(
-        profile.actions or profile.capabilitySync is not None
+        profile.exposure == "runtime_support" or profile.actions or profile.capabilitySync is not None
         for plugin in catalog.plugins
         for profile in plugin.cliProfiles
     )
@@ -327,6 +354,167 @@ def test_builtin_catalog_has_18_signed_curated_plugins(runtime) -> None:
     assert godot.setupAdapter == "godot_v1"
     assert godot.mcpServers[0].sourceTrust == "reviewed_community"
     assert godot.mcpServers[0].revision == "e642402d179e48173f4774492cfe2e11181cd1fa"
+
+
+def test_runtime_support_schema_rejects_agent_cli_surfaces(runtime) -> None:
+    service, _, _ = runtime
+    profile = _cloudflare_manifest_with_runtime_support(service).cliProfiles[-1]
+
+    assert profile.exposure == "runtime_support"
+    for update in (
+        {"allowedArguments": ["--help"]},
+        {"actions": [CliAction(id="status", argv=["cloudflared", "--version"])]},
+        {"login": CommandSpec(argv=["cloudflared", "tunnel", "login"])},
+        {"shimCommand": ["{pluginRoot}/cloudflared.exe"]},
+    ):
+        payload = profile.model_dump(mode="json")
+        payload.update(update)
+        with pytest.raises(ValueError, match="runtime-support"):
+            CliProfile.model_validate(payload)
+
+
+def test_cloudflared_runtime_support_is_lifecycle_visible_but_never_agent_visible(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, test_db, _ = runtime
+    original_manifest = service._manifest
+    manifest = _cloudflare_manifest_with_runtime_support(service)
+    runtime_profile = next(item for item in manifest.cliProfiles if item.exposure == "runtime_support")
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    monkeypatch.setattr(service_module, "_architecture_name", lambda: "amd64")
+    monkeypatch.setattr(
+        service,
+        "_manifest",
+        lambda plugin_id: manifest if plugin_id == manifest.id else original_manifest(plugin_id),
+    )
+    original_catalog_get = service_module.plugin_catalog_service.get
+    monkeypatch.setattr(
+        service_module.plugin_catalog_service,
+        "get",
+        lambda plugin_id: manifest if plugin_id == manifest.id else original_catalog_get(plugin_id),
+    )
+
+    policy = service._component_policy(manifest)
+    assert [item.id for item in policy["agentCliProfiles"]] == ["wrangler"]
+    assert [item.id for item in policy["runtimeSupportProfiles"]] == [runtime_profile.id]
+    assert runtime_profile.id in policy["activeComponentIds"]
+    assert runtime_profile.id not in policy["agentComponentIds"]
+    assert policy["transport"] == "cli"
+    plan = service.build_install_plan(manifest.id)
+    assert [item["componentId"] for item in plan["steps"]["cli"]] == [
+        "wrangler",
+        runtime_profile.id,
+    ]
+    assert runtime_profile.install.downloadUrl.endswith("/2026.7.2/cloudflared-windows-amd64.exe")
+    assert runtime_profile.install.downloadSha256 == (
+        "cdb5d4432f6ae1595654a692a51308b69d2bf7af961f5578d9391837cf072df9"
+    )
+    assert service._ensure_cli_shims(manifest, runtime_profile) == []
+
+    _mark_ready(service, manifest.id)
+    assert runtime_profile.id in service._active_installed_component_ids(manifest)
+    assert runtime_profile.id not in service._grantable_installed_component_ids(manifest)
+    assert {item["id"] for item in service._grantable_components(manifest)} == {
+        "wrangler",
+        manifest.skills[0].id,
+    }
+    with pytest.raises(PluginManagerError) as denied_grant:
+        service.create_grant(
+            plugin_id=manifest.id,
+            scope="task",
+            session_id="s1",
+            run_id="r1",
+            component_ids=[runtime_profile.id],
+        )
+    assert denied_grant.value.code == "grant_component_invalid"
+
+    grant = service.create_grant(
+        plugin_id=manifest.id,
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=["wrangler"],
+    )
+    with test_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE plugin_grants SET component_ids_json=? WHERE id=?",
+            (json.dumps(["wrangler", runtime_profile.id]), grant["grantId"]),
+        )
+        conn.commit()
+    service._invalidate_grant_cache()
+    projected = service.projection_for(session_id="s1", run_id="r1")
+    assert projected["grants"][0]["componentIds"] == ["wrangler"]
+    assert [item["id"] for item in projected["cliProfiles"]] == ["wrangler"]
+
+    with test_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE plugin_grants SET component_ids_json=? WHERE id=?",
+            (json.dumps([runtime_profile.id]), grant["grantId"]),
+        )
+        conn.commit()
+    service._invalidate_grant_cache()
+    assert service.active_grants(session_id="s1", run_id="r1") == []
+    privileged = service.resolve_privileged_channel(
+        plugin_references=[
+            {
+                "pluginId": manifest.id,
+                "componentIds": [runtime_profile.id],
+                "scope": "task",
+            }
+        ],
+        session_id="s1",
+        run_id="r1",
+    )
+    assert privileged["projection"]["cliProfiles"] == []
+    assert privileged["blocked"] == [
+        {
+            "pluginId": manifest.id,
+            "status": "invalid",
+            "reason": "runtime_support_not_grantable",
+            "componentIds": [runtime_profile.id],
+            "configurationUrl": f"/admin/plugins?plugin={manifest.id}",
+        }
+    ]
+    with pytest.raises(PluginManagerError) as denied_execution:
+        asyncio.run(
+            service.execute_cli(
+                plugin_id=manifest.id,
+                profile_id=runtime_profile.id,
+                action_id="version",
+                parameters={},
+                session_id="s1",
+                run_id="r1",
+            )
+        )
+    assert denied_execution.value.code == "plugin_cli_runtime_support_denied"
+
+
+def test_cloudflared_runtime_support_version_probe_has_no_windows_console(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = _cloudflare_manifest_with_runtime_support(service)
+    profile = manifest.cliProfiles[-1]
+    captured: dict[str, object] = {}
+    create_no_window = 0x08000000
+
+    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
+    monkeypatch.setattr(service, "_refresh_process_cli_path", lambda: "")
+    monkeypatch.setattr(service, "_resolve_execution_argv", lambda argv, **_kwargs: argv)
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["kwargs"] = kwargs
+        return type("Completed", (), {"returncode": 0, "stdout": "cloudflared version 2026.7.2", "stderr": ""})()
+
+    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    result = service._execute_spec(manifest, profile.version)
+
+    assert result["returnCode"] == 0
+    assert captured["kwargs"]["creationflags"] == create_no_window
+    assert captured["kwargs"]["shell"] is False
 
 
 def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypatch: pytest.MonkeyPatch) -> None:

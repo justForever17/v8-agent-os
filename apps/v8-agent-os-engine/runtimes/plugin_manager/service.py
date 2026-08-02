@@ -1087,14 +1087,16 @@ class PluginManagerService:
                     "manifestDigest": self._manifest_digest(manifest),
                     "catalogRevision": catalog.revision,
                     "componentCounts": {
-                        "cli": len(policy["cliProfiles"]),
+                        "cli": len(policy["agentCliProfiles"]),
+                        "runtimeSupport": len(policy["runtimeSupportProfiles"]),
                         "skills": active_skill_count,
                         "mcp": len(policy["mcpServers"]),
                         "uiAdapters": len(manifest.uiAdapters),
                         "providerAdapters": len(manifest.providerAdapters),
                     },
                     "declaredComponentCounts": {
-                        "cli": len(manifest.cliProfiles),
+                        "cli": sum(1 for item in manifest.cliProfiles if item.exposure == "agent"),
+                        "runtimeSupport": sum(1 for item in manifest.cliProfiles if item.exposure == "runtime_support"),
                         "skills": declared_skill_count,
                         "mcp": len(manifest.mcpServers),
                         "uiAdapters": len(manifest.uiAdapters),
@@ -1110,9 +1112,11 @@ class PluginManagerService:
                         "installable": policy["installable"],
                         "blockingReasons": list(policy["blockingReasons"]),
                         "selectedComponentIds": sorted(policy["activeComponentIds"]),
+                        "runtimeSupportComponentIds": sorted(policy["runtimeSupportComponentIds"]),
                         "skippedComponentIds": list(policy["skippedComponentIds"]),
                     },
-                    "grantRequired": True,
+                    "grantRequired": bool(policy["agentComponentIds"]),
+                    "runtimeManaged": bool(policy["runtimeSupportComponentIds"]),
                     "brandAssetUrl": f"/v1/api/plugins/{manifest.id}/logo",
                 }
             )
@@ -1194,15 +1198,20 @@ class PluginManagerService:
             if current_platform in profile.platforms
             and (not profile.architectures or current_architecture in profile.architectures)
         ]
+        selected_agent_cli = [profile for profile in selected_cli if profile.exposure == "agent"]
+        selected_runtime_support = [profile for profile in selected_cli if profile.exposure == "runtime_support"]
         if manifest.setupAdapter == "godot_v1":
             selected_mcp = list(manifest.mcpServers)
             transport = "cli_mcp"
-        elif selected_cli:
+        elif selected_agent_cli:
             selected_mcp = []
             transport = "cli"
         elif manifest.mcpServers:
             selected_mcp = list(manifest.mcpServers)
-            transport = "mcp_platform_fallback" if manifest.cliProfiles else "mcp"
+            transport = "mcp_platform_fallback" if any(item.exposure == "agent" for item in manifest.cliProfiles) else "mcp"
+        elif selected_runtime_support:
+            selected_mcp = []
+            transport = "runtime_support"
         else:
             selected_mcp = []
             transport = "skill_only" if manifest.skills else "none"
@@ -1241,6 +1250,13 @@ class PluginManagerService:
             *[item.id for item in manifest.uiAdapters],
             *[item.id for item in manifest.providerAdapters],
         }
+        agent_component_ids = {
+            *[item.id for item in selected_agent_cli],
+            *[item.id for item in selected_skills],
+            *[item.id for item in selected_mcp],
+            *[item.id for item in manifest.uiAdapters],
+            *[item.id for item in manifest.providerAdapters],
+        }
         return {
             "platform": current_platform,
             "architecture": current_architecture,
@@ -1248,9 +1264,13 @@ class PluginManagerService:
             "installable": not blocking_reasons,
             "blockingReasons": blocking_reasons,
             "cliProfiles": selected_cli,
+            "agentCliProfiles": selected_agent_cli,
+            "runtimeSupportProfiles": selected_runtime_support,
             "skills": selected_skills,
             "mcpServers": selected_mcp,
             "activeComponentIds": active_component_ids,
+            "agentComponentIds": agent_component_ids,
+            "runtimeSupportComponentIds": {item.id for item in selected_runtime_support},
             "skippedComponentIds": sorted(
                 {
                     *[item.id for item in manifest.cliProfiles if item.id not in selected_cli_ids],
@@ -1319,6 +1339,10 @@ class PluginManagerService:
         policy = self._component_policy(manifest)
         installed_ids = {str(item.get("component_id") or "") for item in self._component_rows(manifest.id)}
         return set(policy["activeComponentIds"]).intersection(installed_ids)
+
+    def _grantable_installed_component_ids(self, manifest: PluginManifest) -> set[str]:
+        policy = self._component_policy(manifest)
+        return self._active_installed_component_ids(manifest).intersection(policy["agentComponentIds"])
 
     def _requirement_component_ids(self, manifest: PluginManifest) -> set[str]:
         policy_ids = set(self._component_policy(manifest)["activeComponentIds"])
@@ -1465,6 +1489,12 @@ class PluginManagerService:
         profile = next((item for item in manifest.cliProfiles if item.id == profile_id), None)
         if profile is None:
             raise PluginManagerError("CLI profile 不存在", code="plugin_cli_profile_not_found", status_code=404)
+        if profile.exposure != "agent":
+            raise PluginManagerError(
+                "runtime-support 组件不提供 Agent CLI 能力同步",
+                code="plugin_cli_runtime_support_denied",
+                status_code=403,
+            )
         result = self._sync_cli_profile_capabilities(manifest, profile, force_refresh=True)
         if result is None:
             raise PluginManagerError("CLI profile 未声明 schema 同步合同", code="plugin_cli_capability_sync_unavailable")
@@ -1480,6 +1510,12 @@ class PluginManagerService:
         profile = next((item for item in manifest.cliProfiles if item.id == profile_id), None)
         if profile is None:
             raise PluginManagerError("CLI profile 不存在", code="plugin_cli_profile_not_found", status_code=404)
+        if profile.exposure != "agent":
+            raise PluginManagerError(
+                "runtime-support 组件不提供 Agent CLI 动作",
+                code="plugin_cli_runtime_support_denied",
+                status_code=403,
+            )
         contract = profile.capabilitySync
         if contract is None or contract.adapter != "reviewed_help_v1":
             raise PluginManagerError(
@@ -1663,7 +1699,7 @@ class PluginManagerService:
         return {"runtime": self.runtime_descriptor(), "plugins": items}
 
     def _grantable_components(self, manifest: PluginManifest) -> list[dict[str, Any]]:
-        active_ids = self._active_installed_component_ids(manifest)
+        active_ids = self._grantable_installed_component_ids(manifest)
         components: list[dict[str, Any]] = []
         components.extend(
             {
@@ -1672,7 +1708,7 @@ class PluginManagerService:
                 "actions": [action.id for action in self._effective_cli_profile(manifest, item).actions],
             }
             for item in manifest.cliProfiles
-            if item.id in active_ids
+            if item.id in active_ids and item.exposure == "agent"
         )
         components.extend({"id": item.id, "type": "skill"} for item in manifest.skills if item.id in active_ids)
         components.extend(
@@ -1703,7 +1739,7 @@ class PluginManagerService:
             for item in self._component_rows(manifest.id)
         }
         cli_items: list[dict[str, Any]] = []
-        for profile in policy["cliProfiles"]:
+        for profile in policy["agentCliProfiles"]:
             if profile.id not in active_ids:
                 continue
             sync_error = ""
@@ -2154,7 +2190,7 @@ class PluginManagerService:
         normalized_component = str(component_id or "").strip()
         profile = next((item for item in manifest.cliProfiles if item.id == normalized_component), None)
         adapter = browser_auth_adapter(manifest, profile) if profile else None
-        if profile is None or profile.login is None or adapter is None:
+        if profile is None or profile.exposure != "agent" or profile.login is None or adapter is None:
             raise PluginManagerError(
                 "插件没有受支持的 CLI 浏览器登录入口",
                 code="plugin_cli_browser_login_not_found",
@@ -3726,7 +3762,7 @@ class PluginManagerService:
         return spec.model_copy(update={"argv": argv})
 
     def _ensure_cli_shims(self, manifest: PluginManifest, profile: CliProfile) -> list[dict[str, Any]]:
-        if profile.ownership != "managed":
+        if profile.ownership != "managed" or profile.exposure != "agent":
             return []
         plugin_bin = self._plugin_root(manifest.id) / "node_modules" / ".bin"
         rows = []
@@ -4077,6 +4113,8 @@ class PluginManagerService:
             for key, replacement in context.items():
                 result = result.replace(f"{{{key}}}", replacement)
             for profile in manifest.cliProfiles:
+                if profile.exposure != "agent":
+                    continue
                 for command in profile.commands:
                     result = result.replace(f"{{shim:{command}}}", str(self._bin_root() / f"{command}.cmd"))
             return result
@@ -4813,7 +4851,7 @@ class PluginManagerService:
                 code="plugin_not_ready",
                 status_code=409,
             )
-        declared = self._active_installed_component_ids(manifest)
+        declared = self._grantable_installed_component_ids(manifest)
         requested = [str(item).strip() for item in list(component_ids or []) if str(item).strip()]
         if not requested:
             raise PluginManagerError(
@@ -4823,7 +4861,7 @@ class PluginManagerService:
             )
         selected = requested
         if not set(selected).issubset(declared):
-            raise PluginManagerError("授权包含未安装或已被 CLI 优先策略排除的组件", code="grant_component_invalid")
+            raise PluginManagerError("授权包含未安装、未启用或仅供 V8OS runtime 使用的组件", code="grant_component_invalid")
         if grantee_type == "subagent":
             normalized_delegation_id = str(delegation_id or "").strip()
             try:
@@ -4961,6 +4999,17 @@ class PluginManagerService:
             "source": row.get("grant_source") or "user_reference",
         }
 
+    def _grant_with_grantable_components(self, grant: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            manifest = self._manifest(str(grant.get("pluginId") or ""))
+            grantable = self._grantable_installed_component_ids(manifest)
+        except Exception:
+            return None
+        component_ids = sorted(set(grant.get("componentIds") or []).intersection(grantable))
+        if not component_ids:
+            return None
+        return {**grant, "componentIds": component_ids}
+
     def active_grants(
         self,
         *,
@@ -5005,7 +5054,11 @@ class PluginManagerService:
         query += " ORDER BY created_at"
         with db.get_connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
-        result = [self._grant_payload(dict(row)) for row in rows]
+        result = [
+            filtered
+            for row in rows
+            if (filtered := self._grant_with_grantable_components(self._grant_payload(dict(row)))) is not None
+        ]
         with self._cache_lock:
             self._grant_cache[cache_key] = result
         return [{**item, "componentIds": list(item.get("componentIds") or [])} for item in result]
@@ -5022,7 +5075,11 @@ class PluginManagerService:
                 """,
                 (now, safe_limit),
             ).fetchall()
-        return [self._grant_payload(dict(row)) for row in rows]
+        return [
+            filtered
+            for row in rows
+            if (filtered := self._grant_with_grantable_components(self._grant_payload(dict(row)))) is not None
+        ]
 
     def revoke_grant(self, grant_id: str) -> dict[str, Any]:
         row = self._grant_row(grant_id)
@@ -5129,10 +5186,10 @@ class PluginManagerService:
         if component_id not in set(_loads(row.get("component_ids_json"), [])):
             raise PluginManagerError("插件组件未获授权", code="plugin_grant_component_denied", status_code=403)
         manifest = self._manifest(plugin_id)
-        if component_id not in self._active_installed_component_ids(manifest):
+        if component_id not in self._grantable_installed_component_ids(manifest):
             raise PluginManagerError(
-                "插件组件未安装或已被当前 CLI 优先策略排除",
-                code="plugin_component_not_active",
+                "插件组件未安装、未启用或仅供 V8OS runtime 使用",
+                code="plugin_component_not_grantable",
                 status_code=409,
             )
         current_digest = self._manifest_digest(manifest)
@@ -5379,7 +5436,7 @@ class PluginManagerService:
         component_rows_by_plugin: dict[str, dict[str, dict[str, Any]]] = {}
         for grant in grants:
             manifest = self._manifest(grant["pluginId"])
-            components = set(grant["componentIds"]).intersection(self._active_installed_component_ids(manifest))
+            components = set(grant["componentIds"]).intersection(self._grantable_installed_component_ids(manifest))
             component_rows = component_rows_by_plugin.setdefault(
                 manifest.id,
                 {
@@ -5400,7 +5457,7 @@ class PluginManagerService:
                         }
                     )
             for profile in manifest.cliProfiles:
-                if profile.id in components:
+                if profile.id in components and profile.exposure == "agent":
                     # Runtime projection only proves that the exact component is
                     # granted. Action schemas are loaded through plugin_broker on
                     # demand so large CLI inventories do not pollute every turn.
@@ -5531,7 +5588,8 @@ class PluginManagerService:
                 continue
             installed_plugin_ids.append(plugin_id)
             installed_components = self._active_installed_component_ids(manifest)
-            active_component_ids[plugin_id] = installed_components
+            grantable_components = self._grantable_installed_component_ids(manifest)
+            active_component_ids[plugin_id] = grantable_components
             requested = requested_components[plugin_id]
             if not requested:
                 blocked.append(
@@ -5543,6 +5601,17 @@ class PluginManagerService:
                     }
                 )
                 continue
+            runtime_support_components = sorted(requested.intersection(installed_components - grantable_components))
+            if runtime_support_components:
+                blocked.append(
+                    {
+                        "pluginId": plugin_id,
+                        "status": "invalid",
+                        "reason": "runtime_support_not_grantable",
+                        "componentIds": runtime_support_components,
+                        "configurationUrl": f"/admin/plugins?plugin={plugin_id}",
+                    }
+                )
             missing_components = sorted(requested - installed_components)
             if missing_components:
                 blocked.append(
@@ -5647,7 +5716,8 @@ class PluginManagerService:
         structurally_blocked_plugin_ids = {
             str(item.get("pluginId") or "").strip().lower()
             for item in blocked
-            if str(item.get("reason") or "") in {"components_required", "component_not_installed"}
+            if str(item.get("reason") or "")
+            in {"components_required", "component_not_installed", "runtime_support_not_grantable"}
         }
         for plugin_id in sorted(ready_plugin_ids):
             if plugin_id not in projected_plugin_ids and plugin_id not in structurally_blocked_plugin_ids:
@@ -5696,6 +5766,16 @@ class PluginManagerService:
         delegation_depth: int | None = None,
         tool_call_id: str = "",
     ) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        declared_profile = next((item for item in manifest.cliProfiles if item.id == profile_id), None)
+        if declared_profile is None:
+            raise PluginManagerError("CLI 组件不存在", code="plugin_cli_profile_not_found", status_code=404)
+        if declared_profile.exposure != "agent":
+            raise PluginManagerError(
+                "该组件仅供 V8OS runtime 使用，不能投影为 Agent CLI",
+                code="plugin_cli_runtime_support_denied",
+                status_code=403,
+            )
         projection = self.projection_for(
             session_id=session_id,
             run_id=run_id,
@@ -5713,8 +5793,6 @@ class PluginManagerService:
         )
         if not profile_payload:
             raise PluginManagerError("当前任务未授权该 CLI", code="plugin_cli_not_granted", status_code=403)
-        manifest = self._manifest(plugin_id)
-        declared_profile = next(item for item in manifest.cliProfiles if item.id == profile_id)
         # Installed CLIs may be upgraded outside V8OS. Revalidate the versioned
         # capability contract before every invocation and keep the last known
         # good snapshot when a breaking change is detected.

@@ -78,6 +78,19 @@ FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
         asset_manifest_file="creative-media-image-analysis.manifest.json",
         python_path_priority="fallback",
     ),
+    FeaturePackDefinition(
+        id="creative_media_motion_capture",
+        product_name="动作采集能力包",
+        short_name="动作采集",
+        description="为多媒体创作提供单人视频动作提取、骨架预览和动作质量核验。",
+        hover="安装后可离线使用已验签的 MediaPipe Holistic 模型；首版仅支持单人视频或摄像头录制文件。",
+        recommended_order=5,
+        runtime_families=(),
+        requirements_file="creative-media-motion-capture.txt",
+        probe_modules=("mediapipe", "cv2"),
+        asset_manifest_file="creative-media-motion-capture.manifest.json",
+        python_path_priority="fallback",
+    ),
 )
 
 FEATURE_PACK_BY_ID = {definition.id: definition for definition in FEATURE_PACK_DEFINITIONS}

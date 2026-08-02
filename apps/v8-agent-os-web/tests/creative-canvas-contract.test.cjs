@@ -172,10 +172,12 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   const maskEditor = read("apps/v8-agent-os-web/src/components/workbench/CreativeCanvasMaskEditor.tsx");
   assert.match(maskEditor, /destination-out/);
   assert.match(maskEditor, /transparent mask pixels as the editable region/);
-  assert.match(canvas, /sourceKind", "web_upload"/);
+  assert.match(canvas, /sourceKind = "canvas_upload"/);
+  assert.match(canvas, /uploadFiles\(\[file\], undefined, "canvas_camera"\)/);
   assert.doesNotMatch(canvas, /grid-cols-\[168px_/);
   assert.doesNotMatch(canvas, /<textarea[^>]+taskPlaceholder/);
   assert.match(shell, /sessionRunning=\{props\.sessionRunning\}/);
+  assert.match(shell, /visible=\{document\.kind === "creative_canvas"\}/);
   assert.match(shell, /dynamic\([\s\S]*import\("\.\/CreativeArtifactCanvas"\)/);
   assert.match(chat, /if \(activeConversationRunning \|\| activeConversationIdRef\.current !== canvasSessionId\) return false/);
   assert.match(chat, /composerPresentation/);
@@ -189,6 +191,10 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   );
   assert.equal((canvasSubmit.match(/handleSend\(syntheticEvent/g) || []).length, 1);
   assert.match(media, /dynamic\(/);
+  assert.match(media, /usesOriginalResource = kind === "model_3d" \|\| kind === "motion"/);
+  assert.match(media, /compact=\{!inspect\}[\s\S]*interactive=\{inspect\}/);
+  assert.match(canvas, /visible=\{visible && visibleNodeIds\.has\(node\.nodeId\)\}/);
+  assert.match(canvas, /<CreativeCanvasMedia resource=\{inspectResource\} inspect visible=\{visible\} \/>/);
   assert.match(media, /preload="metadata"/);
   assert.doesNotMatch(media, /preload="auto"/);
   assert.match(media, /pointer-events-none h-full w-full object-contain/);

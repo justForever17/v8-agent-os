@@ -33,7 +33,6 @@ CHAT_CAPABILITY_CLASSES = [
 ]
 
 PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
-    "video.action_transfer",
     "video.lipsync",
     "video.avatar",
     "video.replacement",
@@ -43,7 +42,6 @@ PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
 
 PLUGIN_ONLY_MEDIA_MODEL_IDS = {
     "wan2.2-animate-mix",
-    "wan2.2-animate-move",
     "wan2.2-s2v",
     "wan2.7-videoedit",
 }

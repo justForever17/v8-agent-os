@@ -148,6 +148,17 @@ const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
         requirementsFile: "creative-media-image-analysis.txt",
         assetManifestFile: "creative-media-image-analysis.manifest.json",
     },
+    {
+        id: "creative_media_motion_capture",
+        productName: "动作采集能力包",
+        shortName: "动作采集",
+        description: "为多媒体创作提供单人视频动作提取、骨架预览和动作质量核验。",
+        hover: "安装后可离线使用已验签的 MediaPipe Holistic 模型；首版仅支持单人视频或摄像头录制文件。",
+        recommendedOrder: 5,
+        runtimeFamilies: [],
+        requirementsFile: "creative-media-motion-capture.txt",
+        assetManifestFile: "creative-media-motion-capture.manifest.json",
+    },
 ];
 
 const FEATURE_PACK_BY_ID = new Map(FEATURE_PACK_DEFINITIONS.map((definition) => [definition.id, definition]));
@@ -192,6 +203,7 @@ const FEATURE_PACK_ASSET_HOSTS = new Set([
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    "storage.googleapis.com",
 ]);
 
 function v8Home() {

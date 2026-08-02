@@ -16,7 +16,7 @@ from core.workspace_identity import workspace_path_key
 
 
 _FOLDER_KINDS = {"production", "episode", "sources", "work", "outputs", "delivery", "custom"}
-_MEDIA_TYPES = {"image", "video", "audio", "model_3d", "psd", "document", "text", "unknown"}
+_MEDIA_TYPES = {"image", "video", "audio", "model_3d", "psd", "motion", "document", "text", "unknown"}
 
 
 def _utc_now() -> str:
@@ -40,6 +40,8 @@ def _media_type(mime_type: str, path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".psd" or "photoshop" in mime:
         return "psd"
+    if suffix == ".v8motion" or mime == "application/vnd.v8.motion+zip":
+        return "motion"
     if mime.startswith("image/"):
         return "image"
     if mime.startswith("video/"):

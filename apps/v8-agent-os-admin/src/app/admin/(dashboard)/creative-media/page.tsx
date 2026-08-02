@@ -271,6 +271,7 @@ function candidateWarningReason(t: ReturnType<typeof useT>, candidate: CreativeM
             adapter_operation_mismatch: "app.admin.dashboard.creativeMedia.readiness.adapterOperationMismatch",
             endpoint_operation_mismatch: "app.admin.dashboard.creativeMedia.readiness.endpointOperationMismatch",
             media_wire_protocol_mismatch: "app.admin.dashboard.creativeMedia.readiness.mediaWireProtocolMismatch",
+            comfyui_workflow_invalid: "app.admin.dashboard.creativeMedia.readiness.comfyWorkflowInvalid",
         };
         const reasons = (candidate.readiness?.reasonCodes || [])
             .map((code) => reasonKeys[code] ? t(reasonKeys[code]) : code)

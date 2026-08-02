@@ -1400,6 +1400,36 @@ class DatabaseManager:
                 ON creative_canvas_node_outputs(graph_id, result_node_id, created_at DESC)
             ''')
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS creative_canvas_commands (
+                    command_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_id TEXT NOT NULL UNIQUE,
+                    graph_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    base_revision INTEGER NOT NULL,
+                    result_revision INTEGER NOT NULL,
+                    direction TEXT NOT NULL,
+                    command_kind TEXT NOT NULL,
+                    target_command_id TEXT,
+                    affected_node_ids_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    inverse_json TEXT NOT NULL,
+                    before_graph_json TEXT NOT NULL,
+                    after_graph_json TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT 'human',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (graph_id) REFERENCES creative_canvas_graphs(graph_id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_creative_canvas_commands_graph
+                ON creative_canvas_commands(graph_id, command_sequence ASC)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_creative_canvas_commands_session
+                ON creative_canvas_commands(session_id, command_sequence DESC)
+            ''')
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS workspace_canvas_templates (
                     template_id TEXT PRIMARY KEY,
                     workspace_key TEXT NOT NULL,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from .comfyui_workflow import validate_comfyui_workflow
+
 
 RUNTIME_ADAPTER_OPERATION_KINDS: dict[str, frozenset[str]] = {
     "openai_images": frozenset({"image.generate", "image.edit"}),
@@ -23,8 +25,10 @@ RUNTIME_ADAPTER_OPERATION_KINDS: dict[str, frozenset[str]] = {
             "video.image_to_video",
             "video.first_last_frame",
             "video.reference_to_video",
+            "video.action_transfer",
         }
     ),
+    "comfyui_workflow": frozenset({"video.action_transfer"}),
     "agnes_video": frozenset(
         {
             "video.text_to_video",
@@ -61,6 +65,7 @@ READINESS_MESSAGES: dict[str, str] = {
     "adapter_operation_mismatch": "The configured adapter does not implement this operation.",
     "endpoint_operation_mismatch": "The endpoint binding targets a different operation.",
     "media_wire_protocol_mismatch": "A chat wire protocol is bound to a media endpoint.",
+    "comfyui_workflow_invalid": "The ComfyUI API workflow or its input/output bindings are missing or invalid.",
 }
 
 
@@ -151,7 +156,13 @@ def evaluate_candidate_readiness(
         reason_codes.append("model_disabled")
     if not str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").strip():
         reason_codes.append("provider_base_url_missing")
-    if not str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip():
+    api_standard = str(
+        endpoint_binding.get("apiStandard")
+        or provider_meta.get("api_standard")
+        or provider_meta.get("apiStandard")
+        or ""
+    ).strip().lower()
+    if api_standard != "comfyui" and not str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip():
         reason_codes.append("provider_credential_missing")
     if not operation_configured:
         reason_codes.append("operation_not_configured")
@@ -167,6 +178,11 @@ def evaluate_candidate_readiness(
         reason_codes.append("adapter_unsupported")
     elif operation_kind not in RUNTIME_ADAPTER_OPERATION_KINDS[normalized_adapter]:
         reason_codes.append("adapter_operation_mismatch")
+    if normalized_adapter == "comfyui_workflow":
+        try:
+            validate_comfyui_workflow(dict(model_data.get("mediaLimits") or {}).get("comfyuiWorkflow"))
+        except (TypeError, ValueError):
+            reason_codes.append("comfyui_workflow_invalid")
 
     configured_binding = dict(model_data.get("endpointBinding") or {})
     binding_operation = str(configured_binding.get("operationKind") or configured_binding.get("operation_kind") or "").strip()

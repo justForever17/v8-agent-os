@@ -1,0 +1,17 @@
+{
+  "id": "creative_media_motion_capture",
+  "version": "1.0.0",
+  "license": {
+    "name": "Apache-2.0",
+    "source": "https://github.com/google-ai-edge/mediapipe"
+  },
+  "assets": [
+    {
+      "id": "holistic_landmarker",
+      "target": "holistic-landmarker-float16-v1.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/1/holistic_landmarker.task",
+      "size": 13683609,
+      "sha256": "e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8"
+    }
+  ]
+}

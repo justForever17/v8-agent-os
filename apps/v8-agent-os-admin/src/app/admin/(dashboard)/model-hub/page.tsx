@@ -164,6 +164,47 @@ type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow
 type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "model3d";
 type CatalogRuntimeProtocol = string;
 type ModelWireProtocol = "" | "openai.chat_completions" | "openai.responses" | "anthropic.messages" | "gemini.generate_content";
+type ComfyWorkflowDraft = {
+    promptJson: string;
+    imageNodeId: string;
+    imageInputName: string;
+    videoNodeId: string;
+    videoInputName: string;
+    outputNodeId: string;
+    outputField: string;
+};
+
+const EMPTY_COMFY_WORKFLOW: ComfyWorkflowDraft = {
+    promptJson: "",
+    imageNodeId: "",
+    imageInputName: "",
+    videoNodeId: "",
+    videoInputName: "",
+    outputNodeId: "",
+    outputField: "",
+};
+
+function comfyWorkflowDraft(mediaLimits: Record<string, unknown> | null | undefined): ComfyWorkflowDraft {
+    const workflow = mediaLimits?.comfyuiWorkflow && typeof mediaLimits.comfyuiWorkflow === "object"
+        ? mediaLimits.comfyuiWorkflow as Record<string, unknown>
+        : {};
+    const bindings = workflow.bindings && typeof workflow.bindings === "object"
+        ? workflow.bindings as Record<string, Record<string, unknown>>
+        : {};
+    const output = workflow.output && typeof workflow.output === "object"
+        ? workflow.output as Record<string, unknown>
+        : {};
+    const prompt = workflow.prompt && typeof workflow.prompt === "object" ? workflow.prompt : null;
+    return {
+        promptJson: prompt ? JSON.stringify(prompt, null, 2) : "",
+        imageNodeId: String(bindings.image?.nodeId || ""),
+        imageInputName: String(bindings.image?.inputName || ""),
+        videoNodeId: String(bindings.video?.nodeId || ""),
+        videoInputName: String(bindings.video?.inputName || ""),
+        outputNodeId: String(output.nodeId || ""),
+        outputField: String(output.field || ""),
+    };
+}
 
 const MODEL_WIRE_PROTOCOLS: Array<{ id: Exclude<ModelWireProtocol, "">; labelKey: string }> = [
     { id: "openai.chat_completions", labelKey: "app.admin.dashboard.model.hub.protocol.openaiChatCompletions" },
@@ -712,6 +753,7 @@ export default function ModelHubPage() {
     const [modelProviderId, setModelProviderId] = useState("");
     const [modelChannelId, setModelChannelId] = useState("");
     const [modelWireProtocol, setModelWireProtocol] = useState<ModelWireProtocol>("");
+    const [comfyWorkflow, setComfyWorkflow] = useState<ComfyWorkflowDraft>(EMPTY_COMFY_WORKFLOW);
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
     const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
@@ -1088,6 +1130,50 @@ export default function ModelHubPage() {
             endpointBinding: editingModel?.endpointBinding || undefined,
             channelId: modelChannelId,
         };
+        if (modelType === "WORKFLOW") {
+            let prompt: Record<string, unknown>;
+            try {
+                const parsed = JSON.parse(comfyWorkflow.promptJson || "null");
+                if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("invalid");
+                prompt = parsed as Record<string, unknown>;
+            } catch {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
+                    description: t("app.admin.dashboard.model.hub.comfy.workflowInvalid"),
+                });
+                return;
+            }
+            const requiredBindings = [
+                comfyWorkflow.imageNodeId,
+                comfyWorkflow.imageInputName,
+                comfyWorkflow.videoNodeId,
+                comfyWorkflow.videoInputName,
+                comfyWorkflow.outputNodeId,
+                comfyWorkflow.outputField,
+            ];
+            if (requiredBindings.some((value) => !value.trim())) {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
+                    description: t("app.admin.dashboard.model.hub.comfy.bindingsRequired"),
+                });
+                return;
+            }
+            payload.mediaLimits = {
+                ...(editingModel?.mediaLimits || {}),
+                comfyuiWorkflow: {
+                    schema: "v8.comfyui.workflow.v1",
+                    operationKind: "video.action_transfer",
+                    prompt,
+                    bindings: {
+                        image: { nodeId: comfyWorkflow.imageNodeId.trim(), inputName: comfyWorkflow.imageInputName.trim() },
+                        video: { nodeId: comfyWorkflow.videoNodeId.trim(), inputName: comfyWorkflow.videoInputName.trim() },
+                    },
+                    output: { nodeId: comfyWorkflow.outputNodeId.trim(), field: comfyWorkflow.outputField.trim(), index: 0 },
+                },
+            };
+        }
         if (["TEXT", "MULTIMODAL", "VISION", "CHAT"].includes(modelType)) {
             payload.wireProtocol = modelWireProtocol;
         }
@@ -1524,7 +1610,7 @@ export default function ModelHubPage() {
                 video: "video.text_to_video",
                 voice: "voice.tts",
                 music: "music.generate",
-                workflow: "workflow.generate",
+                workflow: "",
                 model3d: "model3d.generate",
             };
             const catalogEndpointPath = String(mediaLimits.endpointPath || mediaLimits.requestPath || "").replace(/^\/+|\/+$/g, "");
@@ -2679,6 +2765,7 @@ export default function ModelHubPage() {
                             setModelChannelId(channel?.id || "");
                             setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
                             setRerankApiFlavor("generic");
+                            setComfyWorkflow(EMPTY_COMFY_WORKFLOW);
                             setIsModelDialogOpen(true);
                         }}>
                             <Plus className="mr-2 h-4 w-4"/>
@@ -3066,6 +3153,7 @@ export default function ModelHubPage() {
                     setModelChannelId(String(model.endpointBinding?.channelId || ""));
                     setModelWireProtocol(String(model.endpointBinding?.wireProtocol || "") as ModelWireProtocol);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
+                    setComfyWorkflow(comfyWorkflowDraft(model.mediaLimits));
                     setIsModelDialogOpen(true);
                 }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
                         })}
@@ -3476,7 +3564,7 @@ export default function ModelHubPage() {
                                         {t("app.admin.dashboard.model.hub.catalog.mediaModelNoticeTitle")}
                                     </Badge>
                                 </AdminHoverInfo>
-                                <div className="grid gap-4 md:grid-cols-2">
+                                {modelType !== "WORKFLOW" ? <div className="grid gap-4 md:grid-cols-2">
                                     <div className="space-y-2">
                                         <Label htmlFor="model-endpoint-path">{t("app.admin.dashboard.model.hub.page.manualEndpointPath")}</Label>
                                         <Input
@@ -3495,8 +3583,14 @@ export default function ModelHubPage() {
                                             placeholder="gpt-image-2"
                                         />
                                     </div>
-                                </div>
-                                <div className="space-y-2">
+                                </div> : null}
+                                {modelType === "WORKFLOW" ? (
+                                    <div className="space-y-2">
+                                        <Label>{t("app.admin.dashboard.model.hub.page.mediaAdapter")}</Label>
+                                        <input type="hidden" name="adapter" value="comfyui_workflow" />
+                                        <div className="flex h-10 items-center rounded-md border border-input bg-muted/30 px-3 text-sm">ComfyUI Workflow</div>
+                                    </div>
+                                ) : <div className="space-y-2">
                                     <Label htmlFor="model-media-adapter">{t("app.admin.dashboard.model.hub.page.mediaAdapter")}</Label>
                                     <select
                                         id="model-media-adapter"
@@ -3510,6 +3604,7 @@ export default function ModelHubPage() {
                                         <option value="agnes_video">Agnes Video</option>
                                         <option value="volcengine_ark">Volcengine Ark</option>
                                         <option value="dashscope">Alibaba Cloud Model Studio</option>
+                                        <option value="comfyui_workflow">ComfyUI Workflow</option>
                                         <option value="minimax_video">MiniMax Video</option>
                                         <option value="minimax_tts">MiniMax Speech</option>
                                         <option value="minimax_music">MiniMax Music</option>
@@ -3521,7 +3616,7 @@ export default function ModelHubPage() {
                                     <p className="text-xs leading-5 text-muted-foreground">
                                         {t("app.admin.dashboard.model.hub.page.mediaAdapterHelp")}
                                     </p>
-                                </div>
+                                </div>}
                                 {getMediaCapabilityOptions(modelType).length > 0 ? (
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between gap-3">
@@ -3558,6 +3653,48 @@ export default function ModelHubPage() {
                                         <p className="text-xs leading-5 text-muted-foreground">
                                             {t("app.admin.dashboard.model.hub.capability.help")}
                                         </p>
+                                    </div>
+                                ) : null}
+                                {modelType === "WORKFLOW" ? (
+                                    <div className="space-y-4 rounded-lg border border-border/70 p-3">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="comfy-workflow-file">{t("app.admin.dashboard.model.hub.comfy.apiWorkflow")}</Label>
+                                            <Input
+                                                id="comfy-workflow-file"
+                                                type="file"
+                                                accept="application/json,.json"
+                                                onChange={async (event) => {
+                                                    const file = event.target.files?.[0];
+                                                    if (!file) return;
+                                                    try {
+                                                        const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
+                                                        const prompt = parsed.prompt && typeof parsed.prompt === "object" ? parsed.prompt : parsed;
+                                                        if (!prompt || Array.isArray(prompt) || typeof prompt !== "object") throw new Error("invalid");
+                                                        setComfyWorkflow((current) => ({ ...current, promptJson: JSON.stringify(prompt, null, 2) }));
+                                                    } catch {
+                                                        toast({
+                                                            variant: "destructive",
+                                                            title: t("app.admin.dashboard.model.hub.comfy.workflowInvalidTitle"),
+                                                            description: t("app.admin.dashboard.model.hub.comfy.workflowInvalid"),
+                                                        });
+                                                    }
+                                                }}
+                                            />
+                                            <Textarea
+                                                value={comfyWorkflow.promptJson}
+                                                onChange={(event) => setComfyWorkflow((current) => ({ ...current, promptJson: event.target.value }))}
+                                                className="max-h-48 min-h-24 font-mono text-xs"
+                                                aria-label={t("app.admin.dashboard.model.hub.comfy.apiWorkflowJson")}
+                                            />
+                                        </div>
+                                        <div className="grid gap-3 md:grid-cols-2">
+                                            <Input value={comfyWorkflow.imageNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, imageNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.imageNodeId")} />
+                                            <Input value={comfyWorkflow.imageInputName} onChange={(event) => setComfyWorkflow((current) => ({ ...current, imageInputName: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.imageInputName")} />
+                                            <Input value={comfyWorkflow.videoNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, videoNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.videoNodeId")} />
+                                            <Input value={comfyWorkflow.videoInputName} onChange={(event) => setComfyWorkflow((current) => ({ ...current, videoInputName: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.videoInputName")} />
+                                            <Input value={comfyWorkflow.outputNodeId} onChange={(event) => setComfyWorkflow((current) => ({ ...current, outputNodeId: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.outputNodeId")} />
+                                            <Input value={comfyWorkflow.outputField} onChange={(event) => setComfyWorkflow((current) => ({ ...current, outputField: event.target.value }))} placeholder={t("app.admin.dashboard.model.hub.comfy.outputField")} />
+                                        </div>
                                     </div>
                                 ) : null}
                                 <p className="text-xs leading-5 text-muted-foreground">

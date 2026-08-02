@@ -22,6 +22,7 @@ TEMPLATE_SCHEMA = "v8.creative_canvas_template.v1"
 MAX_GRAPH_NODES = 160
 MAX_GRAPH_EDGES = 320
 MAX_TEMPLATE_TITLE = 80
+MAX_COMMAND_HISTORY = 120
 RUNNING_GRAPH_STATES = {"queued", "running"}
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled", "degraded", "rejected"}
 
@@ -151,7 +152,7 @@ class ActionDefinition:
     may_incur_cost: bool = True
 
 
-ANY_REFERENCE_TYPES = ("image", "video", "audio", "model_3d", "psd", "document", "text")
+ANY_REFERENCE_TYPES = ("image", "video", "audio", "model_3d", "psd", "motion", "document", "text")
 
 
 def _port(
@@ -328,6 +329,46 @@ ACTION_DEFINITIONS = {
             network_required=False,
             may_incur_cost=False,
         ),
+        _action(
+            "creative_media.extract_holistic_motion",
+            "video.extract_holistic_motion",
+            [_port("video", ["video"], 1, 1)],
+            "motion_clip",
+            ["motion"],
+            requires_prompt=False,
+            network_required=False,
+            may_incur_cost=False,
+        ),
+        _action(
+            "creative_media.transfer_action_to_character",
+            "video.action_transfer",
+            [_port("image", ["image"], 1, 1), _port("video", ["video"], 1, 1)],
+            "action_transfer_video",
+            ["video"],
+            requires_prompt=False,
+            network_required=True,
+            may_incur_cost=True,
+        ),
+        _action(
+            "creative_media.inspect_rigged_model",
+            "model3d.inspect_rigged",
+            [_port("model", ["model_3d"], 1, 1)],
+            "rig_profile",
+            ["document"],
+            requires_prompt=False,
+            network_required=False,
+            may_incur_cost=False,
+        ),
+        _action(
+            "creative_media.retarget_motion_godot",
+            "model3d.retarget_motion_godot",
+            [_port("motion", ["motion"], 1, 1), _port("model", ["model_3d"], 1, 1)],
+            "animated_model",
+            ["model_3d"],
+            requires_prompt=False,
+            network_required=False,
+            may_incur_cost=False,
+        ),
     )
 }
 
@@ -338,6 +379,83 @@ class CreativeCanvasGraphError(ValueError):
 
 class CreativeCanvasGraphConflict(CreativeCanvasGraphError):
     pass
+
+
+def _graph_without_viewport(graph: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "nodes": _list(graph.get("nodes")),
+        "edges": _list(graph.get("edges")),
+    }
+
+
+def _changed_keys(before: dict[str, Any], after: dict[str, Any]) -> set[str]:
+    return {
+        key
+        for key in set(before) | set(after)
+        if before.get(key) != after.get(key)
+    }
+
+
+def _command_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any] | None:
+    if _graph_without_viewport(before) == _graph_without_viewport(after):
+        return None
+    before_nodes = {str(item.get("nodeId")): item for item in _list(before.get("nodes")) if isinstance(item, dict)}
+    after_nodes = {str(item.get("nodeId")): item for item in _list(after.get("nodes")) if isinstance(item, dict)}
+    before_edges = {str(item.get("edgeId")): item for item in _list(before.get("edges")) if isinstance(item, dict)}
+    after_edges = {str(item.get("edgeId")): item for item in _list(after.get("edges")) if isinstance(item, dict)}
+    added_nodes = sorted(set(after_nodes) - set(before_nodes))
+    removed_nodes = sorted(set(before_nodes) - set(after_nodes))
+    added_edges = sorted(set(after_edges) - set(before_edges))
+    removed_edges = sorted(set(before_edges) - set(after_edges))
+    updated_nodes = sorted(
+        node_id for node_id in set(before_nodes) & set(after_nodes)
+        if before_nodes[node_id] != after_nodes[node_id]
+    )
+    updated_edges = sorted(
+        edge_id for edge_id in set(before_edges) & set(after_edges)
+        if before_edges[edge_id] != after_edges[edge_id]
+    )
+    node_keys = set().union(*(
+        _changed_keys(before_nodes[node_id], after_nodes[node_id]) for node_id in updated_nodes
+    )) if updated_nodes else set()
+    edge_keys = set().union(*(
+        _changed_keys(before_edges[edge_id], after_edges[edge_id]) for edge_id in updated_edges
+    )) if updated_edges else set()
+    if added_nodes and not (removed_nodes or updated_nodes or removed_edges or updated_edges):
+        command_kind = "add_nodes"
+    elif removed_nodes and not (added_nodes or updated_nodes or added_edges or updated_edges):
+        command_kind = "remove_nodes"
+    elif (added_edges or removed_edges) and not (added_nodes or removed_nodes or updated_nodes or updated_edges):
+        command_kind = "connect_nodes" if added_edges else "disconnect_nodes"
+    elif updated_nodes and node_keys <= {"x", "y", "width", "height"} and not (added_nodes or removed_nodes or added_edges or removed_edges or updated_edges):
+        command_kind = "move_nodes"
+    elif updated_edges and edge_keys <= {"note"} and not (added_nodes or removed_nodes or updated_nodes or added_edges or removed_edges):
+        command_kind = "edit_relationship"
+    elif updated_nodes and node_keys <= {"prompt", "parameters", "configurationRevision", "mask", "title"} and not (added_nodes or removed_nodes or added_edges or removed_edges or updated_edges):
+        command_kind = "configure_nodes"
+    else:
+        command_kind = "edit_graph"
+    payload = {
+        "addedNodeIds": added_nodes,
+        "removedNodeIds": removed_nodes,
+        "updatedNodeIds": updated_nodes,
+        "addedEdgeIds": added_edges,
+        "removedEdgeIds": removed_edges,
+        "updatedEdgeIds": updated_edges,
+    }
+    inverse = {
+        **payload,
+        "addedNodeIds": removed_nodes,
+        "removedNodeIds": added_nodes,
+        "addedEdgeIds": removed_edges,
+        "removedEdgeIds": added_edges,
+    }
+    return {
+        "kind": command_kind,
+        "affectedNodeIds": sorted(set(added_nodes + removed_nodes + updated_nodes)),
+        "payload": payload,
+        "inverse": inverse,
+    }
 
 
 def _normalize_action_parameters(definition: ActionDefinition, value: Any) -> dict[str, Any]:
@@ -733,11 +851,127 @@ class CreativeCanvasGraphService:
             ).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def _history_rows(conn: Any, *, graph_id: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT * FROM creative_canvas_commands
+            WHERE graph_id = ?
+            ORDER BY command_sequence ASC
+            """,
+            (graph_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _history_stacks(rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+        undo_stack: list[str] = []
+        redo_stack: list[str] = []
+        for row in rows:
+            direction = str(row.get("direction") or "forward")
+            command_id = str(row.get("command_id") or "")
+            target_id = str(row.get("target_command_id") or "")
+            if direction == "forward":
+                if command_id:
+                    undo_stack.append(command_id)
+                redo_stack.clear()
+            elif direction == "undo" and target_id:
+                if undo_stack and undo_stack[-1] == target_id:
+                    undo_stack.pop()
+                    redo_stack.append(target_id)
+            elif direction == "redo" and target_id:
+                if redo_stack and redo_stack[-1] == target_id:
+                    redo_stack.pop()
+                    undo_stack.append(target_id)
+        return undo_stack, redo_stack
+
+    def _history_summary(self, conn: Any, *, graph_id: str) -> dict[str, Any]:
+        rows = self._history_rows(conn, graph_id=graph_id)
+        undo_stack, redo_stack = self._history_stacks(rows)
+        latest = rows[-1] if rows else {}
+        return {
+            "canUndo": bool(undo_stack),
+            "canRedo": bool(redo_stack),
+            "undoDepth": len(undo_stack),
+            "redoDepth": len(redo_stack),
+            "lastCommand": {
+                "commandId": latest.get("command_id"),
+                "direction": latest.get("direction"),
+                "kind": latest.get("command_kind"),
+                "createdAt": latest.get("created_at"),
+            } if latest else None,
+        }
+
+    @staticmethod
+    def _insert_history_command(
+        conn: Any,
+        *,
+        graph_id: str,
+        session_id: str,
+        base_revision: int,
+        result_revision: int,
+        direction: str,
+        command_kind: str,
+        before_graph: dict[str, Any],
+        after_graph: dict[str, Any],
+        affected_node_ids: list[str],
+        payload: dict[str, Any],
+        inverse: dict[str, Any],
+        target_command_id: str = "",
+        actor: str = "human",
+    ) -> str:
+        command_id = f"canvas-command-{uuid.uuid4().hex}"
+        conn.execute(
+            """
+            INSERT INTO creative_canvas_commands(
+                command_id, graph_id, session_id, base_revision, result_revision,
+                direction, command_kind, target_command_id, affected_node_ids_json,
+                payload_json, inverse_json, before_graph_json, after_graph_json,
+                actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                command_id,
+                graph_id,
+                session_id,
+                base_revision,
+                result_revision,
+                direction,
+                command_kind,
+                target_command_id or None,
+                json.dumps(affected_node_ids, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False),
+                json.dumps(inverse, ensure_ascii=False),
+                json.dumps(before_graph, ensure_ascii=False),
+                json.dumps(after_graph, ensure_ascii=False),
+                actor,
+                _utc_now(),
+            ),
+        )
+        conn.execute(
+            """
+            DELETE FROM creative_canvas_commands
+            WHERE graph_id = ? AND command_sequence NOT IN (
+                SELECT command_sequence FROM creative_canvas_commands
+                WHERE graph_id = ?
+                ORDER BY command_sequence DESC
+                LIMIT ?
+            )
+            """,
+            (graph_id, graph_id, MAX_COMMAND_HISTORY),
+        )
+        return command_id
+
     def get_graph(self, *, session_id: str) -> dict[str, Any]:
         self._authority(session_id)
         row = self._graph_row(session_id=session_id)
         if not row:
-            return {"graph": None, "revision": 0, "runtime": {"status": "idle", "nodeStates": {}, "outputs": {}}}
+            return {
+                "graph": None,
+                "revision": 0,
+                "history": {"canUndo": False, "canRedo": False, "undoDepth": 0, "redoDepth": 0, "lastCommand": None},
+                "runtime": {"status": "idle", "nodeStates": {}, "outputs": {}},
+            }
         graph = _record(_json(row.get("graph_json"), {}))
         with db.get_connection() as conn:
             run = conn.execute(
@@ -751,6 +985,7 @@ class CreativeCanvasGraphService:
                 """,
                 (row["graph_id"],),
             ).fetchall()
+            history = self._history_summary(conn, graph_id=str(row["graph_id"]))
         output_map: dict[str, list[dict[str, Any]]] = {}
         for output in outputs:
             item = dict(output)
@@ -769,6 +1004,7 @@ class CreativeCanvasGraphService:
         return {
             "graph": graph,
             "revision": int(row.get("revision") or 0),
+            "history": history,
             "runtime": {
                 "graphRunId": run_data.get("graph_run_id"),
                 "status": run_data.get("status") or "idle",
@@ -808,7 +1044,7 @@ class CreativeCanvasGraphService:
                 conn.rollback()
                 raise CreativeCanvasGraphConflict("Canvas graph is locked while its run is active")
             existing_row = conn.execute(
-                "SELECT graph_id, revision FROM creative_canvas_graphs WHERE session_id = ? LIMIT 1",
+                "SELECT graph_id, revision, graph_json FROM creative_canvas_graphs WHERE session_id = ? LIMIT 1",
                 (session_id,),
             ).fetchone()
             existing = dict(existing_row) if existing_row else None
@@ -821,6 +1057,8 @@ class CreativeCanvasGraphService:
             persisted_graph_id = str((existing or {}).get("graph_id") or graph_id)
             normalized["graphId"] = persisted_graph_id
             next_revision = current_revision + 1
+            before_graph = _record(_json((existing or {}).get("graph_json"), {})) or self.empty_graph(graph_id=persisted_graph_id)
+            before_graph["graphId"] = persisted_graph_id
             conn.execute(
                 """
                 INSERT INTO creative_canvas_graphs(
@@ -844,8 +1082,246 @@ class CreativeCanvasGraphService:
                     now,
                 ),
             )
+            command = _command_delta(before_graph, normalized)
+            if command:
+                self._insert_history_command(
+                    conn,
+                    graph_id=persisted_graph_id,
+                    session_id=session_id,
+                    base_revision=current_revision,
+                    result_revision=next_revision,
+                    direction="forward",
+                    command_kind=str(command["kind"]),
+                    before_graph=before_graph,
+                    after_graph=normalized,
+                    affected_node_ids=list(command["affectedNodeIds"]),
+                    payload=_record(command["payload"]),
+                    inverse=_record(command["inverse"]),
+                )
             conn.commit()
         return self.get_graph(session_id=session_id)
+
+    def apply_history(
+        self,
+        *,
+        session_id: str,
+        direction: str,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        authority = self._authority(session_id, require_write=True)
+        normalized_direction = str(direction or "").strip().lower()
+        if normalized_direction not in {"undo", "redo"}:
+            raise CreativeCanvasGraphError("Canvas history direction must be undo or redo")
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute(
+                "SELECT graph_run_id FROM creative_canvas_graph_runs WHERE session_id = ? AND status IN ('queued', 'running') LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if active:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas graph is locked while its run is active")
+            graph_row = conn.execute(
+                "SELECT * FROM creative_canvas_graphs WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if not graph_row:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas history is empty")
+            graph_data = dict(graph_row)
+            current_revision = int(graph_data.get("revision") or 0)
+            if int(expected_revision) != current_revision:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict(
+                    f"Canvas graph revision changed: expected {expected_revision}, current {current_revision}"
+                )
+            rows = self._history_rows(conn, graph_id=str(graph_data["graph_id"]))
+            undo_stack, redo_stack = self._history_stacks(rows)
+            stack = undo_stack if normalized_direction == "undo" else redo_stack
+            if not stack:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict(f"Canvas has nothing to {normalized_direction}")
+            target_command_id = stack[-1]
+            target = next((row for row in rows if row.get("command_id") == target_command_id), None)
+            if not target:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas history target is unavailable")
+            current_graph = _record(_json(graph_data.get("graph_json"), {}))
+            target_graph = _record(_json(
+                target.get("before_graph_json") if normalized_direction == "undo" else target.get("after_graph_json"),
+                {},
+            ))
+            target_graph["graphId"] = str(graph_data["graph_id"])
+            normalized = self.validate_graph(
+                session_id=session_id,
+                graph=target_graph,
+                allow_unbound_inputs=True,
+            )
+            normalized["graphId"] = str(graph_data["graph_id"])
+            next_revision = current_revision + 1
+            now = _utc_now()
+            conn.execute(
+                """
+                UPDATE creative_canvas_graphs
+                SET workspace_key = ?, schema_version = ?, revision = ?, graph_json = ?, updated_at = ?
+                WHERE graph_id = ? AND session_id = ?
+                """,
+                (
+                    self._workspace_key(authority),
+                    GRAPH_VERSION,
+                    next_revision,
+                    json.dumps(normalized, ensure_ascii=False),
+                    now,
+                    graph_data["graph_id"],
+                    session_id,
+                ),
+            )
+            self._insert_history_command(
+                conn,
+                graph_id=str(graph_data["graph_id"]),
+                session_id=session_id,
+                base_revision=current_revision,
+                result_revision=next_revision,
+                direction=normalized_direction,
+                command_kind=str(target.get("command_kind") or "edit_graph"),
+                target_command_id=target_command_id,
+                before_graph=current_graph,
+                after_graph=normalized,
+                affected_node_ids=[str(item) for item in _list(_json(target.get("affected_node_ids_json"), []))],
+                payload={"targetCommandId": target_command_id},
+                inverse={"targetCommandId": target_command_id},
+            )
+            conn.commit()
+        return self.get_graph(session_id=session_id)
+
+    @staticmethod
+    def _preflight_issue_for_error(graph: dict[str, Any], error: Exception) -> dict[str, Any]:
+        message = str(error)
+        node_id = ""
+        capability = ""
+        for node in _list(graph.get("nodes")):
+            if not isinstance(node, dict):
+                continue
+            candidate_id = str(node.get("nodeId") or "")
+            action_id = str(node.get("actionDefinitionId") or "")
+            resource_id = str(node.get("resourceId") or "")
+            if candidate_id and candidate_id in message:
+                node_id = candidate_id
+                capability = action_id
+                break
+            if action_id and action_id in message:
+                node_id = candidate_id
+                capability = action_id
+                break
+            if resource_id and resource_id in message:
+                node_id = candidate_id
+                break
+        lowered = message.lower()
+        if "requires an instruction" in lowered:
+            code, remediation = "missing-prompt", "configure_action"
+        elif "requires" in lowered and "inputs" in lowered:
+            code, remediation = "missing-input", "connect_input"
+        elif "unbound workflow input" in lowered:
+            code, remediation = "unbound-input", "bind_input"
+        elif "does not accept" in lowered:
+            code, remediation = "incompatible-media", "replace_input"
+        elif "source" in lowered or "artifact" in lowered or "workspace asset" in lowered:
+            code, remediation = "resource-unavailable", "choose_material"
+        elif "cycle" in lowered:
+            code, remediation = "cycle", "remove_connection"
+        elif "result slot" in lowered or "producer" in lowered:
+            code, remediation = "result-slot", "repair_result_slot"
+        else:
+            code, remediation = "invalid-graph", "inspect_graph"
+        return {
+            "severity": "error",
+            "code": code,
+            "nodeId": node_id,
+            "capability": capability,
+            "detail": message,
+            "remediation": remediation,
+        }
+
+    def preflight_execution(
+        self,
+        *,
+        session_id: str,
+        graph_id: str,
+        graph_revision: int,
+        target_node_ids: list[str] | None = None,
+        available_operation_kinds: set[str] | None = None,
+        unavailable_operation_reasons: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self._authority(session_id)
+        row = self._graph_row(session_id=session_id)
+        if not row or str(row.get("graph_id") or "") != str(graph_id or ""):
+            raise CreativeCanvasGraphConflict("Canvas graph is unavailable for the current session")
+        if int(row.get("revision") or 0) != int(graph_revision or 0):
+            raise CreativeCanvasGraphConflict("Canvas graph revision changed before validation")
+        graph = _record(_json(row.get("graph_json"), {}))
+        try:
+            plan = self._compile_plan(
+                session_id=session_id,
+                graph=graph,
+                target_node_ids=target_node_ids,
+            )
+        except CreativeCanvasGraphConflict:
+            raise
+        except (CreativeCanvasGraphError, PermissionError, FileNotFoundError, ValueError) as error:
+            issue = self._preflight_issue_for_error(graph, error)
+            return {"valid": False, "issues": [issue], "plan": None}
+
+        issues: list[dict[str, Any]] = []
+        available = set(available_operation_kinds or set())
+        unavailable = dict(unavailable_operation_reasons or {})
+        for entry in _list(plan.get("actions")):
+            action = _record(entry)
+            action_id = str(action.get("actionDefinitionId") or "")
+            definition = ACTION_DEFINITIONS.get(action_id)
+            if not definition:
+                continue
+            node_id = str(action.get("actionNodeId") or "")
+            if definition.network_required and available_operation_kinds is not None and definition.capability not in available:
+                issues.append({
+                    "severity": "error",
+                    "code": "provider-unconfigured",
+                    "nodeId": node_id,
+                    "capability": definition.capability,
+                    "detail": definition.capability,
+                    "remediation": "configure_model",
+                })
+            if definition.capability in unavailable:
+                issues.append({
+                    "severity": "error",
+                    "code": "local-runtime-unavailable",
+                    "nodeId": node_id,
+                    "capability": definition.capability,
+                    "detail": unavailable[definition.capability],
+                    "remediation": "configure_local_runtime",
+                })
+            if definition.network_required:
+                issues.append({
+                    "severity": "warning",
+                    "code": "network-required",
+                    "nodeId": node_id,
+                    "capability": definition.capability,
+                    "detail": definition.capability,
+                    "remediation": "review_run",
+                })
+            if definition.may_incur_cost:
+                issues.append({
+                    "severity": "warning",
+                    "code": "possible-cost",
+                    "nodeId": node_id,
+                    "capability": definition.capability,
+                    "detail": definition.capability,
+                    "remediation": "review_run",
+                })
+        return {
+            "valid": not any(item["severity"] == "error" for item in issues),
+            "issues": issues,
+            "plan": plan,
+        }
 
     def _compile_plan(
         self,

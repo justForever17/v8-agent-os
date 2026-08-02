@@ -13,6 +13,7 @@ import {
 import {
     Archive,
     AlignLeft,
+    Camera,
     Check,
     Copy,
     Download,
@@ -35,6 +36,7 @@ import {
     Rows3,
     Save,
     Sparkles,
+    Square,
     Trash2,
     Undo2,
     Columns3,
@@ -115,6 +117,7 @@ import {
 } from "./creative-canvas/serialization";
 import {
     CANVAS_DRAG_TYPE,
+    EMPTY_GRAPH_HISTORY,
     EMPTY_GRAPH_RUNTIME,
     EMPTY_SNAPSHOT,
     GRID_COLUMN_STEP,
@@ -127,6 +130,7 @@ import {
     type CanvasActionDefinition,
     type CanvasEdge,
     type CanvasGraphRuntime,
+    type CanvasGraphHistory,
     type CanvasNode,
     type CanvasPort,
     type CanvasResource,
@@ -150,12 +154,14 @@ export function CreativeArtifactCanvas({
     document,
     workspacePath,
     sessionRunning: upstreamSessionRunning = false,
+    visible = true,
     onSubmitTask,
 }: {
     document: CreativeCanvasWorkbenchDocument;
     workspacePath?: string;
     messages?: Message[];
     sessionRunning?: boolean;
+    visible?: boolean;
     onSubmitTask?: (request: CanvasTaskRequest) => Promise<boolean> | boolean;
 }) {
     const t = useT();
@@ -164,6 +170,11 @@ export function CreativeArtifactCanvas({
     const legacyStorageKey = `v8-web-creative-canvas:v2:${sessionId}`;
     const boardRef = useRef<HTMLDivElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
+    const cameraRecorderRef = useRef<MediaRecorder | null>(null);
+    const cameraStreamRef = useRef<MediaStream | null>(null);
+    const cameraChunksRef = useRef<Blob[]>([]);
+    const discardCameraRecordingRef = useRef(false);
     const sessionRunningRef = useRef(upstreamSessionRunning);
     const sessionIdRef = useRef(sessionId);
     const catalogAbortRef = useRef<AbortController | null>(null);
@@ -184,15 +195,13 @@ export function CreativeArtifactCanvas({
         beginTransaction,
         finishTransaction,
         cancelTransaction,
-        undo,
-        redo,
-        canUndo,
-        canRedo,
     } = useCanvasHistory<CanvasSnapshot>(EMPTY_SNAPSHOT);
     const [graphRevision, setGraphRevision] = useState(0);
     const [graphRuntime, setGraphRuntime] = useState<CanvasGraphRuntime>(EMPTY_GRAPH_RUNTIME);
+    const [graphHistory, setGraphHistory] = useState<CanvasGraphHistory>(EMPTY_GRAPH_HISTORY);
     const sessionRunning = upstreamSessionRunning || ["queued", "running"].includes(graphRuntime.status);
     const [graphSaving, setGraphSaving] = useState(false);
+    const [historyApplying, setHistoryApplying] = useState(false);
     const [actionDefinitions, setActionDefinitions] = useState<CanvasActionDefinition[]>([]);
     const [templates, setTemplates] = useState<CanvasWorkflowTemplate[]>([]);
     const [templateOpen, setTemplateOpen] = useState(false);
@@ -212,6 +221,10 @@ export function CreativeArtifactCanvas({
     const [trayOpen, setTrayOpen] = useState(false);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
+    const [cameraOpen, setCameraOpen] = useState(false);
+    const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+    const [cameraRecording, setCameraRecording] = useState(false);
+    const [cameraSeconds, setCameraSeconds] = useState(0);
     const [error, setError] = useState("");
     const [mediaKitStatus, setMediaKitStatus] = useState<"loading" | "ready" | "unavailable">("loading");
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -228,10 +241,17 @@ export function CreativeArtifactCanvas({
     const [spacePanning, setSpacePanning] = useState(false);
     const [preflightOpen, setPreflightOpen] = useState(false);
     const [preflightTargets, setPreflightTargets] = useState<string[]>([]);
+    const [enginePreflightIssues, setEnginePreflightIssues] = useState<CanvasPreflightIssue[]>([]);
     const [connectionIssue, setConnectionIssue] = useState<ConnectionIssue | null>(null);
     const [boardSize, setBoardSize] = useState({ width: 0, height: 0 });
-    sessionRunningRef.current = sessionRunning;
-    sessionIdRef.current = sessionId;
+
+    useEffect(() => {
+        sessionRunningRef.current = sessionRunning;
+    }, [sessionRunning]);
+
+    useEffect(() => {
+        sessionIdRef.current = sessionId;
+    }, [sessionId]);
 
     useEffect(() => {
         const board = boardRef.current;
@@ -249,9 +269,7 @@ export function CreativeArtifactCanvas({
             while (graphSavingRef.current) {
                 await new Promise((resolve) => window.setTimeout(resolve, 25));
             }
-            return lastSavedGraphRef.current === JSON.stringify(candidate)
-                ? true
-                : persistGraph(candidate);
+            return lastSavedGraphRef.current === JSON.stringify(candidate);
         }
         graphSavingRef.current = true;
         setGraphSaving(true);
@@ -277,6 +295,7 @@ export function CreativeArtifactCanvas({
                             graphRevisionRef.current = Number(latestPayload.revision || 0);
                             setGraphRevision(graphRevisionRef.current);
                             setGraphRuntime(recordOf(latestPayload.runtime) as CanvasGraphRuntime);
+                            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(latestPayload.history) } as CanvasGraphHistory);
                             lastSavedGraphRef.current = JSON.stringify(recovered);
                             resetSnapshot(recovered);
                         }
@@ -287,6 +306,7 @@ export function CreativeArtifactCanvas({
                 graphRevisionRef.current = Number(payload.revision || graphRevisionRef.current + 1);
                 setGraphRevision(graphRevisionRef.current);
                 setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
+                setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
                 lastSavedGraphRef.current = serialized;
                 window.localStorage.removeItem(legacyStorageKey);
             }
@@ -299,32 +319,36 @@ export function CreativeArtifactCanvas({
 
     useEffect(() => {
         let cancelled = false;
-        setHydratedKey("");
-        const cached = window.localStorage.getItem(storageKey)
-            ? readSnapshot(storageKey)
-            : readSnapshot(legacyStorageKey);
-        resetSnapshot(cached);
-        graphRevisionRef.current = 0;
-        setGraphRevision(0);
-        setGraphRuntime(EMPTY_GRAPH_RUNTIME);
-        lastSavedGraphRef.current = "";
-        pendingGraphRef.current = null;
-        setResources([]);
-        setWorkspaceFolders([]);
-        setActiveFolderId("");
-        setSelectedIds([]);
-        setContextMenu(null);
-        setComposer(null);
-        setInspectNodeId(null);
-        setInspectResourceOverride(null);
-        setMaskNodeId(null);
-        setConnectionSourceId(null);
-        setConnectionDraft(null);
-        setEdgeNote(null);
-        setTemplateOpen(false);
-        interactionRef.current = null;
-        const base = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas`;
-        void Promise.all([
+        const initialize = window.setTimeout(() => {
+            if (cancelled) return;
+            setHydratedKey("");
+            const cached = window.localStorage.getItem(storageKey)
+                ? readSnapshot(storageKey)
+                : readSnapshot(legacyStorageKey);
+            resetSnapshot(cached);
+            graphRevisionRef.current = 0;
+            setGraphRevision(0);
+            setGraphRuntime(EMPTY_GRAPH_RUNTIME);
+            setGraphHistory(EMPTY_GRAPH_HISTORY);
+            lastSavedGraphRef.current = "";
+            pendingGraphRef.current = null;
+            setResources([]);
+            setWorkspaceFolders([]);
+            setActiveFolderId("");
+            setSelectedIds([]);
+            setContextMenu(null);
+            setComposer(null);
+            setInspectNodeId(null);
+            setInspectResourceOverride(null);
+            setMaskNodeId(null);
+            setEnginePreflightIssues([]);
+            setConnectionSourceId(null);
+            setConnectionDraft(null);
+            setEdgeNote(null);
+            setTemplateOpen(false);
+            interactionRef.current = null;
+            const base = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas`;
+            void Promise.all([
             fetch(`${base}/graph`, { cache: "no-store" }),
             fetch(`${base}/actions`, { cache: "no-store" }),
             fetch(`${base}/templates`, { cache: "no-store" }),
@@ -344,6 +368,7 @@ export function CreativeArtifactCanvas({
             graphRevisionRef.current = Number(graphPayload?.revision || 0);
             setGraphRevision(graphRevisionRef.current);
             setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(graphPayload?.runtime) } as CanvasGraphRuntime);
+            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(graphPayload?.history) } as CanvasGraphHistory);
             lastSavedGraphRef.current = graphPayload?.graph ? JSON.stringify(recovered) : "";
             setActionDefinitions((Array.isArray(actionPayload?.actions) ? actionPayload.actions : []).map((item: unknown) => {
                 const action = recordOf(item);
@@ -381,7 +406,11 @@ export function CreativeArtifactCanvas({
                 setHydratedKey(storageKey);
             }
         });
-        return () => { cancelled = true; };
+        }, 0);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(initialize);
+        };
     }, [legacyStorageKey, sessionId, storageKey]);
 
     useEffect(() => {
@@ -481,8 +510,11 @@ export function CreativeArtifactCanvas({
     }, [sessionId]);
 
     useEffect(() => {
-        void loadCatalog();
-        return () => catalogAbortRef.current?.abort();
+        const initialize = window.setTimeout(() => void loadCatalog(), 0);
+        return () => {
+            window.clearTimeout(initialize);
+            catalogAbortRef.current?.abort();
+        };
     }, [loadCatalog]);
 
     useEffect(() => {
@@ -554,15 +586,18 @@ export function CreativeArtifactCanvas({
 
     useEffect(() => {
         if (!sessionRunning) return;
-        setComposer(null);
-        setContextMenu(null);
-        setPendingConnectionDrop(null);
-        setConnectionIssue(null);
-        setMaskNodeId(null);
-        setConnectionSourceId(null);
-        setConnectionDraft(null);
-        setReconnectingEdgeId(null);
-        if (interactionRef.current?.kind === "connect" || interactionRef.current?.kind === "reconnect") interactionRef.current = null;
+        const closeTransientEditors = window.setTimeout(() => {
+            setComposer(null);
+            setContextMenu(null);
+            setPendingConnectionDrop(null);
+            setConnectionIssue(null);
+            setMaskNodeId(null);
+            setConnectionSourceId(null);
+            setConnectionDraft(null);
+            setReconnectingEdgeId(null);
+            if (interactionRef.current?.kind === "connect" || interactionRef.current?.kind === "reconnect") interactionRef.current = null;
+        }, 0);
+        return () => window.clearTimeout(closeTransientEditors);
     }, [sessionRunning]);
 
     const boardPoint = useCallback((clientX: number, clientY: number) => {
@@ -1064,7 +1099,12 @@ export function CreativeArtifactCanvas({
         setSelectedIds([node.nodeId]);
         setConnectionSourceId(node.nodeId);
         setConnectionIssue(null);
-        setConnectionDraft({ fromNodeId: node.nodeId, fromPort: port, target: portPoint(node, port) });
+        setConnectionDraft({
+            fromNodeId: node.nodeId,
+            fromPort: port,
+            target: portPoint(node, port),
+            gesture: { kind: "connect", fromNodeId: node.nodeId, fromPort: port },
+        });
         interactionRef.current = { kind: "connect", pointerId: event.pointerId, fromNodeId: node.nodeId, fromPort: port };
         boardRef.current?.setPointerCapture(event.pointerId);
     }, []);
@@ -1088,7 +1128,12 @@ export function CreativeArtifactCanvas({
         setSelectedIds([edge.from, edge.to]);
         setReconnectingEdgeId(edge.edgeId);
         setConnectionIssue(null);
-        setConnectionDraft({ fromNodeId: fixedNode.nodeId, fromPort: fixedPort, target: pointer });
+        setConnectionDraft({
+            fromNodeId: fixedNode.nodeId,
+            fromPort: fixedPort,
+            target: pointer,
+            gesture: { kind: "reconnect", edgeId: edge.edgeId, movingEnd, fixedNodeId: fixedNode.nodeId, fixedPort },
+        });
         interactionRef.current = { kind: "reconnect", pointerId: event.pointerId, edgeId: edge.edgeId, movingEnd, fixedNodeId: fixedNode.nodeId, fixedPort };
         boardRef.current?.setPointerCapture(event.pointerId);
     }, [snapshot.viewport.scale, worldPoint]);
@@ -1132,6 +1177,46 @@ export function CreativeArtifactCanvas({
         commitSnapshot((current) => layoutCanvasGraph(current, nodeIds));
     }, [commitSnapshot, sessionRunning]);
 
+    const applyGraphHistory = useCallback(async (direction: "undo" | "redo") => {
+        if (sessionRunning || historyApplying) return;
+        const allowed = direction === "undo" ? graphHistory.canUndo : graphHistory.canRedo;
+        if (!allowed && JSON.stringify(snapshot) === lastSavedGraphRef.current) return;
+        setHistoryApplying(true);
+        setError("");
+        try {
+            const persisted = await persistGraph(snapshot);
+            if (!persisted || sessionIdRef.current !== sessionId) {
+                throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            }
+            const response = await fetch(
+                `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/history/${direction}`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expectedRevision: graphRevisionRef.current }),
+                    cache: "no-store",
+                },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId || !payload?.graph) {
+                throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            }
+            const recovered = normalizeSnapshot(payload.graph);
+            graphRevisionRef.current = Number(payload.revision || graphRevisionRef.current + 1);
+            setGraphRevision(graphRevisionRef.current);
+            setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
+            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
+            lastSavedGraphRef.current = JSON.stringify(recovered);
+            pendingGraphRef.current = null;
+            resetSnapshot(recovered);
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setHistoryApplying(false);
+        }
+    }, [graphHistory.canRedo, graphHistory.canUndo, historyApplying, persistGraph, resetSnapshot, sessionId, sessionRunning, snapshot, t]);
+
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             const editable = isEditableTarget(event.target);
@@ -1161,13 +1246,12 @@ export function CreativeArtifactCanvas({
             const command = event.metaKey || event.ctrlKey;
             if (command && event.key.toLowerCase() === "z" && !sessionRunning) {
                 event.preventDefault();
-                if (event.shiftKey) redo();
-                else undo();
+                void applyGraphHistory(event.shiftKey ? "redo" : "undo");
                 return;
             }
             if (command && event.key.toLowerCase() === "y" && !sessionRunning) {
                 event.preventDefault();
-                redo();
+                void applyGraphHistory("redo");
                 return;
             }
             if (command && event.key.toLowerCase() === "c") {
@@ -1204,7 +1288,7 @@ export function CreativeArtifactCanvas({
             window.removeEventListener("keydown", onKeyDown);
             window.removeEventListener("keyup", onKeyUp);
         };
-    }, [cancelTransaction, copySelection, duplicateSelection, focusNodes, pasteSelection, redo, removeNodes, selectedIds, sessionRunning, undo]);
+    }, [applyGraphHistory, cancelTransaction, copySelection, duplicateSelection, focusNodes, pasteSelection, removeNodes, selectedIds, sessionRunning]);
 
     const selectedNodes = useMemo(
         () => snapshot.nodes.filter((node) => selectedIds.includes(node.nodeId)),
@@ -1232,10 +1316,14 @@ export function CreativeArtifactCanvas({
         () => getExecutionActionIds(snapshot, preflightTargets),
         [preflightTargets, snapshot],
     );
-    const visiblePreflightIssues = useMemo(
-        () => preflightIssues.filter((issue) => executionActionIds.has(issue.nodeId)),
-        [executionActionIds, preflightIssues],
-    );
+    const visiblePreflightIssues = useMemo(() => {
+        const local = preflightIssues.filter((issue) => executionActionIds.has(issue.nodeId));
+        const merged = new Map<string, CanvasPreflightIssue>();
+        for (const issue of [...local, ...enginePreflightIssues]) {
+            merged.set(`${issue.nodeId}:${issue.code}:${issue.detail || ""}`, issue);
+        }
+        return [...merged.values()];
+    }, [enginePreflightIssues, executionActionIds, preflightIssues]);
     const emphasizedNodeIds = useMemo(() => {
         const related = getConnectedNodeIds(snapshot, selectedIds);
         const hovered = snapshot.edges.find((edge) => edge.edgeId === hoveredEdgeId);
@@ -1247,8 +1335,8 @@ export function CreativeArtifactCanvas({
     }, [hoveredEdgeId, selectedIds, snapshot]);
     const connectionVerdicts = useMemo(() => {
         const verdicts = new Map<string, ReturnType<typeof getConnectionVerdict>>();
-        const interaction = interactionRef.current;
-        if (!connectionDraft || !interaction || (interaction.kind !== "connect" && interaction.kind !== "reconnect")) return verdicts;
+        const interaction = connectionDraft?.gesture;
+        if (!connectionDraft || !interaction) return verdicts;
         const base = interaction.kind === "reconnect"
             ? { ...snapshot, edges: snapshot.edges.filter((edge) => edge.edgeId !== interaction.edgeId) }
             : snapshot;
@@ -1284,8 +1372,14 @@ export function CreativeArtifactCanvas({
 
     useEffect(() => {
         const ids = new Set(snapshot.nodes.map((node) => node.nodeId));
-        setSelectedIds((current) => current.filter((nodeId) => ids.has(nodeId)));
+        const reconcile = window.setTimeout(() => setSelectedIds((current) => current.filter((nodeId) => ids.has(nodeId))), 0);
+        return () => window.clearTimeout(reconcile);
     }, [snapshot.nodes]);
+
+    useEffect(() => {
+        const clear = window.setTimeout(() => setEnginePreflightIssues([]), 0);
+        return () => window.clearTimeout(clear);
+    }, [snapshot]);
 
     const actionLabel = useCallback((action: CreativeCanvasAction) => (
         isTranslationKey(action.labelKey) ? t(action.labelKey) : action.actionId
@@ -1646,7 +1740,7 @@ export function CreativeArtifactCanvas({
         createActionCard(action, menu);
     };
 
-    const uploadFiles = useCallback(async (files: File[], point?: { x: number; y: number }) => {
+    const uploadFiles = useCallback(async (files: File[], point?: { x: number; y: number }, sourceKind = "canvas_upload") => {
         if (!files.length || uploading || sessionRunning) return;
         setUploading(true);
         setError("");
@@ -1656,7 +1750,7 @@ export function CreativeArtifactCanvas({
                 const formData = new FormData();
                 formData.set("file", files[index]);
                 formData.set("sessionId", sessionId);
-                formData.set("sourceKind", "web_upload");
+                formData.set("sourceKind", sourceKind);
                 const response = await fetch("/api/upload", { method: "POST", body: formData });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
@@ -1697,6 +1791,105 @@ export function CreativeArtifactCanvas({
         event.target.value = "";
         void uploadFiles(files);
     }, [uploadFiles]);
+
+    const closeCamera = useCallback((discard = true) => {
+        discardCameraRecordingRef.current = discard;
+        const recorder = cameraRecorderRef.current;
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+        cameraRecorderRef.current = null;
+        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
+        setCameraStream(null);
+        setCameraRecording(false);
+        setCameraSeconds(0);
+        setCameraOpen(false);
+    }, []);
+
+    const openCamera = useCallback(async () => {
+        if (sessionRunning || uploading) return;
+        if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+            setError(t("web.workbench.canvas.camera.unavailable"));
+            return;
+        }
+        setError("");
+        setCameraOpen(true);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 60 } },
+                audio: false,
+            });
+            if (sessionIdRef.current !== sessionId || sessionRunningRef.current) {
+                stream.getTracks().forEach((track) => track.stop());
+                setCameraOpen(false);
+                return;
+            }
+            cameraStreamRef.current = stream;
+            setCameraStream(stream);
+        } catch (reason) {
+            setCameraOpen(false);
+            setError(reason instanceof Error ? reason.message : t("web.workbench.canvas.camera.unavailable"));
+        }
+    }, [sessionId, sessionRunning, t, uploading]);
+
+    const startCameraRecording = useCallback(() => {
+        if (!cameraStream || cameraRecording || sessionRunning) return;
+        const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+        const mimeType = candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+        cameraChunksRef.current = [];
+        discardCameraRecordingRef.current = false;
+        const recorder = new MediaRecorder(cameraStream, mimeType ? { mimeType } : undefined);
+        recorder.ondataavailable = (event) => { if (event.data.size > 0) cameraChunksRef.current.push(event.data); };
+        recorder.onstop = () => {
+            const chunks = cameraChunksRef.current;
+            cameraChunksRef.current = [];
+            cameraRecorderRef.current = null;
+            if (!discardCameraRecordingRef.current && chunks.length) {
+                const type = recorder.mimeType || mimeType || "video/webm";
+                const extension = type.includes("mp4") ? "mp4" : "webm";
+                const file = new File(chunks, `canvas-motion-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`, { type });
+                void uploadFiles([file], undefined, "canvas_camera");
+            }
+        };
+        recorder.start(1000);
+        cameraRecorderRef.current = recorder;
+        setCameraSeconds(0);
+        setCameraRecording(true);
+    }, [cameraRecording, cameraStream, sessionRunning, uploadFiles]);
+
+    const finishCameraRecording = useCallback(() => {
+        if (!cameraRecorderRef.current || cameraRecorderRef.current.state === "inactive") return;
+        discardCameraRecordingRef.current = false;
+        cameraRecorderRef.current.stop();
+        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
+        setCameraStream(null);
+        setCameraRecording(false);
+        setCameraOpen(false);
+    }, []);
+
+    useEffect(() => {
+        if (cameraPreviewRef.current) cameraPreviewRef.current.srcObject = cameraStream;
+    }, [cameraStream]);
+
+    useEffect(() => {
+        if (!cameraRecording) return;
+        const startedAt = Date.now();
+        const timer = window.setInterval(() => setCameraSeconds(Math.floor((Date.now() - startedAt) / 1000)), 250);
+        return () => window.clearInterval(timer);
+    }, [cameraRecording]);
+
+    useEffect(() => () => {
+        discardCameraRecordingRef.current = true;
+        const recorder = cameraRecorderRef.current;
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+        cameraRecorderRef.current = null;
+        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
+        setCameraStream(null);
+        setCameraRecording(false);
+        setCameraSeconds(0);
+        setCameraOpen(false);
+    }, [sessionId]);
 
     const freezeMask = useCallback(async (node: CanvasNode, resource: CanvasResource) => {
         if (!node.mask?.strokes.length) return null;
@@ -1773,7 +1966,7 @@ export function CreativeArtifactCanvas({
         }
     }, [composer, sessionRunning, submitting]);
 
-    const runGraph = useCallback(async (targetNodeIds: string[]) => {
+    const runGraph = useCallback(async (targetNodeIds: string[], acknowledgeWarnings = false) => {
         if (sessionRunning || submitting || graphSubmittingRef.current || !onSubmitTask) return;
         const targetIds = Array.from(new Set(targetNodeIds.filter(Boolean)));
         graphSubmittingRef.current = true;
@@ -1795,6 +1988,26 @@ export function CreativeArtifactCanvas({
             const validationPayload = await validationResponse.json().catch(() => ({}));
             if (!validationResponse.ok) throw new Error(String(validationPayload?.detail || validationPayload?.error || `HTTP ${validationResponse.status}`));
             if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            const engineIssues: CanvasPreflightIssue[] = (Array.isArray(validationPayload?.issues) ? validationPayload.issues : []).flatMap((raw: unknown) => {
+                const issue = recordOf(raw);
+                const severity = issue.severity === "warning" ? "warning" : "error";
+                const code = String(issue.code || "invalid-graph") as CanvasPreflightIssue["code"];
+                return [{
+                    severity,
+                    code,
+                    nodeId: String(issue.nodeId || ""),
+                    detail: String(issue.detail || ""),
+                    capability: String(issue.capability || ""),
+                    remediation: String(issue.remediation || ""),
+                } satisfies CanvasPreflightIssue];
+            });
+            setEnginePreflightIssues(engineIssues);
+            const hasEngineErrors = engineIssues.some((issue) => issue.severity === "error") || validationPayload?.valid === false;
+            if (hasEngineErrors || (!acknowledgeWarnings && engineIssues.some((issue) => issue.severity === "warning"))) {
+                setPreflightTargets(targetIds);
+                setPreflightOpen(true);
+                return;
+            }
             const plan = recordOf(validationPayload?.plan);
             const refs = (Array.isArray(plan.resourceRefs) ? plan.resourceRefs : []).flatMap((raw: unknown) => {
                 const reference = recordOf(raw);
@@ -1855,6 +2068,7 @@ export function CreativeArtifactCanvas({
         const actionIds = getExecutionActionIds(snapshot, targets);
         const issues = getCanvasPreflight(snapshot, actionDefinitions, graphRuntime).filter((issue) => actionIds.has(issue.nodeId));
         setPreflightTargets(targets);
+        setEnginePreflightIssues([]);
         if (issues.length) {
             setPreflightOpen(true);
             return;
@@ -1915,6 +2129,7 @@ export function CreativeArtifactCanvas({
             graphRevisionRef.current = Number(payload.revision || 0);
             setGraphRevision(graphRevisionRef.current);
             setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
+            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
             lastSavedGraphRef.current = JSON.stringify(graph);
             commitSnapshot(graph);
             setTemplateOpen(false);
@@ -1960,7 +2175,7 @@ export function CreativeArtifactCanvas({
     const composerUsesPsdLayers = composer?.action.parameterEditor === "psd_layers";
     const composerUsesPsd = composerUsesPsdComposition || composerUsesPsdLayers;
     const composerPreferredWidth = composerUsesTimeline || composerUsesPsd ? 620 : 340;
-    const composerBoardWidth = boardSize.width || boardRef.current?.clientWidth || 380;
+    const composerBoardWidth = boardSize.width || 380;
     const composerPanelWidth = Math.min(composerPreferredWidth, Math.max(280, composerBoardWidth - 24));
     const composerHalfWidth = composerPanelWidth / 2;
     const composerLeft = composer
@@ -2303,7 +2518,7 @@ export function CreativeArtifactCanvas({
                                         </div>
                                     ) : resource ? (
                                         <>
-                                            <CreativeCanvasMedia resource={resource} active={selected} visible={visibleNodeIds.has(node.nodeId)} onDimensions={node.kind === "resource" ? (dimensions) => updateNodeDimensions(node.nodeId, dimensions) : undefined} />
+                                            <CreativeCanvasMedia resource={resource} active={selected} visible={visible && visibleNodeIds.has(node.nodeId)} onDimensions={node.kind === "resource" ? (dimensions) => updateNodeDimensions(node.nodeId, dimensions) : undefined} />
                                             <CreativeCanvasMaskOverlay mask={node.mask} />
                                             {node.kind === "result" && versions.length > 1 ? (
                                                 <div className="absolute bottom-2 right-2 flex max-w-[70%] flex-row-reverse gap-1 rounded-lg border border-white/70 bg-background/80 p-1 shadow-lg backdrop-blur dark:border-white/10">
@@ -2338,11 +2553,9 @@ export function CreativeArtifactCanvas({
                                 const portDisabled = sessionRunning || fixedResultInput;
                                 const verdict = connectionVerdicts.get(node.nodeId);
                                 const candidatePort = connectionDraft
-                                    ? (interactionRef.current?.kind === "connect"
-                                        ? (interactionRef.current.fromPort === "right" ? "left" : "right")
-                                        : interactionRef.current?.kind === "reconnect"
-                                            ? (interactionRef.current.movingEnd === "from" ? "right" : "left")
-                                            : null)
+                                    ? (connectionDraft.gesture.kind === "connect"
+                                        ? (connectionDraft.gesture.fromPort === "right" ? "left" : "right")
+                                        : (connectionDraft.gesture.movingEnd === "from" ? "right" : "left"))
                                     : null;
                                 const candidate = candidatePort === port && node.nodeId !== connectionDraft?.fromNodeId;
                                 const portLabel = candidate && verdict?.issue ? connectionIssueLabel(verdict.issue) : fixedResultInput ? t("web.workbench.canvas.graph.resultInputFixed") : port === "left" ? t("web.workbench.canvas.graph.connectUpstream") : t("web.workbench.canvas.graph.connectDownstream");
@@ -2399,10 +2612,11 @@ export function CreativeArtifactCanvas({
             <div data-canvas-wheel-isolation className="custom-scrollbar absolute left-3 top-3 z-30 flex max-w-[calc(100%-176px)] items-center gap-1 overflow-x-auto rounded-2xl border border-white/80 bg-background/88 p-1.5 shadow-[0_12px_36px_rgba(15,23,42,.12)] backdrop-blur-xl dark:border-white/10" onWheel={(event) => event.stopPropagation()}>
                 <button type="button" onClick={() => setTool("select")} className={cn("rounded-xl p-2", tool === "select" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground")} aria-label={t("web.workbench.canvas.graph.selectTool")}><MousePointer2 className="h-4 w-4" /></button>
                 <button type="button" onClick={() => setTool("pan")} className={cn("rounded-xl p-2", tool === "pan" ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground")} aria-label={t("web.workbench.canvas.graph.panTool")}><Hand className="h-4 w-4" /></button>
-                <button type="button" disabled={sessionRunning || !canUndo} onClick={() => undo()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.undo")} title={`${t("web.workbench.canvas.graph.undo")} Ctrl+Z`}><Undo2 className="h-4 w-4" /></button>
-                <button type="button" disabled={sessionRunning || !canRedo} onClick={() => redo()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.redo")} title={`${t("web.workbench.canvas.graph.redo")} Ctrl+Shift+Z`}><Redo2 className="h-4 w-4" /></button>
+                <button type="button" disabled={sessionRunning || historyApplying || !graphHistory.canUndo} onClick={() => void applyGraphHistory("undo")} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.undo")} title={`${t("web.workbench.canvas.graph.undo")} Ctrl+Z`}><Undo2 className="h-4 w-4" /></button>
+                <button type="button" disabled={sessionRunning || historyApplying || !graphHistory.canRedo} onClick={() => void applyGraphHistory("redo")} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.redo")} title={`${t("web.workbench.canvas.graph.redo")} Ctrl+Shift+Z`}><Redo2 className="h-4 w-4" /></button>
                 <span className="mx-0.5 h-5 w-px bg-border" />
                 <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label={t("web.workbench.canvas.graph.upload")}>{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}</button>
+                <button type="button" disabled={sessionRunning || uploading || cameraOpen} onClick={() => void openCamera()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label={t("web.workbench.canvas.camera.open")} title={t("web.workbench.canvas.camera.open")}><Camera className="h-4 w-4" /></button>
                 <button type="button" onClick={() => selectedIds.length ? focusNodes(selectedIds) : fitView()} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={selectedIds.length ? t("web.workbench.canvas.graph.focusSelection") : t("web.workbench.canvas.graph.fit")}><Focus className="h-4 w-4" /></button>
                 <button type="button" disabled={sessionRunning || snapshot.nodes.length < 2} onClick={() => organizeLayout(selectedIds.length > 1 ? selectedIds : [])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.organizeLayout")} title={t("web.workbench.canvas.graph.organizeLayout")}><LayoutGrid className="h-4 w-4" /></button>
                 <button type="button" onClick={() => zoomAtCenter(-0.15)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.graph.zoomOut")}><ZoomOut className="h-4 w-4" /></button>
@@ -2426,6 +2640,22 @@ export function CreativeArtifactCanvas({
                 </div>
             ) : null}
 
+            {cameraOpen ? (
+                <div className="absolute left-1/2 top-20 z-[70] w-[min(520px,calc(100%-24px))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/80 bg-neutral-950 shadow-[0_24px_72px_rgba(0,0,0,.38)] dark:border-white/10" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                    <div className="relative aspect-video bg-black">
+                        {cameraStream ? <video ref={cameraPreviewRef} autoPlay muted playsInline className="h-full w-full object-contain" /> : <div className="flex h-full items-center justify-center text-white/65"><Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" /></div>}
+                        {cameraRecording ? <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/70 px-2 py-1 text-[10px] tabular-nums text-white"><span className="h-2 w-2 rounded-full bg-red-500" />{Math.floor(cameraSeconds / 60).toString().padStart(2, "0")}:{(cameraSeconds % 60).toString().padStart(2, "0")}</span> : null}
+                    </div>
+                    <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-white">
+                        <span className="text-[11px] font-medium">{cameraRecording ? t("web.workbench.canvas.camera.recording") : t("web.workbench.canvas.camera.ready")}</span>
+                        <div className="flex items-center gap-1.5">
+                            {!cameraRecording ? <button type="button" disabled={!cameraStream} onClick={startCameraRecording} className="grid h-9 w-9 place-items-center rounded-full bg-red-500 text-white hover:bg-red-600 disabled:opacity-35" aria-label={t("web.workbench.canvas.camera.start")} title={t("web.workbench.canvas.camera.start")}><span className="h-3.5 w-3.5 rounded-full bg-white" /></button> : <button type="button" onClick={finishCameraRecording} className="grid h-9 w-9 place-items-center rounded-full bg-white text-neutral-950 hover:bg-white/85" aria-label={t("web.workbench.canvas.camera.stop")} title={t("web.workbench.canvas.camera.stop")}><Square className="h-3.5 w-3.5 fill-current" /></button>}
+                            <button type="button" onClick={() => closeCamera(true)} className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20" aria-label={t("web.workbench.canvas.camera.discard")} title={t("web.workbench.canvas.camera.discard")}><X className="h-4 w-4" /></button>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
             {preflightOpen ? (
                 <CanvasPreflightPanel
                     issues={visiblePreflightIssues}
@@ -2436,7 +2666,7 @@ export function CreativeArtifactCanvas({
                     closeLabel={t("web.workbench.canvas.graph.close")}
                     issueLabel={preflightIssueLabel}
                     onFocus={(nodeId) => { setSelectedIds([nodeId]); focusNodes([nodeId]); }}
-                    onRun={() => { setPreflightOpen(false); void runGraph(preflightTargets); }}
+                    onRun={() => { setPreflightOpen(false); void runGraph(preflightTargets, true); }}
                     onClose={() => setPreflightOpen(false)}
                 />
             ) : null}
@@ -2512,7 +2742,7 @@ export function CreativeArtifactCanvas({
                                         }}
                                         className="block w-full disabled:cursor-not-allowed disabled:opacity-55"
                                     >
-                                        <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact /></span>
+                                        <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact visible={visible} /></span>
                                         <span className="flex items-center gap-1 border-t border-border/50 px-1.5 py-1.5"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" /><span className="truncate text-[9px] font-medium">{resource.name}</span></span>
                                     </button>
                                     <select value={resource.folderId || ""} onChange={(event) => void moveWorkspaceAsset(resource.id, event.target.value)} disabled={sessionRunning} aria-label={t("web.workbench.canvas.library.organize", { name: resource.name })} className="h-6 w-full border-0 border-t border-border/50 bg-transparent px-1 text-[8px] text-muted-foreground outline-none">
@@ -2582,7 +2812,7 @@ export function CreativeArtifactCanvas({
             {edgeNote ? (
                 <div
                     data-canvas-wheel-isolation
-                    style={{ left: Math.min(Math.max(176, edgeNote.x), Math.max(176, (boardRef.current?.clientWidth || 380) - 176)), top: Math.min(Math.max(84, edgeNote.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)) }}
+                    style={{ left: Math.min(Math.max(176, edgeNote.x), Math.max(176, (boardSize.width || 380) - 176)), top: Math.min(Math.max(84, edgeNote.y), Math.max(84, (boardSize.height || 420) - 150)) }}
                     className="absolute z-[70] w-[340px] -translate-x-1/2 rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10"
                     onPointerDown={(event) => event.stopPropagation()}
                     onWheel={(event) => event.stopPropagation()}
@@ -2600,8 +2830,8 @@ export function CreativeArtifactCanvas({
                         left: composerLeft,
                         width: composerPanelWidth,
                         top: composerUsesTimeline || composerUsesPsd
-                            ? Math.min(Math.max(12, composer.y), Math.max(12, (boardRef.current?.clientHeight || 520) - 430))
-                            : Math.min(Math.max(84, composer.y), Math.max(84, (boardRef.current?.clientHeight || 420) - 150)),
+                            ? Math.min(Math.max(12, composer.y), Math.max(12, (boardSize.height || 520) - 430))
+                            : Math.min(Math.max(84, composer.y), Math.max(84, (boardSize.height || 420) - 150)),
                     }}
                     className="absolute z-[70] max-h-[calc(100%-24px)] -translate-x-1/2 overflow-y-auto rounded-[18px] border border-white/80 bg-background/96 p-2 shadow-[0_24px_72px_rgba(15,23,42,.25)] backdrop-blur-xl dark:border-white/10"
                     onPointerDown={(event) => event.stopPropagation()}
@@ -2657,7 +2887,7 @@ export function CreativeArtifactCanvas({
                     <div className="min-h-0 flex-1 overflow-auto bg-black/5 p-2">
                         {mediaTypeOf(inspectResource) === "psd" ? (
                             <CreativeCanvasPsdLayerEditor sessionId={sessionId} resource={inspectResource} edits={[]} onChange={() => undefined} readOnly />
-                        ) : <CreativeCanvasMedia resource={inspectResource} inspect />}
+                        ) : <CreativeCanvasMedia resource={inspectResource} inspect visible={visible} />}
                     </div>
                 </div>
             ) : null}

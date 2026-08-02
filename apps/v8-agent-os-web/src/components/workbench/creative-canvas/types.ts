@@ -173,6 +173,19 @@ export type CanvasGraphRuntime = {
     updatedAt?: string;
 };
 
+export type CanvasGraphHistory = {
+    canUndo: boolean;
+    canRedo: boolean;
+    undoDepth: number;
+    redoDepth: number;
+    lastCommand?: {
+        commandId?: string;
+        direction?: "forward" | "undo" | "redo";
+        kind?: string;
+        createdAt?: string;
+    };
+};
+
 export type CanvasWorkflowTemplate = {
     templateId: string;
     title: string;
@@ -215,6 +228,9 @@ export type ConnectionDraft = {
     fromNodeId: string;
     fromPort: CanvasPort;
     target: { x: number; y: number };
+    gesture:
+        | { kind: "connect"; fromNodeId: string; fromPort: CanvasPort }
+        | { kind: "reconnect"; edgeId: string; movingEnd: "from" | "to"; fixedNodeId: string; fixedPort: CanvasPort };
 };
 
 export type PendingConnectionDrop = {
@@ -249,3 +265,4 @@ export const EMPTY_SNAPSHOT: CanvasSnapshot = {
     viewport: { x: 24, y: 24, scale: 1 },
 };
 export const EMPTY_GRAPH_RUNTIME: CanvasGraphRuntime = { status: "idle", nodeStates: {}, outputs: {} };
+export const EMPTY_GRAPH_HISTORY: CanvasGraphHistory = { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 };

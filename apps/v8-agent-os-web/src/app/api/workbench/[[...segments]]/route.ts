@@ -7,7 +7,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 const ALLOWED_PATHS = [
     /^sessions\/[A-Za-z0-9_-]+\/files(?:\/(?:resolve|read))?$/,
     /^sessions\/[A-Za-z0-9_-]+\/media\/(?:reconcile|probe|assets(?:\/[A-Za-z0-9_-]+\/(?:use|placement|content))?|folders(?:\/[A-Za-z0-9_-]+)?)$/,
-    /^sessions\/[A-Za-z0-9_-]+\/canvas\/(?:actions|graph(?:\/validate)?|templates(?:\/[A-Za-z0-9_.:-]+(?:\/instantiate)?)?)$/,
+    /^sessions\/[A-Za-z0-9_-]+\/canvas\/(?:actions|preview\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+|motion\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+\/(?:manifest|frames\/\d+)|graph(?:\/validate|\/history\/(?:undo|redo))?|templates(?:\/[A-Za-z0-9_.:-]+(?:\/instantiate)?)?)$/,
 ];
 
 function enginePath(segments: string[]) {
@@ -49,6 +49,7 @@ async function proxy(
             headers: {
                 "Content-Type": req.headers.get("Content-Type") || "application/json",
                 "x-v8-agent-os-user-email": session.user.email,
+                ...(req.headers.get("Range") ? { Range: req.headers.get("Range")! } : {}),
             },
             body: method === "POST" ? await req.text() : undefined,
             cache: "no-store",
@@ -61,11 +62,9 @@ async function proxy(
         if (!response.body) {
             return new NextResponse(null, { status: response.status });
         }
-        const headers = new Headers({
-            "Content-Type": contentType,
-            "Cache-Control": "no-store",
-        });
-        for (const key of ["Content-Disposition", "ETag", "X-V8-Workspace-Path"]) {
+        const headers = new Headers({ "Content-Type": contentType });
+        headers.set("Cache-Control", response.headers.get("Cache-Control") || "no-store");
+        for (const key of ["Content-Disposition", "Content-Range", "Content-Length", "Accept-Ranges", "ETag", "X-V8-Workspace-Path", "X-V8-Canvas-Preview"]) {
             const value = response.headers.get(key);
             if (value) headers.set(key, value);
         }

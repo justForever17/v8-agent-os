@@ -1272,6 +1272,13 @@ async def upsert_model_binding(data: dict = Body(...)):
         }
         if not model_patch:
             model_patch = {key: value for key, value in data.items() if key not in reserved}
+        media_limits = dict(model_patch.get("mediaLimits") or {})
+        endpoint_binding = dict(model_patch.get("endpointBinding") or {})
+        if str(endpoint_binding.get("adapter") or media_limits.get("adapter") or "").strip().lower() == "comfyui_workflow":
+            from runtimes.creative_media.comfyui_workflow import validate_comfyui_workflow
+
+            media_limits["comfyuiWorkflow"] = validate_comfyui_workflow(media_limits.get("comfyuiWorkflow"))
+            model_patch["mediaLimits"] = media_limits
         result = model_control_plane.upsert_model_record(
             provider_id=provider_id,
             model_id=model_id,

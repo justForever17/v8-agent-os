@@ -33,9 +33,26 @@ export type ConnectionVerdict = {
 
 export type CanvasPreflightIssue = {
     severity: "error" | "warning";
-    code: "missing-input" | "missing-prompt" | "missing-configuration" | "failed" | "stale";
+    code:
+        | "missing-input"
+        | "missing-prompt"
+        | "missing-configuration"
+        | "failed"
+        | "stale"
+        | "unbound-input"
+        | "incompatible-media"
+        | "resource-unavailable"
+        | "cycle"
+        | "result-slot"
+        | "invalid-graph"
+        | "provider-unconfigured"
+        | "local-runtime-unavailable"
+        | "network-required"
+        | "possible-cost";
     nodeId: string;
     detail?: string;
+    capability?: string;
+    remediation?: string;
 };
 
 export type CanvasBounds = {

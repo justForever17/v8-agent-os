@@ -83,7 +83,6 @@ _VOICE_MODEL_TOKENS = {
 _MUSIC_MODEL_TOKENS = {"music", "song", "mureka", "suno"}
 
 _PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
-    "video.action_transfer",
     "video.lipsync",
     "video.avatar",
     "video.replacement",
@@ -93,7 +92,6 @@ _PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
 
 _PLUGIN_ONLY_MEDIA_MODEL_IDS = {
     "wan2.2-animate-mix",
-    "wan2.2-animate-move",
     "wan2.2-s2v",
     "wan2.7-videoedit",
 }
@@ -443,6 +441,8 @@ class ModelProviderCatalog:
                 for item in registry_operations
                 if str(item).strip() and (not prefix or str(item).strip().startswith(prefix))
             ])
+            if str(model_id).strip().lower() != "wan2.2-animate-move":
+                exact_operations = [item for item in exact_operations if item != "video.action_transfer"]
             if exact_operations:
                 return exact_operations
         return _creative_media_public_operations(self._media_operation_kinds(provider_entry, modality))

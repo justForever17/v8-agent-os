@@ -320,6 +320,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                             messages={props.messages}
                             workspacePath={props.workspacePath}
                             sessionRunning={props.sessionRunning}
+                            visible={document.kind === "creative_canvas"}
                             onSubmitTask={props.onSubmitCanvasTask}
                         />
                     </div>

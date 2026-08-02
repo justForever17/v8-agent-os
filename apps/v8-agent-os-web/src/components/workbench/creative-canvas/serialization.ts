@@ -46,7 +46,7 @@ export function toWebResourceUrl(value: unknown) {
 
 export function mediaTypeOf(resource: Pick<CanvasResource, "name" | "mimeType" | "mediaType">): CreativeCanvasMediaType {
     const result = creativeCanvasMediaType(resource);
-    if (["image", "video", "audio", "model_3d", "psd", "document", "text", "mask", "metadata"].includes(result)) {
+    if (["image", "video", "audio", "model_3d", "psd", "motion", "document", "text", "mask", "metadata"].includes(result)) {
         return result as CreativeCanvasMediaType;
     }
     return "unknown";
@@ -76,6 +76,7 @@ export function normalizeResource(
         : explicitResourceRef;
     const base: CanvasResource = {
         id,
+        sessionId,
         origin,
         name,
         mimeType,
@@ -99,9 +100,7 @@ export function normalizeResource(
     return {
         ...base,
         mediaType,
-        ...(mediaType === "psd" ? {
-            previewUrl: `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/psd/${origin}/${encodeURIComponent(id)}/preview`,
-        } : {}),
+        previewUrl: `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/preview/${origin}/${encodeURIComponent(id)}`,
     };
 }
 

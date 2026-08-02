@@ -225,6 +225,8 @@ def test_catalog_bridges_creative_media_provider_matrix():
         assert normalized["mediaLimits"]["operationKinds"]
     assert providers["aliyun_bailian_image"]["logoAsset"].endswith("alibabacloud-color.svg")
     assert "video.action_transfer" not in providers["aliyun_bailian_video"]["models"][0]["operationKinds"]
+    animate_move = next(item for item in providers["aliyun_bailian_video"]["models"] if item["id"] == "wan2.2-animate-move")
+    assert "video.action_transfer" in animate_move["operationKinds"]
     assert providers["zhipu_bigmodel_image"]["models"][0]["id"] == "glm-image"
     assert providers["openai_sora_video"]["models"][0]["mediaLimits"]["operationCapabilityProfiles"]["video.text_to_video"]["nativeAudio"] is True
     assert providers["volcengine_seedance"]["models"][0]["mediaLimits"]["operationCapabilityProfiles"]["video.first_last_frame"]["referenceInputs"]["image"]["maxCount"] == 9

@@ -876,11 +876,11 @@ def test_model_preferences_are_scoped_by_operation_kind(monkeypatch):
 
     assert "image.generate" in prefs["policies"]
     assert "video.first_last_frame" in prefs["policies"]
-    assert "video.action_transfer" not in prefs["policies"]
+    assert "video.action_transfer" in prefs["policies"]
     assert any(item["source"] == "model_control_plane" for item in prefs["connectedOptions"])
     assert any(item["source"] == "mcp_or_env" for item in prefs["diagnosticCandidates"])
     assert all(item["operationKind"] == "video.first_last_frame" for item in prefs["policies"]["video.first_last_frame"]["models"])
-    assert all(item.get("operationKind") != "video.action_transfer" for item in prefs["connectedOptions"])
+    assert any(item.get("operationKind") == "video.action_transfer" for item in prefs["connectedOptions"])
     assert all(item.get("operationKind") != "video.action_transfer" for item in prefs["diagnosticCandidates"])
 
 

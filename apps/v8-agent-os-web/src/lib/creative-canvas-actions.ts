@@ -4,6 +4,7 @@ export type CreativeCanvasMediaType =
     | "audio"
     | "model_3d"
     | "psd"
+    | "motion"
     | "document"
     | "text"
     | "mask"
@@ -117,6 +118,7 @@ const ALL_MEDIA_TYPES: readonly CreativeCanvasMediaType[] = [
     "audio",
     "model_3d",
     "psd",
+    "motion",
     "document",
     "text",
     "mask",
@@ -172,7 +174,16 @@ const ONE_IMAGE = selection(["node", "selection"], 1, 1, ["image"]);
 const ONE_VIDEO = selection(["node", "selection"], 1, 1, ["video"]);
 const ONE_AUDIO = selection(["node", "selection"], 1, 1, ["audio"]);
 const ONE_PSD = selection(["node", "selection"], 1, 1, ["psd"]);
+const ONE_MODEL_3D = selection(["node", "selection"], 1, 1, ["model_3d"]);
 const ONE_AUDIO_OR_VIDEO = selection(["node", "selection"], 1, 1, ["audio", "video"]);
+const MOTION_AND_MODEL_3D = selection(["selection"], 2, 2, ["motion", "model_3d"], {
+    mediaCounts: [{ mediaType: "motion", min: 1, max: 1 }, { mediaType: "model_3d", min: 1, max: 1 }],
+    ordered: true,
+});
+const IMAGE_AND_VIDEO = selection(["selection"], 2, 2, ["image", "video"], {
+    mediaCounts: [{ mediaType: "image", min: 1, max: 1 }, { mediaType: "video", min: 1, max: 1 }],
+    ordered: true,
+});
 const ANY_SELECTION = selection(["node", "selection"], 1, undefined, ALL_MEDIA_TYPES, { ordered: true });
 const ANY_CONTEXT = selection(["canvas", "node", "selection", "edge"], 0, undefined, ALL_MEDIA_TYPES);
 
@@ -488,6 +499,42 @@ export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
         networkRequired: false,
         mayIncurCost: false,
         output: output("artifact", "audio_derivative", ["audio"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.extract_holistic_motion",
+        capability: "video.extract_holistic_motion",
+        selection: ONE_VIDEO,
+        requiresPrompt: false,
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "motion_clip", ["motion"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.transfer_action_to_character",
+        capability: "video.action_transfer",
+        selection: IMAGE_AND_VIDEO,
+        requiresPrompt: false,
+        networkRequired: true,
+        mayIncurCost: true,
+        output: output("artifact", "action_transfer_video", ["video"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.inspect_rigged_model",
+        capability: "model3d.inspect_rigged",
+        selection: ONE_MODEL_3D,
+        requiresPrompt: false,
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "rig_profile", ["document"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.retarget_motion_godot",
+        capability: "model3d.retarget_motion_godot",
+        selection: MOTION_AND_MODEL_3D,
+        requiresPrompt: false,
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "animated_model", ["model_3d"]),
     }),
 ];
 

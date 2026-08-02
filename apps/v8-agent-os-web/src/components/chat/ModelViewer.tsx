@@ -1,9 +1,10 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
-import { Bounds, Center, OrbitControls, useGLTF } from "@react-three/drei";
+import { Bounds, Center, OrbitControls, useAnimations, useGLTF } from "@react-three/drei";
 import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Box, FileWarning, Loader2 } from "lucide-react";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 
 interface ModelViewerProps {
     src: string;
@@ -14,9 +15,25 @@ interface ModelViewerProps {
     compact?: boolean;
 }
 
-function Model({ url }: { url: string }) {
-    const { scene } = useGLTF(url);
-    const copiedScene = useMemo(() => scene.clone(), [scene]);
+function Model({ url, active }: { url: string; active: boolean }) {
+    const { scene, animations } = useGLTF(url);
+    const copiedScene = useMemo(() => cloneSkeleton(scene), [scene]);
+    const { actions, names } = useAnimations(animations, copiedScene);
+
+    useEffect(() => {
+        const action = names.length ? actions[names[0]] : undefined;
+        if (!action) return;
+        if (!active) {
+            action.stop();
+            return;
+        }
+        action.reset().fadeIn(0.15).play();
+        return () => {
+            action.fadeOut(0.1);
+            action.stop();
+        };
+    }, [actions, active, names]);
+
     return <primitive object={copiedScene} />;
 }
 
@@ -98,7 +115,7 @@ export function ModelViewer({
                             shadows={!compact}
                             dpr={compact ? [1, 1.25] : [1, 1.5]}
                             camera={{ fov: 45, near: 0.01, far: 10000, position: [0, 0, 5] }}
-                            frameloop={rotate ? "always" : "demand"}
+                            frameloop={active ? "always" : "demand"}
                         >
                             <ambientLight intensity={0.75} />
                             <hemisphereLight args={["#ffffff", "#64748b", 1.15]} />
@@ -106,7 +123,7 @@ export function ModelViewer({
                             <directionalLight position={[-4, 2, -3]} intensity={0.55} />
                             <Bounds fit clip observe margin={1.2}>
                                 <Center>
-                                    <Model url={src} />
+                                    <Model url={src} active={active} />
                                 </Center>
                             </Bounds>
                             <OrbitControls

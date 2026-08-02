@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 
@@ -61,6 +61,10 @@ from .media_quality import (
     inspect_media_quality,
 )
 from .governed_media import trim_exact as trim_governed_media_exact
+from .motion_capture import MOTION_MIME_TYPE, extract_holistic_motion
+from .gltf_rig import inspect_rigged_model
+from .godot_retarget import retarget_motion_with_godot
+from .comfyui_workflow import bind_comfyui_inputs, select_comfyui_output, validate_comfyui_workflow
 from .model_routing import (
     configured_adapter,
     configured_operation_kinds,
@@ -93,7 +97,6 @@ MEDIA_MODEL_TYPE_TO_MODALITY = {
     "SPEECH": "voice",
     "MUSIC": "music",
     "MODEL3D": "model3d",
-    "WORKFLOW": "model3d",
 }
 DEFAULT_OPERATION_KINDS = {
     "image": ["image.generate"],
@@ -127,6 +130,7 @@ EXECUTABLE_OPERATION_KINDS = {
     "video.image_to_video",
     "video.first_last_frame",
     "video.reference_to_video",
+    "video.action_transfer",
     "voice.tts",
     "voice.design",
     "music.generate",
@@ -137,6 +141,9 @@ EXECUTABLE_OPERATION_KINDS = {
     "audio.trim_exact",
     "image.compose_psd",
     "image.edit_psd_layers",
+    "video.extract_holistic_motion",
+    "model3d.inspect_rigged",
+    "model3d.retarget_motion_godot",
 }
 GOVERNED_LOCAL_OPERATION_KINDS = {
     "video.extract_frame_exact",
@@ -144,6 +151,9 @@ GOVERNED_LOCAL_OPERATION_KINDS = {
     "audio.trim_exact",
     "image.compose_psd",
     "image.edit_psd_layers",
+    "video.extract_holistic_motion",
+    "model3d.inspect_rigged",
+    "model3d.retarget_motion_godot",
 }
 DASHSCOPE_VIDEO_OPERATION_KINDS = {
     "video.text_to_video",
@@ -160,7 +170,6 @@ DASHSCOPE_BUILTIN_MODELS = {
     "video.reference_to_video": ["wan2.7-r2v", "wan2.7-r2v-2026-06-12"],
 }
 PLUGIN_ONLY_OPERATION_KINDS = {
-    "video.action_transfer",
     "video.lipsync",
     "video.avatar",
     "video.replacement",
@@ -739,6 +748,10 @@ class CreativeMediaRuntime:
                 "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
                 "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐、3D 道具或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；AI 生成拼接长视频可由 Creative Media 产出各类素材，由 Engineering 组装可编辑页面/时间线。",
                 "语音边界：Creative Media 的 voice.tts / voice.design 生成项目媒体 artifact 与 reusable voice_id，不等同于聊天气泡 `<voice>text</voice>` 的系统 TTS 播放协议。",
+                "画布执行纪律：节点、参数、连线和关系说明只形成可恢复执行图，绝不自动执行；只有用户触发“运行全部 / 运行到此”后，才按图级预检通过的计划创建 job。",
+                "动作采集首版边界：video.extract_holistic_motion 仅接受单人视频或本地录制后上传的视频，依赖显式安装的动作采集能力包，产出带精确 ffprobe time base 与 QA 的 .v8motion；不要宣称实时骨架流、多人物或高精度面部动画。",
+                "3D 重定向首版边界：model3d.inspect_rigged / model3d.retarget_motion_godot 仅接受已绑骨 GLB/GLTF；重定向只使用用户在插件管理中心配置且离线校验通过的 Godot 3D 场景，不覆盖配置，不自动绑骨，不生成 root motion。",
+                "动作转移 Provider 边界：video.action_transfer 只按用户已配置的精确模型候选执行；内置 DashScope 适配器仅接受 wan2.2-animate-move 的角色图 + 公网动作视频合同，本地素材没有 provider 可访问 URL 时必须诚实失败，不得伪造上传或换用其他模型。",
             ],
             "metadata": {
                 "p1": True,
@@ -756,7 +769,7 @@ class CreativeMediaRuntime:
                 ],
                 "baseOperationKinds": sorted(EXECUTABLE_OPERATION_KINDS),
                 "optionalPluginCapabilities": plugin_items,
-                "artifactRange": ["image", "video", "audio", "music", "3D", "PSD", "recipe", "QA"],
+                "artifactRange": ["image", "video", "audio", "music", "3D", "PSD", "motion", "rig profile", "recipe", "QA"],
             },
         }
 
@@ -779,6 +792,7 @@ class CreativeMediaRuntime:
                 {"id": "minimax_video", "modalities": ["video"], "executable": True},
                 {"id": "volcengine_ark", "modalities": ["image", "video"], "executable": True},
                 {"id": "dashscope", "modalities": ["image", "video"], "executable": True},
+                {"id": "comfyui_workflow", "modalities": ["video"], "executable": True},
                 {"id": "v8_audio_tts", "modalities": ["voice"], "executable": True},
                 {"id": "minimax_tts", "modalities": ["voice"], "executable": True},
                 {"id": "minimax_music", "modalities": ["music"], "executable": True},
@@ -912,8 +926,19 @@ class CreativeMediaRuntime:
                 media_limits = dict(model_data.get("mediaLimits") or {})
                 model_type = str(model_data.get("type") or "").strip().upper()
                 modality = MEDIA_MODEL_TYPE_TO_MODALITY.get(model_type)
+                if model_type == "WORKFLOW":
+                    workflow_operations, _ = configured_operation_kinds(
+                        provider_meta=provider_meta,
+                        model_data=model_data,
+                    )
+                    workflow_modalities = {
+                        "voice" if str(item).split(".", 1)[0].lower() == "audio" else str(item).split(".", 1)[0].lower()
+                        for item in workflow_operations
+                        if "." in str(item)
+                    }
+                    modality = next(iter(workflow_modalities)) if len(workflow_modalities) == 1 else None
                 capabilities = dict(model_data.get("capabilities") or {})
-                if not modality:
+                if not modality and model_type != "WORKFLOW":
                     if capabilities.get("image"):
                         modality = "image"
                     elif capabilities.get("video"):
@@ -3119,6 +3144,8 @@ class CreativeMediaRuntime:
         mask_source_id = str(prepared.get("maskSourceId") or "").strip()
         if operation_kind in GOVERNED_LOCAL_OPERATION_KINDS:
             return prepared
+        if operation_kind == "video.action_transfer" and isinstance(prepared.get("canvasInputs"), list):
+            return prepared
         if not source_id and not mask_source_id:
             return prepared
         if operation_kind != "image.edit":
@@ -3193,6 +3220,9 @@ class CreativeMediaRuntime:
             "audio.trim_exact": ["session_source_or_workspace_media_asset"],
             "image.compose_psd": ["ordered_canvas_image_or_psd_inputs"],
             "image.edit_psd_layers": ["canvas_psd_input"],
+            "video.extract_holistic_motion": ["session_source_or_workspace_media_asset"],
+            "model3d.inspect_rigged": ["session_source_or_workspace_media_asset"],
+            "model3d.retarget_motion_godot": ["canvas_motion_and_rigged_model_inputs"],
         }
         return list(mapping.get(str(operation_kind or ""), []))
 
@@ -3317,6 +3347,8 @@ class CreativeMediaRuntime:
             return await self._poll_minimax_video_job(job)
         if job.get("adapter") == "dashscope" and job.get("providerTaskId"):
             return await self._poll_dashscope_task(job)
+        if job.get("adapter") == "comfyui_workflow" and job.get("providerTaskId"):
+            return await self._poll_comfyui_workflow_job(job)
         if job.get("adapter") == "mureka_music" and job.get("providerTaskId"):
             return await self._poll_mureka_music_job(job)
         if job.get("adapter") == "tencent_hunyuan_3d" and job.get("providerTaskId"):
@@ -3470,11 +3502,34 @@ class CreativeMediaRuntime:
         operation_kind: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        expected_modality = "image" if operation_kind.startswith("image.") else "video" if operation_kind.startswith("video.") else "voice"
+        expected_modality = (
+            "image" if operation_kind.startswith("image.")
+            else "video" if operation_kind.startswith("video.")
+            else "model3d" if operation_kind.startswith("model3d.")
+            else "voice"
+        )
         if modality != expected_modality:
             raise ValueError(f"operationKind={operation_kind} requires modality={expected_modality}")
         if operation_kind in {"image.compose_psd", "image.edit_psd_layers"}:
             return await self._create_governed_psd_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
+        if operation_kind == "video.extract_holistic_motion":
+            return await self._create_holistic_motion_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
+        if operation_kind == "model3d.inspect_rigged":
+            return await self._create_rig_inspection_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
+        if operation_kind == "model3d.retarget_motion_godot":
+            return await self._create_godot_retarget_job(
                 modality=modality,
                 operation_kind=operation_kind,
                 request=request,
@@ -3528,12 +3583,178 @@ class CreativeMediaRuntime:
                     pass
         return self._save_job(job)
 
+    async def _create_holistic_motion_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        job = self._new_job(
+            modality=modality,
+            adapter="mediapipe_holistic",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        output_path = self._output_path(job, "single-person-motion", ".v8motion")
+        try:
+            proof = await asyncio.to_thread(
+                extract_holistic_motion,
+                {**request, "operationKind": operation_kind},
+                output_path=output_path,
+            )
+            manifest = dict(proof.get("manifest") or {})
+            qa = dict(manifest.get("qa") or {})
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind="motion",
+                mime_type=MOTION_MIME_TYPE,
+                metadata={
+                    "origin": "governed_local_motion_capture",
+                    "motionCaptureProof": proof,
+                    "motionManifest": manifest,
+                    "providerInvoked": False,
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "mediapipe_holistic",
+                "proofSchema": proof.get("schema"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = str(qa.get("status") or "warning")
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+        return self._save_job(job)
+
+    async def _create_rig_inspection_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        job = self._new_job(
+            modality=modality,
+            adapter="gltf_rig_inspector",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        output_path = self._output_path(job, "rig-profile", ".json")
+        try:
+            profile = await asyncio.to_thread(inspect_rigged_model, request)
+            output_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind="document",
+                mime_type="application/json",
+                metadata={
+                    "origin": "governed_local_rig_inspection",
+                    "rigProfile": profile,
+                    "providerInvoked": False,
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "gltf_rig_inspector",
+                "profileSchema": profile.get("schema"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = "passed" if profile.get("readyForGodotRetarget") else "warning"
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+        return self._save_job(job)
+
+    async def _create_godot_retarget_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        job = self._new_job(
+            modality=modality,
+            adapter="godot_humanoid_v1",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        output_path = self._output_path(job, "retargeted-motion", ".glb")
+        try:
+            canvas_inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
+            motion_inputs = [item for item in canvas_inputs if str(item.get("portId") or "") == "motion"]
+            model_inputs = [item for item in canvas_inputs if str(item.get("portId") or "") == "model"]
+            if len(motion_inputs) != 1 or len(model_inputs) != 1:
+                raise ValueError("Godot retarget requires exactly one motion package and one rigged model")
+            session_id = str(request.get("sessionId") or "").strip()
+            motion_path = self._canvas_input_path(session_id=session_id, item=motion_inputs[0])
+            model_path = self._canvas_input_path(session_id=session_id, item=model_inputs[0])
+            proof = await asyncio.to_thread(
+                retarget_motion_with_godot,
+                motion_path=motion_path,
+                model_path=model_path,
+                output_path=output_path,
+                minimum_confidence=float(request.get("minimumConfidence") or 0.5),
+            )
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind="model3d",
+                mime_type="model/gltf-binary",
+                metadata={
+                    "origin": "governed_local_godot_retarget",
+                    "godotRetargetProof": proof,
+                    "providerInvoked": False,
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "godot_humanoid_v1",
+                "proofSchema": proof.get("schema"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = "passed"
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+        return self._save_job(job)
+
     @staticmethod
     def _canvas_input_path(*, session_id: str, item: dict[str, Any]) -> Path:
         origin = str(item.get("origin") or "").strip()
         resource_id = str(item.get("id") or "").strip()
         if not session_id or not origin or not resource_id:
-            raise ValueError("Canvas PSD input is missing its session-bound resource reference")
+            raise ValueError("Canvas input is missing its session-bound resource reference")
         if origin == "source":
             return workspace_media_library.resolve_source_path(session_id=session_id, source_id=resource_id)
         if origin == "artifact":
@@ -3544,7 +3765,7 @@ class CreativeMediaRuntime:
                 asset_id=resource_id,
                 require_session_use=True,
             )
-        raise ValueError("Canvas PSD input origin is not governed")
+        raise ValueError("Canvas input origin is not governed")
 
     async def _create_governed_psd_job(
         self,
@@ -3829,6 +4050,8 @@ class CreativeMediaRuntime:
                 job = await self._submit_volcengine_video_job(job, prepared_request)
             elif adapter == "dashscope":
                 job = await self._submit_dashscope_video_job(job, prepared_request)
+            elif adapter == "comfyui_workflow":
+                job = await self._submit_comfyui_workflow_job(job, prepared_request)
             elif adapter == "agnes_video":
                 job = await self._submit_agnes_video_job(job, prepared_request)
             elif adapter == "minimax_video":
@@ -5419,11 +5642,37 @@ class CreativeMediaRuntime:
                 watermark=request.get("watermark", False),
             )
         elif operation_kind == "video.action_transfer":
-            target_image = image_urls[0] if image_urls else self._public_url_or_error(request.get("targetImageUrl") or request.get("target_image_url"), field_name="targetImageUrl")
+            if model != "wan2.2-animate-move":
+                raise ValueError(
+                    "Configured DashScope model cannot execute video.action_transfer; "
+                    "select wan2.2-animate-move in the model control plane"
+                )
+            canvas_inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
+
+            def canvas_artifact_url(port_id: str) -> str:
+                for item in canvas_inputs:
+                    if str(item.get("portId") or "") != port_id:
+                        continue
+                    if str(item.get("origin") or "") != "artifact":
+                        raise ValueError(
+                            f"Canvas {port_id} input is local-only; the configured remote provider requires a public artifact URL"
+                        )
+                    url = self._artifact_provider_transport_url(str(item.get("id") or ""))
+                    if not url:
+                        raise ValueError(
+                            f"Canvas {port_id} artifact has no provider-accessible URL; use a provider artifact or a local workflow"
+                        )
+                    return url
+                return ""
+
+            target_image = image_urls[0] if image_urls else self._public_url_or_error(
+                request.get("targetImageUrl") or request.get("target_image_url"),
+                field_name="targetImageUrl",
+            ) or canvas_artifact_url("image")
             reference_video = self._public_url_or_error(
                 request.get("referenceVideoUrl") or request.get("reference_video_url") or request.get("actionVideoUrl") or request.get("action_video_url"),
                 field_name="referenceVideoUrl",
-            )
+            ) or canvas_artifact_url("video")
             if not target_image or not reference_video:
                 raise ValueError("DashScope video.action_transfer requires target image URL and reference video URL")
             input_payload.update({"image_url": target_image, "video_url": reference_video, "watermark": bool(request.get("watermark", False))})
@@ -5464,6 +5713,141 @@ class CreativeMediaRuntime:
         job["status"] = normalize_provider_status(output.get("task_status") or "PENDING", provider="dashscope")
         job["providerTaskId"] = task_id
         job["providerResponse"] = {"providerId": "aliyun_bailian_dashscope", "taskId": task_id, "model": model, "operationKind": operation_kind}
+        return self._save_job(job)
+
+    def _comfyui_binding(self, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, str]]:
+        binding = self._configured_endpoint_binding(request, default_model="comfyui-workflow")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model_data = dict(binding.get("modelData") or {})
+        adapter = str(binding.get("adapter") or "").strip().lower()
+        api_standard = str(
+            binding.get("apiStandard")
+            or provider_meta.get("api_standard")
+            or provider_meta.get("apiStandard")
+            or ""
+        ).strip().lower()
+        if adapter != "comfyui_workflow" or api_standard != "comfyui":
+            raise ValueError("Configured model is not bound to the ComfyUI workflow adapter")
+        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").strip().rstrip("/")
+        if not base_url:
+            raise ValueError("Configured ComfyUI Provider has no base URL")
+        workflow = validate_comfyui_workflow(dict(model_data.get("mediaLimits") or {}).get("comfyuiWorkflow"))
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        return binding, workflow, base_url, headers
+
+    async def _submit_comfyui_workflow_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+        _binding, workflow, base_url, headers = self._comfyui_binding(request)
+        session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+        canvas_inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
+        uploaded_inputs: dict[str, str] = {}
+        upload_proof: dict[str, dict[str, str]] = {}
+        for port_id in ("image", "video"):
+            matches = [item for item in canvas_inputs if str(item.get("portId") or "") == port_id]
+            if len(matches) != 1:
+                raise ValueError(f"ComfyUI action transfer requires exactly one Canvas {port_id} input")
+            source_path = self._canvas_input_path(session_id=session_id, item=matches[0])
+            mime_type = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
+            with source_path.open("rb") as source_file:
+                response = await self._request_multipart_json(
+                    "POST",
+                    self._join_api_path(base_url, "upload/image"),
+                    headers=headers,
+                    data={"type": "input", "subfolder": f"v8os/{job['jobId']}"},
+                    files={"image": (source_path.name, source_file, mime_type)},
+                    timeout=600,
+                )
+            filename = str(response.get("name") or "").strip()
+            subfolder = str(response.get("subfolder") or "").strip().replace("\\", "/")
+            folder_type = str(response.get("type") or "input").strip()
+            if not filename or "/" in filename or "\\" in filename or ".." in subfolder.split("/"):
+                raise RuntimeError("ComfyUI returned an unsafe uploaded input reference")
+            uploaded_inputs[port_id] = f"{subfolder}/{filename}".strip("/")
+            upload_proof[port_id] = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+
+        prompt = bind_comfyui_inputs(workflow, uploaded_inputs)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(base_url, "prompt"),
+            headers=headers,
+            json={"prompt": prompt, "client_id": f"v8os-{job['jobId']}"},
+            timeout=120,
+        )
+        prompt_id = str(response.get("prompt_id") or "").strip()
+        if not prompt_id:
+            raise RuntimeError("ComfyUI did not return a prompt id")
+        job["providerTaskId"] = prompt_id
+        job["providerRequestHash"] = self._provider_request_hash(prompt)
+        job["providerResponse"] = {
+            "providerId": str(job.get("providerId") or "comfyui"),
+            "promptId": prompt_id,
+            "workflowDigest": workflow["digest"],
+            "uploadedInputs": upload_proof,
+        }
+        job["status"] = "running"
+        return self._save_job(job)
+
+    async def _poll_comfyui_workflow_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        request = dict(job.get("request") or {})
+        _binding, workflow, base_url, headers = self._comfyui_binding(request)
+        prompt_id = str(job.get("providerTaskId") or "").strip()
+        history = await self._request_json(
+            "GET",
+            self._join_api_path(base_url, f"history/{quote(prompt_id, safe='')}"),
+            headers=headers,
+            timeout=30,
+        )
+        history_item = dict(history.get(prompt_id) or {})
+        selected = select_comfyui_output(workflow, history_item)
+        if selected is None:
+            status = dict(history_item.get("status") or {})
+            if str(status.get("status_str") or "").lower() == "error":
+                job["status"] = "failed"
+                job["error"] = "ComfyUI workflow execution failed"
+                job["completedAt"] = utc_now_iso()
+            elif status.get("completed") is True:
+                job["status"] = "failed"
+                job["error"] = "ComfyUI workflow completed without the configured output"
+                job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+
+        extension = Path(selected["filename"]).suffix.lower()
+        if extension not in VIDEO_EXTENSIONS:
+            job["status"] = "failed"
+            job["error"] = "ComfyUI action-transfer output is not a supported video file"
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+        output_path = self._output_path(job, "comfyui-action-transfer", extension)
+        query = urlencode(selected)
+        content_type = await self._download_provider_file(
+            f"{self._join_api_path(base_url, 'view')}?{query}",
+            output_path,
+            headers=headers,
+            timeout=600,
+        )
+        mime_type = content_type or mimetypes.guess_type(selected["filename"])[0] or "video/mp4"
+        if not mime_type.startswith("video/"):
+            output_path.unlink(missing_ok=True)
+            job["status"] = "failed"
+            job["error"] = "ComfyUI action-transfer output did not have a video content type"
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+        artifact = self._record_local_artifact(
+            file_path=output_path,
+            job=job,
+            kind="video",
+            mime_type=mime_type,
+            metadata={
+                "origin": "configured_comfyui_workflow",
+                "providerInvoked": True,
+                "workflowDigest": workflow["digest"],
+                "promptId": prompt_id,
+            },
+        )
+        job["artifacts"] = [artifact]
+        job["status"] = "succeeded"
+        job["qualityStatus"] = "not_run"
+        job["completedAt"] = utc_now_iso()
         return self._save_job(job)
 
     async def _poll_dashscope_task(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -5807,6 +6191,34 @@ class CreativeMediaRuntime:
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
             return response.json()
+
+    async def _download_provider_file(
+        self,
+        url: str,
+        destination: Path,
+        *,
+        headers: Optional[dict[str, str]] = None,
+        timeout: float = 600.0,
+    ) -> str:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        content_type = ""
+        try:
+            async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
+                async with client.stream("GET", url, headers=headers) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", errors="replace")
+                        raise RuntimeError(f"Provider download failed ({response.status_code}) at {url}: {body[:500]}")
+                    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+                    with destination.open("wb") as output:
+                        async for chunk in response.aiter_bytes():
+                            if chunk:
+                                output.write(chunk)
+            if not destination.is_file() or destination.stat().st_size <= 0:
+                raise RuntimeError("Provider download completed without a local file")
+            return content_type
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
 
 
 creative_media_runtime = runtime_registry.register(CreativeMediaRuntime())

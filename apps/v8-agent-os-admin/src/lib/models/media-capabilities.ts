@@ -33,6 +33,9 @@ const MEDIA_CAPABILITY_OPTIONS: Record<string, readonly MediaCapabilityOption[]>
         { id: "model3d.text_to_3d", labelKey: "app.admin.dashboard.model.hub.capability.model3d.textTo3d", operationKind: "model3d.generate" },
         { id: "model3d.image_to_3d", labelKey: "app.admin.dashboard.model.hub.capability.model3d.imageTo3d", operationKind: "model3d.generate" },
     ],
+    WORKFLOW: [
+        { id: "video.action_transfer", labelKey: "app.admin.dashboard.model.hub.capability.workflow.actionTransfer", operationKind: "video.action_transfer" },
+    ],
 };
 
 const PRIMARY_MODE_BY_OPERATION_KIND: Record<string, string> = {
@@ -47,6 +50,7 @@ const PRIMARY_MODE_BY_OPERATION_KIND: Record<string, string> = {
     "music.generate": "music.generate",
     "music.cover": "music.cover",
     "model3d.generate": "model3d.text_to_3d",
+    "video.action_transfer": "video.action_transfer",
 };
 
 function asStringList(value: unknown): string[] {

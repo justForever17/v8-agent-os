@@ -117,7 +117,7 @@ def _resource_path(request: dict[str, Any]) -> tuple[Path, dict[str, str]]:
     return workspace_media_library.resolve_asset_path(
         session_id=session_id,
         asset_id=workspace_asset_id,
-        require_session_use=True,
+        require_session_use=bool(request.get("requireSessionUse", True)),
     ), {"kind": "workspace_asset", "id": workspace_asset_id}
 
 
@@ -134,6 +134,18 @@ def _fingerprint(path: Path) -> str:
             handle.seek(max(0, stat.st_size - 1024 * 1024))
             digest.update(handle.read(1024 * 1024))
     return f"v8mf_{digest.hexdigest()}"
+
+
+def governed_ffmpeg_pair() -> tuple[str, str, str]:
+    return _ffmpeg_pair()
+
+
+def governed_media_fingerprint(path: Path) -> str:
+    return _fingerprint(path)
+
+
+def resolve_governed_media_path(request: dict[str, Any]) -> tuple[Path, dict[str, str]]:
+    return _resource_path(request)
 
 
 def _stream_header(ffprobe: str, path: Path) -> dict[str, Any]:

@@ -3,9 +3,11 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 from core.runtime_projection import (
+    format_durable_chat_messages,
     project_chat_messages_from_events,
     merge_authoritative_timeline_messages,
     project_runtime_timeline_from_events,
@@ -14,6 +16,83 @@ from core.runtime_projection import (
 
 
 class RuntimeProjectionContractTests(unittest.TestCase):
+    def test_durable_supervisor_message_uses_current_admin_display_profile(self):
+        rows = [
+            {
+                "id": "assistant_old",
+                "role": "assistant",
+                "content": "done",
+                "created_at": "2026-07-29T00:00:00Z",
+                "agent_id": "supervisor",
+                "agent_name": "Supervisor",
+                "agent_avatar": "old-avatar",
+                "agent_role_label": "SUPERVISOR",
+                "metadata": {"agentType": "supervisor"},
+            }
+        ]
+
+        with patch(
+            "core.runtime_projection.storage.get_supervisor_profile",
+            return_value={"name": "智能主管", "roleLabel": "主理人", "avatar": "new-avatar"},
+        ):
+            messages = format_durable_chat_messages(rows)
+
+        self.assertEqual(messages[0]["agentName"], "智能主管")
+        self.assertEqual(messages[0]["agentRoleLabel"], "主理人")
+        self.assertEqual(messages[0]["agentAvatar"], "new-avatar")
+        self.assertEqual(messages[0]["nodes"][0]["agentName"], "智能主管")
+
+    def test_durable_subagent_message_keeps_configured_identity(self):
+        rows = [
+            {
+                "id": "assistant_subagent",
+                "role": "assistant",
+                "content": "reviewed",
+                "created_at": "2026-07-29T00:00:00Z",
+                "agent_id": "reviewer",
+                "agent_name": "质量复核员",
+                "agent_avatar": "reviewer-avatar",
+                "agent_role_label": "验收",
+                "metadata": {"agentType": "agent"},
+            }
+        ]
+
+        messages = format_durable_chat_messages(rows)
+
+        self.assertEqual(messages[0]["agentName"], "质量复核员")
+        self.assertEqual(messages[0]["agentRoleLabel"], "验收")
+        self.assertEqual(messages[0]["agentAvatar"], "reviewer-avatar")
+
+    def test_agent_started_uses_canonical_id_not_configurable_labels(self):
+        events = [
+            {
+                "event_id": "evt_supervisor_started",
+                "run_id": "run_supervisor",
+                "seq": 1,
+                "topic": "agent.started",
+                "payload": {
+                    "agent": {
+                        "id": "supervisor",
+                        "name": "Supervisor",
+                        "avatar": "old-avatar",
+                        "roleLabel": "SUPERVISOR",
+                    }
+                },
+                "event_ts": "2026-07-29T00:00:00Z",
+                "source": {},
+            }
+        ]
+
+        with patch(
+            "core.runtime_projection.storage.get_supervisor_profile",
+            return_value={"name": "智能主管", "roleLabel": "主理人", "avatar": "new-avatar"},
+        ):
+            messages = project_chat_messages_from_events(events)
+
+        self.assertEqual(messages[0]["agentType"], "supervisor")
+        self.assertEqual(messages[0]["agentName"], "智能主管")
+        self.assertEqual(messages[0]["agentRoleLabel"], "主理人")
+
     def test_merge_prefers_richer_durable_assistant_content_for_same_run(self):
         projected_messages = [
             {

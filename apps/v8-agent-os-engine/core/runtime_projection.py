@@ -20,6 +20,43 @@ def _default_supervisor_profile() -> Dict[str, Any]:
         "agentRoleLabel": profile.get("roleLabel") or "主理人",
     }
 
+
+_SUPERVISOR_AGENT_IDS = {"supervisor", "system_supervisor", "system-supervisor"}
+
+
+def _canonical_agent_id(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_supervisor_agent_id(value: Any) -> bool:
+    return _canonical_agent_id(value) in _SUPERVISOR_AGENT_IDS
+
+
+def _durable_agent_profile(row: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    agent_id = (
+        row.get("agent_id")
+        or metadata.get("agentId")
+        or metadata.get("agent_id")
+        or metadata.get("ownerAgentId")
+        or metadata.get("owner_agent_id")
+    )
+    agent_kind = str(
+        metadata.get("agentType")
+        or metadata.get("agent_type")
+        or metadata.get("ownerAgentKind")
+        or metadata.get("owner_agent_kind")
+        or ""
+    ).strip().lower()
+    if row.get("role") == "assistant" and (
+        _is_supervisor_agent_id(agent_id) or agent_kind == "supervisor"
+    ):
+        return _default_supervisor_profile()
+    return {
+        "agentName": row.get("agent_name"),
+        "agentAvatar": row.get("agent_avatar"),
+        "agentRoleLabel": row.get("agent_role_label"),
+    }
+
 STATUS_LABELS = {
     "created": "待运行",
     "queued": "排队中",
@@ -435,6 +472,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
     for row in rows:
         created_at = row.get("created_at")
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        agent_profile = _durable_agent_profile(row, metadata)
         try:
             timestamp = int(datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp() * 1000) if created_at else 0
         except Exception:
@@ -448,9 +486,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
             "reasoningContent": row.get("reasoning_content"),
             "createdAt": row.get("created_at"),
             "timestamp": timestamp,
-            "agentName": row.get("agent_name"),
-            "agentAvatar": row.get("agent_avatar"),
-            "agentRoleLabel": row.get("agent_role_label"),
+            **agent_profile,
             "agentId": row.get("agent_id"),
             "images": row.get("images") or [],
             "metadata": metadata,
@@ -464,9 +500,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
                     "executionType": "reasoning",
                     "content": row.get("reasoning_content"),
                     "timestamp": timestamp,
-                    "agentName": row.get("agent_name"),
-                    "agentAvatar": row.get("agent_avatar"),
-                    "agentRoleLabel": row.get("agent_role_label"),
+                    **agent_profile,
                 }
             )
         if row.get("content"):
@@ -477,9 +511,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
                     "role": row.get("role"),
                     "content": row.get("content"),
                     "timestamp": timestamp,
-                    "agentName": row.get("agent_name"),
-                    "agentAvatar": row.get("agent_avatar"),
-                    "agentRoleLabel": row.get("agent_role_label"),
+                    **agent_profile,
                 }
             )
         tool_calls = row.get("tool_calls")
@@ -516,9 +548,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
                         "toolName": tool_name,
                         "args": tool_args,
                         "timestamp": timestamp,
-                        "agentName": row.get("agent_name"),
-                        "agentAvatar": row.get("agent_avatar"),
-                        "agentRoleLabel": row.get("agent_role_label"),
+                        **agent_profile,
                     }
                 )
                 if tool_result is not None:
@@ -531,9 +561,7 @@ def format_durable_chat_messages(rows: list[dict]) -> list[dict]:
                             "toolName": tool_name,
                             "result": tool_result,
                             "timestamp": timestamp,
-                            "agentName": row.get("agent_name"),
-                            "agentAvatar": row.get("agent_avatar"),
-                            "agentRoleLabel": row.get("agent_role_label"),
+                            **agent_profile,
                         }
                     )
             if invocations:
@@ -683,16 +711,16 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
 
         if topic == "agent.started":
             agent = payload.get("agent") or payload
+            agent_id = agent.get("id") or agent.get("agent_id") or event.get("agent_id")
+            is_supervisor = _is_supervisor_agent_id(agent_id)
+            default_profile = _default_supervisor_profile()
             active_agent_profile = {
-                "agentName": agent.get("name") or agent.get("agent_name") or "智能主管",
-                "agentAvatar": agent.get("avatar") or agent.get("agent_avatar") or _default_supervisor_profile().get("agentAvatar", ""),
-                "agentRoleLabel": agent.get("roleLabel") or agent.get("agent_role_label") or "主理人",
+                "agentName": default_profile["agentName"] if is_supervisor else agent.get("name") or agent.get("agent_name") or str(agent_id or "Agent"),
+                "agentAvatar": default_profile["agentAvatar"] if is_supervisor else agent.get("avatar") or agent.get("agent_avatar") or "",
+                "agentRoleLabel": default_profile["agentRoleLabel"] if is_supervisor else agent.get("roleLabel") or agent.get("agent_role_label") or "Agent",
             }
             assistant = ensure_assistant(event)
-            if (
-                active_agent_profile["agentName"] == "智能主管"
-                or active_agent_profile["agentRoleLabel"] == "主理人"
-            ):
+            if is_supervisor:
                 assistant["agentName"] = active_agent_profile["agentName"]
                 assistant["agentAvatar"] = active_agent_profile["agentAvatar"]
                 assistant["agentRoleLabel"] = active_agent_profile["agentRoleLabel"]

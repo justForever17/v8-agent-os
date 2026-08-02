@@ -12,6 +12,8 @@ export type ShellDesktopPetState = {
     enabled: boolean;
 };
 
+type ShellPickerResult = { ok: boolean; path?: string; cancelled?: boolean; error?: string };
+
 type ShellWindowApi = {
     isShell: true;
     minimize: () => void;
@@ -21,6 +23,8 @@ type ShellWindowApi = {
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;
+    selectGodotExecutable: () => Promise<ShellPickerResult>;
+    selectGodotProjectDirectory: () => Promise<ShellPickerResult>;
     getDesktopPetState: () => Promise<ShellDesktopPetState>;
     setDesktopPetEnabled: (enabled: boolean) => Promise<ShellDesktopPetState>;
     onDesktopPetStateChange: (callback: (state: ShellDesktopPetState) => void) => () => void;

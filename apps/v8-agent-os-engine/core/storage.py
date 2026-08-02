@@ -2594,7 +2594,7 @@ class StorageManager:
         if custom_agent:
             return {
                 "name": custom_agent.get("name") or default_name,
-                "roleLabel": custom_agent.get("description") or default_role,
+                "roleLabel": custom_agent.get("roleLabel") or custom_agent.get("description") or default_role,
                 "avatar": custom_agent.get("avatar") or default_avatar,
             }
         return {

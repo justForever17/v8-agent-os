@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -270,6 +271,105 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.failed")
 
 
+def test_runtime_episode_fenced_writes_reject_stale_lease_generation(tmp_path):
+    manager = DatabaseManager(tmp_path / "episode-generation-fence.db")
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "exercise generation fencing"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+
+    first = manager.claim_runtime_episode(worker_id="worker-a", lease_seconds=30, kinds=["research"])
+    assert first is not None
+    first_generation = first["leaseGeneration"]
+    assert manager.heartbeat_runtime_episode(
+        episode["episodeId"],
+        worker_id="worker-a",
+        lease_generation=first_generation,
+        progress="first generation",
+        lease_seconds=30,
+    ) is True
+
+    expired_at = "2000-01-01T00:00:00.000Z"
+    with manager.get_connection() as conn:
+        conn.execute(
+            "UPDATE runtime_episodes SET lease_expires_at = ? WHERE id = ?",
+            (expired_at, episode["episodeId"]),
+        )
+        conn.execute(
+            "UPDATE runtime_episode_queue SET lease_expires_at = ? WHERE episode_id = ?",
+            (expired_at, episode["episodeId"]),
+        )
+        conn.commit()
+
+    second = manager.claim_runtime_episode(worker_id="worker-b", lease_seconds=30, kinds=["research"])
+    assert second is not None
+    assert second["leaseGeneration"] == first_generation + 1
+    assert manager.heartbeat_runtime_episode(
+        episode["episodeId"],
+        worker_id="worker-a",
+        lease_generation=first_generation,
+        progress="late first generation",
+        lease_seconds=30,
+    ) is False
+    stale_handoff = manager.add_runtime_episode_handoff(
+        episode_id=episode["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=episode["episodeId"],
+            kind="research_handoff",
+            compact_summary="stale result",
+            status="ready",
+            confidence="high",
+        ),
+        worker_id="worker-a",
+        lease_generation=first_generation,
+    )
+    assert stale_handoff is None
+    assert manager.complete_runtime_episode(
+        episode["episodeId"],
+        state="completed",
+        worker_id="worker-a",
+        lease_generation=first_generation,
+    ) is None
+    current = manager.get_runtime_episode(episode["episodeId"])
+    assert current is not None
+    assert current["state"] == "active"
+    assert current["worker_id"] == "worker-b"
+    assert current["leaseGeneration"] == second["leaseGeneration"]
+    assert manager.list_runtime_episode_handoffs(episode["episodeId"]) == []
+
+
+def test_runtime_episode_fenced_complete_rejects_expired_matching_lease(tmp_path):
+    manager = DatabaseManager(tmp_path / "episode-expired-fence.db")
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "exercise expiry fencing"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    claimed = manager.claim_runtime_episode(worker_id="worker-a", lease_seconds=30, kinds=["research"])
+    assert claimed is not None
+    with manager.get_connection() as conn:
+        conn.execute(
+            "UPDATE runtime_episodes SET lease_expires_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00.000Z", episode["episodeId"]),
+        )
+        conn.commit()
+
+    assert manager.complete_runtime_episode(
+        episode["episodeId"],
+        state="completed",
+        worker_id="worker-a",
+        lease_generation=claimed["leaseGeneration"],
+    ) is None
+    stored = manager.get_runtime_episode(episode["episodeId"])
+    assert stored is not None
+    assert stored["state"] == "active"
+
+
 def test_run_cancel_stops_creative_media_executor_and_suppresses_late_progress(tmp_path, monkeypatch):
     manager = DatabaseManager(tmp_path / "cancel-active-episode.db")
     manager.create_or_update_session("session-cancel-active", "Cancel active episode")
@@ -357,6 +457,31 @@ def test_run_cancel_stops_creative_media_executor_and_suppresses_late_progress(t
             ).fetchall()
         ]
     assert [payload.get("progress", {}).get("summary") for payload in progress_payloads] == ["initial-model-progress"]
+
+
+def test_research_executor_keeps_renewing_its_lease_during_blocking_work(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    heartbeats: list[str] = []
+
+    def _blocking_research(_episode):
+        time.sleep(0.35)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(runner, "_execute_research_sync", _blocking_research)
+    monkeypatch.setattr(runner, "_heartbeat", lambda _episode_id, progress: heartbeats.append(progress))
+    monkeypatch.setattr(runtime_episode_runner_module, "_EPISODE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+    episode = {
+        "episodeId": "episode-blocking-research",
+        "kind": "research",
+    }
+
+    async def _scenario():
+        return await runner._await_episode_executor(episode, runner._execute_research(episode))
+
+    assert asyncio.run(_scenario()) == {"status": "ready"}
+    assert len(heartbeats) >= 2
+    assert set(heartbeats) == {"research: executor running"}
 
 
 def test_creative_media_deadline_cancels_executor_and_fails_without_retry(tmp_path, monkeypatch):

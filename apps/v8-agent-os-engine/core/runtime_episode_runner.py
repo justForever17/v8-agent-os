@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import hashlib
 import json
 import logging
@@ -58,6 +59,10 @@ class RuntimeEpisodeCancelled(asyncio.CancelledError):
     """Raised when the durable episode or its parent run is cancelled."""
 
 
+class RuntimeEpisodeLeaseLost(RuntimeError):
+    """Raised when a runner no longer owns the claimed episode generation."""
+
+
 class RuntimeEpisodeDeadlineExceeded(TimeoutError):
     """Raised when a governed runtime episode exceeds its wall-clock budget."""
 
@@ -76,7 +81,12 @@ class CreativeMediaExecutionContractError(ValueError):
 
 _EPISODE_CANCEL_POLL_SECONDS = 0.25
 _EPISODE_CANCEL_SETTLE_SECONDS = 1.0
+_EPISODE_HEARTBEAT_INTERVAL_SECONDS = 20.0
 _CREATIVE_MEDIA_EPISODE_DEADLINE_SECONDS = 300.0
+_RUNTIME_EPISODE_CLAIM_CONTEXT: ContextVar[tuple[str, str, int] | None] = ContextVar(
+    "runtime_episode_claim_context",
+    default=None,
+)
 
 
 def _episode_extension_route_context(inputs: dict[str, Any] | None) -> dict[str, Any]:
@@ -910,17 +920,33 @@ class RuntimeEpisodeRunner:
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         if self._episode_cancellation_requested(episode_id, run_id=run_id):
             return
+        claimed_worker_id = str(episode.get("worker_id") or episode.get("workerId") or "").strip()
+        try:
+            claimed_generation = int(episode.get("leaseGeneration") or episode.get("lease_generation") or 0)
+        except (TypeError, ValueError):
+            claimed_generation = 0
+        claim_context = (
+            (episode_id, claimed_worker_id, claimed_generation)
+            if episode_id and claimed_worker_id == self.worker_id and claimed_generation > 0
+            else None
+        )
+        claim_context_token = _RUNTIME_EPISODE_CLAIM_CONTEXT.set(claim_context)
         self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
             self._heartbeat(episode_id, "executor starting")
             episode, dependency_gate = self._prepare_cross_episode_dependencies(episode)
             if dependency_gate and dependency_gate.get("state") == "waiting_dependency":
-                waiting = db.complete_runtime_episode(
+                waiting = self._require_claim_write(
                     episode_id,
-                    state="waiting_dependency",
-                    error_code="cross_episode_dependency_active",
-                    error_message=str(dependency_gate.get("summary") or "Waiting for upstream runtime episode."),
-                    metadata={"dependencyGate": dependency_gate},
+                    db.complete_runtime_episode(
+                        episode_id,
+                        state="waiting_dependency",
+                        error_code="cross_episode_dependency_active",
+                        error_message=str(dependency_gate.get("summary") or "Waiting for upstream runtime episode."),
+                        metadata={"dependencyGate": dependency_gate},
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="persisting dependency wait state",
                 ) or {**episode, "state": "waiting_dependency"}
                 self._emit(
                     "runtime.episode.waiting",
@@ -968,11 +994,16 @@ class RuntimeEpisodeRunner:
                 handoff = self._generic_handoff(episode, status="failed", summary=f"No executor registered for {kind}.")
 
             self._raise_if_episode_cancelled(episode_id, run_id=run_id)
-            persisted_handoff = db.add_runtime_episode_handoff(
-                episode_id=episode_id,
-                handoff=handoff,
-                session_id=session_id,
-                run_id=run_id,
+            persisted_handoff = self._require_claim_write(
+                episode_id,
+                db.add_runtime_episode_handoff(
+                    episode_id=episode_id,
+                    handoff=handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                    **self._claim_fence_kwargs(episode_id),
+                ),
+                action="publishing the runtime handoff",
             )
             self._emit(
                 "handoff.ref.created",
@@ -983,13 +1014,18 @@ class RuntimeEpisodeRunner:
             )
             handoff_status = str(handoff.get("status") or "ready").strip().lower()
             if handoff_status in {"waiting_input", "awaiting_input", "needs_input"}:
-                waiting = db.complete_runtime_episode(
+                waiting = self._require_claim_write(
                     episode_id,
-                    state="waiting_input",
-                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
-                    error_code="runtime_input_required",
-                    error_message=str(handoff.get("compactSummary") or handoff.get("summary") or "Runtime input is required before execution can continue."),
-                    metadata={"handoff": persisted_handoff, "continuationRequest": handoff.get("continuationRequest") or {}},
+                    db.complete_runtime_episode(
+                        episode_id,
+                        state="waiting_input",
+                        result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                        error_code="runtime_input_required",
+                        error_message=str(handoff.get("compactSummary") or handoff.get("summary") or "Runtime input is required before execution can continue."),
+                        metadata={"handoff": persisted_handoff, "continuationRequest": handoff.get("continuationRequest") or {}},
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="persisting input wait state",
                 ) or {**episode, "state": "waiting_input"}
                 self._emit(
                     "runtime.episode.waiting_input",
@@ -1003,11 +1039,16 @@ class RuntimeEpisodeRunner:
                 waiting_state = "waiting_external" if target_kind in {"network_peer", "external_worker"} else "waiting"
                 if self._handoff_has_child_episodes(handoff):
                     waiting_state = "waiting_child"
-                waiting = db.complete_runtime_episode(
+                waiting = self._require_claim_write(
                     episode_id,
-                    state=waiting_state,
-                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
-                    metadata={"handoff": persisted_handoff, "waitingReason": handoff_status},
+                    db.complete_runtime_episode(
+                        episode_id,
+                        state=waiting_state,
+                        result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                        metadata={"handoff": persisted_handoff, "waitingReason": handoff_status},
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="persisting runtime wait state",
                 ) or {**episode, "state": waiting_state}
                 self._emit(
                     "runtime.episode.waiting",
@@ -1022,10 +1063,15 @@ class RuntimeEpisodeRunner:
                 and handoff.get("recoverable") is not False
                 and self._can_retry(episode)
             ):
-                retry_episode = db.retry_runtime_episode(
+                retry_episode = self._require_claim_write(
                     episode_id,
-                    error_message=str(handoff.get("errorMessage") or handoff.get("compactSummary") or "episode failed; retry scheduled"),
-                    delay_seconds=self._retry_delay_seconds(episode),
+                    db.retry_runtime_episode(
+                        episode_id,
+                        error_message=str(handoff.get("errorMessage") or handoff.get("compactSummary") or "episode failed; retry scheduled"),
+                        delay_seconds=self._retry_delay_seconds(episode),
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="scheduling a runtime retry",
                 ) or {**episode, "state": "queued"}
                 self._emit(
                     "runtime.episode.retry_scheduled",
@@ -1042,13 +1088,18 @@ class RuntimeEpisodeRunner:
             else:
                 final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
             recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
-            completed = db.complete_runtime_episode(
+            completed = self._require_claim_write(
                 episode_id,
-                state=final_state,
-                result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
-                error_code=str(handoff.get("errorCode") or "") or None,
-                error_message=str(handoff.get("errorMessage") or "") or None,
-                metadata={"handoff": persisted_handoff, "recovery": recovery},
+                db.complete_runtime_episode(
+                    episode_id,
+                    state=final_state,
+                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                    error_code=str(handoff.get("errorCode") or "") or None,
+                    error_message=str(handoff.get("errorMessage") or "") or None,
+                    metadata={"handoff": persisted_handoff, "recovery": recovery},
+                    **self._claim_fence_kwargs(episode_id),
+                ),
+                action="completing the runtime episode",
             )
             event_type = "runtime.episode.completed"
             if final_state == "failed":
@@ -1068,15 +1119,22 @@ class RuntimeEpisodeRunner:
             self._resume_cross_episode_dependents(completed or {**episode, "state": final_state})
             self._maybe_schedule_chat_handoff_resume(completed or {**episode, "state": final_state})
             self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
-        except RuntimeEpisodeCancelled:
+        except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost) as exc:
+            if isinstance(exc, RuntimeEpisodeLeaseLost):
+                logger.warning("Discarded stale runtime episode result for %s: %s", episode_id or "<unknown>", exc)
             return
         except RuntimeEpisodeDeadlineExceeded as exc:
-            failed = db.complete_runtime_episode(
+            failed = self._require_claim_write(
                 episode_id,
-                state="failed",
-                error_code="episode_deadline_exceeded",
-                error_message=str(exc),
-                metadata={"recoverable": False, "deadlineSeconds": exc.deadline_seconds},
+                db.complete_runtime_episode(
+                    episode_id,
+                    state="failed",
+                    error_code="episode_deadline_exceeded",
+                    error_message=str(exc),
+                    metadata={"recoverable": False, "deadlineSeconds": exc.deadline_seconds},
+                    **self._claim_fence_kwargs(episode_id),
+                ),
+                action="persisting an episode deadline failure",
             )
             self._emit(
                 "runtime.episode.failed",
@@ -1096,10 +1154,15 @@ class RuntimeEpisodeRunner:
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             if self._can_retry(episode):
-                retry_episode = db.retry_runtime_episode(
+                retry_episode = self._require_claim_write(
                     episode_id,
-                    error_message=error_message,
-                    delay_seconds=self._retry_delay_seconds(episode),
+                    db.retry_runtime_episode(
+                        episode_id,
+                        error_message=error_message,
+                        delay_seconds=self._retry_delay_seconds(episode),
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="scheduling an executor-error retry",
                 ) or {**episode, "state": "queued"}
                 self._emit(
                     "runtime.episode.retry_scheduled",
@@ -1109,12 +1172,17 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            failed = db.complete_runtime_episode(
+            failed = self._require_claim_write(
                 episode_id,
-                state="failed",
-                error_code="episode_executor_error",
-                error_message=error_message,
-                metadata={"recoverable": True},
+                db.complete_runtime_episode(
+                    episode_id,
+                    state="failed",
+                    error_code="episode_executor_error",
+                    error_message=error_message,
+                    metadata={"recoverable": True},
+                    **self._claim_fence_kwargs(episode_id),
+                ),
+                action="persisting an executor failure",
             )
             self._emit(
                 "runtime.episode.failed",
@@ -1126,6 +1194,8 @@ class RuntimeEpisodeRunner:
             self._resume_cross_episode_dependents(failed or {**episode, "state": "failed"})
             self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
             self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
+        finally:
+            _RUNTIME_EPISODE_CLAIM_CONTEXT.reset(claim_context_token)
 
     def _episode_cancellation_requested(self, episode_id: str, *, run_id: str | None = None) -> bool:
         persisted_episode: dict[str, Any] = {}
@@ -1153,6 +1223,19 @@ class RuntimeEpisodeRunner:
     def _raise_if_episode_cancelled(self, episode_id: str, *, run_id: str | None = None) -> None:
         if self._episode_cancellation_requested(episode_id, run_id=run_id):
             raise RuntimeEpisodeCancelled(f"Runtime episode {episode_id or '<unknown>'} was cancelled.")
+
+    def _claim_fence_kwargs(self, episode_id: str) -> dict[str, Any]:
+        claim = _RUNTIME_EPISODE_CLAIM_CONTEXT.get()
+        if not claim or claim[0] != str(episode_id or "").strip():
+            return {}
+        return {"worker_id": claim[1], "lease_generation": claim[2]}
+
+    def _require_claim_write(self, episode_id: str, value: Any, *, action: str) -> Any:
+        if value is None and self._claim_fence_kwargs(episode_id):
+            raise RuntimeEpisodeLeaseLost(
+                f"Runtime episode {episode_id or '<unknown>'} lost its lease before {action}."
+            )
+        return value
 
     async def _stop_awaitable_task(
         self,
@@ -1230,10 +1313,13 @@ class RuntimeEpisodeRunner:
     async def _await_episode_executor(self, episode: dict[str, Any], awaitable: Any) -> Any:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
+        kind = str(episode.get("kind") or "runtime").strip().lower() or "runtime"
         return await self._await_cancellable_task(
             episode_id,
             awaitable,
             run_id=run_id,
+            progress=f"{kind}: executor running",
+            heartbeat_interval_seconds=_EPISODE_HEARTBEAT_INTERVAL_SECONDS,
             deadline_seconds=self._episode_executor_deadline_seconds(episode),
         )
 
@@ -1246,13 +1332,22 @@ class RuntimeEpisodeRunner:
 
     def _heartbeat(self, episode_id: str, progress: str) -> None:
         if self._episode_cancellation_requested(episode_id):
+            if self._claim_fence_kwargs(episode_id):
+                raise RuntimeEpisodeCancelled(
+                    f"Runtime episode {episode_id or '<unknown>'} was cancelled before heartbeat."
+                )
             return
-        db.heartbeat_runtime_episode(
+        claim_fence = self._claim_fence_kwargs(episode_id)
+        accepted = db.heartbeat_runtime_episode(
             episode_id,
-            worker_id=self.worker_id,
             progress=progress,
             lease_seconds=self._lease_seconds,
+            **claim_fence,
         )
+        if not accepted and claim_fence:
+            raise RuntimeEpisodeLeaseLost(
+                f"Runtime episode {episode_id or '<unknown>'} heartbeat was rejected for a stale lease generation."
+            )
 
     async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
         return await self._await_cancellable_task(
@@ -1496,10 +1591,15 @@ class RuntimeEpisodeRunner:
             )
             self._emit("runtime.episode.queued", episode=persisted, session_id=session_id, run_id=run_id)
         metadata = {**dict(episode.get("metadata") or {}), "childNeedsDispatched": True, "childEpisodeIds": child_ids}
-        waiting = db.complete_runtime_episode(
+        waiting = self._require_claim_write(
             parent_id,
-            state="waiting_child",
-            metadata={"childNeedsDispatched": True, "childEpisodeIds": child_ids, "resumeReason": "waiting_child_handoffs"},
+            db.complete_runtime_episode(
+                parent_id,
+                state="waiting_child",
+                metadata={"childNeedsDispatched": True, "childEpisodeIds": child_ids, "resumeReason": "waiting_child_handoffs"},
+                **self._claim_fence_kwargs(parent_id),
+            ),
+            action="persisting child-dispatch wait state",
         ) or {**episode, "state": "waiting_child", "metadata": metadata}
         return waiting
 

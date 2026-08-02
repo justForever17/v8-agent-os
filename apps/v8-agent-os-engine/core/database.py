@@ -4064,7 +4064,7 @@ class DatabaseManager:
                 queue_id = row["id"]
                 episode_id = row["episode_id"]
                 attempt_count = int(row["attempt_count"] or 0) + 1
-                conn.execute(
+                claimed_queue = conn.execute(
                     '''
                     UPDATE runtime_episode_queue
                     SET state = 'leased',
@@ -4073,9 +4073,26 @@ class DatabaseManager:
                         attempt_count = ?,
                         updated_at = ?
                     WHERE id = ?
+                      AND (
+                          state IN ('queued', 'retry')
+                          OR (state = 'leased' AND COALESCE(lease_expires_at, '') <= ?)
+                      )
+                      AND COALESCE(available_at, ?) <= ?
                     ''',
-                    (worker_id, expires_iso, attempt_count, now_iso, queue_id),
+                    (
+                        worker_id,
+                        expires_iso,
+                        attempt_count,
+                        now_iso,
+                        queue_id,
+                        now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
                 )
+                if claimed_queue.rowcount != 1:
+                    conn.rollback()
+                    return None
                 conn.execute(
                     '''
                     UPDATE runtime_episodes
@@ -4089,6 +4106,20 @@ class DatabaseManager:
                     WHERE id = ?
                     ''',
                     (worker_id, expires_iso, now_iso, attempt_count, now_iso, episode_id),
+                )
+                generation_row = conn.execute(
+                    'SELECT lease_generation FROM runtime_episodes WHERE id = ?',
+                    (episode_id,),
+                ).fetchone()
+                lease_generation = int(generation_row["lease_generation"] or 0) if generation_row else 0
+                conn.execute(
+                    '''
+                    UPDATE runtime_episode_leases
+                    SET state = 'expired',
+                        released_at = COALESCE(released_at, ?)
+                    WHERE episode_id = ? AND state = 'active'
+                    ''',
+                    (now_iso, episode_id),
                 )
                 conn.execute(
                     '''
@@ -4104,7 +4135,10 @@ class DatabaseManager:
                         now_iso,
                         expires_iso,
                         now_iso,
-                        json.dumps({"queueId": queue_id}, ensure_ascii=False),
+                        json.dumps(
+                            {"queueId": queue_id, "leaseGeneration": lease_generation},
+                            ensure_ascii=False,
+                        ),
                     ),
                 )
                 conn.commit()
@@ -4120,16 +4154,49 @@ class DatabaseManager:
         episode_id: str,
         *,
         worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
         progress: Optional[str] = None,
         lease_seconds: int = 60,
-    ) -> None:
+    ) -> bool:
         now_iso = utc_now_iso()
         expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=int(lease_seconds or 60))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
 
         def _write():
             with self.get_connection() as conn:
-                conn.execute(
-                    '''
+                if fenced:
+                    heartbeat = conn.execute(
+                        '''
+                        UPDATE runtime_episodes
+                        SET last_heartbeat_at = ?,
+                            lease_expires_at = ?,
+                            last_progress = COALESCE(?, last_progress),
+                            updated_at = ?
+                        WHERE id = ?
+                          AND state = 'active'
+                          AND worker_id = ?
+                          AND lease_generation = ?
+                          AND COALESCE(lease_expires_at, '') > ?
+                        ''',
+                        (
+                            now_iso,
+                            expires_iso,
+                            progress,
+                            now_iso,
+                            episode_id,
+                            worker_id,
+                            int(lease_generation),
+                            now_iso,
+                        ),
+                    )
+                    if heartbeat.rowcount != 1:
+                        conn.rollback()
+                        return False
+                else:
+                    conn.execute(
+                        '''
                     UPDATE runtime_episodes
                     SET last_heartbeat_at = ?,
                         lease_expires_at = ?,
@@ -4137,16 +4204,21 @@ class DatabaseManager:
                         updated_at = ?
                     WHERE id = ?
                     ''',
-                    (now_iso, expires_iso, progress, now_iso, episode_id),
-                )
+                        (now_iso, expires_iso, progress, now_iso, episode_id),
+                    )
+                queue_where = "episode_id = ?"
+                queue_params: list[Any] = [expires_iso, now_iso, episode_id]
+                if fenced:
+                    queue_where += " AND state = 'leased' AND locked_by = ?"
+                    queue_params.append(worker_id)
                 conn.execute(
-                    '''
+                    f'''
                     UPDATE runtime_episode_queue
                     SET lease_expires_at = ?,
                         updated_at = ?
-                    WHERE episode_id = ?
+                    WHERE {queue_where}
                     ''',
-                    (expires_iso, now_iso, episode_id),
+                    queue_params,
                 )
                 if worker_id:
                     conn.execute(
@@ -4159,8 +4231,9 @@ class DatabaseManager:
                         (now_iso, expires_iso, episode_id, worker_id),
                     )
                 conn.commit()
+                return True
 
-        self._run_write_with_retry(_write)
+        return bool(self._run_write_with_retry(_write))
 
     def complete_runtime_episode(
         self,
@@ -4171,14 +4244,37 @@ class DatabaseManager:
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
         terminal = state in {"completed", "failed", "cancelled", "merged"}
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
 
         def _write():
             with self.get_connection() as conn:
-                conn.execute(
-                    '''
+                episode_where = "id = ?"
+                episode_params: list[Any] = [
+                    state,
+                    result_ref,
+                    error_code,
+                    error_message,
+                    json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
+                    1 if terminal else 0,
+                    now_iso,
+                    now_iso,
+                    episode_id,
+                ]
+                if fenced:
+                    episode_where += (
+                        " AND state = 'active' AND worker_id = ?"
+                        " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
+                    )
+                    episode_params.extend((worker_id, int(lease_generation), now_iso))
+                completed = conn.execute(
+                    f'''
                     UPDATE runtime_episodes
                     SET state = ?,
                         result_ref = COALESCE(?, result_ref),
@@ -4187,42 +4283,53 @@ class DatabaseManager:
                         metadata_json = COALESCE(?, metadata_json),
                         completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
                         updated_at = ?
-                    WHERE id = ?
+                    WHERE {episode_where}
                     ''',
-                    (
-                        state,
-                        result_ref,
-                        error_code,
-                        error_message,
-                        json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
-                        1 if terminal else 0,
-                        now_iso,
-                        now_iso,
-                        episode_id,
-                    ),
+                    episode_params,
                 )
+                if completed.rowcount != 1:
+                    conn.rollback()
+                    return False
+                queue_where = "episode_id = ?"
+                queue_params: list[Any] = [
+                    "completed" if state in {"completed", "merged"} else state,
+                    error_message,
+                    now_iso,
+                    episode_id,
+                ]
+                if fenced:
+                    queue_where += " AND state = 'leased' AND locked_by = ?"
+                    queue_params.append(worker_id)
                 conn.execute(
-                    '''
+                    f'''
                     UPDATE runtime_episode_queue
                     SET state = ?,
                         last_error = COALESCE(?, last_error),
                         updated_at = ?
-                    WHERE episode_id = ?
+                    WHERE {queue_where}
                     ''',
-                    ("completed" if state in {"completed", "merged"} else state, error_message, now_iso, episode_id),
+                    queue_params,
                 )
+                lease_where = "episode_id = ? AND state = 'active'"
+                lease_params: list[Any] = [state, now_iso, episode_id]
+                if fenced:
+                    lease_where += " AND worker_id = ?"
+                    lease_params.append(worker_id)
                 conn.execute(
-                    '''
+                    f'''
                     UPDATE runtime_episode_leases
                     SET state = ?,
                         released_at = COALESCE(released_at, ?)
-                    WHERE episode_id = ? AND state = 'active'
+                    WHERE {lease_where}
                     ''',
-                    (state, now_iso, episode_id),
+                    lease_params,
                 )
                 conn.commit()
+                return True
 
-        self._run_write_with_retry(_write)
+        accepted = bool(self._run_write_with_retry(_write))
+        if not accepted:
+            return None
         return self.get_runtime_episode(episode_id)
 
     def retry_runtime_episode(
@@ -4231,27 +4338,48 @@ class DatabaseManager:
         *,
         error_message: Optional[str] = None,
         delay_seconds: int = 0,
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
         delay = max(0, int(delay_seconds or 0))
         available_at = now_iso if delay == 0 else (
             datetime.now(timezone.utc) + timedelta(seconds=delay)
         ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
 
         def _write():
             with self.get_connection() as conn:
-                conn.execute(
-                    '''
+                episode_where = "id = ?"
+                episode_params: list[Any] = [error_message, now_iso, episode_id]
+                if fenced:
+                    episode_where += (
+                        " AND state = 'active' AND worker_id = ?"
+                        " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
+                    )
+                    episode_params.extend((worker_id, int(lease_generation), now_iso))
+                retried = conn.execute(
+                    f'''
                     UPDATE runtime_episodes
                     SET state = 'queued',
                         error_message = COALESCE(?, error_message),
                         updated_at = ?
-                    WHERE id = ?
+                    WHERE {episode_where}
                     ''',
-                    (error_message, now_iso, episode_id),
+                    episode_params,
                 )
+                if retried.rowcount != 1:
+                    conn.rollback()
+                    return False
+                queue_where = "episode_id = ?"
+                queue_params: list[Any] = [error_message, available_at, now_iso, episode_id]
+                if fenced:
+                    queue_where += " AND state = 'leased' AND locked_by = ?"
+                    queue_params.append(worker_id)
                 conn.execute(
-                    '''
+                    f'''
                     UPDATE runtime_episode_queue
                     SET state = 'retry',
                         last_error = COALESCE(?, last_error),
@@ -4259,22 +4387,30 @@ class DatabaseManager:
                         locked_by = NULL,
                         lease_expires_at = NULL,
                         updated_at = ?
-                    WHERE episode_id = ?
+                    WHERE {queue_where}
                     ''',
-                    (error_message, available_at, now_iso, episode_id),
+                    queue_params,
                 )
+                lease_where = "episode_id = ? AND state = 'active'"
+                lease_params: list[Any] = [now_iso, episode_id]
+                if fenced:
+                    lease_where += " AND worker_id = ?"
+                    lease_params.append(worker_id)
                 conn.execute(
-                    '''
+                    f'''
                     UPDATE runtime_episode_leases
                     SET state = 'retry',
                         released_at = COALESCE(released_at, ?)
-                    WHERE episode_id = ? AND state = 'active'
+                    WHERE {lease_where}
                     ''',
-                    (now_iso, episode_id),
+                    lease_params,
                 )
                 conn.commit()
+                return True
 
-        self._run_write_with_retry(_write)
+        accepted = bool(self._run_write_with_retry(_write))
+        if not accepted:
+            return None
         return self.get_runtime_episode(episode_id)
 
     def cancel_runtime_episode(
@@ -4491,12 +4627,33 @@ class DatabaseManager:
         handoff: Dict[str, Any],
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         handoff_id = str(handoff.get("handoffId") or handoff.get("id") or f"handoff:{episode_id}:{uuid.uuid4().hex[:10]}")
         now_iso = utc_now_iso()
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
 
         def _write():
             with self.get_connection() as conn:
+                if fenced:
+                    current_claim = conn.execute(
+                        '''
+                        SELECT 1
+                        FROM runtime_episodes
+                        WHERE id = ?
+                          AND state = 'active'
+                          AND worker_id = ?
+                          AND lease_generation = ?
+                          AND COALESCE(lease_expires_at, '') > ?
+                        ''',
+                        (episode_id, worker_id, int(lease_generation), now_iso),
+                    ).fetchone()
+                    if not current_claim:
+                        conn.rollback()
+                        return False
                 conn.execute(
                     '''
                     INSERT OR REPLACE INTO runtime_episode_handoffs (
@@ -4543,8 +4700,11 @@ class DatabaseManager:
                     (json.dumps(to_jsonable(refs), ensure_ascii=False), now_iso, episode_id),
                 )
                 conn.commit()
+                return True
 
-        self._run_write_with_retry(_write)
+        accepted = bool(self._run_write_with_retry(_write))
+        if not accepted:
+            return None
         return {**handoff, "handoffId": handoff_id}
 
     def list_runtime_episode_handoffs(self, episode_id: str) -> List[Dict[str, Any]]:

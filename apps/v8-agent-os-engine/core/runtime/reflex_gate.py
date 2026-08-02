@@ -129,8 +129,8 @@ def _truthy_nested(value: Any, key: str) -> bool:
 def _engineering_active(state: dict[str, Any], user_query: str) -> bool:
     engineering = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
     trigger = engineering.get("triggerDecision") if isinstance(engineering.get("triggerDecision"), dict) else {}
-    if bool(trigger.get("active")):
-        return True
+    if "active" in trigger:
+        return bool(trigger.get("active"))
     mode = str(state.get("engineeringMode") or state.get("engineering_mode") or "").strip().lower()
     if mode == "force":
         return True

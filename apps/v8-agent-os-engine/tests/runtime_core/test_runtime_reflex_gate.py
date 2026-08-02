@@ -175,6 +175,28 @@ def test_other_project_scope_boundary_does_not_become_global_read_only_intent():
     assert "engineering_workset_risk" in gate.reasons
 
 
+def test_inactive_engineering_trigger_overrides_force_mode_for_pure_research():
+    state = {
+        "engineeringMode": "force",
+        "engineering_context": {
+            "triggerDecision": {"active": False, "deferred": True},
+        },
+    }
+    query = "这是纯调研任务，不写文件、不执行工程修改，请交给深度调研。"
+
+    reflex = RuntimeReflexService().evaluate(
+        user_query=query,
+        scope="workspace:test",
+        scope_chain=["global", "workspace:test"],
+        session_id="s1",
+        route_bundle=_route_bundle(),
+        state=state,
+    )
+
+    assert "engineering_read_only_contract" not in reflex.matchedReflexes
+    assert "engineering_read_before_write" not in reflex.matchedReflexes
+
+
 def test_evidence_feedback_emits_only_signal_events(monkeypatch):
     class FakeDb:
         def __init__(self):

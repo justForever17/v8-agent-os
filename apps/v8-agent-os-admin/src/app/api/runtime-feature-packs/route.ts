@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getRuntimeFeaturePackState, triggerFeaturePackInstall } from "@/lib/server/runtime-feature-packs";
 import { verifyServiceAuth } from "@/lib/service-auth";
+import { LOCALE_COOKIE_NAME } from "@/lib/locale";
 
 async function resolveUserEmail(req: NextRequest) {
     let userEmail: string | null | undefined = await verifyServiceAuth(req);
@@ -35,7 +36,11 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json().catch(() => ({}));
-        const result = await triggerFeaturePackInstall(String(payload?.packId || ""), Boolean(payload?.dryRun));
+        const result = await triggerFeaturePackInstall(
+            String(payload?.packId || ""),
+            Boolean(payload?.dryRun),
+            String(payload?.locale || req.cookies.get(LOCALE_COOKIE_NAME)?.value || "en"),
+        );
         return NextResponse.json(result);
     } catch (error) {
         console.error("[Admin Runtime Feature Packs] Failed to start install:", error);

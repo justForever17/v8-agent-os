@@ -5,6 +5,11 @@
     "name": "Apache-2.0",
     "source": "https://github.com/google-ai-edge/mediapipe"
   },
+  "smokeCheck": {
+    "kind": "mediapipe_task",
+    "task": "holistic_landmarker",
+    "preferGpu": true
+  },
   "assets": [
     {
       "id": "holistic_landmarker",

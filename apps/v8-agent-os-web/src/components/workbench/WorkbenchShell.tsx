@@ -23,6 +23,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { WorkbenchFilePicker } from "./WorkbenchFilePicker";
 import type { CanvasTaskRequest } from "./CreativeArtifactCanvas";
 import { createCreativeCanvasDocument } from "@/lib/workbench";
+import { prefetchWorkspaceFiles } from "@/lib/workbench-actions";
 
 const CreativeArtifactCanvas = dynamic(
     () => import("./CreativeArtifactCanvas").then((module) => module.CreativeArtifactCanvas),
@@ -248,6 +249,14 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
             observer.disconnect();
         };
     }, [mode]);
+
+    useEffect(() => {
+        const timeout = window.setTimeout(() => {
+            void prefetchWorkspaceFiles(props.sessionId).catch(() => undefined);
+            void import("./CreativeArtifactCanvas").catch(() => undefined);
+        }, 180);
+        return () => window.clearTimeout(timeout);
+    }, [props.sessionId]);
 
     const activeTab = useMemo(
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,

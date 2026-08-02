@@ -123,6 +123,11 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   assert.match(picker, /listWorkspaceFiles\(sessionId/);
   assert.match(picker, /resolveAndOpenWorkspaceFile\(item\.workspacePath, \{ sessionId/);
   assert.match(actions, /payload\.sessionId !== normalizedSessionId/);
+  assert.match(actions, /WORKBENCH_FILE_CACHE_TTL_MS = 15_000/);
+  assert.match(actions, /WORKBENCH_FILE_CACHE_LIMIT = 64/);
+  assert.match(actions, /export function prefetchWorkspaceFiles/);
+  assert.match(actions, /export function invalidateWorkbenchFileCatalog/);
+  assert.match(shell, /prefetchWorkspaceFiles\(props\.sessionId\)/);
   assert.match(workbench, /creative-canvas:\$\{sessionId\}/);
   assert.match(store, /isWorkbenchDocumentOwnedBySession/);
   assert.match(canvas, /v8-web-creative-canvas:v2:\$\{sessionId\}/);

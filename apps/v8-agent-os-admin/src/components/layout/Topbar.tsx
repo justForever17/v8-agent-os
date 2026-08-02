@@ -17,7 +17,7 @@ import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-searc
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
-import { useT } from "@/components/providers/LocaleProvider";
+import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminNavItem } from "@/lib/admin-navigation";
 import { fetchAdminJson } from "@/lib/admin-client-cache";
@@ -48,6 +48,8 @@ type RuntimeFeaturePack = {
     restartRequired: boolean;
     logRef: string | null;
     lastError: string | null;
+    executionProvider?: string | null;
+    gpuAdapters?: string[];
 };
 
 type RuntimeFeaturePackState = {
@@ -85,6 +87,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const router = useRouter();
     const current = getAdminNavItem(pathname);
     const t = useT();
+    const { locale } = useLocale();
     const [debugMode, toggleDebugMode] = useDebugMode();
     const { toast } = useToast();
     const [activePanel, setActivePanel] = useState<"install" | "search" | "inbox" | null>(null);
@@ -333,7 +336,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
             const response = await fetch("/api/runtime-feature-packs", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ packId }),
+                body: JSON.stringify({ packId, locale }),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -341,7 +344,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
             }
             toast({
                 title: t("components.layout.Topbar.featurePackInstallStartedTitle"),
-                description: String(payload.message || t("components.layout.Topbar.featurePackInstallStartedDescription")),
+                description: t("components.layout.Topbar.featurePackInstallStartedDescription"),
             });
             void loadInstallState(true, true);
         } catch (error) {
@@ -354,7 +357,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         } finally {
             setInstallSubmittingPackId(null);
         }
-    }, [loadInstallState, t, toast]);
+    }, [loadInstallState, locale, t, toast]);
 
     const featurePackLabel = t("components.layout.Topbar.featurePacksLabel");
     const featurePackButtonTitle = installState?.summary?.missing
@@ -428,12 +431,16 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                 const isInstalled = pack.status === "installed";
                                                 const isInstalling = pack.status === "installing" || installSubmittingPackId === pack.id;
                                                 const canInstall = !isInstalled && !isInstalling;
+                                                const packI18nKey = `components.layout.Topbar.featurePack.${pack.id}`;
+                                                const productName = t(`${packI18nKey}.name`);
+                                                const description = t(`${packI18nKey}.description`);
+                                                const hover = t(`${packI18nKey}.hover`);
                                                 return (
-                                                    <div key={pack.id} className="rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={pack.hover}>
+                                                    <div key={pack.id} className="rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={hover}>
                                                         <div className="flex items-start justify-between gap-3">
                                                             <div className="min-w-0">
-                                                                <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{pack.productName}</div>
-                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{pack.description}</div>
+                                                                <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{productName}</div>
+                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{description}</div>
                                                                 {pack.runtimeFamilies.length ? (
                                                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                                                         {pack.runtimeFamilies.map((family) => (
@@ -458,8 +465,18 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                             </span>
                                                         </div>
                                                         {pack.lastError ? (
-                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">
-                                                                {pack.lastError}
+                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200" title={pack.lastError}>
+                                                                {t("components.layout.Topbar.featurePackInstallFailedDetail")}
+                                                            </div>
+                                                        ) : null}
+                                                        {pack.executionProvider ? (
+                                                            <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                                                                {t("components.layout.Topbar.featurePackExecutionProvider", { provider: pack.executionProvider })}
+                                                                {pack.gpuAdapters?.length ? (
+                                                                    <span title={pack.gpuAdapters.join(", ")}>
+                                                                        {` · ${t("components.layout.Topbar.featurePackDetectedGpu", { gpu: pack.gpuAdapters[0] })}`}
+                                                                    </span>
+                                                                ) : null}
                                                             </div>
                                                         ) : null}
                                                         {pack.logRef ? (

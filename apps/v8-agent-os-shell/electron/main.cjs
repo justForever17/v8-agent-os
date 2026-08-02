@@ -33,6 +33,11 @@ let coreServicesStartPromise = null;
 let coreServicesReady = false;
 let pendingSurfaceUrl = null;
 let lastPublishedControlStatus = '';
+let surfaceRecoveryTimer = null;
+let surfaceStabilityTimer = null;
+let surfaceRecoveryTimes = [];
+const SURFACE_RECOVERY_WINDOW_MS = 60_000;
+const MAX_SURFACE_RECOVERY_ATTEMPTS = 2;
 const desktopPetShutdown = createDesktopPetShutdownCoordinator();
 
 function currentDesktopPetStatus() {
@@ -288,8 +293,35 @@ function errorDataUrl(error) {
   return startupDataUrl(`启动未完成：${error?.message || error || '未知错误'}。请从托盘查看服务状态或运行 v8os doctor。`);
 }
 
+function isLocalProductSurface(url) {
+  return String(url || '').startsWith(webBaseUrl) || String(url || '').startsWith(adminBaseUrl);
+}
+
+function scheduleSurfaceRecovery(reason, targetUrl = '') {
+  if (quitting || !mainWindow || mainWindow.isDestroyed() || surfaceRecoveryTimer) return;
+  const now = Date.now();
+  surfaceRecoveryTimes = surfaceRecoveryTimes.filter((timestamp) => now - timestamp < SURFACE_RECOVERY_WINDOW_MS);
+  if (surfaceRecoveryTimes.length >= MAX_SURFACE_RECOVERY_ATTEMPTS) {
+    console.error(`[v8os-shell] surface recovery stopped: ${reason}`);
+    void mainWindow.loadURL(errorDataUrl(`界面连续恢复失败（${reason}）`));
+    return;
+  }
+  surfaceRecoveryTimes.push(now);
+  if (surfaceStabilityTimer) {
+    clearTimeout(surfaceStabilityTimer);
+    surfaceStabilityTimer = null;
+  }
+  if (isLocalProductSurface(targetUrl)) pendingSurfaceUrl = targetUrl;
+  console.error(`[v8os-shell] recovering local surface: ${reason}`);
+  void mainWindow.loadURL(startupDataUrl('界面进程正在恢复，正在重新连接 Engine / Admin / Web...')).catch(() => undefined);
+  surfaceRecoveryTimer = setTimeout(() => {
+    surfaceRecoveryTimer = null;
+    if (!quitting && mainWindow && !mainWindow.isDestroyed()) void loadInitialSurface();
+  }, 700);
+}
+
 async function loadInitialSurface() {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
     await ensureCoreServicesStarted();
     await waitForServices();
@@ -561,6 +593,22 @@ function createMainWindow() {
   mainWindow.on('maximize', emitWindowState);
   mainWindow.on('unmaximize', emitWindowState);
   mainWindow.on('restore', emitWindowState);
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details?.reason === 'clean-exit') return;
+    scheduleSurfaceRecovery(`renderer ${details?.reason || 'gone'} (${details?.exitCode ?? 'unknown'})`, mainWindow?.webContents.getURL());
+  });
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3 || !isLocalProductSurface(validatedUrl)) return;
+    scheduleSurfaceRecovery(`load ${errorCode}: ${errorDescription}`, validatedUrl);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!isLocalProductSurface(mainWindow?.webContents.getURL())) return;
+    if (surfaceStabilityTimer) clearTimeout(surfaceStabilityTimer);
+    surfaceStabilityTimer = setTimeout(() => {
+      surfaceRecoveryTimes = [];
+      surfaceStabilityTimer = null;
+    }, 15_000);
+  });
   loadInitialSurface();
 }
 

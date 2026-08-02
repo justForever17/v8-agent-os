@@ -668,6 +668,7 @@
   "web.workbench.canvas.emptyTitle": "把素材与动作连成执行图",
   "web.workbench.canvas.emptyHint": "上传或选择素材，再从节点拉出动作；只有运行按钮会执行。",
   "web.workbench.canvas.media.loading3d": "正在加载 3D 预览…",
+  "web.workbench.canvas.media.load3d": "加载 3D 预览",
   "web.workbench.canvas.media.playVideo": "播放视频",
   "web.workbench.canvas.media.pauseVideo": "暂停视频",
   "web.workbench.canvas.media.playAudio": "播放音频",

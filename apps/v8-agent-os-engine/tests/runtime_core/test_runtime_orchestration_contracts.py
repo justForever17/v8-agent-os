@@ -874,6 +874,93 @@ def test_non_spec_typed_creative_artifact_satisfies_artifact_delivery_without_wo
     assert decision.action == "complete"
 
 
+def test_canvas_graph_artifact_bundle_satisfies_outer_delivery_contract(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    artifact_path = tmp_path / "creative_media" / "inner-frame" / "frame.png"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"canvas-graph-frame")
+    episode = _creative_artifact_episode(str(tmp_path))
+    brief = episode["inputs"]["taskBriefs"][0]
+    contract = brief["context"]["canvasExecutionContract"]
+    contract["actionId"] = "canvas.graph.run_to_here"
+    contract["output"] = {"kind": "artifacts", "slot": "canvas_graph"}
+    contract["resources"] = {"workspaceAssetIds": ["wma-video"]}
+    contract["execution"]["arguments"]["request"] = {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "canvasOperationId": "canvas-op-proof",
+        "graphId": "canvas-graph-proof",
+        "graphRevision": 4,
+        "targetNodeIds": ["frame-action"],
+    }
+
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_session_scope_binding",
+        lambda _session_id: {
+            "session_id": "session-creative-artifact",
+            "workspace_id": "workspace-creative-artifact",
+            "project_id": "project-creative-artifact",
+            "workspace_path": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        completion_gate_module.db,
+        "get_runtime_artifact",
+        lambda artifact_id: {
+            "artifactId": artifact_id,
+            "sessionId": "session-creative-artifact",
+            "runId": "run-creative-artifact",
+            "resourceRole": "artifact",
+            "sourcePath": str(artifact_path),
+            "metadata": {
+                "storageClass": "runtime_artifact",
+                "creativeMediaJobId": "cm-inner-frame",
+                "workspaceId": "workspace-creative-artifact",
+                "projectId": "project-creative-artifact",
+                "workspacePath": str(tmp_path),
+                "modality": "video",
+                "operationKind": "video.extract_frame_exact",
+                "outputKind": "artifact",
+                "outputSlot": "image_derivative",
+                "canvasOperationId": "canvas-op-proof",
+            },
+        }
+        if artifact_id == "art_frame"
+        else None,
+    )
+    handoff = {
+        "status": "ready",
+        "artifactRefs": ["art_frame"],
+        "proofRefs": ["creative-media-job://cm-outer-graph"],
+        "creativeExecutionEvidence": {
+            "schemaVersion": "creative-execution-evidence/v1",
+            "records": [{
+                "tool": "creative_media_jobs",
+                "operationKind": "canvas.graph.execute",
+                "outputKind": "artifacts",
+                "outputSlot": "canvas_graph",
+                "jobId": "cm-outer-graph",
+                "status": "succeeded",
+                "artifactRefs": ["art_frame"],
+            }],
+            "artifactRefs": ["art_frame"],
+            "proofRefs": ["creative-media-job://cm-outer-graph"],
+        },
+    }
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={"episode-creative-artifact": [handoff]},
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
 def test_non_spec_typed_creative_artifact_rejects_source_lineage_drift(
     tmp_path,
     monkeypatch,

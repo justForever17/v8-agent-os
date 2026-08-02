@@ -253,6 +253,7 @@ export function CreativeCanvasMedia({
     const rootRef = useRef<HTMLDivElement | null>(null);
     const playableRef = useRef<HTMLMediaElement | null>(null);
     const [playbackState, setPlaybackState] = useState({ cacheKey, playing: false });
+    const [modelPreviewKey, setModelPreviewKey] = useState("");
     const [inView, setInView] = useState(false);
     const [documentVisible, setDocumentVisible] = useState(() => typeof document === "undefined" || !document.hidden);
     const effectiveVisible = visible && (inspect || inView) && documentVisible;
@@ -410,7 +411,23 @@ export function CreativeCanvasMedia({
     if (kind === "model_3d") {
         const supported = /\.(?:glb|gltf)(?:$|[?#])/i.test(url) || /\.(?:glb|gltf)$/i.test(resource.name);
         if (supported) {
-            return <div ref={rootRef} className="h-full w-full">{effectiveVisible ? <ModelViewer src={url} className="h-full w-full rounded-none border-0" compact={!inspect} active={active && effectiveVisible} interactive={inspect} /> : <FileFallback resource={resource} compact={compact} />}</div>;
+            const previewRequested = inspect || modelPreviewKey === cacheKey;
+            const shouldRenderModel = effectiveVisible && !compact && (inspect || (active && previewRequested));
+            return (
+                <div ref={rootRef} className="relative h-full w-full">
+                    {shouldRenderModel ? <ModelViewer src={url} className="h-full w-full rounded-none border-0" compact={!inspect} active interactive={inspect} /> : <FileFallback resource={resource} compact={compact} />}
+                    {!compact && active && effectiveVisible && !previewRequested ? (
+                        <button
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => { event.stopPropagation(); setModelPreviewKey(cacheKey); }}
+                            className="absolute left-1/2 top-1/2 flex h-9 -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-black/70 px-3 text-[10px] font-semibold text-white shadow-lg hover:bg-black/85"
+                        >
+                            <Box className="h-3.5 w-3.5" />{t("web.workbench.canvas.media.load3d")}
+                        </button>
+                    ) : null}
+                </div>
+            );
         }
         return <div ref={rootRef} className="h-full w-full"><FileFallback resource={resource} compact={compact} /></div>;
     }

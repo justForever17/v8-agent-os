@@ -93,6 +93,7 @@ def test_extract_holistic_motion_preserves_exact_pts_and_qa(monkeypatch, tmp_pat
 
     assert proof["providerInvoked"] is False
     assert proof["manifest"]["source"]["timeBase"] == {"numerator": 1, "denominator": 30000}
+    assert proof["manifest"]["capture"]["executionProvider"] == "CPU"
     assert proof["manifest"]["qa"]["status"] == "passed"
     assert detector.timestamps == [0, 33, 67]
     assert motion_capture.inspect_motion_package(output_path)["source"]["frameCount"] == 3

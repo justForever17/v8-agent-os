@@ -668,6 +668,7 @@
   "web.workbench.canvas.emptyTitle": "Connect materials and actions into an execution graph",
   "web.workbench.canvas.emptyHint": "Upload or choose materials, then drag from a port to add an action. Only Run executes the graph.",
   "web.workbench.canvas.media.loading3d": "Loading 3D preview…",
+  "web.workbench.canvas.media.load3d": "Load 3D preview",
   "web.workbench.canvas.media.playVideo": "Play video",
   "web.workbench.canvas.media.pauseVideo": "Pause video",
   "web.workbench.canvas.media.playAudio": "Play audio",

@@ -50,6 +50,8 @@ export type RuntimeFeaturePack = {
     version?: string | null;
     assetRoot?: string | null;
     receiptRef?: string | null;
+    executionProvider?: string | null;
+    gpuAdapters?: string[];
 };
 
 export type RuntimeFeaturePackState = {
@@ -91,7 +93,21 @@ type FeaturePackAssetManifest = {
     id: string;
     version: string;
     license?: { name?: string; source?: string };
+    smokeCheck?: {
+        kind: "onnx" | "mediapipe_task";
+        task?: "holistic_landmarker";
+        preferGpu?: boolean;
+    };
     assets: FeaturePackAsset[];
+};
+
+type FeaturePackInstallEnvironment = {
+    platform: NodeJS.Platform;
+    architecture: string;
+    pythonVersion: string;
+    pythonImplementation: string;
+    gpuAdapters: string[];
+    gpuDetected: boolean;
 };
 
 type FeaturePackConfigRecord = {
@@ -272,6 +288,30 @@ function normalizeStatus(value: unknown): FeaturePackStatus {
     return "not_installed";
 }
 
+function readReceiptRuntimeSummary(receiptRef: unknown) {
+    const receiptPath = String(receiptRef || "").trim();
+    if (!receiptPath || !fs.existsSync(receiptPath)) {
+        return { executionProvider: null, gpuAdapters: [] as string[] };
+    }
+    try {
+        const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf-8")) as Record<string, unknown>;
+        const environment = receipt.environment && typeof receipt.environment === "object"
+            ? receipt.environment as Record<string, unknown>
+            : {};
+        const smokeCheck = receipt.smokeCheck && typeof receipt.smokeCheck === "object"
+            ? receipt.smokeCheck as Record<string, unknown>
+            : {};
+        return {
+            executionProvider: String(smokeCheck.selectedExecutionProvider || "").trim() || null,
+            gpuAdapters: Array.isArray(environment.gpuAdapters)
+                ? environment.gpuAdapters.map(String).map((value) => value.trim()).filter(Boolean)
+                : [],
+        };
+    } catch {
+        return { executionProvider: null, gpuAdapters: [] as string[] };
+    }
+}
+
 function nowIso() {
     return new Date().toISOString();
 }
@@ -285,6 +325,7 @@ function normalizeFeaturePackFromConfig(definition: FeaturePackDefinition, confi
     const manifest = readAssetManifest(definition);
     const assetsExist = !manifest || manifest.assets.every((asset) => fs.existsSync(path.join(assetRoot, asset.target)));
     const installed = status === "installed" && targetExists && assetsExist;
+    const receiptSummary = readReceiptRuntimeSummary(raw.receiptRef);
     return {
         ...definition,
         requirementsFile: requirementsPathFor(definition),
@@ -299,11 +340,13 @@ function normalizeFeaturePackFromConfig(definition: FeaturePackDefinition, confi
         version: raw.version ? String(raw.version) : null,
         assetRoot: manifest ? assetRoot : null,
         receiptRef: raw.receiptRef ? String(raw.receiptRef) : null,
+        ...receiptSummary,
     };
 }
 
 function normalizeFeaturePackFromEngine(definition: FeaturePackDefinition, raw: Record<string, unknown>): RuntimeFeaturePack {
     const status = normalizeStatus(raw.status);
+    const receiptSummary = readReceiptRuntimeSummary(raw.receiptRef);
     return {
         ...definition,
         requirementsFile: String(raw.requirementsFile || requirementsPathFor(definition)),
@@ -318,6 +361,7 @@ function normalizeFeaturePackFromEngine(definition: FeaturePackDefinition, raw: 
         version: raw.version ? String(raw.version) : null,
         assetRoot: raw.assetRoot ? String(raw.assetRoot) : null,
         receiptRef: raw.receiptRef ? String(raw.receiptRef) : null,
+        ...receiptSummary,
     };
 }
 
@@ -410,8 +454,16 @@ function formatCommandSummary(pythonExe: string, args: string[]) {
     return `${pythonExe} ${args.map((item) => (item.includes(" ") ? `"${item}"` : item)).join(" ")}`;
 }
 
-function sourceStrategyForResponse() {
-    return PIP_SOURCE_STRATEGY.map((source) => ({
+function pipSourceStrategy(locale: string) {
+    const normalized = String(locale || "").trim().toLowerCase();
+    if (!normalized.startsWith("zh")) return PIP_SOURCE_STRATEGY;
+    const official = PIP_SOURCE_STRATEGY.filter((source) => source.id === "official");
+    const mirrors = PIP_SOURCE_STRATEGY.filter((source) => source.id !== "official");
+    return [...mirrors, ...official];
+}
+
+function sourceStrategyForResponse(sources: PipSource[]) {
+    return sources.map((source) => ({
         id: source.id,
         label: source.label,
         indexUrl: source.indexUrl,
@@ -445,7 +497,13 @@ function isTerminalPipFailure(output: string) {
     return TERMINAL_PIP_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
 }
 
-function isRecoverablePipFailure(output: string) {
+function isRecoverablePipFailure(output: string, source: PipSource) {
+    if (
+        source.id !== "official"
+        && /(?:Could not find a version that satisfies|No matching distribution found)/i.test(output)
+    ) {
+        return true;
+    }
     if (isTerminalPipFailure(output)) return false;
     return RECOVERABLE_PIP_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
 }
@@ -510,14 +568,15 @@ async function installPipDependencies(
     targetDir: string,
     requirementsFile: string,
     output: fs.WriteStream,
+    sources: PipSource[],
 ) {
     const attempts: PipAttemptSummary[] = [];
-    for (const [index, source] of PIP_SOURCE_STRATEGY.entries()) {
+    for (const [index, source] of sources.entries()) {
         const args = buildPipInstallArgs(targetDir, requirementsFile, source);
         output.write(`\n[Source] ${source.label}\n[Command] ${formatCommandSummary(pythonExe, args)}\n\n`);
         const result = await runPipAttempt(pythonExe, args, output);
         const ok = result.exitCode === 0;
-        const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview);
+        const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview, source);
         attempts.push({
             sourceId: source.id,
             sourceLabel: source.label,
@@ -527,8 +586,8 @@ async function installPipDependencies(
         });
         output.write(`\n[Exit code] ${result.exitCode ?? "unknown"}\n`);
         if (ok) return attempts;
-        if (!recoverable || index === PIP_SOURCE_STRATEGY.length - 1) break;
-        output.write(`[Fallback] Retrying via ${PIP_SOURCE_STRATEGY[index + 1].label}.\n`);
+        if (!recoverable || index === sources.length - 1) break;
+        output.write(`[Fallback] Retrying via ${sources[index + 1].label}.\n`);
     }
     throw new Error(buildInstallFailureMessage(attempts));
 }
@@ -603,35 +662,170 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
     return { ...asset, path: target, verifiedSha256: actualHash };
 }
 
-function runAssetSmokeCheck(pythonExe: string, pythonRoot: string, modelPath: string, output: fs.WriteStream) {
-    return new Promise<void>((resolve, reject) => {
-        const script = [
-            "import sys",
-            "sys.path.insert(0, sys.argv[1])",
-            "import onnxruntime as ort",
-            "session = ort.InferenceSession(sys.argv[2], providers=['CPUExecutionProvider'])",
-            "assert session.get_inputs() and session.get_outputs()",
-            "print(session.get_inputs()[0].name)",
-        ].join("; ");
-        const child = spawn(pythonExe, ["-c", script, pythonRoot, modelPath], {
+function runProbeProcess(command: string, args: string[], timeoutMs = 20_000) {
+    return new Promise<{ code: number | null; output: string }>((resolve) => {
+        let settled = false;
+        let output = "";
+        const child = spawn(command, args, {
             windowsHide: true,
             stdio: ["ignore", "pipe", "pipe"],
             env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
         });
-        let diagnostic = "";
-        child.stdout?.on("data", (chunk) => {
-            const value = String(chunk);
-            diagnostic += value;
-            output.write(value);
+        const append = (chunk: Buffer | string) => {
+            if (output.length < 64_000) output += String(chunk).slice(0, 64_000 - output.length);
+        };
+        child.stdout?.on("data", append);
+        child.stderr?.on("data", append);
+        const timeout = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill();
+            resolve({ code: null, output: `${output}\nprobe timed out` });
+        }, timeoutMs);
+        child.on("error", (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve({ code: null, output: `${output}\n${error.message}` });
         });
-        child.stderr?.on("data", (chunk) => {
-            const value = String(chunk);
-            diagnostic += value;
-            output.write(value);
+        child.on("exit", (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve({ code, output });
         });
-        child.on("error", reject);
-        child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`ONNX smoke check failed (${code}): ${diagnostic.slice(-500)}`)));
     });
+}
+
+function hardwareGpuAdapters(adapters: string[]) {
+    const virtualAdapter = /(?:virtual|remote|basic display|basic render|indirect display|parsec|spacedesk)/i;
+    return adapters.filter((adapter) => adapter && !virtualAdapter.test(adapter));
+}
+
+async function detectGpuAdapters() {
+    if (process.platform === "win32") {
+        const powershell = path.join(
+            process.env.SystemRoot || "C:\\Windows",
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        );
+        const script = "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); @(Get-CimInstance Win32_VideoController | ForEach-Object {$_.Name}) | ConvertTo-Json -Compress";
+        const result = await runProbeProcess(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]);
+        if (result.code !== 0) return [];
+        try {
+            const value = JSON.parse(result.output.trim());
+            return hardwareGpuAdapters(
+                (Array.isArray(value) ? value : [value]).map(String).map((item) => item.trim()).filter(Boolean),
+            );
+        } catch {
+            return [];
+        }
+    }
+    if (process.platform === "darwin") {
+        const result = await runProbeProcess("system_profiler", ["SPDisplaysDataType", "-json"]);
+        if (result.code !== 0) return [];
+        try {
+            const payload = JSON.parse(result.output) as { SPDisplaysDataType?: Array<Record<string, unknown>> };
+            return (payload.SPDisplaysDataType || []).map((item) => String(item.sppci_model || item._name || "").trim()).filter(Boolean);
+        } catch {
+            return [];
+        }
+    }
+    const nvidia = await runProbeProcess("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"]);
+    if (nvidia.code === 0) return nvidia.output.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    const pci = await runProbeProcess("lspci", ["-mm"]);
+    return pci.code === 0
+        ? pci.output.split(/\r?\n/).filter((line) => /(?:VGA compatible controller|3D controller)/i.test(line)).map((line) => line.trim())
+        : [];
+}
+
+async function detectFeaturePackInstallEnvironment(pythonExe: string, output: fs.WriteStream): Promise<FeaturePackInstallEnvironment> {
+    const script = "import json,platform,sys; print(json.dumps({'pythonVersion':platform.python_version(),'pythonImplementation':platform.python_implementation(),'architecture':platform.machine() or platform.architecture()[0]}))";
+    const [python, gpuAdapters] = await Promise.all([
+        runProbeProcess(pythonExe, ["-c", script]),
+        detectGpuAdapters(),
+    ]);
+    if (python.code !== 0) throw new Error("Feature pack Python environment probe failed. See logRef for details.");
+    const pythonPayload = JSON.parse(python.output.trim()) as Record<string, unknown>;
+    const environment = {
+        platform: process.platform,
+        architecture: String(pythonPayload.architecture || process.arch),
+        pythonVersion: String(pythonPayload.pythonVersion || "unknown"),
+        pythonImplementation: String(pythonPayload.pythonImplementation || "unknown"),
+        gpuAdapters: [...new Set(gpuAdapters)],
+        gpuDetected: gpuAdapters.length > 0,
+    };
+    output.write(`[Environment] ${JSON.stringify(environment)}\n`);
+    return environment;
+}
+
+function assetSmokeScript(kind: "onnx" | "mediapipe_task") {
+    if (kind === "onnx") {
+        return [
+            "import json,sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import onnxruntime as ort",
+            "providers=ort.get_available_providers()",
+            "gpu=[p for p in providers if p not in ('CPUExecutionProvider','AzureExecutionProvider')]",
+            "selected=(gpu[0] if sys.argv[3]=='GPU' and gpu else 'CPUExecutionProvider')",
+            "ordered=[selected]+([ 'CPUExecutionProvider' ] if selected!='CPUExecutionProvider' else [])",
+            "session=ort.InferenceSession(sys.argv[2], providers=ordered)",
+            "assert session.get_inputs() and session.get_outputs()",
+            "print('__V8_SMOKE__'+json.dumps({'kind':'onnx','availableProviders':providers,'selectedExecutionProvider':selected}))",
+        ].join("; ");
+    }
+    return [
+        "import json,sys",
+        "sys.path.insert(0, sys.argv[1])",
+        "import mediapipe as mp",
+        "def open_task(delegate):",
+        " options=mp.tasks.vision.HolisticLandmarkerOptions(base_options=mp.tasks.BaseOptions(model_asset_path=sys.argv[2],delegate=delegate),running_mode=mp.tasks.vision.RunningMode.IMAGE)",
+        " task=mp.tasks.vision.HolisticLandmarker.create_from_options(options)",
+        " task.close()",
+        "selected=('GPU' if sys.argv[3]=='GPU' else 'CPU')",
+        "delegate=(mp.tasks.BaseOptions.Delegate.GPU if selected=='GPU' else mp.tasks.BaseOptions.Delegate.CPU)",
+        "open_task(delegate)",
+        "print('__V8_SMOKE__'+json.dumps({'kind':'mediapipe_task','task':'holistic_landmarker','selectedExecutionProvider':selected,'mediapipeVersion':getattr(mp,'__version__','unknown')}))",
+    ].join("\n");
+}
+
+async function runAssetSmokeCheck(
+    pythonExe: string,
+    pythonRoot: string,
+    modelPath: string,
+    smokeCheck: NonNullable<FeaturePackAssetManifest["smokeCheck"]>,
+    environment: FeaturePackInstallEnvironment,
+    output: fs.WriteStream,
+) {
+    const execute = async (provider: "CPU" | "GPU") => {
+        const result = await runProbeProcess(
+            pythonExe,
+            ["-c", assetSmokeScript(smokeCheck.kind), pythonRoot, modelPath, provider],
+            60_000,
+        );
+        output.write(`\n[${provider} smoke]\n${result.output}`);
+        const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_SMOKE__"));
+        return {
+            result,
+            payload: result.code === 0 && marker
+                ? JSON.parse(marker.slice("__V8_SMOKE__".length)) as Record<string, unknown>
+                : null,
+        };
+    };
+    let gpuFailure: string | null = null;
+    if (environment.gpuDetected && smokeCheck.preferGpu) {
+        const gpu = await execute("GPU");
+        if (gpu.payload) return gpu.payload;
+        gpuFailure = gpu.result.output.trim().slice(-500) || `exit=${gpu.result.code ?? "timeout"}`;
+        output.write("\n[GPU fallback] The detected adapter has no working provider for this feature pack; validating CPU in a fresh process.\n");
+    }
+    const cpu = await execute("CPU");
+    if (!cpu.payload) {
+        throw new Error(`Feature pack ${smokeCheck.kind} validation failed (${cpu.result.code ?? "timeout"}). See logRef for details.`);
+    }
+    return gpuFailure ? { ...cpu.payload, gpuProbeError: gpuFailure } : cpu.payload;
 }
 
 async function runTransactionalAssetPackInstall(input: {
@@ -642,8 +836,9 @@ async function runTransactionalAssetPackInstall(input: {
     requirementsFile: string;
     logRef: string;
     output: fs.WriteStream;
+    sources: PipSource[];
 }) {
-    const { definition, manifest, pythonExe, targetDir, requirementsFile, logRef, output } = input;
+    const { definition, manifest, pythonExe, targetDir, requirementsFile, logRef, output, sources } = input;
     const packRoot = path.dirname(targetDir);
     const stagingBase = path.join(featurePackRoot(), ".staging");
     const stagingRoot = path.join(stagingBase, `${definition.id}-${Date.now()}`);
@@ -664,20 +859,31 @@ async function runTransactionalAssetPackInstall(input: {
     fs.mkdirSync(stagingPython, { recursive: true });
     fs.mkdirSync(stagingModels, { recursive: true });
     try {
-        await installPipDependencies(pythonExe, stagingPython, requirementsFile, output);
+        if (!manifest.smokeCheck) throw new Error("Feature pack asset manifest has no smokeCheck contract.");
+        const environment = await detectFeaturePackInstallEnvironment(pythonExe, output);
+        await installPipDependencies(pythonExe, stagingPython, requirementsFile, output, sources);
         const verifiedAssets = [];
         for (const asset of manifest.assets) {
             verifiedAssets.push(await downloadFeaturePackAsset(asset, stagingModels, output));
         }
         const primaryModel = verifiedAssets[0]?.path;
         if (!primaryModel) throw new Error("Feature pack manifest has no model asset");
-        await runAssetSmokeCheck(pythonExe, stagingPython, primaryModel, output);
+        const smokeResult = await runAssetSmokeCheck(
+            pythonExe,
+            stagingPython,
+            primaryModel,
+            manifest.smokeCheck,
+            environment,
+            output,
+        );
         const receipt = {
             version: 1,
             packId: definition.id,
             packVersion: manifest.version,
             installedAt: nowIso(),
             license: manifest.license || null,
+            environment,
+            smokeCheck: smokeResult,
             assets: verifiedAssets.map((asset) => ({
                 id: asset.id,
                 target: asset.target,
@@ -748,8 +954,9 @@ async function runFeaturePackInstallSequence(input: {
     requirementsFile: string;
     logRef: string;
     output: fs.WriteStream;
+    sources: PipSource[];
 }) {
-    const { definition, pythonExe, targetDir, requirementsFile, logRef, output } = input;
+    const { definition, pythonExe, targetDir, requirementsFile, logRef, output, sources } = input;
     const assetManifest = readAssetManifest(definition);
     if (assetManifest) {
         await runTransactionalAssetPackInstall({
@@ -760,19 +967,21 @@ async function runFeaturePackInstallSequence(input: {
             requirementsFile,
             logRef,
             output,
+            sources,
         });
         return;
     }
     const attempts: PipAttemptSummary[] = [];
     try {
-        for (const [index, source] of PIP_SOURCE_STRATEGY.entries()) {
+        await detectFeaturePackInstallEnvironment(pythonExe, output);
+        for (const [index, source] of sources.entries()) {
             const args = buildPipInstallArgs(targetDir, requirementsFile, source);
             const commandSummary = formatCommandSummary(pythonExe, args);
             output.write(`\n[Source] ${source.label}\n`);
             output.write(`[Command] ${commandSummary}\n\n`);
             const result = await runPipAttempt(pythonExe, args, output);
             const ok = result.exitCode === 0;
-            const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview);
+            const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview, source);
             attempts.push({
                 sourceId: source.id,
                 sourceLabel: source.label,
@@ -792,10 +1001,10 @@ async function runFeaturePackInstallSequence(input: {
                 });
                 return;
             }
-            if (!recoverable || index === PIP_SOURCE_STRATEGY.length - 1) {
+            if (!recoverable || index === sources.length - 1) {
                 break;
             }
-            const nextSource = PIP_SOURCE_STRATEGY[index + 1];
+            const nextSource = sources[index + 1];
             output.write(`[Fallback] ${source.label} failed with a recoverable download error; retrying via ${nextSource.label}.\n`);
         }
         output.end();
@@ -820,7 +1029,7 @@ async function runFeaturePackInstallSequence(input: {
     }
 }
 
-export async function triggerFeaturePackInstall(packId: string, dryRun = false) {
+export async function triggerFeaturePackInstall(packId: string, dryRun = false, locale = "en") {
     const definition = FEATURE_PACK_BY_ID.get(String(packId || ""));
     if (!definition) {
         throw new Error(`Unknown feature pack: ${packId}`);
@@ -833,14 +1042,15 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
     const targetDir = targetDirFor(definition.id);
     const assetManifest = readAssetManifest(definition);
     const pythonExe = resolvePythonExecutable(config);
-    const firstAttemptArgs = buildPipInstallArgs(targetDir, requirementsFile, PIP_SOURCE_STRATEGY[0]);
+    const sources = pipSourceStrategy(locale);
+    const firstAttemptArgs = buildPipInstallArgs(targetDir, requirementsFile, sources[0]);
     const commandSummary = formatCommandSummary(pythonExe, firstAttemptArgs);
     if (dryRun) {
         return {
             status: "dry_run",
             packId: definition.id,
             commandSummary,
-            sourceStrategy: sourceStrategyForResponse(),
+            sourceStrategy: sourceStrategyForResponse(sources),
             targetDir,
             requirementsFile,
             assetManifest: assetManifest ? {
@@ -858,7 +1068,7 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
             status: "installing",
             packId: definition.id,
             commandSummary,
-            sourceStrategy: sourceStrategyForResponse(),
+            sourceStrategy: sourceStrategyForResponse(sources),
             targetDir: String(existing.targetDir || targetDir),
             requirementsFile,
             logRef: existing.logRef || null,
@@ -875,7 +1085,8 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
     const logRef = path.join(featurePackLogRoot(), `${definition.id}-${timestamp}.log`);
     const output = fs.createWriteStream(logRef, { flags: "a", encoding: "utf-8" });
     output.write(`[V8OS Feature Pack] ${definition.productName}\n`);
-    output.write(`[Source strategy] ${PIP_SOURCE_STRATEGY.map((source) => source.label).join(" -> ")}\n`);
+    output.write(`[Locale] ${locale}\n`);
+    output.write(`[Source strategy] ${sources.map((source) => source.label).join(" -> ")}\n`);
 
     updateFeaturePackConfig(definition.id, {
         status: "installing",
@@ -892,13 +1103,14 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
         requirementsFile,
         logRef,
         output,
+        sources,
     });
 
     return {
         status: "started",
         packId: definition.id,
         commandSummary,
-        sourceStrategy: sourceStrategyForResponse(),
+        sourceStrategy: sourceStrategyForResponse(sources),
         targetDir,
         requirementsFile,
         logRef,

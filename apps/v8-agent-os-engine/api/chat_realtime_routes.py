@@ -43,6 +43,7 @@ router = APIRouter()
 _UPLOAD_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 _VOICE_UPLOAD_SOURCE_KINDS = {"web_voice", "phone_voice", "desktop_pet_voice"}
 _VOICE_UPLOAD_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
+_UPLOAD_COPY_CHUNK_SIZE = 1024 * 1024
 logger = logging.getLogger("v8chat.chat_realtime")
 _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS = 90.0
 
@@ -668,6 +669,8 @@ def _normalize_upload_source_kind(value: str) -> str:
         "phone_voice",
         "desktop_pet_upload",
         "desktop_pet_voice",
+        "canvas_upload",
+        "canvas_camera",
         "canvas_mask",
     }
     return normalized if normalized in allowed else "client_upload"
@@ -723,6 +726,21 @@ def _transcode_voice_upload_to_mp3(source: Path, target: Path) -> None:
         partial.unlink(missing_ok=True)
 
 
+def _copy_upload_to_path(upload: object, target: Path) -> None:
+    source = getattr(upload, "file", None)
+    if source is None or not callable(getattr(source, "read", None)):
+        raise ValueError("上传文件内容不可读取。")
+    seek = getattr(source, "seek", None)
+    if callable(seek):
+        seek(0)
+    with target.open("wb") as destination:
+        while True:
+            chunk = source.read(_UPLOAD_COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            destination.write(chunk)
+
+
 @router.post("/chat/upload")
 async def chat_upload(request: Request):
     form = await request.form()
@@ -737,7 +755,10 @@ async def chat_upload(request: Request):
     workspace_id = _form_text(form, "workspaceId", "workspace_id")
     workspace_path = _form_text(form, "workspacePath", "workspace_path")
     project_id = _form_text(form, "projectId", "project_id")
-    source_kind = _normalize_upload_source_kind(_form_text(form, "sourceKind", "source_kind"))
+    source_kind = _normalize_upload_source_kind(
+        _form_text(form, "sourceKind", "source_kind")
+        or request.headers.get("x-v8-upload-default-source-kind", "")
+    )
     if not any((workspace_id, workspace_path, project_id)) and not _session_has_workspace_binding(session_id):
         raise HTTPException(status_code=400, detail=_workspace_binding_required_payload())
     binding = build_workspace_binding(
@@ -786,26 +807,29 @@ async def chat_upload(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="上传目标越过当前工作区边界，已拒绝。") from exc
 
-    content = await upload.read()
-    if not isinstance(content, (bytes, bytearray)):
-        raise HTTPException(status_code=400, detail="上传文件内容不可读取。")
-    if normalize_voice:
-        source_suffix = Path(original_filename).suffix or mimetypes.guess_extension(original_content_type) or ".audio"
-        staging = (resolved_upload_dir / f".{uuid.uuid4().hex}.voice-source{source_suffix}").resolve(strict=False)
-        try:
-            staging.relative_to(workspace_root)
-        except ValueError as exc:
-            raise HTTPException(status_code=403, detail="语音暂存目标越过当前工作区边界，已拒绝。") from exc
-        try:
-            await run_in_threadpool(staging.write_bytes, bytes(content))
+    source_suffix = Path(original_filename).suffix or mimetypes.guess_extension(original_content_type) or ".upload"
+    staging = (resolved_upload_dir / f".{uuid.uuid4().hex}.upload-source{source_suffix}").resolve(strict=False)
+    try:
+        staging.relative_to(workspace_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="上传暂存目标越过当前工作区边界，已拒绝。") from exc
+    try:
+        await run_in_threadpool(_copy_upload_to_path, upload, staging)
+        if normalize_voice:
             await run_in_threadpool(_transcode_voice_upload_to_mp3, staging, target)
-        except RuntimeError as exc:
-            target.unlink(missing_ok=True)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        finally:
-            staging.unlink(missing_ok=True)
-    else:
-        await run_in_threadpool(target.write_bytes, bytes(content))
+        else:
+            await run_in_threadpool(staging.replace, target)
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        staging.unlink(missing_ok=True)
+        close_upload = getattr(upload, "close", None)
+        if callable(close_upload):
+            await close_upload()
     mark_workspace_state_stale(
         {
             "runtime_kind": "chat",

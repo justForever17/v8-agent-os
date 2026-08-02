@@ -156,6 +156,44 @@ def resolve_feature_pack_asset(pack_id: str, asset_id: str) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
+def load_feature_pack_receipt(
+    pack_id: str,
+    runtime_registry: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if isinstance(runtime_registry, dict):
+        registry = runtime_registry
+    else:
+        from core.storage import storage
+
+        registry = storage.get_runtime_registry_config()
+    configured = normalize_feature_pack_config(registry.get("featurePacks")).get(str(pack_id)) or {}
+    if configured.get("status") != "installed":
+        return None
+    receipt_ref = str(configured.get("receiptRef") or "").strip()
+    receipt_path = (
+        Path(receipt_ref).expanduser()
+        if receipt_ref
+        else Path(str(configured.get("targetDir") or feature_pack_target_dir(pack_id))).expanduser().parent / "receipt.json"
+    )
+    try:
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or str(payload.get("packId") or "") != str(pack_id):
+        return None
+    return dict(payload)
+
+
+def preferred_feature_pack_execution_provider(
+    pack_id: str,
+    runtime_registry: dict[str, Any] | None = None,
+) -> str:
+    receipt = load_feature_pack_receipt(pack_id, runtime_registry)
+    smoke_check = dict(receipt.get("smokeCheck") or {}) if isinstance(receipt, dict) else {}
+    selected = str(smoke_check.get("selectedExecutionProvider") or "").strip()
+    return selected if selected else "CPU"
+
+
 def normalize_feature_pack_config(value: Any) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     source = value if isinstance(value, dict) else {}

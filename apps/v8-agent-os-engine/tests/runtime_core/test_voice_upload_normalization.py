@@ -1,4 +1,6 @@
+import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from api import chat_realtime_routes
 
@@ -23,6 +25,29 @@ def test_voice_source_requires_audio_mime_or_extension() -> None:
     assert chat_realtime_routes._is_voice_upload("recording.bin", "audio/webm;codecs=opus") is True
     assert chat_realtime_routes._is_voice_upload("recording.m4a", "application/octet-stream") is True
     assert chat_realtime_routes._is_voice_upload("attachment.png", "image/png") is False
+
+
+def test_canvas_upload_sources_keep_their_authoritative_kind() -> None:
+    assert chat_realtime_routes._normalize_upload_source_kind("canvas_upload") == "canvas_upload"
+    assert chat_realtime_routes._normalize_upload_source_kind("canvas_camera") == "canvas_camera"
+    assert chat_realtime_routes._normalize_upload_source_kind("canvas_mask") == "canvas_mask"
+
+
+def test_upload_copy_reads_in_bounded_chunks(tmp_path) -> None:
+    payload = b"x" * (chat_realtime_routes._UPLOAD_COPY_CHUNK_SIZE * 2 + 17)
+
+    class BoundedReadStream(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= chat_realtime_routes._UPLOAD_COPY_CHUNK_SIZE
+            return super().read(size)
+
+    target = tmp_path / "model.glb"
+    chat_realtime_routes._copy_upload_to_path(
+        SimpleNamespace(file=BoundedReadStream(payload)),
+        target,
+    )
+
+    assert target.read_bytes() == payload
 
 
 def test_transcode_voice_upload_uses_compatible_mp3_contract(tmp_path, monkeypatch) -> None:

@@ -23,6 +23,17 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /await ensureCoreServicesStarted\(\);\s*await waitForServices\(\);/);
 });
 
+test('shell recovers a failed local surface without an unbounded reload loop', () => {
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  assert.match(mainSource, /render-process-gone/);
+  assert.match(mainSource, /did-fail-load/);
+  assert.match(mainSource, /MAX_SURFACE_RECOVERY_ATTEMPTS = 2/);
+  assert.match(mainSource, /surfaceRecoveryTimes\.length >= MAX_SURFACE_RECOVERY_ATTEMPTS/);
+  assert.match(mainSource, /surfaceStabilityTimer = setTimeout/);
+  assert.match(mainSource, /void loadInitialSurface\(\)/);
+  assert.match(mainSource, /界面连续恢复失败/);
+});
+
 test('shell uses dedicated taskbar and tray icon assets', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /function taskbarIconPath\(\)/);

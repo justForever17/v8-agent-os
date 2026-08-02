@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from core.process_launch import windowless_subprocess_kwargs
-from core.runtime.feature_packs import resolve_feature_pack_asset
+from core.runtime.feature_packs import (
+    preferred_feature_pack_execution_provider,
+    resolve_feature_pack_asset,
+)
 
 from .governed_media import (
     governed_ffmpeg_pair,
@@ -110,18 +113,35 @@ class _MediaPipeHolisticDetector:
                 "动作采集能力包未安装或尚未重启 Engine；请先在控制台安装动作采集能力包。"
             ) from exc
         self._mp = mp
-        options = mp.tasks.vision.HolisticLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
-            running_mode=mp.tasks.vision.RunningMode.VIDEO,
-            min_face_detection_confidence=min_confidence,
-            min_face_landmarks_confidence=min_confidence,
-            min_pose_detection_confidence=min_confidence,
-            min_pose_landmarks_confidence=min_confidence,
-            min_hand_landmarks_confidence=min_confidence,
-            output_face_blendshapes=False,
-            output_segmentation_mask=False,
-        )
-        self._detector = mp.tasks.vision.HolisticLandmarker.create_from_options(options)
+        preferred = preferred_feature_pack_execution_provider("creative_media_motion_capture").upper()
+
+        def create(provider: str) -> Any:
+            delegate = (
+                mp.tasks.BaseOptions.Delegate.GPU
+                if provider == "GPU"
+                else mp.tasks.BaseOptions.Delegate.CPU
+            )
+            options = mp.tasks.vision.HolisticLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path), delegate=delegate),
+                running_mode=mp.tasks.vision.RunningMode.VIDEO,
+                min_face_detection_confidence=min_confidence,
+                min_face_landmarks_confidence=min_confidence,
+                min_pose_detection_confidence=min_confidence,
+                min_pose_landmarks_confidence=min_confidence,
+                min_hand_landmarks_confidence=min_confidence,
+                output_face_blendshapes=False,
+                output_segmentation_mask=False,
+            )
+            return mp.tasks.vision.HolisticLandmarker.create_from_options(options)
+
+        self.execution_provider = "GPU" if preferred == "GPU" else "CPU"
+        try:
+            self._detector = create(self.execution_provider)
+        except Exception:
+            if self.execution_provider != "GPU":
+                raise
+            self.execution_provider = "CPU"
+            self._detector = create("CPU")
 
     def __enter__(self) -> "_MediaPipeHolisticDetector":
         return self
@@ -235,7 +255,9 @@ def extract_holistic_motion(request: dict[str, Any], *, output_path: Path) -> di
     right_hand_world: list[Any] = []
     inference_timestamps: list[int] = []
     previous_timestamp = -1
+    execution_provider = "CPU"
     with _create_detector(model_path, min_confidence=min_confidence) as detector:
+        execution_provider = str(getattr(detector, "execution_provider", "CPU") or "CPU")
         for frame_index, rgb_frame in enumerate(_iter_rgb_frames(source_path)):
             if frame_index >= frame_count:
                 raise MotionCaptureError("解码帧数超过 ffprobe 时间轴；拒绝写入错位动作数据")
@@ -270,6 +292,7 @@ def extract_holistic_motion(request: dict[str, Any], *, output_path: Path) -> di
         },
         "capture": {
             "people": 1,
+            "executionProvider": execution_provider,
             "faceLandmarksStored": False,
             "coordinateSystems": {
                 "normalized": "MediaPipe image-normalized x/y and relative z",

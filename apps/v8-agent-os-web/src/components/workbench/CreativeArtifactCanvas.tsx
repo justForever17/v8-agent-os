@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 import { isTranslationKey } from "@/lib/locale";
 import type { CreativeCanvasWorkbenchDocument } from "@/lib/workbench";
 import type { Message } from "@/store/chat-types";
+import { invalidateWorkbenchFileCatalog } from "@/lib/workbench-actions";
 import {
     CREATIVE_CANVAS_ACTIONS,
     getCreativeCanvasActions,
@@ -150,6 +151,26 @@ import {
 
 export type { CanvasTaskReference, CanvasTaskRequest } from "./creative-canvas/types";
 
+const canvasMediaReconcileTasks = new Map<string, Promise<void>>();
+
+function reconcileCanvasMediaCatalog(sessionId: string) {
+    const existing = canvasMediaReconcileTasks.get(sessionId);
+    if (existing) return existing;
+    const task = fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/reconcile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        cache: "no-store",
+    }).then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+    }).finally(() => {
+        canvasMediaReconcileTasks.delete(sessionId);
+    });
+    canvasMediaReconcileTasks.set(sessionId, task);
+    return task;
+}
+
 export function CreativeArtifactCanvas({
     document,
     workspacePath,
@@ -177,6 +198,7 @@ export function CreativeArtifactCanvas({
     const discardCameraRecordingRef = useRef(false);
     const sessionRunningRef = useRef(upstreamSessionRunning);
     const sessionIdRef = useRef(sessionId);
+    const mountedRef = useRef(true);
     const catalogAbortRef = useRef<AbortController | null>(null);
     const interactionRef = useRef<PointerInteraction | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
@@ -252,6 +274,11 @@ export function CreativeArtifactCanvas({
     useEffect(() => {
         sessionIdRef.current = sessionId;
     }, [sessionId]);
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
 
     useEffect(() => {
         const board = boardRef.current;
@@ -444,30 +471,10 @@ export function CreativeArtifactCanvas({
                 .filter((item: CanvasResource | null): item is CanvasResource => Boolean(item));
         };
         try {
-            const [artifacts, sources] = await Promise.all([
+            const mediaBase = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media`;
+            const [artifacts, sources, assetResponse, folderResponse] = await Promise.all([
                 load("/api/artifacts", "artifacts", "artifact"),
                 load("/api/sources", "sources", "source"),
-            ]);
-            if (controller.signal.aborted || sessionIdRef.current !== sessionId) return;
-            const merged = [...artifacts, ...sources];
-            setResources((current) => {
-                const byKey = new Map(current.filter((item) => item.origin === "workspace_asset").map((item) => [`${item.origin}:${item.id}`, item]));
-                for (const item of merged) byKey.set(`${item.origin}:${item.id}`, item);
-                return [...byKey.values()];
-            });
-            const mediaBase = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media`;
-            if (!silent) {
-                const reconcileResponse = await fetch(`${mediaBase}/reconcile`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: "{}",
-                    cache: "no-store",
-                    signal: controller.signal,
-                });
-                const reconcilePayload = await reconcileResponse.json().catch(() => ({}));
-                if (!reconcileResponse.ok) throw new Error(String(reconcilePayload?.detail || reconcilePayload?.error || `HTTP ${reconcileResponse.status}`));
-            }
-            const [assetResponse, folderResponse] = await Promise.all([
                 fetch(`${mediaBase}/assets?limit=500`, { cache: "no-store", signal: controller.signal }),
                 fetch(`${mediaBase}/folders`, { cache: "no-store", signal: controller.signal }),
             ]);
@@ -481,10 +488,11 @@ export function CreativeArtifactCanvas({
             const workspaceAssets = (Array.isArray(assetPayload?.assets) ? assetPayload.assets : [])
                 .map((entry: unknown, index: number) => normalizeResource(entry, "workspace_asset", sessionId, index))
                 .filter((item: CanvasResource | null): item is CanvasResource => Boolean(item));
-            setResources((current) => [
-                ...current.filter((item) => item.origin !== "workspace_asset"),
-                ...workspaceAssets,
-            ]);
+            const byKey = new Map<string, CanvasResource>();
+            for (const item of [...artifacts, ...sources, ...workspaceAssets]) {
+                byKey.set(`${item.origin}:${item.id}`, item);
+            }
+            setResources([...byKey.values()]);
             setWorkspaceFolders((Array.isArray(folderPayload?.folders) ? folderPayload.folders : []).flatMap((raw: unknown) => {
                 const folder = recordOf(raw);
                 const folderId = stringValue(folder, "folderId", "folder_id");
@@ -509,13 +517,25 @@ export function CreativeArtifactCanvas({
         }
     }, [sessionId]);
 
+    const reconcileCatalog = useCallback(() => {
+        void reconcileCanvasMediaCatalog(sessionId).then(() => {
+            if (mountedRef.current && sessionIdRef.current === sessionId) void loadCatalog(true);
+        }).catch((reason) => {
+            console.warn("Canvas media reconciliation failed", reason);
+        });
+    }, [loadCatalog, sessionId]);
+
     useEffect(() => {
-        const initialize = window.setTimeout(() => void loadCatalog(), 0);
+        const initialize = window.setTimeout(() => {
+            void loadCatalog().then(() => {
+                if (mountedRef.current && sessionIdRef.current === sessionId) reconcileCatalog();
+            });
+        }, 0);
         return () => {
             window.clearTimeout(initialize);
             catalogAbortRef.current?.abort();
         };
-    }, [loadCatalog]);
+    }, [loadCatalog, reconcileCatalog, sessionId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1777,14 +1797,15 @@ export function CreativeArtifactCanvas({
                 } : undefined, connection));
                 setPendingConnectionDrop(null);
             }
-            void loadCatalog();
+            invalidateWorkbenchFileCatalog(sessionId);
+            reconcileCatalog();
             setTrayOpen(false);
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
             setUploading(false);
         }
-    }, [loadCatalog, pendingConnectionDrop, placeResource, sessionId, sessionRunning, t, uploading]);
+    }, [pendingConnectionDrop, placeResource, reconcileCatalog, sessionId, sessionRunning, t, uploading]);
 
     const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(event.target.files || []);
@@ -2518,7 +2539,7 @@ export function CreativeArtifactCanvas({
                                         </div>
                                     ) : resource ? (
                                         <>
-                                            <CreativeCanvasMedia resource={resource} active={selected} visible={visible && visibleNodeIds.has(node.nodeId)} onDimensions={node.kind === "resource" ? (dimensions) => updateNodeDimensions(node.nodeId, dimensions) : undefined} />
+                                            <CreativeCanvasMedia resource={resource} active={selected && inspectNodeId !== node.nodeId} visible={visible && visibleNodeIds.has(node.nodeId)} onDimensions={node.kind === "resource" ? (dimensions) => updateNodeDimensions(node.nodeId, dimensions) : undefined} />
                                             <CreativeCanvasMaskOverlay mask={node.mask} />
                                             {node.kind === "result" && versions.length > 1 ? (
                                                 <div className="absolute bottom-2 right-2 flex max-w-[70%] flex-row-reverse gap-1 rounded-lg border border-white/70 bg-background/80 p-1 shadow-lg backdrop-blur dark:border-white/10">

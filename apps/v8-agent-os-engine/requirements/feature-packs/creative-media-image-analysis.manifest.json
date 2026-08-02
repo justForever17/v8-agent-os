@@ -5,6 +5,10 @@
     "name": "Apache-2.0",
     "source": "https://github.com/xuebinqin/DIS"
   },
+  "smokeCheck": {
+    "kind": "onnx",
+    "preferGpu": true
+  },
   "assets": [
     {
       "id": "isnet_general_use",

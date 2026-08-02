@@ -23,24 +23,25 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-        const formData = await req.formData();
-        if (!String(formData.get("sourceKind") || "").trim()) {
-            formData.set("sourceKind", "web_upload");
+        if (!req.body) {
+            return NextResponse.json({ error: "Missing upload body" }, { status: 400 });
         }
-
-        // Headers manipulation: Next.js/Browser fetch automatically sets Content-Type boundary for FormData
-        // But we are proxying. We need to pass the incoming body stream or recreate FormData?
-        // Node/Next Fetch with FormData is tricky.
-
+        const headers = new Headers({
+            "x-v8-agent-os-secret": internalSecret,
+            "x-v8-agent-os-user-email": session.user.email,
+            "x-v8-upload-default-source-kind": "web_upload",
+        });
+        const contentType = req.headers.get("content-type");
+        const contentLength = req.headers.get("content-length");
+        if (contentType) headers.set("content-type", contentType);
+        if (contentLength) headers.set("content-length", contentLength);
         const res = await fetch(`${adminApiBaseUrl}/client/upload`, {
             method: "POST",
-            headers: {
-                // Do NOT set Content-Type here, let fetch handle the boundary
-                "x-v8-agent-os-secret": internalSecret,
-                "x-v8-agent-os-user-email": session.user.email
-            },
-            body: formData
-        });
+            headers,
+            body: req.body,
+            signal: req.signal,
+            duplex: "half",
+        } as RequestInit & { duplex: "half" });
 
         if (!res.ok) {
             const errorText = await res.text();

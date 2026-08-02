@@ -1,3 +1,4 @@
+import json
 import re
 import sys
 from pathlib import Path
@@ -8,6 +9,8 @@ from core.runtime.feature_packs import (
     build_feature_pack_statuses,
     installed_runtime_families_from_feature_packs,
     load_feature_pack_asset_manifest,
+    load_feature_pack_receipt,
+    preferred_feature_pack_execution_provider,
 )
 
 
@@ -55,6 +58,7 @@ def test_creative_media_image_analysis_pack_has_pinned_verified_asset():
     assert manifest is not None
     assert manifest["version"] == "1.0.0"
     assert manifest["license"]["name"] == "Apache-2.0"
+    assert manifest["smokeCheck"] == {"kind": "onnx", "preferGpu": True}
     assert manifest["assets"] == [
         {
             "id": "isnet_general_use",
@@ -72,6 +76,11 @@ def test_creative_media_motion_capture_pack_has_pinned_verified_asset():
     assert manifest is not None
     assert manifest["version"] == "1.0.0"
     assert manifest["license"]["name"] == "Apache-2.0"
+    assert manifest["smokeCheck"] == {
+        "kind": "mediapipe_task",
+        "task": "holistic_landmarker",
+        "preferGpu": True,
+    }
     assert manifest["assets"] == [
         {
             "id": "holistic_landmarker",
@@ -81,6 +90,35 @@ def test_creative_media_motion_capture_pack_has_pinned_verified_asset():
             "sha256": "e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8",
         }
     ]
+
+
+def test_feature_pack_receipt_projects_only_the_validated_execution_provider(tmp_path):
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "packId": "creative_media_motion_capture",
+                "environment": {"gpuAdapters": ["Test GPU"]},
+                "smokeCheck": {"selectedExecutionProvider": "GPU"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = {
+        "featurePacks": {
+            "creative_media_motion_capture": {
+                "status": "installed",
+                "targetDir": str(tmp_path / "python"),
+                "receiptRef": str(receipt),
+            }
+        }
+    }
+
+    assert load_feature_pack_receipt("creative_media_motion_capture", registry)["packId"] == "creative_media_motion_capture"
+    assert preferred_feature_pack_execution_provider("creative_media_motion_capture", registry) == "GPU"
+    receipt.write_text(json.dumps({"packId": "another_pack"}), encoding="utf-8")
+    assert load_feature_pack_receipt("creative_media_motion_capture", registry) is None
+    assert preferred_feature_pack_execution_provider("creative_media_motion_capture", registry) == "CPU"
 
 
 def test_feature_pack_status_uses_config_and_legacy_runtime_families(tmp_path):

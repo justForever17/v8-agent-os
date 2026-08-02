@@ -599,7 +599,8 @@ def _typed_creative_artifact_requirements(
         if schema not in {"v8.creative_canvas_task.v1", "v8.creative_media_execution.v1"}:
             return False
         output = contract.get("output") if isinstance(contract.get("output"), Mapping) else {}
-        if str(output.get("kind") or "").strip().lower() != "artifact":
+        output_kind = str(output.get("kind") or "").strip().lower()
+        if output_kind not in {"artifact", "artifacts"}:
             return False
         execution = contract.get("execution") if isinstance(contract.get("execution"), Mapping) else {}
         arguments = execution.get("arguments") if isinstance(execution.get("arguments"), Mapping) else {}
@@ -615,7 +616,7 @@ def _typed_creative_artifact_requirements(
             {
                 "taskBriefKey": brief_key,
                 "request": dict(request),
-                "outputKind": "artifact",
+                "outputKind": output_kind,
                 "outputSlot": str(output.get("slot") or "").strip(),
             }
         )
@@ -687,6 +688,7 @@ def _creative_artifact_evidence(
 
     artifact_ids: list[str] = []
     job_proof_ids: set[str] = set()
+    delivery_records: list[dict[str, Any]] = []
     for handoff in handoffs:
         payload = _handoff_payload(handoff)
         for value in _collect_named_values(payload, {"artifactRefs", "artifact_refs"}):
@@ -699,6 +701,20 @@ def _creative_artifact_evidence(
                 job_id = text[len("creative-media-job://") :].strip("/\\")
                 if job_id:
                     job_proof_ids.add(job_id)
+        evidence = payload.get("creativeExecutionEvidence")
+        if isinstance(evidence, Mapping) and str(evidence.get("schemaVersion") or "") == "creative-execution-evidence/v1":
+            for value in list(evidence.get("records") or []):
+                if not isinstance(value, Mapping):
+                    continue
+                record = dict(value)
+                job_id = str(record.get("jobId") or "").strip()
+                record_artifacts = [
+                    _creative_artifact_id(item)
+                    for item in list(record.get("artifactRefs") or [])
+                ]
+                record_artifacts = [item for item in record_artifacts if item]
+                if job_id and job_id in job_proof_ids and record_artifacts:
+                    delivery_records.append({**record, "artifactRefs": record_artifacts})
     if not artifact_ids:
         return [], "required_creative_artifact_missing"
 
@@ -818,23 +834,49 @@ def _creative_artifact_evidence(
         ):
             return [], "required_creative_artifact_missing"
         job_id = str(metadata.get("creativeMediaJobId") or metadata.get("creative_media_job_id") or "").strip()
-        if not job_id or job_id not in job_proof_ids:
+        delivery_record = next(
+            (
+                record
+                for record in delivery_records
+                if artifact_id in list(record.get("artifactRefs") or [])
+            ),
+            None,
+        )
+        if not job_id or (job_id not in job_proof_ids and delivery_record is None):
             return [], "creative_artifact_proof_missing"
 
         for index, requirement in enumerate(requirements):
             request = requirement.get("request") if isinstance(requirement.get("request"), Mapping) else {}
             lineage_keys = ("modality", "operationKind", "canvasOperationId", "sourceId", "maskSourceId")
-            output_kind_matches = str(metadata.get("outputKind") or metadata.get("output_kind") or "").strip() == str(
-                requirement.get("outputKind") or ""
-            ).strip()
+            expected_output_kind = str(requirement.get("outputKind") or "").strip()
+            record_for_requirement = next(
+                (
+                    record
+                    for record in delivery_records
+                    if artifact_id in list(record.get("artifactRefs") or [])
+                    and str(record.get("operationKind") or "").strip() == str(request.get("operationKind") or "").strip()
+                    and str(record.get("outputKind") or "").strip() == expected_output_kind
+                    and str(record.get("outputSlot") or "").strip() == str(requirement.get("outputSlot") or "").strip()
+                ),
+                None,
+            )
+            output_kind_matches = (
+                str(metadata.get("outputKind") or metadata.get("output_kind") or "").strip() == expected_output_kind
+                or record_for_requirement is not None
+            )
             expected_output_slot = str(requirement.get("outputSlot") or "").strip()
             output_slot_matches = bool(expected_output_slot) and str(
                 metadata.get("outputSlot") or metadata.get("output_slot") or ""
             ).strip() == expected_output_slot
-            if output_kind_matches and output_slot_matches and all(
+            if record_for_requirement is not None:
+                output_slot_matches = True
+            metadata_lineage_matches = all(
                 not str(request.get(key) or "").strip()
                 or str(metadata.get(key) or "").strip() == str(request.get(key) or "").strip()
                 for key in lineage_keys
+            )
+            if output_kind_matches and output_slot_matches and (
+                record_for_requirement is not None or metadata_lineage_matches
             ):
                 matched_requirements.add(index)
         evidence.append(str(resolved_source_path))

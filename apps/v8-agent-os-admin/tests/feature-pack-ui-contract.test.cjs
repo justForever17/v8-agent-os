@@ -13,7 +13,7 @@ test("Topbar uses feature pack API instead of legacy runtime install API", () =>
   assert.doesNotMatch(topbarSource, /\/api\/runtime-install/);
   assert.match(topbarSource, /v8os:open-feature-packs/);
   assert.match(topbarSource, /loadInstallState = useCallback\(async \(force = false, silent = false\)/);
-  assert.match(topbarSource, /loadInstallState\(false, true\)/);
+  assert.match(topbarSource, /loadInstallState\(false, installState !== null\)/);
   assert.match(topbarSource, /installLoading && !installState/);
   assert.match(installerSource, /productName: "可选本地识别包"/);
 });
@@ -49,6 +49,11 @@ test("feature pack installer retries official PyPI through trusted zh mirrors wi
   assert.match(installerSource, /https:\/\/pypi\.mirrors\.ustc\.edu\.cn\/simple/);
   assert.match(installerSource, /https:\/\/mirrors\.aliyun\.com\/pypi\/simple/);
   assert.match(installerSource, /sourceStrategy/);
+  assert.match(installerSource, /function pipSourceStrategy\(locale: string\)/);
+  assert.match(installerSource, /normalized\.startsWith\("zh"\)/);
+  assert.match(installerSource, /source\.id !== "official"/);
+  assert.match(installerSource, /No matching distribution found/);
+  assert.match(topbarSource, /JSON\.stringify\(\{ packId, locale \}\)/);
   assert.match(installerSource, /Could not fetch URL/);
   assert.match(installerSource, /No matching distribution found/);
   assert.match(installerSource, /runFeaturePackInstallSequence/);
@@ -56,6 +61,42 @@ test("feature pack installer retries official PyPI through trusted zh mirrors wi
 
   assert.doesNotMatch(topbarSource, /commandSummary/);
   assert.doesNotMatch(topbarSource, /stdout|stderr/);
+});
+
+test("feature pack installation detects hardware but trusts only a format-specific validated provider", () => {
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const routeSource = fs.readFileSync(path.join(adminRoot, "src", "app", "api", "runtime-feature-packs", "route.ts"), "utf8");
+  const motionManifest = JSON.parse(fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "requirements", "feature-packs", "creative-media-motion-capture.manifest.json"), "utf8"));
+  const imageManifest = JSON.parse(fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "requirements", "feature-packs", "creative-media-image-analysis.manifest.json"), "utf8"));
+
+  assert.deepEqual(motionManifest.smokeCheck, { kind: "mediapipe_task", task: "holistic_landmarker", preferGpu: true });
+  assert.deepEqual(imageManifest.smokeCheck, { kind: "onnx", preferGpu: true });
+  assert.match(installerSource, /Get-CimInstance Win32_VideoController/);
+  assert.match(installerSource, /hardwareGpuAdapters/);
+  assert.match(installerSource, /BaseOptions\.Delegate\.GPU/);
+  assert.match(installerSource, /\[GPU fallback\]/);
+  assert.match(installerSource, /validating CPU in a fresh process/);
+  assert.match(installerSource, /selectedExecutionProvider/);
+  assert.match(installerSource, /environment,/);
+  assert.match(installerSource, /smokeCheck: smokeResult/);
+  assert.match(routeSource, /LOCALE_COOKIE_NAME/);
+});
+
+test("feature pack cards localize metadata and do not expose raw installer errors", () => {
+  const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
+  const en = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "en.json"), "utf8"));
+  const zh = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "zh-CN.json"), "utf8"));
+
+  for (const packId of ["computer_use_desktop", "rpa_automation", "local_asr_ocr", "creative_media_image_analysis", "creative_media_motion_capture"]) {
+    for (const field of ["name", "description", "hover"]) {
+      const key = `components.layout.Topbar.featurePack.${packId}.${field}`;
+      assert.ok(en[key], `missing English ${key}`);
+      assert.ok(zh[key], `missing Chinese ${key}`);
+    }
+  }
+  assert.match(topbarSource, /featurePackInstallFailedDetail/);
+  assert.match(topbarSource, /featurePackExecutionProvider/);
+  assert.doesNotMatch(topbarSource, />\{pack\.lastError\}</);
 });
 
 test("image analysis feature pack uses a pinned asset transaction and never a silent runtime download", () => {

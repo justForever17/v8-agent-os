@@ -192,7 +192,11 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.equal((canvasSubmit.match(/handleSend\(syntheticEvent/g) || []).length, 1);
   assert.match(media, /dynamic\(/);
   assert.match(media, /usesOriginalResource = kind === "model_3d" \|\| kind === "motion"/);
-  assert.match(media, /compact=\{!inspect\}[\s\S]*interactive=\{inspect\}/);
+  assert.match(media, /const previewRequested = inspect \|\| modelPreviewKey === cacheKey/);
+  assert.match(media, /const shouldRenderModel = effectiveVisible && !compact && \(inspect \|\| \(active && previewRequested\)\)/);
+  assert.match(media, /shouldRenderModel \? <ModelViewer[\s\S]*active interactive=\{inspect\}/);
+  assert.match(media, /web\.workbench\.canvas\.media\.load3d/);
+  assert.match(canvas, /active=\{selected && inspectNodeId !== node\.nodeId\}/);
   assert.match(canvas, /visible=\{visible && visibleNodeIds\.has\(node\.nodeId\)\}/);
   assert.match(canvas, /<CreativeCanvasMedia resource=\{inspectResource\} inspect visible=\{visible\} \/>/);
   assert.match(media, /preload="metadata"/);
@@ -211,6 +215,9 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(canvas, /pendingConnectionDrop/);
   assert.match(canvas, /adoptWorkspaceResource\(dropped\)/);
   assert.match(canvas, /catalogAbortRef\.current\?\.abort\(\)/);
+  assert.match(canvas, /Promise\.all\(\[[\s\S]*\/api\/artifacts[\s\S]*\/api\/sources[\s\S]*mediaBase\}\/assets[\s\S]*mediaBase\}\/folders/);
+  assert.match(canvas, /reconcileCanvasMediaCatalog\(sessionId\)\.then/);
+  assert.doesNotMatch(canvas.slice(canvas.indexOf("const loadCatalog"), canvas.indexOf("const reconcileCatalog")), /mediaBase\}\/reconcile/);
   assert.match(canvas, /sessionIdRef\.current !== sessionId/);
   assert.match(timelineEditor, /onChangeRef\.current\(/);
   assert.match(timelineEditor, /\[mode, resource\?\.id, resource\?\.origin, sessionId, t\]/);

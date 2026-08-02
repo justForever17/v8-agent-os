@@ -187,12 +187,15 @@ def rank_candidates_markdown(
             continue
         filtered.append(dict(item))
 
-    def _score(item: dict[str, Any]) -> tuple[int, int, str]:
+    def _score(item: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+        configured = 1 if str(item.get("source") or "") in {"model_control_plane", "runtime_builtin"} else 0
+        enabled = 1 if item.get("enabled") else 0
         available = 1 if item.get("available") else 0
         executable = 0 if item.get("briefOnly") else 1
-        return (available, executable, str(item.get("candidateId") or item.get("modelId") or ""))
+        priority = int(item.get("priority") or 999)
+        return (-configured, -enabled, -available, -executable, priority, str(item.get("candidateId") or item.get("modelId") or ""))
 
-    ranked = sorted(filtered, key=_score, reverse=True)[: max(1, min(int(limit or 8), 20))]
+    ranked = sorted(filtered, key=_score)[: max(1, min(int(limit or 8), 20))]
     lines = ["## Creative Media 模型选择", f"结果：找到 {len(filtered)} 个候选，展示前 {len(ranked)} 个。"]
     if goal:
         lines.append(f"目标：{_text(goal, limit=220)}")
@@ -204,16 +207,22 @@ def rank_candidates_markdown(
         label = item.get("modelId") or item.get("candidateId") or "unknown-model"
         provider = item.get("providerName") or item.get("providerId") or "unknown-provider"
         operation = item.get("operationKind") or operation_norm or "unknown-operation"
-        status = "可执行" if item.get("available") and not item.get("briefOnly") else "需确认"
+        status = "可执行" if item.get("available") and item.get("enabled") and not item.get("briefOnly") else "配置有误"
         if item.get("briefOnly"):
             status = "仅 Brief"
+        elif item.get("available") and not item.get("enabled"):
+            status = "未启用"
         lines.append(f"{index}. {label} - {provider}")
         lines.append(f"   - 类型：{item.get('modality') or modality_norm or 'unknown'} / {operation}")
         lines.append(f"   - 状态：{status}")
         if item.get("modelRef"):
             lines.append(f"   - modelRef：{item['modelRef']}")
         if not item.get("available"):
-            lines.append("   - 风险：当前配置不可用或缺少 provider 凭据。")
+            reason_codes = [str(value) for value in list((item.get("readiness") or {}).get("reasonCodes") or [])]
+            lines.append(f"   - 配置错误：{', '.join(reason_codes) or 'unknown_readiness_error'}")
+            suggested_adapter = str(item.get("suggestedAdapter") or "").strip()
+            if suggested_adapter:
+                lines.append(f"   - 注册表建议（不授权执行）：adapter={suggested_adapter}")
     lines.append("")
     lines.append("下一步：锁定一个 provider/model 后再生成样片；不要把完整模型目录当作交付结果。")
     return "\n".join(lines).strip()

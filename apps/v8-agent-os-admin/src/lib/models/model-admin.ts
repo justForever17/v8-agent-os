@@ -158,6 +158,8 @@ export function listEngineModels(
 }
 
 export function buildModelMutationPayload(data: Record<string, unknown>) {
+    const isMediaModel = new Set(["MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"])
+        .has(String(data.type || "").trim().toUpperCase());
     const existingMediaLimits = data.mediaLimits && typeof data.mediaLimits === "object"
         ? data.mediaLimits as Record<string, unknown>
         : {};
@@ -193,10 +195,12 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     const existingBinding = data.endpointBinding && typeof data.endpointBinding === "object"
         ? data.endpointBinding as Record<string, unknown>
         : {};
-    const wireProtocol = data.wireProtocol === undefined
+    const wireProtocol = isMediaModel
+        ? ""
+        : data.wireProtocol === undefined
         ? String(existingBinding.wireProtocol || "").trim()
         : String(data.wireProtocol || "").trim();
-    const protocolFieldPresent = Object.prototype.hasOwnProperty.call(data, "wireProtocol");
+    const protocolFieldPresent = isMediaModel || Object.prototype.hasOwnProperty.call(data, "wireProtocol");
     const channelId = data.channelId === undefined
         ? String(existingBinding.channelId || "").trim()
         : String(data.channelId || "").trim();
@@ -217,13 +221,22 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
         ? String(existingBinding.providerModelId || "").trim().replace(/^\/+|\/+$/g, "")
         : String(data.providerModelId || "").trim().replace(/^\/+|\/+$/g, "");
     const operationKind = capabilityModesProvided
-        ? String(derivedOperationKinds?.[0] || "")
+        ? String(derivedOperationKinds?.length === 1 ? derivedOperationKinds[0] : "")
         : data.operationKind === undefined
         ? String(existingBinding.operationKind || "").trim()
         : String(data.operationKind || "").trim();
     const adapter = data.adapter === undefined
         ? String(existingBinding.adapter || "").trim()
         : String(data.adapter || "").trim();
+    if (isMediaModel) {
+        payload.mediaLimits = {
+            ...existingMediaLimits,
+            ...(payload.mediaLimits && typeof payload.mediaLimits === "object"
+                ? payload.mediaLimits as Record<string, unknown>
+                : {}),
+            adapter,
+        };
+    }
     if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || channelId || protocolFieldPresent || channelFieldPresent || capabilityModesProvided) {
         payload.endpointBinding = {
             ...existingBinding,

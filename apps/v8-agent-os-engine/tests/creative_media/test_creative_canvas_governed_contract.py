@@ -671,7 +671,19 @@ def test_endpoint_binding_operation_excludes_mismatched_candidates(monkeypatch) 
         for item in creative_media_runtime.list_model_candidates()
         if item.get("providerId") == "openai-images"
     ]
-    assert [item["operationKind"] for item in candidates] == ["image.edit"]
+    assert [item["operationKind"] for item in candidates] == ["image.generate", "image.edit"]
+    generate_candidate = next(item for item in candidates if item["operationKind"] == "image.generate")
+    edit_candidate = next(item for item in candidates if item["operationKind"] == "image.edit")
+    assert generate_candidate["available"] is False
+    assert generate_candidate["readiness"]["reasonCodes"] == [
+        "provider_base_url_missing",
+        "provider_credential_missing",
+        "endpoint_operation_mismatch",
+    ]
+    assert edit_candidate["readiness"]["reasonCodes"] == [
+        "provider_base_url_missing",
+        "provider_credential_missing",
+    ]
 
 
 def test_explicit_provider_model_cannot_bypass_disabled_exact_operation(monkeypatch) -> None:

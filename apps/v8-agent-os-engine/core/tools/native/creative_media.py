@@ -506,7 +506,8 @@ def creative_media_rank_models(
         from runtimes.creative_media.production_pack import rank_candidates_markdown
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        candidates = creative_media_runtime.list_model_candidates()
+        preferences = creative_media_runtime.get_model_preferences()
+        candidates = list(preferences.get("connectedOptions") or [])
         return rank_candidates_markdown(
             candidates,
             modality=modality,

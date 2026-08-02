@@ -58,6 +58,8 @@ def test_rank_candidates_markdown_is_compact_and_not_raw_json():
                 "modelId": "videos/agnes-video-v2.0",
                 "modelRef": "model_ref://agnes/video",
                 "available": True,
+                "enabled": True,
+                "priority": 10,
             },
             {
                 "candidateId": "c2",
@@ -66,6 +68,9 @@ def test_rank_candidates_markdown_is_compact_and_not_raw_json():
                 "providerId": "catalog_only",
                 "modelId": "catalog-model",
                 "available": False,
+                "enabled": True,
+                "priority": 20,
+                "readiness": {"reasonCodes": ["adapter_catalog_only"]},
             },
         ],
         modality="video",
@@ -75,9 +80,58 @@ def test_rank_candidates_markdown_is_compact_and_not_raw_json():
     assert markdown.startswith("## Creative Media")
     assert "videos/agnes-video-v2.0" in markdown
     assert "可执行" in markdown
-    assert "风险" in markdown
+    assert "配置错误：adapter_catalog_only" in markdown
     assert "candidateId" not in markdown
     assert not markdown.lstrip().startswith(("{", "["))
+
+
+def test_rank_candidates_honors_saved_priority_and_does_not_promote_registry_suggestion():
+    markdown = rank_candidates_markdown(
+        [
+            {
+                "candidateId": "second",
+                "source": "model_control_plane",
+                "modality": "image",
+                "operationKind": "image.generate",
+                "providerName": "Configured B",
+                "modelId": "model-b",
+                "modelRef": "b::model-b",
+                "enabled": True,
+                "available": True,
+                "priority": 20,
+            },
+            {
+                "candidateId": "first",
+                "source": "model_control_plane",
+                "modality": "image",
+                "operationKind": "image.generate",
+                "providerName": "Configured A",
+                "modelId": "model-a",
+                "modelRef": "a::model-a",
+                "enabled": True,
+                "available": True,
+                "priority": 10,
+            },
+            {
+                "candidateId": "suggested",
+                "source": "model_control_plane",
+                "modality": "image",
+                "operationKind": "image.generate",
+                "providerName": "Suggested",
+                "modelId": "model-suggested",
+                "modelRef": "s::model-suggested",
+                "enabled": False,
+                "available": False,
+                "priority": 1,
+                "suggestedAdapter": "openai_images",
+                "readiness": {"reasonCodes": ["adapter_not_configured"]},
+            },
+        ],
+        operation_kind="image.generate",
+    )
+
+    assert markdown.index("model-a") < markdown.index("model-b") < markdown.index("model-suggested")
+    assert "注册表建议（不授权执行）：adapter=openai_images" in markdown
 
 
 def test_reference_media_pack_surfaces_required_analysis_slots():

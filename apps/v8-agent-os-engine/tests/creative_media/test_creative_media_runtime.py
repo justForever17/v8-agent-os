@@ -758,7 +758,7 @@ def test_minimax_s2v_adapter_submits_queries_and_downloads_through_v8_job_surfac
                                 "capabilityModes": ["video.image_reference"],
                             },
                             "endpointBinding": {
-                                "adapter": "catalog_only",
+                                "adapter": "minimax_video",
                                 "endpointPath": "video_generation",
                                 "providerModelId": "S2V-01",
                                 "provenance": {"source": "manual"},
@@ -884,7 +884,7 @@ def test_model_preferences_are_scoped_by_operation_kind(monkeypatch):
     assert all(item.get("operationKind") != "video.action_transfer" for item in prefs["diagnosticCandidates"])
 
 
-def test_seedance_1_0_fast_uses_exact_registry_operations(monkeypatch):
+def test_user_configured_operations_override_registry_suggestions(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr(
@@ -892,11 +892,17 @@ def test_seedance_1_0_fast_uses_exact_registry_operations(monkeypatch):
         lambda: {
             "providers": {
                 "volcengine_seedance": {
-                    "provider": {"name": "Volcengine Seedance", "api_standard": "volcengine_ark"},
+                    "provider": {
+                        "name": "Volcengine Seedance",
+                        "api_standard": "volcengine_ark",
+                        "base_url": "https://ark.example.test/api/v3",
+                        "api_key": "sk-test",
+                    },
                     "models": {
                         "doubao-seedance-1-0-pro-fast-251015": {
                             "type": "VIDEO",
                             "mediaLimits": {
+                                "adapter": "volcengine_ark",
                                 "operationKinds": [
                                     "video.text_to_video",
                                     "video.image_to_video",
@@ -926,11 +932,20 @@ def test_seedance_1_0_fast_uses_exact_registry_operations(monkeypatch):
 
     assert connected == [
         ("video.text_to_video", "model_control_plane", True),
+        ("video.image_to_video", "model_control_plane", True),
+        ("video.first_last_frame", "model_control_plane", True),
+        ("video.reference_to_video", "model_control_plane", False),
     ]
-    assert rows["video.reference_to_video"]["optionCount"] == 0
+    assert rows["video.reference_to_video"]["optionCount"] == 1
     assert rows["video.reference_to_video"]["selectedModelRefs"] == []
     assert rows["video.reference_to_video"]["enabled"] is False
-    assert rows["video.first_last_frame"]["optionCount"] == 0
+    assert rows["video.first_last_frame"]["optionCount"] == 1
+    reference_candidate = next(
+        item
+        for item in prefs["connectedOptions"]
+        if item["operationKind"] == "video.reference_to_video"
+    )
+    assert reference_candidate["readiness"]["reasonCodes"] == ["adapter_operation_mismatch"]
 
 
 def test_media_candidate_exposes_native_audio_capability_profile(monkeypatch):
@@ -1152,7 +1167,7 @@ def test_minimax_voice_tts_and_design_are_executable_candidates(monkeypatch):
                         "t2a_v2/speech-2.8-hd": {
                             "type": "TTS",
                             "mediaLimits": {
-                                "adapter": "catalog_only",
+                                "adapter": "minimax_tts",
                                 "adapterProviderId": "minimax_tts",
                                 "providerModelId": "speech-2.8-hd",
                                 "operationKinds": ["voice.tts"],
@@ -1175,7 +1190,8 @@ def test_minimax_voice_tts_and_design_are_executable_candidates(monkeypatch):
 
     assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd")]["available"] is True
     assert ("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd") not in options
-    assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["adapter"] == "minimax_tts"
+    assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["adapter"] == "catalog_only"
+    assert options[("voice.tts", "minimax-cn::t2a_v2/speech-2.8-hd-legacy")]["available"] is False
     assert ("voice.design", "minimax-cn::t2a_v2/speech-2.8-hd-legacy") not in options
 
 
@@ -1210,7 +1226,7 @@ def test_agnes_media_candidates_require_models_saved_in_model_hub(monkeypatch):
     assert options == {}
 
 
-def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(monkeypatch):
+def test_model_hub_keeps_invalid_user_config_visible_without_making_it_executable(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr(
@@ -1354,9 +1370,12 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
 
     agnes_ref = "agnes::images/generations/agnes-image-2.1-flash"
     minimax_ref = "minimax-cn::image_generation/image-01"
-    assert options[("image.generate", agnes_ref)]["available"] is True
-    assert ("image.edit", agnes_ref) not in options
-    assert options[("image.generate", minimax_ref)]["available"] is True
+    assert options[("image.generate", agnes_ref)]["available"] is False
+    assert "operation_not_configured" in options[("image.generate", agnes_ref)]["readiness"]["reasonCodes"]
+    assert "adapter_not_configured" in options[("image.generate", agnes_ref)]["readiness"]["reasonCodes"]
+    assert ("image.edit", agnes_ref) in options
+    assert options[("image.generate", minimax_ref)]["available"] is False
+    assert "adapter_unsupported" in options[("image.generate", minimax_ref)]["readiness"]["reasonCodes"]
     assert ("image.edit", minimax_ref) not in options
     assert (("image.generate", minimax_ref)) not in {
         (item.get("operationKind"), item.get("modelRef"))
@@ -1377,7 +1396,8 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     }
     assert expected_model_hub_candidates.issubset(connected_pairs)
     assert all(
-        options[pair]["adapter"] == "minimax_video"
+        options[pair]["adapter"] == "catalog_only"
+        and "adapter_catalog_only" in options[pair]["readiness"]["reasonCodes"]
         for pair in expected_model_hub_candidates
         if pair[0].startswith("video.")
     )
@@ -1387,7 +1407,11 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
     )
     rows = {item["operationKind"]: item for item in prefs["operationRows"]}
     for operation_kind, model_ref in expected_model_hub_candidates:
-        assert model_ref in rows[operation_kind]["selectedModelRefs"]
+        assert model_ref not in rows[operation_kind]["selectedModelRefs"]
+
+    projection = prefs["executionProjection"]
+    assert projection["image.generate"]["status"] == "unconfigured"
+    assert projection["video.reference_to_video"]["status"] == "unconfigured"
 
     s2v_ref = "minimax-cn::video_generation/S2V-01"
     saved = creative_media_runtime.save_model_preferences(
@@ -1407,7 +1431,122 @@ def test_model_hub_media_candidates_stay_selectable_without_adapter_allowlist(mo
         if item["operationKind"] == "video.reference_to_video"
     )
     assert saved_row["selectedModelRefs"] == [s2v_ref]
-    assert creative_media_runtime._preferred_model_candidates("video.reference_to_video")[0]["modelRef"] == s2v_ref
+    assert creative_media_runtime._preferred_model_candidates("video.reference_to_video") == []
+    saved_projection = saved["executionProjection"]["video.reference_to_video"]
+    assert saved_projection["status"] == "blocked"
+    assert saved_projection["configuredModelRefs"] == [s2v_ref]
+    assert saved_projection["executableCandidates"] == []
+    assert saved_projection["blockedCandidates"][0]["readiness"]["reasonCodes"] == ["adapter_catalog_only"]
+
+    failed_job = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "video",
+                "operationKind": "video.reference_to_video",
+                "modelRef": s2v_ref,
+                "prompt": "Use the configured reference video model.",
+            }
+        )
+    )
+    assert failed_job["status"] == "failed"
+    assert "configurationErrors=adapter_catalog_only" in failed_job["error"]
+
+
+def test_model_candidate_reports_missing_provider_configuration_without_network_fallback(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "configured-images": {
+                    "provider": {"name": "Configured Images"},
+                    "models": {
+                        "images/generations/gpt-image-2": {
+                            "type": "IMAGE",
+                            "operationKinds": ["image.generate"],
+                            "mediaLimits": {
+                                "adapter": "openai_images",
+                                "operationKinds": ["image.generate"],
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
+    monkeypatch.setattr(creative_media_runtime, "_dashscope_credentials", lambda: {})
+
+    candidate = next(
+        item
+        for item in creative_media_runtime.get_model_preferences()["connectedOptions"]
+        if item["modelRef"] == "configured-images::images/generations/gpt-image-2"
+    )
+
+    assert candidate["available"] is False
+    assert candidate["readiness"]["reasonCodes"] == [
+        "provider_base_url_missing",
+        "provider_credential_missing",
+    ]
+
+
+def test_adapter_cannot_bypass_or_override_configured_model_binding(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "configured-images": {
+                    "provider": {
+                        "name": "Configured Images",
+                        "base_url": "https://images.example.test/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "images/generations/gpt-image-2": {
+                            "type": "IMAGE",
+                            "operationKinds": ["image.generate"],
+                            "mediaLimits": {
+                                "adapter": "openai_images",
+                                "operationKinds": ["image.generate"],
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
+    monkeypatch.setattr(creative_media_runtime, "_dashscope_credentials", lambda: {})
+
+    adapter_only = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "image",
+                "operationKind": "image.generate",
+                "adapter": "openai_images",
+                "prompt": "Do not dispatch this request.",
+            }
+        )
+    )
+    assert adapter_only["status"] == "failed"
+    assert "configurationErrors=adapter_without_configured_model" in adapter_only["error"]
+
+    mismatched = asyncio.run(
+        creative_media_runtime.create_job(
+            {
+                "modality": "image",
+                "operationKind": "image.generate",
+                "modelRef": "configured-images::images/generations/gpt-image-2",
+                "adapter": "dashscope",
+                "prompt": "Do not rewrite this adapter.",
+            }
+        )
+    )
+    assert mismatched["status"] == "failed"
+    assert "configurationErrors=requested_adapter_mismatch" in mismatched["error"]
 
 
 def test_explicit_provider_rejects_unregistered_media_model(monkeypatch):
@@ -1657,6 +1796,7 @@ def test_minimax_music_job_decodes_hex_artifact(monkeypatch, tmp_path: Path):
                         "music_generation/music-2.6": {
                             "type": "MUSIC",
                             "mediaLimits": {
+                                "adapter": "minimax_music",
                                 "providerModelId": "music-2.6",
                                 "operationKinds": ["music.generate"],
                             },
@@ -1858,7 +1998,14 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
                         "base_url": "https://api.mureka.ai",
                         "api_key": "sk-test",
                     },
-                    "models": {"auto": {"type": "MUSIC", "capabilities": {"music": True}}},
+                    "models": {
+                        "auto": {
+                            "type": "MUSIC",
+                            "operationKinds": ["music.generate"],
+                            "mediaLimits": {"adapter": "mureka_music", "operationKinds": ["music.generate"]},
+                            "capabilities": {"music": True},
+                        }
+                    },
                 }
             }
         },
@@ -1924,7 +2071,14 @@ def test_tencent_hunyuan_3d_uses_tokenhub_and_downloads_model(monkeypatch, tmp_p
                         "base_url": "https://ai3d.tencentcloudapi.com",
                         "api_key": "sk-test",
                     },
-                    "models": {"hy-3d-3.0": {"type": "MODEL3D", "capabilities": {"model3d": True}}},
+                    "models": {
+                        "hy-3d-3.0": {
+                            "type": "MODEL3D",
+                            "operationKinds": ["model3d.generate"],
+                            "mediaLimits": {"adapter": "tencent_hunyuan_3d", "operationKinds": ["model3d.generate"]},
+                            "capabilities": {"model3d": True},
+                        }
+                    },
                 }
             }
         },

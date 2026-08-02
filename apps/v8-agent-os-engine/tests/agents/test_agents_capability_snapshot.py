@@ -117,6 +117,8 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertIn("CreativeMediaProductionPack", agent.system_prompt)
             self.assertIn("sample before batch", agent.system_prompt)
             self.assertIn("action='rank_models'", agent.system_prompt)
+            self.assertIn("Model Hub configuration is the execution authority", agent.system_prompt)
+            self.assertIn("never guess an adapter", agent.system_prompt)
             self.assertIn("action='sample_approval'", agent.system_prompt)
             self.assertIn("action='qa_check'", agent.system_prompt)
             self.assertIn("Reference media is a gate", agent.system_prompt)

@@ -50,6 +50,13 @@ type CreativeModelCandidate = {
     briefOnly?: boolean;
     enabled?: boolean;
     priority?: number;
+    adapterSource?: string;
+    suggestedAdapter?: string;
+    operationSource?: string;
+    readiness?: {
+        executable?: boolean;
+        reasonCodes?: string[];
+    };
 };
 
 type CreativeOperationRow = {
@@ -250,7 +257,26 @@ function relatedCount(records: Array<Record<string, unknown>>, workOrder: Record
 
 function candidateWarningReason(t: ReturnType<typeof useT>, candidate: CreativeModelCandidate) {
     if (candidate.briefOnly) return t("app.admin.dashboard.creativeMedia.candidateRiskBriefOnly");
-    if (candidate.available === false) return t("app.admin.dashboard.creativeMedia.candidateRiskUnavailable");
+    if (candidate.available === false) {
+        const reasonKeys: Record<string, string> = {
+            provider_disabled: "app.admin.dashboard.creativeMedia.readiness.providerDisabled",
+            model_disabled: "app.admin.dashboard.creativeMedia.readiness.modelDisabled",
+            provider_base_url_missing: "app.admin.dashboard.creativeMedia.readiness.baseUrlMissing",
+            provider_credential_missing: "app.admin.dashboard.creativeMedia.readiness.credentialMissing",
+            operation_not_configured: "app.admin.dashboard.creativeMedia.readiness.operationNotConfigured",
+            adapter_not_configured: "app.admin.dashboard.creativeMedia.readiness.adapterNotConfigured",
+            adapter_missing: "app.admin.dashboard.creativeMedia.readiness.adapterMissing",
+            adapter_catalog_only: "app.admin.dashboard.creativeMedia.readiness.adapterCatalogOnly",
+            adapter_unsupported: "app.admin.dashboard.creativeMedia.readiness.adapterUnsupported",
+            adapter_operation_mismatch: "app.admin.dashboard.creativeMedia.readiness.adapterOperationMismatch",
+            endpoint_operation_mismatch: "app.admin.dashboard.creativeMedia.readiness.endpointOperationMismatch",
+            media_wire_protocol_mismatch: "app.admin.dashboard.creativeMedia.readiness.mediaWireProtocolMismatch",
+        };
+        const reasons = (candidate.readiness?.reasonCodes || [])
+            .map((code) => reasonKeys[code] ? t(reasonKeys[code]) : code)
+            .filter(Boolean);
+        return reasons.length ? reasons.join("; ") : t("app.admin.dashboard.creativeMedia.candidateRiskUnavailable");
+    }
     return "";
 }
 
@@ -391,7 +417,10 @@ export default function CreativeMediaPage() {
 
     const musicRecipes = data.recipes.filter((item) => text(item.modality, "") === "music");
     const connectedModelOptions = data.modelPreferences?.connectedOptions || [];
-    const diagnosticCandidates = data.modelPreferences?.diagnosticCandidates || [];
+    const diagnosticCandidates = useMemo(() => [
+        ...(data.modelPreferences?.connectedOptions || []).filter((candidate) => candidate.available === false),
+        ...(data.modelPreferences?.diagnosticCandidates || []),
+    ], [data.modelPreferences?.connectedOptions, data.modelPreferences?.diagnosticCandidates]);
     const operationRows = useMemo(
         () => mergeOperationRows(data.modelPreferences?.operationRows),
         [data.modelPreferences?.operationRows],
@@ -766,6 +795,11 @@ export default function CreativeMediaPage() {
                                 model: candidate.modelId,
                                 source: candidate.source,
                                 available: candidate.available,
+                                adapter: candidate.adapter,
+                                suggestedAdapter: candidate.suggestedAdapter,
+                                adapterSource: candidate.adapterSource,
+                                operationSource: candidate.operationSource,
+                                reasonCodes: candidate.readiness?.reasonCodes || [],
                             }))} />
                         </div>
                     </details>
@@ -1078,6 +1112,11 @@ export default function CreativeMediaPage() {
                                     model: candidate.modelId,
                                     source: candidate.source,
                                     available: candidate.available,
+                                    adapter: candidate.adapter,
+                                    suggestedAdapter: candidate.suggestedAdapter,
+                                    adapterSource: candidate.adapterSource,
+                                    operationSource: candidate.operationSource,
+                                    reasonCodes: candidate.readiness?.reasonCodes || [],
                                 }))} />
                             </div>
                         </details>

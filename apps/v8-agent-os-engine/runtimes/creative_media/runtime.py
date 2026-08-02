@@ -61,6 +61,12 @@ from .media_quality import (
     inspect_media_quality,
 )
 from .governed_media import trim_exact as trim_governed_media_exact
+from .model_routing import (
+    configured_adapter,
+    configured_operation_kinds,
+    evaluate_candidate_readiness,
+    suggested_adapter_for_model,
+)
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
@@ -758,6 +764,12 @@ class CreativeMediaRuntime:
         matrix = load_provider_matrix()
         return {
             **matrix,
+            "modelRoutingContract": {
+                "configurationAuthority": "model_control_plane",
+                "registryRole": "suggestion_only",
+                "selectionAuthority": "creative_media_operation_preferences",
+                "failurePolicy": "fail_closed_with_readiness_reasons",
+            },
             "mediaModelCapabilityRegistry": load_media_model_capability_registry(),
             "modelCapabilityOverrides": load_media_model_capability_overrides(),
             "runtimeAdapters": [
@@ -794,59 +806,14 @@ class CreativeMediaRuntime:
         provider_meta: dict[str, Any],
         model_data: dict[str, Any],
     ) -> str:
-        media_limits = dict(model_data.get("mediaLimits") or {})
-        endpoint_binding = dict(model_data.get("endpointBinding") or {})
-        media_adapter = str(media_limits.get("adapter") or "").strip()
-        adapter_candidates = (
-            endpoint_binding.get("adapter"),
-            model_data.get("adapter"),
-            media_limits.get("adapterProviderId"),
-            media_adapter,
-        )
-        explicit_adapter = next(
-            (
-                str(value).strip()
-                for value in adapter_candidates
-                if str(value or "").strip() and str(value or "").strip() != "catalog_only"
-            ),
-            "",
-        )
-        if explicit_adapter:
-            return explicit_adapter
-        haystack = " ".join(
-            [
-                provider_id,
-                str(provider_meta.get("name") or ""),
-                str(provider_meta.get("apiStandard") or provider_meta.get("api_standard") or ""),
-                str(model_data.get("adapter") or ""),
-                str(media_limits.get("adapterProviderId") or ""),
-            ]
-        ).lower()
-        if modality in {"image", "video"} and any(token in haystack for token in ("volc", "seedream", "seedance", "jimeng")):
-            return "volcengine_ark"
-        if modality in {"image", "video"} and any(token in haystack for token in ("dashscope", "bailian", "aliyun", "alibaba", "qwen", "wan2", "wanx")):
-            return "dashscope"
-        if modality == "image" and "agnes" in haystack:
-            return "agnes_images"
-        if modality == "video" and "agnes" in haystack:
-            return "agnes_video"
-        if modality == "video" and ("minimax" in haystack or "mini max" in haystack):
-            return "minimax_video"
-        if modality == "music":
-            if "mureka" in haystack:
-                return "mureka_music"
-            if "minimax" in haystack or "mini max" in haystack:
-                return "minimax_music"
-        if modality == "model3d":
-            if any(token in haystack for token in ("tencent", "hunyuan", "hy-3d", "tokenhub")):
-                return "tencent_hunyuan_3d"
-        if modality == "image":
-            return "openai_images"
-        if modality == "voice":
-            if "minimax" in haystack or str(model_data.get("id") or "").startswith("t2a_v2/"):
-                return "minimax_tts"
-            return "v8_audio_tts" if provider_id == "v8_audio_tts" else str(model_data.get("adapter") or "v8_audio_tts")
-        return str(model_data.get("adapter") or "catalog_only")
+        adapter, declared = configured_adapter(model_data)
+        if declared:
+            return adapter
+        return suggested_adapter_for_model(
+            modality=modality,
+            model_id=str(model_data.get("id") or ""),
+            provider_matrix=load_provider_matrix(),
+        ) or "catalog_only"
 
     def _operation_kinds_for_candidate(
         self,
@@ -857,67 +824,19 @@ class CreativeMediaRuntime:
         provider_meta: dict[str, Any],
         model_data: dict[str, Any],
     ) -> list[str]:
+        configured_operations, configured = configured_operation_kinds(
+            provider_meta=provider_meta,
+            model_data=model_data,
+        )
+        if configured:
+            return _normalize_operation_kinds_for_modality(modality, configured_operations)
         registry_operations = _registry_operation_kinds_for_model(
             provider_id=provider_id,
             model_id=str(model_data.get("id") or ""),
             modality=modality,
         )
-        media_limits = dict(model_data.get("mediaLimits") or {})
-        explicit_present = (
-            "operationKinds" in model_data
-            or "operations" in model_data
-            or "operationKinds" in media_limits
-            or "operationKinds" in provider_meta
-        )
-        endpoint_binding = dict(model_data.get("endpointBinding") or {})
-        binding_provenance = dict(endpoint_binding.get("provenance") or {})
-        manual_declaration = (
-            "capabilityModes" in media_limits
-            or str(binding_provenance.get("source") or "").strip().lower() == "manual"
-            or str(media_limits.get("capabilitySource") or "").strip().lower() == "manual"
-        )
-        explicit = _list_of_strings(
-            model_data.get("operationKinds")
-            if "operationKinds" in model_data
-            else model_data.get("operations")
-            if "operations" in model_data
-            else media_limits.get("operationKinds")
-            if "operationKinds" in media_limits
-            else provider_meta.get("operationKinds")
-        )
-        if modality == "voice" and adapter == "minimax_tts":
-            if explicit_present and manual_declaration:
-                return _normalize_operation_kinds_for_modality(modality, explicit)
-            return _normalize_operation_kinds_for_modality(
-                modality,
-                [*registry_operations, *explicit, "voice.tts", "voice.design"],
-            )
-        if explicit_present and manual_declaration:
-            return _normalize_operation_kinds_for_modality(modality, explicit)
         if registry_operations:
             return _normalize_operation_kinds_for_modality(modality, registry_operations)
-        if explicit_present:
-            return _normalize_operation_kinds_for_modality(modality, explicit)
-        haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
-        if modality == "image":
-            if adapter == "dashscope":
-                return ["image.generate", "image.edit"]
-            if adapter == "openai_images":
-                return ["image.generate", "image.edit"]
-            return ["image.generate", "image.edit"]
-        if modality == "video":
-            if any(token in haystack for token in ("lipsync", "lip-sync", "retalk", "对口型")):
-                return ["video.lipsync"]
-            if any(token in haystack for token in ("action", "motion", "动作迁移")):
-                return ["video.action_transfer"]
-            if any(token in haystack for token in ("avatar", "digital-human", "数字人")):
-                return ["video.avatar"]
-            if any(token in haystack for token in ("replace", "replacement", "换人")):
-                return ["video.replacement"]
-            if adapter == "volcengine_ark":
-                return ["video.text_to_video", "video.image_to_video", "video.first_last_frame"]
-            if adapter == "dashscope":
-                return ["video.text_to_video", "video.image_to_video"]
         return list(DEFAULT_OPERATION_KINDS.get(modality, []))
 
     def _operation_kind_for_request(self, modality: str, request: dict[str, Any]) -> str:
@@ -976,12 +895,14 @@ class CreativeMediaRuntime:
         candidates: list[dict[str, Any]] = []
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
+        provider_matrix = load_provider_matrix()
         for provider_id, provider_data in providers.items():
             provider_meta = dict((provider_data or {}).get("provider") or {})
             provider_name = str(provider_meta.get("name") or provider_id).strip() or provider_id
             provider_logo_asset = str(provider_meta.get("logoAsset") or provider_meta.get("logo_asset") or provider_meta.get("icon") or "").strip()
             for model_id, model_data_raw in dict((provider_data or {}).get("models") or {}).items():
                 model_data = dict(model_data_raw or {})
+                model_id_str = str(model_id)
                 endpoint_binding = build_model_endpoint_binding(
                     str(provider_id),
                     str(model_id),
@@ -1007,14 +928,23 @@ class CreativeMediaRuntime:
                     modality=modality,
                     provider_id=str(provider_id),
                     provider_meta=provider_meta,
+                    model_data={**model_data, "id": model_id_str},
+                )
+                configured_operations, has_configured_operations = configured_operation_kinds(
+                    provider_meta=provider_meta,
                     model_data=model_data,
+                )
+                configured_adapter_value, has_configured_adapter = configured_adapter(model_data)
+                suggested_adapter = suggested_adapter_for_model(
+                    modality=modality,
+                    model_id=model_id_str,
+                    provider_matrix=provider_matrix,
                 )
                 operation_capability_profiles = dict(
                     media_limits.get("operationCapabilityProfiles")
                     or model_data.get("operationCapabilityProfiles")
                     or {}
                 )
-                model_id_str = str(model_id)
                 for operation_kind in self._operation_kinds_for_candidate(
                     modality=modality,
                     provider_id=str(provider_id),
@@ -1022,9 +952,6 @@ class CreativeMediaRuntime:
                     provider_meta=provider_meta,
                     model_data={**model_data, "id": model_id_str},
                 ):
-                    binding_operation_kind = str(endpoint_binding.get("operationKind") or "").strip()
-                    if binding_operation_kind and binding_operation_kind != operation_kind:
-                        continue
                     capability_profile = dict(
                         operation_capability_profiles.get(operation_kind)
                         or capability_profile_for_model(
@@ -1036,6 +963,19 @@ class CreativeMediaRuntime:
                         or model_data.get("capabilityProfile")
                         or {}
                     )
+                    operation_configured = has_configured_operations and operation_kind in configured_operations
+                    readiness = evaluate_candidate_readiness(
+                        provider_meta=provider_meta,
+                        model_data=model_data,
+                        endpoint_binding=endpoint_binding,
+                        operation_kind=operation_kind,
+                        adapter=adapter,
+                        operation_configured=operation_configured,
+                        adapter_configured=bool(configured_adapter_value) and has_configured_adapter and configured_adapter_value == adapter,
+                    )
+                    brief_only = self._is_brief_only_operation(adapter=adapter, operation_kind=operation_kind)
+                    if brief_only:
+                        readiness = {"executable": False, "planningOnly": True, "reasonCodes": [], "reasonMessages": []}
                     candidates.append(
                         {
                             "candidateId": _candidate_id(
@@ -1054,16 +994,20 @@ class CreativeMediaRuntime:
                             "providerLogoAsset": provider_logo_asset,
                             "modelLogoAsset": str(model_data.get("logoAsset") or model_data.get("logo_asset") or "").strip(),
                             "adapter": adapter,
+                            "adapterSource": "configuration" if has_configured_adapter else "registry_suggestion" if suggested_adapter else "none",
+                            "suggestedAdapter": suggested_adapter,
                             "endpointBinding": endpoint_binding,
+                            "operationSource": "configuration" if operation_configured else "registry_suggestion" if _registry_operation_kinds_for_model(
+                                provider_id=str(provider_id),
+                                model_id=model_id_str,
+                                modality=modality,
+                            ) else "default_suggestion",
                             "capabilityProfile": capability_profile,
                             "nativeAudio": bool(capability_profile.get("nativeAudio")),
                             "source": "model_control_plane",
-                            # Model Hub is the authoritative source for connected media models and
-                            # their declared operation kinds. Runtime adapter dispatch may still
-                            # fail honestly at execution time, but it must not hide or de-prioritize
-                            # a model the user explicitly configured.
-                            "available": True,
-                            "briefOnly": self._is_brief_only_operation(adapter=adapter, operation_kind=operation_kind),
+                            "available": brief_only or bool(readiness.get("executable")),
+                            "readiness": readiness,
+                            "briefOnly": brief_only,
                         }
                     )
 
@@ -1345,17 +1289,51 @@ class CreativeMediaRuntime:
             for item in candidates
             if not self._is_model_preference_visible_candidate(item)
         ]
+        operation_rows = self._build_operation_rows(
+            candidates=candidates,
+            connected_options=connected_options,
+            stored_selections=list(selection_by_operation.values()),
+        )
+        execution_projection: dict[str, dict[str, Any]] = {}
+        candidates_by_operation: dict[str, list[dict[str, Any]]] = {}
+        for candidate in candidates:
+            operation_kind = str(candidate.get("operationKind") or "").strip()
+            if operation_kind:
+                candidates_by_operation.setdefault(operation_kind, []).append(candidate)
+        for row in operation_rows:
+            operation_kind = str(row.get("operationKind") or "").strip()
+            selected_refs = set(_list_of_strings(row.get("selectedModelRefs")))
+            operation_candidates = candidates_by_operation.get(operation_kind, [])
+            selected_candidates = [
+                item
+                for item in operation_candidates
+                if str(item.get("modelRef") or "").strip() in selected_refs
+            ]
+            executable = [
+                self._compact_model_candidate(item)
+                for item in selected_candidates
+                if bool(item.get("enabled", False)) and bool(item.get("available", False))
+            ]
+            blocked = [
+                self._compact_model_candidate(item)
+                for item in selected_candidates
+                if not bool(item.get("enabled", False)) or not bool(item.get("available", False))
+            ]
+            status = "ready" if executable else "blocked" if selected_refs else "unconfigured"
+            execution_projection[operation_kind] = {
+                "status": status,
+                "configuredModelRefs": list(row.get("selectedModelRefs") or []),
+                "executableCandidates": executable,
+                "blockedCandidates": blocked,
+            }
         return {
             "version": 1,
             "updatedAt": (stored or {}).get("updatedAt") if isinstance(stored, dict) else "",
             "candidates": candidates,
             "connectedOptions": connected_options,
             "diagnosticCandidates": diagnostic_candidates,
-            "operationRows": self._build_operation_rows(
-                candidates=candidates,
-                connected_options=connected_options,
-                stored_selections=list(selection_by_operation.values()),
-            ),
+            "operationRows": operation_rows,
+            "executionProjection": execution_projection,
             "policies": policies,
         }
 
@@ -1459,13 +1437,13 @@ class CreativeMediaRuntime:
             )
         )
 
-    def _explicit_enabled_model_candidate(
+    def _matching_explicit_model_candidates(
         self,
         request: dict[str, Any],
         *,
         modality: str,
         operation_kind: str,
-    ) -> dict[str, Any] | None:
+    ) -> list[dict[str, Any]]:
         model_ref = parse_model_ref(str(request.get("modelRef") or request.get("model_ref") or ""))
         requested_provider = str(
             request.get("providerId")
@@ -1508,11 +1486,30 @@ class CreativeMediaRuntime:
                 )
                 if requested_model not in candidate_models and self._strip_provider_model_prefix(requested_model) not in candidate_models:
                     continue
-            if not bool(candidate.get("enabled", False)) or not bool(candidate.get("available", False)):
-                continue
             matches.append(dict(candidate))
         matches.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("modelRef") or "")))
-        return matches[0] if matches else None
+        return matches
+
+    def _explicit_enabled_model_candidate(
+        self,
+        request: dict[str, Any],
+        *,
+        modality: str,
+        operation_kind: str,
+    ) -> dict[str, Any] | None:
+        matches = self._matching_explicit_model_candidates(
+            request,
+            modality=modality,
+            operation_kind=operation_kind,
+        )
+        return next(
+            (
+                candidate
+                for candidate in matches
+                if bool(candidate.get("enabled", False)) and bool(candidate.get("available", False))
+            ),
+            None,
+        )
 
     def _preferred_model_candidates(self, operation_kind: str) -> list[dict[str, Any]]:
         prefs = self.get_model_preferences()
@@ -1520,6 +1517,8 @@ class CreativeMediaRuntime:
             dict(item)
             for item in list((prefs.get("policies") or {}).get(operation_kind, {}).get("models") or [])
             if bool(item.get("enabled", True))
+            and bool(item.get("available", False))
+            and not self._is_incompatible_media_candidate(item, operation_kind)
         ]
         candidates.sort(key=lambda item: (_safe_priority(item.get("priority"), 999), str(item.get("providerName") or "")))
         return candidates
@@ -1556,6 +1555,10 @@ class CreativeMediaRuntime:
             "modality": candidate.get("modality"),
             "source": candidate.get("source"),
             "available": bool(candidate.get("available", False)),
+            "adapterSource": candidate.get("adapterSource"),
+            "suggestedAdapter": candidate.get("suggestedAdapter"),
+            "operationSource": candidate.get("operationSource"),
+            "readiness": candidate.get("readiness") or {},
             "nativeAudio": bool(candidate.get("nativeAudio", False)),
             "capabilityProfile": candidate.get("capabilityProfile") or {},
         }
@@ -1583,12 +1586,6 @@ class CreativeMediaRuntime:
             for item in self._preferred_model_candidates(operation_kind)
             if not self._is_incompatible_media_candidate(item, operation_kind)
         ]
-        if not candidates:
-            candidates = [
-                item
-                for item in self._all_model_candidates_for_operation(operation_kind)
-                if bool(item.get("available", False)) and not self._is_incompatible_media_candidate(item, operation_kind)
-            ]
         candidates.sort(
             key=lambda item: (
                 preferred.index(str(item.get("modelId") or ""))
@@ -1600,6 +1597,19 @@ class CreativeMediaRuntime:
             )
         )
         primary = candidates[0] if candidates else None
+        blocked_candidates = [
+            item
+            for item in self._all_model_candidates_for_operation(operation_kind)
+            if bool(item.get("enabled", False)) and not bool(item.get("available", False))
+        ]
+        blocking_reason_codes = list(
+            dict.fromkeys(
+                str(code)
+                for item in blocked_candidates
+                for code in list((item.get("readiness") or {}).get("reasonCodes") or [])
+                if str(code)
+            )
+        )
         return {
             "operationKind": operation_kind,
             "selectionPolicy": {
@@ -1614,6 +1624,8 @@ class CreativeMediaRuntime:
             else {
                 "code": "creative_media_capability_gap",
                 "message": f"No available model candidate for {operation_kind}.",
+                "reasonCodes": blocking_reason_codes,
+                "configuredModelRefs": [str(item.get("modelRef") or "") for item in blocked_candidates if item.get("modelRef")],
             },
         }
 
@@ -3351,13 +3363,66 @@ class CreativeMediaRuntime:
                 operation_kind=operation_kind,
                 request=request,
             )
-        if self._has_explicit_provider_or_model_selection(request):
+        has_explicit_model_identity = self._has_explicit_provider_or_model_selection(request)
+        requested_adapter = str(request.get("adapter") or "").strip().lower()
+        if requested_adapter and not has_explicit_model_identity:
+            job = self._new_job(
+                modality=modality,
+                adapter="operation_unavailable",
+                request={**request, "operationKind": operation_kind},
+            )
+            job["status"] = "failed"
+            job["error"] = (
+                "Creative Media adapter cannot authorize execution without a configured provider/model; "
+                "configurationErrors=adapter_without_configured_model"
+            )
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
+        if has_explicit_model_identity:
             explicit_candidate = self._explicit_enabled_model_candidate(
                 request,
                 modality=modality,
                 operation_kind=operation_kind,
             )
             if not explicit_candidate:
+                matches = self._matching_explicit_model_candidates(
+                    request,
+                    modality=modality,
+                    operation_kind=operation_kind,
+                )
+                reason_codes = list(
+                    dict.fromkeys(
+                        [
+                            *("model_not_enabled_for_operation" for item in matches if not bool(item.get("enabled", False))),
+                            *(
+                                str(code)
+                                for item in matches
+                                for code in list((item.get("readiness") or {}).get("reasonCodes") or [])
+                                if str(code)
+                            ),
+                        ]
+                    )
+                )
+                job = self._new_job(
+                    modality=modality,
+                    adapter="operation_unavailable",
+                    request={**request, "operationKind": operation_kind},
+                )
+                job["status"] = "failed"
+                reason_text = (
+                    "configured model is not enabled; "
+                    if "model_not_enabled_for_operation" in reason_codes
+                    else ""
+                )
+                job["error"] = (
+                    "Explicit Creative Media provider/model cannot execute the exact "
+                    f"operationKind={operation_kind}; {reason_text}configurationErrors="
+                    f"{','.join(reason_codes or ['configured_candidate_not_found'])}"
+                )
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
+            configured_adapter_value = str(explicit_candidate.get("adapter") or "").strip().lower()
+            if requested_adapter and requested_adapter != configured_adapter_value:
                 job = self._new_job(
                     modality=modality,
                     adapter="operation_unavailable",
@@ -3365,13 +3430,13 @@ class CreativeMediaRuntime:
                 )
                 job["status"] = "failed"
                 job["error"] = (
-                    "Explicit Creative Media provider/model is not enabled and bound to the exact "
-                    f"operationKind={operation_kind}"
+                    "Requested Creative Media adapter conflicts with the configured model binding; "
+                    "configurationErrors=requested_adapter_mismatch"
                 )
                 job["completedAt"] = utc_now_iso()
                 return self._save_job(job)
             request = self._request_for_candidate(request, explicit_candidate)
-        if not self._has_explicit_model_selection(request):
+        if not has_explicit_model_identity:
             preferred = self._preferred_model_candidates(operation_kind)
             if preferred:
                 return await self._create_job_with_model_fallback(modality, operation_kind, request, preferred)
@@ -3381,12 +3446,11 @@ class CreativeMediaRuntime:
                 job["error"] = f"No enabled executable Creative Media model candidate is available for operationKind={operation_kind}"
                 job["completedAt"] = utc_now_iso()
                 return self._save_job(job)
-            if operation_kind not in EXECUTABLE_OPERATION_KINDS:
-                job = self._new_job(modality=modality, adapter="operation_unsupported", request={**request, "operationKind": operation_kind})
-                job["status"] = "failed"
-                job["error"] = f"No enabled Creative Media model candidate supports operationKind={operation_kind}"
-                job["completedAt"] = utc_now_iso()
-                return self._save_job(job)
+            job = self._new_job(modality=modality, adapter="operation_unavailable", request={**request, "operationKind": operation_kind})
+            job["status"] = "failed"
+            job["error"] = f"No configured Creative Media model candidate exists for operationKind={operation_kind}"
+            job["completedAt"] = utc_now_iso()
+            return self._save_job(job)
         if modality == "image":
             return await self._create_image_job(request)
         if modality == "video":
@@ -3685,22 +3749,8 @@ class CreativeMediaRuntime:
                     binding_error = str(exc)
         if endpoint_binding.get("operationKind") and not str(request.get("operationKind") or request.get("operation_kind") or "").strip():
             operation_kind = str(endpoint_binding["operationKind"])
-        adapter = str(request.get("adapter") or endpoint_binding.get("adapter") or "").strip().lower()
+        adapter = str(request.get("adapter") or "").strip().lower()
         provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip()
-        if not adapter:
-            if endpoint_binding:
-                adapter = self._adapter_for_model_candidate(
-                    modality="image",
-                    provider_id=str(endpoint_binding.get("providerId") or provider_id),
-                    provider_meta=dict(endpoint_binding.get("providerMeta") or {}),
-                    model_data=dict(endpoint_binding.get("modelData") or {}),
-                )
-            elif "agnes" in provider_id.lower():
-                adapter = "agnes_images"
-            elif any(token in provider_id.lower() for token in ("dashscope", "aliyun", "bailian")):
-                adapter = "dashscope"
-            else:
-                adapter = "volcengine_ark" if "volc" in provider_id.lower() or str(request.get("provider") or "").lower() in {"volcengine", "seedream"} else "openai_images"
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="image")
         prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
         if endpoint_binding:
@@ -3755,24 +3805,7 @@ class CreativeMediaRuntime:
                     binding_error = str(exc)
         if endpoint_binding.get("operationKind") and not str(request.get("operationKind") or request.get("operation_kind") or "").strip():
             operation_kind = str(endpoint_binding["operationKind"])
-        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
         adapter = str(request.get("adapter") or "").strip().lower()
-        if not adapter:
-            if endpoint_binding:
-                adapter = self._adapter_for_model_candidate(
-                    modality="video",
-                    provider_id=str(endpoint_binding.get("providerId") or requested_provider_id),
-                    provider_meta=dict(endpoint_binding.get("providerMeta") or {}),
-                    model_data=dict(endpoint_binding.get("modelData") or {}),
-                )
-            elif "agnes" in requested_provider_id:
-                adapter = "agnes_video"
-            elif "minimax" in requested_provider_id:
-                adapter = "minimax_video"
-            else:
-                adapter = "volcengine_ark"
-        if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"} and adapter == "volcengine_ark":
-            adapter = "dashscope"
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="video")
         prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
         if endpoint_binding:
@@ -3833,11 +3866,7 @@ class CreativeMediaRuntime:
 
     async def _create_voice_job(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_kind = self._operation_kind_for_request("voice", request)
-        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
-        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or "").strip().lower()
         adapter = str(request.get("adapter") or "").strip().lower()
-        if not adapter:
-            adapter = "minimax_tts" if "minimax" in requested_provider_id or "minimax" in requested_model else "v8_audio_tts"
         prepared_request = {**request, "operationKind": operation_kind}
         job = self._new_job(modality="voice", adapter=adapter, request=prepared_request)
         self._save_job(job)
@@ -4073,11 +4102,7 @@ class CreativeMediaRuntime:
             job["error"] = f"Unsupported music operationKind={operation_kind}; music.brief is planning-only."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
-        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
-        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or "").strip().lower()
         adapter = str(request.get("adapter") or "").strip().lower()
-        if not adapter:
-            adapter = "mureka_music" if "mureka" in requested_provider_id or "mureka" in requested_model else "minimax_music"
         prepared_request = {**request, "operationKind": operation_kind}
         job = self._new_job(modality="music", adapter=adapter, request=prepared_request)
         self._save_job(job)
@@ -4104,8 +4129,7 @@ class CreativeMediaRuntime:
             job["error"] = f"Unsupported model3d operationKind={operation_kind}"
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
-        requested_provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip().lower()
-        adapter = str(request.get("adapter") or ("tencent_hunyuan_3d" if any(token in requested_provider_id for token in ("tencent", "hunyuan")) else "tencent_hunyuan_3d")).strip().lower()
+        adapter = str(request.get("adapter") or "").strip().lower()
         prepared_request = {**request, "operationKind": operation_kind}
         job = self._new_job(modality="model3d", adapter=adapter, request=prepared_request)
         self._save_job(job)

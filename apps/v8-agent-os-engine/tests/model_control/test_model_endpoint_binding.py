@@ -56,7 +56,65 @@ def test_catalog_submit_path_is_relative_to_provider_base_url():
     assert binding["route"] == "image_generation/image-01-live"
     assert binding["endpointPath"] == "image_generation"
     assert binding["providerModelId"] == "image-01-live"
-    assert binding["operationKind"] == "image.generate"
+    assert binding["operationKind"] == ""
+
+
+def test_media_binding_does_not_inherit_chat_protocol_and_preserves_multi_operation_scope():
+    provider = {
+        "api_standard": "openai",
+        "base_url": "https://api.example.test/v1",
+        "channels": [
+            {
+                "id": "openai",
+                "apiStandard": "openai",
+                "baseUrl": "https://api.example.test/v1",
+                "wireProtocols": ["openai.chat_completions"],
+                "defaultWireProtocol": "openai.chat_completions",
+            }
+        ],
+        "defaultChannelId": "openai",
+    }
+    persisted = persist_model_endpoint_binding(
+        "images",
+        "images/generations/gpt-image-2",
+        provider,
+        {
+            "type": "IMAGE",
+            "operationKinds": ["image.generate", "image.edit"],
+            "mediaLimits": {
+                "adapter": "openai_images",
+                "operationKinds": ["image.generate", "image.edit"],
+            },
+            "endpointBinding": {
+                "channelId": "openai",
+                "wireProtocol": "",
+                "operationKind": "",
+                "adapter": "openai_images",
+            },
+        },
+        source="manual",
+    )
+
+    binding = persisted["endpointBinding"]
+    assert binding["wireProtocol"] == ""
+    assert binding["operationKind"] == ""
+    assert binding["adapter"] == "openai_images"
+    assert persisted["mediaLimits"]["operationKinds"] == ["image.generate", "image.edit"]
+
+
+def test_explicitly_unbound_media_adapter_is_not_replaced_by_stale_media_limit():
+    binding = build_model_endpoint_binding(
+        "images",
+        "images/generations/gpt-image-2",
+        {"base_url": "https://api.example.test/v1", "api_standard": "openai_images"},
+        {
+            "type": "IMAGE",
+            "mediaLimits": {"adapter": "openai_images", "operationKinds": ["image.generate"]},
+            "endpointBinding": {"adapter": "", "operationKind": "image.generate"},
+        },
+    )
+
+    assert binding["adapter"] == ""
 
 
 def test_non_media_model_id_with_slash_is_not_treated_as_endpoint_route():

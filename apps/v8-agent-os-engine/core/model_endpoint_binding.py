@@ -103,6 +103,7 @@ def build_model_endpoint_binding(
     model = dict(model_meta or {})
     explicit = dict(model.get("endpointBinding") or {})
     media_limits = dict(model.get("mediaLimits") or {})
+    is_media_model = _is_media_model(model)
     requested_wire_protocol = str(explicit.get("wireProtocol") or explicit.get("wire_protocol") or "").strip()
     channel = resolve_provider_channel(
         provider,
@@ -123,12 +124,31 @@ def build_model_endpoint_binding(
             media_limits.get("submitPath") or "",
         )
     )
-    operation_kind = str(
-        explicit.get("operationKind")
-        or media_limits.get("operationKind")
-        or ((media_limits.get("operationKinds") or [""])[0] if isinstance(media_limits.get("operationKinds"), list) else "")
-        or ""
-    ).strip()
+    configured_operation_values = (
+        media_limits.get("operationKinds")
+        if "operationKinds" in media_limits
+        else model.get("operationKinds")
+    )
+    configured_operations = [
+        str(item or "").strip()
+        for item in list(configured_operation_values or [])
+        if str(item or "").strip()
+    ] if isinstance(configured_operation_values, list) else []
+    operation_scope_declared = (
+        "operationKind" in explicit
+        or "operation_kind" in explicit
+        or "operationKind" in media_limits
+        or "operationKinds" in media_limits
+        or "operationKinds" in model
+    )
+    if "operationKind" in explicit or "operation_kind" in explicit:
+        operation_kind = str(explicit.get("operationKind") or explicit.get("operation_kind") or "").strip()
+    else:
+        operation_kind = str(
+            media_limits.get("operationKind")
+            or (configured_operations[0] if len(configured_operations) == 1 else "")
+            or ""
+        ).strip()
 
     known_endpoint, known_provider_model_id, known_operation = _known_route_split(route)
     inferred = False
@@ -138,11 +158,11 @@ def build_model_endpoint_binding(
     if not provider_model_id and known_provider_model_id:
         provider_model_id = known_provider_model_id
         inferred = True
-    if not operation_kind and known_operation:
+    if not operation_kind and known_operation and not operation_scope_declared:
         operation_kind = known_operation
         inferred = True
 
-    if _is_media_model(model):
+    if is_media_model:
         if not provider_model_id:
             provider_model_id = route
         if not endpoint_path and provider_model_id and route.endswith(f"/{provider_model_id}"):
@@ -162,14 +182,14 @@ def build_model_endpoint_binding(
         or provider.get("apiStandard")
         or "openai"
     ).strip()
-    adapter = str(
-        explicit.get("adapter")
-        or media_limits.get("adapter")
-        or model.get("adapter")
-        or ""
-    ).strip()
+    if "adapter" in explicit:
+        adapter = str(explicit.get("adapter") or "").strip()
+    elif "adapter" in media_limits:
+        adapter = str(media_limits.get("adapter") or "").strip()
+    else:
+        adapter = str(model.get("adapter") or "").strip()
     wire_protocol = requested_wire_protocol
-    if not wire_protocol and channel.get("source") == "configured":
+    if not wire_protocol and channel.get("source") == "configured" and not is_media_model:
         wire_protocol = str(channel.get("defaultWireProtocol") or "").strip()
     provider_hosted_tools = normalize_provider_hosted_tools(explicit.get("providerHostedTools"))
     protocol_advice = suggest_model_protocol(
@@ -189,7 +209,7 @@ def build_model_endpoint_binding(
             "sourceRefs": list(explicit.get("protocolSourceRefs") or protocol_advice.get("sourceRefs") or []),
             "warning": str(explicit.get("protocolWarning") or ""),
         }
-    if wire_protocol and not endpoint_path and not _is_media_model(model):
+    if wire_protocol and not endpoint_path and not is_media_model:
         endpoint_path = endpoint_path_for_protocol(wire_protocol)
     base_url = str(
         channel.get("baseUrl")

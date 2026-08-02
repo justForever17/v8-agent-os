@@ -3496,6 +3496,32 @@ export default function ModelHubPage() {
                                         />
                                     </div>
                                 </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-media-adapter">{t("app.admin.dashboard.model.hub.page.mediaAdapter")}</Label>
+                                    <select
+                                        id="model-media-adapter"
+                                        name="adapter"
+                                        defaultValue={String(editingModel?.endpointBinding?.adapter || editingModel?.mediaLimits?.adapter || "")}
+                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                        <option value="">{t("app.admin.dashboard.model.hub.page.mediaAdapterUnbound")}</option>
+                                        <option value="openai_images">OpenAI Images</option>
+                                        <option value="agnes_images">Agnes Images</option>
+                                        <option value="agnes_video">Agnes Video</option>
+                                        <option value="volcengine_ark">Volcengine Ark</option>
+                                        <option value="dashscope">Alibaba Cloud Model Studio</option>
+                                        <option value="minimax_video">MiniMax Video</option>
+                                        <option value="minimax_tts">MiniMax Speech</option>
+                                        <option value="minimax_music">MiniMax Music</option>
+                                        <option value="mureka_music">Mureka Music</option>
+                                        <option value="v8_audio_tts">V8OS System Speech</option>
+                                        <option value="tencent_hunyuan_3d">Tencent Hunyuan 3D</option>
+                                        <option value="catalog_only">{t("app.admin.dashboard.model.hub.page.mediaAdapterCatalogOnly")}</option>
+                                    </select>
+                                    <p className="text-xs leading-5 text-muted-foreground">
+                                        {t("app.admin.dashboard.model.hub.page.mediaAdapterHelp")}
+                                    </p>
+                                </div>
                                 {getMediaCapabilityOptions(modelType).length > 0 ? (
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between gap-3">

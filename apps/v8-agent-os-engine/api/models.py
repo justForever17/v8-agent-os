@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class ChatToolFunction(BaseModel):
@@ -51,6 +51,12 @@ class ExternalToolSpec(BaseModel):
 class ChatMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("id", "messageId", "message_id"),
+        serialization_alias="id",
+        description="Stable message identity used by persistent graph reducers",
+    )
     role: str = Field(description="Role of the message sender (user, assistant, system, tool)")
     content: str = Field(description="Content of the message")
     name: Optional[str] = Field(default=None, description="Name of the tool or user")
@@ -84,6 +90,7 @@ class ChatMessage(BaseModel):
                 )
             )
         message = cls(
+            id=str(record.get("id") or record.get("message_id") or "").strip() or None,
             role=str(record.get("role") or "user"),
             content=str(record.get("content") or ""),
             name=metadata.get("tool_name") if str(record.get("role") or "") == "tool" else None,

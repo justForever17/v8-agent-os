@@ -283,3 +283,79 @@ def test_delta_retention_blocks_incomplete_parent_chain_without_mutation(
         StorageRetentionService()._prune_old_checkpoints(dry_run=False)
     with sqlite3.connect(checkpoint_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 2
+
+
+def test_explicit_thread_delete_removes_only_target_checkpoint_lineage(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "delete-thread.db"
+
+    async def run() -> dict[str, int]:
+        store = CheckpointStore(checkpoint_path)
+        graph = _build_graph(_DeltaState, await store.get_async_sqlite_saver())
+        for thread_id in ("delete-me", "keep-me"):
+            await graph.ainvoke(
+                {"messages": [HumanMessage(content=f"message-{thread_id}")]},
+                {"configurable": {"thread_id": thread_id}},
+            )
+        counts = await store.delete_thread("delete-me")
+        await store.close()
+        return counts
+
+    counts = asyncio.run(run())
+
+    assert counts["checkpoints"] > 0
+    with sqlite3.connect(checkpoint_path) as conn:
+        for table in ("checkpoints", "writes", "blobs"):
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if not table_exists:
+                assert counts[table] == 0
+                continue
+            assert conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE thread_id = ?",
+                ("delete-me",),
+            ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
+            ("keep-me",),
+        ).fetchone()[0] > 0
+
+
+def test_runtime_snapshots_replace_same_session_projection(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    db = DatabaseManager(state_path)
+    db.create_or_update_session("snapshot-session", "snapshot", user_id="user")
+    db.create_run_record(
+        "snapshot-run",
+        "snapshot-session",
+        thread_id="snapshot-session",
+        run_type="chat",
+        status="running",
+    )
+
+    db.add_runtime_snapshot(
+        "snapshot-1",
+        "snapshot-session",
+        "snapshot-run",
+        1,
+        "chat_projection",
+        {"value": 1},
+    )
+    db.add_runtime_snapshot(
+        "snapshot-2",
+        "snapshot-session",
+        "snapshot-run",
+        2,
+        "chat_projection",
+        {"value": 2},
+    )
+
+    latest = db.get_latest_runtime_snapshot("snapshot-session")
+    assert latest["id"] == "snapshot-2"
+    assert latest["snapshot"] == {"value": 2}
+    with sqlite3.connect(state_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM runtime_snapshots WHERE session_id = ? AND snapshot_type = ?",
+            ("snapshot-session", "chat_projection"),
+        ).fetchone()[0] == 1

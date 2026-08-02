@@ -254,12 +254,21 @@ def build_supervisor_node(
             response,
             existing_route_context=dict(state.get("current_route_context") or {}),
         )
+        routed_update = dict(routed.update or {}) if isinstance(routed.update, dict) else {}
+        state_compaction_updates = list(
+            getattr(response, "_v8_state_compaction_updates", ()) or ()
+        )
+        if state_compaction_updates:
+            routed_update["messages"] = [
+                *state_compaction_updates,
+                *list(routed_update.get("messages") or []),
+            ]
         return Command(
             graph=routed.graph,
             goto=routed.goto,
             resume=routed.resume,
             update={
-                **(dict(routed.update or {}) if isinstance(routed.update, dict) else {}),
+                **routed_update,
                 "subagent_registry_snapshot": dict(bundle.subagent_registry_snapshot or {}),
             },
         )

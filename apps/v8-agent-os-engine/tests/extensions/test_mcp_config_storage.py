@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from core import storage as storage_module
@@ -11,7 +12,11 @@ def _storage_for_tmp(tmp_path: Path, monkeypatch) -> storage_module.StorageManag
     monkeypatch.setattr(storage_module, "MCP_JSON_PATH", tmp_path / "mcp.json")
     manager = object.__new__(storage_module.StorageManager)
     manager.base_dir = tmp_path
+    manager._config_io_lock = threading.RLock()
+    manager._mcp_io_lock = threading.RLock()
     manager._legacy_model_bindings_migrated = False
+    manager._config_payload_cache_signature = None
+    manager._config_payload_cache_data = None
     return manager
 
 
@@ -27,7 +32,7 @@ def test_mcp_config_reads_dedicated_mcp_json(tmp_path: Path, monkeypatch) -> Non
     assert config["mcpServers"]["context7"]["type"] == "http"
 
 
-def test_mcp_config_migrates_legacy_config_domain_to_mcp_json(tmp_path: Path, monkeypatch) -> None:
+def test_mcp_config_projects_legacy_domain_without_write_on_read(tmp_path: Path, monkeypatch) -> None:
     manager = _storage_for_tmp(tmp_path, monkeypatch)
     (tmp_path / "config.json").write_text(
         json.dumps({"mcp": {"mcpServers": {"sqlite": {"type": "stdio", "command": "openai-dev-mcp"}}}}),
@@ -37,6 +42,17 @@ def test_mcp_config_migrates_legacy_config_domain_to_mcp_json(tmp_path: Path, mo
     config = manager.get_mcp_config()
 
     assert config["mcpServers"]["sqlite"]["command"] == "openai-dev-mcp"
+    assert not (tmp_path / "mcp.json").exists()
+
+
+def test_explicit_mcp_migration_persists_legacy_domain(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mcp": {"mcpServers": {"sqlite": {"type": "stdio", "command": "openai-dev-mcp"}}}}),
+        encoding="utf-8",
+    )
+
+    assert manager.migrate_legacy_mcp_config() is True
     saved = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
     assert saved["mcpServers"]["sqlite"]["type"] == "stdio"
 

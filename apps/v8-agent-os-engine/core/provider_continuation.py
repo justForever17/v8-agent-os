@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from copy import deepcopy
 from typing import Any, Iterable, Mapping
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 PRIVATE_PROVIDER_CONTINUATION_KEY = "_v8_provider_continuation"
+_PROVIDER_CONTINUATION_STORAGE_SCHEME = "v8-provider-continuation-aesgcm-v1"
+_PROVIDER_CONTINUATION_STORAGE_AAD = b"v8-agent-os/provider-continuation/v1"
 _GEMINI_SIGNATURE_MAP_KEY = "__gemini_function_call_thought_signatures__"
 _EPHEMERAL_BLOCK_KEYS = {"index", "sub_index"}
 
@@ -369,8 +375,109 @@ def provider_continuation_matches_target(
     return True
 
 
+def seal_provider_continuation(continuation: Mapping[str, Any] | None) -> dict[str, Any]:
+    normalized = deepcopy(dict(continuation or {}))
+    if not normalized:
+        return {}
+    from erc.checkpoint_security import checkpoint_key_manager
+
+    key = checkpoint_key_manager.resolve().key
+    nonce = secrets.token_bytes(12)
+    plaintext = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, _PROVIDER_CONTINUATION_STORAGE_AAD)
+    return {
+        "schemaVersion": 1,
+        "storageScheme": _PROVIDER_CONTINUATION_STORAGE_SCHEME,
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+    }
+
+
+def is_sealed_provider_continuation(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get("storageScheme") == _PROVIDER_CONTINUATION_STORAGE_SCHEME
+
+
+def migrate_persisted_provider_continuations(database: Any) -> dict[str, int]:
+    """Encrypt legacy plaintext continuation metadata without touching visible text."""
+
+    result = {
+        "scannedRows": 0,
+        "migratedRows": 0,
+        "alreadyEncryptedRows": 0,
+        "invalidRows": 0,
+    }
+    with database.get_connection() as conn:
+        # Plaintext removal must clear the replaced SQLite cells as well as the
+        # logical row value; otherwise opaque bytes can remain in free pages.
+        conn.execute("PRAGMA secure_delete=ON")
+        for table in ("messages", "chat_canonical_messages"):
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if not exists:
+                continue
+            rows = conn.execute(
+                f"SELECT id, metadata_json FROM {table} "
+                "WHERE metadata_json IS NOT NULL AND instr(metadata_json, ?) > 0",
+                (PRIVATE_PROVIDER_CONTINUATION_KEY,),
+            ).fetchall()
+            for row in rows:
+                result["scannedRows"] += 1
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    result["invalidRows"] += 1
+                    continue
+                if not isinstance(metadata, dict):
+                    result["invalidRows"] += 1
+                    continue
+                continuation = metadata.get(PRIVATE_PROVIDER_CONTINUATION_KEY)
+                if is_sealed_provider_continuation(continuation):
+                    result["alreadyEncryptedRows"] += 1
+                    continue
+                if not isinstance(continuation, Mapping) or not continuation:
+                    result["invalidRows"] += 1
+                    continue
+                metadata[PRIVATE_PROVIDER_CONTINUATION_KEY] = seal_provider_continuation(continuation)
+                conn.execute(
+                    f"UPDATE {table} SET metadata_json = ? WHERE id = ?",
+                    (
+                        json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+                        row["id"],
+                    ),
+                )
+                result["migratedRows"] += 1
+        conn.commit()
+        if result["migratedRows"]:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return result
+
+
 def provider_continuation_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     value = dict(metadata or {}).get(PRIVATE_PROVIDER_CONTINUATION_KEY)
+    if is_sealed_provider_continuation(value):
+        from erc.checkpoint_security import checkpoint_key_manager
+
+        try:
+            nonce = base64.b64decode(str(value.get("nonce") or ""), validate=True)
+            ciphertext = base64.b64decode(str(value.get("ciphertext") or ""), validate=True)
+            plaintext = AESGCM(checkpoint_key_manager.resolve().key).decrypt(
+                nonce,
+                ciphertext,
+                _PROVIDER_CONTINUATION_STORAGE_AAD,
+            )
+            decoded = json.loads(plaintext.decode("utf-8"))
+        except (InvalidTag, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Provider continuation metadata failed authenticated decryption.") from exc
+        return deepcopy(dict(decoded)) if isinstance(decoded, Mapping) else {}
+    # Legacy plaintext metadata remains readable for migration/replay, but all
+    # new writes use authenticated encryption.
     return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
 
 

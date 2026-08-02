@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from core import storage as storage_module
@@ -11,6 +12,8 @@ def _storage_for_tmp(tmp_path: Path, monkeypatch) -> storage_module.StorageManag
     monkeypatch.setattr(storage_module, "CONFIG_JSON_PATH", tmp_path / "config.json")
     manager = object.__new__(storage_module.StorageManager)
     manager.base_dir = tmp_path
+    manager._config_io_lock = storage_module._CONFIG_IO_LOCK
+    manager._mcp_io_lock = storage_module._MCP_IO_LOCK
     manager._legacy_model_bindings_migrated = False
     manager._config_payload_cache_signature = None
     manager._config_payload_cache_data = None
@@ -57,6 +60,119 @@ def test_known_config_write_preserves_ignored_domains_on_disk(tmp_path: Path, mo
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted["removedRuntime"] == {"preserved": True}
     assert persisted["runtimeRegistry"]["startupProfile"] == "desktop"
+
+
+def test_preserved_domain_can_be_read_and_mutated_without_replacing_siblings(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "rpa": {"nativeInspector": {"enabled": True}, "keep": "value"},
+                "removedRuntime": {"preserved": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert manager.get_config_domain("rpa")["nativeInspector"]["enabled"] is True
+    manager.mutate_config_domain(
+        "rpa",
+        lambda current: {
+            **dict(current or {}),
+            "nativeInspector": {"enabled": False},
+        },
+    )
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["rpa"] == {
+        "nativeInspector": {"enabled": False},
+        "keep": "value",
+    }
+    assert persisted["removedRuntime"] == {"preserved": True}
+
+
+def test_config_read_uses_defaults_without_recreating_a_missing_file(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+
+    assert manager.get_config_domain("ui") == {"theme": "system"}
+    assert not config_path.exists()
+
+
+def test_system_and_safety_reads_are_pure_and_explicit_migrations_are_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "systemBase": {"bridge": {"engineBaseUrl": "http://127.0.0.1:9530/v1"}},
+                "safety": {"runtimeRules": {"allow": ["read"]}},
+                "removedRuntime": {"preserved": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+
+    system_base = manager.get_system_base_config()
+    repeated_system_base = manager.get_system_base_config()
+    safety = manager.get_safety_guardian_config()
+
+    assert system_base["bridge"]["internalSecret"]
+    assert repeated_system_base["bridge"]["internalSecret"] == system_base["bridge"]["internalSecret"]
+    assert safety["runtimeRules"]["allow"] == ["read"]
+    assert config_path.read_bytes() == before
+    assert manager.migrate_system_base_config() is True
+    assert manager.migrate_safety_guardian_config() is False
+    migrated = config_path.read_bytes()
+    assert manager.migrate_system_base_config() is False
+    assert manager.migrate_safety_guardian_config() is False
+    assert config_path.read_bytes() == migrated
+    assert json.loads(migrated)["removedRuntime"] == {"preserved": True}
+
+
+def test_config_domain_mutations_share_one_lock_across_storage_instances(tmp_path: Path, monkeypatch) -> None:
+    first = _storage_for_tmp(tmp_path, monkeypatch)
+    second = storage_module.StorageManager()
+    first.save_ui_config({"theme": "system"})
+    first_mutator_entered = threading.Event()
+    release_first = threading.Event()
+    second_mutator_entered = threading.Event()
+
+    def _first_mutator(_current):
+        first_mutator_entered.set()
+        assert release_first.wait(timeout=2)
+        return {"theme": "dark"}
+
+    def _second_mutator(_current):
+        second_mutator_entered.set()
+        return {"enabled": False}
+
+    first_thread = threading.Thread(
+        target=lambda: first.mutate_config_domain("ui", _first_mutator),
+        daemon=True,
+    )
+    second_thread = threading.Thread(
+        target=lambda: second.mutate_config_domain("automationRuntime", _second_mutator),
+        daemon=True,
+    )
+    first_thread.start()
+    assert first_mutator_entered.wait(timeout=2)
+    second_thread.start()
+    try:
+        assert not second_mutator_entered.wait(timeout=0.2)
+    finally:
+        release_first.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    persisted = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert persisted["ui"]["theme"] == "dark"
+    assert persisted["automationRuntime"]["enabled"] is False
 
 
 def test_stock_prompt_sanitizer_removes_retired_plugin_host_wording() -> None:

@@ -46,6 +46,37 @@ def test_windows_capture_process_polling_uses_windowless_runner(monkeypatch) -> 
     assert all(call_kwargs["shell"] is False for _, call_kwargs in calls)
 
 
+def test_native_inspector_config_uses_atomic_rpa_domain_mutation(monkeypatch) -> None:
+    config = {
+        "nativeInspector": {"enabled": True, "hoverSampleHz": 12},
+        "preserved": {"value": True},
+    }
+    monkeypatch.setattr(rpa_runtime.storage, "get_config_domain", lambda domain: json.loads(json.dumps(config)))
+
+    def _mutate(domain, mutator):
+        assert domain == "rpa"
+        proposed = mutator(json.loads(json.dumps(config)))
+        config.clear()
+        config.update(json.loads(json.dumps(proposed)))
+        return json.loads(json.dumps(config))
+
+    monkeypatch.setattr(rpa_runtime.storage, "mutate_config_domain", _mutate)
+    monkeypatch.setattr(
+        rpa_runtime,
+        "_native_hotkey_backend_capability",
+        lambda _config: {"available": True, "backend": "test"},
+    )
+
+    result = object.__new__(rpa_runtime.RPARuntime).save_native_inspector_config(
+        {"enabled": False, "hoverSampleHz": 18}
+    )
+
+    assert result["saved"] is True
+    assert config["nativeInspector"]["enabled"] is False
+    assert config["nativeInspector"]["hoverSampleHz"] == 18
+    assert config["preserved"] == {"value": True}
+
+
 def test_coordinate_fallback_uses_window_client_relative_anchor(tmp_path: Path) -> None:
     manager, store = _manager(tmp_path)
     session = manager.start({"name": "coordinate fallback", "targetMode": "desktop_window", "appId": "qqmusic"})

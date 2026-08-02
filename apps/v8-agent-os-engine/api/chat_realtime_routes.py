@@ -335,11 +335,18 @@ def _request_from_queue_item(item: dict, *, run_id: str) -> ChatRequest:
     if not session_id:
         raise RuntimeError("Queued message is missing session_id.")
     history = _legacy_messages_for_request(session_id)
-    history.append(ChatMessage(role="user", content=str(item.get("content") or "")))
+    queued_client_message_id = str(item.get("client_message_id") or "").strip() or f"queued_{item.get('id')}"
+    history.append(
+        ChatMessage(
+            id=queued_client_message_id,
+            role="user",
+            content=str(item.get("content") or ""),
+        )
+    )
     base_request.messages = history
     base_request.session_id = session_id
     base_request.conversation_id = base_request.conversation_id or session_id
-    base_request.client_message_id = str(item.get("client_message_id") or "").strip() or f"queued_{item.get('id')}"
+    base_request.client_message_id = queued_client_message_id
     if base_request.data is not None:
         base_request.data.client_message_id = base_request.client_message_id
     base_request.resume_run_id = None

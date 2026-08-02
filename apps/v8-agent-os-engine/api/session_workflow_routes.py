@@ -738,11 +738,13 @@ async def delete_session(session_id: str):
         # events can still resolve the original session truth.
         from runtimes.plugin_manager.service import plugin_manager_service
         from erc.session_coordination_service import session_coordination_service
+        from erc.checkpoint_store import checkpoint_store
 
         current = db.get_session(session_id) or {}
         owner_id = str(current.get("user_id") or current.get("userId") or "").strip()
         plugin_manager_service.revoke_session_grants(session_id)
         session_coordination_service.prepare_session_deletion(session_id)
+        checkpoint_cleanup = await checkpoint_store.delete_thread(session_id)
         db.delete_session(session_id)
         _refresh_web_session_index_safely()
         session_activity_broker.publish(
@@ -750,7 +752,7 @@ async def delete_session(session_id: str):
             session_id=session_id,
             topic="session.deleted",
         )
-        return {"status": "success"}
+        return {"status": "success", "checkpointCleanup": checkpoint_cleanup}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

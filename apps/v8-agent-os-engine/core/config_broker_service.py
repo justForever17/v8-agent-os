@@ -11,17 +11,15 @@ from urllib.parse import urlparse
 
 from core.database import db
 from core.mcp_config_service import (
-    install_mcp_server_config,
     list_mcp_server_configs,
     mcp_runtime_status_snapshot,
-    remove_mcp_server_config,
     request_mcp_inventory_refresh,
     validate_mcp_server_map,
 )
 from core.model_connection_tester import model_connection_tester
 from core.model_control_plane import model_control_plane
 from core.model_eligibility import evaluate_model_eligibility, model_category, model_kind
-from core.model_ref import make_model_ref
+from core.model_ref import make_model_ref, parse_model_ref
 from core.security.credentials import CredentialStoreError, credential_ref_store
 from core.storage import storage
 from core.time_truth import utc_now_iso
@@ -87,6 +85,73 @@ class ConfigBrokerService:
     def __init__(self) -> None:
         self._lock = threading.RLock()
 
+    @staticmethod
+    def _target_snapshot(target_kind: str, target_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        if target_kind == "model":
+            identity = parse_model_ref(target_id)
+            if not identity:
+                return {"providerExists": False, "modelExists": False}
+            provider_id, model_id = identity
+            providers = dict(config.get("providers") or {})
+            provider_data = dict(providers.get(provider_id) or {})
+            models = dict(provider_data.get("models") or {})
+            return {
+                "providerExists": provider_id in providers,
+                "provider": dict(provider_data.get("provider") or {}),
+                "modelExists": model_id in models,
+                "model": dict(models.get(model_id) or {}),
+            }
+        if target_kind == "model_role":
+            roles = dict(config.get("roles") or {})
+            return {"exists": target_id in roles, "value": roles.get(target_id)}
+        if target_kind == "agent_model_role":
+            agents = dict((config.get("bindings") or {}).get("agents") or {})
+            return {"exists": target_id in agents, "value": deepcopy(agents.get(target_id))}
+        if target_kind == "mcp":
+            servers = dict(config.get("mcpServers") or {})
+            return {"exists": target_id in servers, "value": deepcopy(servers.get(target_id))}
+        return {"unsupported": target_kind}
+
+    @staticmethod
+    def _target_config(target_kind: str) -> dict[str, Any]:
+        if target_kind == "mcp":
+            return deepcopy(storage.get_mcp_config() or {"mcpServers": {}})
+        return model_control_plane.get_storage_safe_config()
+
+    def _assert_target_revision(self, transaction: dict[str, Any]) -> dict[str, Any]:
+        current_config = self._target_config(str(transaction.get("targetKind") or ""))
+        try:
+            return self._assert_target_revision_in_config(transaction, current_config)
+        except ConfigBrokerError:
+            self._update_transaction(
+                str(transaction.get("transactionId") or ""),
+                state="conflict",
+                error_code="config_transaction_stale",
+                error_message="目标配置已在计划后发生变化；事务未提交，也未覆盖新配置。",
+            )
+            raise
+
+    def _assert_target_revision_in_config(
+        self,
+        transaction: dict[str, Any],
+        current_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        validation = dict(transaction.get("validation") or {})
+        expected = str(validation.get("targetBeforeDigest") or "").strip()
+        current_snapshot = self._target_snapshot(
+            str(transaction.get("targetKind") or ""),
+            str(transaction.get("targetId") or ""),
+            current_config,
+        )
+        current_digest = _digest(current_snapshot)
+        if expected and current_digest != expected:
+            raise ConfigBrokerError(
+                "目标配置已在计划后发生变化；请重新准备事务。",
+                code="config_transaction_stale",
+                status_code=409,
+            )
+        return current_snapshot
+
     def _insert_transaction(
         self,
         *,
@@ -104,7 +169,21 @@ class ConfigBrokerService:
     ) -> dict[str, Any]:
         transaction_id = f"cfg_txn_{uuid.uuid4().hex}"
         now = utc_now_iso()
-        plan_digest = _digest({"targetKind": target_kind, "targetId": target_id, "operation": operation, "proposed": proposed})
+        target_before = self._target_snapshot(target_kind, target_id, before)
+        target_before_digest = _digest(target_before)
+        validation_payload = {
+            **dict(validation or {}),
+            "targetBeforeDigest": target_before_digest,
+        }
+        plan_digest = _digest(
+            {
+                "targetKind": target_kind,
+                "targetId": target_id,
+                "operation": operation,
+                "targetBeforeDigest": target_before_digest,
+                "proposed": proposed,
+            }
+        )
         with db.get_connection() as conn:
             conn.execute(
                 """
@@ -125,7 +204,7 @@ class ConfigBrokerService:
                     plan_digest,
                     _json(before),
                     _json(proposed),
-                    _json(validation or {}),
+                    _json(validation_payload),
                     (error or (None, None))[0],
                     (error or (None, None))[1],
                     now,
@@ -169,7 +248,7 @@ class ConfigBrokerService:
             raise ConfigBrokerError("配置事务不存在。", code="config_transaction_not_found", status_code=404)
         item = dict(row)
         stored_owner = str(item.get("owner_id") or "").strip()
-        if stored_owner and owner_id and stored_owner != str(owner_id).strip():
+        if stored_owner and stored_owner != str(owner_id or "").strip():
             raise ConfigBrokerError("配置事务不属于当前用户。", code="config_transaction_owner_mismatch", status_code=403)
         payload = {
             "transactionId": item["id"],
@@ -356,10 +435,19 @@ class ConfigBrokerService:
         config = model_control_plane.get_config()
         role_key = str(role or "").strip()
         role_definition, role_label, _agent_id = self._role_contract(role_key, config)
-        allowed = set(role_definition.get("capabilityClasses") or [])
         candidates = []
         for model in model_control_plane.list_models(config):
-            if allowed and str(model.get("capabilityClass") or "") not in allowed:
+            record = model_control_plane.get_model_record(str(model.get("modelRef") or ""), config)
+            compatibility_record = {
+                **dict(record or {}),
+                "model": {
+                    **dict((record or {}).get("model") or {}),
+                    "capabilityClass": model.get("capabilityClass"),
+                    "capabilities": dict(model.get("capabilities") or {}),
+                    "type": model.get("type"),
+                },
+            }
+            if not model_control_plane.is_model_compatible(role_definition, compatibility_record):
                 continue
             eligibility = dict(model.get("eligibility") or {})
             if not eligibility.get("selectable"):
@@ -398,6 +486,9 @@ class ConfigBrokerService:
         provider_name: str,
         base_url: str,
         api_standard: str,
+        channel_id: str = "",
+        wire_protocol: str = "",
+        endpoint_path: str = "",
         model_type: str,
         context_window: int | None,
         max_tokens: int | None,
@@ -434,6 +525,23 @@ class ConfigBrokerService:
             "isEnabled": True,
             "runtimeReady": True,
         }
+        normalized_channel_id = str(channel_id or "").strip().lower()
+        normalized_wire_protocol = str(wire_protocol or "").strip()
+        normalized_endpoint_path = str(endpoint_path or "").strip().strip("/")
+        if normalized_channel_id or normalized_wire_protocol or normalized_endpoint_path:
+            model_patch["endpointBinding"] = {
+                "version": 2,
+                "route": model_key,
+                "channelId": normalized_channel_id or "default",
+                "wireProtocol": normalized_wire_protocol,
+                "endpointPath": normalized_endpoint_path,
+                "providerModelId": model_key,
+                "protocolSource": "config_broker_explicit",
+                "provenance": {
+                    "source": "config_broker_explicit",
+                    "confidence": "authoritative",
+                },
+            }
         eligibility = evaluate_model_eligibility(model_patch)
         provider_patch = {
             "name": str(provider_name or provider_key).strip() or provider_key,
@@ -561,8 +669,20 @@ class ConfigBrokerService:
             None,
         ) or {}
         eligibility = dict(model_row.get("eligibility") or evaluate_model_eligibility(model_row, role=role_key))
-        allowed = set(role_definition.get("capabilityClasses") or [])
-        if not eligibility.get("selectable") or (allowed and str(model_row.get("capabilityClass") or "") not in allowed):
+        compatibility_record = record
+        if not isinstance(record.get("model"), dict):
+            compatibility_record = {
+                **record,
+                "model": {
+                    "capabilityClass": model_row.get("capabilityClass"),
+                    "capabilities": dict(model_row.get("capabilities") or {}),
+                    "type": model_row.get("type"),
+                },
+            }
+        if not eligibility.get("selectable") or not model_control_plane.is_model_compatible(
+            role_definition,
+            compatibility_record,
+        ):
             raise ConfigBrokerError("目标模型不满足该功能的运行条件。", code="model_role_ineligible", status_code=409)
         before = model_control_plane.get_storage_safe_config()
         proposed = {
@@ -802,10 +922,22 @@ class ConfigBrokerService:
                 return {"ok": True, "mode": "commit", **self.get_transaction(transaction_id, owner_id=owner_id)}
             if state != "ready_to_commit":
                 raise ConfigBrokerError("配置事务尚未达到可提交状态。", code="config_transaction_not_ready", status_code=409)
+            self._assert_target_revision(transaction)
             proposed = dict(transaction.get("proposed") or {})
+            validation = dict(transaction.get("validation") or {})
+            target_mutated = False
             self._update_transaction(transaction_id, state="committing", error_code=None, error_message=None)
+
+            def _capture_working_target(config: dict[str, Any]) -> None:
+                working_target = self._target_snapshot(
+                    transaction["targetKind"],
+                    transaction["targetId"],
+                    config,
+                )
+                validation["targetWorkingDigest"] = _digest(working_target)
+                self._update_transaction(transaction_id, validation_json=_json(validation))
+
             try:
-                validation = dict(transaction.get("validation") or {})
                 if transaction["targetKind"] == "model":
                     validation["safety"] = self._safety_check_model_target(
                         proposed,
@@ -817,7 +949,10 @@ class ConfigBrokerService:
                         model_id=str(proposed.get("modelId") or ""),
                         model_patch=dict(proposed.get("model") or {}),
                         source=str(proposed.get("source") or "agent_proposed"),
+                        precondition=lambda current: self._assert_target_revision_in_config(transaction, current),
                     )
+                    target_mutated = True
+                    _capture_working_target(dict(result.get("config") or {}))
                     self._update_transaction(transaction_id, state="verifying", validation_json=_json(validation))
                     probe = model_connection_tester.test_model_connection(
                         provider_id=str(proposed.get("providerId") or ""),
@@ -838,32 +973,66 @@ class ConfigBrokerService:
                         "verified": True,
                     }
                 elif transaction["targetKind"] == "model_role":
-                    config = model_control_plane.get_config()
-                    roles = dict(config.get("roles") or {})
-                    roles[str(proposed.get("role") or "")] = str(proposed.get("modelRef") or "")
-                    config["roles"] = roles
-                    model_control_plane.save_config(config)
+                    def _assign_role(config: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, config)
+                        roles = dict(config.get("roles") or {})
+                        roles[str(proposed.get("role") or "")] = str(proposed.get("modelRef") or "")
+                        config["roles"] = roles
+                        return config
+
+                    saved_model_config = model_control_plane.mutate_config(_assign_role)
+                    target_mutated = True
+                    _capture_working_target(saved_model_config)
                     public_result = {"role": proposed.get("role"), "modelRef": proposed.get("modelRef")}
                 elif transaction["targetKind"] == "agent_model_role":
-                    config = model_control_plane.get_config()
-                    bindings = dict(config.get("bindings") or {})
-                    agents = dict(bindings.get("agents") or {})
-                    agents[str(proposed.get("agentId") or "")] = {"model_id": str(proposed.get("modelRef") or "")}
-                    bindings["agents"] = agents
-                    config["bindings"] = bindings
-                    model_control_plane.save_config(config)
+                    def _assign_agent(config: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, config)
+                        bindings = dict(config.get("bindings") or {})
+                        agents = dict(bindings.get("agents") or {})
+                        agents[str(proposed.get("agentId") or "")] = {"model_id": str(proposed.get("modelRef") or "")}
+                        bindings["agents"] = agents
+                        config["bindings"] = bindings
+                        return config
+
+                    saved_model_config = model_control_plane.mutate_config(_assign_agent)
+                    target_mutated = True
+                    _capture_working_target(saved_model_config)
                     public_result = {"agentId": proposed.get("agentId"), "modelRef": proposed.get("modelRef")}
                 elif transaction["targetKind"] == "mcp":
-                    if transaction["operation"] == "install":
-                        public_result = install_mcp_server_config(
-                            {"mcpServers": {str(proposed.get("name") or ""): dict(proposed.get("server") or {})}},
-                            refresh_reason="config_broker_commit",
-                        )
-                    else:
-                        public_result = remove_mcp_server_config(str(proposed.get("name") or ""), refresh_reason="config_broker_commit")
+                    server_name = str(proposed.get("name") or "")
+
+                    def _mutate_mcp(current: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, current)
+                        servers = dict(current.get("mcpServers") or {})
+                        if transaction["operation"] == "install":
+                            servers[server_name] = deepcopy(dict(proposed.get("server") or {}))
+                        else:
+                            servers.pop(server_name, None)
+                        current["mcpServers"] = servers
+                        return current
+
+                    saved_mcp = storage.mutate_mcp_config(_mutate_mcp)
+                    target_mutated = True
+                    _capture_working_target(saved_mcp)
+                    request_mcp_inventory_refresh(reason="config_broker_commit")
+                    public_result = {
+                        "status": "success",
+                        "installedServers": [server_name] if transaction["operation"] == "install" else [],
+                        "removedServer": server_name if transaction["operation"] == "remove" else None,
+                        "serverCount": len(dict(saved_mcp.get("mcpServers") or {})),
+                        "refreshRequested": True,
+                    }
                     validation["runtimeRefresh"] = {"requested": bool(public_result.get("refreshRequested"))}
                 else:
                     raise ConfigBrokerError("不支持的配置事务目标。", code="config_transaction_target_invalid")
+                target_after = self._target_snapshot(
+                    transaction["targetKind"],
+                    transaction["targetId"],
+                    self._target_config(transaction["targetKind"]),
+                )
+                if target_mutated:
+                    validation.setdefault("targetWorkingDigest", _digest(target_after))
+                validation["targetAfterDigest"] = _digest(target_after)
                 committed_at = utc_now_iso()
                 self._update_transaction(
                     transaction_id,
@@ -884,9 +1053,35 @@ class ConfigBrokerService:
             except Exception as exc:
                 code = exc.code if isinstance(exc, ConfigBrokerError) else "config_commit_failed"
                 message = str(exc)
+                if code == "config_transaction_stale":
+                    self._update_transaction(
+                        transaction_id,
+                        state="conflict",
+                        error_code=code,
+                        error_message=message,
+                    )
+                    return {
+                        "ok": False,
+                        "mode": "commit",
+                        "state": "conflict",
+                        "transactionId": transaction_id,
+                        "summary": "目标配置已变化；事务未写入，也未覆盖较新的配置。",
+                        "error": {"code": code, "message": message},
+                    }
                 self._update_transaction(transaction_id, state="rolling_back", error_code=code, error_message=message)
-                rollback = self._restore_snapshot(transaction)
-                state = "rolled_back" if rollback.get("ok") else "recovery_required"
+                expected_digest = str(
+                    validation.get("targetWorkingDigest" if target_mutated else "targetBeforeDigest") or ""
+                ).strip()
+                rollback = self._restore_snapshot(
+                    transaction,
+                    enforce_after_digest=True,
+                    expected_current_digest=expected_digest,
+                )
+                state = (
+                    "rolled_back"
+                    if rollback.get("ok")
+                    else ("conflict" if rollback.get("conflict") else "recovery_required")
+                )
                 self._update_transaction(
                     transaction_id,
                     state=state,
@@ -903,25 +1098,112 @@ class ConfigBrokerService:
                     "rollback": rollback,
                 }
 
-    def _restore_snapshot(self, transaction: dict[str, Any]) -> dict[str, Any]:
+    def _restore_snapshot(
+        self,
+        transaction: dict[str, Any],
+        *,
+        enforce_after_digest: bool = False,
+        expected_current_digest: str = "",
+    ) -> dict[str, Any]:
         errors: list[str] = []
+        conflict = False
+        target_kind = str(transaction.get("targetKind") or "")
+        proposed = dict(transaction.get("proposed") or {})
+        target_id = str(transaction.get("targetId") or proposed.get("name") or "")
+        validation = dict(transaction.get("validation") or {})
+        expected_after = str(
+            expected_current_digest or validation.get("targetAfterDigest") or ""
+        ).strip()
+
+        def _assert_restore_revision(current: dict[str, Any]) -> None:
+            if not enforce_after_digest:
+                return
+            current_snapshot = self._target_snapshot(target_kind, target_id, current)
+            if not expected_after or _digest(current_snapshot) != expected_after:
+                raise ConfigBrokerError(
+                    "目标配置在提交后再次变化；为避免覆盖新配置，自动撤销已停止。",
+                    code="config_rollback_conflict",
+                    status_code=409,
+                )
         try:
-            if transaction["targetKind"] in {"model", "model_role", "agent_model_role"}:
-                model_control_plane.save_config(dict(transaction.get("before") or {}))
-            elif transaction["targetKind"] == "mcp":
-                storage.save_mcp_config(dict(transaction.get("before") or {"mcpServers": {}}))
+            before_config = dict(transaction.get("before") or {})
+            before_target = self._target_snapshot(target_kind, target_id, before_config)
+            if target_kind in {"model", "model_role", "agent_model_role"}:
+                def _restore_model_config(config: dict[str, Any]) -> dict[str, Any]:
+                    _assert_restore_revision(config)
+                    if target_kind == "model":
+                        identity = parse_model_ref(target_id)
+                        if not identity:
+                            raise ValueError("invalid model target")
+                        provider_id, model_id = identity
+                        providers = dict(config.get("providers") or {})
+                        if not before_target.get("providerExists"):
+                            providers.pop(provider_id, None)
+                        else:
+                            current_provider = dict(providers.get(provider_id) or {})
+                            models = dict(current_provider.get("models") or {})
+                            if before_target.get("modelExists"):
+                                models[model_id] = deepcopy(before_target.get("model") or {})
+                            else:
+                                models.pop(model_id, None)
+                            providers[provider_id] = {
+                                **current_provider,
+                                "provider": deepcopy(before_target.get("provider") or {}),
+                                "models": models,
+                            }
+                        config["providers"] = providers
+                    elif target_kind == "model_role":
+                        roles = dict(config.get("roles") or {})
+                        if before_target.get("exists"):
+                            roles[target_id] = before_target.get("value")
+                        else:
+                            roles.pop(target_id, None)
+                        config["roles"] = roles
+                    else:
+                        bindings = dict(config.get("bindings") or {})
+                        agents = dict(bindings.get("agents") or {})
+                        if before_target.get("exists"):
+                            agents[target_id] = deepcopy(before_target.get("value"))
+                        else:
+                            agents.pop(target_id, None)
+                        bindings["agents"] = agents
+                        config["bindings"] = bindings
+                    return config
+
+                model_control_plane.mutate_config(_restore_model_config)
+            elif target_kind == "mcp":
+                def _restore_mcp_config(current: dict[str, Any]) -> dict[str, Any]:
+                    _assert_restore_revision(current)
+                    servers = dict(current.get("mcpServers") or {})
+                    if before_target.get("exists"):
+                        servers[target_id] = deepcopy(before_target.get("value") or {})
+                    else:
+                        servers.pop(target_id, None)
+                    current["mcpServers"] = servers
+                    return current
+
+                storage.mutate_mcp_config(_restore_mcp_config)
                 request_mcp_inventory_refresh(reason="config_broker_rollback")
             else:
                 errors.append("unsupported snapshot target")
+        except ConfigBrokerError as exc:
+            if exc.code == "config_rollback_conflict":
+                conflict = True
+            errors.append(str(exc))
         except Exception as exc:
             errors.append(str(exc))
-        proposed = dict(transaction.get("proposed") or {})
-        for reference in list(proposed.get("newCredentialRefs") or []):
-            try:
-                credential_ref_store.delete(str(reference))
-            except Exception as exc:
-                errors.append(f"credential cleanup failed: {exc}")
-        return {"ok": not errors, "errors": errors}
+        if not errors:
+            for reference in list(proposed.get("newCredentialRefs") or []):
+                try:
+                    credential_ref_store.delete(str(reference))
+                except Exception as exc:
+                    errors.append(f"credential cleanup failed: {exc}")
+        return {
+            "ok": not errors,
+            "conflict": conflict,
+            **({"errorCode": "config_rollback_conflict"} if conflict else {}),
+            "errors": errors,
+        }
 
     def rollback(self, transaction_id: str, *, owner_id: str = "") -> dict[str, Any]:
         with self._lock:
@@ -931,8 +1213,12 @@ class ConfigBrokerService:
             if transaction["state"] != "committed":
                 raise ConfigBrokerError("只有已提交事务可以执行精确撤销。", code="config_transaction_not_committed", status_code=409)
             self._update_transaction(transaction_id, state="rolling_back")
-            rollback = self._restore_snapshot(transaction)
-            next_state = "rolled_back" if rollback.get("ok") else "recovery_required"
+            rollback = self._restore_snapshot(transaction, enforce_after_digest=True)
+            next_state = (
+                "rolled_back"
+                if rollback.get("ok")
+                else ("conflict" if rollback.get("conflict") else "recovery_required")
+            )
             self._update_transaction(
                 transaction_id,
                 state=next_state,
@@ -944,7 +1230,15 @@ class ConfigBrokerService:
                 "mode": "rollback",
                 "state": next_state,
                 "transactionId": transaction_id,
-                "summary": "配置已恢复到事务前状态。" if rollback.get("ok") else "自动恢复未完成，需要人工检查。",
+                "summary": (
+                    "配置已恢复到事务前状态。"
+                    if rollback.get("ok")
+                    else (
+                        "目标配置已在提交后变化；撤销已停止，未覆盖新配置。"
+                        if rollback.get("conflict")
+                        else "自动恢复未完成，需要人工检查。"
+                    )
+                ),
                 "rollback": rollback,
             }
 

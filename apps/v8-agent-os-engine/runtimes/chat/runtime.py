@@ -36,6 +36,7 @@ from core.provider_continuation import (
     extract_provider_continuation,
     merge_provider_continuations,
     provider_continuation_matches_target,
+    seal_provider_continuation,
 )
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
@@ -792,9 +793,45 @@ class ChatRuntime:
             or ""
         )
         target_provider_adapter = str(target_model_metadata.get("provider_adapter") or "")
-        for message in request.messages:
+        continuation_reset_required = False
+        latest_user_index = next(
+            (
+                index
+                for index in range(len(request.messages) - 1, -1, -1)
+                if str(request.messages[index].role or "").strip().lower() == "user"
+            ),
+            -1,
+        )
+        for index, message in enumerate(request.messages):
+            message_id = str(message.id or "").strip()
+            if not message_id and index == latest_user_index:
+                message_id = str(
+                    request.client_message_id
+                    or (request.data.client_message_id if request.data else "")
+                    or ""
+                ).strip()
+            if not message_id:
+                identity_payload = {
+                    "sessionId": str(request.session_id or request.conversation_id or ""),
+                    "ordinal": index,
+                    "role": str(message.role or "").strip().lower(),
+                    "content": str(message.content or ""),
+                    "toolCallId": str(message.tool_call_id or ""),
+                    "name": str(message.name or ""),
+                }
+                identity_digest = hashlib.sha256(
+                    json.dumps(identity_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:24]
+                message_id = f"ingress_{identity_digest}"
+            ingress_kwargs = {"v8_ingress_history": True}
             if message.role == "user":
-                lc_messages.append(HumanMessage(content=message.content))
+                lc_messages.append(
+                    HumanMessage(
+                        content=message.content,
+                        id=message_id,
+                        additional_kwargs=ingress_kwargs,
+                    )
+                )
             elif message.role == "assistant":
                 continuation = dict(getattr(message, "_provider_continuation", {}) or {})
                 if metadata_was_resolved and not provider_continuation_matches_target(
@@ -804,6 +841,7 @@ class ChatRuntime:
                     target_provider_adapter=target_provider_adapter,
                 ):
                     continuation = {}
+                    continuation_reset_required = True
                 replay_content, replay_kwargs, replay_metadata = build_replay_ai_message_payload(
                     message.content,
                     continuation,
@@ -832,36 +870,70 @@ class ChatRuntime:
                         AIMessage(
                             content=replay_content,
                             tool_calls=tool_calls_payload,
-                            additional_kwargs=replay_kwargs,
+                            additional_kwargs={**replay_kwargs, **ingress_kwargs},
                             response_metadata=replay_metadata,
+                            id=message_id,
                         )
                     )
                 else:
                     lc_messages.append(
                         AIMessage(
                             content=replay_content,
-                            additional_kwargs=replay_kwargs,
+                            additional_kwargs={**replay_kwargs, **ingress_kwargs},
                             response_metadata=replay_metadata,
+                            id=message_id,
                         )
                     )
             elif message.role == "system":
-                lc_messages.append(SystemMessage(content=message.content))
+                lc_messages.append(
+                    SystemMessage(
+                        content=message.content,
+                        id=message_id,
+                        additional_kwargs=ingress_kwargs,
+                    )
+                )
             elif message.role == "tool":
                 lc_messages.append(
                     ToolMessage(
                         content=message.content,
                         tool_call_id=message.tool_call_id,
                         name=wire_to_internal.get(str(message.name or "").strip(), message.name or "unknown"),
+                        id=message_id,
+                        additional_kwargs=ingress_kwargs,
                     )
                 )
 
+        if continuation_reset_required:
+            reset_identity = hashlib.sha256(
+                f"{request.session_id or ''}\x1f{target_provider}\x1f{target_wire_protocol}\x1f{target_provider_adapter}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()[:24]
+            lc_messages.insert(
+                0,
+                SystemMessage(
+                    id=f"provider_continuation_reset_{reset_identity}",
+                    content=(
+                        "[V8 PROVIDER CONTINUITY RESET] Opaque reasoning state from a prior provider or wire "
+                        "protocol was intentionally omitted. Continue from visible conversation evidence and do not "
+                        "claim continuity with the discarded private reasoning chain."
+                    ),
+                    additional_kwargs={"v8_provider_continuation_reset": True},
+                ),
+            )
+
         if request.tool_outputs:
             for tool_output in request.tool_outputs:
+                tool_output_digest = hashlib.sha256(
+                    f"{request.session_id or ''}\x1f{tool_output.tool_call_id}\x1f{tool_output.output}".encode("utf-8")
+                ).hexdigest()[:24]
                 lc_messages.append(
                     ToolMessage(
                         content=tool_output.output,
                         tool_call_id=tool_output.tool_call_id,
                         name=tool_output.name or "ask_user",
+                        id=f"tool_result_{tool_output_digest}",
+                        additional_kwargs={"v8_ingress_tool_output": True},
                     )
                 )
         return lc_messages
@@ -8994,7 +9066,11 @@ class ChatRuntime:
                 "timestamp": self._now_timestamp_ms(),
                 "agentId": stream_state.current_agent,
                 **(
-                    {PRIVATE_PROVIDER_CONTINUATION_KEY: stream_state.provider_continuation}
+                    {
+                        PRIVATE_PROVIDER_CONTINUATION_KEY: seal_provider_continuation(
+                            stream_state.provider_continuation
+                        )
+                    }
                     if stream_state.provider_continuation
                     else {}
                 ),

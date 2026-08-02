@@ -144,6 +144,7 @@ def prepare_supervisor_messages(
     scope_chain,
     remaining_steps: int,
     prompt_profile: str = "full",
+    return_state_updates: bool = False,
 ):
     runtime_kind = str(get_runtime_context().get("runtime_kind") or "chat")
     authority_contract = (
@@ -211,6 +212,8 @@ def prepare_supervisor_messages(
         )
         _safe_print(f"[LoopBreaker] Repeated tool pattern detected ({tool_list}) x{loop_info['count']}")
 
+    if return_state_updates:
+        return prepared, list(getattr(prepared_context, "state_message_updates", None) or [])
     return prepared
 
 

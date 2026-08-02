@@ -7,7 +7,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from core.context_compaction_baseline import (
     baseline_matches_messages,
@@ -110,6 +111,7 @@ class PreparedContext:
     messages: List[BaseMessage]
     blocks: List[ContextBlock]
     audit: Dict[str, Any]
+    state_message_updates: List[BaseMessage] = field(default_factory=list)
 
 
 class ContextOrchestrator:
@@ -187,11 +189,26 @@ class ContextOrchestrator:
         if leading_system_content:
             rendered_messages.append(SystemMessage(content=leading_system_content))
 
-        system_messages = [message for message in cleaned_messages if isinstance(message, SystemMessage)]
+        persistent_summary_messages = [
+            message
+            for message in cleaned_messages
+            if isinstance(message, SystemMessage)
+            and bool(dict(getattr(message, "additional_kwargs", {}) or {}).get("v8_context_summary"))
+        ]
+        existing_summary_message = persistent_summary_messages[-1] if persistent_summary_messages else None
+        system_messages = [
+            message
+            for message in cleaned_messages
+            if isinstance(message, SystemMessage) and message not in persistent_summary_messages
+        ]
         non_system_messages = [message for message in cleaned_messages if not isinstance(message, SystemMessage)]
         rendered_messages.extend(system_messages)
 
-        estimated_input_tokens = self._estimate_messages_tokens(rendered_messages + non_system_messages)
+        estimated_input_tokens = self._estimate_messages_tokens(
+            rendered_messages
+            + ([existing_summary_message] if existing_summary_message is not None else [])
+            + non_system_messages
+        )
         trigger_reason = "disabled"
         compaction_applied = False
         history_block: ContextBlock | None = None
@@ -224,7 +241,12 @@ class ContextOrchestrator:
             recent_raw_count = len(recent_tail)
             should_compact = estimated_input_tokens >= trigger_limit
             trigger_reason = "persistent_baseline_token_budget" if should_compact else "within_budget"
-            if compaction_mode == "persistent_baseline" and session_id and old_prefix:
+            if (
+                compaction_mode == "persistent_baseline"
+                and session_id
+                and old_prefix
+                and existing_summary_message is None
+            ):
                 baseline_snapshot = load_compaction_baseline(session_id=session_id, target_role=target_role)
                 if baseline_snapshot:
                     covered_count = min(int(baseline_snapshot.get("coveredMessageCount") or 0), len(old_prefix))
@@ -246,6 +268,8 @@ class ContextOrchestrator:
             projected_messages = list(rendered_messages)
             if history_block is not None:
                 projected_messages.append(self._render_block_message(history_block))
+            elif existing_summary_message is not None:
+                projected_messages.append(existing_summary_message)
             projected_messages.extend(non_system_messages)
             projected_effective_tokens = self._estimate_messages_tokens(projected_messages)
 
@@ -282,8 +306,13 @@ class ContextOrchestrator:
                     if baseline_source_messages:
                         summary_mode = "llm" if compression.get("use_llm_summary", True) else "rule"
                         compaction_started = time.perf_counter()
+                        summary_source_messages = (
+                            [existing_summary_message, *baseline_source_messages]
+                            if existing_summary_message is not None
+                            else list(baseline_source_messages)
+                        )
                         history_block, method = self._build_history_block(
-                            to_compress=baseline_source_messages,
+                            to_compress=summary_source_messages,
                             compression=compression,
                             target_role=target_role,
                             resolved_model_id=resolved_model_id,
@@ -332,9 +361,26 @@ class ContextOrchestrator:
             blocks.append(history_block)
         blocks.extend(adapter_blocks)
 
+        if history_block is None and existing_summary_message is not None:
+            rendered_messages.append(existing_summary_message)
         for block in blocks:
             rendered_messages.append(self._render_block_message(block))
         rendered_messages.extend(non_system_messages)
+
+        state_message_updates: List[BaseMessage] = []
+        if session_id and history_block is not None and old_prefix:
+            state_summary = self._build_persistent_summary_message(
+                session_id=session_id,
+                target_role=target_role,
+                block=history_block,
+                covered_message_count=baseline_message_count,
+            )
+            state_message_updates = [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *system_messages,
+                state_summary,
+                *non_system_messages,
+            ]
 
         estimated_final_tokens = self._estimate_messages_tokens(rendered_messages)
         explicit_scope = str(resolved_scope or "").strip()
@@ -377,6 +423,8 @@ class ContextOrchestrator:
             "block_summaries": [self._build_block_summary(block) for block in blocks],
             "estimated_saved_tokens": max(0, estimated_input_tokens - estimated_final_tokens),
             "durable_flush": durable_flush or {"ok": True, "skipped": True, "reason": "compaction_not_needed"},
+            "persistent_state_compaction": bool(state_message_updates),
+            "persistent_state_message_count": max(0, len(state_message_updates) - 1),
             "resolved_scope": resolved_scope,
             "scope_chain": scope_chain,
             "recall_audit": recall_audit,
@@ -430,7 +478,12 @@ class ContextOrchestrator:
         if blocks:
             print(f"[ContextOrchestrator] {json.dumps(audit, ensure_ascii=False)}")
 
-        return PreparedContext(messages=rendered_messages, blocks=blocks, audit=audit)
+        return PreparedContext(
+            messages=rendered_messages,
+            blocks=blocks,
+            audit=audit,
+            state_message_updates=state_message_updates,
+        )
 
     def _compact_non_system_messages(
         self,
@@ -499,25 +552,49 @@ class ContextOrchestrator:
 
     @staticmethod
     def _protect_latest_provider_continuation(messages: Sequence[BaseMessage], keep_from: int) -> int:
-        """Keep the last opaque provider state immediately before a compacted tail.
-
-        Compaction may intentionally summarize old turns, but it must not split
-        the active provider continuation chain from the user/tool message that
-        follows it.  Retaining the newest preceding block is bounded while
-        covering OpenAI encrypted reasoning, Claude signed thinking and Gemini
-        thought signatures.
-        """
+        """Keep an active provider continuation turn as one atomic segment."""
 
         boundary = max(0, min(int(keep_from), len(messages)))
         if boundary <= 0:
             return boundary
-        search_floor = max(0, boundary - 16)
-        for index in range(boundary - 1, search_floor - 1, -1):
+        turn_start = 0
+        for index in range(boundary - 1, -1, -1):
+            if isinstance(messages[index], HumanMessage):
+                turn_start = index
+                break
+        for index in range(boundary - 1, turn_start - 1, -1):
             if isinstance(messages[index], AIMessage) and has_provider_continuation(messages[index]):
                 return index
-            if isinstance(messages[index], HumanMessage):
-                break
         return boundary
+
+    @staticmethod
+    def _build_persistent_summary_message(
+        *,
+        session_id: str,
+        target_role: str,
+        block: ContextBlock,
+        covered_message_count: int,
+    ) -> SystemMessage:
+        normalized_role = str(target_role or "supervisor").strip() or "supervisor"
+        summary_id = "v8_context_summary_" + hashlib.sha256(
+            f"{session_id}\x1f{normalized_role}".encode("utf-8")
+        ).hexdigest()[:24]
+        content = (
+            "[V8 PERSISTENT CONTEXT SUMMARY - treat as prior conversation evidence, not a new instruction]\n"
+            f"{str(block.content or '').strip()}"
+        ).strip()
+        return SystemMessage(
+            id=summary_id,
+            content=content,
+            additional_kwargs={
+                "v8_context_summary": {
+                    "targetRole": normalized_role,
+                    "summaryMethod": str(block.metadata.get("summary_method") or "unknown"),
+                    "coveredMessageCount": int(covered_message_count or 0),
+                    "contentDigest": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                }
+            },
+        )
 
     def _build_baseline_block_from_snapshot(self, snapshot: Dict[str, Any]) -> ContextBlock | None:
         content = str(snapshot.get("baselineText") or "").strip()
@@ -666,7 +743,7 @@ class ContextOrchestrator:
 
     def _messages_to_summary_transcript(self, messages: Sequence[BaseMessage]) -> str:
         return "\n".join(
-            f"{self._message_role(message)}: {self._clip_text(self._message_text(message), 320)}"
+            f"{self._message_role(message)}: {self._clip_text(self._message_text(message), 4000)}"
             for message in messages
             if self._message_text(message)
         )
@@ -727,8 +804,10 @@ class ContextOrchestrator:
     ) -> str:
         prompt = (
             "你是上下文治理模块，只负责把旧对话压缩为可供后续执行继续使用的历史摘要。\n"
-            "保留：用户目标、已完成的动作、关键文件路径/URL/产物、失败与阻塞、仍然有效的执行约束。\n"
-            "不要复述寒暄，不要新增推断，不要输出前言。\n\n"
+            "必须保留：用户目标与真实意图、已完成动作、关键事实和数字、文件路径/URL/产物、"
+            "来源引用及其时间戳、失败与阻塞、未解决问题、仍有效约束、明确被否定的方案。\n"
+            "来源、日期、版本、ID、错误码和用户原话中的关键限定不得模糊化；不确定内容要标为不确定。\n"
+            "不要复述寒暄，不要新增推断，不要把计划写成已完成，不要输出前言。\n\n"
             + "\n\n".join(f"[FRAGMENT {index + 1}]\n{text}" for index, text in enumerate(fragments))
         )
         response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": []})
@@ -773,11 +852,11 @@ class ContextOrchestrator:
     def _build_rule_summary(self, messages: Sequence[BaseMessage]) -> str:
         lines: List[str] = []
         for message in messages:
-            text = self._clip_text(self._message_text(message), 180)
+            text = self._clip_text(self._message_text(message), 1200)
             if not text:
                 continue
             lines.append(f"- {self._message_role(message)}: {text}")
-        return "\n".join(lines[:20])
+        return "[RULE FALLBACK SUMMARY - source-preserving extraction, semantic compression unavailable]\n" + "\n".join(lines[:60])
 
     def _select_summary_candidates(
         self,

@@ -2933,6 +2933,30 @@ def execute_supervisor_turn(
     current_scope = context_info["current_scope"]
     scope_chain = context_info["scope_chain"]
     session_id = context_info["session_id"]
+
+    def _attach_early_state_compaction(response):
+        try:
+            compacted = context_orchestrator.prepare(
+                messages=messages,
+                runtime_kind="chat",
+                target_role="supervisor",
+                resolved_model_id=sup_model_name,
+                resolved_scope=current_scope,
+                scope_chain=scope_chain,
+            )
+            updates = list(compacted.state_message_updates or [])
+            if updates:
+                object.__setattr__(response, "_v8_state_compaction_updates", tuple(updates))
+        except Exception as exc:
+            extensions_runtime_service.emit_supervisor_diagnostics(
+                {
+                    "sessionId": session_id,
+                    "contextCompactionDeferred": True,
+                    "contextCompactionError": str(exc)[:240],
+                }
+            )
+        return response
+
     explicit_runtime_kinds = _explicit_runtime_orchestration_kinds(state, user_query)
     authoritative_runtime_kinds = _authoritative_runtime_route_kinds(state)
     observed_runtime_kinds = _observed_runtime_episode_kinds(state)
@@ -2984,6 +3008,7 @@ def execute_supervisor_turn(
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
         session_context_response = _session_context_broker_first_response(state, visible_supervisor_tools)
         if session_context_response is not None:
+            _attach_early_state_compaction(session_context_response)
             extensions_runtime_service.emit_response_tool_calls(session_context_response)
             return session_context_response
         runtime_handoff_ready = _runtime_episode_handoff_ready(state)
@@ -3145,6 +3170,7 @@ def execute_supervisor_turn(
             )
             extensions_runtime_service.emit_response_tool_calls(deterministic_route_response)
             extensions_runtime_service.emit_execution_completed(response=deterministic_route_response)
+            _attach_early_state_compaction(deterministic_route_response)
             return deterministic_route_response
 
         use_runtime_route_compiler = _should_use_runtime_route_compiler(
@@ -3286,7 +3312,7 @@ def execute_supervisor_turn(
             hasRecallCue=bool(passive_rag_diagnostics.get("has_recall_cue")),
             humanTurns=passive_rag_diagnostics.get("human_turns"),
         )
-        prepared_messages = prepare_supervisor_messages(
+        prepared_result = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,
             prompt_segments=context_bundle.get("v8_prompt_segments") or [],
@@ -3302,7 +3328,13 @@ def execute_supervisor_turn(
                 if use_runtime_route_compiler
                 else "full"
             ),
+            return_state_updates=True,
         )
+        if isinstance(prepared_result, tuple):
+            prepared_messages, state_compaction_updates = prepared_result
+        else:
+            prepared_messages = prepared_result
+            state_compaction_updates = []
         if not explicit_coordination_send and _should_force_memory_broker_first(
             user_query=user_query,
             passive_rag_diagnostics=passive_rag_diagnostics,
@@ -3611,4 +3643,6 @@ def execute_supervisor_turn(
             f"[LoopBreaker] Short-circuited repeated tool cycle ({tool_list}) "
             f"x{loop_breaker['count']} with identical observation fingerprint"
         )
+    if state_compaction_updates:
+        object.__setattr__(response, "_v8_state_compaction_updates", tuple(state_compaction_updates))
     return response

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -25,6 +26,11 @@ from core.v8_agent_os_paths import (
     runtime_private_root,
 )
 from core.memory_maintenance_contract import normalize_cron_config_with_system_job
+
+
+_CONFIG_IO_LOCK = threading.RLock()
+_MCP_IO_LOCK = threading.RLock()
+_BOOTSTRAP_INTERNAL_SECRET = uuid4().hex
 
 
 # Optional user-authored overlay. Built-in Supervisor cognition is assembled
@@ -977,6 +983,10 @@ class StorageManager:
     def __init__(self):
         # Resolve the absolute path to `~/.v8-agent-os`
         self.base_dir = CONFIG_JSON_PATH.parent
+        # Multiple native-tool modules create StorageManager instances, while
+        # the config files remain one process-wide source of truth.
+        self._config_io_lock = _CONFIG_IO_LOCK
+        self._mcp_io_lock = _MCP_IO_LOCK
         self._legacy_model_bindings_migrated = False
         self._config_payload_cache_signature: tuple[int, int] | None = None
         self._config_payload_cache_data: dict[str, Any] | None = None
@@ -1320,13 +1330,14 @@ class StorageManager:
         return deepcopy(current)
 
     def _read_raw_config_payload(self) -> dict[str, Any]:
-        if not CONFIG_JSON_PATH.exists():
-            return {}
-        try:
-            payload = self._read_json_file(CONFIG_JSON_PATH)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        with self._config_io_lock:
+            if not CONFIG_JSON_PATH.exists():
+                return {}
+            try:
+                payload = self._read_json_file(CONFIG_JSON_PATH)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
 
     def _partition_config_payload(self, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         known_domains = set(self._default_config_payload())
@@ -1379,35 +1390,65 @@ class StorageManager:
             pass
 
     def _read_config_payload(self) -> dict[str, Any]:
-        if not CONFIG_JSON_PATH.exists():
-            self._ensure_config_json_exists()
-        signature = self._config_payload_signature()
-        if (
-            signature is not None
-            and getattr(self, "_config_payload_cache_signature", None) == signature
-            and getattr(self, "_config_payload_cache_data", None) is not None
-        ):
-            return deepcopy(self._config_payload_cache_data)
-        try:
-            payload = self._read_json_file(CONFIG_JSON_PATH) if CONFIG_JSON_PATH.exists() else {}
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            payload = {}
-        if isinstance(payload, dict):
-            migrated_payload = _maybe_migrate_legacy_local_config(payload)
-            if migrated_payload != payload:
-                payload = migrated_payload
-                self._write_config_payload(payload)
-                signature = self._config_payload_signature()
-        supported_payload, ignored_payload = self._partition_config_payload(payload if isinstance(payload, dict) else {})
-        self._report_ignored_config_domains(ignored_payload)
-        merged = self._deep_merge(self._default_config_payload(), supported_payload)
-        if signature is not None:
-            self._config_payload_cache_signature = signature
-            self._config_payload_cache_data = deepcopy(merged)
-        return deepcopy(merged)
+        with self._config_io_lock:
+            signature = self._config_payload_signature()
+            if (
+                signature is not None
+                and getattr(self, "_config_payload_cache_signature", None) == signature
+                and getattr(self, "_config_payload_cache_data", None) is not None
+            ):
+                return deepcopy(self._config_payload_cache_data)
+            try:
+                payload = self._read_json_file(CONFIG_JSON_PATH) if CONFIG_JSON_PATH.exists() else {}
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                # Project legacy local endpoints in memory. Persistence is an
+                # explicit startup migration, never a side effect of a read.
+                payload = _maybe_migrate_legacy_local_config(payload)
+            supported_payload, ignored_payload = self._partition_config_payload(payload if isinstance(payload, dict) else {})
+            self._report_ignored_config_domains(ignored_payload)
+            merged = self._deep_merge(self._default_config_payload(), supported_payload)
+            if signature is not None:
+                self._config_payload_cache_signature = signature
+                self._config_payload_cache_data = deepcopy(merged)
+            return deepcopy(merged)
+
+    def migrate_legacy_local_config(self) -> bool:
+        raw = self._read_raw_config_payload()
+        migrated = _maybe_migrate_legacy_local_config(raw)
+        if migrated == raw:
+            return False
+        self._write_config_payload(migrated)
+        return True
 
     def _write_config_payload(self, payload: dict[str, Any]):
-        self.write_json("config.json", payload)
+        with self._config_io_lock:
+            self.write_json("config.json", payload)
+
+    def get_config_domain(self, domain: str) -> Any:
+        """Read one known or preserved config domain without mutating disk."""
+
+        normalized_domain = str(domain or "").strip()
+        if not normalized_domain:
+            raise ValueError("config domain is required")
+        with self._config_io_lock:
+            if normalized_domain in self._default_config_payload():
+                return deepcopy(self._read_config_payload().get(normalized_domain))
+            return deepcopy(self._read_raw_config_payload().get(normalized_domain))
+
+    def mutate_config_domain(self, domain: str, mutator) -> Any:
+        """Atomically update one config.json domain without replacing siblings."""
+
+        normalized_domain = str(domain or "").strip()
+        if not normalized_domain:
+            raise ValueError("config domain is required")
+        with self._config_io_lock:
+            payload = self._read_raw_config_payload()
+            next_value = mutator(self.get_config_domain(normalized_domain))
+            payload[normalized_domain] = deepcopy(next_value)
+            self._write_config_payload(payload)
+            return deepcopy(next_value)
 
     def _read_computer_use_payload(self) -> dict[str, Any]:
         if not COMPUTER_USE_JSON_PATH.exists():
@@ -1958,17 +1999,19 @@ class StorageManager:
             self._write_computer_use_payload(data)
             return
         if normalized_name == "settings.json":
-            config_payload = self._read_config_payload()
             incoming = self._legacy_settings_to_system_base(dict(data or {}))
-            config_payload["systemBase"] = self._deep_merge(config_payload.get("systemBase", {}), incoming)
-            self._write_config_payload(config_payload)
+            self.mutate_config_domain(
+                "systemBase",
+                lambda current: self._deep_merge(current if isinstance(current, dict) else {}, incoming),
+            )
             return
 
         mapped_domain = LEGACY_STRUCTURED_FILE_TO_DOMAIN.get(normalized_name)
         if mapped_domain:
-            config_payload = self._read_config_payload()
-            config_payload[mapped_domain] = self._deep_merge(config_payload.get(mapped_domain), dict(data or {}))
-            self._write_config_payload(config_payload)
+            self.mutate_config_domain(
+                mapped_domain,
+                lambda current: self._deep_merge(current, dict(data or {})),
+            )
             return
 
         filepath = self.base_dir / filename
@@ -2075,37 +2118,60 @@ class StorageManager:
         return MCP_JSON_PATH
 
     def get_mcp_config(self) -> Dict[str, Any]:
-        if MCP_JSON_PATH.exists():
-            payload = self._read_json_file(MCP_JSON_PATH)
-        else:
-            payload = self._read_config_payload().get("mcp") or {}
-            if payload:
-                self.save_mcp_config(payload if isinstance(payload, dict) else {})
-        normalized = self._deep_merge(
-            STRUCTURED_CONFIG_DEFAULTS["mcp"],
-            payload if isinstance(payload, dict) else {},
-        )
-        normalized.setdefault("mcpServers", {})
-        return normalized
+        with self._mcp_io_lock:
+            if MCP_JSON_PATH.exists():
+                payload = self._read_json_file(MCP_JSON_PATH)
+            else:
+                # Legacy config is projected in memory. Engine startup owns
+                # the one-time persistence migration.
+                payload = self._read_config_payload().get("mcp") or {}
+            normalized = self._deep_merge(
+                STRUCTURED_CONFIG_DEFAULTS["mcp"],
+                payload if isinstance(payload, dict) else {},
+            )
+            normalized.setdefault("mcpServers", {})
+            return normalized
 
     def save_mcp_config(self, data: Dict[str, Any]):
-        payload = self._deep_merge(
-            STRUCTURED_CONFIG_DEFAULTS["mcp"],
-            dict(data or {}),
-        )
-        payload.setdefault("mcpServers", {})
-        self.write_json("mcp.json", payload)
+        with self._mcp_io_lock:
+            payload = self._deep_merge(
+                STRUCTURED_CONFIG_DEFAULTS["mcp"],
+                dict(data or {}),
+            )
+            payload.setdefault("mcpServers", {})
+            self.write_json("mcp.json", payload)
+
+    def mutate_mcp_config(self, mutator) -> Dict[str, Any]:
+        with self._mcp_io_lock:
+            current = self.get_mcp_config()
+            proposed = mutator(deepcopy(current))
+            if not isinstance(proposed, dict):
+                raise ValueError("MCP config mutator must return a mapping")
+            self.save_mcp_config(proposed)
+            return self.get_mcp_config()
+
+    def migrate_legacy_mcp_config(self) -> bool:
+        with self._mcp_io_lock:
+            if MCP_JSON_PATH.exists():
+                return False
+            payload = self._read_config_payload().get("mcp") or {}
+            if not isinstance(payload, dict) or not payload:
+                return False
+            self.save_mcp_config(payload)
+            return True
         
     def get_models_config(self) -> Dict[str, Any]:
         """Reads the unified models.json (model catalog + role assignments)."""
-        self._ensure_legacy_model_bindings_migrated()
         return self.read_json("models.json")
+
+    def ensure_legacy_model_bindings_migrated(self) -> None:
+        """Run legacy binding migration explicitly during governed startup."""
+
+        self._ensure_legacy_model_bindings_migrated()
     
     def save_models_config(self, data: Dict[str, Any]):
         """Saves the unified models.json."""
-        payload = self._read_config_payload()
-        payload["models"] = deepcopy(dict(data or {}))
-        self._write_config_payload(payload)
+        self.mutate_config_domain("models", lambda _current: deepcopy(dict(data or {})))
     
     def get_role_model_id(self, role: str) -> str:
         """Get the model ID assigned to a specific role from models.json."""
@@ -2135,15 +2201,21 @@ class StorageManager:
         return self.get_agent_model_bindings().get(agent_id, "")
 
     def set_agent_model_binding(self, agent_id: str, model_id: Optional[str]):
-        config = self.get_models_config() or {}
-        bindings = config.setdefault("bindings", {})
-        agents = bindings.setdefault("agents", {})
-        resolved_model_id = str(model_id or "").strip()
-        if resolved_model_id:
-            agents[agent_id] = {"model_id": resolved_model_id}
-        else:
-            agents.pop(agent_id, None)
-        self.save_models_config(config)
+        from core.model_control_plane import model_control_plane
+
+        def _assign(config: Dict[str, Any]) -> Dict[str, Any]:
+            bindings = dict(config.get("bindings") or {})
+            agents = dict(bindings.get("agents") or {})
+            resolved_model_id = str(model_id or "").strip()
+            if resolved_model_id:
+                agents[agent_id] = {"model_id": resolved_model_id}
+            else:
+                agents.pop(agent_id, None)
+            bindings["agents"] = agents
+            config["bindings"] = bindings
+            return config
+
+        model_control_plane.mutate_config(_assign)
     
     # Backward compat aliases
     def get_routes(self) -> Dict[str, Any]:
@@ -2153,7 +2225,6 @@ class StorageManager:
 
     # --- Memory Config Accessors ---
     def get_memory_config(self) -> Dict[str, Any]:
-        self._ensure_legacy_model_bindings_migrated()
         return self.read_json("memory_config.json")
 
     def get_memory_config_metadata(self) -> Dict[str, Any]:
@@ -2251,7 +2322,6 @@ class StorageManager:
         return normalized
 
     def save_extensions_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
         normalized = dict(data or {})
         legacy_policy = dict(normalized.pop("rerankPolicy", {}) or {})
         prefilter_policy = dict(normalized.pop("prefilterPolicy", {}) or {})
@@ -2286,8 +2356,7 @@ class StorageManager:
             },
         )
         next_extensions.pop("rerankPolicy", None)
-        payload["extensions"] = next_extensions
-        self._write_config_payload(payload)
+        self.mutate_config_domain("extensions", lambda _current: next_extensions)
 
     # --- Engineering Runtime Config Accessors (legacy key: engineeringLane) ---
     def get_engineering_lane_config(self) -> Dict[str, Any]:
@@ -2336,7 +2405,6 @@ class StorageManager:
         return merged
 
     def save_engineering_lane_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
         current = self.get_engineering_lane_config()
         raw_data = dict(data or {})
         next_data = self._deep_merge(current, raw_data)
@@ -2380,8 +2448,8 @@ class StorageManager:
                 next_data[key] = default
         for key in ("enabled", "evidenceGraphEnabled", "codingExecutionContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             next_data[key] = bool(next_data.get(key))
-        payload["engineeringLane"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
-        self._write_config_payload(payload)
+        normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
+        self.mutate_config_domain("engineeringLane", lambda _current: normalized)
 
     # --- Storage Retention Config Accessors ---
     def _normalize_storage_retention_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -2454,10 +2522,9 @@ class StorageManager:
         return self._normalize_storage_retention_config(payload.get("storageRetention"))
 
     def save_storage_retention_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
         current = self.get_storage_retention_config()
-        payload["storageRetention"] = self._normalize_storage_retention_config(self._deep_merge(current, dict(data or {})))
-        self._write_config_payload(payload)
+        normalized = self._normalize_storage_retention_config(self._deep_merge(current, dict(data or {})))
+        self.mutate_config_domain("storageRetention", lambda _current: normalized)
         
     # --- Supervisor Config Accessors ---
     def _normalize_specialist_registry_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -2520,32 +2587,19 @@ class StorageManager:
         return raw
 
     def get_supervisor_config(self) -> Dict[str, Any]:
-        self._ensure_legacy_model_bindings_migrated()
+        raw_payload = self._read_config_payload().get("supervisor")
         config = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["supervisor"],
-            self._read_config_payload().get("supervisor") if isinstance(self._read_config_payload().get("supervisor"), dict) else {},
+            raw_payload if isinstance(raw_payload, dict) else {},
         )
-        should_save = False
         sanitized_allowed_tools = sanitize_supervisor_allowed_tools(config.get("allowed_tools"))
-        if sanitized_allowed_tools != config.get("allowed_tools"):
-            config["allowed_tools"] = sanitized_allowed_tools
-            should_save = True
+        config["allowed_tools"] = sanitized_allowed_tools
         delegation = dict(config.get("delegation") or {})
         normalized_external_workers = normalize_external_worker_descriptors(delegation.get("externalWorkers"))
-        if normalized_external_workers != delegation.get("externalWorkers"):
-            delegation["externalWorkers"] = normalized_external_workers
-            config["delegation"] = delegation
-            should_save = True
-        specialist_registry = self._normalize_specialist_registry_config(config.get("specialistRegistry"))
-        if specialist_registry != config.get("specialistRegistry"):
-            config["specialistRegistry"] = specialist_registry
-            should_save = True
-        research_config = self._normalize_research_config(config.get("research"))
-        if research_config != config.get("research"):
-            config["research"] = research_config
-            should_save = True
-        if should_save:
-            self.save_supervisor_config(config)
+        delegation["externalWorkers"] = normalized_external_workers
+        config["delegation"] = delegation
+        config["specialistRegistry"] = self._normalize_specialist_registry_config(config.get("specialistRegistry"))
+        config["research"] = self._normalize_research_config(config.get("research"))
         return config
         
     def save_supervisor_config(self, data: Dict[str, Any]):
@@ -2556,9 +2610,7 @@ class StorageManager:
         next_payload["delegation"] = delegation
         next_payload["specialistRegistry"] = self._normalize_specialist_registry_config(next_payload.get("specialistRegistry"))
         next_payload["research"] = self._normalize_research_config(next_payload.get("research"))
-        payload = self._read_config_payload()
-        payload["supervisor"] = next_payload
-        self._write_config_payload(payload)
+        self.mutate_config_domain("supervisor", lambda _current: next_payload)
 
     def get_supervisor_profile(self) -> Dict[str, str]:
         supervisor_config = self.get_supervisor_config() or {}
@@ -2621,7 +2673,7 @@ class StorageManager:
             _derive_ws_base_url(bridge["engineBaseUrl"]),
         )
         bridge["adminBaseUrl"] = _normalize_http_base_url(bridge.get("adminBaseUrl"), "http://127.0.0.1:9528/api")
-        bridge["internalSecret"] = str(bridge.get("internalSecret") or uuid4().hex)
+        bridge["internalSecret"] = str(bridge.get("internalSecret") or _BOOTSTRAP_INTERNAL_SECRET)
         bridge["allowedOrigins"] = _normalize_allowed_origins(bridge.get("allowedOrigins"))
         normalized.pop("skills", None)
         normalized.setdefault("webFetch", {}).setdefault("cacheDir", str(self.base_dir / "web_fetch"))
@@ -2679,18 +2731,20 @@ class StorageManager:
                 continue
             filtered_legacy_settings.append(dict(item))
         normalized["legacySettings"] = filtered_legacy_settings
-        if normalized != data:
-            payload = self._read_config_payload()
-            payload["systemBase"] = normalized
-            self._write_config_payload(payload)
         return normalized
 
+    def migrate_system_base_config(self) -> bool:
+        raw = self._read_raw_config_payload().get("systemBase")
+        normalized = self.get_system_base_config()
+        if isinstance(raw, dict) and raw == normalized:
+            return False
+        self.mutate_config_domain("systemBase", lambda _current: normalized)
+        return True
+
     def save_system_base_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
         merged = self._deep_merge(self.get_system_base_config(), dict(data or {}))
         merged.pop("channels", None)
-        payload["systemBase"] = merged
-        self._write_config_payload(payload)
+        self.mutate_config_domain("systemBase", lambda _current: merged)
 
     def get_system_settings(self) -> Dict[str, Any]:
         return self._system_base_to_legacy_settings(self.get_system_base_config())
@@ -2725,12 +2779,11 @@ class StorageManager:
         )
 
     def save_automation_runtime_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["automationRuntime"] = self._deep_merge(
+        normalized = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["automationRuntime"],
             dict(data or {}),
         )
-        self._write_config_payload(payload)
+        self.mutate_config_domain("automationRuntime", lambda _current: normalized)
 
     # --- Network Supervisor Runtime Config Accessors ---
     def get_network_supervisor_runtime_config(self) -> Dict[str, Any]:
@@ -2741,16 +2794,14 @@ class StorageManager:
         )
 
     def save_network_supervisor_runtime_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["networkSupervisorRuntime"] = self._deep_merge(
+        normalized = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["networkSupervisorRuntime"],
             dict(data or {}),
         )
-        self._write_config_payload(payload)
+        self.mutate_config_domain("networkSupervisorRuntime", lambda _current: normalized)
 
     # --- Context Config Accessors ---
     def get_context_config(self) -> Dict[str, Any]:
-        self._ensure_legacy_model_bindings_migrated()
         raw = self.read_json("context_config.json")
         # Runtime reads must remain side-effect free. Historical or unknown
         # adapter fields are tolerated in storage and are only removed when a
@@ -2766,9 +2817,8 @@ class StorageManager:
         return self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], data if isinstance(data, dict) else {})
 
     def save_computer_use_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["computerUse"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], dict(data or {}))
-        self._write_config_payload(payload)
+        normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], dict(data or {}))
+        self.mutate_config_domain("computerUse", lambda _current: normalized)
 
     # --- Plugin Manager Runtime Config Accessors ---
     def get_plugin_manager_config(self) -> Dict[str, Any]:
@@ -2785,12 +2835,10 @@ class StorageManager:
         return normalized
 
     def save_plugin_manager_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
         merged = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["pluginManager"], dict(data or {}))
         merged["requireExplicitMention"] = True
         merged["defaultGrantScope"] = "task"
-        payload["pluginManager"] = merged
-        self._write_config_payload(payload)
+        self.mutate_config_domain("pluginManager", lambda _current: merged)
 
     # --- Computer Use Memory Accessors ---
     def get_computer_use_memory(self) -> Dict[str, Any]:
@@ -2925,29 +2973,25 @@ class StorageManager:
     def get_safety_guardian_config(self) -> Dict[str, Any]:
         payload = self._read_config_payload()
         structured = payload.get("safety") if isinstance(payload.get("safety"), dict) else {}
-        legacy = self.read_json("safety_guardian.json")
         merged = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["safety"],
-            legacy if isinstance(legacy, dict) else {},
-        )
-        merged = self._deep_merge(
-            merged,
             structured if isinstance(structured, dict) else {},
         )
-        normalized = self._normalize_safety_guardian_config(merged)
-        if normalized != structured:
-            payload["safety"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
-            self._write_config_payload(payload)
-        if isinstance(legacy, dict) and normalized != legacy:
-            self.write_json("safety_guardian.json", normalized)
-        return normalized
+        return self._normalize_safety_guardian_config(merged)
+
+    def migrate_safety_guardian_config(self) -> bool:
+        raw = self._read_raw_config_payload().get("safety")
+        normalized = self.get_safety_guardian_config()
+        persisted = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
+        if isinstance(raw, dict) and raw == persisted:
+            return False
+        self.mutate_config_domain("safety", lambda _current: persisted)
+        return True
 
     def save_safety_guardian_config(self, data: Dict[str, Any]):
         normalized = self._normalize_safety_guardian_config(data)
-        payload = self._read_config_payload()
-        payload["safety"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
-        self._write_config_payload(payload)
-        self.write_json("safety_guardian.json", normalized)
+        persisted = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
+        self.mutate_config_domain("safety", lambda _current: persisted)
 
     def get_desktop_pet_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("desktopPet") or {}
@@ -2957,12 +3001,11 @@ class StorageManager:
         )
 
     def save_desktop_pet_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["desktopPet"] = self._deep_merge(
+        normalized = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["desktopPet"],
             dict(data or {}),
         )
-        self._write_config_payload(payload)
+        self.mutate_config_domain("desktopPet", lambda _current: normalized)
 
     def get_music_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("music") or {}
@@ -2974,13 +3017,12 @@ class StorageManager:
         return normalized
 
     def save_music_config(self, data: Dict[str, Any]):
-        payload = self._read_config_payload()
-        payload["music"] = self._deep_merge(
+        normalized = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["music"],
             dict(data or {}),
         )
-        payload["music"].setdefault("tracks", [])
-        self._write_config_payload(payload)
+        normalized.setdefault("tracks", [])
+        self.mutate_config_domain("music", lambda _current: normalized)
 
     def get_ui_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("ui") or {}
@@ -2993,9 +3035,7 @@ class StorageManager:
         theme = str((data or {}).get("theme") or "system").strip().lower()
         if theme not in {"light", "dark", "system"}:
             theme = "system"
-        payload = self._read_config_payload()
-        payload["ui"] = {"theme": theme}
-        self._write_config_payload(payload)
+        self.mutate_config_domain("ui", lambda _current: {"theme": theme})
 
     # --- Project Registry Accessors ---
     def get_projects_registry(self) -> Dict[str, Any]:
@@ -3020,7 +3060,6 @@ class StorageManager:
     # --- Agent Accessors ---
     def get_all_agents(self) -> List[Dict[str, Any]]:
         from core.runtime.agents import parse_agent_md
-        self._ensure_legacy_model_bindings_migrated()
         agents_dir = self.base_dir / "agents"
         agents = []
         model_bindings = self.get_agent_model_bindings()
@@ -3039,7 +3078,6 @@ class StorageManager:
 
     def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
         from core.runtime.agents import parse_agent_md
-        self._ensure_legacy_model_bindings_migrated()
         agent_path = self.base_dir / "agents" / f"{agent_id}.md"
         if not agent_path.exists():
             return None

@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import base64
+import json
+from types import SimpleNamespace
+
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from api.models import ChatMessage
 from core.context_orchestrator import ContextOrchestrator
+from core.database import DatabaseManager
 from core.openai_codex_runtime import _build_messages
 from core.provider_continuation import (
     PRIVATE_PROVIDER_CONTINUATION_KEY,
     build_replay_ai_message_payload,
     extract_provider_continuation,
     merge_provider_continuations,
+    migrate_persisted_provider_continuations,
+    provider_continuation_from_metadata,
     provider_continuation_matches_target,
+    seal_provider_continuation,
     strip_private_provider_continuation,
 )
 from core.response_normalizer import extract_text_and_reasoning
@@ -47,6 +56,96 @@ def test_openai_encrypted_reasoning_is_private_but_replayable():
     assert extract_text_and_reasoning(message) == ("已完成。", "检查输入。")
     assert "opaque-openai-continuation" not in str(strip_private_provider_continuation({PRIVATE_PROVIDER_CONTINUATION_KEY: continuation}))
     assert additional_kwargs == {}
+
+
+def test_provider_continuation_state_db_envelope_is_authenticated_and_not_plaintext(monkeypatch):
+    from erc.checkpoint_security import checkpoint_key_manager
+
+    monkeypatch.setattr(
+        checkpoint_key_manager,
+        "resolve",
+        lambda: SimpleNamespace(key=b"k" * 32),
+    )
+    continuation = {
+        "schemaVersion": 1,
+        "providerStandard": "openai",
+        "contentBlocks": [
+            {
+                "type": "reasoning",
+                "id": "reasoning-private",
+                "encrypted_content": "opaque-provider-marker",
+            }
+        ],
+    }
+
+    sealed = seal_provider_continuation(continuation)
+    metadata = {PRIVATE_PROVIDER_CONTINUATION_KEY: sealed}
+
+    assert sealed["storageScheme"] == "v8-provider-continuation-aesgcm-v1"
+    assert "opaque-provider-marker" not in json.dumps(sealed)
+    assert provider_continuation_from_metadata(metadata) == continuation
+
+    ciphertext = bytearray(base64.b64decode(sealed["ciphertext"]))
+    ciphertext[-1] ^= 1
+    tampered = {
+        PRIVATE_PROVIDER_CONTINUATION_KEY: {
+            **sealed,
+            "ciphertext": base64.b64encode(bytes(ciphertext)).decode("ascii"),
+        }
+    }
+    with pytest.raises(RuntimeError, match="authenticated decryption"):
+        provider_continuation_from_metadata(tampered)
+
+
+def test_legacy_state_db_continuations_are_migrated_in_place(tmp_path, monkeypatch):
+    from erc.checkpoint_security import checkpoint_key_manager
+
+    monkeypatch.setattr(
+        checkpoint_key_manager,
+        "resolve",
+        lambda: SimpleNamespace(key=b"m" * 32),
+    )
+    database = DatabaseManager(tmp_path / "state.db")
+    database.create_or_update_session("session", "session", user_id="user")
+    continuation = {
+        "schemaVersion": 1,
+        "providerStandard": "openai",
+        "contentBlocks": [
+            {"type": "reasoning", "encrypted_content": "legacy-opaque-marker"}
+        ],
+    }
+    metadata = {PRIVATE_PROVIDER_CONTINUATION_KEY: continuation}
+    database.add_message(
+        "assistant-legacy",
+        "session",
+        "assistant",
+        "visible",
+        metadata=metadata,
+    )
+    database.create_chat_canonical_message(
+        message_id="canonical-legacy",
+        session_id="session",
+        run_id=None,
+        ordinal=1,
+        role="assistant",
+        state="completed",
+        nodes=[],
+        content_text="visible",
+        metadata=metadata,
+    )
+
+    result = migrate_persisted_provider_continuations(database)
+
+    assert result["migratedRows"] == 2
+    raw_bytes = (tmp_path / "state.db").read_bytes()
+    assert b"legacy-opaque-marker" not in raw_bytes
+    restored = database.get_message("assistant-legacy")
+    assert provider_continuation_from_metadata(restored["metadata"]) == continuation
+    canonical = database.get_chat_canonical_message("canonical-legacy")
+    assert provider_continuation_from_metadata(canonical["metadata"]) == continuation
+    second = migrate_persisted_provider_continuations(database)
+    assert second["migratedRows"] == 0
+    assert second["alreadyEncryptedRows"] == 2
 
 
 def test_anthropic_signed_and_redacted_thinking_blocks_are_preserved():

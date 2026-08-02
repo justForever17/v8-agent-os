@@ -21,7 +21,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 
 from core.background_context_guard import prepare_background_model_messages
-from core.background_model_output import sanitize_background_model_output
+from core.background_model_output import extract_reasoning_token_count, sanitize_background_model_output
 from core.model_thinking_control import no_think_request_patch
 from core.research_runtime_prompts import (
     RESEARCH_PROMPT_CONTRACT_VERSION,
@@ -11449,10 +11449,7 @@ def _architect_response_safe_diagnostics(response: Any, sanitized: Any) -> dict[
                 token_usage.get("completion_tokens"),
                 token_usage.get("output_tokens"),
             ),
-            "reasoningTokens": first_positive_int(
-                completion_details.get("reasoning_tokens"),
-                completion_details.get("reasoning"),
-            ),
+            "reasoningTokens": extract_reasoning_token_count(completion_details),
             "totalTokens": first_positive_int(
                 usage_metadata.get("total_tokens"),
                 token_usage.get("total_tokens"),

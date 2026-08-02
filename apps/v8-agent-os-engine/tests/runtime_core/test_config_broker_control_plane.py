@@ -8,6 +8,14 @@ from core.database import DatabaseManager
 from core.security.credentials import CredentialRefStore, MemoryCredentialBackend, resolve_config_credential_refs
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config_files(tmp_path, monkeypatch) -> None:
+    import core.storage as storage_module
+
+    monkeypatch.setattr(storage_module, "CONFIG_JSON_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(storage_module, "MCP_JSON_PATH", tmp_path / "mcp.json")
+
+
 def test_model_prepare_blocks_incomplete_facts_and_persists_recovery_record(tmp_path, monkeypatch) -> None:
     import core.config_broker_service as module
 
@@ -298,7 +306,6 @@ def test_registered_subagent_binding_commits_and_uses_subagent_contract(tmp_path
     import core.config_broker_service as module
 
     test_db = DatabaseManager(tmp_path / "state.db")
-    saved: list[dict] = []
     config = {"roles": {"subagent": "provider::default"}, "bindings": {"agents": {}}}
     monkeypatch.setattr(module, "db", test_db)
     monkeypatch.setattr(module.storage, "get_agent", lambda agent_id: {"id": agent_id, "name": "Reviewer"})
@@ -325,7 +332,13 @@ def test_registered_subagent_binding_commits_and_uses_subagent_contract(tmp_path
         ],
     )
     monkeypatch.setattr(module.model_control_plane, "get_storage_safe_config", lambda: json.loads(json.dumps(config)))
-    monkeypatch.setattr(module.model_control_plane, "save_config", lambda value: saved.append(json.loads(json.dumps(value))))
+    def _mutate(mutator):
+        proposed = mutator(json.loads(json.dumps(config)))
+        config.clear()
+        config.update(json.loads(json.dumps(proposed)))
+        return json.loads(json.dumps(config))
+
+    monkeypatch.setattr(module.model_control_plane, "mutate_config", _mutate)
     service = module.ConfigBrokerService()
 
     prepared = service.prepare_role_assignment(
@@ -338,7 +351,7 @@ def test_registered_subagent_binding_commits_and_uses_subagent_contract(tmp_path
     committed = service.commit(prepared["transactionId"], owner_id="owner@example.test")
 
     assert committed["state"] == "committed"
-    assert saved[-1]["bindings"]["agents"]["reviewer"] == {"model_id": "provider::reviewer"}
+    assert config["bindings"]["agents"]["reviewer"] == {"model_id": "provider::reviewer"}
 
 
 def test_mcp_secret_prepare_rejects_missing_runtime_scope_without_orphan_transaction(tmp_path, monkeypatch) -> None:
@@ -453,7 +466,15 @@ def test_mcp_rollback_refreshes_runtime_inventory(monkeypatch) -> None:
     import core.config_broker_service as module
 
     calls: list[str] = []
-    monkeypatch.setattr(module.storage, "save_mcp_config", lambda _value: None)
+    config = {"mcpServers": {}}
+
+    def _mutate(mutator):
+        proposed = mutator(json.loads(json.dumps(config)))
+        config.clear()
+        config.update(json.loads(json.dumps(proposed)))
+        return json.loads(json.dumps(config))
+
+    monkeypatch.setattr(module.storage, "mutate_mcp_config", _mutate)
     monkeypatch.setattr(module, "request_mcp_inventory_refresh", lambda reason: calls.append(reason))
 
     result = module.ConfigBrokerService()._restore_snapshot(
@@ -468,6 +489,57 @@ def test_mcp_rollback_refreshes_runtime_inventory(monkeypatch) -> None:
     assert calls == ["config_broker_rollback"]
 
 
+def test_mcp_refresh_failure_rolls_back_only_transaction_target(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "mcpServers": {
+            "keep": {"type": "http", "url": "https://keep.example.test/mcp"},
+        }
+    }
+
+    def _copy_config() -> dict:
+        return json.loads(json.dumps(config))
+
+    def _mutate(mutator):
+        proposed = mutator(_copy_config())
+        config.clear()
+        config.update(json.loads(json.dumps(proposed)))
+        return _copy_config()
+
+    refresh_calls: list[str] = []
+
+    def _refresh(*, reason: str):
+        refresh_calls.append(reason)
+        if reason == "config_broker_commit":
+            raise RuntimeError("simulated refresh failure")
+
+    monkeypatch.setattr(module.storage, "get_mcp_config", _copy_config)
+    monkeypatch.setattr(module.storage, "mutate_mcp_config", _mutate)
+    monkeypatch.setattr(module, "request_mcp_inventory_refresh", _refresh)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_mcp(
+        operation="install",
+        name="new",
+        server={"type": "http", "url": "https://new.example.test/mcp"},
+        credential_requirements=[],
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert committed["state"] == "rolled_back"
+    assert config == {
+        "mcpServers": {
+            "keep": {"type": "http", "url": "https://keep.example.test/mcp"},
+        }
+    }
+    assert refresh_calls == ["config_broker_commit", "config_broker_rollback"]
+
+
 def test_config_broker_rejects_secret_bearing_command_arguments() -> None:
     from core.tools.native.mcp import ConfigBrokerError, _reject_secret_bearing_args
 
@@ -475,3 +547,187 @@ def test_config_broker_rejects_secret_bearing_command_arguments() -> None:
     with pytest.raises(ConfigBrokerError) as blocked:
         _reject_secret_bearing_args(["--api-key=secret"])
     assert blocked.value.code == "config_secret_in_command_args"
+
+
+def test_model_config_read_is_pure_and_does_not_run_migrations(monkeypatch) -> None:
+    import core.model_control_plane as module
+
+    raw = {"providers": {}, "roles": {}, "bindings": {"agents": {}}}
+    monkeypatch.setattr(module.storage, "get_models_config", lambda: raw)
+    monkeypatch.setattr(
+        module.storage,
+        "save_models_config",
+        lambda _value: pytest.fail("a model config read must not write"),
+    )
+
+    config = module.ModelControlPlane(
+        credential_store=CredentialRefStore(MemoryCredentialBackend())
+    ).get_config()
+
+    assert config["providers"] == {}
+
+
+def test_model_prepare_keeps_explicit_channel_and_endpoint_contract(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    test_db = DatabaseManager(tmp_path / "state.db")
+    monkeypatch.setattr(module, "db", test_db)
+    monkeypatch.setattr(module.model_control_plane, "get_storage_safe_config", lambda: {})
+    service = module.ConfigBrokerService()
+
+    prepared = service.prepare_model(
+        provider_id="cpm",
+        model_id="gpt-5.5",
+        provider_name="CPM",
+        base_url="https://cpm.example.test/v1",
+        api_standard="openai",
+        channel_id="openai-responses",
+        wire_protocol="openai.responses",
+        endpoint_path="responses",
+        model_type="MULTIMODAL",
+        context_window=1_000_000,
+        max_tokens=32_768,
+        capabilities={"chat": True, "vision": True, "reasoning": True},
+        evidence_refs=["https://cpm.example.test/docs/models"],
+        credential_required=False,
+        owner_id="local-cli",
+        session_id="",
+        run_id="",
+    )
+
+    transaction = service.get_transaction(
+        prepared["transactionId"],
+        owner_id="local-cli",
+        include_private=True,
+    )
+    assert transaction["proposed"]["model"]["endpointBinding"] == {
+        "version": 2,
+        "route": "gpt-5.5",
+        "channelId": "openai-responses",
+        "wireProtocol": "openai.responses",
+        "endpointPath": "responses",
+        "providerModelId": "gpt-5.5",
+        "protocolSource": "config_broker_explicit",
+        "provenance": {
+            "source": "config_broker_explicit",
+            "confidence": "authoritative",
+        },
+    }
+
+
+def _install_role_control_plane_fakes(module, monkeypatch, config: dict):
+    def _copy_config():
+        return json.loads(json.dumps(config))
+
+    def _mutate(mutator):
+        proposed = mutator(_copy_config())
+        config.clear()
+        config.update(json.loads(json.dumps(proposed)))
+        return _copy_config()
+
+    monkeypatch.setattr(module.model_control_plane, "get_config", lambda: _copy_config())
+    monkeypatch.setattr(module.model_control_plane, "get_storage_safe_config", lambda: _copy_config())
+    monkeypatch.setattr(
+        module.model_control_plane,
+        "get_role_definitions",
+        lambda _config: {"default": {"label": "Default", "capabilityClasses": ["chat_general"]}},
+    )
+    monkeypatch.setattr(
+        module.model_control_plane,
+        "get_model_record",
+        lambda _ref, _config: {
+            "model_ref": "provider::new",
+            "model_id": "new",
+            "model": {"type": "TEXT", "capabilityClass": "chat_general"},
+        },
+    )
+    monkeypatch.setattr(
+        module.model_control_plane,
+        "list_models",
+        lambda _config: [
+            {
+                "modelRef": "provider::new",
+                "type": "TEXT",
+                "capabilityClass": "chat_general",
+                "eligibility": {"selectable": True, "shortLabel": "可用"},
+            }
+        ],
+    )
+    monkeypatch.setattr(module.model_control_plane, "mutate_config", _mutate)
+    return _copy_config
+
+
+def test_atomic_role_commit_rejects_change_between_fast_check_and_write(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "providers": {},
+        "roles": {"default": "provider::old"},
+        "bindings": {"agents": {}},
+    }
+    _install_role_control_plane_fakes(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+
+    # Simulate a write arriving after the fast check but before the model lock.
+    monkeypatch.setattr(service, "_assert_target_revision", lambda _transaction: {})
+    config["roles"]["default"] = "provider::concurrent"
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert committed["state"] == "conflict"
+    assert committed["error"]["code"] == "config_transaction_stale"
+    assert config["roles"]["default"] == "provider::concurrent"
+
+
+def test_precise_role_rollback_preserves_unrelated_changes_and_stops_on_target_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "providers": {},
+        "roles": {"default": "provider::old", "summary": "provider::summary-old"},
+        "bindings": {"agents": {}},
+    }
+    _install_role_control_plane_fakes(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+
+    first = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    assert service.commit(first["transactionId"], owner_id="owner")["state"] == "committed"
+    config["roles"]["summary"] = "provider::summary-new"
+
+    rolled_back = service.rollback(first["transactionId"], owner_id="owner")
+    assert rolled_back["state"] == "rolled_back"
+    assert config["roles"] == {
+        "default": "provider::old",
+        "summary": "provider::summary-new",
+    }
+
+    second = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    assert service.commit(second["transactionId"], owner_id="owner")["state"] == "committed"
+    config["roles"]["default"] = "provider::newer"
+    conflicted = service.rollback(second["transactionId"], owner_id="owner")
+
+    assert conflicted["state"] == "conflict"
+    assert config["roles"]["default"] == "provider::newer"

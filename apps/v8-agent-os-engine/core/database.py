@@ -3682,9 +3682,23 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 conn.execute(
                     '''
+                    DELETE FROM runtime_snapshots
+                    WHERE session_id = ? AND snapshot_type = ? AND id <> ?
+                    ''',
+                    (session_id, snapshot_type, snapshot_id),
+                )
+                conn.execute(
+                    '''
                     INSERT INTO runtime_snapshots
                     (id, session_id, run_id, latest_seq, snapshot_type, snapshot_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        session_id = excluded.session_id,
+                        run_id = excluded.run_id,
+                        latest_seq = excluded.latest_seq,
+                        snapshot_type = excluded.snapshot_type,
+                        snapshot_json = excluded.snapshot_json,
+                        created_at = excluded.created_at
                     ''',
                     (snapshot_id, session_id, run_id, latest_seq, snapshot_type, snapshot_str, created_at),
                 )

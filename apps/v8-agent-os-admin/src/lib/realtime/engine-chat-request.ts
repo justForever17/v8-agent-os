@@ -146,6 +146,13 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 agent_id: agentId,
             },
             messages: messages.map((message) => ({
+                id: typeof message.id === "string"
+                    ? message.id
+                    : typeof message.messageId === "string"
+                        ? message.messageId
+                        : typeof message.message_id === "string"
+                            ? message.message_id
+                            : undefined,
                 role: typeof message.role === "string" ? message.role : "user",
                 content: typeof message.content === "string" ? message.content : "",
                 tool_call_id: typeof message.tool_call_id === "string" ? message.tool_call_id : undefined,

@@ -172,6 +172,30 @@ class CheckpointStore:
             raise RuntimeError("Checkpoint security preflight completed without an audit result.")
         return dict(result)
 
+    async def delete_thread(self, thread_id: str) -> dict[str, int]:
+        """Delete one explicitly removed session's checkpoint lineage."""
+
+        normalized_thread_id = str(thread_id or "").strip()
+        if not normalized_thread_id:
+            return {"checkpoints": 0, "writes": 0, "blobs": 0}
+        saver = await self.get_async_sqlite_saver()
+        counts = {"checkpoints": 0, "writes": 0, "blobs": 0}
+        async with saver._v8_write_lock:
+            for table in ("writes", "checkpoints", "blobs"):
+                exists = await saver.conn.execute_fetchall(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                )
+                if not exists:
+                    continue
+                cursor = await saver.conn.execute(
+                    f"DELETE FROM {table} WHERE thread_id = ?",
+                    (normalized_thread_id,),
+                )
+                counts[table] = max(0, int(cursor.rowcount or 0))
+            await saver.conn.commit()
+        return counts
+
     async def close(self) -> None:
         with self._thread_lock:
             states = list(self._state_by_loop.values())

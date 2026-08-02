@@ -62,6 +62,7 @@ export async function POST(req: NextRequest) {
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             messages: messages.map((m: any) => ({
+                id: typeof m.id === "string" ? m.id : (m.messageId || m.message_id),
                 role: m.role,
                 content: m.content || "",
                 tool_call_id: m.tool_call_id,

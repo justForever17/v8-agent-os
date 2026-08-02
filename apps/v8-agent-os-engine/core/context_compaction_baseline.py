@@ -22,10 +22,23 @@ def digest_messages(messages: Sequence[BaseMessage]) -> str:
     for message in messages:
         payload.append(
             {
+                "id": getattr(message, "id", None),
                 "type": getattr(message, "type", ""),
                 "content": getattr(message, "content", ""),
+                "name": getattr(message, "name", None),
                 "tool_calls": getattr(message, "tool_calls", None),
                 "tool_call_id": getattr(message, "tool_call_id", None),
+                "private_state_digest": hashlib.sha256(
+                    json.dumps(
+                        {
+                            "additional_kwargs": getattr(message, "additional_kwargs", None),
+                            "response_metadata": getattr(message, "response_metadata", None),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest(),
             }
         )
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()

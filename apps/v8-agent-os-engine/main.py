@@ -302,6 +302,19 @@ async def _reconcile_engineering_workspaces():
 async def lifespan(app: FastAPI):
     # Startup logic: Load all SKILL.md files into the registry
     print("[Engine] Bootstrapping V8 Agent OS Engine...")
+    from core.model_control_plane import model_control_plane
+
+    await asyncio.to_thread(storage.migrate_legacy_local_config)
+    await asyncio.to_thread(storage.migrate_legacy_mcp_config)
+    await asyncio.to_thread(storage.ensure_legacy_model_bindings_migrated)
+    await asyncio.to_thread(storage.migrate_system_base_config)
+    await asyncio.to_thread(storage.migrate_safety_guardian_config)
+    reasoning_migrations = await asyncio.to_thread(model_control_plane.migrate_reasoning_surfaces)
+    if reasoning_migrations:
+        print(
+            "[Engine] Applied explicit model reasoning-surface migrations:",
+            {"records": len(reasoning_migrations)},
+        )
     checkpoint_preflight = await checkpoint_store.ensure_preflight()
     print(
         "[Engine] Checkpoint security preflight completed:",
@@ -313,6 +326,15 @@ async def lifespan(app: FastAPI):
             "durationMs": checkpoint_preflight.get("durationMs"),
         },
     )
+    from core.database import db
+    from core.provider_continuation import migrate_persisted_provider_continuations
+
+    continuation_migration = await asyncio.to_thread(migrate_persisted_provider_continuations, db)
+    if continuation_migration["migratedRows"] or continuation_migration["invalidRows"]:
+        print(
+            "[Engine] Provider continuation metadata migration completed:",
+            continuation_migration,
+        )
     applied_memory_defaults = storage.ensure_memory_runtime_defaults()
     if applied_memory_defaults:
         print("[Engine] Applied memory runtime defaults:", applied_memory_defaults)

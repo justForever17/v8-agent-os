@@ -61,6 +61,20 @@ def sanitize_background_model_output(response: Any) -> BackgroundModelOutput:
     )
 
 
+def extract_reasoning_token_count(details: Mapping[str, Any] | None) -> int | None:
+    """Read provider token accounting without exposing reasoning payload text."""
+
+    normalized = details if isinstance(details, Mapping) else {}
+    for key in ("reasoning_tokens", "reasoning"):
+        try:
+            value = int(normalized.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def parse_background_json_object(response: Any) -> tuple[dict[str, Any] | None, BackgroundModelOutput, str | None]:
     sanitized = sanitize_background_model_output(response)
     if not sanitized.text:

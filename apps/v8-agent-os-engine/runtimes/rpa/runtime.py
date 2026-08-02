@@ -476,10 +476,9 @@ def _native_inspector_helper_status(config: Dict[str, Any] | None = None) -> Dic
 
 def _native_inspector_config_from_disk() -> Dict[str, Any]:
     try:
-        raw_config = storage.read_json("config.json")
+        rpa_config = storage.get_config_domain("rpa")
     except Exception:
-        raw_config = {}
-    rpa_config = raw_config.get("rpa") if isinstance(raw_config, dict) else {}
+        rpa_config = {}
     native_config = rpa_config.get("nativeInspector") if isinstance(rpa_config, dict) else {}
     merged = dict(_DEFAULT_NATIVE_INSPECTOR_CONFIG)
     if isinstance(native_config, dict):
@@ -2431,8 +2430,6 @@ class RPARuntime:
         return status
 
     def save_native_inspector_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        existing_config = storage.read_json("config.json")
-        rpa_config = dict(existing_config.get("rpa") or {})
         current = _native_inspector_config_from_disk()
         allowed_keys = {
             "enabled",
@@ -2457,9 +2454,13 @@ class RPARuntime:
             updated["hoverSampleHz"] = 12
         updated["highlightOverlay"] = bool(updated.get("highlightOverlay", True))
         updated["ignoreAdminSurface"] = bool(updated.get("ignoreAdminSurface", True))
-        rpa_config["nativeInspector"] = updated
-        existing_config["rpa"] = rpa_config
-        storage.write_json("config.json", existing_config)
+
+        def _save_rpa_domain(current_rpa: Any) -> Dict[str, Any]:
+            rpa_config = dict(current_rpa or {}) if isinstance(current_rpa, dict) else {}
+            rpa_config["nativeInspector"] = updated
+            return rpa_config
+
+        storage.mutate_config_domain("rpa", _save_rpa_domain)
         return {
             "ok": True,
             "saved": True,

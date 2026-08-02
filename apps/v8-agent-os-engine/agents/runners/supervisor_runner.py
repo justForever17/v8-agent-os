@@ -8,6 +8,7 @@ from typing import AsyncIterator, Any
 
 from api.models import EngineConfig
 from graph.supervisor import AgentState, create_supervisor_graph
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from erc.checkpoint_store import checkpoint_store
@@ -145,6 +146,67 @@ class SupervisorAgentRunner:
     def build_graph_config(self, session_id: str, *, recursion_limit: int) -> dict:
         return {"configurable": {"thread_id": session_id}, "recursion_limit": recursion_limit}
 
+    @staticmethod
+    def _message_id(message: Any) -> str:
+        if isinstance(message, dict):
+            return str(message.get("id") or "").strip()
+        return str(getattr(message, "id", "") or "").strip()
+
+    @staticmethod
+    def _message_kwargs(message: Any) -> dict[str, Any]:
+        if isinstance(message, dict):
+            value = message.get("additional_kwargs") or message.get("additionalKwargs") or {}
+        else:
+            value = getattr(message, "additional_kwargs", {}) or {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    async def _reconcile_persistent_input(
+        self,
+        *,
+        graph: Any,
+        graph_config: dict[str, Any],
+        messages: Any,
+    ) -> tuple[list[Any], dict[str, Any]]:
+        incoming = list(messages or [])
+        getter = getattr(graph, "aget_state", None)
+        if not callable(getter):
+            return incoming, {"persistentInputReconciled": False, "reason": "state_reader_unavailable"}
+        snapshot = await getter(graph_config)
+        values = getattr(snapshot, "values", None)
+        existing = list((values or {}).get("messages") or []) if isinstance(values, dict) else []
+        if not existing:
+            return incoming, {"persistentInputReconciled": False, "reason": "new_thread"}
+
+        existing_ids = {self._message_id(message) for message in existing if self._message_id(message)}
+        latest_ingress_human_index = -1
+        for index, message in enumerate(incoming):
+            kwargs = self._message_kwargs(message)
+            if kwargs.get("v8_ingress_history") and isinstance(message, HumanMessage):
+                latest_ingress_human_index = index
+
+        reconciled: list[Any] = []
+        dropped = 0
+        for index, message in enumerate(incoming):
+            kwargs = self._message_kwargs(message)
+            if not kwargs.get("v8_ingress_history"):
+                reconciled.append(message)
+                continue
+            message_id = self._message_id(message)
+            keep_latest_human = index == latest_ingress_human_index and (
+                not message_id or message_id not in existing_ids
+            )
+            if keep_latest_human:
+                reconciled.append(message)
+            else:
+                dropped += 1
+        return reconciled, {
+            "persistentInputReconciled": True,
+            "existingMessageCount": len(existing),
+            "incomingMessageCount": len(incoming),
+            "reconciledMessageCount": len(reconciled),
+            "droppedHistoricalMessageCount": dropped,
+        }
+
     async def create_execution_bundle(
         self,
         *,
@@ -163,10 +225,16 @@ class SupervisorAgentRunner:
         transport: str | None = None,
     ):
         graph, diagnostics = await self.build_graph(config)
+        graph_config = self.build_graph_config(session_id, recursion_limit=recursion_limit)
+        reconciled_messages, reconciliation = await self._reconcile_persistent_input(
+            graph=graph,
+            graph_config=graph_config,
+            messages=messages,
+        )
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.create_state(
-                messages,
+                reconciled_messages,
                 current_route_context=current_route_context,
                 runtime_dispatch_status=runtime_dispatch_status,
                 engineering_context=engineering_context,
@@ -177,9 +245,9 @@ class SupervisorAgentRunner:
                 session_coordination=session_coordination,
                 transport=transport,
             ),
-            graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),
+            graph_config=graph_config,
             mode="start",
-            diagnostics=diagnostics,
+            diagnostics={**dict(diagnostics or {}), **reconciliation},
         )
 
     def build_resume_input(self, resume_value):

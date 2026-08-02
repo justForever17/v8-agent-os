@@ -508,7 +508,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             if (abortControllerRef.current) abortControllerRef.current.abort();
 
             const requestBody: any = {
-                messages: [...currentMessages, tempUserMsg].map(m => ({ role: m.role, content: m.content })), // Send only history up to user msg
+                messages: [...currentMessages, tempUserMsg].map(m => ({ id: m.id, role: m.role, content: m.content })), // Stable ids let the Engine reconcile persistent history.
                 data: data, // Keep passing the whole object just in case backend expects it
                 fileUrls: allFileUrls, // Explicitly pass all uploaded refs, including audio
                 attachments: dataAttachments,
@@ -610,7 +610,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             );
             setMessages(nextMessages);
             const requestBody: any = {
-                messages: currentMessages.map(m => ({ role: m.role, content: m.content })),
+                messages: currentMessages.map(m => ({ id: m.id, role: m.role, content: m.content })),
                 data: data,
                 tool_outputs: [{ tool_call_id: toolCallId, output: output }]
             };

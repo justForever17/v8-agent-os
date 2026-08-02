@@ -952,11 +952,17 @@ class ModelControlPlane:
 
     def get_config(self) -> Dict[str, Any]:
         raw = storage.get_models_config()
-        migrated, records = self._migrate_reasoning_surfaces(raw)
-        if records:
-            storage.save_models_config(migrated)
-            raw = migrated
         return self._materialize_provider_credentials(self.normalize_config(raw))
+
+    def migrate_reasoning_surfaces(self) -> List[Dict[str, Any]]:
+        """Run the legacy reasoning-surface migration as an explicit write."""
+
+        with self._mutation_lock:
+            raw = storage.get_models_config()
+            migrated, records = self._migrate_reasoning_surfaces(raw)
+            if records:
+                storage.save_models_config(self._storage_safe_config(self.normalize_config(migrated)))
+            return records
 
     def get_storage_safe_config(self) -> Dict[str, Any]:
         """Return a rollback-safe snapshot and secure legacy in-file keys.
@@ -994,9 +1000,20 @@ class ModelControlPlane:
             return safe
 
     def save_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = self.normalize_config(data)
-        storage.save_models_config(self._storage_safe_config(normalized))
-        return normalized
+        with self._mutation_lock:
+            normalized = self.normalize_config(data)
+            storage.save_models_config(self._storage_safe_config(normalized))
+            return normalized
+
+    def mutate_config(self, mutator) -> Dict[str, Any]:
+        """Apply one model-domain mutation under the shared control-plane lock."""
+
+        with self._mutation_lock:
+            current = self.get_config()
+            proposed = mutator(deepcopy(current))
+            if not isinstance(proposed, dict):
+                raise ValueError("model config mutator must return a mapping")
+            return self.save_config(proposed)
 
     def get_public_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return public_models_config(config or self.get_config())
@@ -1119,6 +1136,7 @@ class ModelControlPlane:
         model_patch: Dict[str, Any],
         source: str,
         replace_provider_models: bool = False,
+        precondition=None,
     ) -> Dict[str, Any]:
         normalized_provider_id = str(provider_id or "").strip()
         normalized_model_id = str(model_id or "").strip().strip("/")
@@ -1126,6 +1144,8 @@ class ModelControlPlane:
             raise ValueError("providerId and modelId are required")
         with self._mutation_lock:
             config = self.get_config()
+            if callable(precondition):
+                precondition(deepcopy(config))
             providers = dict(config.get("providers") or {})
             existing = dict(providers.get(normalized_provider_id) or {})
             secured_patch = self._secure_provider_patch(
@@ -1377,11 +1397,35 @@ class ModelControlPlane:
     def _is_model_compatible(self, role_definition: Dict[str, Any], model_record: Optional[Dict[str, Any]]) -> bool:
         if not model_record:
             return False
-        allowed = list(role_definition.get("capabilityClasses") or [])
+        allowed = {
+            str(item or "").strip()
+            for item in list(role_definition.get("capabilityClasses") or [])
+            if str(item or "").strip()
+        }
         if not allowed:
             return True
-        capability_class = str((model_record.get("model") or {}).get("capabilityClass") or "")
-        return capability_class in allowed
+        model = dict(model_record.get("model") or {})
+        capability_class = str(model.get("capabilityClass") or "").strip()
+        capabilities = dict(model.get("capabilities") or {})
+        available = {capability_class} if capability_class else set()
+        if capability_class == "vision_multimodal" or capabilities.get("vision") or capabilities.get("multimodal"):
+            available.add("vision_multimodal")
+            # Multimodal chat models still have a text-generation surface.
+            available.add("chat_general")
+        if capabilities.get("reasoning"):
+            available.add("chat_reasoning")
+        if capabilities.get("toolCalling") or capabilities.get("tool_calling"):
+            available.add("chat_tool_calling")
+        if capabilities.get("chat") or str(model.get("type") or "").strip().upper() in {"TEXT", "MULTIMODAL"}:
+            available.add("chat_general")
+        if capabilities.get("embedding"):
+            available.add("embedding")
+        if capabilities.get("rerank") or capabilities.get("reranker"):
+            available.add("reranker")
+        return bool(available & allowed)
+
+    def is_model_compatible(self, role_definition: Dict[str, Any], model_record: Optional[Dict[str, Any]]) -> bool:
+        return self._is_model_compatible(role_definition, model_record)
 
     def default_category_for_role(self, role: str, role_definition: Optional[Dict[str, Any]] = None) -> str:
         role_key = str(role or "").strip()

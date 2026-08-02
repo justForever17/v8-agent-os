@@ -6453,6 +6453,7 @@ export default function ChatScreen() {
             const historyMessages = messagesRef.current
                 .filter((message) => !message.uiEphemeral)
                 .map((message) => ({
+                    id: message.id,
                     role: message.role,
                     content: message.content,
                 }));

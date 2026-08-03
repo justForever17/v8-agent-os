@@ -29,10 +29,19 @@ def test_media_registry_exact_native_audio_does_not_inherit_by_family_name():
     assert seedance_20["nativeAudio"] is True
     assert seedance_20["audioPreservationPolicy"] == "preserve_native_audio_by_default"
 
-    seedance_lite = media_model_capability_registry.find("volcengine_seedance", "doubao-seed-2-0-lite-260428", "video.reference_to_video")
+    seedance_lite = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-2-0-mini", "video.reference_to_video")
     assert seedance_lite
     assert seedance_lite["nativeAudio"] is True
     assert seedance_lite["referenceInputs"]["audio"]["maxCount"] == 3
+
+    seedance_25 = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-2-5", "video.reference_to_video")
+    assert seedance_25
+    assert seedance_25["duration"]["secondsMax"] == 30
+
+    minimax_h3 = media_model_capability_registry.find("minimax_video", "MiniMax-H3", "video.reference_to_video")
+    assert minimax_h3
+    assert minimax_h3["inputModalities"] == ["text", "image", "video", "audio"]
+    assert minimax_h3["referenceInputs"]["video"]["maxCount"] == 3
 
     seedance_15 = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-1-5-pro", "video.text_to_video")
     assert seedance_15

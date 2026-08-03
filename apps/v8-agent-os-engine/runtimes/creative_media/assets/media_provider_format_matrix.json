@@ -697,9 +697,10 @@
         "displayName": "Volcengine Ark Seedance",
         "logoAsset": "/model-assets/lobe/volcengine-color.svg",
         "modelIds": [
+          "doubao-seedance-2-5",
           "doubao-seedance-2-0",
           "doubao-seedance-2-0-fast",
-          "doubao-seed-2-0-lite-260428",
+          "doubao-seedance-2-0-mini",
           "doubao-seedance-1-5-pro",
           "doubao-seedance-1-0-pro-fast-251015"
         ],
@@ -1157,6 +1158,7 @@
         "displayName": "MiniMax Video",
         "logoAsset": "/model-assets/lobe/minimax-color.svg",
         "modelIds": [
+          "MiniMax-H3",
           "MiniMax-Hailuo-2.3",
           "MiniMax-Hailuo-2.3-Fast",
           "MiniMax-Hailuo-02",
@@ -1189,6 +1191,12 @@
         "request": {
           "method": "POST",
           "submitPath": "/v1/video_generation",
+          "modelOverrides": {
+            "MiniMax-H3": {
+              "submitPath": "/v2/video_generation",
+              "statusPath": "/v2/query/video_generation/{task_id}"
+            }
+          },
           "bodyFields": [
             "model",
             "prompt",
@@ -1267,7 +1275,8 @@
         "displayName": "HappyHorse Video",
         "logoAsset": "/model-assets/providers/happyhorse.svg",
         "modelIds": [
-          "happyhorse-native-audio-video"
+          "HappyHorse-1.0",
+          "HappyHorse-1.1"
         ],
         "apiStandard": "video_generation",
         "adapter": "catalog_only",

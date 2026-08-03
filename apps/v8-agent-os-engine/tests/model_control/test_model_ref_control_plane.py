@@ -229,7 +229,12 @@ def test_catalog_bridges_creative_media_provider_matrix():
     assert "video.action_transfer" in animate_move["operationKinds"]
     assert providers["zhipu_bigmodel_image"]["models"][0]["id"] == "glm-image"
     assert providers["openai_sora_video"]["models"][0]["mediaLimits"]["operationCapabilityProfiles"]["video.text_to_video"]["nativeAudio"] is True
-    assert providers["volcengine_seedance"]["models"][0]["mediaLimits"]["operationCapabilityProfiles"]["video.first_last_frame"]["referenceInputs"]["image"]["maxCount"] == 9
+    seedance_20 = next(
+        item
+        for item in providers["volcengine_seedance"]["models"]
+        if item["id"] == "doubao-seedance-2-0"
+    )
+    assert seedance_20["mediaLimits"]["operationCapabilityProfiles"]["video.first_last_frame"]["referenceInputs"]["image"]["maxCount"] == 9
     legacy_seedance = next(item for item in providers["volcengine_seedance"]["models"] if item["id"] == "doubao-seedance-1-0-pro-fast-251015")
     assert legacy_seedance["operationKinds"] == ["video.text_to_video", "video.image_to_video"]
     assert legacy_seedance["mediaLimits"]["operationKinds"] == ["video.text_to_video", "video.image_to_video"]

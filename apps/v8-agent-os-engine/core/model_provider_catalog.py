@@ -52,12 +52,12 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "stability_image": ["stable-image-core"],
     "fal_image": ["fal-image-model"],
     "replicate_image": ["replicate-image-model"],
-    "volcengine_seedance": ["doubao-seedance-1-0-pro-fast-251015"],
+    "volcengine_seedance": ["doubao-seedance-2-5", "doubao-seedance-2-0", "doubao-seedance-2-0-mini"],
     "aliyun_bailian_video": ["wan2.7-t2v"],
     "google_veo": ["veo-3.1-generate-preview"],
     "runway_video": ["gen4_turbo"],
     "luma_video": ["ray-2"],
-    "minimax_video": ["MiniMax-Hailuo-2.3"],
+    "minimax_video": ["MiniMax-H3", "MiniMax-Hailuo-2.3"],
     "kling_video": ["kling-v2-1"],
     "v8_audio_tts": ["v8-audio-tts"],
     "openai_audio_speech": ["gpt-4o-mini-tts"],
@@ -451,6 +451,7 @@ class ModelProviderCatalog:
         provider_id = str(provider_entry.get("id") or "")
         registry_entry = media_model_capability_registry.find(provider_id, model_id)
         request = dict(provider_entry.get("request") or {})
+        model_request = dict((request.get("modelOverrides") or {}).get(model_id) or {})
         polling = dict(provider_entry.get("polling") or {})
         result = dict(provider_entry.get("result") or {})
         operation_kinds = self._media_model_operation_kinds(provider_entry, modality, model_id)
@@ -490,7 +491,8 @@ class ModelProviderCatalog:
                 "apiStandard": provider_entry.get("apiStandard") or "",
                 "operationKinds": operation_kinds,
                 "operationCapabilityProfiles": operation_capability_profiles,
-                "submitPath": request.get("submitPath") or "",
+                "submitPath": model_request.get("submitPath") or request.get("submitPath") or "",
+                "endpointPath": model_request.get("submitPath") or request.get("submitPath") or "",
                 "pollingMode": polling.get("mode") or "none",
                 "resultPaths": _as_list(result.get("paths")),
                 "sizeFormat": request.get("sizeFormat") or "",

@@ -148,3 +148,34 @@ def test_motion_frame_reader_rejects_out_of_range(monkeypatch, tmp_path):
 
     with pytest.raises(motion_capture.MotionCaptureError, match="超出时间轴"):
         motion_capture.read_motion_frame(output_path, 3)
+
+
+def test_render_motion_guidance_preserves_frame_count_and_duration(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch, tmp_path)
+    motion_path = tmp_path / "motion.v8motion"
+    motion_capture.extract_holistic_motion(
+        {"sessionId": "session-a", "sourceId": "src-a"},
+        output_path=motion_path,
+    )
+    rendered: dict[str, object] = {}
+    monkeypatch.setattr(
+        motion_capture,
+        "_motion_guidance_frame",
+        lambda *_args, frame_index, **_kwargs: np.full((2, 2, 3), frame_index, dtype=np.uint8),
+    )
+
+    def fake_writer(frames, *, output_path, fps):
+        rendered["frames"] = list(frames)
+        rendered["fps"] = fps
+        output_path.write_bytes(b"mp4")
+
+    monkeypatch.setattr(motion_capture, "_write_motion_guidance_video", fake_writer)
+    output_path = tmp_path / "guidance.mp4"
+    proof = motion_capture.render_motion_guidance_video(motion_path, output_path=output_path)
+
+    assert proof["schema"] == "v8.motion_guidance_video.v1"
+    assert proof["frameCount"] == 3
+    assert proof["durationSeconds"] == pytest.approx(0.1001)
+    assert proof["providerInvoked"] is False
+    assert len(rendered["frames"]) == 3
+    assert float(rendered["fps"]) == pytest.approx(3 / 0.1001)

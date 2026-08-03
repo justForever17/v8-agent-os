@@ -8,10 +8,21 @@ import pytest
 
 import core.creative_canvas_graph as graph_module
 from core.creative_canvas_graph import (
+    ACTION_DEFINITIONS,
     CreativeCanvasGraphConflict,
     CreativeCanvasGraphError,
     CreativeCanvasGraphService,
 )
+
+
+def test_motion_guidance_action_keeps_motion_and_video_ports_explicit():
+    definition = ACTION_DEFINITIONS["creative_media.render_motion_guidance"]
+    assert definition.capability == "video.render_motion_guidance"
+    assert definition.inputs[0].media_types == ("motion",)
+    assert definition.output_media_types == ("video",)
+    assert definition.network_required is False
+    references = ACTION_DEFINITIONS["creative_media.generate_video_from_references"]
+    assert references.inputs[0].media_types == ("image", "video", "audio")
 from core.database import DatabaseManager
 
 

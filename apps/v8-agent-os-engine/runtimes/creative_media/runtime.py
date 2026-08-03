@@ -61,7 +61,7 @@ from .media_quality import (
     inspect_media_quality,
 )
 from .governed_media import trim_exact as trim_governed_media_exact
-from .motion_capture import MOTION_MIME_TYPE, extract_holistic_motion
+from .motion_capture import MOTION_MIME_TYPE, extract_holistic_motion, render_motion_guidance_video
 from .gltf_rig import inspect_rigged_model
 from .godot_retarget import retarget_motion_with_godot
 from .comfyui_workflow import bind_comfyui_inputs, select_comfyui_output, validate_comfyui_workflow
@@ -142,6 +142,7 @@ EXECUTABLE_OPERATION_KINDS = {
     "image.compose_psd",
     "image.edit_psd_layers",
     "video.extract_holistic_motion",
+    "video.render_motion_guidance",
     "model3d.inspect_rigged",
     "model3d.retarget_motion_godot",
 }
@@ -152,6 +153,7 @@ GOVERNED_LOCAL_OPERATION_KINDS = {
     "image.compose_psd",
     "image.edit_psd_layers",
     "video.extract_holistic_motion",
+    "video.render_motion_guidance",
     "model3d.inspect_rigged",
     "model3d.retarget_motion_godot",
 }
@@ -187,18 +189,21 @@ POLICY_REJECT_MARKERS = (
 )
 PREFERRED_IMAGE_MODEL_IDS = ("gpt-image-2", "gpt-image-1")
 PREFERRED_SEEDANCE2_MODEL_IDS = (
+    "doubao-seedance-2-5",
     "doubao-seedance-2-0-260128",
     "doubao-seedance-2-0",
     "doubao-seedance-2-0-fast",
-    "doubao-seed-2-0-lite-260428",
+    "doubao-seedance-2-0-mini",
 )
-LOWER_TIER_EXECUTABLE_VIDEO_MODELS = {"doubao-seed-2-0-lite-260428"}
+LOWER_TIER_EXECUTABLE_VIDEO_MODELS = {"doubao-seedance-2-0-mini"}
+MINIMAX_H3_VIDEO_MODEL = "MiniMax-H3"
 MINIMAX_VIDEO_MODELS_BY_OPERATION = {
     "video.text_to_video": {
         "MiniMax-Hailuo-2.3",
         "MiniMax-Hailuo-02",
         "T2V-01-Director",
         "T2V-01",
+        MINIMAX_H3_VIDEO_MODEL,
     },
     "video.image_to_video": {
         "MiniMax-Hailuo-2.3",
@@ -207,9 +212,10 @@ MINIMAX_VIDEO_MODELS_BY_OPERATION = {
         "I2V-01-Director",
         "I2V-01-live",
         "I2V-01",
+        MINIMAX_H3_VIDEO_MODEL,
     },
-    "video.first_last_frame": {"MiniMax-Hailuo-02"},
-    "video.reference_to_video": {"S2V-01"},
+    "video.first_last_frame": {"MiniMax-Hailuo-02", MINIMAX_H3_VIDEO_MODEL},
+    "video.reference_to_video": {"S2V-01", MINIMAX_H3_VIDEO_MODEL},
 }
 MINIMAX_HAILUO_VIDEO_MODELS = {
     "MiniMax-Hailuo-2.3",
@@ -635,8 +641,11 @@ def _build_minimax_video_payload(
     prompt: str,
     operation_kind: str,
     image_references: Optional[list[str]] = None,
+    video_references: Optional[list[str]] = None,
+    audio_references: Optional[list[str]] = None,
     duration_seconds: Any = None,
     resolution: Any = None,
+    ratio: Any = None,
     prompt_optimizer: bool = True,
     fast_pretreatment: Any = None,
     aigc_watermark: bool = False,
@@ -651,12 +660,76 @@ def _build_minimax_video_payload(
         )
 
     normalized_prompt = str(prompt or "").strip()
+    if normalized_model == MINIMAX_H3_VIDEO_MODEL and not normalized_prompt:
+        raise ValueError(f"MiniMax {operation_kind} requires prompt")
+
+    references = [str(item or "").strip() for item in list(image_references or []) if str(item or "").strip()]
+    reference_videos = [str(item or "").strip() for item in list(video_references or []) if str(item or "").strip()]
+    reference_audio = [str(item or "").strip() for item in list(audio_references or []) if str(item or "").strip()]
+    if normalized_model == MINIMAX_H3_VIDEO_MODEL:
+        if len(normalized_prompt) > 7000:
+            raise ValueError("MiniMax-H3 video prompt must not exceed 7000 characters")
+        content: list[dict[str, Any]] = [{"type": "text", "text": normalized_prompt}]
+        if operation_kind == "video.text_to_video":
+            if references or reference_videos or reference_audio:
+                raise ValueError("MiniMax-H3 video.text_to_video does not accept media references")
+        elif operation_kind == "video.image_to_video":
+            if len(references) != 1 or reference_videos or reference_audio:
+                raise ValueError("MiniMax-H3 video.image_to_video requires exactly one first-frame image")
+            content.append({"type": "image_url", "image_url": {"url": references[0]}, "role": "first_frame"})
+        elif operation_kind == "video.first_last_frame":
+            if len(references) != 2 or reference_videos or reference_audio:
+                raise ValueError("MiniMax-H3 video.first_last_frame requires exactly two images")
+            content.extend([
+                {"type": "image_url", "image_url": {"url": references[0]}, "role": "first_frame"},
+                {"type": "image_url", "image_url": {"url": references[1]}, "role": "last_frame"},
+            ])
+        else:
+            if not references and not reference_videos:
+                raise ValueError("MiniMax-H3 reference video generation requires at least one image or video")
+            if len(references) > 9 or len(reference_videos) > 3 or len(reference_audio) > 3:
+                raise ValueError("MiniMax-H3 supports at most 9 images, 3 videos, and 3 audio references")
+            content.extend(
+                {"type": "image_url", "image_url": {"url": item}, "role": "reference_image"}
+                for item in references
+            )
+            content.extend(
+                {"type": "video_url", "video_url": {"url": item}, "role": "reference_video"}
+                for item in reference_videos
+            )
+            content.extend(
+                {"type": "audio_url", "audio_url": {"url": item}, "role": "reference_audio"}
+                for item in reference_audio
+            )
+        duration = int(duration_seconds) if duration_seconds not in (None, "") else 5
+        if duration < 4 or duration > 15:
+            raise ValueError("MiniMax-H3 duration must be between 4 and 15 seconds")
+        normalized_resolution = str(resolution or "768P").strip().upper()
+        if normalized_resolution not in {"768P", "2K"}:
+            raise ValueError("MiniMax-H3 resolution must be 768P or 2K")
+        normalized_ratio = str(ratio or ("16:9" if operation_kind == "video.text_to_video" else "adaptive")).strip()
+        allowed_ratios = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+        if normalized_ratio not in allowed_ratios:
+            raise ValueError("MiniMax-H3 ratio is not supported")
+        if operation_kind == "video.text_to_video" and normalized_ratio == "adaptive":
+            raise ValueError("MiniMax-H3 text-to-video ratio cannot be adaptive")
+        if operation_kind in {"video.image_to_video", "video.first_last_frame"}:
+            normalized_ratio = "adaptive"
+        return {
+            "model": normalized_model,
+            "content": content,
+            "resolution": normalized_resolution,
+            "duration": duration,
+            "ratio": normalized_ratio,
+            "aigc_watermark": _truthy(aigc_watermark),
+        }
+
     if operation_kind == "video.text_to_video" and not normalized_prompt:
         raise ValueError("MiniMax video.text_to_video requires prompt")
     if len(normalized_prompt) > 2000:
         raise ValueError("MiniMax video prompt must not exceed 2000 characters")
-
-    references = [str(item or "").strip() for item in list(image_references or []) if str(item or "").strip()]
+    if reference_videos or reference_audio:
+        raise ValueError(f"MiniMax model {normalized_model} does not accept video or audio references")
     payload: dict[str, Any] = {
         "model": normalized_model,
         "prompt_optimizer": _truthy(prompt_optimizer),
@@ -1956,7 +2029,7 @@ class CreativeMediaRuntime:
                 "directorOrReview": {
                     "allowedRoles": ["director", "prompt_compression", "quality_review"],
                     "lowerTierExecutableVideoModels": sorted(LOWER_TIER_EXECUTABLE_VIDEO_MODELS),
-                    "note": "doubao-seed-2-0-lite-260428 is an executable video model with image/video/audio references; it is treated as a lower-tier fallback behind Seedance 2.0 exact profiles.",
+                    "note": "doubao-seedance-2-0-mini is an executable lower-tier video model behind the exact Seedance 2.x profiles.",
                 },
             },
             "jobIds": [],
@@ -3144,7 +3217,7 @@ class CreativeMediaRuntime:
         mask_source_id = str(prepared.get("maskSourceId") or "").strip()
         if operation_kind in GOVERNED_LOCAL_OPERATION_KINDS:
             return prepared
-        if operation_kind == "video.action_transfer" and isinstance(prepared.get("canvasInputs"), list):
+        if operation_kind in {"video.action_transfer", "video.reference_to_video"} and isinstance(prepared.get("canvasInputs"), list):
             return prepared
         if not source_id and not mask_source_id:
             return prepared
@@ -3221,6 +3294,7 @@ class CreativeMediaRuntime:
             "image.compose_psd": ["ordered_canvas_image_or_psd_inputs"],
             "image.edit_psd_layers": ["canvas_psd_input"],
             "video.extract_holistic_motion": ["session_source_or_workspace_media_asset"],
+            "video.render_motion_guidance": ["canvas_motion_input"],
             "model3d.inspect_rigged": ["session_source_or_workspace_media_asset"],
             "model3d.retarget_motion_godot": ["canvas_motion_and_rigged_model_inputs"],
         }
@@ -3522,6 +3596,12 @@ class CreativeMediaRuntime:
                 operation_kind=operation_kind,
                 request=request,
             )
+        if operation_kind == "video.render_motion_guidance":
+            return await self._create_motion_guidance_job(
+                modality=modality,
+                operation_kind=operation_kind,
+                request=request,
+            )
         if operation_kind == "model3d.inspect_rigged":
             return await self._create_rig_inspection_job(
                 modality=modality,
@@ -3626,6 +3706,67 @@ class CreativeMediaRuntime:
             }
             job["status"] = "succeeded"
             job["qualityStatus"] = str(qa.get("status") or "warning")
+            job["completedAt"] = utc_now_iso()
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = _exception_summary(exc)
+            job["completedAt"] = utc_now_iso()
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                except OSError:
+                    pass
+        return self._save_job(job)
+
+    async def _create_motion_guidance_job(
+        self,
+        *,
+        modality: str,
+        operation_kind: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        job = self._new_job(
+            modality=modality,
+            adapter="governed_motion_guidance",
+            request={**request, "operationKind": operation_kind},
+        )
+        job["status"] = "running"
+        self._save_job(job)
+        output_path = self._output_path(job, "motion-guidance", ".mp4")
+        try:
+            session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+            motion_inputs = [
+                dict(item)
+                for item in list(request.get("canvasInputs") or [])
+                if isinstance(item, dict) and str(item.get("mediaType") or "") == "motion"
+            ]
+            if len(motion_inputs) != 1:
+                raise ValueError("Motion guidance rendering requires exactly one connected motion input")
+            motion_path = self._canvas_input_path(session_id=session_id, item=motion_inputs[0])
+            proof = await asyncio.to_thread(
+                render_motion_guidance_video,
+                motion_path,
+                output_path=output_path,
+            )
+            artifact = self._record_local_artifact(
+                file_path=output_path,
+                job=job,
+                kind="video",
+                mime_type="video/mp4",
+                metadata={
+                    "origin": "governed_local_motion_guidance",
+                    "motionGuidanceProof": proof,
+                    "providerInvoked": False,
+                },
+            )
+            job["artifacts"] = [artifact]
+            job["providerResponse"] = {
+                "adapter": "governed_motion_guidance",
+                "proofSchema": proof.get("schema"),
+                "providerInvoked": False,
+            }
+            job["status"] = "succeeded"
+            job["qualityStatus"] = "passed"
             job["completedAt"] = utc_now_iso()
         except Exception as exc:
             job["status"] = "failed"
@@ -4045,7 +4186,7 @@ class CreativeMediaRuntime:
             if binding_error:
                 raise ValueError(binding_error)
             if adapter == "volcengine_ark":
-                if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame"}:
+                if operation_kind not in {"video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"}:
                     raise ValueError(f"Volcengine adapter does not support operationKind={operation_kind}")
                 job = await self._submit_volcengine_video_job(job, prepared_request)
             elif adapter == "dashscope":
@@ -4764,6 +4905,97 @@ class CreativeMediaRuntime:
             references.append(self._local_image_data_url(normalized_id))
         return list(dict.fromkeys(references))
 
+    @staticmethod
+    def _request_url_list(request: dict[str, Any], *keys: str) -> list[str]:
+        values: list[str] = []
+        for key in keys:
+            raw = request.get(key)
+            items = [raw] if isinstance(raw, str) else list(raw or [])
+            for item in items:
+                normalized = str(item or "").strip()
+                if normalized and normalized not in values:
+                    if not normalized.startswith(("http://", "https://", "data:")):
+                        raise ValueError(f"{key} must contain public HTTP/HTTPS URLs or data URIs")
+                    values.append(normalized)
+        return values
+
+    @staticmethod
+    def _local_h3_media_data_url(path: Path, *, media_type: str) -> str:
+        suffix = path.suffix.lower()
+        formats = {
+            "image": {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".webp": "image/webp", ".heic": "image/heic", ".heif": "image/heif",
+            },
+            "video": {".mp4": "video/mp4", ".mov": "video/quicktime"},
+            "audio": {".wav": "audio/wav", ".mp3": "audio/mpeg"},
+        }
+        limits = {"image": 30, "video": 50, "audio": 15}
+        mime_type = formats.get(media_type, {}).get(suffix)
+        if not mime_type:
+            raise ValueError(f"MiniMax-H3 does not support {path.name} as a {media_type} reference")
+        if not path.is_file():
+            raise ValueError(f"MiniMax-H3 reference file is unavailable: {path.name}")
+        if path.stat().st_size > limits[media_type] * 1024 * 1024:
+            raise ValueError(f"MiniMax-H3 {media_type} reference exceeds the {limits[media_type]} MB limit")
+        if media_type == "image":
+            try:
+                from PIL import Image
+
+                with Image.open(path) as image:
+                    width, height = image.size
+            except Exception as exc:
+                raise ValueError(f"MiniMax-H3 image reference could not be decoded: {_exception_summary(exc)}") from exc
+            if min(width, height) < 256 or max(width, height) > 5760:
+                raise ValueError("MiniMax-H3 image dimensions must be between 256 and 5760 pixels")
+            ratio = width / height
+            if ratio < 0.4 or ratio > 2.5:
+                raise ValueError("MiniMax-H3 image aspect ratio must be between 0.4 and 2.5")
+        return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+    def _minimax_h3_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
+        references = {
+            "image": self._request_url_list(
+                request,
+                "imageUrl", "image_url", "imageUrls", "image_urls",
+                "firstFrame", "first_frame", "lastFrame", "last_frame",
+                "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+            ),
+            "video": self._request_url_list(
+                request,
+                "videoUrl", "video_url", "videoUrls", "video_urls",
+                "referenceVideoUrl", "reference_video_url", "referenceVideoUrls", "reference_video_urls",
+            ),
+            "audio": self._request_url_list(
+                request,
+                "audioUrl", "audio_url", "audioUrls", "audio_urls",
+                "referenceAudioUrl", "reference_audio_url", "referenceAudioUrls", "reference_audio_urls",
+            ),
+        }
+        session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+        for item in [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]:
+            media_type = str(item.get("mediaType") or "").strip().lower()
+            if media_type not in references:
+                continue
+            origin = str(item.get("origin") or "").strip()
+            resource_id = str(item.get("id") or "").strip()
+            provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
+            value = provider_url or self._local_h3_media_data_url(
+                self._canvas_input_path(session_id=session_id, item=item),
+                media_type=media_type,
+            )
+            if value not in references[media_type]:
+                references[media_type].append(value)
+        encoded_size = sum(
+            len(value.encode("utf-8"))
+            for values in references.values()
+            for value in values
+            if value.startswith("data:")
+        )
+        if encoded_size > 60 * 1024 * 1024:
+            raise ValueError("MiniMax-H3 inline references exceed the 64 MB request limit; use provider-accessible URLs")
+        return references
+
     def _video_url_from_request(self, request: dict[str, Any], *keys: str) -> str:
         for key in keys or ("videoUrl", "video_url"):
             url = self._public_url_or_error(request.get(key), field_name=key)
@@ -5344,29 +5576,38 @@ class CreativeMediaRuntime:
         provider_id = str(binding.get("providerId") or "")
         provider_meta = dict(binding.get("providerMeta") or {})
         model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or default_model))
-        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
         api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
         if not base_url:
             raise ValueError(f"Provider {provider_id} has no base_url")
         if not api_key:
             raise ValueError(f"Provider {provider_id} has no API key")
-        image_references = self._minimax_image_references_from_request(
-            request,
-            operation_kind=operation_kind,
+        h3_references = self._minimax_h3_references_from_request(request) if model == MINIMAX_H3_VIDEO_MODEL else {}
+        image_references = (
+            list(h3_references.get("image") or [])
+            if h3_references
+            else self._minimax_image_references_from_request(request, operation_kind=operation_kind)
         )
         payload = _build_minimax_video_payload(
             model=model,
             prompt=str(request.get("prompt") or ""),
             operation_kind=operation_kind,
             image_references=image_references,
+            video_references=list(h3_references.get("video") or []),
+            audio_references=list(h3_references.get("audio") or []),
             duration_seconds=request.get("durationSeconds", request.get("duration_seconds", request.get("duration"))),
             resolution=request.get("resolution"),
+            ratio=request.get("ratio", request.get("aspectRatio", request.get("aspect_ratio"))),
             prompt_optimizer=request.get("promptOptimizer", request.get("prompt_optimizer", True)),
             fast_pretreatment=request.get("fastPretreatment", request.get("fast_pretreatment")),
             aigc_watermark=_truthy(request.get("aigcWatermark", request.get("aigc_watermark", False))),
         )
         job["providerRequestHash"] = self._provider_request_hash(payload)
-        endpoint_path = str(binding.get("endpointPath") or "video_generation").strip() or "video_generation"
+        api_version = "v2" if model == MINIMAX_H3_VIDEO_MODEL else "v1"
+        endpoint_path = str(
+            binding.get("endpointPath")
+            or ("/v2/video_generation" if api_version == "v2" else "/v1/video_generation")
+        ).strip()
         response = await self._request_json(
             "POST",
             self._join_api_path(base_url, endpoint_path),
@@ -5374,7 +5615,7 @@ class CreativeMediaRuntime:
             json=payload,
             timeout=180,
         )
-        trace_id = self._validate_minimax_business_response(response, action="video submit")
+        trace_id = "" if api_version == "v2" else self._validate_minimax_business_response(response, action="video submit")
         task_id = str(response.get("task_id") or response.get("taskId") or "").strip()
         if not task_id:
             raise RuntimeError("MiniMax video submit succeeded without task_id")
@@ -5386,6 +5627,7 @@ class CreativeMediaRuntime:
             "traceId": trace_id,
             "model": model,
             "operationKind": operation_kind,
+            "apiVersion": api_version,
         }
         return self._save_job(job)
 
@@ -5404,27 +5646,39 @@ class CreativeMediaRuntime:
         provider_id = str(binding.get("providerId") or provider_response.get("providerId") or "")
         provider_meta = dict(binding.get("providerMeta") or {})
         model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or provider_response.get("model") or ""))
-        base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
         api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
         if not base_url:
             raise ValueError(f"Provider {provider_id} has no base_url")
         if not api_key:
             raise ValueError(f"Provider {provider_id} has no API key")
+        api_version = str(provider_response.get("apiVersion") or ("v2" if model == MINIMAX_H3_VIDEO_MODEL else "v1"))
         response = await self._request_json(
             "GET",
-            self._join_api_path(base_url, f"/v1/query/video_generation?task_id={quote(task_id)}"),
+            self._join_api_path(
+                base_url,
+                f"/v2/query/video_generation/{quote(task_id)}"
+                if api_version == "v2"
+                else f"/v1/query/video_generation?task_id={quote(task_id)}",
+            ),
             headers=self._bearer_headers(api_key),
             timeout=60,
         )
-        trace_id = self._validate_minimax_business_response(response, action="video query")
-        raw_status = str(response.get("status") or "").strip()
+        trace_id = "" if api_version == "v2" else self._validate_minimax_business_response(response, action="video query")
+        task = dict(response.get("task") or {}) if api_version == "v2" else response
+        raw_status = str(task.get("status") or "").strip()
         normalized_status = raw_status.lower()
         status = {
             "preparing": "running",
             "queueing": "queued",
             "processing": "running",
             "success": "succeeded",
+            "succeeded": "succeeded",
+            "queued": "queued",
+            "running": "running",
             "fail": "failed",
+            "failed": "failed",
+            "cancelled": "cancelled",
         }.get(normalized_status, "running")
         job["status"] = status
         job["providerResponse"] = {
@@ -5434,6 +5688,38 @@ class CreativeMediaRuntime:
             "taskId": task_id,
         }
         if status == "succeeded":
+            if api_version == "v2":
+                download_url = str((task.get("content") or {}).get("url") or "").strip()
+                if not download_url:
+                    job["status"] = "failed"
+                    job["error"] = "MiniMax-H3 task succeeded without task.content.url"
+                    job["completedAt"] = utc_now_iso()
+                    return self._save_job(job)
+                artifact = await self._artifact_from_url(
+                    download_url,
+                    job=job,
+                    kind="video",
+                    provider=provider_id,
+                    mime_hint="video/mp4",
+                    metadata={
+                        "model": model,
+                        "taskId": task_id,
+                        "resolution": task.get("resolution"),
+                        "duration": task.get("duration"),
+                        "ratio": task.get("ratio"),
+                        "nativeAudio": False,
+                        "audioMode": "reference_input_supported_output_audio_unverified",
+                    },
+                )
+                job["artifacts"] = [artifact]
+                job["providerResponse"].update({
+                    "resolution": task.get("resolution"),
+                    "duration": task.get("duration"),
+                    "ratio": task.get("ratio"),
+                    "usage": task.get("usage") or {},
+                })
+                job["completedAt"] = utc_now_iso()
+                return self._save_job(job)
             raw_file_id = response.get("file_id")
             file_id_text = str(raw_file_id or "").strip()
             if not file_id_text.isdigit():
@@ -5490,13 +5776,29 @@ class CreativeMediaRuntime:
 
     async def _submit_volcengine_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         creds = self._volc_credentials()
-        if not creds["apiKey"]:
-            raise ValueError("Volcengine API key not found in jimeng_visual_generation MCP env or VOLC_API_KEY")
+        requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or creds["videoModel"])
+        binding: dict[str, Any] = {}
+        try:
+            binding = self._configured_endpoint_binding(request, default_model=requested_model)
+        except ValueError:
+            if any(
+                str(request.get(key) or "").strip()
+                for key in ("providerId", "provider_id", "modelRef", "model_ref", "model", "modelId", "model_id")
+            ):
+                raise
+        provider_meta = dict(binding.get("providerMeta") or {})
+        provider_id = str(binding.get("providerId") or "volcengine_seedance")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or creds["apiKey"]).strip()
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or creds["baseUrl"]).rstrip("/")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
         prompt = str(request.get("prompt") or "").strip()
         if not prompt and not (request.get("imageUrls") or request.get("image_urls")):
             raise ValueError("video job requires prompt or imageUrls")
         duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
-        model = str(request.get("model") or creds["videoModel"])
+        model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or requested_model))
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
         capability_profile = capability_profile_for_model(
             provider_id="volcengine_seedance",
@@ -5520,8 +5822,8 @@ class CreativeMediaRuntime:
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
-            f"{creds['baseUrl']}/contents/generations/tasks",
-            headers=self._bearer_headers(creds["apiKey"]),
+            self._join_api_path(base_url, str(binding.get("endpointPath") or "/contents/generations/tasks")),
+            headers=self._bearer_headers(api_key),
             json=payload,
             timeout=180,
         )
@@ -5531,7 +5833,7 @@ class CreativeMediaRuntime:
         job["status"] = "running"
         job["providerTaskId"] = task_id
         job["providerResponse"] = {
-            "providerId": "volcengine_seedance",
+            "providerId": provider_id,
             "taskId": task_id,
             "model": payload["model"],
             "operationKind": operation_kind,
@@ -5546,10 +5848,29 @@ class CreativeMediaRuntime:
             job["status"] = "failed"
             job["error"] = "Missing providerTaskId"
             return self._save_job(job)
+        request = dict(job.get("request") or {})
+        provider_response = dict(job.get("providerResponse") or {})
+        requested_model = str(provider_response.get("model") or request.get("model") or creds["videoModel"])
+        binding: dict[str, Any] = {}
+        try:
+            binding = self._configured_endpoint_binding(request, default_model=requested_model)
+        except ValueError:
+            if any(
+                str(request.get(key) or "").strip()
+                for key in ("providerId", "provider_id", "modelRef", "model_ref", "model", "modelId", "model_id")
+            ):
+                raise
+            binding = {}
+        provider_meta = dict(binding.get("providerMeta") or {})
+        provider_id = str(binding.get("providerId") or provider_response.get("providerId") or "volcengine_seedance")
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or creds["apiKey"]).strip()
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or creds["baseUrl"]).rstrip("/")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
         response = await self._request_json(
             "GET",
-            f"{creds['baseUrl']}/contents/generations/tasks/{task_id}",
-            headers=self._bearer_headers(creds["apiKey"]),
+            self._join_api_path(base_url, f"/contents/generations/tasks/{task_id}"),
+            headers=self._bearer_headers(api_key),
             timeout=60,
         )
         status = normalize_provider_status(response.get("status"), provider="volcengine_seedance")
@@ -5978,7 +6299,7 @@ class CreativeMediaRuntime:
                 **dict(metadata or {}),
             },
         )
-        if kind == "image" and parsed.scheme in {"http", "https"}:
+        if kind in {"image", "video", "audio"} and parsed.scheme in {"http", "https"}:
             artifact_id = str(artifact.get("artifactId") or "").strip()
             if artifact_id:
                 self._provider_transport_urls[artifact_id] = url

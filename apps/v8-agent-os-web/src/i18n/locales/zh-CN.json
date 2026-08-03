@@ -770,6 +770,7 @@
   "web.creativeCanvas.actions.creative_media.trim_audio_exact.label": "精确分割音频",
   "web.creativeCanvas.actions.creative_media.trim_video_exact.label": "精确分割视频",
   "web.creativeCanvas.actions.creative_media.extract_holistic_motion.label": "提取单人动作",
+  "web.creativeCanvas.actions.creative_media.render_motion_guidance.label": "生成动作指导视频",
   "web.creativeCanvas.actions.creative_media.transfer_action_to_character.label": "把动作转移给角色",
   "web.creativeCanvas.actions.creative_media.inspect_rigged_model.label": "检查人形骨架",
   "web.creativeCanvas.actions.creative_media.retarget_motion_godot.label": "绑定动作到 3D 角色",

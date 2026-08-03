@@ -10,7 +10,7 @@
   "capabilityProfiles": [
     {
       "providerId": "volcengine_seedance",
-      "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seed-2-0-lite-260428"],
+      "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini"],
       "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
       "capabilityProfile": {
         "nativeAudio": true,
@@ -38,6 +38,26 @@
         }
       },
       "sourceUrl": "https://seed.bytedance.com/zh/seedance2_0",
+      "confidence": "provider_docs"
+    },
+    {
+      "providerId": "volcengine_seedance",
+      "modelIds": ["doubao-seedance-2-5"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": true,
+        "audioModes": ["native_generation", "audio_reference", "silent"],
+        "audioPreservationPolicy": "preserve_native_audio_by_default",
+        "inputModalities": ["text", "image", "video", "audio"],
+        "outputStreams": ["video", "audio"],
+        "referenceInputs": {
+          "image": {"roles": ["first_frame", "last_frame", "character", "scene", "style"]},
+          "video": {"roles": ["camera_motion", "action", "visual_effect", "transition", "editing_reference"]},
+          "audio": {"roles": ["background_music", "sound_effect", "rhythm", "voice_tone"]}
+        },
+        "duration": {"secondsMin": 1, "secondsMax": 30}
+      },
+      "sourceUrl": "https://seed.bytedance.com/zh/seedance2_5",
       "confidence": "provider_docs"
     },
     {
@@ -163,6 +183,32 @@
     },
     {
       "providerId": "minimax_video",
+      "modelIds": ["MiniMax-H3"],
+      "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
+      "capabilityProfile": {
+        "nativeAudio": false,
+        "audioModes": ["audio_reference"],
+        "audioPreservationPolicy": "reference_input_supported_output_audio_unverified",
+        "inputModalities": ["text", "image", "video", "audio"],
+        "outputStreams": ["video"],
+        "referenceInputs": {
+          "image": {"maxCount": 9, "roles": ["first_frame", "last_frame", "reference_image"]},
+          "video": {"maxCount": 3, "roles": ["reference_video"]},
+          "audio": {"maxCount": 3, "roles": ["reference_audio"]}
+        },
+        "duration": {"secondsMin": 4, "secondsMax": 15},
+        "resolution": {"presets": ["768P", "2K"]},
+        "formats": {
+          "imageInput": ["JPG", "JPEG", "PNG", "WEBP", "HEIC", "HEIF"],
+          "videoInput": ["MP4", "MOV"],
+          "audioInput": ["WAV", "MP3"]
+        }
+      },
+      "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create",
+      "confidence": "verified_official"
+    },
+    {
+      "providerId": "minimax_video",
       "modelIds": ["MiniMax-Hailuo-2.3"],
       "operationKinds": ["video.text_to_video", "video.image_to_video"],
       "capabilityProfile": {
@@ -275,17 +321,14 @@
     },
     {
       "providerId": "happyhorse_video",
-      "modelId": "happyhorse-native-audio-video",
+      "modelIds": ["HappyHorse-1.0", "HappyHorse-1.1"],
       "operationKinds": ["video.text_to_video", "video.image_to_video"],
       "capabilityProfile": {
-        "nativeAudio": true,
-        "audioModes": ["native_generation"],
-        "audioPreservationPolicy": "preserve_native_audio_by_default",
-        "supportsDialogue": true,
-        "supportsSfx": true,
-        "supportsMusicBed": true,
+        "nativeAudio": false,
+        "audioModes": [],
+        "audioPreservationPolicy": "unverified",
         "inputModalities": ["text", "image"],
-        "outputStreams": ["video", "audio"]
+        "outputStreams": ["video"]
       },
       "sourceUrl": "https://happyhorse.ai/",
       "confidence": "community_or_inferred"

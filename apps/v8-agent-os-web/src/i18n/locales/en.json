@@ -770,6 +770,7 @@
   "web.creativeCanvas.actions.creative_media.trim_audio_exact.label": "Split audio precisely",
   "web.creativeCanvas.actions.creative_media.trim_video_exact.label": "Split video precisely",
   "web.creativeCanvas.actions.creative_media.extract_holistic_motion.label": "Extract single-person motion",
+  "web.creativeCanvas.actions.creative_media.render_motion_guidance.label": "Render motion guidance video",
   "web.creativeCanvas.actions.creative_media.transfer_action_to_character.label": "Transfer action to character",
   "web.creativeCanvas.actions.creative_media.inspect_rigged_model.label": "Inspect humanoid rig",
   "web.creativeCanvas.actions.creative_media.retarget_motion_godot.label": "Retarget motion to 3D character",

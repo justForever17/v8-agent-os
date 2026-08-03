@@ -463,6 +463,49 @@ def test_minimax_video_payloads_match_official_four_operation_contracts():
     assert not {"duration", "resolution", "fast_pretreatment"} & set(s2v)
 
 
+def test_minimax_h3_payload_matches_official_v2_multimodal_contract():
+    payload = _build_minimax_video_payload(
+        model="MiniMax-H3",
+        prompt="Use the reference motion while preserving the new character design.",
+        operation_kind="video.reference_to_video",
+        image_references=["https://example.com/character.png"],
+        video_references=["https://example.com/motion.mp4"],
+        audio_references=["https://example.com/rhythm.mp3"],
+        duration_seconds=12,
+        resolution="2K",
+        ratio="9:16",
+        aigc_watermark=True,
+    )
+
+    assert payload == {
+        "model": "MiniMax-H3",
+        "content": [
+            {"type": "text", "text": "Use the reference motion while preserving the new character design."},
+            {"type": "image_url", "image_url": {"url": "https://example.com/character.png"}, "role": "reference_image"},
+            {"type": "video_url", "video_url": {"url": "https://example.com/motion.mp4"}, "role": "reference_video"},
+            {"type": "audio_url", "audio_url": {"url": "https://example.com/rhythm.mp3"}, "role": "reference_audio"},
+        ],
+        "resolution": "2K",
+        "duration": 12,
+        "ratio": "9:16",
+        "aigc_watermark": True,
+    }
+
+
+def test_minimax_h3_keyframes_force_adaptive_ratio():
+    payload = _build_minimax_video_payload(
+        model="MiniMax-H3",
+        prompt="Move smoothly between the supplied frames.",
+        operation_kind="video.first_last_frame",
+        image_references=["https://example.com/first.png", "https://example.com/last.png"],
+        duration_seconds=5,
+        resolution="768P",
+        ratio="16:9",
+    )
+    assert payload["ratio"] == "adaptive"
+    assert [item.get("role") for item in payload["content"][1:]] == ["first_frame", "last_frame"]
+
+
 def test_minimax_video_payload_rejects_model_operation_mismatch_and_invalid_frames():
     with pytest.raises(ValueError, match="does not officially support"):
         _build_minimax_video_payload(
@@ -577,7 +620,7 @@ def test_work_order_archive_marks_related_plans_assets_and_jobs(monkeypatch):
     assert fake.payloads[JOB_STORE_FILE]["jobs"]["job-archive-smoke"]["status"] == "archived"
 
 
-def test_storyboard_work_order_prefers_seedance_2_over_seed_lite(monkeypatch):
+def test_storyboard_work_order_prefers_seedance_2_over_seedance_mini(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
@@ -589,7 +632,7 @@ def test_storyboard_work_order_prefers_seedance_2_over_seed_lite(monkeypatch):
                 _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=10),
             ],
             "video.first_last_frame": [
-                _candidate("doubao-seed-2-0-lite-260428", operation_kind="video.first_last_frame", modality="video", provider_id="volcengine_seedance", priority=1),
+                _candidate("doubao-seedance-2-0-mini", operation_kind="video.first_last_frame", modality="video", provider_id="volcengine_seedance", priority=1),
                 _candidate("doubao-seedance-2-0-260128", operation_kind="video.first_last_frame", modality="video", provider_id="volcengine_seedance", priority=20),
             ],
         }.get(operation_kind, []),
@@ -611,13 +654,13 @@ def test_storyboard_work_order_prefers_seedance_2_over_seed_lite(monkeypatch):
     assert work_order["workOrderKind"] == "storyboard_to_video"
     assert video_plan["operationKind"] == "video.first_last_frame"
     assert video_plan["primary"]["modelId"] == "doubao-seedance-2-0-260128"
-    assert video_plan["fallbacks"][0]["modelId"] == "doubao-seed-2-0-lite-260428"
-    assert "doubao-seed-2-0-lite-260428" in work_order["providerPlan"]["directorOrReview"]["lowerTierExecutableVideoModels"]
+    assert video_plan["fallbacks"][0]["modelId"] == "doubao-seedance-2-0-mini"
+    assert "doubao-seedance-2-0-mini" in work_order["providerPlan"]["directorOrReview"]["lowerTierExecutableVideoModels"]
     assert work_order["shotPlan"]
     assert work_order["storyboardAssets"]
 
 
-def test_storyboard_work_order_can_execute_with_seed_lite_when_seedance_2_is_unavailable(monkeypatch):
+def test_storyboard_work_order_can_execute_with_seedance_mini_when_seedance_2_is_unavailable(monkeypatch):
     fake = FakeJsonStorage()
     monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
     monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
@@ -629,7 +672,7 @@ def test_storyboard_work_order_can_execute_with_seed_lite_when_seedance_2_is_una
                 _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=10),
             ],
             "video.reference_to_video": [
-                _candidate("doubao-seed-2-0-lite-260428", operation_kind="video.reference_to_video", modality="video", provider_id="volcengine_seedance", priority=10),
+                _candidate("doubao-seedance-2-0-mini", operation_kind="video.reference_to_video", modality="video", provider_id="volcengine_seedance", priority=10),
             ],
         }.get(operation_kind, []),
     )
@@ -648,7 +691,7 @@ def test_storyboard_work_order_can_execute_with_seed_lite_when_seedance_2_is_una
 
     video_plan = work_order["providerPlan"]["videoGeneration"]
     assert video_plan["operationKind"] == "video.reference_to_video"
-    assert video_plan["primary"]["modelId"] == "doubao-seed-2-0-lite-260428"
+    assert video_plan["primary"]["modelId"] == "doubao-seedance-2-0-mini"
     assert video_plan["capabilityGap"] is None
 
 
@@ -1635,6 +1678,138 @@ def test_configured_endpoint_binding_is_the_single_route_and_wire_model_truth(mo
     assert binding["endpointPath"] == "images/edits"
     assert binding["providerModelId"] == "gpt-image-2"
     assert binding["requestUrlPreview"] == "https://example.test/v1/images/edits"
+
+
+def test_minimax_h3_uses_model_bound_v2_provider_channel(monkeypatch):
+    requested = {}
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax": {
+                    "provider": {
+                        "name": "MiniMax",
+                        "base_url": "https://legacy.example.test/v1",
+                        "api_key": "sk-test",
+                        "channels": [
+                            {"id": "v1", "label": "V1", "apiStandard": "minimax", "baseUrl": "https://legacy.example.test"},
+                            {"id": "v2", "label": "V2", "apiStandard": "minimax", "baseUrl": "https://h3.example.test"},
+                        ],
+                        "defaultChannelId": "v1",
+                    },
+                    "models": {
+                        "MiniMax-H3": {
+                            "type": "VIDEO",
+                            "endpointBinding": {
+                                "version": 2,
+                                "route": "MiniMax-H3",
+                                "channelId": "v2",
+                                "endpointPath": "v2/video_generation",
+                                "providerModelId": "MiniMax-H3",
+                                "operationKind": "video.text_to_video",
+                                "adapter": "minimax_video",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.update({"method": method, "url": url, "json": kwargs.get("json")})
+        return {"task_id": "h3-task"}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "providerId": "minimax",
+        "modelId": "MiniMax-H3",
+        "operationKind": "video.text_to_video",
+        "prompt": "A measured walking cycle.",
+    }
+    job = creative_media_runtime._new_job(modality="video", adapter="minimax_video", request=request)
+
+    result = asyncio.run(creative_media_runtime._submit_minimax_video_job(job, request))
+
+    assert requested["url"] == "https://h3.example.test/v2/video_generation"
+    assert requested["json"]["model"] == "MiniMax-H3"
+    assert result["providerResponse"]["apiVersion"] == "v2"
+
+
+def test_minimax_h3_poll_reuses_model_bound_v2_provider_channel(monkeypatch):
+    requested = {}
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "minimax": {
+                    "provider": {
+                        "name": "MiniMax",
+                        "api_key": "sk-test",
+                        "channels": [
+                            {"id": "v1", "apiStandard": "minimax", "baseUrl": "https://legacy.example.test"},
+                            {"id": "v2", "apiStandard": "minimax", "baseUrl": "https://h3.example.test"},
+                        ],
+                        "defaultChannelId": "v1",
+                    },
+                    "models": {
+                        "MiniMax-H3": {
+                            "type": "VIDEO",
+                            "endpointBinding": {
+                                "version": 2,
+                                "route": "MiniMax-H3",
+                                "channelId": "v2",
+                                "endpointPath": "v2/video_generation",
+                                "providerModelId": "MiniMax-H3",
+                                "operationKind": "video.text_to_video",
+                                "adapter": "minimax_video",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.update({"method": method, "url": url})
+        return {
+            "task": {
+                "status": "Success",
+                "content": {"url": "https://cdn.example.test/h3-result.mp4"},
+                "duration": 5,
+                "resolution": "768P",
+                "ratio": "16:9",
+            }
+        }
+
+    async def fake_artifact(url, **kwargs):
+        return {"artifactId": "artifact-h3", "url": url, "metadata": kwargs.get("metadata")}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "providerId": "minimax",
+        "modelId": "MiniMax-H3",
+        "operationKind": "video.text_to_video",
+        "prompt": "A measured walking cycle.",
+    }
+    job = creative_media_runtime._new_job(modality="video", adapter="minimax_video", request=request)
+    job.update({
+        "providerTaskId": "h3-task",
+        "providerResponse": {"providerId": "minimax", "model": "MiniMax-H3", "apiVersion": "v2"},
+    })
+
+    result = asyncio.run(creative_media_runtime._poll_minimax_video_job(job))
+
+    assert requested == {
+        "method": "GET",
+        "url": "https://h3.example.test/v2/query/video_generation/h3-task",
+    }
+    assert result["status"] == "succeeded"
+    assert result["artifacts"][0]["url"] == "https://cdn.example.test/h3-result.mp4"
 
 
 def test_openai_image_generation_uses_configured_binding_endpoint_and_wire_model(monkeypatch):

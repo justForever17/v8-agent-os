@@ -5,6 +5,7 @@ import json
 import math
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -26,6 +27,20 @@ MOTION_MIME_TYPE = "application/vnd.v8.motion+zip"
 DECODE_SIZE = 640
 POSE_LANDMARK_COUNT = 33
 HAND_LANDMARK_COUNT = 21
+MOTION_GUIDANCE_SCHEMA = "v8.motion_guidance_video.v1"
+MOTION_GUIDANCE_SIZE = 768
+POSE_CONNECTIONS = (
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+    (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
+    (27, 29), (29, 31), (24, 26), (26, 28), (28, 30), (30, 32),
+)
+HAND_CONNECTIONS = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20), (0, 17),
+)
 
 
 class MotionCaptureError(RuntimeError):
@@ -351,6 +366,121 @@ def inspect_motion_package(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def _motion_guidance_frame(pose: Any, left_hand: Any, right_hand: Any, *, frame_index: int) -> Any:
+    try:
+        import numpy as np
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise MotionCaptureError("Motion guidance rendering requires the managed Pillow and NumPy runtime") from exc
+
+    image = Image.new("RGB", (MOTION_GUIDANCE_SIZE, MOTION_GUIDANCE_SIZE), (25, 20, 18))
+    drawer = ImageDraw.Draw(image)
+
+    def point(item: Any) -> tuple[int, int] | None:
+        if item.shape[0] < 2 or not bool(np.isfinite(item[:2]).all()):
+            return None
+        x = int(round(float(item[0]) * (MOTION_GUIDANCE_SIZE - 1)))
+        y = int(round(float(item[1]) * (MOTION_GUIDANCE_SIZE - 1)))
+        return max(0, min(x, MOTION_GUIDANCE_SIZE - 1)), max(0, min(y, MOTION_GUIDANCE_SIZE - 1))
+
+    def draw(points: Any, connections: tuple[tuple[int, int], ...], color: tuple[int, int, int]) -> None:
+        resolved = [point(item) for item in points]
+        for start, end in connections:
+            if start < len(resolved) and end < len(resolved) and resolved[start] and resolved[end]:
+                drawer.line((resolved[start], resolved[end]), fill=color, width=4)
+        for item in resolved:
+            if item:
+                x, y = item
+                drawer.ellipse((x - 7, y - 7, x + 7, y + 7), outline=color, width=2)
+                drawer.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(250, 247, 245))
+
+    draw(pose, POSE_CONNECTIONS, (80, 210, 255))
+    draw(left_hand, HAND_CONNECTIONS, (255, 145, 95))
+    draw(right_hand, HAND_CONNECTIONS, (185, 105, 255))
+    drawer.text((28, 28), f"V8 MOTION  |  FRAME {frame_index + 1}", fill=(235, 225, 220))
+    return np.asarray(image, dtype=np.uint8)
+
+
+def _write_motion_guidance_video(frames: Iterator[Any], *, output_path: Path, fps: Fraction) -> None:
+    ffmpeg, _, _ = governed_ffmpeg_pair()
+    command = [
+        ffmpeg,
+        "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s:v", f"{MOTION_GUIDANCE_SIZE}x{MOTION_GUIDANCE_SIZE}",
+        "-r", f"{fps.numerator}/{fps.denominator}",
+        "-i", "pipe:0",
+        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        str(output_path),
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+            **windowless_subprocess_kwargs(),
+        )
+        try:
+            if process.stdin is None:
+                raise MotionCaptureError("Governed ffmpeg encoder has no input stream")
+            for frame in frames:
+                process.stdin.write(frame.tobytes(order="C"))
+            process.stdin.close()
+            return_code = process.wait(timeout=120)
+            if return_code != 0:
+                stderr_file.seek(0)
+                detail = stderr_file.read().decode("utf-8", errors="replace").strip().splitlines()
+                raise MotionCaptureError((detail[-1] if detail else "Governed ffmpeg encode failed")[-360:])
+        finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def render_motion_guidance_video(motion_path: Path, *, output_path: Path) -> dict[str, Any]:
+    try:
+        import numpy as np
+        with np.load(motion_path, allow_pickle=False) as package:
+            manifest = json.loads(bytes(package["manifest_json"].tolist()).decode("utf-8"))
+            pose = package["pose"].copy()
+            left_hand = package["left_hand"].copy()
+            right_hand = package["right_hand"].copy()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise MotionCaptureError("动作数据包损坏或格式不受支持") from exc
+    if manifest.get("schema") != MOTION_SCHEMA:
+        raise MotionCaptureError("动作数据包 schema 不受支持")
+    frame_count = int(pose.shape[0])
+    duration_seconds = float(((manifest.get("source") or {}).get("durationSeconds") or 0))
+    if frame_count <= 0 or duration_seconds <= 0:
+        raise MotionCaptureError("动作数据包缺少可渲染的逐帧时间轴")
+    fps = Fraction(frame_count, 1) / Fraction(str(duration_seconds))
+    fps = fps.limit_denominator(100_000)
+    frames = (
+        _motion_guidance_frame(pose[index], left_hand[index], right_hand[index], frame_index=index)
+        for index in range(frame_count)
+    )
+    _write_motion_guidance_video(frames, output_path=output_path, fps=fps)
+    if not output_path.is_file() or output_path.stat().st_size <= 0:
+        raise MotionCaptureError("动作指导视频写入失败")
+    variable_frame_rate = bool(((manifest.get("source") or {}).get("variableFrameRate")))
+    return {
+        "schema": MOTION_GUIDANCE_SCHEMA,
+        "sourceMotionSchema": MOTION_SCHEMA,
+        "frameCount": frame_count,
+        "durationSeconds": duration_seconds,
+        "outputFps": {"numerator": fps.numerator, "denominator": fps.denominator},
+        "timingMode": "average_cfr_from_exact_motion_timeline",
+        "warnings": ["source_vfr_rendered_as_average_cfr"] if variable_frame_rate else [],
+        "providerInvoked": False,
+        "engine": {"renderer": "pillow", "encoder": "governed_ffmpeg", "windowless": True},
+    }
+
+
 def read_motion_frame(path: Path, frame_index: int) -> dict[str, Any]:
     try:
         import numpy as np
@@ -389,4 +519,5 @@ __all__ = [
     "extract_holistic_motion",
     "inspect_motion_package",
     "read_motion_frame",
+    "render_motion_guidance_video",
 ]

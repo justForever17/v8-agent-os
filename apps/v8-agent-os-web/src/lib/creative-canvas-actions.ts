@@ -425,7 +425,7 @@ export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
     creativeMediaAction({
         actionId: "creative_media.generate_video_from_references",
         capability: "video.reference_to_video",
-        selection: selection(["selection"], 1, 8, VISUAL_REFERENCE_TYPES, { ordered: true }),
+        selection: selection(["selection"], 1, 8, ["image", "video", "audio"], { ordered: true }),
         requiresPrompt: true,
         output: output("artifact", "video", ["video"]),
     }),
@@ -508,6 +508,15 @@ export const CREATIVE_MEDIA_NATIVE_ACTIONS: readonly CreativeCanvasAction[] = [
         networkRequired: false,
         mayIncurCost: false,
         output: output("artifact", "motion_clip", ["motion"]),
+    }),
+    creativeMediaAction({
+        actionId: "creative_media.render_motion_guidance",
+        capability: "video.render_motion_guidance",
+        selection: selection(["node", "selection"], 1, 1, ["motion"]),
+        requiresPrompt: false,
+        networkRequired: false,
+        mayIncurCost: false,
+        output: output("artifact", "motion_guidance_video", ["video"]),
     }),
     creativeMediaAction({
         actionId: "creative_media.transfer_action_to_character",

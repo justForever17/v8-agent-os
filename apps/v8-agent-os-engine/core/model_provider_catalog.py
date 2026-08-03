@@ -52,7 +52,7 @@ _MEDIA_DEFAULT_MODEL_IDS = {
     "stability_image": ["stable-image-core"],
     "fal_image": ["fal-image-model"],
     "replicate_image": ["replicate-image-model"],
-    "volcengine_seedance": ["doubao-seedance-2-5", "doubao-seedance-2-0", "doubao-seedance-2-0-mini"],
+    "volcengine_seedance": ["doubao-seedance-2-5", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-mini"],
     "aliyun_bailian_video": ["wan2.7-t2v"],
     "google_veo": ["veo-3.1-generate-preview"],
     "runway_video": ["gen4_turbo"],
@@ -447,6 +447,35 @@ class ModelProviderCatalog:
                 return exact_operations
         return _creative_media_public_operations(self._media_operation_kinds(provider_entry, modality))
 
+    @staticmethod
+    def _media_capability_modes(
+        modality: str,
+        operation_kinds: List[str],
+        operation_capability_profiles: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        primary_modes = {
+            "image.generate": "image.text_to_image",
+            "image.edit": "image.image_to_image",
+            "video.text_to_video": "video.text_to_video",
+            "video.image_to_video": "video.image_to_video",
+            "video.first_last_frame": "video.first_last_frame",
+            "voice.tts": "voice.tts",
+            "voice.design": "voice.design",
+            "music.generate": "music.generate",
+            "music.cover": "music.cover",
+            "model3d.generate": "model3d.text_to_3d",
+        }
+        modes = [primary_modes[item] for item in operation_kinds if item in primary_modes]
+        if _normalized_modality(modality) == "video" and "video.reference_to_video" in operation_kinds:
+            profile = dict(operation_capability_profiles.get("video.reference_to_video") or {})
+            reference_inputs = dict(profile.get("referenceInputs") or {})
+            input_modalities = {str(item).strip() for item in (profile.get("inputModalities") or [])}
+            if "image" in reference_inputs or "image" in input_modalities or not profile:
+                modes.append("video.image_reference")
+            if any(item in reference_inputs or item in input_modalities for item in ("video", "audio")):
+                modes.append("video.multimodal_reference")
+        return list(dict.fromkeys(modes))
+
     def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
         provider_id = str(provider_entry.get("id") or "")
         registry_entry = media_model_capability_registry.find(provider_id, model_id)
@@ -460,6 +489,7 @@ class ModelProviderCatalog:
             for operation_kind in operation_kinds
         }
         operation_capability_profiles = {key: value for key, value in operation_capability_profiles.items() if value}
+        capability_modes = self._media_capability_modes(modality, operation_kinds, operation_capability_profiles)
         capability_profile = next(iter(operation_capability_profiles.values()), {})
         model_logo_assets = provider_entry.get("modelLogoAssets")
         model_logo_asset = ""
@@ -489,6 +519,7 @@ class ModelProviderCatalog:
                 "modality": _normalized_modality(modality),
                 "adapter": provider_entry.get("adapter") or "catalog_only",
                 "apiStandard": provider_entry.get("apiStandard") or "",
+                "capabilityModes": capability_modes,
                 "operationKinds": operation_kinds,
                 "operationCapabilityProfiles": operation_capability_profiles,
                 "submitPath": model_request.get("submitPath") or request.get("submitPath") or "",
@@ -1325,7 +1356,16 @@ class ModelProviderCatalog:
         online_metadata = dict(online_metadata or {})
         provider_id = str(provider.get("id") or "").strip()
         catalog_model = self._model_from_catalog(provider, model_id)
-        model = catalog_model if self._has_explicit_catalog_model(provider, model_id) else self._media_model_from_root_provider(provider, model_id) or catalog_model
+        media_catalog_model = self._media_model_from_root_provider(provider, model_id)
+        has_explicit_catalog_model = self._has_explicit_catalog_model(provider, model_id)
+        model = catalog_model if has_explicit_catalog_model else media_catalog_model or catalog_model
+        if has_explicit_catalog_model and media_catalog_model:
+            media_limits = deepcopy(dict(model.get("mediaLimits") or {}))
+            suggested_limits = dict(media_catalog_model.get("mediaLimits") or {})
+            for key in ("capabilityModes", "operationCapabilityProfiles", "mediaCapabilityRegistry"):
+                if key not in media_limits and key in suggested_limits:
+                    media_limits[key] = deepcopy(suggested_limits[key])
+            model["mediaLimits"] = media_limits
         provider_kind = str(provider.get("providerKind") or "chat")
         registry_entry = model_capability_registry.find(model_id)
         explicit_provider_override = bool(

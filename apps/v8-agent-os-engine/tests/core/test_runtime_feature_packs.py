@@ -1,4 +1,5 @@
 import json
+import platform
 import re
 import sys
 from pathlib import Path
@@ -155,21 +156,90 @@ def test_feature_pack_status_uses_config_and_legacy_runtime_families(tmp_path):
 def test_image_analysis_pack_fills_missing_modules_without_shadowing_engine_dependencies(monkeypatch, tmp_path):
     desktop_target = tmp_path / "desktop"
     analysis_target = tmp_path / "analysis"
+    analysis_receipt = tmp_path / "analysis-receipt.json"
     desktop_target.mkdir()
     analysis_target.mkdir()
+    analysis_receipt.write_text(
+        json.dumps(
+            {
+                "packId": "creative_media_image_analysis",
+                "environment": {
+                    "pythonVersion": platform.python_version(),
+                    "pythonImplementation": platform.python_implementation(),
+                    "architecture": platform.machine(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(sys, "path", ["engine-site-packages"])
 
     added = apply_feature_pack_python_paths(
         {
             "featurePacks": {
                 "computer_use_desktop": {"status": "installed", "targetDir": str(desktop_target)},
-                "creative_media_image_analysis": {"status": "installed", "targetDir": str(analysis_target)},
+                "creative_media_image_analysis": {
+                    "status": "installed",
+                    "targetDir": str(analysis_target),
+                    "receiptRef": str(analysis_receipt),
+                },
             }
         }
     )
 
     assert added == [str(desktop_target), str(analysis_target)]
     assert sys.path == [str(desktop_target), "engine-site-packages", str(analysis_target)]
+
+
+def test_asset_pack_rejects_a_receipt_from_an_incompatible_python_abi(monkeypatch, tmp_path):
+    target = tmp_path / "motion" / "python"
+    model_root = tmp_path / "motion" / "models"
+    target.mkdir(parents=True)
+    model_root.mkdir(parents=True)
+    (model_root / "holistic-landmarker-float16-v1.task").write_bytes(b"model")
+    receipt = tmp_path / "motion" / "receipt.json"
+    current_minor = platform.python_version_tuple()[:2]
+    incompatible_minor = "3.12" if current_minor != ("3", "12") else "3.11"
+    receipt.write_text(
+        json.dumps(
+            {
+                "packId": "creative_media_motion_capture",
+                "environment": {
+                    "pythonVersion": f"{incompatible_minor}.0",
+                    "pythonImplementation": platform.python_implementation(),
+                    "architecture": platform.machine(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = {
+        "featurePacks": {
+            "creative_media_motion_capture": {
+                "status": "installed",
+                "targetDir": str(target),
+                "assetRoot": str(model_root),
+                "receiptRef": str(receipt),
+                "restartRequired": True,
+            }
+        }
+    }
+    monkeypatch.setattr(sys, "path", ["engine-site-packages"])
+
+    assert apply_feature_pack_python_paths(registry) == []
+    status = next(item for item in build_feature_pack_statuses(registry) if item["id"] == "creative_media_motion_capture")
+    assert status["status"] == "failed"
+    assert status["installed"] is False
+    assert status["missingReason"] == "python_abi_mismatch"
+    assert status["receiptPythonVersion"] == f"{incompatible_minor}.0"
+    assert status["runtimePythonVersion"] == platform.python_version()
+    assert "重新安装" in status["lastError"]
+
+
+def test_engine_applies_feature_pack_paths_before_importing_api_routes():
+    main_source = (ENGINE_ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert main_source.index("STARTUP_PROFILE = resolve_startup_profile()") < main_source.index("from api import routes")
 
 
 def test_requirements_move_heavy_runtime_dependencies_into_feature_packs():

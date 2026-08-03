@@ -82,6 +82,18 @@ test("feature pack installation detects hardware but trusts only a format-specif
   assert.match(routeSource, /LOCALE_COOKIE_NAME/);
 });
 
+test("feature pack installation targets the managed Engine Python before a development venv", () => {
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const managedRuntimeIndex = installerSource.indexOf('path.join(engineRoot, ".python", "python.exe")');
+  const configuredRuntimeIndex = installerSource.indexOf("if (configured && fs.existsSync(configured)) return configured");
+  const developmentVenvIndex = installerSource.indexOf('path.join(engineRoot, ".venv", "Scripts", "python.exe")');
+
+  assert.ok(managedRuntimeIndex > -1, "managed Engine Python candidate is missing");
+  assert.ok(configuredRuntimeIndex > managedRuntimeIndex, "configured fallback must not override an installed managed runtime");
+  assert.ok(developmentVenvIndex > configuredRuntimeIndex, "development venv must remain the final source-tree fallback");
+  assert.match(installerSource, /V8_ENGINE_PYTHON/);
+});
+
 test("feature pack cards localize metadata and do not expose raw installer errors", () => {
   const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
   const en = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "en.json"), "utf8"));

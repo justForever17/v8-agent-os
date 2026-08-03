@@ -232,7 +232,7 @@ def test_catalog_bridges_creative_media_provider_matrix():
     seedance_20 = next(
         item
         for item in providers["volcengine_seedance"]["models"]
-        if item["id"] == "doubao-seedance-2-0"
+        if item["id"] == "doubao-seedance-2-0-260128"
     )
     assert seedance_20["mediaLimits"]["operationCapabilityProfiles"]["video.first_last_frame"]["referenceInputs"]["image"]["maxCount"] == 9
     legacy_seedance = next(item for item in providers["volcengine_seedance"]["models"] if item["id"] == "doubao-seedance-1-0-pro-fast-251015")

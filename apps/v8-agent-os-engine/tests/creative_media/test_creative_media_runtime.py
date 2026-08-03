@@ -124,7 +124,7 @@ def test_media_model_capability_overrides_are_exact_model_versioned():
 
     seedance_2 = capability_profile_for_model(
         provider_id="volcengine_seedance",
-        model_id="doubao-seedance-2-0",
+        model_id="doubao-seedance-2-0-260128",
         operation_kind="video.first_last_frame",
     )
     seedance_old = capability_profile_for_model(
@@ -338,17 +338,21 @@ def test_dashscope_payloads_match_wan_and_qwen_multimodal_contracts():
     assert r2v["parameters"]["duration"] == 10
 
     volc_reference = _build_volcengine_video_payload(
-        model="doubao-seedance-2-0-pro-260624",
+        model="doubao-seedance-2-0-260128",
         prompt="preserve the two subjects",
         operation_kind="video.reference_to_video",
         ratio="16:9",
         resolution="720p",
         duration=5,
         image_urls=["https://example.com/a.png", "https://example.com/b.png"],
+        video_urls=["https://example.com/action.mp4"],
+        audio_urls=["https://example.com/voice.mp3"],
     )
     assert volc_reference["content"][1:] == [
         {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}, "role": "reference_image"},
         {"type": "image_url", "image_url": {"url": "https://example.com/b.png"}, "role": "reference_image"},
+        {"type": "video_url", "video_url": {"url": "https://example.com/action.mp4"}, "role": "reference_video"},
+        {"type": "audio_url", "audio_url": {"url": "https://example.com/voice.mp3"}, "role": "reference_audio"},
     ]
 
 
@@ -393,9 +397,9 @@ def test_provider_payload_builders_reject_cross_operation_inputs():
             duration=5,
             image_urls=["https://example.com/a.png"],
         )
-    with pytest.raises(ValueError, match="one to five reference images"):
+    with pytest.raises(ValueError, match="at least one image, video, or audio reference"):
         _build_volcengine_video_payload(
-            model="doubao-seedance-2-0-pro-260624",
+            model="doubao-seedance-2-0-260128",
             prompt="preserve",
             operation_kind="video.reference_to_video",
             ratio="16:9",
@@ -403,6 +407,52 @@ def test_provider_payload_builders_reject_cross_operation_inputs():
             duration=5,
             image_urls=[],
         )
+
+
+def test_seedance_multimodal_references_preserve_provider_urls_and_asset_ids():
+    references = creative_media_runtime._seedance_references_from_request({
+        "referenceImageUrls": ["asset://asset-image", "https://example.com/product.png"],
+        "referenceVideoUrl": "https://example.com/motion.mp4",
+        "referenceAudioUrl": "https://example.com/voice.mp3",
+    })
+
+    assert references == {
+        "image": ["asset://asset-image", "https://example.com/product.png"],
+        "video": ["https://example.com/motion.mp4"],
+        "audio": ["https://example.com/voice.mp3"],
+    }
+
+    with pytest.raises(ValueError, match="provider-inaccessible"):
+        creative_media_runtime._seedance_references_from_request({
+            "referenceVideoUrl": "asset://unproven-video-transport",
+        })
+
+
+def test_seedance_canvas_references_fail_closed_when_provider_transport_is_missing(monkeypatch):
+    monkeypatch.setattr(creative_media_runtime, "_artifact_provider_transport_url", lambda _artifact_id: "")
+
+    with pytest.raises(ValueError, match="local-only Canvas reference"):
+        creative_media_runtime._seedance_references_from_request({
+            "canvasInputs": [
+                {"origin": "source", "id": "source-video", "mediaType": "video"},
+            ],
+        })
+
+
+def test_seedance_canvas_artifact_reuses_provider_transport_url(monkeypatch):
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_artifact_provider_transport_url",
+        lambda artifact_id: "https://provider.example.com/output.mp4" if artifact_id == "artifact-video" else "",
+    )
+
+    references = creative_media_runtime._seedance_references_from_request({
+        "canvasInputs": [
+            {"origin": "artifact", "id": "artifact-video", "mediaType": "video"},
+        ],
+    })
+
+    assert references["video"] == ["https://provider.example.com/output.mp4"]
 
 
 def test_minimax_video_payloads_match_official_four_operation_contracts():
@@ -1810,6 +1860,66 @@ def test_minimax_h3_poll_reuses_model_bound_v2_provider_channel(monkeypatch):
     }
     assert result["status"] == "succeeded"
     assert result["artifacts"][0]["url"] == "https://cdn.example.test/h3-result.mp4"
+
+
+def test_seedance_2x_adapter_preserves_multimodal_references_on_submit(monkeypatch):
+    requested = {}
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "ark": {
+                    "provider": {
+                        "name": "Volcengine Ark",
+                        "base_url": "https://ark.example.test/api/v3",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "doubao-seedance-2-0-260128": {
+                            "type": "VIDEO",
+                            "endpointBinding": {
+                                "version": 1,
+                                "route": "doubao-seedance-2-0-260128",
+                                "endpointPath": "contents/generations/tasks",
+                                "providerModelId": "doubao-seedance-2-0-260128",
+                                "operationKind": "video.reference_to_video",
+                                "adapter": "volcengine_ark",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.update({"method": method, "url": url, "json": kwargs.get("json")})
+        return {"id": "seedance-task"}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "providerId": "ark",
+        "modelId": "doubao-seedance-2-0-260128",
+        "operationKind": "video.reference_to_video",
+        "prompt": "Use the movement and soundtrack references.",
+        "referenceImageUrl": "asset://reference-image",
+        "referenceVideoUrl": "https://cdn.example.test/motion.mp4",
+        "referenceAudioUrl": "https://cdn.example.test/music.mp3",
+    }
+    job = creative_media_runtime._new_job(modality="video", adapter="volcengine_ark", request=request)
+
+    result = asyncio.run(creative_media_runtime._submit_volcengine_video_job(job, request))
+
+    assert requested["url"] == "https://ark.example.test/api/v3/contents/generations/tasks"
+    assert requested["json"]["content"] == [
+        {"type": "text", "text": "Use the movement and soundtrack references."},
+        {"type": "image_url", "image_url": {"url": "asset://reference-image"}, "role": "reference_image"},
+        {"type": "video_url", "video_url": {"url": "https://cdn.example.test/motion.mp4"}, "role": "reference_video"},
+        {"type": "audio_url", "audio_url": {"url": "https://cdn.example.test/music.mp3"}, "role": "reference_audio"},
+    ]
+    assert requested["json"]["generate_audio"] is True
+    assert result["providerResponse"]["taskId"] == "seedance-task"
 
 
 def test_openai_image_generation_uses_configured_binding_endpoint_and_wire_model(monkeypatch):

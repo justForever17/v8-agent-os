@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-03T04:24:09.132658+00:00",
+  "generatedAt": "2026-08-03T08:17:56.550394+00:00",
   "notes": [
     "Media model facts are exact providerId + modelId records. Do not infer advanced capability from provider or family names.",
     "Provider/API wire format remains in media_provider_format_matrix.json.",
@@ -7482,7 +7482,7 @@
       "missingFields": []
     },
     {
-      "canonicalModelId": "doubao-seedance-2-0",
+      "canonicalModelId": "doubao-seedance-2-0-260128",
       "displayName": "Seedance 2.0",
       "creator": "Volcengine Ark Seedance",
       "providerIds": [
@@ -7491,6 +7491,7 @@
       "aliases": [
         "Seedance 2.0",
         "doubao-seedance-2-0",
+        "doubao-seedance-2-0-260128",
         "seedance-2.0"
       ],
       "modality": "video",

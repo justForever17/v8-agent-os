@@ -17,14 +17,14 @@ def test_media_model_capability_registry_covers_matrix_and_doc_seed():
     assert len(payload.get("providers") or []) >= 32
     assert len(payload.get("models") or []) >= 78
     report_models = {item["canonicalModelId"] for item in payload.get("models") or []}
-    assert "doubao-seedance-2-0" in report_models
+    assert "doubao-seedance-2-0-260128" in report_models
     assert "nano-banana-pro" in report_models
     assert "flux.2" in report_models
     assert "stable-audio-2.5" in report_models
 
 
 def test_media_registry_exact_native_audio_does_not_inherit_by_family_name():
-    seedance_20 = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-2-0", "video.text_to_video")
+    seedance_20 = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-2-0-260128", "video.text_to_video")
     assert seedance_20
     assert seedance_20["nativeAudio"] is True
     assert seedance_20["audioPreservationPolicy"] == "preserve_native_audio_by_default"
@@ -58,6 +58,71 @@ def test_media_catalog_uses_registry_logo_and_keeps_chat_budget_empty():
     assert model["logoAsset"] == "/model-assets/lobe/openai.svg"
     assert model["capabilitySource"] == "media_model_capability_registry"
     assert model["mediaLimits"]["mediaCapabilityRegistry"]["canonicalModelId"] == "gpt-image-2"
+
+
+def test_multimodal_reference_models_expose_both_reference_modes_in_model_hub():
+    minimax = model_provider_catalog.get_provider("minimax_video")
+    seedance = model_provider_catalog.get_provider("volcengine_seedance")
+    assert minimax and seedance
+
+    h3 = model_provider_catalog.normalize_model(minimax, "MiniMax-H3")
+    seedance_20 = model_provider_catalog.normalize_model(seedance, "doubao-seedance-2-0-260128")
+
+    expected = {"video.image_reference", "video.multimodal_reference"}
+    assert expected.issubset(set(h3["mediaLimits"]["capabilityModes"]))
+    assert expected.issubset(set(seedance_20["mediaLimits"]["capabilityModes"]))
+    assert h3["mediaLimits"]["endpointPath"] == "/v2/video_generation"
+
+
+def test_seedance_2x_catalog_models_share_the_multimodal_reference_contract():
+    seedance = model_provider_catalog.get_provider("volcengine_seedance")
+    assert seedance
+
+    seedance_2x = [item for item in seedance["models"] if item["id"].startswith("doubao-seedance-2-")]
+    assert seedance_2x
+    for item in seedance_2x:
+        modes = set(item["mediaLimits"]["capabilityModes"])
+        assert {"video.image_reference", "video.multimodal_reference"}.issubset(modes), item["id"]
+
+    assert "doubao-seedance-2-0" not in {item["id"] for item in seedance_2x}
+    alias = media_model_capability_registry.find("volcengine_seedance", "doubao-seedance-2-0", "video.reference_to_video")
+    assert alias and alias["canonicalModelId"] == "doubao-seedance-2-0-260128"
+
+
+def test_existing_media_model_backfills_missing_capability_modes_without_overriding_user_values():
+    base_model = {
+        "id": "v2/video_generation/MiniMax-H3",
+        "type": "VIDEO",
+        "operationKinds": [
+            "video.text_to_video",
+            "video.image_to_video",
+            "video.first_last_frame",
+            "video.reference_to_video",
+        ],
+        "mediaLimits": {
+            "adapter": "minimax_video",
+            "providerModelId": "MiniMax-H3",
+            "operationKinds": [
+                "video.text_to_video",
+                "video.image_to_video",
+                "video.first_last_frame",
+                "video.reference_to_video",
+            ],
+        },
+    }
+    provider = {
+        "id": "minimax-cn",
+        "providerKind": "media_generation",
+        "baseUrl": "https://api.minimaxi.com/v1",
+        "models": [base_model],
+    }
+
+    inferred = model_provider_catalog.normalize_model(provider, base_model["id"])
+    assert "video.multimodal_reference" in inferred["mediaLimits"]["capabilityModes"]
+
+    provider["models"][0]["mediaLimits"]["capabilityModes"] = ["video.text_to_video"]
+    explicit = model_provider_catalog.normalize_model(provider, base_model["id"])
+    assert explicit["mediaLimits"]["capabilityModes"] == ["video.text_to_video"]
 
 
 def test_reference_media_models_are_matrix_backed_not_doc_only():

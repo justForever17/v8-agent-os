@@ -3142,12 +3142,23 @@ export default function ModelHubPage() {
                             return (<ModelCardV2 key={modelRef} model={model} controlMeta={controlMeta} isDefault={modelRef === defaultModelRef} connectionStatus={connectionStatusMap[modelRef] || null} reasoningRepairStatus={reasoningRepairStatusMap[modelRef] || null} onEdit={() => {
                     setEditingModel(model);
                     setModelType(model.type || "TEXT");
+                    const storedMediaLimits = model.mediaLimits || {};
+                    const controlMediaLimits = controlMeta?.mediaLimits || {};
+                    const capabilityModes = Object.prototype.hasOwnProperty.call(storedMediaLimits, "capabilityModes")
+                        ? storedMediaLimits.capabilityModes
+                        : controlMediaLimits.capabilityModes;
+                    const operationCapabilityProfiles = Object.prototype.hasOwnProperty.call(storedMediaLimits, "operationCapabilityProfiles")
+                        ? storedMediaLimits.operationCapabilityProfiles
+                        : controlMediaLimits.operationCapabilityProfiles;
                     setMediaCapabilityModes(resolveMediaCapabilityModes(
                         model.type || "TEXT",
-                        model.mediaLimits?.capabilityModes,
-                        Array.isArray(model.mediaLimits?.operationKinds)
-                            ? model.mediaLimits?.operationKinds
-                            : model.operationKinds || [model.endpointBinding?.operationKind],
+                        capabilityModes,
+                        Array.isArray(storedMediaLimits.operationKinds)
+                            ? storedMediaLimits.operationKinds
+                            : Array.isArray(controlMediaLimits.operationKinds)
+                                ? controlMediaLimits.operationKinds
+                                : model.operationKinds || [model.endpointBinding?.operationKind],
+                        operationCapabilityProfiles,
                     ));
                     setModelProviderId(model.providerId);
                     setModelChannelId(String(model.endpointBinding?.channelId || ""));

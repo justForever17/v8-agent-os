@@ -1920,6 +1920,10 @@ class StorageManager:
 
     # --- Generic JSON helpers ---
     def read_json(self, filename: str) -> Dict[str, Any]:
+        with self._config_io_lock:
+            return self._read_json_unlocked(filename)
+
+    def _read_json_unlocked(self, filename: str) -> Dict[str, Any]:
         """Reads a JSON file from the base directory."""
         normalized_name = str(filename or "").replace("\\", "/").strip()
         if normalized_name == "config.json":
@@ -1957,6 +1961,10 @@ class StorageManager:
             return {}
 
     def write_json(self, filename: str, data: Dict[str, Any]):
+        with self._config_io_lock:
+            self._write_json_unlocked(filename, data)
+
+    def _write_json_unlocked(self, filename: str, data: Dict[str, Any]):
         """Writes data to a JSON file in the base directory."""
         normalized_name = str(filename or "").replace("\\", "/").strip()
         if normalized_name == "config.json":
@@ -2044,6 +2052,23 @@ class StorageManager:
                     backup_temp_path.unlink()
                 except OSError:
                     pass
+
+    def mutate_json(self, filename: str, mutator) -> Dict[str, Any]:
+        """Atomically read, mutate, and persist one generic JSON document."""
+        normalized_name = str(filename or "").replace("\\", "/").strip()
+        if (
+            not normalized_name
+            or normalized_name in {"config.json", "settings.json", "computer_use.json", "computer_use_memory.json"}
+            or normalized_name in LEGACY_STRUCTURED_FILE_TO_DOMAIN
+        ):
+            raise ValueError("mutate_json only supports generic JSON documents")
+        with self._config_io_lock:
+            current = deepcopy(self.read_json(normalized_name) or {})
+            proposed = mutator(current)
+            if not isinstance(proposed, dict):
+                raise ValueError("generic JSON mutator must return an object")
+            self.write_json(normalized_name, proposed)
+            return deepcopy(proposed)
 
     def _read_json_file(self, filepath: Path) -> Dict[str, Any]:
         with open(filepath, "r", encoding="utf-8") as f:

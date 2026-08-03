@@ -28,6 +28,7 @@ from erc.safety_guardian import safety_guardian
 
 _PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _API_STANDARDS = {"openai", "anthropic", "google", "gemini", "comfyui", "custom"}
+_CREATIVE_MEDIA_PREFERENCES_FILE = "creative_media/model_preferences.json"
 
 
 class ConfigBrokerError(RuntimeError):
@@ -107,6 +108,22 @@ class ConfigBrokerService:
         if target_kind == "agent_model_role":
             agents = dict((config.get("bindings") or {}).get("agents") or {})
             return {"exists": target_id in agents, "value": deepcopy(agents.get(target_id))}
+        if target_kind == "creative_media_operation":
+            selections = [
+                deepcopy(item)
+                for item in list(config.get("selections") or [])
+                if isinstance(item, dict) and str(item.get("operationKind") or "").strip() == target_id
+            ]
+            models = [
+                deepcopy(item)
+                for item in list(config.get("models") or [])
+                if isinstance(item, dict) and str(item.get("operationKind") or "").strip() == target_id
+            ]
+            return {
+                "exists": bool(selections or models),
+                "selections": selections,
+                "models": models,
+            }
         if target_kind == "mcp":
             servers = dict(config.get("mcpServers") or {})
             return {"exists": target_id in servers, "value": deepcopy(servers.get(target_id))}
@@ -116,6 +133,8 @@ class ConfigBrokerService:
     def _target_config(target_kind: str) -> dict[str, Any]:
         if target_kind == "mcp":
             return deepcopy(storage.get_mcp_config() or {"mcpServers": {}})
+        if target_kind == "creative_media_operation":
+            return deepcopy(storage.read_json(_CREATIVE_MEDIA_PREFERENCES_FILE) or {})
         return model_control_plane.get_storage_safe_config()
 
     def _assert_target_revision(self, transaction: dict[str, Any]) -> dict[str, Any]:
@@ -713,6 +732,117 @@ class ConfigBrokerService:
             "nextAction": "提交配置事务。",
         }
 
+    def prepare_media_operation(
+        self,
+        *,
+        operation_kind: str,
+        model_ref: str,
+        enabled: bool,
+        priority: int | None,
+        owner_id: str,
+        session_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        operation = str(operation_kind or "").strip()
+        requested_ref = str(model_ref or "").strip()
+        if not operation:
+            raise ConfigBrokerError("多媒体操作类型不能为空。", code="media_operation_kind_required")
+        requested_identity = parse_model_ref(requested_ref)
+        if not requested_identity:
+            raise ConfigBrokerError("目标模型引用无效。", code="media_model_ref_invalid")
+
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        preferences = creative_media_runtime.get_model_preferences()
+        candidates = [
+            dict(item)
+            for item in list(preferences.get("connectedOptions") or [])
+            if isinstance(item, dict) and str(item.get("operationKind") or "").strip() == operation
+        ]
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if parse_model_ref(str(item.get("modelRef") or "")) == requested_identity
+            ),
+            None,
+        )
+        if not candidate:
+            raise ConfigBrokerError(
+                "该模型没有为目标多媒体操作提供已配置候选。",
+                code="media_operation_model_not_found",
+                status_code=404,
+            )
+        readiness = dict(candidate.get("readiness") or {})
+        if enabled and (not bool(candidate.get("available")) or not bool(readiness.get("executable"))):
+            reasons = ", ".join(str(item) for item in list(readiness.get("reasonCodes") or []) if str(item))
+            raise ConfigBrokerError(
+                f"目标模型当前不能执行该多媒体操作{f'：{reasons}' if reasons else '。'}",
+                code="media_operation_model_ineligible",
+                status_code=409,
+            )
+
+        before = self._target_config("creative_media_operation")
+        before_target = self._target_snapshot("creative_media_operation", operation, before)
+        current_selection = next(iter(list(before_target.get("selections") or [])), {})
+        normalized_priority = int(
+            priority
+            if priority is not None
+            else current_selection.get("priority", candidate.get("priority", 100))
+        )
+        if normalized_priority < 1 or normalized_priority > 9999:
+            raise ConfigBrokerError(
+                "多媒体模型优先级必须在 1 到 9999 之间。",
+                code="media_operation_priority_invalid",
+            )
+        normalized_ref = str(candidate.get("modelRef") or "").strip()
+        proposed = {
+            "operationKind": operation,
+            "modelRef": normalized_ref,
+            "enabled": bool(enabled),
+            "priority": normalized_priority,
+            "candidate": {
+                key: deepcopy(candidate.get(key))
+                for key in (
+                    "candidateId",
+                    "modality",
+                    "operationKind",
+                    "providerId",
+                    "modelId",
+                    "modelRef",
+                    "adapter",
+                )
+            },
+        }
+        owner = _session_owner(session_id, owner_id)
+        transaction = self._insert_transaction(
+            target_kind="creative_media_operation",
+            target_id=operation,
+            operation="select_model" if enabled else "disable_model",
+            state="ready_to_commit",
+            owner_id=owner,
+            session_id=session_id,
+            run_id=run_id,
+            before=before,
+            proposed=proposed,
+            validation={
+                "doctor": {
+                    "available": bool(candidate.get("available")),
+                    "readiness": readiness,
+                    "source": candidate.get("source"),
+                }
+            },
+        )
+        return {
+            "ok": True,
+            "mode": "media_operation_prepare",
+            "state": transaction["state"],
+            "transactionId": transaction["transactionId"],
+            "planDigest": transaction["planDigest"],
+            "summary": f"已准备把 {normalized_ref} {'启用为' if enabled else '停用于'} {operation}。",
+            "nextAction": "提交配置事务。",
+        }
+
     def _credentialize_mcp_config(self, raw: dict[str, Any]) -> dict[str, Any]:
         safe = deepcopy(raw or {"mcpServers": {}})
         servers = dict(safe.get("mcpServers") or {})
@@ -998,6 +1128,94 @@ class ConfigBrokerService:
                     target_mutated = True
                     _capture_working_target(saved_model_config)
                     public_result = {"agentId": proposed.get("agentId"), "modelRef": proposed.get("modelRef")}
+                elif transaction["targetKind"] == "creative_media_operation":
+                    operation_kind = str(proposed.get("operationKind") or "").strip()
+                    model_ref = str(proposed.get("modelRef") or "").strip()
+                    enabled = bool(proposed.get("enabled"))
+                    priority = int(proposed.get("priority") or 100)
+                    candidate = dict(proposed.get("candidate") or {})
+                    now = utc_now_iso()
+
+                    def _select_media_model(current: dict[str, Any]) -> dict[str, Any]:
+                        self._assert_target_revision_in_config(transaction, current)
+                        selections = [
+                            deepcopy(item)
+                            for item in list(current.get("selections") or [])
+                            if isinstance(item, dict) and str(item.get("operationKind") or "").strip() != operation_kind
+                        ]
+                        models = [
+                            deepcopy(item)
+                            for item in list(current.get("models") or [])
+                            if isinstance(item, dict) and str(item.get("operationKind") or "").strip() != operation_kind
+                        ]
+                        selections.append(
+                            {
+                                "operationKind": operation_kind,
+                                "modelRefs": [model_ref],
+                                "enabled": enabled,
+                                "priority": priority,
+                                "updatedAt": now,
+                            }
+                        )
+                        models.append(
+                            {
+                                **candidate,
+                                "enabled": enabled,
+                                "priority": priority,
+                                "updatedAt": now,
+                            }
+                        )
+                        return {
+                            **current,
+                            "version": 1,
+                            "updatedAt": now,
+                            "selections": selections,
+                            "models": models,
+                        }
+
+                    saved_preferences = storage.mutate_json(
+                        _CREATIVE_MEDIA_PREFERENCES_FILE,
+                        _select_media_model,
+                    )
+                    target_mutated = True
+                    _capture_working_target(saved_preferences)
+
+                    from runtimes.creative_media.runtime import creative_media_runtime
+
+                    projected = creative_media_runtime.get_model_preferences()
+                    operation_row = next(
+                        (
+                            dict(item)
+                            for item in list(projected.get("operationRows") or [])
+                            if str(item.get("operationKind") or "").strip() == operation_kind
+                        ),
+                        {},
+                    )
+                    selected_refs = [str(item) for item in list(operation_row.get("selectedModelRefs") or [])]
+                    execution = dict((projected.get("executionProjection") or {}).get(operation_kind) or {})
+                    if model_ref not in selected_refs or bool(operation_row.get("enabled")) != enabled:
+                        raise ConfigBrokerError(
+                            "多媒体操作模型投影与提交值不一致。",
+                            code="media_operation_projection_mismatch",
+                            status_code=409,
+                        )
+                    if enabled and str(execution.get("status") or "") != "ready":
+                        raise ConfigBrokerError(
+                            "多媒体操作模型提交后仍不可执行。",
+                            code="media_operation_not_ready_after_commit",
+                            status_code=409,
+                        )
+                    validation["executionProjection"] = {
+                        "status": execution.get("status"),
+                        "configuredModelRefs": list(execution.get("configuredModelRefs") or []),
+                    }
+                    public_result = {
+                        "operationKind": operation_kind,
+                        "modelRef": model_ref,
+                        "enabled": enabled,
+                        "priority": priority,
+                        "executionStatus": execution.get("status"),
+                    }
                 elif transaction["targetKind"] == "mcp":
                     server_name = str(proposed.get("name") or "")
 
@@ -1184,6 +1402,29 @@ class ConfigBrokerService:
 
                 storage.mutate_mcp_config(_restore_mcp_config)
                 request_mcp_inventory_refresh(reason="config_broker_rollback")
+            elif target_kind == "creative_media_operation":
+                def _restore_media_operation(current: dict[str, Any]) -> dict[str, Any]:
+                    _assert_restore_revision(current)
+                    selections = [
+                        deepcopy(item)
+                        for item in list(current.get("selections") or [])
+                        if isinstance(item, dict) and str(item.get("operationKind") or "").strip() != target_id
+                    ]
+                    models = [
+                        deepcopy(item)
+                        for item in list(current.get("models") or [])
+                        if isinstance(item, dict) and str(item.get("operationKind") or "").strip() != target_id
+                    ]
+                    selections.extend(deepcopy(list(before_target.get("selections") or [])))
+                    models.extend(deepcopy(list(before_target.get("models") or [])))
+                    return {
+                        **current,
+                        "updatedAt": utc_now_iso(),
+                        "selections": selections,
+                        "models": models,
+                    }
+
+                storage.mutate_json(_CREATIVE_MEDIA_PREFERENCES_FILE, _restore_media_operation)
             else:
                 errors.append("unsupported snapshot target")
         except ConfigBrokerError as exc:

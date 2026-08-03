@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-26",
+  "updatedAt": "2026-08-03",
   "matchPolicy": "exact providerId + exact modelId + operationKind; no provider-level inheritance",
   "notes": [
     "This file stores model-version media capability overlays that are too specific for provider-level metadata.",
@@ -10,7 +10,7 @@
   "capabilityProfiles": [
     {
       "providerId": "volcengine_seedance",
-      "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini"],
+      "modelIds": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini"],
       "operationKinds": ["video.text_to_video", "video.image_to_video", "video.first_last_frame", "video.reference_to_video"],
       "capabilityProfile": {
         "nativeAudio": true,

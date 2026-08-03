@@ -32,10 +32,6 @@ _configure_pycache_behavior()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import routes
-from core.runtime.health import inspect_engine_runtime
-from core.models.provider_compatibility import install_provider_compatibility_patches
-from core.time_truth import utc_now_iso
 from core.runtime.startup_profile import (
     build_installation_snapshot,
     disabled_reason_summary,
@@ -49,6 +45,15 @@ from core.runtime.startup_profile import (
     startup_bundle_diagnostics,
     startup_bundle_summary,
 )
+
+STARTUP_PROFILE = resolve_startup_profile()
+INSTALL_PROFILE = resolve_install_profile()
+INSTALL_PLATFORM = resolve_install_platform()
+
+from api import routes
+from core.runtime.health import inspect_engine_runtime
+from core.models.provider_compatibility import install_provider_compatibility_patches
+from core.time_truth import utc_now_iso
 from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.storage_retention import storage_retention_service
@@ -62,9 +67,6 @@ from erc.session_admission_service import session_admission_service
 from erc.workflow_ledger import workflow_ledger_service
 
 install_provider_compatibility_patches()
-STARTUP_PROFILE = resolve_startup_profile()
-INSTALL_PROFILE = resolve_install_profile()
-INSTALL_PLATFORM = resolve_install_platform()
 
 
 def _build_cors_allow_origins() -> list[str]:

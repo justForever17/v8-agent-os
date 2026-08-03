@@ -64,7 +64,7 @@ LOGO_FALLBACKS = {
 
 
 DOC_MODEL_MAP = {
-    "seedance-2.0": ("volcengine_seedance", "doubao-seedance-2-0"),
+    "seedance-2.0": ("volcengine_seedance", "doubao-seedance-2-0-260128"),
     "veo-3.1": ("google_veo", "veo-3.1-generate-preview"),
     "sora-2": ("openai_sora_video", "sora-2"),
     "gen-4.5": ("runway_video", "gen4_turbo"),
@@ -304,6 +304,7 @@ def build_registry() -> Dict[str, Any]:
             if not provider.get("logoAsset"):
                 provider["missingFields"].append("providerLogoAsset")
             model_logo_assets = entry.get("modelLogoAssets") if isinstance(entry.get("modelLogoAssets"), dict) else {}
+            model_aliases = entry.get("modelAliases") if isinstance(entry.get("modelAliases"), dict) else {}
             for model_id in [str(item).strip() for item in as_list(entry.get("modelIds")) if str(item).strip()]:
                 operations = overridden_operation_kinds(overrides, provider_id, model_id) or operation_kinds(entry, str(modality))
                 operation_capability_profiles = {
@@ -326,7 +327,10 @@ def build_registry() -> Dict[str, Any]:
                     "displayName": model_id,
                     "creator": entry.get("displayName") or provider_id,
                     "providerIds": [provider_id],
-                    "aliases": sorted({model_id}),
+                    "aliases": sorted({
+                        model_id,
+                        *[str(alias).strip() for alias in as_list(model_aliases.get(model_id)) if str(alias).strip()],
+                    }),
                     "modality": normalize_modality(modality),
                     "operationKinds": operations,
                     "inputModalities": input_modalities,

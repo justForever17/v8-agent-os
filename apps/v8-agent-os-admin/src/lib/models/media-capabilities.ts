@@ -68,6 +68,7 @@ export function resolveMediaCapabilityModes(
     modelType: string,
     capabilityModes: unknown,
     operationKinds: unknown,
+    operationCapabilityProfiles?: unknown,
 ): string[] {
     const options = getMediaCapabilityOptions(modelType);
     const allowed = new Set(options.map((option) => option.id));
@@ -75,9 +76,28 @@ export function resolveMediaCapabilityModes(
         return Array.from(new Set(asStringList(capabilityModes).filter((mode) => allowed.has(mode))));
     }
 
-    const inferred = asStringList(operationKinds)
+    const normalizedOperationKinds = asStringList(operationKinds);
+    const inferred = normalizedOperationKinds
         .map((operationKind) => PRIMARY_MODE_BY_OPERATION_KIND[operationKind])
         .filter((mode): mode is string => Boolean(mode && allowed.has(mode)));
+    if (normalizedOperationKinds.includes("video.reference_to_video") && operationCapabilityProfiles && typeof operationCapabilityProfiles === "object") {
+        const profiles = operationCapabilityProfiles as Record<string, unknown>;
+        const referenceProfile = profiles["video.reference_to_video"];
+        if (referenceProfile && typeof referenceProfile === "object") {
+            const profile = referenceProfile as Record<string, unknown>;
+            const inputModalities = new Set(asStringList(profile.inputModalities));
+            const referenceInputs = profile.referenceInputs && typeof profile.referenceInputs === "object"
+                ? profile.referenceInputs as Record<string, unknown>
+                : {};
+            if (("image" in referenceInputs || inputModalities.has("image")) && allowed.has("video.image_reference")) {
+                inferred.push("video.image_reference");
+            }
+            if (("video" in referenceInputs || "audio" in referenceInputs || inputModalities.has("video") || inputModalities.has("audio"))
+                && allowed.has("video.multimodal_reference")) {
+                inferred.push("video.multimodal_reference");
+            }
+        }
+    }
     if (inferred.length) return Array.from(new Set(inferred));
     return options[0] ? [options[0].id] : [];
 }

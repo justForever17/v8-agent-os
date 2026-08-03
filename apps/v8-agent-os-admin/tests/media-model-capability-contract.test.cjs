@@ -24,6 +24,17 @@ test("manual capability modes persist both human and runtime projections", () =>
   assert.match(admin, /provenance: \{ source: "manual", confidence: "authoritative" \}/);
 });
 
+test("existing models use control-plane capability facts only when persisted modes are absent", () => {
+  const page = read("src/app/admin/(dashboard)/model-hub/page.tsx");
+  assert.match(page, /hasOwnProperty\.call\(storedMediaLimits, "capabilityModes"\)/);
+  assert.match(page, /\? storedMediaLimits\.capabilityModes\s*:\s*controlMediaLimits\.capabilityModes/);
+  assert.match(page, /Array\.isArray\(controlMediaLimits\.operationKinds\)/);
+  assert.match(page, /operationCapabilityProfiles,/);
+  const capabilities = read("src/lib/models/media-capabilities.ts");
+  assert.match(capabilities, /normalizedOperationKinds\.includes\("video\.reference_to_video"\)/);
+  assert.match(capabilities, /inferred\.push\("video\.multimodal_reference"\)/);
+});
+
 test("the UI supports the requested image video voice music and 3D families", () => {
   const capabilities = read("src/lib/models/media-capabilities.ts");
   for (const expected of [

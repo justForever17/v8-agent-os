@@ -440,9 +440,16 @@ function updateFeaturePackConfig(packId: string, patch: Record<string, unknown>)
 }
 
 function resolvePythonExecutable(config: CanonicalConfig) {
+    const explicitRuntime = String(process.env.V8_ENGINE_PYTHON || "").trim();
+    if (explicitRuntime && fs.existsSync(explicitRuntime)) return explicitRuntime;
     const configured = String(config.systemBase?.channels?.enginePython || "").trim();
-    if (configured && fs.existsSync(configured)) return configured;
     const engineRoot = resolveEngineRoot();
+    const managedCandidates = process.platform === "win32"
+        ? [path.join(engineRoot, ".python", "python.exe")]
+        : [path.join(engineRoot, ".python", "bin", "python3"), path.join(engineRoot, ".python", "bin", "python")];
+    const managedRuntime = managedCandidates.find((candidate) => fs.existsSync(candidate));
+    if (managedRuntime) return managedRuntime;
+    if (configured && fs.existsSync(configured)) return configured;
     const windowsPython = path.join(engineRoot, ".venv", "Scripts", "python.exe");
     if (fs.existsSync(windowsPython)) return windowsPython;
     const posixPython = path.join(engineRoot, ".venv", "bin", "python");

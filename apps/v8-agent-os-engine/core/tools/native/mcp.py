@@ -129,6 +129,9 @@ def config_broker(
     evidence_refs: list[str] | None = None,
     credential_required: bool = True,
     role: str = "",
+    operation_kind: str = "",
+    enabled: bool = True,
+    priority: int | None = None,
     transaction_id: str = "",
     plan_digest: str = "",
     mcp_name: str = "",
@@ -145,8 +148,10 @@ def config_broker(
     inspect model consumers, and `recommend` before changing a role. Use
     `agent:<agent-id>` as the role when inspecting or updating one registered
     Subagent; grandchild agents inherit and have no independent model binding.
-    `model_prepare` with researched facts and evidence refs, then `commit` with
-    the returned transaction_id and plan_digest. Web research is accepted as
+    `model_prepare` with researched facts and evidence refs, or
+    `media_operation_prepare` with an exact operation_kind and configured
+    model_ref, then `commit` with the returned transaction_id and plan_digest.
+    Web research is accepted as
     reviewed evidence; it is not silently promoted above a user's saved facts.
     Never pass API keys, tokens, cookies, env values or authorization headers to
     this tool. When a credential is required, `model_prepare` or
@@ -191,6 +196,16 @@ def config_broker(
             payload = config_broker_service.prepare_role_assignment(
                 role=role,
                 model_ref=model_ref,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        elif normalized_mode == "media_operation_prepare":
+            payload = config_broker_service.prepare_media_operation(
+                operation_kind=operation_kind,
+                model_ref=model_ref,
+                enabled=enabled,
+                priority=priority,
                 owner_id=owner_id,
                 session_id=session_id,
                 run_id=run_id,

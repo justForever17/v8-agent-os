@@ -175,6 +175,39 @@ def test_config_domain_mutations_share_one_lock_across_storage_instances(tmp_pat
     assert persisted["automationRuntime"]["enabled"] is False
 
 
+def test_generic_json_mutation_preserves_unrelated_records(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    filename = "creative_media/model_preferences.json"
+    manager.write_json(
+        filename,
+        {
+            "selections": [
+                {"operationKind": "image.generate", "enabled": True},
+                {"operationKind": "video.reference_to_video", "enabled": False},
+            ]
+        },
+    )
+
+    mutated = manager.mutate_json(
+        filename,
+        lambda current: {
+            **current,
+            "selections": [
+                item
+                if item["operationKind"] != "video.reference_to_video"
+                else {**item, "enabled": True}
+                for item in current["selections"]
+            ],
+        },
+    )
+
+    assert mutated["selections"] == [
+        {"operationKind": "image.generate", "enabled": True},
+        {"operationKind": "video.reference_to_video", "enabled": True},
+    ]
+    assert manager.read_json(filename) == mutated
+
+
 def test_stock_prompt_sanitizer_removes_retired_plugin_host_wording() -> None:
     legacy_runtime_id = "plugin_host"
     source = (

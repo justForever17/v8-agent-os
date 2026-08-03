@@ -597,6 +597,8 @@ def _build_volcengine_video_payload(
     duration: int,
     seed: int = -1,
     image_urls: Optional[list[str]] = None,
+    video_urls: Optional[list[str]] = None,
+    audio_urls: Optional[list[str]] = None,
     generate_audio: bool = True,
     watermark: bool = False,
 ) -> dict[str, Any]:
@@ -612,17 +614,29 @@ def _build_volcengine_video_payload(
     if prompt:
         content.append({"type": "text", "text": prompt})
     references = [str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()]
+    reference_videos = [str(item or "").strip() for item in list(video_urls or []) if str(item or "").strip()]
+    reference_audio = [str(item or "").strip() for item in list(audio_urls or []) if str(item or "").strip()]
     if operation_kind == "video.reference_to_video":
-        if not references or len(references) > 5:
-            raise ValueError("Volcengine video.reference_to_video requires one to five reference images")
+        if not references and not reference_videos and not reference_audio:
+            raise ValueError("Volcengine video.reference_to_video requires at least one image, video, or audio reference")
         required_count = None
     else:
+        if reference_videos or reference_audio:
+            raise ValueError(f"Volcengine {operation_kind} does not accept reference video or audio inputs")
         required_count = {"video.text_to_video": 0, "video.image_to_video": 1, "video.first_last_frame": 2}[operation_kind]
         if len(references) != required_count:
             raise ValueError(f"Volcengine {operation_kind} requires exactly {required_count} image inputs")
     for index, url in enumerate(references):
         role = "reference_image" if operation_kind == "video.reference_to_video" else "first_frame" if index == 0 else "last_frame"
         content.append({"type": "image_url", "image_url": {"url": url}, "role": role})
+    content.extend(
+        {"type": "video_url", "video_url": {"url": url}, "role": "reference_video"}
+        for url in reference_videos
+    )
+    content.extend(
+        {"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"}
+        for url in reference_audio
+    )
     return {
         "model": model,
         "content": content,
@@ -4906,7 +4920,11 @@ class CreativeMediaRuntime:
         return list(dict.fromkeys(references))
 
     @staticmethod
-    def _request_url_list(request: dict[str, Any], *keys: str) -> list[str]:
+    def _request_url_list(
+        request: dict[str, Any],
+        *keys: str,
+        allowed_prefixes: tuple[str, ...] = ("http://", "https://", "data:"),
+    ) -> list[str]:
         values: list[str] = []
         for key in keys:
             raw = request.get(key)
@@ -4914,8 +4932,8 @@ class CreativeMediaRuntime:
             for item in items:
                 normalized = str(item or "").strip()
                 if normalized and normalized not in values:
-                    if not normalized.startswith(("http://", "https://", "data:")):
-                        raise ValueError(f"{key} must contain public HTTP/HTTPS URLs or data URIs")
+                    if not normalized.startswith(allowed_prefixes):
+                        raise ValueError(f"{key} contains a provider-inaccessible media reference")
                     values.append(normalized)
         return values
 
@@ -4960,16 +4978,19 @@ class CreativeMediaRuntime:
                 "imageUrl", "image_url", "imageUrls", "image_urls",
                 "firstFrame", "first_frame", "lastFrame", "last_frame",
                 "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+                allowed_prefixes=("http://", "https://", "data:", "mm_file://"),
             ),
             "video": self._request_url_list(
                 request,
                 "videoUrl", "video_url", "videoUrls", "video_urls",
                 "referenceVideoUrl", "reference_video_url", "referenceVideoUrls", "reference_video_urls",
+                allowed_prefixes=("http://", "https://", "data:", "mm_file://"),
             ),
             "audio": self._request_url_list(
                 request,
                 "audioUrl", "audio_url", "audioUrls", "audio_urls",
                 "referenceAudioUrl", "reference_audio_url", "referenceAudioUrls", "reference_audio_urls",
+                allowed_prefixes=("http://", "https://", "data:", "mm_file://"),
             ),
         }
         session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
@@ -4994,6 +5015,43 @@ class CreativeMediaRuntime:
         )
         if encoded_size > 60 * 1024 * 1024:
             raise ValueError("MiniMax-H3 inline references exceed the 64 MB request limit; use provider-accessible URLs")
+        return references
+
+    def _seedance_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
+        references = {
+            "image": self._request_url_list(
+                request,
+                "imageUrl", "image_url", "imageUrls", "image_urls",
+                "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+                allowed_prefixes=("http://", "https://", "asset://"),
+            ),
+            "video": self._request_url_list(
+                request,
+                "videoUrl", "video_url", "videoUrls", "video_urls",
+                "referenceVideoUrl", "reference_video_url", "referenceVideoUrls", "reference_video_urls",
+                allowed_prefixes=("http://", "https://"),
+            ),
+            "audio": self._request_url_list(
+                request,
+                "audioUrl", "audio_url", "audioUrls", "audio_urls",
+                "referenceAudioUrl", "reference_audio_url", "referenceAudioUrls", "reference_audio_urls",
+                allowed_prefixes=("http://", "https://"),
+            ),
+        }
+        for item in [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]:
+            media_type = str(item.get("mediaType") or "").strip().lower()
+            if media_type not in references:
+                continue
+            origin = str(item.get("origin") or "").strip()
+            resource_id = str(item.get("id") or "").strip()
+            provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
+            if not provider_url:
+                raise ValueError(
+                    "Seedance cannot receive a local-only Canvas reference; provide a public URL or asset:// reference, "
+                    "or connect a provider-generated artifact that still has its transport URL"
+                )
+            if provider_url not in references[media_type]:
+                references[media_type].append(provider_url)
         return references
 
     def _video_url_from_request(self, request: dict[str, Any], *keys: str) -> str:
@@ -5795,8 +5853,20 @@ class CreativeMediaRuntime:
         if not base_url:
             raise ValueError(f"Provider {provider_id} has no base_url")
         prompt = str(request.get("prompt") or "").strip()
-        if not prompt and not (request.get("imageUrls") or request.get("image_urls")):
-            raise ValueError("video job requires prompt or imageUrls")
+        has_media_input = any(
+            request.get(key)
+            for key in (
+                "imageUrl", "image_url", "imageUrls", "image_urls",
+                "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+                "videoUrl", "video_url", "videoUrls", "video_urls",
+                "referenceVideoUrl", "reference_video_url", "referenceVideoUrls", "reference_video_urls",
+                "audioUrl", "audio_url", "audioUrls", "audio_urls",
+                "referenceAudioUrl", "reference_audio_url", "referenceAudioUrls", "reference_audio_urls",
+                "canvasInputs",
+            )
+        )
+        if not prompt and not has_media_input:
+            raise ValueError("video job requires a prompt or a media reference")
         duration = max(1, min(int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5), 30))
         model = self._strip_provider_model_prefix(str(binding.get("providerModelId") or requested_model))
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
@@ -5807,6 +5877,7 @@ class CreativeMediaRuntime:
         )
         supports_native_audio = bool(capability_profile.get("nativeAudio"))
         generate_audio = bool(request.get("generateAudio", request.get("generate_audio", supports_native_audio))) and supports_native_audio
+        seedance_references = self._seedance_references_from_request(request) if operation_kind == "video.reference_to_video" else {}
         payload = _build_volcengine_video_payload(
             model=model,
             prompt=prompt,
@@ -5815,7 +5886,9 @@ class CreativeMediaRuntime:
             resolution=resolve_video_resolution(preset=request.get("resolutionPreset"), explicit_resolution=request.get("resolution") or "720p"),
             duration=duration,
             seed=int(request.get("seed", -1)),
-            image_urls=request.get("imageUrls") or request.get("image_urls"),
+            image_urls=list(seedance_references.get("image") or []) if seedance_references else request.get("imageUrls") or request.get("image_urls"),
+            video_urls=list(seedance_references.get("video") or []),
+            audio_urls=list(seedance_references.get("audio") or []),
             generate_audio=generate_audio,
             watermark=bool(request.get("watermark", False)),
         )

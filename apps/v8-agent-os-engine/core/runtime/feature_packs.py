@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import platform
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +139,11 @@ def resolve_feature_pack_asset(pack_id: str, asset_id: str) -> Path | None:
     configured = normalize_feature_pack_config(registry.get("featurePacks")).get(str(pack_id)) or {}
     if configured.get("status") != "installed":
         return None
+    definition = FEATURE_PACK_BY_ID.get(str(pack_id))
+    if definition and definition.asset_manifest_file:
+        compatible, _, _, _ = _feature_pack_receipt_runtime_compatibility(pack_id, registry)
+        if not compatible:
+            return None
     manifest = load_feature_pack_asset_manifest(pack_id) or {}
     asset = next(
         (item for item in list(manifest.get("assets") or []) if str(item.get("id") or "") == str(asset_id)),
@@ -182,6 +189,60 @@ def load_feature_pack_receipt(
     if not isinstance(payload, dict) or str(payload.get("packId") or "") != str(pack_id):
         return None
     return dict(payload)
+
+
+def _normalized_architecture(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+    aliases = {
+        "x8664": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _python_minor(value: Any) -> tuple[int, int] | None:
+    match = re.match(r"^\s*(\d+)\.(\d+)", str(value or ""))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _feature_pack_receipt_runtime_compatibility(
+    pack_id: str,
+    runtime_registry: dict[str, Any] | None = None,
+) -> tuple[bool, str | None, str | None, dict[str, Any]]:
+    receipt = load_feature_pack_receipt(pack_id, runtime_registry)
+    if not isinstance(receipt, dict):
+        return False, "receipt_missing", "能力包缺少有效安装回执，请重新安装。", {}
+    environment = dict(receipt.get("environment") or {})
+    receipt_version = str(environment.get("pythonVersion") or "").strip()
+    runtime_version = platform.python_version()
+    if _python_minor(receipt_version) != _python_minor(runtime_version):
+        return (
+            False,
+            "python_abi_mismatch",
+            f"能力包由 Python {receipt_version or 'unknown'} 安装，当前 Engine 使用 Python {runtime_version}；请重新安装能力包。",
+            receipt,
+        )
+    receipt_implementation = str(environment.get("pythonImplementation") or "").strip().lower()
+    runtime_implementation = platform.python_implementation().strip().lower()
+    if not receipt_implementation or receipt_implementation != runtime_implementation:
+        return (
+            False,
+            "python_implementation_mismatch",
+            "能力包安装解释器与当前 Engine 的 Python 实现不一致，请重新安装能力包。",
+            receipt,
+        )
+    receipt_architecture = _normalized_architecture(environment.get("architecture"))
+    runtime_architecture = _normalized_architecture(platform.machine() or platform.architecture()[0])
+    if not receipt_architecture or receipt_architecture != runtime_architecture:
+        return (
+            False,
+            "python_architecture_mismatch",
+            "能力包安装架构与当前 Engine 架构不一致，请重新安装能力包。",
+            receipt,
+        )
+    return True, None, None, receipt
 
 
 def preferred_feature_pack_execution_provider(
@@ -242,12 +303,17 @@ def apply_feature_pack_python_paths(runtime_registry: dict[str, Any] | None = No
     for pack_id, pack_state in feature_packs.items():
         if str(pack_state.get("status") or "") != "installed":
             continue
+        definition = definitions.get(pack_id)
+        if definition and definition.asset_manifest_file:
+            compatible, _, _, _ = _feature_pack_receipt_runtime_compatibility(pack_id, registry)
+            if not compatible:
+                continue
         target = Path(str(pack_state.get("targetDir") or feature_pack_target_dir(pack_id))).expanduser()
         if not target.exists():
             continue
         target_text = str(target)
         if target_text not in sys.path:
-            if definitions.get(pack_id) and definitions[pack_id].python_path_priority == "fallback":
+            if definition and definition.python_path_priority == "fallback":
                 sys.path.append(target_text)
             else:
                 sys.path.insert(0, target_text)
@@ -276,6 +342,15 @@ def build_feature_pack_statuses(
         probe_match = _has_probe_modules(definition) if not definition.asset_manifest_file else False
         target_exists = target_dir.exists()
         asset_manifest = load_feature_pack_asset_manifest(definition.id)
+        receipt_compatible = True
+        receipt_reason = None
+        receipt_error = None
+        receipt: dict[str, Any] = {}
+        if asset_manifest and configured_status == "installed":
+            receipt_compatible, receipt_reason, receipt_error, receipt = _feature_pack_receipt_runtime_compatibility(
+                definition.id,
+                registry,
+            )
         asset_root = Path(str(configured.get("assetRoot") or feature_pack_asset_root(definition.id, target_dir))).expanduser()
         assets_exist = True
         if asset_manifest:
@@ -285,12 +360,14 @@ def build_feature_pack_statuses(
                 if isinstance(item, dict)
             )
         installed = (
-            (configured_status == "installed" and target_exists and assets_exist)
+            (configured_status == "installed" and target_exists and assets_exist and receipt_compatible)
             or legacy_runtime_match
             or probe_match
         )
         if installed:
             status = "installed"
+        elif configured_status == "installed" and not receipt_compatible:
+            status = "failed"
         elif configured_status in {"installing", "failed"}:
             status = configured_status
         else:
@@ -299,7 +376,14 @@ def build_feature_pack_statuses(
         if status == "not_installed":
             missing_reason = "not_installed"
         elif status == "failed":
-            missing_reason = configured.get("lastError") or "install_failed"
+            missing_reason = receipt_reason or configured.get("lastError") or "install_failed"
+        receipt_environment = dict(receipt.get("environment") or {})
+        last_error = receipt_error or configured.get("lastError")
+        restart_required = (
+            False
+            if status == "installed" and asset_manifest and receipt_compatible
+            else bool(configured.get("restartRequired", status == "installed"))
+        )
         statuses.append(
             {
                 "id": definition.id,
@@ -318,11 +402,13 @@ def build_feature_pack_statuses(
                 "status": status,
                 "installed": status == "installed",
                 "installPlatform": install_platform,
-                "restartRequired": bool(configured.get("restartRequired", status == "installed")),
+                "restartRequired": restart_required,
                 "logRef": configured.get("logRef"),
-                "lastError": configured.get("lastError"),
+                "lastError": last_error,
                 "updatedAt": configured.get("updatedAt"),
                 "missingReason": missing_reason,
+                "receiptPythonVersion": receipt_environment.get("pythonVersion"),
+                "runtimePythonVersion": platform.python_version(),
                 "source": "feature_pack"
                 if configured_status == "installed" and target_exists
                 else "legacy_runtime_families"

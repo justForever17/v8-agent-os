@@ -698,12 +698,18 @@
         "logoAsset": "/model-assets/lobe/volcengine-color.svg",
         "modelIds": [
           "doubao-seedance-2-5",
-          "doubao-seedance-2-0",
+          "doubao-seedance-2-0-260128",
           "doubao-seedance-2-0-fast",
           "doubao-seedance-2-0-mini",
           "doubao-seedance-1-5-pro",
           "doubao-seedance-1-0-pro-fast-251015"
         ],
+        "modelAliases": {
+          "doubao-seedance-2-0-260128": [
+            "doubao-seedance-2-0",
+            "seedance-2.0"
+          ]
+        },
         "apiStandard": "volcengine_ark_video",
         "adapter": "volcengine_ark",
         "probeStrategy": "openai_models",
@@ -731,6 +737,8 @@
             "content[].type",
             "content[].text",
             "content[].image_url.url",
+            "content[].video_url.url",
+            "content[].audio_url.url",
             "content[].role",
             "ratio",
             "resolution",

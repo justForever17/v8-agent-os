@@ -354,6 +354,147 @@ def test_registered_subagent_binding_commits_and_uses_subagent_contract(tmp_path
     assert config["bindings"]["agents"]["reviewer"] == {"model_id": "provider::reviewer"}
 
 
+def test_media_operation_transaction_is_scoped_recoverable_and_requires_ready_projection(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import core.config_broker_service as module
+    import runtimes.creative_media.runtime as creative_module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    model_ref = "minimax-cn::v2/video_generation/MiniMax-H3"
+    state = {
+        "version": 1,
+        "updatedAt": "before",
+        "selections": [
+            {
+                "operationKind": "image.generate",
+                "modelRefs": ["images::configured"],
+                "enabled": True,
+                "priority": 10,
+                "updatedAt": "before",
+            },
+            {
+                "operationKind": "video.reference_to_video",
+                "modelRefs": [model_ref],
+                "enabled": False,
+                "priority": 390,
+                "updatedAt": "before",
+            },
+        ],
+        "models": [
+            {
+                "candidateId": "image-candidate",
+                "operationKind": "image.generate",
+                "modelRef": "images::configured",
+                "enabled": True,
+                "priority": 10,
+                "updatedAt": "before",
+            },
+            {
+                "candidateId": "h3-candidate",
+                "modality": "video",
+                "operationKind": "video.reference_to_video",
+                "providerId": "minimax-cn",
+                "modelId": "v2/video_generation/MiniMax-H3",
+                "modelRef": model_ref,
+                "adapter": "minimax_video",
+                "enabled": False,
+                "priority": 390,
+                "updatedAt": "before",
+            },
+        ],
+    }
+
+    def _read_json(_filename):
+        return json.loads(json.dumps(state))
+
+    def _mutate_json(_filename, mutator):
+        proposed = mutator(json.loads(json.dumps(state)))
+        state.clear()
+        state.update(json.loads(json.dumps(proposed)))
+        return json.loads(json.dumps(state))
+
+    def _preferences():
+        selection = next(
+            item
+            for item in state["selections"]
+            if item["operationKind"] == "video.reference_to_video"
+        )
+        enabled = bool(selection["enabled"])
+        candidate = {
+            "candidateId": "h3-candidate",
+            "modality": "video",
+            "operationKind": "video.reference_to_video",
+            "providerId": "minimax-cn",
+            "modelId": "v2/video_generation/MiniMax-H3",
+            "modelRef": model_ref,
+            "adapter": "minimax_video",
+            "source": "model_control_plane",
+            "available": True,
+            "enabled": enabled,
+            "priority": 390,
+            "readiness": {"executable": True, "reasonCodes": []},
+        }
+        return {
+            "connectedOptions": [candidate],
+            "operationRows": [
+                {
+                    "operationKind": "video.reference_to_video",
+                    "enabled": enabled,
+                    "selectedModelRefs": [model_ref],
+                }
+            ],
+            "executionProjection": {
+                "video.reference_to_video": {
+                    "status": "ready" if enabled else "blocked",
+                    "configuredModelRefs": [model_ref],
+                }
+            },
+        }
+
+    monkeypatch.setattr(module.storage, "read_json", _read_json)
+    monkeypatch.setattr(module.storage, "mutate_json", _mutate_json)
+    monkeypatch.setattr(creative_module.creative_media_runtime, "get_model_preferences", _preferences)
+    service = module.ConfigBrokerService()
+
+    prepared = service.prepare_media_operation(
+        operation_kind="video.reference_to_video",
+        model_ref="minimax-cn::v2%2Fvideo_generation%2FMiniMax-H3",
+        enabled=True,
+        priority=None,
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert committed["state"] == "committed"
+    assert committed["result"] == {
+        "operationKind": "video.reference_to_video",
+        "modelRef": model_ref,
+        "enabled": True,
+        "priority": 390,
+        "executionStatus": "ready",
+    }
+    assert next(item for item in state["selections"] if item["operationKind"] == "image.generate")["modelRefs"] == [
+        "images::configured"
+    ]
+    assert next(
+        item for item in state["selections"] if item["operationKind"] == "video.reference_to_video"
+    )["enabled"] is True
+
+    rolled_back = service.rollback(prepared["transactionId"], owner_id="owner")
+
+    assert rolled_back["state"] == "rolled_back"
+    assert next(
+        item for item in state["selections"] if item["operationKind"] == "video.reference_to_video"
+    )["enabled"] is False
+    assert next(item for item in state["selections"] if item["operationKind"] == "image.generate")["modelRefs"] == [
+        "images::configured"
+    ]
+
+
 def test_mcp_secret_prepare_rejects_missing_runtime_scope_without_orphan_transaction(tmp_path, monkeypatch) -> None:
     import core.config_broker_service as module
 

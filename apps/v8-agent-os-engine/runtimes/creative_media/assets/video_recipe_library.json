@@ -12,7 +12,7 @@
   "referenceRoles": ["first_frame", "last_frame", "character", "scene", "camera_motion", "action", "style", "audio_tempo", "background_music", "sound_effect", "voice_tone"],
   "seedance2": {
     "providerIds": ["volcengine_seedance"],
-    "modelIds": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast"],
+    "modelIds": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast"],
     "promptLanguage": "provider-facing English by default; preserve required on-screen text or subtitles in the original language",
     "referenceSyntax": {
       "image": "@imageN / @图片N",

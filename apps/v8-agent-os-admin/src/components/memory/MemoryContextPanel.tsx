@@ -323,7 +323,7 @@ export function MemoryContextPanel() {
   };
   if (loading || !envelope) {
     return <div className="flex min-h-[320px] items-center justify-center rounded-2xl border border-border/60 bg-background/80">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>;
   }
   return <div className="space-y-6">
@@ -374,14 +374,14 @@ export function MemoryContextPanel() {
 
 
             <div className="grid gap-4 lg:grid-cols-3">
-                {PRESET_OPTIONS.map(option => <button key={option.key} type="button" className={cn("rounded-2xl border px-5 py-5 text-left shadow-sm transition-colors", currentPreset === option.key ? "border-sky-200 bg-sky-50 text-sky-900" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300")} onClick={() => handleApplyPreset(option.key)}>
+                {PRESET_OPTIONS.map(option => <button key={option.key} type="button" className={cn("rounded-2xl border px-5 py-5 text-left text-foreground shadow-sm transition-colors", currentPreset === option.key ? "border-primary/40 bg-primary/10" : "border-border bg-card hover:border-input")} onClick={() => handleApplyPreset(option.key)}>
 
                         <div className="flex items-center justify-between gap-3">
                             <div className="text-base font-semibold">{t(option.title)}</div>
                             <AlignLeft className="h-4 w-4 shrink-0" />
                         </div>
-                        <div className="mt-2 text-sm leading-6 text-slate-500">{t(option.description)}</div>
-                        <div className="mt-4 text-xs leading-5 text-slate-500">
+                        <div className="mt-2 text-sm leading-6 text-muted-foreground">{t(option.description)}</div>
+                        <div className="mt-4 text-xs leading-5 text-muted-foreground">
                             {tg(t, "a05320e1")} {Math.round((option.compression.trigger_ratio ?? 0.94) * 100)}{tg(t, "63c5e541")} {option.compression.keep_recent_turns} {tg(t, "74fcafe5")} {option.compression.max_summary_input_tokens}
                         </div>
                     </button>)}
@@ -402,7 +402,7 @@ export function MemoryContextPanel() {
                                 onCheckedChange={checked => updateCompression({
                                     enabled: checked
                                 })}
-                                className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                                className="rounded-2xl border-border bg-muted/35 px-4 py-3"
                             />
 
                             <div className="grid gap-5 md:grid-cols-2">
@@ -414,7 +414,7 @@ export function MemoryContextPanel() {
                 }))} />
                                 </div>
 
-                                <div className="space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 md:col-span-2">
+                                <div className="space-y-2 rounded-2xl border border-border bg-card px-4 py-3 md:col-span-2">
                                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                         <div className="space-y-1">
                                             <Label>{t("components.memory.MemoryContextPanel.maxGraphContinuationsLabel")}</Label>
@@ -494,7 +494,7 @@ export function MemoryContextPanel() {
                                 onCheckedChange={checked => updateCompression({
                                     use_llm_summary: checked
                                 })}
-                                className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                                className="rounded-2xl border-border bg-muted/35 px-4 py-3"
                             />
 
                             <div className="grid gap-5 md:grid-cols-2">

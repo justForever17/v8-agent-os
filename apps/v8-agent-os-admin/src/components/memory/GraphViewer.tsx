@@ -5,6 +5,7 @@ import { forceCollide, forceX, forceY } from "d3-force-3d";
 import { Link2, Loader2, Plus, Search, Sparkles, Trash2, Unlink2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { tg } from "@/i18n/admin-legacy";
@@ -747,22 +748,22 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     }
     return matchedNodeIds.has(sourceId) || matchedNodeIds.has(targetId) || link.label.toLowerCase().includes(normalizedFilter);
   }, [hoveredNodeId, matchedNodeIds, normalizedFilter, selectedNodeId]);
-  const workspaceSelector = workspaceReady && graphWorkspaces.length > 0 ? <label className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
-            <span className="sr-only">{t("components.memory.GraphViewer.workspaceLabel")}</span>
-            <select
-              className="max-w-56 cursor-pointer bg-transparent pr-1 text-foreground outline-none"
+  const workspaceSelector = workspaceReady && graphWorkspaces.length > 0 ? <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+             <span className="sr-only">{t("components.memory.GraphViewer.workspaceLabel")}</span>
+            <Select
               value={selectedWorkspaceKey}
-              onChange={(event) => setSelectedWorkspaceKey(event.target.value)}
-              aria-label={t("components.memory.GraphViewer.workspaceLabel")}
+              onValueChange={setSelectedWorkspaceKey}
             >
-              {!selectedWorkspaceKey ? <option value="" disabled>
-                {t("components.memory.GraphViewer.chooseWorkspace")}
-              </option> : null}
-              {graphWorkspaces.map((option) => <option key={option.workspaceKey} value={option.workspaceKey}>
-                {option.label}{option.isDefault ? `（${t("components.memory.GraphViewer.defaultWorkspace")}）` : ""} — {option.workspacePath} · {option.relationCount}
-              </option>)}
-            </select>
-        </label> : null;
+              <SelectTrigger className="h-6 w-56 border-0 bg-transparent px-0 py-0 text-xs text-foreground shadow-none focus:ring-0" aria-label={t("components.memory.GraphViewer.workspaceLabel")}>
+                <SelectValue placeholder={t("components.memory.GraphViewer.chooseWorkspace")} />
+              </SelectTrigger>
+              <SelectContent className="max-w-[min(44rem,calc(100vw-2rem))]">
+                {graphWorkspaces.map((option) => <SelectItem key={option.workspaceKey} value={option.workspaceKey}>
+                  {option.label}{option.isDefault ? `（${t("components.memory.GraphViewer.defaultWorkspace")}）` : ""} — {option.workspacePath} · {option.relationCount}
+                </SelectItem>)}
+              </SelectContent>
+            </Select>
+        </div> : null;
   if (loading) {
     return <div className="relative flex h-[620px] items-center justify-center rounded-3xl border border-border/60 bg-muted/10">
                 {workspaceSelector}

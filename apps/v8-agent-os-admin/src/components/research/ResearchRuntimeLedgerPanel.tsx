@@ -76,17 +76,16 @@ type LedgerPayload = {
 };
 
 function confidenceTone(confidence?: string) {
-    if (confidence === "high") return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    if (confidence === "medium") return "bg-sky-50 text-sky-700 border-sky-200";
-    return "bg-slate-50 text-slate-600 border-slate-200";
+    if (confidence === "high") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (confidence === "medium") return "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+    return "border-border bg-muted/40 text-muted-foreground";
 }
 
 function packStateTone(state: "searchable" | "review" | "refresh" | "archived" | "unknown") {
-    if (state === "searchable") return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    if (state === "review") return "bg-amber-50 text-amber-700 border-amber-200";
-    if (state === "refresh") return "bg-rose-50 text-rose-700 border-rose-200";
-    if (state === "archived") return "bg-slate-100 text-slate-600 border-slate-200";
-    return "bg-slate-50 text-slate-600 border-slate-200";
+    if (state === "searchable") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (state === "review") return "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    if (state === "refresh") return "border-rose-500/25 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    return "border-border bg-muted/40 text-muted-foreground";
 }
 
 function normalizeStatus(value?: string) {
@@ -359,13 +358,13 @@ export function ResearchRuntimeLedgerPanel() {
     }, [refresh]);
 
     return (
-        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+        <Card className="rounded-3xl border-border bg-card/95 shadow-sm">
             <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
                 <div>
-                    <CardTitle className="text-lg font-semibold text-slate-900">
+                    <CardTitle className="text-lg font-semibold text-foreground">
                         {t("app.admin.dashboard.research.runtime.ledger.title")}
                     </CardTitle>
-                    <p className="mt-2 text-sm text-slate-500">
+                    <p className="mt-2 text-sm text-muted-foreground">
                         {t("app.admin.dashboard.research.runtime.ledger.description")}
                     </p>
                 </div>
@@ -376,29 +375,29 @@ export function ResearchRuntimeLedgerPanel() {
             </CardHeader>
             <CardContent className="space-y-5">
                 {error ? (
-                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
                         {t(`app.admin.dashboard.research.runtime.ledger.errors.${normalizeErrorCode(error)}`)}
-                        {normalizeErrorCode(error) === "unknown" ? <div className="mt-1 font-mono text-xs text-rose-600">{error}</div> : null}
+                        {normalizeErrorCode(error) === "unknown" ? <div className="mt-1 font-mono text-xs text-rose-600 dark:text-rose-200">{error}</div> : null}
                     </div>
                 ) : null}
                 <div className="grid gap-3 md:grid-cols-3">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.research.runtime.ledger.evidenceCount")}</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-950">{data?.counts?.evidenceBundles ?? evidence.length}</div>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.evidenceCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{data?.counts?.evidenceBundles ?? evidence.length}</div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.research.runtime.ledger.packCount")}</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-950">{data?.counts?.experiencePacks ?? visiblePacks.length}</div>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.packCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{data?.counts?.experiencePacks ?? visiblePacks.length}</div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.research.runtime.ledger.timelineCount")}</div>
-                        <div className="mt-2 text-2xl font-semibold text-slate-950">{timeline.length}</div>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.timelineCount")}</div>
+                        <div className="mt-2 text-2xl font-semibold text-foreground">{timeline.length}</div>
                     </div>
                 </div>
 
                 <section className="space-y-3">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.research.runtime.ledger.experiencePacks")}</h3>
+                        <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.experiencePacks")}</h3>
                         <div className="flex gap-2">
                             {selectedPackIds.size ? (
                                 <>
@@ -414,7 +413,7 @@ export function ResearchRuntimeLedgerPanel() {
                                     ) : null}
                                 </>
                             ) : null}
-                            <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 text-xs text-slate-600">
+                            <label className="flex items-center gap-2 rounded-xl border border-border px-3 text-xs text-muted-foreground">
                                 <Checkbox checked={includeArchived} onCheckedChange={(value) => {
                                     setIncludeArchived(Boolean(value));
                                     setPacks([]);
@@ -438,7 +437,7 @@ export function ResearchRuntimeLedgerPanel() {
                         {visiblePacks.slice(0, 8).map((item) => {
                             const packState = resolvePackState(item, t);
                             return (
-                                <div key={item.experiencePackId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div key={item.experiencePackId} className="rounded-2xl border border-border bg-background/55 p-4">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="flex min-w-0 items-start gap-3">
                                             <Checkbox
@@ -465,13 +464,13 @@ export function ResearchRuntimeLedgerPanel() {
                                                 )}
                                                 panelClassName="w-[32rem] max-w-[calc(100vw-2rem)] whitespace-normal text-xs leading-5"
                                             >
-                                                <div className="font-medium text-slate-900 underline decoration-slate-300 decoration-dotted underline-offset-4">
+                                                <div className="font-medium text-foreground underline decoration-border decoration-dotted underline-offset-4">
                                                     {item.title || item.experiencePackId}
                                                 </div>
                                             </AdminHoverInfo>
-                                            <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
+                                            <div className="mt-1 text-xs text-muted-foreground">{item.experiencePackId}</div>
                                             {item.freshnessState && item.freshnessState !== "current" ? (
-                                                <div className="mt-1 text-xs text-amber-700">
+                                                <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
                                                     {t("app.admin.dashboard.research.runtime.ledger.freshnessAge", {
                                                         age: item.ageDays ?? 0,
                                                         limit: item.maxAgeDays ?? 0,
@@ -484,7 +483,7 @@ export function ResearchRuntimeLedgerPanel() {
                                             {packState.label}
                                         </Badge>
                                     </div>
-                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
                                         <span>{t("app.admin.dashboard.research.runtime.ledger.authority")}: {item.authorityScore ?? 0}</span>
                                         <span>{t("app.admin.dashboard.research.runtime.ledger.usage")}: {item.usageCount ?? 0}</span>
                                         <span>{t("app.admin.dashboard.research.runtime.ledger.confidence")}: {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}</span>
@@ -501,7 +500,7 @@ export function ResearchRuntimeLedgerPanel() {
                                                 {t("app.admin.dashboard.research.runtime.ledger.archive")}
                                             </Button>
                                         )}
-                                        <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => hardDeletePack(item)} disabled={loading}>
+                                        <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-300 dark:hover:bg-rose-500/10" onClick={() => hardDeletePack(item)} disabled={loading}>
                                             <Trash2 className="mr-2 h-4 w-4" />
                                             {t("app.admin.dashboard.research.runtime.ledger.hardDelete")}
                                         </Button>
@@ -513,14 +512,14 @@ export function ResearchRuntimeLedgerPanel() {
                 </section>
 
                 <section className="space-y-3">
-                    <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.research.runtime.ledger.evidenceBundles")}</h3>
+                    <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.evidenceBundles")}</h3>
                     <div className="space-y-3">
                         {evidence.slice(0, 8).map((item) => (
-                            <div key={item.evidenceBundleId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div key={item.evidenceBundleId} className="rounded-2xl border border-border bg-background/55 p-4">
                                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                                     <div>
-                                        <div className="font-medium text-slate-900">{item.question || item.evidenceBundleId}</div>
-                                        <div className="mt-1 text-xs text-slate-500">{item.evidenceBundleId}</div>
+                                        <div className="font-medium text-foreground">{item.question || item.evidenceBundleId}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{item.evidenceBundleId}</div>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Badge variant="outline" className={confidenceTone(item.confidence)}>
@@ -538,19 +537,19 @@ export function ResearchRuntimeLedgerPanel() {
                 </section>
 
                 <section className="space-y-3">
-                    <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.research.runtime.ledger.confidenceTimeline")}</h3>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                    <h3 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.research.runtime.ledger.confidenceTimeline")}</h3>
+                    <div className="rounded-2xl border border-border bg-muted/30 p-4">
                         <div className="space-y-3">
                             {timeline.slice(0, 10).map((item) => (
                                 <div key={`${item.evidenceBundleId}-${item.at}`} className="flex items-start gap-3 text-sm">
                                     <GitBranch className="mt-0.5 h-4 w-4 text-sky-600" />
                                     <div className="min-w-0">
-                                        <div className="truncate font-medium text-slate-900">{item.question || item.evidenceBundleId}</div>
-                                        <div className="text-xs text-slate-500">{item.at} · {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")} · {item.authorityScore ?? 0}</div>
+                                        <div className="truncate font-medium text-foreground">{item.question || item.evidenceBundleId}</div>
+                                        <div className="text-xs text-muted-foreground">{item.at} · {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")} · {item.authorityScore ?? 0}</div>
                                     </div>
                                 </div>
                             ))}
-                            {!timeline.length ? <div className="text-sm text-slate-500">{t("app.admin.dashboard.research.runtime.ledger.emptyTimeline")}</div> : null}
+                            {!timeline.length ? <div className="text-sm text-muted-foreground">{t("app.admin.dashboard.research.runtime.ledger.emptyTimeline")}</div> : null}
                         </div>
                     </div>
                 </section>

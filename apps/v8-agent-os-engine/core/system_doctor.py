@@ -5,13 +5,14 @@ import json
 import shutil
 import socket
 import sqlite3
-import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.process_launch import run_windowless
 from core.runtime.startup_profile import build_installation_snapshot, startup_bundle_diagnostics
 from core.storage import storage
 from core.storage_retention import storage_retention_service
@@ -46,14 +47,14 @@ def _module_available(module_name: str) -> tuple[bool, str | None]:
         return False, str(exc)
 
 
-def _run_version_command(command: list[str], *, timeout_seconds: float = 2.0) -> dict[str, Any]:
+def _run_version_command(command: list[str], *, timeout_seconds: float = 5.0) -> dict[str, Any]:
     try:
         executable = shutil.which(command[0])
         if executable is None and sys.platform == "win32":
             executable = shutil.which(f"{command[0]}.cmd") or shutil.which(f"{command[0]}.exe")
         if executable is None:
             return {"ok": False, "output": f"{command[0]} not found on PATH", "returnCode": None}
-        completed = subprocess.run(
+        completed = run_windowless(
             [executable, *command[1:]],
             capture_output=True,
             text=True,
@@ -79,15 +80,20 @@ class SystemDoctorService:
 
     def run(self) -> dict[str, Any]:
         checks: list[dict[str, Any]] = []
-        checks.extend(self._check_paths())
-        checks.extend(self._check_ports())
-        checks.extend(self._check_dependencies())
-        checks.extend(self._check_databases())
-        checks.extend(self._check_models())
-        checks.extend(self._check_runtimes())
-        checks.extend(self._check_extensions())
-        checks.extend(self._check_network_supervisor_compat())
-        checks.extend(self._check_storage_pressure())
+        checkers = (
+            self._check_paths,
+            self._check_ports,
+            self._check_dependencies,
+            self._check_databases,
+            self._check_models,
+            self._check_runtimes,
+            self._check_extensions,
+            self._check_network_supervisor_compat,
+            self._check_storage_pressure,
+        )
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="v8-system-doctor") as executor:
+            for result in executor.map(lambda checker: checker(), checkers):
+                checks.extend(result)
         summary = self._summarize(checks)
         return {
             "id": f"doctor_{uuid.uuid4().hex[:12]}",

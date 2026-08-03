@@ -127,11 +127,11 @@ export function RuntimeConfigWorkbench({
     }, [disabled, kind, t, toast]);
 
     return (
-        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+        <Card className="rounded-3xl border-border bg-card shadow-sm">
             <CardContent className="space-y-4 p-6">
                 {loading ? (
-                    <div className="flex h-24 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/80">
-                        <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                    <div className="flex h-24 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40">
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                     </div>
                 ) : (
                     <>
@@ -159,7 +159,7 @@ export function RuntimeConfigWorkbench({
                             <div className="flex justify-end">
                                 <Link
                                     href={governanceHref}
-                                    className="inline-flex items-center gap-2 text-sm font-medium text-sky-700 transition hover:text-sky-800"
+                                    className="inline-flex items-center gap-2 text-sm font-medium text-sky-700 transition hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
                                 >
                                     {t("components.runtime.RuntimeConfigWorkbench.k103f21d3")}
                                     <ArrowRight className="h-4 w-4" />

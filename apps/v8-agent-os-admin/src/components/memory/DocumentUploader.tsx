@@ -170,7 +170,7 @@ export default function DocumentUploader() {
         if (['zip', 'tar', 'gz'].includes(ext || ''))
             return <FileArchive className="w-6 h-6 text-yellow-600"/>;
         if (['json', 'xml', 'md', 'mdx', 'html'].includes(ext || ''))
-            return <FileCode className="w-6 h-6 text-slate-500"/>;
+            return <FileCode className="h-6 w-6 text-muted-foreground"/>;
         return <FileIcon className="w-6 h-6 text-muted-foreground"/>;
     };
     return (<Card>

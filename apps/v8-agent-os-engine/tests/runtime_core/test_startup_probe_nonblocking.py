@@ -39,3 +39,9 @@ def test_windows_standalone_launcher_repairs_directory_links_before_start() -> N
 
     assert 'fs.symlinkSync(target, candidate, "junction")' in source
     assert "repairWindowsDirectorySymlinks" in source
+
+
+def test_engine_startup_does_not_eagerly_run_plugin_machine_discovery() -> None:
+    source = (Path(__file__).resolve().parents[2] / "main.py").read_text(encoding="utf-8")
+
+    assert "warm_machine_discovery" not in source

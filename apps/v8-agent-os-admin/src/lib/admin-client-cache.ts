@@ -117,7 +117,6 @@ const ROUTE_DATA_PREFETCH: Record<string, RoutePrefetchTarget[]> = {
   ],
   "/admin/operations-center": [
     ["/api/operations-center/summary", 15_000],
-    "/api/storage-retention/stats",
   ],
   "/admin/projects-workspaces": [
     "/api/config-registry/projects",
@@ -186,8 +185,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   }
 
   const requestId = ++nextRequestId;
-  let request: Promise<T>;
-  request = fetch(key, { cache: "no-store" })
+  const request: Promise<T> = fetch(key, { cache: "no-store" })
     .then(async (response) => {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {

@@ -2789,7 +2789,7 @@ export default function ModelHubPage() {
                                 <button
                                     key={purpose.id}
                                     type="button"
-                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white dark:border-border/60 dark:bg-muted dark:text-slate-950" : "bg-background hover:bg-muted"}`}
+                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-primary/40 bg-primary/10 text-foreground" : "border-border bg-background hover:bg-muted"}`}
                                     onClick={() => {
                                         setCatalogPurpose(purpose.id);
                                         pendingCatalogProviderIdRef.current = "";
@@ -2806,7 +2806,7 @@ export default function ModelHubPage() {
                                     }}
                                 >
                                     <span className="block text-sm font-semibold">{t(purpose.labelKey)}</span>
-                                    <span className={`mt-1 block truncate text-[11px] ${catalogPurpose === purpose.id ? "text-white/75 dark:text-slate-950/70" : "text-muted-foreground"}`}>{t(purpose.hintKey)}</span>
+                                    <span className="mt-1 block truncate text-[11px] text-muted-foreground">{t(purpose.hintKey)}</span>
                                 </button>
                             ))}
                         </div>
@@ -3024,14 +3024,14 @@ export default function ModelHubPage() {
                                                 <button
                                                     key={`${probedCatalogProviderId || selectedCatalogProviderId}:${modelId}`}
                                                     type="button"
-                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white dark:bg-muted dark:text-slate-950" : "hover:bg-muted"}`}
+                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-primary/10 text-foreground" : "hover:bg-muted"}`}
                                                     onClick={() => {
                                                         setSelectedCatalogModelId(modelId);
                                                         setCatalogModelFilter(modelId);
                                                     }}
                                                 >
                                                     <span className="flex min-w-0 items-center gap-2">
-                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-card/10 dark:bg-slate-950/10" : "bg-muted dark:bg-card/10"}`}>
+                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-primary/15" : "bg-muted"}`}>
                                                             {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
                                                         <span className="min-w-0">

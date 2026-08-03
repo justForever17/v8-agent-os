@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/system/doctor", tags=["system-doctor"])
 @router.get("")
 async def get_system_doctor():
     try:
-        return system_doctor_service.run()
+        return await asyncio.to_thread(system_doctor_service.run)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -22,6 +23,9 @@ async def get_system_doctor():
 async def build_system_doctor_repair_plan(payload: dict[str, Any] | None = Body(default=None)):
     try:
         checks = payload.get("checks") if isinstance(payload, dict) else None
-        return system_doctor_service.build_repair_plan(checks if isinstance(checks, list) else None)
+        return await asyncio.to_thread(
+            system_doctor_service.build_repair_plan,
+            checks if isinstance(checks, list) else None,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

@@ -5,6 +5,7 @@ def test_tool_observation_records_list_and_reveal_are_redacted(tmp_path):
     from core.observability_db import ObservabilityDatabaseManager
 
     db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    raw_body = "api_key=sk-secretsecretsecret\nsafe line\n" + ("x" * 2000)
     db.add_tool_observation_record(
         {
             "id": "toolobs_test",
@@ -16,7 +17,7 @@ def test_tool_observation_records_list_and_reveal_are_redacted(tmp_path):
             "raw_chars": 80,
             "visible_chars": 20,
             "raw_sha256": "abc",
-            "raw_body": "api_key=sk-secretsecretsecret\nsafe line\n" + ("x" * 2000),
+            "raw_body": raw_body,
             "budget": {"wasBudgetTruncated": True},
             "metadata": {"runId": "run_1", "sessionId": "sess_1"},
         }
@@ -28,12 +29,39 @@ def test_tool_observation_records_list_and_reveal_are_redacted(tmp_path):
     assert item["rawRef"] == "toolobs://toolobs_test"
     assert "sk-secret" not in item["preview"]
     assert "<redacted>" in item["preview"]
-    assert item["omittedChars"] > 0
+    assert item["rawChars"] == len(raw_body)
+    assert item["omittedChars"] == len(raw_body) - 40
 
     revealed = db.reveal_tool_observation_record("toolobs_test", max_chars=4000)
     assert revealed
     assert "safe line" in revealed["preview"]
     assert "sk-secret" not in revealed["preview"]
+
+
+def test_tool_observation_list_preserves_lengths_after_nul_characters(tmp_path):
+    from core.observability_db import ObservabilityDatabaseManager
+
+    db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    raw_body = "abc\x00def"
+    visible_body = "xy\x00z"
+    db.add_tool_observation_record(
+        {
+            "id": "toolobs_nul",
+            "raw_ref": "toolobs://toolobs_nul",
+            "tool_name": "test_tool",
+            "raw_chars": len(raw_body),
+            "visible_chars": len(visible_body),
+            "raw_body": raw_body,
+            "visible_body": visible_body,
+        }
+    )
+
+    item = db.list_tool_observation_records(limit=1, preview_chars=3)["items"][0]
+
+    assert item["rawChars"] == len(raw_body)
+    assert item["visibleChars"] == len(visible_body)
+    assert item["omittedChars"] == len(raw_body) - len(item["preview"])
+    assert item["agentVisibleOmittedChars"] == len(visible_body) - len(item["agentVisiblePreview"])
 
 
 def test_observability_routes_delegate_filters_and_reveal(monkeypatch):

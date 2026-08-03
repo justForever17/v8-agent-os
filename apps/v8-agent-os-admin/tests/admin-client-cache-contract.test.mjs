@@ -44,11 +44,12 @@ test("network supervisor prefetch uses the same plural neighbor and token routes
     assert.doesNotMatch(source, /"\/api\/network-supervisor\/neighbor\/status"/);
 });
 
-test("operations prefetch only calls readable storage retention endpoints", () => {
+test("operations prefetch avoids storage scans until the user opens retention details", () => {
     const source = read("src", "lib", "admin-client-cache.ts");
+    const operationsPrefetch = source.match(/"\/admin\/operations-center": \[([\s\S]*?)\n\s*\],/u)?.[1] || "";
 
-    assert.match(source, /"\/api\/storage-retention\/stats"/);
-    assert.doesNotMatch(source, /"\/api\/storage-retention\/config"/);
+    assert.match(operationsPrefetch, /"\/api\/operations-center\/summary"/);
+    assert.doesNotMatch(operationsPrefetch, /storage-retention/);
 });
 
 test("chat runtime and subagents share the supervisor model binding without a duplicate default-model request", () => {

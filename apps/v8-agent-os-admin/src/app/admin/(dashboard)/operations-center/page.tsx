@@ -1103,7 +1103,7 @@ function OperationLogsPanel() {
                 </Button>
             </div>
             <div className="flex flex-wrap gap-2">
-                {OPERATION_LOG_SOURCES.map(item => <button key={item} type="button" onClick={() => setSource(item)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${source === item ? "bg-slate-950 text-white" : "bg-muted text-muted-foreground hover:bg-muted"}`}>
+                {OPERATION_LOG_SOURCES.map(item => <button key={item} type="button" onClick={() => setSource(item)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${source === item ? "bg-primary/15 text-foreground" : "bg-muted text-muted-foreground hover:bg-muted"}`}>
 
                         {t(`app.admin.dashboard.operations.center.logs.source.${item}`)}
                     </button>)}
@@ -1272,7 +1272,7 @@ function EvidencePanel() {
 
             <div className="grid min-h-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
                 <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-border bg-card p-3 shadow-sm xl:max-h-[680px]">
-                    {items.length === 0 ? <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.empty")}</div> : items.map(item => <button key={item.id || item.rawRef} type="button" onClick={() => setSelected(item)} className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-slate-900 bg-slate-950 text-white" : "border-border bg-muted/50 text-foreground hover:border-input"}`}>
+                    {items.length === 0 ? <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.empty")}</div> : items.map(item => <button key={item.id || item.rawRef} type="button" onClick={() => setSelected(item)} className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-primary/40 bg-primary/10 text-foreground" : "border-border bg-muted/50 text-foreground hover:border-input"}`}>
 
                             <div className="flex items-center justify-between gap-2">
                                 <span className="truncate font-semibold">{item.toolName || "unknown"}</span>
@@ -1307,8 +1307,8 @@ function EvidencePanel() {
                                   { label: t("app.admin.dashboard.operations.center.evidence.hash"), value: selected.rawSha256 },
                                 ]} />
                                 <div className="mt-3 grid gap-2 md:grid-cols-2">
-                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
-                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
+                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-slate-200">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
+                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-slate-200">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
                                 </div>
                             </details>
                             <div className="rounded-xl border border-border p-3 text-xs">
@@ -1424,7 +1424,7 @@ function RunLedgerPanel({
                     <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
                         {timeline.length === 0 ? <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">{ti(t, "k0e212bccad")}</div> : timeline.map(item => <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-border/60 bg-card p-3 shadow-sm">
                                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                                    <span className="rounded-full bg-slate-950 px-2 py-0.5 font-medium text-white">{item.type || "event"}</span>
+                                    <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">{item.type || "event"}</span>
                                     <span className="text-muted-foreground">{item.source || "-"}</span>
                                     <span className="font-mono text-muted-foreground/80">{item.ts || "-"}</span>
                                 </div>
@@ -1507,9 +1507,9 @@ export default function OperationsCenterPage() {
                 <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
                     <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k127a42f4")}</div>
                     <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-                        {summary?.health?.memory?.warnings?.length ? summary.health.memory.warnings.map(warning => <div key={warning} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+                        {summary?.health?.memory?.warnings?.length ? summary.health.memory.warnings.map(warning => <div key={warning} className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
                                     {warning}
-                                </div>) : <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-900">
+                                </div>) : <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-800 dark:text-emerald-200">
                                 {t("app.admin.dashboard.operations.center.page.k8a57c639")}
                             </div>}
                     </div>
@@ -1587,7 +1587,7 @@ export default function OperationsCenterPage() {
                 </TabsContent>
 
                 <TabsContent value="advanced">
-                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")} defaultOpen>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")} defaultOpen={false}>
                         <SystemDoctorPanel />
                     </AdvancedSection>
                     <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.configMigration.title")} defaultOpen={false}>
@@ -1599,10 +1599,10 @@ export default function OperationsCenterPage() {
                     <AdvancedSection title={t("app.admin.dashboard.operations.center.advanced.storageRetention.title")} defaultOpen={false}>
                         <StorageRetentionPanel />
                     </AdvancedSection>
-                    <AdvancedSection title={t("app.admin.dashboard.operations.center.logs.title")} defaultOpen>
+                    <AdvancedSection title={t("app.admin.dashboard.operations.center.logs.title")} defaultOpen={false}>
                         <OperationLogsPanel />
                     </AdvancedSection>
-                    <AdvancedSection title={"app.admin.dashboard.operations.center.page.k428237fe"} defaultOpen>
+                    <AdvancedSection title={"app.admin.dashboard.operations.center.page.k428237fe"} defaultOpen={false}>
                         <AuditLogsPanel />
                     </AdvancedSection>
                 </TabsContent>

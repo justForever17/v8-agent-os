@@ -487,7 +487,7 @@ export default function MemoryConfigPanel() {
                                 ...prev,
                                 passive_injection_enabled: checked
                             }))}
-                            className="rounded-lg border p-3 bg-white"
+                            className="rounded-lg p-3"
                         />
                         <SettingToggleCard
                             title={t("components.memory.MemoryConfigPanel.k2fda3796")}
@@ -497,7 +497,7 @@ export default function MemoryConfigPanel() {
                                 ...prev,
                                 graph_enabled: checked
                             }))}
-                            className="rounded-lg border p-3 bg-white"
+                            className="rounded-lg p-3"
                         />
                         <SettingToggleCard
                             title={t("components.memory.MemoryConfigPanel.k1b7acecd")}
@@ -507,7 +507,7 @@ export default function MemoryConfigPanel() {
                                 ...prev,
                                 fts_enabled: checked
                             }))}
-                            className="rounded-lg border p-3 bg-white"
+                            className="rounded-lg p-3"
                         />
                         <SettingToggleCard
                             title={t("components.memory.MemoryConfigPanel.manualExtraction.title")}
@@ -518,7 +518,7 @@ export default function MemoryConfigPanel() {
                                 extraction_mode: checked ? "manual" : "auto",
                                 extraction_enabled: !checked
                             }))}
-                            className="rounded-lg border p-3 bg-white"
+                            className="rounded-lg p-3"
                         />
                     </div>
 
@@ -539,7 +539,7 @@ export default function MemoryConfigPanel() {
                                         enabled: checked
                                     }
                                 }))}
-                                className="rounded-lg border p-3 bg-white"
+                                className="rounded-lg p-3"
                             />
                             <SettingToggleCard
                                 title={t("components.memory.MemoryConfigPanel.workflowMemory.hints")}
@@ -552,7 +552,7 @@ export default function MemoryConfigPanel() {
                                         hintInjectionEnabled: checked
                                     }
                                 }))}
-                                className="rounded-lg border p-3 bg-white"
+                                className="rounded-lg p-3"
                             />
                             <SettingToggleCard
                                 title={t("components.memory.MemoryConfigPanel.workflowMemory.quarantine")}
@@ -565,7 +565,7 @@ export default function MemoryConfigPanel() {
                                         quarantineOnNegativeFeedback: checked
                                     }
                                 }))}
-                                className="rounded-lg border p-3 bg-white"
+                                className="rounded-lg p-3"
                             />
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -580,7 +580,7 @@ export default function MemoryConfigPanel() {
                                         progressiveHintsEnabled: checked
                                     }
                                 }))}
-                                className="rounded-lg border p-3 bg-white"
+                                className="rounded-lg p-3"
                             />
                             <SettingToggleCard
                                 title={t("components.memory.MemoryConfigPanel.workflowMemory.sideEffectApproval")}
@@ -593,7 +593,7 @@ export default function MemoryConfigPanel() {
                                         requireApprovalForSideEffects: checked
                                     }
                                 }))}
-                                className="rounded-lg border p-3 bg-white"
+                                className="rounded-lg p-3"
                             />
                             <div className="space-y-1.5">
                                 <Label>{t("components.memory.MemoryConfigPanel.workflowMemory.maxGuides")}</Label>
@@ -649,7 +649,7 @@ export default function MemoryConfigPanel() {
                                     errorfulSuccessRequiresUserAcceptance: checked
                                 }
                             }))}
-                            className="rounded-lg border p-3 bg-white"
+                            className="rounded-lg p-3"
                         />
                     </div>
 
@@ -752,11 +752,11 @@ export default function MemoryConfigPanel() {
                             </p>
                         </div>
                         <div className="grid gap-3 md:grid-cols-3">
-                            {Object.entries(durablePresets).map(([presetKey, presetValues]) => <button key={presetKey} type="button" onClick={() => applyDurablePreset(presetKey)} className={`rounded-lg border p-3 text-left transition-colors ${currentDurablePreset === presetKey ? "border-sky-300 bg-sky-50" : "border-border hover:border-slate-300"}`}>
+                            {Object.entries(durablePresets).map(([presetKey, presetValues]) => <button key={presetKey} type="button" onClick={() => applyDurablePreset(presetKey)} className={`rounded-lg border p-3 text-left transition-colors ${currentDurablePreset === presetKey ? "border-primary/40 bg-primary/10" : "border-border hover:border-input"}`}>
 
                                     <div className="flex items-center justify-between gap-3">
                                         <span className="text-sm font-semibold">{t(DURABLE_POLICY_PRESET_LABELS[presetKey] || presetKey)}</span>
-                                        {presetKey === recommendedDurablePreset ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">{tg(t, "62b46f24")}</span> : null}
+                                        {presetKey === recommendedDurablePreset ? <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{tg(t, "62b46f24")}</span> : null}
                                     </div>
                                     <p className="mt-2 text-xs leading-5 text-muted-foreground">
                                         {DURABLE_POLICY_PRESET_DESCRIPTIONS[presetKey] ? t(DURABLE_POLICY_PRESET_DESCRIPTIONS[presetKey]) : tg(t, "88ee9dc4")}

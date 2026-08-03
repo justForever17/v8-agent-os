@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ExternalLink, Loader2, RefreshCw, Save, Search, ShieldCheck } from "lucide-react";
+import { ChevronDown, ExternalLink, Loader2, RefreshCw, Save, Search, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -95,6 +95,7 @@ export function ResearchSourceProviderPanel() {
     const [saving, setSaving] = useState(false);
     const [query, setQuery] = useState("");
     const [error, setError] = useState("");
+    const [expanded, setExpanded] = useState(false);
 
     const load = useCallback(async (force = false) => {
         if (!peekAdminJsonCache<SourceProvidersPayload>(SOURCE_PROVIDERS_URL) || !peekConfigDomain<SystemBaseData>("system-base")) {
@@ -137,6 +138,10 @@ export function ResearchSourceProviderPanel() {
             return text.includes(needle);
         });
     }, [providers, query]);
+    const enabledProviderCount = useMemo(
+        () => providers.filter((provider) => provider.enabled).length,
+        [providers],
+    );
 
     const updateProvider = (providerId: string, patch: Partial<EditableProvider>) => {
         setProviders((current) => current.map((provider) => provider.id === providerId ? { ...provider, ...patch } : provider));
@@ -194,53 +199,87 @@ export function ResearchSourceProviderPanel() {
     };
 
     return (
-        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
-            <CardHeader className="space-y-3">
-                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-                    <div className="space-y-1">
-                        <CardTitle className="flex items-center gap-2 text-base font-semibold text-slate-900">
-                            <Search className="h-4 w-4 text-sky-600" />
+        <Card className="overflow-hidden rounded-3xl border-border bg-card/95 shadow-sm">
+            <CardHeader className="space-y-0 p-0">
+                <button
+                    type="button"
+                    data-testid="source-router-toggle"
+                    className="flex w-full items-start justify-between gap-4 p-6 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    aria-expanded={expanded}
+                    aria-controls="research-source-provider-content"
+                    onClick={() => setExpanded((current) => !current)}
+                >
+                    <div className="min-w-0 space-y-1">
+                        <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
+                            <Search className="h-4 w-4 text-sky-600 dark:text-sky-400" />
                             {t("app.admin.research.sourceProviders.title")}
                         </CardTitle>
-                        <p className="text-sm leading-6 text-slate-500">
+                        <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">
                             {t("app.admin.research.sourceProviders.description")}
                         </p>
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2">
-                        <Input
-                            value={query}
-                            onChange={(event) => setQuery(event.target.value)}
-                            placeholder={t("app.admin.research.sourceProviders.searchPlaceholder")}
-                            className="h-9 w-full min-w-0 sm:w-64"
-                        />
-                        <Button type="button" variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || saving}>
-                            <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
-                            {t("app.admin.research.sourceProviders.refresh")}
-                        </Button>
-                        <Button type="button" size="sm" onClick={() => void handleSave()} disabled={loading || saving || !systemBase}>
-                            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            {t("app.admin.research.sourceProviders.save")}
-                        </Button>
+                    <div className="flex shrink-0 items-center gap-3">
+                        <Badge
+                            variant="outline"
+                            className={cn(
+                                "border-border bg-muted/35 text-muted-foreground",
+                                error && "border-destructive/40 bg-destructive/10 text-destructive",
+                            )}
+                        >
+                            {loading ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                            {loading
+                                ? t("app.admin.research.sourceProviders.loadingSummary")
+                                : error
+                                    ? t("app.admin.research.sourceProviders.loadFailedSummary")
+                                    : t("app.admin.research.sourceProviders.providerSummary", {
+                                        enabled: enabledProviderCount,
+                                        total: providers.length,
+                                    })}
+                        </Badge>
+                        <ChevronDown className={cn("h-5 w-5 text-muted-foreground transition-transform", expanded && "rotate-180")} />
+                        <span className="sr-only">
+                            {t(expanded ? "app.admin.research.sourceProviders.collapse" : "app.admin.research.sourceProviders.expand")}
+                        </span>
                     </div>
-                </div>
-                <div className="grid gap-2 text-xs text-slate-500 md:grid-cols-3">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        {t("app.admin.research.sourceProviders.networkRoute")}<span className="font-semibold text-slate-800">{String(sourceRouter.defaultNetworkRoute || "auto")}</span>
+                </button>
+                {expanded ? (
+                    <div className="space-y-3 border-t border-border/70 px-6 pb-6 pt-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                placeholder={t("app.admin.research.sourceProviders.searchPlaceholder")}
+                                className="h-9 w-full min-w-0 sm:w-64"
+                            />
+                            <Button type="button" variant="outline" size="sm" onClick={() => void load(true)} disabled={loading || saving}>
+                                <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
+                                {t("app.admin.research.sourceProviders.refresh")}
+                            </Button>
+                            <Button type="button" size="sm" onClick={() => void handleSave()} disabled={loading || saving || !systemBase}>
+                                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                {t("app.admin.research.sourceProviders.save")}
+                            </Button>
+                        </div>
+                        <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-3">
+                            <div className="rounded-2xl border border-border bg-muted/30 px-3 py-2">
+                                {t("app.admin.research.sourceProviders.networkRoute")}<span className="font-semibold text-foreground">{String(sourceRouter.defaultNetworkRoute || "auto")}</span>
+                            </div>
+                            <div className="rounded-2xl border border-border bg-muted/30 px-3 py-2">
+                                {t("app.admin.research.sourceProviders.cnPreferred")}{Array.isArray(sourceRouter.cnPreferred) ? sourceRouter.cnPreferred.join(" / ") : t("app.admin.research.sourceProviders.notConfigured")}
+                            </div>
+                            <div className="rounded-2xl border border-border bg-muted/30 px-3 py-2">
+                                {t("app.admin.research.sourceProviders.globalPreferred")}{Array.isArray(sourceRouter.globalPreferred) ? sourceRouter.globalPreferred.join(" / ") : t("app.admin.research.sourceProviders.notConfigured")}
+                            </div>
+                        </div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        {t("app.admin.research.sourceProviders.cnPreferred")}{Array.isArray(sourceRouter.cnPreferred) ? sourceRouter.cnPreferred.join(" / ") : t("app.admin.research.sourceProviders.notConfigured")}
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        {t("app.admin.research.sourceProviders.globalPreferred")}{Array.isArray(sourceRouter.globalPreferred) ? sourceRouter.globalPreferred.join(" / ") : t("app.admin.research.sourceProviders.notConfigured")}
-                    </div>
-                </div>
+                ) : null}
             </CardHeader>
-            <CardContent>
+            {expanded ? <CardContent id="research-source-provider-content" data-testid="source-router-content">
                 {error ? (
-                    <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">{error}</div>
                 ) : null}
                 {loading ? (
-                    <div className="flex h-32 items-center justify-center text-sm text-slate-500">
+                    <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         {t("app.admin.research.sourceProviders.loading")}
                     </div>
@@ -249,12 +288,12 @@ export function ResearchSourceProviderPanel() {
                         {filteredProviders.map((provider) => {
                             const helpUrl = provider.credentialHelp?.url || "";
                             return (
-                                <div key={provider.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                <div key={provider.id} className="rounded-2xl border border-border bg-background/55 p-4 shadow-sm">
                                     <SettingToggleCard
                                         title={
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <span className="truncate text-sm font-semibold text-slate-900">{provider.displayName}</span>
-                                                <Badge variant={provider.implemented ? "secondary" : "outline"} className={provider.implemented ? "bg-emerald-50 text-emerald-700" : "text-slate-500"}>
+                                                <span className="truncate text-sm font-semibold text-foreground">{provider.displayName}</span>
+                                                <Badge variant={provider.implemented ? "secondary" : "outline"} className={provider.implemented ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>
                                                     {provider.implemented ? t("app.admin.research.sourceProviders.implemented") : t("app.admin.research.sourceProviders.configSlot")}
                                                 </Badge>
                                                 <Badge variant="outline">{REGION_LABELS[provider.region] ? t(REGION_LABELS[provider.region]) : provider.region}</Badge>
@@ -267,7 +306,7 @@ export function ResearchSourceProviderPanel() {
                                         className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
                                     />
                                     <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                                        <label className="grid gap-1 text-xs font-medium text-slate-600">
+                                        <label className="grid gap-1 text-xs font-medium text-muted-foreground">
                                             {t("app.admin.research.sourceProviders.envLabel")}
                                             <Input
                                                 value={provider.authEnv}
@@ -276,7 +315,7 @@ export function ResearchSourceProviderPanel() {
                                                 className="h-9"
                                             />
                                         </label>
-                                        <label className="grid gap-1 text-xs font-medium text-slate-600">
+                                        <label className="grid gap-1 text-xs font-medium text-muted-foreground">
                                             {t("app.admin.research.sourceProviders.apiKeyLabel")}
                                             <div className="flex gap-2">
                                                 <Input
@@ -297,7 +336,7 @@ export function ResearchSourceProviderPanel() {
                                         </label>
                                     </div>
                                     {(provider.id === "searxng" || provider.baseUrl) ? (
-                                        <label className="mt-3 grid gap-1 text-xs font-medium text-slate-600">
+                                        <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
                                             {t("app.admin.research.sourceProviders.baseUrlLabel")}
                                             <Input
                                                 value={provider.baseUrl}
@@ -307,8 +346,8 @@ export function ResearchSourceProviderPanel() {
                                             />
                                         </label>
                                     ) : null}
-                                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                                        <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+                                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                        <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground/70" />
                                         <span>{t("app.admin.research.sourceProviders.proxy")}{String(provider.requiresProxy)}</span>
                                         <span>{t("app.admin.research.sourceProviders.cost")}{provider.costTier}</span>
                                         <span>{t("app.admin.research.sourceProviders.latency")}{provider.latencyTier}</span>
@@ -319,7 +358,7 @@ export function ResearchSourceProviderPanel() {
                         })}
                     </div>
                 )}
-            </CardContent>
+            </CardContent> : null}
         </Card>
     );
 }

@@ -216,17 +216,6 @@ async def _safe_initialize_mcp(app: FastAPI):
     print("[Engine] MCP initialization started in background; startup will not wait for server probes.")
 
 
-def _start_plugin_machine_discovery(app: FastAPI) -> None:
-    async def _run() -> dict:
-        from runtimes.plugin_manager.service import plugin_manager_service
-
-        return await asyncio.to_thread(plugin_manager_service.warm_machine_discovery)
-
-    task = asyncio.create_task(_run(), name="plugin_manager:machine_discovery")
-    task.add_done_callback(lambda item: _log_background_task(item, "plugin_machine_discovery"))
-    app.state.plugin_machine_discovery_task = task
-
-
 def _start_skill_refresh(app: FastAPI) -> None:
     extensions_runtime_service = _get_extensions_runtime_service()
     loaded_from_cache = extensions_runtime_service.prime_skill_cache()
@@ -477,7 +466,6 @@ async def lifespan(app: FastAPI):
     app.state.storage_pressure_monitor_task = asyncio.create_task(_monitor_storage_pressure())
 
     _ensure_plugin_manager_runtime_registered()
-    _start_plugin_machine_discovery(app)
     if service_flags["mcp"]:
         await _safe_initialize_mcp(app)
     if service_flags["extensions"]:

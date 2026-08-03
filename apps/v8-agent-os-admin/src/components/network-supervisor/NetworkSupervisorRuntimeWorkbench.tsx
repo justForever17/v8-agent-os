@@ -1459,7 +1459,7 @@ env:
                 </ConfigCard>) : null}
 
             {portNotices.length ? (<ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k40de2d8c"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8cbba0cc"} variant="list" bodyHeight="auto">
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950">
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-4 text-sm text-amber-800 dark:text-amber-200">
                         <ul className="list-disc space-y-2 pl-5 leading-6">
                             {portNotices.map((notice, index) => (<li key={`${notice.code}-${notice.path}-${index}`}>{renderPortNotice(notice)}</li>))}
                         </ul>
@@ -1469,12 +1469,12 @@ env:
             <ConfigCard title={neighborCopy.title} description={neighborCopy.description} variant="editor" bodyHeight="auto">
                 <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
                     <div className="space-y-4">
-                        <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-950 to-slate-800 p-5 text-white shadow-sm">
+                        <div className="rounded-3xl border border-border bg-gradient-to-br from-slate-950 to-slate-800 p-5 text-slate-100 shadow-sm">
                             <div className="flex items-start justify-between gap-4">
                                 <div>
                                     <div className="text-sm text-slate-300">{neighborStatus.node?.displayName || "V8 Device"}</div>
                                     <div className="mt-2 text-2xl font-semibold">{neighborStatus.enabled ? neighborCopy.enabled : neighborCopy.disabled}</div>
-                                    <div className="mt-2 text-xs text-slate-400">{neighborStatus.node?.peerId || "peer pending"}</div>
+                                    <div className="mt-2 text-xs text-slate-300/80">{neighborStatus.node?.peerId || "peer pending"}</div>
                                 </div>
                                 <Button variant={neighborStatus.enabled ? "secondary" : "default"} onClick={() => void toggleNeighbors()} disabled={neighborBusy === "switch"}>
                                     {neighborStatus.enabled ? neighborCopy.switchOff : neighborCopy.switchOn}
@@ -1496,36 +1496,36 @@ env:
                             </div>
                         </div>
 
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div>
-                                    <div className="text-sm font-semibold text-slate-900">{neighborCopy.createCode}</div>
-                                    <div className="mt-1 text-xs text-slate-500">{neighborCopy.codeHint}</div>
+                                    <div className="text-sm font-semibold text-foreground">{neighborCopy.createCode}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">{neighborCopy.codeHint}</div>
                                 </div>
                                 <Button variant="outline" size="sm" onClick={() => void createPairingInvite()} disabled={neighborBusy === "invite"}>
                                     {neighborCopy.createCode}
                                 </Button>
                             </div>
                             {pairingInvite ? (
-                                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                                    <div className="font-mono text-2xl font-semibold tracking-[0.3em] text-emerald-950">{pairingInvite.code}</div>
-                                    <div className="mt-1 text-xs text-emerald-700">{pairingInvite.expiresAt}</div>
+                                <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+                                    <div className="font-mono text-2xl font-semibold tracking-[0.3em] text-emerald-800 dark:text-emerald-200">{pairingInvite.code}</div>
+                                    <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">{pairingInvite.expiresAt}</div>
                                 </div>
                             ) : null}
                         </div>
 
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="mb-3 flex items-center justify-between">
-                                <div className="text-sm font-semibold text-slate-900">{neighborCopy.candidates}</div>
+                                <div className="text-sm font-semibold text-foreground">{neighborCopy.candidates}</div>
                                 <Badge variant="outline">{neighborCandidates.length}</Badge>
                             </div>
                             {neighborCandidates.length ? (
                                 <div className="space-y-2">
                                     {neighborCandidates.map((candidate) => (
-                                        <div key={candidate.peerId} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-3">
+                                        <div key={candidate.peerId} className="flex items-center justify-between gap-3 rounded-2xl bg-muted/35 px-3 py-3">
                                             <div className="min-w-0">
-                                                <div className="truncate text-sm font-medium text-slate-900">{candidate.displayName || candidate.peerId}</div>
-                                                <div className="truncate text-xs text-slate-500">{candidate.baseUrl || candidate.address || candidate.source || candidate.peerId}</div>
+                                                <div className="truncate text-sm font-medium text-foreground">{candidate.displayName || candidate.peerId}</div>
+                                                <div className="truncate text-xs text-muted-foreground">{candidate.baseUrl || candidate.address || candidate.source || candidate.peerId}</div>
                                             </div>
                                             <Button size="sm" variant="outline" onClick={() => setPairingPeerId(candidate.peerId)}>
                                                 {neighborCopy.connect}
@@ -1534,7 +1534,7 @@ env:
                                     ))}
                                 </div>
                             ) : (
-                                <div className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">{neighborCopy.noCandidates}</div>
+                                <div className="rounded-2xl bg-muted/35 px-3 py-4 text-sm text-muted-foreground">{neighborCopy.noCandidates}</div>
                             )}
                             <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_0.7fr_auto]">
                                 <Input value={pairingPeerId} onChange={(event) => setPairingPeerId(event.target.value)} placeholder="peer_xxx"/>
@@ -1547,21 +1547,21 @@ env:
                     </div>
 
                     <div className="space-y-4">
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="mb-3 flex items-center justify-between">
-                                <div className="text-sm font-semibold text-slate-900">{neighborCopy.connected}</div>
+                                <div className="text-sm font-semibold text-foreground">{neighborCopy.connected}</div>
                                 <Badge variant="outline">{neighborLinks.length}</Badge>
                             </div>
                             {neighborLinks.length ? (
                                 <div className="grid gap-2">
                                     {neighborLinks.map((link) => (
-                                        <button key={link.linkId} type="button" onClick={() => setSelectedNeighborLinkId(link.linkId)} className={`rounded-2xl border px-4 py-3 text-left transition ${selectedNeighborLink?.linkId === link.linkId ? "border-slate-900 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-900 hover:border-slate-300"}`}>
+                                        <button key={link.linkId} type="button" onClick={() => setSelectedNeighborLinkId(link.linkId)} className={`rounded-2xl border px-4 py-3 text-left transition ${selectedNeighborLink?.linkId === link.linkId ? "border-primary/40 bg-primary/10 text-foreground" : "border-border bg-muted/35 text-foreground hover:border-primary/30 hover:bg-muted/55"}`}>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="min-w-0">
                                                     <div className="truncate text-sm font-semibold">{link.remoteNickname || link.displayName || link.peerId}</div>
-                                                    <div className={`truncate text-xs ${selectedNeighborLink?.linkId === link.linkId ? "text-slate-300" : "text-slate-500"}`}>{link.localRole === "primary" ? neighborCopy.primary : neighborCopy.companion} · {link.online ? "online" : "offline"}</div>
+                                                    <div className="truncate text-xs text-muted-foreground">{link.localRole === "primary" ? neighborCopy.primary : neighborCopy.companion} · {link.online ? "online" : "offline"}</div>
                                                     {link.capabilityTags?.length ? (
-                                                        <div className={`mt-1 truncate text-[11px] ${selectedNeighborLink?.linkId === link.linkId ? "text-slate-300" : "text-slate-500"}`}>{link.capabilityTags.join(" · ")}</div>
+                                                        <div className="mt-1 truncate text-[11px] text-muted-foreground">{link.capabilityTags.join(" · ")}</div>
                                                     ) : null}
                                                 </div>
                                                 <Badge variant={link.online ? "default" : "secondary"}>{link.online ? "●" : "○"}</Badge>
@@ -1570,12 +1570,12 @@ env:
                                     ))}
                                 </div>
                             ) : (
-                                <div className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">{neighborCopy.noLinks}</div>
+                                <div className="rounded-2xl bg-muted/35 px-3 py-4 text-sm text-muted-foreground">{neighborCopy.noLinks}</div>
                             )}
                         </div>
 
                         {selectedNeighborLink ? (
-                            <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="rounded-3xl border border-border bg-card p-4">
                                 <div className="grid gap-3 sm:grid-cols-3">
                                     <div className="grid gap-2">
                                         <Label>{neighborCopy.localNickname}</Label>
@@ -1613,16 +1613,16 @@ env:
                             </div>
                         ) : null}
 
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
-                            <div className="mb-3 text-sm font-semibold text-slate-900">{neighborCopy.timeline}</div>
-                            <div className="max-h-72 space-y-2 overflow-auto rounded-2xl bg-slate-50 p-3">
+                        <div className="rounded-3xl border border-border bg-card p-4">
+                            <div className="mb-3 text-sm font-semibold text-foreground">{neighborCopy.timeline}</div>
+                            <div className="max-h-72 space-y-2 overflow-auto rounded-2xl bg-muted/35 p-3">
                                 {neighborTimeline.length ? neighborTimeline.map((message) => (
-                                    <div key={message.messageId} className={`rounded-2xl px-3 py-2 text-sm ${message.direction === "outbound" ? "ml-8 bg-slate-900 text-white" : "mr-8 bg-white text-slate-900"}`}>
+                                    <div key={message.messageId} className={`rounded-2xl px-3 py-2 text-sm text-foreground ${message.direction === "outbound" ? "ml-8 border border-primary/30 bg-primary/10" : "mr-8 border border-border bg-card"}`}>
                                         <div className="text-xs opacity-70">{message.fromNickname || message.role || message.status}</div>
                                         <div className="mt-1 whitespace-pre-wrap break-words">{message.preview || message.body}</div>
                                     </div>
                                 )) : (
-                                    <div className="py-8 text-center text-sm text-slate-500">{neighborCopy.timeline}</div>
+                                    <div className="py-8 text-center text-sm text-muted-foreground">{neighborCopy.timeline}</div>
                                 )}
                             </div>
                             <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
@@ -1632,11 +1632,11 @@ env:
                             </div>
                         </div>
 
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                                 <div>
-                                    <div className="text-sm font-semibold text-slate-900">{neighborCopy.tasks}</div>
-                                    <div className="mt-1 text-xs text-slate-500">{neighborCopy.taskHint}</div>
+                                    <div className="text-sm font-semibold text-foreground">{neighborCopy.tasks}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">{neighborCopy.taskHint}</div>
                                 </div>
                                 <div className="grid min-w-40 gap-1">
                                     <Label className="text-xs">{neighborCopy.resultPolicy}</Label>
@@ -1657,23 +1657,23 @@ env:
                                     <Button onClick={() => void dispatchNeighborTask("all")} disabled={!neighborLinks.length || neighborBusy === "taskAll" || !neighborTaskBody.trim()}>{neighborCopy.sendTaskAll}</Button>
                                 </div>
                             </div>
-                            <div className="mt-4 max-h-64 space-y-2 overflow-auto rounded-2xl bg-slate-50 p-3">
+                            <div className="mt-4 max-h-64 space-y-2 overflow-auto rounded-2xl bg-muted/35 p-3">
                                 {neighborTasks.length ? neighborTasks.map((task) => (
-                                    <div key={task.taskId} className="rounded-2xl bg-white px-3 py-3 text-sm">
+                                    <div key={task.taskId} className="rounded-2xl border border-border bg-card px-3 py-3 text-sm">
                                         <div className="flex items-center justify-between gap-3">
                                             <div className="min-w-0">
-                                                <div className="truncate font-semibold text-slate-900">{task.title || task.taskId}</div>
-                                                <div className="mt-1 truncate text-xs text-slate-500">{task.taskId} · {task.requiredCapabilities?.join(", ") || "auto"}</div>
+                                                <div className="truncate font-semibold text-foreground">{task.title || task.taskId}</div>
+                                                <div className="mt-1 truncate text-xs text-muted-foreground">{task.taskId} · {task.requiredCapabilities?.join(", ") || "auto"}</div>
                                             </div>
                                             <Badge variant={task.status === "completed" ? "default" : "secondary"}>{task.status || "queued"}</Badge>
                                         </div>
-                                        <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
+                                        <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
                                             <div>{task.assignments?.length || 0} assignments</div>
                                             <div>{task.results?.length || 0} results · {task.wakePolicy || "inbox"}</div>
                                         </div>
                                     </div>
                                 )) : (
-                                    <div className="py-8 text-center text-sm text-slate-500">{neighborCopy.noTasks}</div>
+                                    <div className="py-8 text-center text-sm text-muted-foreground">{neighborCopy.noTasks}</div>
                                 )}
                             </div>
                         </div>
@@ -1711,16 +1711,16 @@ env:
                                     key={adapter.id}
                                     type="button"
                                     onClick={() => selectRelayAdapter(adapter.id)}
-                                    className={`group rounded-3xl border p-4 text-left transition ${active ? "border-slate-950 bg-slate-950 text-white shadow-sm" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}
+                                    className={`group rounded-3xl border p-4 text-left transition ${active ? "border-primary/40 bg-primary/10 text-foreground shadow-sm" : "border-border bg-card text-foreground hover:border-primary/30 hover:bg-muted/35"}`}
                                 >
                                     <div className="flex items-start justify-between gap-3">
                                         <div>
-                                            <div className={`text-sm font-semibold ${active ? "text-white" : "text-slate-950"}`}>{title}</div>
-                                            <div className={`mt-1 text-xs leading-5 ${active ? "text-slate-300" : "text-slate-500"}`}>{hint}</div>
+                                            <div className="text-sm font-semibold text-foreground">{title}</div>
+                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">{hint}</div>
                                         </div>
                                         <Badge variant={adapterStatus?.configured ? "default" : "secondary"}>{active ? relayCopy.active : (adapterStatus?.configured ? relayCopy.ready : relayCopy.needsConfig)}</Badge>
                                     </div>
-                                    <div className={`mt-4 truncate rounded-2xl px-3 py-2 font-mono text-xs ${active ? "bg-white/10 text-slate-200" : "bg-slate-50 text-slate-500"}`}>
+                                    <div className={`mt-4 truncate rounded-2xl px-3 py-2 font-mono text-xs text-muted-foreground ${active ? "bg-background/50" : "bg-muted/35"}`}>
                                         {adapter.baseUrl || adapterStatus?.baseUrl || "https://relay.example.com"}
                                     </div>
                                 </button>
@@ -1729,17 +1729,17 @@ env:
                     </div>
 
                     {selectedRelayAdapter ? (
-                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-3xl border border-border bg-card p-4">
                             <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
                                 <div className="space-y-4">
                                     <SettingToggleCard
-                                        title={<span className="text-sm font-medium text-slate-900">{relayCopy.enabled}</span>}
+                                        title={<span className="text-sm font-medium text-foreground">{relayCopy.enabled}</span>}
                                         description={relayCopy.endpointHint}
                                         checked={config.relay.enabled}
                                         onCheckedChange={(checked) => {
                                             setConfig((prev) => ({ ...prev, enabled: checked ? true : prev.enabled, relay: mergeRelayConfig({ ...prev.relay, enabled: checked }) }));
                                         }}
-                                        className="rounded-2xl border border-slate-200 px-4 py-3 bg-slate-50 shadow-none hover:bg-slate-50"
+                                        className="rounded-2xl border border-border bg-muted/35 px-4 py-3 shadow-none hover:bg-muted/55"
                                     />
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <div className="space-y-2">
@@ -1773,9 +1773,9 @@ env:
                                     ) : null}
                                 </div>
 
-                                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="space-y-4 rounded-2xl border border-border bg-muted/35 p-4">
                                     <div className="flex items-center justify-between gap-3">
-                                        <div className="text-sm font-semibold text-slate-900">{relayCopy.protocol}</div>
+                                        <div className="text-sm font-semibold text-foreground">{relayCopy.protocol}</div>
                                         <Badge variant="outline">{config.relay.protocolVersion}</Badge>
                                     </div>
                                     <div className="grid gap-3 sm:grid-cols-2">
@@ -1790,19 +1790,19 @@ env:
                                     </div>
                                     <div className="grid gap-3">
                                         <SettingToggleCard
-                                            title={<span className="text-sm font-medium text-slate-900">{relayCopy.e2e}</span>}
+                                            title={<span className="text-sm font-medium text-foreground">{relayCopy.e2e}</span>}
                                             checked={config.relay.endToEndEnvelopeRequired}
                                             onCheckedChange={(checked) => setRelay({ endToEndEnvelopeRequired: checked })}
                                             className="border-none bg-transparent p-0 shadow-none hover:bg-transparent"
                                         />
                                         <SettingToggleCard
-                                            title={<span className="text-sm font-medium text-slate-900">{relayCopy.storeForward}</span>}
+                                            title={<span className="text-sm font-medium text-foreground">{relayCopy.storeForward}</span>}
                                             checked={config.relay.storeAndForwardRequired}
                                             onCheckedChange={(checked) => setRelay({ storeAndForwardRequired: checked })}
                                             className="border-none bg-transparent p-0 shadow-none hover:bg-transparent"
                                         />
                                     </div>
-                                    <div className="space-y-2 text-xs leading-5 text-slate-500">
+                                    <div className="space-y-2 text-xs leading-5 text-muted-foreground">
                                         <div className="truncate">well-known: {relayStatusAdapter?.endpoints?.wellKnown || "—"}</div>
                                         <div className="truncate">mailbox: {relayStatusAdapter?.endpoints?.mailbox || "—"}</div>
                                         <div className="truncate">websocket: {relayStatusAdapter?.endpoints?.websocket || "—"}</div>
@@ -1823,30 +1823,30 @@ env:
             >
                 <div className="grid gap-3 xl:grid-cols-3">
                     {thirdPartyConnectionCards.map((card) => (
-                        <div key={card.canonicalId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div key={card.canonicalId} className="rounded-2xl border border-border bg-card p-4">
                             <div className="flex items-start justify-between gap-3">
                                 <div>
-                                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                                         {card.title}
                                         <AdminHoverInfo content={`canonical id: ${card.canonicalId}`}>
-                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-100 text-[10px] text-slate-500">i</span>
+                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">i</span>
                                         </AdminHoverInfo>
                                     </div>
-                                    <p className="mt-1 text-xs leading-5 text-slate-500">{card.purpose}</p>
+                                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{card.purpose}</p>
                                 </div>
                             </div>
                             <div className="mt-4 space-y-2 text-xs">
                                 <div className="flex items-center justify-between gap-3">
-                                    <span className="text-slate-500">{card.endpointLabel}</span>
+                                    <span className="text-muted-foreground">{card.endpointLabel}</span>
                                     <Button type="button" size="sm" variant="outline" onClick={() => void copyText(card.endpoint, card.endpointLabel)}>
                                         {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}
                                     </Button>
                                 </div>
-                                <div className="truncate rounded-xl bg-slate-50 px-3 py-2 font-mono text-slate-700">{card.endpoint}</div>
-                                <div className="grid grid-cols-[88px_1fr] gap-2 text-slate-600">
-                                    <span className="text-slate-400">{card.credentialLabel}</span>
+                                <div className="truncate rounded-xl bg-muted/35 px-3 py-2 font-mono text-foreground">{card.endpoint}</div>
+                                <div className="grid grid-cols-[88px_1fr] gap-2 text-muted-foreground">
+                                    <span className="text-muted-foreground/70">{card.credentialLabel}</span>
                                     <span className="truncate font-mono">{card.credential}</span>
-                                    <span className="text-slate-400">{card.modelLabel}</span>
+                                    <span className="text-muted-foreground/70">{card.modelLabel}</span>
                                     <span className="truncate font-mono">{card.model}</span>
                                 </div>
                                 <div className="flex justify-end">
@@ -1860,10 +1860,10 @@ env:
                 </div>
             </ConfigCard>
 
-            <details className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-                <summary className="cursor-pointer list-none text-sm font-semibold text-slate-900">
+            <details className="rounded-3xl border border-border bg-muted/35 p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
                     {neighborCopy.advanced}
-                    <span className="ml-3 text-xs font-normal text-slate-500">{neighborCopy.advancedHint}</span>
+                    <span className="ml-3 text-xs font-normal text-muted-foreground">{neighborCopy.advancedHint}</span>
                 </summary>
                 <div className="mt-4 space-y-4">
 
@@ -1882,7 +1882,7 @@ env:
                             </Badge>
                         </div>
 
-                        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="grid gap-3 rounded-2xl border border-border bg-muted/35 p-4">
                             <div className="grid gap-2">
                                 <Label htmlFor="openai-compat-base-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatBaseUrl")}</Label>
                                 <div className="flex gap-2">
@@ -1904,8 +1904,8 @@ env:
                                     <Button type="button" variant="outline" onClick={() => void copyText(compatModelsUrl, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatModelsUrl"))}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopy")}</Button>
                                 </div>
                             </div>
-                            <div className="mt-2 border-t border-slate-200 pt-4">
-                                <div className="mb-3 text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatTitle")}</div>
+                            <div className="mt-2 border-t border-border pt-4">
+                                <div className="mb-3 text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatTitle")}</div>
                                 <div className="grid gap-3">
                                     <div className="grid gap-2">
                                         <Label htmlFor="anthropic-compat-base-url">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatBaseUrl")}</Label>
@@ -1944,11 +1944,11 @@ env:
                             </div>
                         </div>
 
-                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                                 <div>
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeysDescription")} panelClassName="text-xs leading-5">
-                                        <span className="cursor-help text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeys")}</span>
+                                        <span className="cursor-help text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatApiKeys")}</span>
                                     </AdminHoverInfo>
                                 </div>
                                 <div className="flex gap-2">
@@ -1959,11 +1959,11 @@ env:
                                 </div>
                             </div>
                             {tokens.length ? (<div className="space-y-2">
-                                    {tokens.map((token) => (<div key={token.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                                    {tokens.map((token) => (<div key={token.id} className="rounded-xl border border-border bg-muted/35 px-3 py-3">
                                             <div className="flex flex-wrap items-center justify-between gap-2">
                                                 <div className="min-w-0">
-                                                    <div className="text-sm font-medium text-slate-900">{token.label || token.id}</div>
-                                                    <div className="text-xs text-slate-500">{token.fingerprint || "—"}{token.createdAt ? ` · ${token.createdAt}` : ""}</div>
+                                                    <div className="text-sm font-medium text-foreground">{token.label || token.id}</div>
+                                                    <div className="text-xs text-muted-foreground">{token.fingerprint || "—"}{token.createdAt ? ` · ${token.createdAt}` : ""}</div>
                                                 </div>
                                                 <div className="flex gap-2">
                                                     <Button type="button" size="sm" variant="outline" onClick={() => void copyText(token.token, "API Key")}>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCopyKey")}</Button>
@@ -1972,46 +1972,46 @@ env:
                                             </div>
                                             <Input className="mt-2 font-mono text-xs" readOnly value={token.token}/>
                                         </div>))}
-                                </div>) : (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                                </div>) : (<div className="rounded-xl border border-dashed border-border bg-muted/35 px-4 py-5 text-sm text-muted-foreground">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatNoToken")}
                                 </div>)}
                         </div>
                     </div>
 
                     <div className="space-y-4">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="rounded-2xl border border-border bg-card p-4">
                             <div className="mb-3 flex items-center justify-between gap-3">
                                 <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressDiagnosticsDescription")} panelClassName="text-xs leading-5">
-                                    <span className="cursor-help text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressDiagnosticsTitle")}</span>
+                                    <span className="cursor-help text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressDiagnosticsTitle")}</span>
                                 </AdminHoverInfo>
                                 <Badge variant={status.pendingExternalTools?.waitingCount ? "default" : "secondary"}>
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressPendingTools", { count: status.pendingExternalTools?.waitingCount || 0 })}
                                 </Badge>
                             </div>
                             {status.compatIngress?.recent?.length ? (<div className="space-y-2">
-                                    {status.compatIngress.recent.slice(0, 3).map((item, index) => (<div key={`compat-ingress-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                    {status.compatIngress.recent.slice(0, 3).map((item, index) => (<div key={`compat-ingress-${index}`} className="rounded-xl border border-border bg-muted/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="outline">{String(item.protocol || "compat")}</Badge>
                                                 <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressPayloadTokens", { count: Number(item.payloadTokens || 0) })}</span>
                                                 <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressToolCount", { count: Number(item.clientToolCount || 0) })}</span>
                                             </div>
                                             <TechnicalReferenceDetails
-                                                className="mt-2 bg-white/60"
+                                                className="mt-2 bg-background/60"
                                                 items={[{
                                                     label: t("components.common.rawReference"),
                                                     value: String(item.rawRef || ""),
                                                 }]}
                                             />
                                         </div>))}
-                                </div>) : (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
+                                </div>) : (<div className="rounded-xl border border-dashed border-border bg-muted/35 px-3 py-4 text-xs text-muted-foreground">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressNoRecent")}
                                 </div>)}
                         </div>
-                        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="grid gap-3 rounded-2xl border border-border bg-card p-4">
                             <SettingToggleCard
                                 title={
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnableDescription")} panelClassName="text-xs leading-5">
-                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</span>
+                                        <span className="cursor-help text-sm font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatEnable")}</span>
                                     </AdminHoverInfo>
                                 }
                                 checked={config.openaiCompat.enabled}
@@ -2021,7 +2021,7 @@ env:
                             <SettingToggleCard
                                 title={
                                     <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainModeDescription")} panelClassName="text-xs leading-5">
-                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainMode")}</span>
+                                        <span className="cursor-help text-sm font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainMode")}</span>
                                     </AdminHoverInfo>
                                 }
                                 checked={config.openaiCompat.v8MainChainModeEnabled}
@@ -2029,12 +2029,12 @@ env:
                                 className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
                             />
                             {config.openaiCompat.v8MainChainModeEnabled ? (
-                                <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
-                                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatAdvancedTitle")}</div>
+                                <div className="grid gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800 dark:text-amber-300">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatAdvancedTitle")}</div>
                                     <SettingToggleCard
                                         title={
                                             <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")} panelClassName="text-xs leading-5">
-                                                <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
+                                                <span className="cursor-help text-sm font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
                                             </AdminHoverInfo>
                                         }
                                         checked={config.openaiCompat.allowWorkspaceHeaders}
@@ -2044,7 +2044,7 @@ env:
                                     <SettingToggleCard
                                         title={
                                             <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")} panelClassName="text-xs leading-5">
-                                                <span className="cursor-help text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
+                                                <span className="cursor-help text-sm font-medium text-amber-800 dark:text-amber-300">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
                                             </AdminHoverInfo>
                                         }
                                         checked={config.openaiCompat.allowRawWorkspacePath}
@@ -2092,19 +2092,19 @@ env:
 
                         <div className="space-y-2">
                             <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatCurlExample")}</Label>
-                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{curlExample}</pre>
+                            <pre className="overflow-auto rounded-2xl border border-border bg-slate-950 p-4 text-xs leading-5 text-slate-200">{curlExample}</pre>
                         </div>
                         <div className="space-y-2">
                             <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatSdkExample")}</Label>
-                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{sdkExample}</pre>
+                            <pre className="overflow-auto rounded-2xl border border-border bg-slate-950 p-4 text-xs leading-5 text-slate-200">{sdkExample}</pre>
                         </div>
                         <div className="space-y-2">
                             <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatCurlExample")}</Label>
-                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{anthropicCurlExample}</pre>
+                            <pre className="overflow-auto rounded-2xl border border-border bg-slate-950 p-4 text-xs leading-5 text-slate-200">{anthropicCurlExample}</pre>
                         </div>
                         <div className="space-y-2">
                             <Label>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.anthropicCompatClaudeCodeExample")}</Label>
-                            <pre className="overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">{claudeCodeExample}</pre>
+                            <pre className="overflow-auto rounded-2xl border border-border bg-slate-950 p-4 text-xs leading-5 text-slate-200">{claudeCodeExample}</pre>
                         </div>
                         <div className="flex justify-end">
                             <Button onClick={() => void saveConfig()} disabled={savingConfig}>
@@ -2127,7 +2127,7 @@ env:
                                 description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51ccd94e")}
                                 checked={config.enabled}
                                 onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enabled: checked }))}
-                                className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                                className="rounded-2xl border border-border bg-transparent px-4 py-3 shadow-none hover:bg-muted/35"
                             />
 
                             <div className="space-y-2">
@@ -2154,7 +2154,7 @@ env:
                                 description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k2288dd56")}
                                 checked={config.discovery.lanEnabled}
                                 onCheckedChange={(checked) => setDiscovery({ lanEnabled: checked })}
-                                className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                                className="rounded-2xl border border-border bg-transparent px-4 py-3 shadow-none hover:bg-muted/35"
                             />
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
@@ -2183,7 +2183,7 @@ env:
                         </div>
                     </div>
 
-                    <div className="grid gap-5 border-t border-slate-100 pt-5 lg:grid-cols-3">
+                    <div className="grid gap-5 border-t border-border pt-5 lg:grid-cols-3">
                         <div className="space-y-2">
                             <Label htmlFor="network-enrollment">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf830fbd8")}</Label>
                             <Select value={config.trust.enrollmentMode} onValueChange={(value: "manual" | "open") => setTrust({ enrollmentMode: value })}>
@@ -2212,14 +2212,14 @@ env:
                             description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kad9d78ed")}
                             checked={config.wake.enabled}
                             onCheckedChange={(checked) => setWake({ enabled: checked })}
-                            className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                            className="rounded-2xl border border-border bg-transparent px-4 py-3 shadow-none hover:bg-muted/35"
                         />
                         <SettingToggleCard
                             title={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5c9b4ab7")}
                             description={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k17b60019")}
                             checked={config.delegation.enabled}
                             onCheckedChange={(checked) => setDelegation({ enabled: checked })}
-                            className="rounded-2xl border border-slate-200 px-4 py-3 bg-transparent hover:bg-transparent shadow-none"
+                            className="rounded-2xl border border-border bg-transparent px-4 py-3 shadow-none hover:bg-muted/35"
                         />
                     </div>
 
@@ -2242,46 +2242,46 @@ env:
                 </ConfigCard>
 
                 <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kae425cff"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k9687b4bd"} variant="list" bodyHeight="auto">
-                    {loading ? (<div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                    {loading ? (<div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
                             {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k28efa74d")}
-                        </div>) : (<div className="space-y-4 text-sm text-slate-700">
+                        </div>) : (<div className="space-y-4 text-sm text-foreground">
                             <div className="flex flex-wrap gap-2">
                                 <Badge variant={status.enabled ? "default" : "secondary"}>{status.enabled ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kdb6c0cc1") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k12b31ba6")}</Badge>
                                 <Badge variant={status.started ? "default" : "secondary"}>{status.started ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d8295f0") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka5a2a276")}</Badge>
                                 <Badge variant={availability.available ? "default" : "secondary"}>{availability.available ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4398bbbc") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke95066ef")}</Badge>
                             </div>
-                            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4ec0ec8d")}</span> {status.node.peerId || "—"}</div>
-                                <div><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7c310026")}</span> {status.node.displayName || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf0354341")}</span> {status.node.advertisedBaseUrl || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0555b63c")}</span> {status.node.advertisedWsUrl || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k70e56416")}</span> {status.node.publicKeyFingerprint || "—"}</div>
-                                <div className="break-all"><span className="font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka2aeb345")}</span> {status.node.localPeerTokenFingerprint || "—"}</div>
+                            <div className="grid gap-3 rounded-2xl border border-border bg-muted/35 p-4">
+                                <div><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4ec0ec8d")}</span> {status.node.peerId || "—"}</div>
+                                <div><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7c310026")}</span> {status.node.displayName || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kf0354341")}</span> {status.node.advertisedBaseUrl || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0555b63c")}</span> {status.node.advertisedWsUrl || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k70e56416")}</span> {status.node.publicKeyFingerprint || "—"}</div>
+                                <div className="break-all"><span className="font-medium text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka2aeb345")}</span> {status.node.localPeerTokenFingerprint || "—"}</div>
                             </div>
                             <div className="grid gap-3 sm:grid-cols-2">
-                                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka700a601")}</div>
-                                    <div className="mt-1 text-lg font-semibold text-slate-900">{status.discovery.discoveredPeerCount}</div>
+                                <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                                    <div className="text-xs text-muted-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ka700a601")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{status.discovery.discoveredPeerCount}</div>
                                 </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke9012800")}</div>
-                                    <div className="mt-1 text-lg font-semibold text-slate-900">{status.discovery.onlinePeerCount}</div>
+                                <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                                    <div className="text-xs text-muted-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke9012800")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{status.discovery.onlinePeerCount}</div>
                                 </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51d9bdf8")}</div>
-                                    <div className="mt-1 text-lg font-semibold text-slate-900">{status.delegation.activeInbound}</div>
+                                <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                                    <div className="text-xs text-muted-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k51d9bdf8")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{status.delegation.activeInbound}</div>
                                 </div>
-                                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                    <div className="text-xs text-slate-500">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7efaaaeb")}</div>
-                                    <div className="mt-1 text-lg font-semibold text-slate-900">{status.delegation.trackedCount}</div>
+                                <div className="rounded-2xl border border-border bg-card px-4 py-3">
+                                    <div className="text-xs text-muted-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7efaaaeb")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{status.delegation.trackedCount}</div>
                                 </div>
                             </div>
-                            {availability.reasons.length ? (<div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+                            {availability.reasons.length ? (<div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-4 text-sm text-amber-800 dark:text-amber-300">
                                     <div className="font-medium">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.ke477157c")}</div>
                                     <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5">
                                         {availability.reasons.map((reason) => (<li key={reason}>{availabilityReason(reason)}</li>))}
                                     </ul>
-                                </div>) : (<div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
+                                </div>) : (<div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-4 text-sm text-emerald-800 dark:text-emerald-300">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k0f3a887d")}
                                 </div>)}
                         </div>)}
@@ -2293,25 +2293,25 @@ env:
                     <div className="space-y-6">
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshCandidatesTitle")}</h3>
+                                <h3 className="text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshCandidatesTitle")}</h3>
                                 <Badge variant="outline">{peers.meshCandidates.length}</Badge>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs leading-5 text-slate-600">
+                            <div className="rounded-2xl border border-border bg-muted/35 px-4 py-3 text-xs leading-5 text-muted-foreground">
                                 {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshCandidatesPolicy")}
                             </div>
                             {peers.meshCandidates.length ? (<div className="space-y-3">
                                     {peers.meshCandidates.map((candidate) => (
-                                        <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                                        <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="rounded-2xl border border-border bg-card px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="font-medium text-slate-900">{candidate.hostName || candidate.dnsName || candidate.ips?.[0] || t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshUnknownPeer")}</div>
+                                                <div className="font-medium text-foreground">{candidate.hostName || candidate.dnsName || candidate.ips?.[0] || t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshUnknownPeer")}</div>
                                                 <Badge variant="secondary">{candidate.source || "mesh"}</Badge>
                                                 <Badge variant={candidate.online ? "default" : "secondary"}>{candidate.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
                                                 {candidate.deviceClass === "phone" ? <Badge variant="outline">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerCandidateBadge")}</Badge> : null}
                                             </div>
-                                            <div className="mt-2 space-y-1 text-xs text-slate-500">
+                                            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                                                 <div className="break-all">{candidate.peerBaseUrl || candidate.dnsName || candidate.ips?.join(" · ") || "—"}</div>
                                                 {candidate.os ? <div>{candidate.os}</div> : null}
-                                                {candidate.deviceClass === "phone" || candidate.requiresApproval ? <div className="text-amber-700">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalHint")}</div> : null}
+                                                {candidate.deviceClass === "phone" || candidate.requiresApproval ? <div className="text-amber-700 dark:text-amber-300">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.phonePeerApprovalHint")}</div> : null}
                                             </div>
                                             <div className="mt-4 flex flex-wrap gap-2">
                                                 <Button variant="outline" size="sm" onClick={() => fillPeerFormFromMeshCandidate(candidate)}>
@@ -2320,25 +2320,25 @@ env:
                                             </div>
                                         </div>
                                     ))}
-                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                </div>) : (<div className="rounded-2xl border border-dashed border-border bg-muted/35 px-4 py-6 text-sm text-muted-foreground">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.meshNoCandidates")}
                                 </div>)}
                         </section>
 
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb07e9c89")}</h3>
+                                <h3 className="text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kb07e9c89")}</h3>
                                 <Badge variant="outline">{peers.discoveredItems.length}</Badge>
                             </div>
                             {peers.discoveredItems.length ? (<div className="space-y-3">
-                                    {peers.discoveredItems.map((peer) => (<div key={`discovered-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                                    {peers.discoveredItems.map((peer) => (<div key={`discovered-${peer.peerId}`} className="rounded-2xl border border-border bg-card px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="font-medium text-slate-900">{peer.displayName || peer.peerId}</div>
+                                                <div className="font-medium text-foreground">{peer.displayName || peer.peerId}</div>
                                                 <Badge variant="outline">{peer.peerId}</Badge>
                                                 <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
                                                 {peer.source ? <Badge variant="secondary">{resolveAdminLabel(t, "networkPeerSource", peer.source)}</Badge> : null}
                                             </div>
-                                            <div className="mt-2 space-y-1 text-xs text-slate-500">
+                                            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                                                 <div className="break-all">{peer.baseUrl || "—"}</div>
                                                 {peer.address ? <div>{peer.address}</div> : null}
                                                 {peer.lastSeenAt ? <div>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k917aca51")}{peer.lastSeenAt}</div> : null}
@@ -2355,25 +2355,25 @@ env:
                                                 </Button>
                                             </div>
                                         </div>))}
-                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                </div>) : (<div className="rounded-2xl border border-dashed border-border bg-muted/35 px-4 py-6 text-sm text-muted-foreground">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd961dc13")}
                                 </div>)}
                         </section>
 
                         <section className="space-y-3">
                             <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-semibold text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kec3b469e")}</h3>
+                                <h3 className="text-sm font-semibold text-foreground">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kec3b469e")}</h3>
                                 <Badge variant="outline">{peers.trustedItems.length}</Badge>
                             </div>
                             {peers.trustedItems.length ? (<div className="space-y-3">
-                                    {peers.trustedItems.map((peer) => (<div key={`trusted-${peer.peerId}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                                    {peers.trustedItems.map((peer) => (<div key={`trusted-${peer.peerId}`} className="rounded-2xl border border-border bg-card px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="font-medium text-slate-900">{peer.displayName || peer.peerId}</div>
+                                                <div className="font-medium text-foreground">{peer.displayName || peer.peerId}</div>
                                                 <Badge variant="outline">{peer.peerId}</Badge>
                                                 <Badge variant="default">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k7ce56639")}</Badge>
                                                 <Badge variant={peer.online ? "default" : "secondary"}>{peer.online ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kd4abefe4") : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kfc2ade75")}</Badge>
                                             </div>
-                                            <div className="mt-2 space-y-1 text-xs text-slate-500">
+                                            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                                                 <div className="break-all">{peer.baseUrl || "—"}</div>
                                                 <div className="break-all">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kcc6543c2")}{peer.tokenFingerprint || "—"}</div>
                                                 <div>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k4fdf4201")}{peer.allowedScopes.length ? joinCsv(peer.allowedScopes) : "—"}</div>
@@ -2390,7 +2390,7 @@ env:
                                                 </Button>
                                             </div>
                                         </div>))}
-                                </div>) : (<div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-6 text-sm text-slate-500">
+                                </div>) : (<div className="rounded-2xl border border-dashed border-border bg-muted/35 px-4 py-6 text-sm text-muted-foreground">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k01f8b04d")}
                                 </div>)}
                         </section>

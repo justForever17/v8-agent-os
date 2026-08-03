@@ -391,7 +391,19 @@ class ObservabilityDatabaseManager:
     def list_tool_observation_records(self, **filters: Any) -> Dict[str, Any]:
         limit = max(1, min(int(filters.get("limit") or 50), 200))
         cursor = str(filters.get("cursor") or "").strip()
-        query = "SELECT * FROM tool_observation_records WHERE 1=1"
+        preview_chars = max(0, int(filters.get("preview_chars") or 700))
+        query = f"""
+            SELECT
+                id, raw_ref, tool_name, tool_call_id, run_id, session_id,
+                runtime_kind, surface, raw_chars, visible_chars, raw_sha256,
+                length(raw_body_text) AS raw_body_length,
+                length(visible_body_text) AS visible_body_length,
+                substr(raw_body_text, 1, {preview_chars}) AS raw_body_text,
+                substr(visible_body_text, 1, {preview_chars}) AS visible_body_text,
+                budget_json, metadata_json, created_at
+            FROM tool_observation_records
+            WHERE 1=1
+        """
         params: list[Any] = []
         for key, column in (
             ("run_id", "run_id"),
@@ -415,7 +427,7 @@ class ObservabilityDatabaseManager:
             rows = rows[:limit]
             items: list[dict[str, Any]] = []
             for row in rows:
-                item = self._decode_tool_observation_row(dict(row), preview_chars=int(filters.get("preview_chars") or 700))
+                item = self._decode_tool_observation_row(dict(row), preview_chars=preview_chars)
                 items.append(item)
             next_cursor = items[-1]["created_at"] if has_more and items else None
             return {"items": items, "nextCursor": next_cursor, "hasMore": has_more}
@@ -435,6 +447,18 @@ class ObservabilityDatabaseManager:
         visible_body = str(row.get("visible_body_text") or "")
         visible_raw_preview = visible_body[: max(0, int(preview_chars or 0))]
         visible_preview = redact_observability_text(visible_raw_preview)
+        raw_body_length = row.get("raw_body_length")
+        visible_body_length = row.get("visible_body_length")
+        raw_total_chars = (
+            max(0, int(raw_body_length), int(row.get("raw_chars") or 0))
+            if raw_body_length is not None
+            else max(len(raw_body), int(row.get("raw_chars") or 0))
+        )
+        visible_total_chars = (
+            max(0, int(visible_body_length), int(row.get("visible_chars") or 0))
+            if visible_body_length is not None
+            else max(len(visible_body), int(row.get("visible_chars") or 0))
+        )
         return {
             "id": row.get("id"),
             "rawRef": row.get("raw_ref"),
@@ -444,8 +468,8 @@ class ObservabilityDatabaseManager:
             "sessionId": row.get("session_id") or metadata.get("sessionId") or metadata.get("session_id"),
             "runtimeKind": row.get("runtime_kind"),
             "surface": row.get("surface"),
-            "rawChars": int(row.get("raw_chars") or 0),
-            "visibleChars": int(row.get("visible_chars") or 0),
+            "rawChars": raw_total_chars,
+            "visibleChars": visible_total_chars,
             "rawSha256": row.get("raw_sha256"),
             "created_at": row.get("created_at"),
             "createdAt": row.get("created_at"),
@@ -453,11 +477,11 @@ class ObservabilityDatabaseManager:
             "metadata": metadata,
             "preview": preview,
             "previewChars": len(preview),
-            "omittedChars": max(0, len(raw_body) - len(raw_preview)),
+            "omittedChars": max(0, raw_total_chars - len(raw_preview)),
             "redacted": preview != raw_preview,
             "agentVisiblePreview": visible_preview,
             "agentVisiblePreviewChars": len(visible_preview),
-            "agentVisibleOmittedChars": max(0, len(visible_body) - len(visible_raw_preview)),
+            "agentVisibleOmittedChars": max(0, visible_total_chars - len(visible_raw_preview)),
         }
 
     def add_conversation_compaction_record(self, record: Dict[str, Any]) -> Dict[str, Any]:

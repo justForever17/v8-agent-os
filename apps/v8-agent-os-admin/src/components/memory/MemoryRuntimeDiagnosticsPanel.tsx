@@ -86,7 +86,7 @@ function formatExtractionOutcome(run: ExtractionRun, t: ReturnType<typeof useT>)
         const skipKey = run.skipReason || run.extractionMode || "";
         return {
             title: labels[skipKey] || t("components.memory.MemoryRuntimeDiagnosticsPanel.kdb68ad90"),
-            tone: "bg-slate-500/10 text-slate-700 border-slate-500/20",
+            tone: "border-border bg-muted/40 text-muted-foreground",
             detail: t("components.memory.MemoryRuntimeDiagnosticsPanel.kafd1f2f4"),
         };
     }

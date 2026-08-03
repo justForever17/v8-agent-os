@@ -6,6 +6,8 @@ const roots = [
   path.resolve("src/components/admin"),
   path.resolve("src/components/admin-shell"),
   path.resolve("src/components/layout"),
+  path.resolve("src/components/memory"),
+  path.resolve("src/components/research"),
 ];
 const forbidden = /^(?:bg-white(?:\/.+)?|bg-slate-(?:50|100)(?:\/.+)?|text-slate-(?:400|500|600|700|800|900|950)(?:\/.+)?|border-slate-(?:100|200|300)(?:\/.+)?)$/;
 const tokenPattern = /[A-Za-z0-9_\-:[\]/.%]+/g;

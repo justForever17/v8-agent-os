@@ -306,13 +306,13 @@ export default function AuditLogsPanel() {
                         <DialogTitle>{t("components.memory.AuditLogsPanel.k9041b4bc")}</DialogTitle>
                     </DialogHeader>
                     {selectedLog ? (<div className="space-y-4">
-                            <div className="grid gap-3 text-sm text-slate-600 md:grid-cols-2">
+                            <div className="grid gap-3 text-sm text-muted-foreground md:grid-cols-2">
                                 <div>{t("components.memory.AuditLogsPanel.k62fb388c")}{formatLocalDateTime(selectedLog.timestamp)}</div>
                                 <div>{t("components.memory.AuditLogsPanel.k925119c3")}{selectedLog.source_type}</div>
                                 <div>{t("components.memory.AuditLogsPanel.kb0d81cd8")}{selectedLog.action}</div>
                                 <div>{t("components.memory.AuditLogsPanel.kd12a1540")}{selectedLog.status}</div>
                             </div>
-                            <div className="max-h-[420px] overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-700">
+                            <div className="max-h-[420px] overflow-y-auto rounded-2xl border border-border bg-muted/30 p-4 text-sm leading-6 text-foreground">
                                 <pre className="whitespace-pre-wrap break-words font-sans">{selectedLog.details || "-"}</pre>
                             </div>
                         </div>) : null}

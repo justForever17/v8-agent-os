@@ -242,22 +242,20 @@ def test_skills_cli_runs_without_a_console_window_on_windows(
 ) -> None:
     service, _, _ = runtime
     captured: dict[str, object] = {}
-    create_no_window = 0x08000000
 
     monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: "C:/npm/npx.cmd")
-    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
 
     def fake_run(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
         return type("Completed", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
 
-    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_module, "run_windowless", fake_run)
 
     result = service._run_skills_cli(["list", "--global"])
 
     assert result["returnCode"] == 0
-    assert captured["kwargs"]["creationflags"] == create_no_window
+    assert captured["args"][0][0] == "C:/npm/npx.cmd"
     assert captured["kwargs"]["capture_output"] is True
 
 
@@ -498,9 +496,7 @@ def test_cloudflared_runtime_support_version_probe_has_no_windows_console(
     manifest = _cloudflare_manifest_with_runtime_support(service)
     profile = manifest.cliProfiles[-1]
     captured: dict[str, object] = {}
-    create_no_window = 0x08000000
 
-    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
     monkeypatch.setattr(service, "_refresh_process_cli_path", lambda: "")
     monkeypatch.setattr(service, "_resolve_execution_argv", lambda argv, **_kwargs: argv)
 
@@ -509,11 +505,10 @@ def test_cloudflared_runtime_support_version_probe_has_no_windows_console(
         captured["kwargs"] = kwargs
         return type("Completed", (), {"returncode": 0, "stdout": "cloudflared version 2026.7.2", "stderr": ""})()
 
-    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_module, "run_windowless", fake_run)
     result = service._execute_spec(manifest, profile.version)
 
     assert result["returnCode"] == 0
-    assert captured["kwargs"]["creationflags"] == create_no_window
     assert captured["kwargs"]["shell"] is False
 
 
@@ -1964,13 +1959,94 @@ def test_execute_spec_resolves_batch_launcher_without_shell(
         captured["kwargs"] = kwargs
         return type("Completed", (), {"returncode": 0, "stdout": "11.10.0", "stderr": ""})()
 
-    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_module, "run_windowless", fake_run)
 
     result = service._execute_spec(manifest, CommandSpec(argv=["npm", "--version"]))
 
     assert result["returnCode"] == 0
     assert captured["argv"] == [str(launcher.resolve()), "--version"]
     assert captured["kwargs"]["shell"] is False
+
+
+def test_managed_cli_shim_resolves_to_native_argv_without_batch_forwarding(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("cloudflare")
+    profile = manifest.cliProfiles[0]
+    target = service._plugin_root(manifest.id) / "node_modules" / ".bin" / "wrangler.cmd"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    capture = service._plugin_root(manifest.id) / "node_modules" / "fixture" / "capture.py"
+    capture.parent.mkdir(parents=True, exist_ok=True)
+    capture.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+    relative_capture = r"..\fixture\capture.py"
+    target.write_text(
+        "@echo off\r\n"
+        f'SET "_prog={sys.executable}"\r\n'
+        f'"%_prog%" "%dp0%\\{relative_capture}" %*\r\n',
+        encoding="utf-8",
+    )
+    service._bin_root().mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        service,
+        "_register_component",
+        lambda _plugin_id, component_id, component_type, **kwargs: {
+            "id": component_id,
+            "type": component_type,
+            "metadata": kwargs.get("metadata") or {},
+        },
+    )
+
+    rows = service._ensure_cli_shims(manifest, profile)
+
+    shim = service._bin_root() / "wrangler.cmd"
+    shim_text = shim.read_text(encoding="utf-8")
+    arguments = [
+        "alpha&echo injected",
+        "second arg",
+        'quote"value',
+        "trailing\\",
+        "percent%PATH%",
+        "pipe|value",
+        "caret^value",
+    ]
+    resolved = service._resolve_execution_argv(
+        [str(shim), *arguments],
+        search_path="",
+        manifest=manifest,
+    )
+    completed = service_module.run_windowless(
+        resolved,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert len(rows) == 1
+    assert resolved[:2] == [str(Path(sys.executable).resolve()), str(capture.resolve())]
+    assert resolved[2:] == arguments
+    assert str(target) not in shim_text
+    assert str(capture) in shim_text
+    assert rows[0]["metadata"]["target"] == str(target)
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout.strip()) == arguments
+
+
+def test_managed_cli_shim_rejects_unparseable_batch_forwarders(runtime) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("cloudflare")
+    profile = manifest.cliProfiles[0]
+    target = service._plugin_root(manifest.id) / "node_modules" / ".bin" / "wrangler.cmd"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('@echo off\r\n"unknown.cmd" %*\r\n', encoding="utf-8")
+    service._bin_root().mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(PluginManagerError) as exc:
+        service._ensure_cli_shims(manifest, profile)
+
+    assert exc.value.code == "plugin_cli_launcher_unsupported"
 
 
 def test_managed_archive_download_extracts_only_the_declared_entry(
@@ -2419,11 +2495,9 @@ def test_cli_auth_status_poll_uses_windowless_process_flags(
         captured["kwargs"] = dict(kwargs)
         return _Completed()
 
-    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: 0x08000000)
-    monkeypatch.setattr(service_module.subprocess, "run", _run)
+    monkeypatch.setattr(service_module, "run_windowless", _run)
 
     assert service._run_cli_auth_status(manifest, profile, adapter) is True
-    assert captured["kwargs"]["creationflags"] == 0x08000000
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["stdin"] is service_module.subprocess.DEVNULL
 
@@ -2735,9 +2809,6 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     skill = manifest.skills[0].model_dump(mode="json")
     calls: list[tuple[list[str], dict]] = []
     skills_cli_calls: list[list[str]] = []
-    create_no_window = 0x08000000
-    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
-
     def fake_run(argv, **kwargs):
         command = [str(item) for item in argv]
         calls.append((command, dict(kwargs)))
@@ -2749,7 +2820,7 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
             kwargs["stdout"].write((skill["revision"] + "\n").encode("utf-8"))
         return type("Completed", (), {"returncode": 0})()
 
-    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_module, "run_windowless", fake_run)
     inventory = {"ok": True, "tool": service_module.SKILLS_CLI_PACKAGE, "items": [], "lockEntries": {}, "error": ""}
 
     def fake_skills_cli(arguments, **_kwargs):
@@ -2784,7 +2855,6 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     ]
     assert all(kwargs["shell"] is False for _, kwargs in calls)
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for _, kwargs in calls)
-    assert all(kwargs["creationflags"] == create_no_window for _, kwargs in calls)
     assert len(skills_cli_calls) == 1
     assert skills_cli_calls[0][0] == "add"
     reviewed_source = Path(skills_cli_calls[0][1])

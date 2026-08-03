@@ -43,8 +43,32 @@ test("knowledge graph uses clustered spacing, drag, subtle motion, and reduced-m
     assert.doesNotMatch(graph, /denseCore/);
     assert.doesNotMatch(graph, /2200/);
     assert.match(graph, /menuMode === "summary"/);
+    assert.match(graph, /SelectTrigger/);
+    assert.match(graph, /SelectContent/);
+    assert.doesNotMatch(graph, /<select/);
     assert.doesNotMatch(graph, /enableNodeDrag=\{false\}/);
     assert.doesNotMatch(graph, /zoomToFit/);
+});
+
+test("Source Router stays compact until the user expands its configuration", () => {
+    const sourceRouter = read("src/components/research/ResearchSourceProviderPanel.tsx");
+
+    assert.match(sourceRouter, /const \[expanded, setExpanded\] = useState\(false\)/);
+    assert.match(sourceRouter, /data-testid="source-router-toggle"/);
+    assert.match(sourceRouter, /aria-expanded=\{expanded\}/);
+    assert.match(sourceRouter, /data-testid="source-router-content"/);
+    assert.match(sourceRouter, /\{expanded \? <CardContent/);
+    assert.match(sourceRouter, /loadingSummary/);
+    assert.match(sourceRouter, /loadFailedSummary/);
+    assert.doesNotMatch(sourceRouter, /bg-white|bg-slate-(?:50|100)|text-slate-(?:400|500|600|700|800|900|950)/);
+});
+
+test("Operations heavy diagnostics stay unmounted until explicitly expanded", () => {
+    const operations = read("src/app/admin/(dashboard)/operations-center/page.tsx");
+
+    assert.match(operations, /advanced\.systemDoctor\.title"\)} defaultOpen=\{false\}/);
+    assert.match(operations, /operations\.center\.logs\.title"\)} defaultOpen=\{false\}/);
+    assert.match(operations, /k428237fe"\} defaultOpen=\{false\}/);
 });
 
 test("subagent orchestration cards retain editable research and recursive budgets", () => {

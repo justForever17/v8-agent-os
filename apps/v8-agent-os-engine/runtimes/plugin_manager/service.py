@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.database import db
+from core.process_launch import run_windowless
 from core.security.credentials import CredentialRefStore, CredentialStoreError, credential_ref_store
 from core.storage import storage
 from core.v8_agent_os_paths import (
@@ -60,6 +61,8 @@ SAFE_COMPONENT_ID_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,160}$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])v?(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)")
 PINNED_PACKAGE_VERSION_RE = re.compile(r"@(?P<version>\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)$")
+MANAGED_CMD_PROGRAM_RE = re.compile(r'^\s*SET\s+"_prog=(?P<program>[^"]+)"\s*$', re.I | re.M)
+MANAGED_CMD_TARGET_RE = re.compile(r'"%dp0%\\(?P<target>\.\.\\[^"]+)"\s+%\*\s*$', re.I | re.M)
 CODE_OWNED_PROVIDER_ADAPTERS = {
     "creative_media.aliyun_bailian_dashscope",
 }
@@ -329,7 +332,7 @@ class PluginManagerService:
         environment = dict(os.environ)
         environment.update({"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"})
         try:
-            completed = subprocess.run(
+            completed = run_windowless(
                 [executable, "--yes", SKILLS_CLI_PACKAGE, *arguments],
                 cwd=str(cwd) if cwd else None,
                 env=environment,
@@ -339,7 +342,6 @@ class PluginManagerService:
                 errors="replace",
                 timeout=timeout_seconds,
                 check=False,
-                creationflags=_background_process_creation_flags(),
             )
             return {
                 "returnCode": int(completed.returncode),
@@ -421,7 +423,7 @@ class PluginManagerService:
             "error": error,
         }
         with self._cache_lock:
-            self._skills_inventory_cache = (now, inventory)
+            self._skills_inventory_cache = (time.monotonic(), inventory)
         return inventory
 
     def _skill_source_matches(self, lock_entry: dict[str, Any], skill: Any) -> bool:
@@ -2223,7 +2225,7 @@ class PluginManagerService:
             CommandSpec(argv=adapter.status_argv(profile), timeoutSeconds=15),
         )
         try:
-            completed = subprocess.run(
+            completed = run_windowless(
                 self._expand_argv(manifest, spec),
                 cwd=spec.cwd or None,
                 shell=False,
@@ -2233,7 +2235,6 @@ class PluginManagerService:
                 timeout=spec.timeoutSeconds,
                 env=self._cli_auth_environment(adapter),
                 check=False,
-                creationflags=_background_process_creation_flags(),
             )
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return False
@@ -3626,8 +3627,8 @@ class PluginManagerService:
                 }
         try:
             search_path = self._refresh_process_cli_path()
-            execution_argv = self._resolve_execution_argv(argv, search_path=search_path)
-            completed = subprocess.run(
+            execution_argv = self._resolve_execution_argv(argv, search_path=search_path, manifest=manifest)
+            completed = run_windowless(
                 execution_argv,
                 cwd=spec.cwd or None,
                 shell=False,
@@ -3641,7 +3642,6 @@ class PluginManagerService:
                     "PATH": f"{self._bin_root()}{os.pathsep}{search_path}",
                     **dict(env_overlay or {}),
                 },
-                creationflags=_background_process_creation_flags(),
             )
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
@@ -3663,8 +3663,13 @@ class PluginManagerService:
                 "durationMs": spec.timeoutSeconds * 1000,
             }
 
-    @staticmethod
-    def _resolve_execution_argv(argv: list[str], *, search_path: str) -> list[str]:
+    def _resolve_execution_argv(
+        self,
+        argv: list[str],
+        *,
+        search_path: str,
+        manifest: PluginManifest | None = None,
+    ) -> list[str]:
         """Resolve allowlisted launchers without invoking a command shell.
 
         Windows CreateProcess does not expand ``npm``/``npx`` to their ``.cmd``
@@ -3677,19 +3682,124 @@ class PluginManagerService:
             return resolved_argv
         executable = resolved_argv[0]
         candidate = Path(executable).expanduser()
+        resolved_path: Path | None = None
         if candidate.is_file():
-            resolved_argv[0] = str(candidate.resolve())
+            resolved_path = candidate.resolve()
+        else:
+            effective_search_path = f"{self._bin_root()}{os.pathsep}{search_path}"
+            resolved = shutil.which(executable, path=effective_search_path)
+            if not resolved and os.name == "nt" and not Path(executable).suffix:
+                for suffix in (".cmd", ".exe", ".bat", ".com"):
+                    resolved = shutil.which(f"{executable}{suffix}", path=effective_search_path)
+                    if resolved:
+                        break
+            if resolved:
+                resolved_path = Path(resolved).resolve()
+        if resolved_path is None:
             return resolved_argv
-
-        resolved = shutil.which(executable, path=search_path)
-        if not resolved and os.name == "nt" and not Path(executable).suffix:
-            for suffix in (".cmd", ".exe", ".bat", ".com"):
-                resolved = shutil.which(f"{executable}{suffix}", path=search_path)
-                if resolved:
-                    break
-        if resolved:
-            resolved_argv[0] = str(Path(resolved).resolve())
+        if manifest is not None:
+            managed_argv = self._resolve_managed_cli_shim_argv(
+                manifest,
+                resolved_path,
+                resolved_argv[1:],
+                search_path=search_path,
+            )
+            if managed_argv is not None:
+                return managed_argv
+        resolved_argv[0] = str(resolved_path)
         return resolved_argv
+
+    def _resolve_managed_batch_launcher(
+        self,
+        manifest: PluginManifest,
+        source: Path,
+        *,
+        search_path: str,
+    ) -> list[str]:
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise PluginManagerError(
+                "受管 CLI 启动器无法读取",
+                code="plugin_cli_launcher_unreadable",
+            ) from exc
+        programs = [match.group("program").strip() for match in MANAGED_CMD_PROGRAM_RE.finditer(text)]
+        targets = [match.group("target").strip() for match in MANAGED_CMD_TARGET_RE.finditer(text)]
+        if not programs or not targets:
+            raise PluginManagerError(
+                "受管 CLI 的 Windows 启动器无法解析为原生入口",
+                code="plugin_cli_launcher_unsupported",
+            )
+        plugin_root = self._plugin_root(manifest.id).resolve()
+        target = (source.parent / targets[-1].replace("\\", os.sep)).resolve()
+        if not target.is_file() or not target.is_relative_to(plugin_root):
+            raise PluginManagerError(
+                "受管 CLI 的原生入口超出插件目录或不存在",
+                code="plugin_cli_launcher_target_invalid",
+            )
+        program = programs[-1]
+        program_path = Path(program).expanduser()
+        if program_path.is_file():
+            executable = str(program_path.resolve())
+        else:
+            local_executable = source.parent / f"{program}.exe"
+            resolved = local_executable if local_executable.is_file() else shutil.which(program, path=search_path)
+            if not resolved:
+                raise PluginManagerError(
+                    "受管 CLI 的原生解释器不可用",
+                    code="plugin_cli_launcher_runtime_missing",
+                )
+            executable = str(Path(resolved).resolve())
+        return [executable, str(target)]
+
+    def _managed_cli_launcher(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        command: str,
+        *,
+        search_path: str,
+    ) -> tuple[list[str], str] | None:
+        if profile.ownership != "managed" or profile.exposure != "agent" or command not in profile.commands:
+            return None
+        if profile.shimCommand:
+            launcher = [str(self._expand_template(manifest, item)) for item in profile.shimCommand]
+            return launcher, subprocess.list2cmdline(launcher)
+        source = self._plugin_root(manifest.id) / "node_modules" / ".bin" / f"{command}.cmd"
+        if not source.exists():
+            source = source.with_suffix("")
+        if not source.exists():
+            return None
+        if source.suffix.lower() in {".cmd", ".bat"}:
+            launcher = self._resolve_managed_batch_launcher(manifest, source, search_path=search_path)
+        else:
+            launcher = [str(source.resolve())]
+        return launcher, str(source)
+
+    def _resolve_managed_cli_shim_argv(
+        self,
+        manifest: PluginManifest,
+        executable: Path,
+        arguments: list[str],
+        *,
+        search_path: str,
+    ) -> list[str] | None:
+        if os.path.normcase(str(executable.parent.resolve())) != os.path.normcase(str(self._bin_root().resolve())):
+            return None
+        command = executable.stem
+        profile = next((item for item in manifest.cliProfiles if command in item.commands), None)
+        if profile is None:
+            return None
+        resolved = self._managed_cli_launcher(
+            manifest,
+            profile,
+            command,
+            search_path=search_path,
+        )
+        if resolved is None:
+            return None
+        launcher, _ = resolved
+        return [*launcher, *arguments]
 
     def _register_cli_component(
         self,
@@ -3764,21 +3874,18 @@ class PluginManagerService:
     def _ensure_cli_shims(self, manifest: PluginManifest, profile: CliProfile) -> list[dict[str, Any]]:
         if profile.ownership != "managed" or profile.exposure != "agent":
             return []
-        plugin_bin = self._plugin_root(manifest.id) / "node_modules" / ".bin"
         rows = []
         for command in profile.commands:
-            if profile.shimCommand:
-                launcher = [str(self._expand_template(manifest, item)) for item in profile.shimCommand]
-                command_line = subprocess.list2cmdline(launcher)
-                source_description = command_line
-            else:
-                source = plugin_bin / f"{command}.cmd"
-                if not source.exists():
-                    source = plugin_bin / command
-                if not source.exists():
-                    continue
-                command_line = f'"{source}"'
-                source_description = str(source)
+            resolved = self._managed_cli_launcher(
+                manifest,
+                profile,
+                command,
+                search_path=self._cli_search_path(),
+            )
+            if resolved is None:
+                continue
+            launcher, source_description = resolved
+            command_line = subprocess.list2cmdline(launcher)
             shim = self._bin_root() / f"{command}.cmd"
             shim.write_text(f"@echo off\r\n{command_line} %*\r\n", encoding="utf-8")
             rows.append(
@@ -3801,14 +3908,13 @@ class PluginManagerService:
         environment["GIT_TERMINAL_PROMPT"] = "0"
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             try:
-                completed = subprocess.run(
+                completed = run_windowless(
                     command,
                     shell=False,
                     stdout=stdout_file,
                     stderr=stderr_file,
                     timeout=timeout_seconds,
                     env=environment,
-                    creationflags=_background_process_creation_flags(),
                 )
             except FileNotFoundError as exc:
                 raise PluginManagerError("Skill 安装需要受支持的 Git 可执行文件", code="skill_git_unavailable") from exc

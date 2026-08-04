@@ -4,6 +4,9 @@ declare global {
   interface Window {
     v8CyberCore?: {
       platform?: string;
+      readonly transport?: {
+        readonly engineWebSocketUrl: string;
+      } | null;
       openAdmin?: () => Promise<void>;
       reportStatus?: (payload: {
         state: 'waiting_v8os' | 'connected' | 'stopping' | 'error';

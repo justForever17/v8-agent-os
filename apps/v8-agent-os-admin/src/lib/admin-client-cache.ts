@@ -14,6 +14,17 @@ export type AdminJsonSnapshot<T = unknown> = {
 type AdminCacheEntry = AdminJsonSnapshot & {
   promise?: Promise<unknown>;
   requestId?: number;
+  controller?: AbortController;
+};
+
+type AdminEngineOriginBrowser = {
+  dispatchEvent: (event: Event) => boolean;
+  location: { reload: () => void };
+};
+
+type AdminEngineOriginChangeOptions = {
+  browser?: AdminEngineOriginBrowser;
+  reload?: boolean;
 };
 
 type RoutePrefetchTarget = string | [string, number];
@@ -28,6 +39,21 @@ const EMPTY_SNAPSHOT: AdminJsonSnapshot = Object.freeze({
 const cache = new Map<string, AdminCacheEntry>();
 const listeners = new Map<string, Set<() => void>>();
 let nextRequestId = 0;
+let cacheGeneration = 0;
+let observedEngineOrigin = "";
+let engineOriginReloadRequested = false;
+
+const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
+export const ADMIN_ENGINE_ORIGIN_CHANGED_EVENT = "v8os:admin-engine-origin-changed";
+
+export class AdminEngineOriginChangedError extends Error {
+  readonly code = "admin_engine_origin_changed";
+
+  constructor() {
+    super("Admin Engine origin changed while the request was in flight.");
+    this.name = "AdminEngineOriginChangedError";
+  }
+}
 
 const ROUTE_DATA_PREFETCH: Record<string, RoutePrefetchTarget[]> = {
   "/admin": [["/api/stats?days=7", 10_000]],
@@ -147,9 +173,67 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || "request_failed");
 }
 
+function assertCurrentGeneration(generation: number) {
+  if (generation !== cacheGeneration) {
+    throw new AdminEngineOriginChangedError();
+  }
+}
+
+function notifySubscribers(key: string) {
+  for (const listener of listeners.get(key) || []) listener();
+}
+
 function publish(key: string, entry: AdminCacheEntry) {
   cache.set(key, entry);
-  for (const listener of listeners.get(key) || []) listener();
+  notifySubscribers(key);
+}
+
+function clearAdminJsonCacheForEngineOriginChange() {
+  cacheGeneration += 1;
+  const invalidatedKeys = new Set([...cache.keys(), ...listeners.keys()]);
+  const controllers = [...cache.values()].flatMap((entry) => entry.controller ? [entry.controller] : []);
+  cache.clear();
+  for (const controller of controllers) controller.abort();
+  for (const key of invalidatedKeys) notifySubscribers(key);
+}
+
+export function normalizeAdminEngineBaseUrl(value: unknown) {
+  const candidate = String(value || "").trim() || DEFAULT_ENGINE_BASE_URL;
+  try {
+    const parsed = new URL(candidate);
+    const pathname = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${pathname}`;
+  } catch {
+    return candidate.replace(/\/+$/, "");
+  }
+}
+
+export function applyAdminEngineOriginChange(
+  previousValue: unknown,
+  nextValue: unknown,
+  options: AdminEngineOriginChangeOptions = {},
+) {
+  const previousOrigin = normalizeAdminEngineBaseUrl(previousValue);
+  const nextOrigin = normalizeAdminEngineBaseUrl(nextValue);
+  if (previousOrigin === nextOrigin) {
+    observedEngineOrigin = nextOrigin;
+    return false;
+  }
+  if (observedEngineOrigin === nextOrigin) return false;
+
+  observedEngineOrigin = nextOrigin;
+  clearAdminJsonCacheForEngineOriginChange();
+
+  const browser = options.browser
+    ?? (typeof window === "undefined" ? undefined : window);
+  if (!browser || (options.reload && engineOriginReloadRequested)) return true;
+
+  browser.dispatchEvent(new Event(ADMIN_ENGINE_ORIGIN_CHANGED_EVENT));
+  if (options.reload) {
+    engineOriginReloadRequested = true;
+    browser.location.reload();
+  }
+  return true;
 }
 
 export function getAdminJsonSnapshot<T>(url: string): AdminJsonSnapshot<T> {
@@ -185,9 +269,13 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   }
 
   const requestId = ++nextRequestId;
-  const request: Promise<T> = fetch(key, { cache: "no-store" })
+  const requestGeneration = cacheGeneration;
+  const controller = new AbortController();
+  const request: Promise<T> = fetch(key, { cache: "no-store", signal: controller.signal })
     .then(async (response) => {
+      assertCurrentGeneration(requestGeneration);
       const payload = await response.json().catch(() => ({}));
+      assertCurrentGeneration(requestGeneration);
       if (!response.ok) {
         const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
         throw new Error(String(record.detail || record.error || `HTTP ${response.status}`));
@@ -205,6 +293,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
       return payload as T;
     })
     .catch((error) => {
+      assertCurrentGeneration(requestGeneration);
       const current = cache.get(key);
       if (current?.requestId === requestId) {
         publish(key, {
@@ -226,6 +315,7 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
     error: null,
     promise: request,
     requestId,
+    controller,
   });
   return request;
 }

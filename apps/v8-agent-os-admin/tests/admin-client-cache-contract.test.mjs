@@ -21,17 +21,15 @@ test("admin JSON cache preserves stale data while a refresh is in flight", () =>
     assert.match(source, /publish\(key/);
 });
 
-test("admin routes prefetch code and data only after stable navigation intent", () => {
+test("admin sidebar navigation does not fan out data reads from hover or focus", () => {
     const cacheSource = read("src", "lib", "admin-client-cache.ts");
     const sidebarSource = read("src", "components", "layout", "Sidebar.tsx");
 
     assert.match(cacheSource, /"\/admin\/model-hub": \[\["\/api\/model-hub\/bootstrap", 30_000\]\]/);
     assert.match(cacheSource, /"\/admin\/plugins":/);
-    assert.match(sidebarSource, /router\.prefetch\(href\)/);
-    assert.match(sidebarSource, /prefetchAdminRouteData\(href\)/);
     assert.match(sidebarSource, /prefetch=\{false\}/);
-    assert.match(sidebarSource, /setTimeout\(\(\) =>/);
-    assert.match(sidebarSource, /onPointerLeave=\{cancelPendingPrefetch\}/);
+    assert.doesNotMatch(sidebarSource, /prefetchAdminRouteData|router\.prefetch|scheduleRoutePrefetch/);
+    assert.doesNotMatch(sidebarSource, /onPointerEnter|onPointerLeave|onPointerDown|onFocus|onBlur/);
 });
 
 test("network supervisor prefetch uses the same plural neighbor and token routes as the page", () => {
@@ -106,8 +104,35 @@ test("chat runtime paints its page shell before supervisor configuration finishe
 
 test("topbar defers inbox work and loads feature packs only on demand", () => {
     const source = read("src", "components", "layout", "Topbar.tsx");
+    const inboxRoute = read("src", "app", "api", "admin-inbox", "route.ts");
+    const healthCache = read("src", "lib", "server", "engine-health-snapshot.ts");
 
     assert.match(source, /setTimeout\(\(\) => void loadInbox\(true\), 1200\)/);
+    assert.match(source, /fetchAdminJson<InboxPayload>\(url/);
+    assert.match(source, /ttlMs: 10_000/);
+    assert.match(source, /loadInbox\(true, true\)/);
+    assert.match(source, /loadInbox\(true, true, true\)/);
+    assert.match(source, /loadInbox\(false, true, true\)/);
+    assert.match(source, /loadInbox\(false\)/);
+    assert.match(source, /inboxLoadingRef\.current/);
+    assert.match(source, /pendingInboxForceRef\.current = true/);
+    assert.match(source, /if \(!pendingInboxForceRef\.current\) break/);
+    assert.match(source, /requestRefreshHealth = true/);
+    assert.match(source, /force: requestForce/);
+    assert.match(source, /inboxRefreshAttempt/);
+    assert.match(source, /primeAdminJsonCache\("\/api\/admin-inbox"/);
     assert.doesNotMatch(source, /void loadInstallState\(false, true\);/);
     assert.match(source, /if \(opening\) \{\s*void loadInstallState/);
+    assert.match(source, /loadInstallState\(true, true, healthRefreshing \|\| packInstalling\)/);
+    assert.match(inboxRoute, /readEngineHealthSnapshot\(\{ force: refreshHealth, waitForFresh: refreshHealth \}\)/);
+    assert.match(inboxRoute, /retryAfterMs: healthResult\.refreshing \? 1_500 : null/);
+    assert.match(healthCache, /HEALTH_FRESH_TTL_MS = 5_000/);
+    assert.match(healthCache, /if \(options\.force && !pending\)/);
+    assert.doesNotMatch(healthCache, /options\.force \|\| \(!hasFreshData/);
+    assert.match(healthCache, /if \(existingRequest\) return existingRequest/);
+    assert.match(healthCache, /Promise\.resolve\(\)\.then/);
+    assert.match(healthCache, /healthRequests\.get\(origin\) === request/);
+    assert.match(healthCache, /healthCaches = new Map/);
+    assert.match(healthCache, /waitForFresh/);
+    assert.match(healthCache, /HEALTH_REQUEST_TIMEOUT_MS = 4_000/);
 });

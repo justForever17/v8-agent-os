@@ -147,8 +147,15 @@ type SystemBaseData = {
         enginePort?: number;
         engineReload?: boolean;
     };
+    environmentProbe?: {
+        status?: "ready" | "refreshing" | "error";
+        stale?: boolean;
+        checkedAt?: string | null;
+        failureCode?: string;
+        retryAfterSeconds?: number;
+    };
     desktopReadiness?: {
-        status?: "ready" | "partial" | "missing";
+        status?: "ready" | "partial" | "missing" | "checking";
         ocrReady?: boolean;
         imageLocatorReady?: boolean;
         pointLocatorReady?: boolean;
@@ -210,12 +217,14 @@ function formatEndpointSummary(value?: string, emptyLabel = "Not set") {
 function desktopStatusLabel(status: string | undefined, t: (value: string) => string) {
     if (status === "ready") return t("app.admin.dashboard.system.base.page.k43d7227d");
     if (status === "partial") return t("app.admin.dashboard.system.base.page.k536a6446");
+    if (status === "checking") return t("app.admin.dashboard.system.base.environment.refreshing");
     return t("app.admin.dashboard.system.base.page.kc1cf5e35");
 }
 
 function desktopStatusTone(status?: string) {
     if (status === "ready") return "text-emerald-700 bg-emerald-50 border-emerald-200";
     if (status === "partial") return "text-amber-700 bg-amber-50 border-amber-200";
+    if (status === "checking") return "text-sky-700 bg-sky-50 border-sky-200";
     return "text-rose-700 bg-rose-50 border-rose-200";
 }
 
@@ -315,6 +324,38 @@ export default function SystemBasePage() {
     useEffect(() => {
         void loadData();
     }, []);
+
+    const environmentProbeStatus = envelope?.data.environmentProbe?.status;
+    useEffect(() => {
+        if (environmentProbeStatus !== "refreshing") return;
+        let active = true;
+        const refreshEnvironment = async () => {
+            try {
+                const next = await fetchConfigDomain<SystemBaseData>("system-base", {
+                    force: true,
+                    refreshEnvironment: true,
+                });
+                if (active) setEnvelope(next);
+            } catch {
+                if (!active) return;
+                setEnvelope((current) => current ? {
+                    ...current,
+                    data: {
+                        ...current.data,
+                        environmentProbe: {
+                            ...(current.data.environmentProbe || {}),
+                            status: "error",
+                            failureCode: "system_base_environment_probe_failed",
+                        },
+                    },
+                } : current);
+            }
+        };
+        void refreshEnvironment();
+        return () => {
+            active = false;
+        };
+    }, [environmentProbeStatus]);
 
     const summaryItems = useMemo(() => {
         const bridge = envelope?.data.bridge || {};
@@ -534,6 +575,7 @@ export default function SystemBasePage() {
     const desktopReadiness = envelope.data.desktopReadiness || {};
     const detectedDesktopTools = envelope.data.detectedDesktopTools || {};
     const dependencyStatus = envelope.data.dependencyStatus || [];
+    const environmentProbe = envelope.data.environmentProbe || {};
     const dependencyGroups = [
         { key: "core", title: "app.admin.dashboard.system.base.page.kfd39f914" },
         { key: "desktop", title: "app.admin.dashboard.system.base.page.k94b54d59" },
@@ -556,6 +598,18 @@ export default function SystemBasePage() {
                     </div>
                 }
             />
+
+            {environmentProbe.status === "refreshing" ? (
+                <div role="status" className="flex items-center gap-2 border-y border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                    <span>{t("app.admin.dashboard.system.base.environment.refreshing")}</span>
+                </div>
+            ) : environmentProbe.status === "error" ? (
+                <div role="alert" className="flex items-center gap-2 border-y border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    <span>{t("app.admin.dashboard.system.base.environment.failed")}</span>
+                </div>
+            ) : null}
 
             <DomainSummaryStrip items={summaryItems} />
 
@@ -769,28 +823,37 @@ export default function SystemBasePage() {
                         ) : null}
                         <div className="rounded-2xl border border-border bg-card p-4 text-xs leading-5 text-muted-foreground">
                             <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.diagnostics")}</div>
-                            <div>
-                                {t("app.admin.dashboard.system.base.remoteLink.candidateIps")}{" "}
-                                {(remoteLinkManifest.diagnostics?.candidateIps || []).map((item) => item.address).filter(Boolean).join(" · ")
-                                    || t("app.admin.dashboard.system.base.page.k6ed9c299")}
-                            </div>
-                            <div>
-                                WireGuard: {remoteLinkManifest.diagnostics?.vpn?.wireguardDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
-                                {" · "}
-                                Tailscale: {remoteLinkManifest.diagnostics?.vpn?.tailscaleDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
-                            </div>
-                            {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).length > 0 ? (
-                                <div className="mt-2 text-amber-700">
-                                    {t("app.admin.dashboard.system.base.remoteLink.warnings")}{" "}
-                                    {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).slice(0, 4).join(" · ")}
+                            {environmentProbe.status === "refreshing" ? (
+                                <div className="flex items-center gap-2 text-sky-700 dark:text-sky-200">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    {t("app.admin.dashboard.system.base.environment.refreshing")}
                                 </div>
-                            ) : null}
-                            {(remoteLinkManifest.diagnostics?.info || []).length > 0 ? (
-                                <div className="mt-2 text-muted-foreground">
-                                    {t("app.admin.dashboard.system.base.remoteLink.info")}{" "}
-                                    {(remoteLinkManifest.diagnostics?.info || []).slice(0, 4).join(" · ")}
-                                </div>
-                            ) : null}
+                            ) : (
+                                <>
+                                    <div>
+                                        {t("app.admin.dashboard.system.base.remoteLink.candidateIps")}{" "}
+                                        {(remoteLinkManifest.diagnostics?.candidateIps || []).map((item) => item.address).filter(Boolean).join(" · ")
+                                            || t("app.admin.dashboard.system.base.page.k6ed9c299")}
+                                    </div>
+                                    <div>
+                                        WireGuard: {remoteLinkManifest.diagnostics?.vpn?.wireguardDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
+                                        {" · "}
+                                        Tailscale: {remoteLinkManifest.diagnostics?.vpn?.tailscaleDetected ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1f3ec640")}
+                                    </div>
+                                    {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).length > 0 ? (
+                                        <div className="mt-2 text-amber-700">
+                                            {t("app.admin.dashboard.system.base.remoteLink.warnings")}{" "}
+                                            {(remoteLinkManifest.warnings || remoteLinkManifest.diagnostics?.warnings || []).slice(0, 4).join(" · ")}
+                                        </div>
+                                    ) : null}
+                                    {(remoteLinkManifest.diagnostics?.info || []).length > 0 ? (
+                                        <div className="mt-2 text-muted-foreground">
+                                            {t("app.admin.dashboard.system.base.remoteLink.info")}{" "}
+                                            {(remoteLinkManifest.diagnostics?.info || []).slice(0, 4).join(" · ")}
+                                        </div>
+                                    ) : null}
+                                </>
+                            )}
                             <div className="mt-2 text-muted-foreground">{t("app.admin.dashboard.system.base.remoteLink.readOnlyNotice")}</div>
                         </div>
                         <AdvancedSection
@@ -827,7 +890,9 @@ export default function SystemBasePage() {
                                         </div>
                                     ) : (
                                         <div className="rounded-xl border border-dashed border-border bg-card px-3 py-3 text-xs text-muted-foreground">
-                                            {t("app.admin.dashboard.system.base.remoteLink.noPeerCandidates")}
+                                            {environmentProbe.status === "refreshing"
+                                                ? t("app.admin.dashboard.system.base.environment.refreshing")
+                                                : t("app.admin.dashboard.system.base.remoteLink.noPeerCandidates")}
                                         </div>
                                     )}
                                 </div>
@@ -1438,7 +1503,12 @@ export default function SystemBasePage() {
                 bodyScroll="auto"
             >
                 <div className="space-y-5">
-                    {dependencyGroups.map((group) => {
+                    {environmentProbe.status === "refreshing" && dependencyStatus.length === 0 ? (
+                        <div className="flex min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t("app.admin.dashboard.system.base.environment.refreshing")}
+                        </div>
+                    ) : dependencyGroups.map((group) => {
                         const items = dependencyStatus.filter((item) => item.category === group.key);
                         if (items.length === 0) return null;
                         return (

@@ -164,7 +164,8 @@ def _experience_freshness(item: dict[str, Any], *, now: datetime | None = None) 
 
 def _visible_experience(item: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     visible = {**_visible(item), **_experience_freshness(item, now=now)}
-    accepted = _has_reusable_answer_pack(item)
+    acceptance_issues = _experience_acceptance_issues(item)
+    accepted = not acceptance_issues
     stored_status = _safe_text(item.get("status")).lower() or "draft"
     visible["qualityAccepted"] = accepted
     visible["reuseEligible"] = bool(
@@ -178,10 +179,9 @@ def _visible_experience(item: dict[str, Any], *, now: datetime | None = None) ->
         visible["status"] = effective_status
         visible["effectiveStatus"] = effective_status
         visible["qualityStatus"] = "refresh_required"
-        issues = _experience_acceptance_issues(item)
         existing = _safe_text(visible.get("invalidationReason"))
         visible["invalidationReason"] = ", ".join(
-            dict.fromkeys([part for part in (existing, *issues) if part])
+            dict.fromkeys([part for part in (existing, *acceptance_issues) if part])
         )
     else:
         visible["effectiveStatus"] = stored_status
@@ -783,10 +783,24 @@ def _search_experience_packs(
 
 def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dict[str, Any]]:
     with _LOCK:
-        payload = _prune_expired(_read_store())
-        _write_store(payload)
-        items = [_visible(item) for item in payload["evidenceBundles"] if isinstance(item, dict) and _scope_matches(item, scope)]
-        return items[: max(1, min(int(limit or 50), 200))]
+        payload = _read_store()
+        previous_count = len(_as_list(payload.get("evidenceBundles")))
+        previous_pack_count = len(_as_list(payload.get("experiencePacks")))
+        payload = _prune_expired(payload)
+        if (
+            len(payload["evidenceBundles"]) != previous_count
+            or len(payload["experiencePacks"]) != previous_pack_count
+        ):
+            _write_store(payload)
+        safe_limit = max(1, min(int(limit or 50), 200))
+        items: list[dict[str, Any]] = []
+        for item in payload["evidenceBundles"]:
+            if not isinstance(item, dict) or not _scope_matches(item, scope):
+                continue
+            items.append(_visible(item))
+            if len(items) >= safe_limit:
+                break
+        return items
 
 
 def get_evidence_bundle(evidence_bundle_id: str) -> dict[str, Any] | None:
@@ -935,14 +949,19 @@ def list_experience_packs(*, scope: str = "global", limit: int = 50, include_arc
     with _LOCK:
         payload = _read_store()
         now = datetime.now(timezone.utc)
-        items = [
-            _visible_experience(item, now=now)
-            for item in payload["experiencePacks"]
-            if isinstance(item, dict)
-            and _scope_matches(item, scope)
-            and (include_archived or _safe_text(item.get("status")).lower() != "archived")
-        ]
-        return items[: max(1, min(int(limit or 50), 200))]
+        safe_limit = max(1, min(int(limit or 50), 200))
+        items: list[dict[str, Any]] = []
+        for item in payload["experiencePacks"]:
+            if (
+                not isinstance(item, dict)
+                or not _scope_matches(item, scope)
+                or (not include_archived and _safe_text(item.get("status")).lower() == "archived")
+            ):
+                continue
+            items.append(_visible_experience(item, now=now))
+            if len(items) >= safe_limit:
+                break
+        return items
 
 
 def bulk_update_experience_packs(
@@ -1068,16 +1087,41 @@ def maintain_experience_packs(*, now: datetime | None = None) -> dict[str, Any]:
         }
 
 
-def research_ledger_summary(*, scope: str = "global", include_archived: bool = False) -> dict[str, Any]:
-    bundles = list_evidence_bundles(scope=scope, limit=200)
+def research_ledger_summary(*, scope: str = "global", include_archived: bool = False, limit: int = 30) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 30), 100))
+    with _LOCK:
+        payload = _read_store()
+        previous_bundle_count = len(_as_list(payload.get("evidenceBundles")))
+        previous_pack_count = len(_as_list(payload.get("experiencePacks")))
+        payload = _prune_expired(payload)
+        if (
+            len(payload["evidenceBundles"]) != previous_bundle_count
+            or len(payload["experiencePacks"]) != previous_pack_count
+        ):
+            _write_store(payload)
+        scoped_bundles = [
+            item
+            for item in payload["evidenceBundles"]
+            if isinstance(item, dict) and _scope_matches(item, scope)
+        ][:200]
+        scoped_packs = [
+            item
+            for item in payload["experiencePacks"]
+            if isinstance(item, dict)
+            and _scope_matches(item, scope)
+            and (include_archived or _safe_text(item.get("status")).lower() != "archived")
+        ][:200]
+
+    bundles = [_visible(item) for item in scoped_bundles[:safe_limit]]
     bundles_by_id = {
         _safe_text(item.get("evidenceBundleId")): item
-        for item in bundles
+        for item in scoped_bundles
         if isinstance(item, dict) and _safe_text(item.get("evidenceBundleId"))
     }
     packs = []
-    for item in list_experience_packs(scope=scope, limit=200, include_archived=include_archived):
-        enriched = dict(item)
+    now = datetime.now(timezone.utc)
+    for item in scoped_packs[:safe_limit]:
+        enriched = _visible_experience(item, now=now)
         if not _safe_text(enriched.get("resultPreview")):
             bundle = bundles_by_id.get(_safe_text(enriched.get("createdFromBundleId")))
             if bundle:
@@ -1096,8 +1140,8 @@ def research_ledger_summary(*, scope: str = "global", include_archived: bool = F
     return {
         "ok": True,
         "scope": scope,
-        "counts": {"evidenceBundles": len(bundles), "experiencePacks": len(packs)},
-        "evidenceBundles": bundles[:30],
-        "experiencePacks": packs[:30],
+        "counts": {"evidenceBundles": len(scoped_bundles), "experiencePacks": len(scoped_packs)},
+        "evidenceBundles": bundles,
+        "experiencePacks": packs,
         "confidenceTimeline": timeline,
     }

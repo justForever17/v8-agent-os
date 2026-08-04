@@ -1,26 +1,31 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import re
 import shlex
 import shutil
-import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import yaml
 
+from core.interprocess_lock import interprocess_file_lock
+from core.process_launch import run_windowless
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 _SUPPORTED_NPX_FLAGS = {"-y", "--yes"}
 _SKILL_INSTALL_BOOLEAN_FLAGS = {"-g", "--global", "-y", "--yes", "--copy"}
 _SKILL_INSTALL_VALUE_FLAGS = {"--skill", "-s"}
 _ENGINE_VENV_ROOT = Path(__file__).resolve().parents[1] / ".venv"
+_INSTALL_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 class SkillInstallValidationError(ValueError):
@@ -192,6 +197,48 @@ def _target_root() -> Path:
     return target
 
 
+def _skill_lock_path(target_dir: Path) -> Path:
+    canonical = os.path.normcase(str(target_dir.resolve(strict=False)))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    return V8_AGENT_OS_HOME / "locks" / "extensions" / "skills" / f"{digest}.lock"
+
+
+def _skills_registry_lock_path() -> Path:
+    return V8_AGENT_OS_HOME / "locks" / "extensions" / "skills-registry.lock"
+
+
+def _directory_content_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for current_root, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names.sort()
+        file_names.sort()
+        current = Path(current_root)
+        relative_root = current.relative_to(root)
+        for directory_name in directory_names:
+            directory = current / directory_name
+            relative = (relative_root / directory_name).as_posix().encode("utf-8")
+            if directory.is_symlink():
+                digest.update(b"L\0" + relative + b"\0" + os.readlink(directory).encode("utf-8") + b"\0")
+            else:
+                digest.update(b"D\0" + relative + b"\0")
+        for file_name in file_names:
+            file_path = current / file_name
+            relative = (relative_root / file_name).as_posix().encode("utf-8")
+            if file_path.is_symlink():
+                digest.update(b"L\0" + relative + b"\0" + os.readlink(file_path).encode("utf-8") + b"\0")
+                continue
+            digest.update(b"F\0" + relative + b"\0")
+            with file_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _publish_staged_skill(staging_dir: Path, target_dir: Path) -> None:
+    staging_dir.rename(target_dir)
+
+
 def _resolve_local_source(source: str) -> Path | None:
     candidate = Path(source).expanduser()
     if candidate.exists():
@@ -217,7 +264,7 @@ def _parse_github_source(source: str) -> tuple[str, str] | None:
 def _clone_from_github(owner: str, repo: str, destination: Path) -> Path:
     repo_url = f"https://github.com/{owner}/{repo}.git"
     if shutil.which("git"):
-        subprocess.run(
+        run_windowless(
             ["git", "clone", "--depth", "1", repo_url, str(destination)],
             check=True,
             capture_output=True,
@@ -384,48 +431,70 @@ def _install_manifests(
     overwrite: bool,
 ) -> dict[str, Any]:
     target_root = _target_root()
+    target_root.mkdir(parents=True, exist_ok=True)
     installed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
 
     for manifest in manifests:
         target_dir = target_root / manifest.folder
-        backup_path: Path | None = None
-        if target_dir.exists():
-            if not overwrite:
-                conflicts.append(
-                    {
-                        "name": manifest.name,
-                        "folder": manifest.folder,
-                        "path": str(target_dir),
-                        "reason": "already_exists",
-                    }
-                )
-                continue
-            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", manifest.folder).strip(".-_") or "skill"
-            backup_path = Path.home() / ".v8-agent-os" / "backups" / "skills" / f"overwrite-{safe_name}"
-            suffix = 1
-            candidate_backup = backup_path
-            while candidate_backup.exists():
-                suffix += 1
-                candidate_backup = backup_path.with_name(f"{backup_path.name}-{suffix}")
-            backup_path = candidate_backup
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            target_dir.rename(backup_path)
-
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", manifest.folder).strip(".-_") or "skill"
+        staging_dir = target_root.resolve(strict=False).parent / f".v8-skill-install-{safe_name}-{uuid4().hex}"
         try:
-            shutil.copytree(manifest.source_dir, target_dir)
-        except Exception:
-            if backup_path and backup_path.exists() and not target_dir.exists():
-                backup_path.rename(target_dir)
-            raise
+            shutil.copytree(manifest.source_dir, staging_dir)
+            staging_digest = _directory_content_digest(staging_dir)
+            backup_path: Path | None = None
+            with interprocess_file_lock(
+                _skill_lock_path(target_dir),
+                timeout_seconds=_INSTALL_LOCK_TIMEOUT_SECONDS,
+            ):
+                if target_dir.exists():
+                    if _directory_content_digest(target_dir) == staging_digest:
+                        skipped.append(
+                            {
+                                "name": manifest.name,
+                                "folder": manifest.folder,
+                                "path": str(target_dir),
+                                "reason": "already_installed",
+                            }
+                        )
+                        continue
+                    if not overwrite:
+                        conflicts.append(
+                            {
+                                "name": manifest.name,
+                                "folder": manifest.folder,
+                                "path": str(target_dir),
+                                "reason": "already_exists",
+                            }
+                        )
+                        continue
+                    backup_path = V8_AGENT_OS_HOME / "backups" / "skills" / f"overwrite-{safe_name}"
+                    suffix = 1
+                    candidate_backup = backup_path
+                    while candidate_backup.exists():
+                        suffix += 1
+                        candidate_backup = backup_path.with_name(f"{backup_path.name}-{suffix}")
+                    backup_path = candidate_backup
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    target_dir.rename(backup_path)
+
+                try:
+                    _publish_staged_skill(staging_dir, target_dir)
+                except Exception:
+                    if backup_path and backup_path.exists() and not target_dir.exists():
+                        backup_path.rename(target_dir)
+                    raise
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
         try:
             from core.audit_logger import audit_logger
 
             audit_logger.log(
                 source_type="EXTENSIONS",
-                action="skill_install_overwrite" if overwrite and backup_path else "skill_install",
-                status="WARNING" if overwrite and backup_path else "INFO",
+                action="skill_install_overwrite" if backup_path else "skill_install",
+                status="WARNING" if backup_path else "INFO",
                 details=json.dumps(
                     {
                         "name": manifest.name,
@@ -433,7 +502,7 @@ def _install_manifests(
                         "source": source,
                         "targetPath": str(target_dir),
                         "backupPath": str(backup_path) if backup_path else None,
-                        "overwritten": bool(overwrite and backup_path),
+                        "overwritten": bool(backup_path),
                     },
                     ensure_ascii=False,
                 ),
@@ -445,7 +514,7 @@ def _install_manifests(
                 "name": manifest.name,
                 "folder": manifest.folder,
                 "path": str(target_dir),
-                "overwritten": overwrite,
+                "overwritten": bool(backup_path),
                 "backupPath": str(backup_path) if backup_path else None,
             }
         )
@@ -455,7 +524,12 @@ def _install_manifests(
 
     from runtimes.extensions.skills.loader import SkillLoader
 
-    SkillLoader.reload_skills()
+    if installed:
+        with interprocess_file_lock(
+            _skills_registry_lock_path(),
+            timeout_seconds=_INSTALL_LOCK_TIMEOUT_SECONDS,
+        ):
+            SkillLoader.reload_skills()
     return {
         "status": "success",
         "source": source,

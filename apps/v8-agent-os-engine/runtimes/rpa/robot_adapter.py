@@ -4,11 +4,11 @@ import importlib
 import importlib.util
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.process_launch import run_windowless
 from core.agent_browser_profile import (
     configured_agent_browser_profile_dir,
     discover_system_agent_browser,
@@ -1048,7 +1048,7 @@ class RobotFrameworkAdapter:
             output_dir=dry_run_output_dir,
             dry_run=True,
         )
-        completed = subprocess.run(
+        completed = run_windowless(
             command,
             capture_output=True,
             text=True,
@@ -1194,7 +1194,7 @@ class RobotFrameworkAdapter:
     ) -> Dict[str, Any]:
         if not self.is_available():
             raise RuntimeError("当前环境未安装 Robot Framework，无法执行 .robot 流程。")
-        completed = subprocess.run(
+        completed = run_windowless(
             command,
             capture_output=True,
             text=True,

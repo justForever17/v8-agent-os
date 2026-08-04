@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { createTranslator, LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
+import { readEngineHealthSnapshot } from "@/lib/server/engine-health-snapshot";
 import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
 
 type InboxItem = {
@@ -106,10 +107,11 @@ export async function GET(req: NextRequest) {
     try {
         const locale = resolveInitialLocale(req.cookies.get(LOCALE_COOKIE_NAME)?.value, req.headers.get("accept-language"));
         const t = createTranslator(locale);
+        const refreshHealth = req.nextUrl.searchParams.get("refresh") === "1";
         const [approvalsResult, runsResult, healthResult, pluginsResult] = await Promise.all([
             proxyEngineJsonSafe<{ approvals?: unknown[] }>("/approvals?status=pending"),
             proxyEngineJsonSafe<{ runs?: Array<{ status?: string }> }>("/runs?limit=12"),
-            proxyEngineJsonSafe<OperationsSummary["health"]>("/health"),
+            readEngineHealthSnapshot({ force: refreshHealth, waitForFresh: refreshHealth }),
             proxyEngineJsonSafe<PluginStatusSummary>("/api/plugins/status-summary"),
         ]);
         const approvals = approvalsResult.data;
@@ -264,6 +266,9 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({
             items,
             degraded: endpointErrors.length > 0,
+            refreshing: healthResult.refreshing,
+            retryAfterMs: healthResult.refreshing ? 1_500 : null,
+            updatedAt: healthResult.updatedAt || null,
         });
     } catch (error) {
         console.error("[Admin Inbox] Failed to build inbox:", error);

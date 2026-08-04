@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { usePathname } from "next/navigation";
 import { Bot, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -20,23 +21,20 @@ const RPAQuickPanel = dynamic(
 );
 
 export function RpaTopbarOverlay() {
+    const pathname = usePathname();
+
+    if (pathname === "/rpa") return null;
+    return <RpaTopbarOverlayContent key={pathname} />;
+}
+
+function RpaTopbarOverlayContent() {
     const t = useT();
-    const [mounted, setMounted] = useState(false);
     const [open, setOpen] = useState(false);
     const [activated, setActivated] = useState(false);
     const triggerRef = useRef<HTMLElement | null>(null);
 
     useEffect(() => {
-        setMounted(true);
         void loadRPAQuickPanel();
-
-        const activate = () => setActivated(true);
-        if (typeof window.requestIdleCallback === "function") {
-            const idleId = window.requestIdleCallback(activate, { timeout: 800 });
-            return () => window.cancelIdleCallback(idleId);
-        }
-        const timer = window.setTimeout(activate, 200);
-        return () => window.clearTimeout(timer);
     }, []);
 
     useEffect(() => {
@@ -65,7 +63,7 @@ export function RpaTopbarOverlay() {
                 aria-haspopup="dialog"
                 title={t("web.rpa.title")}
                 onClick={() => {
-                    if (!open) setActivated(true);
+                    if (!activated) setActivated(true);
                     setOpen((current) => !current);
                 }}
             >
@@ -73,7 +71,7 @@ export function RpaTopbarOverlay() {
                 <span className="sr-only">{t("web.rpa.title")}</span>
             </TopbarGlowActionButton>
 
-            {mounted && activated ? createPortal(
+            {activated ? createPortal(
                 <div
                     className={open
                         ? "fixed inset-0 z-[140] bg-slate-950/12 backdrop-blur-[1px] dark:bg-black/24"

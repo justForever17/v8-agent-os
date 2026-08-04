@@ -21,7 +21,9 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        return NextResponse.json(await getRuntimeFeaturePackState());
+        return NextResponse.json(await getRuntimeFeaturePackState({
+            forceHealthRefresh: req.nextUrl.searchParams.get("refresh") === "1",
+        }));
     } catch (error) {
         console.error("[Admin Runtime Feature Packs] Failed to read state:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

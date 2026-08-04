@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ChevronDown, ExternalLink, Loader2, RefreshCw, Save, Search, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -91,7 +91,8 @@ export function ResearchSourceProviderPanel() {
     );
     const [sourceRouter, setSourceRouter] = useState<Record<string, unknown>>(() => cachedProviders?.sourceRouter || {});
     const [systemBase, setSystemBase] = useState<ConfigRegistryEnvelope<SystemBaseData> | null>(() => cachedSystemBase || null);
-    const [loading, setLoading] = useState(() => !cachedProviders || !cachedSystemBase);
+    const [loaded, setLoaded] = useState(() => Boolean(cachedProviders && cachedSystemBase));
+    const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [query, setQuery] = useState("");
     const [error, setError] = useState("");
@@ -111,6 +112,7 @@ export function ResearchSourceProviderPanel() {
             setSystemBase(configEnvelope);
             setSourceRouter(payload.sourceRouter || {});
             setProviders((payload.providers || []).map((item) => mergeProviderConfig(item, configEnvelope)));
+            setLoaded(true);
         } catch (loadError) {
             const message = loadError instanceof Error ? loadError.message : "source_provider_load_failed";
             setError(message);
@@ -119,9 +121,13 @@ export function ResearchSourceProviderPanel() {
         }
     }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+    const handleToggle = () => {
+        const nextExpanded = !expanded;
+        setExpanded(nextExpanded);
+        if (nextExpanded && !loaded && !loading) {
+            void load();
+        }
+    };
 
     const filteredProviders = useMemo(() => {
         const needle = query.trim().toLowerCase();
@@ -207,7 +213,7 @@ export function ResearchSourceProviderPanel() {
                     className="flex w-full items-start justify-between gap-4 p-6 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                     aria-expanded={expanded}
                     aria-controls="research-source-provider-content"
-                    onClick={() => setExpanded((current) => !current)}
+                    onClick={handleToggle}
                 >
                     <div className="min-w-0 space-y-1">
                         <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
@@ -231,10 +237,10 @@ export function ResearchSourceProviderPanel() {
                                 ? t("app.admin.research.sourceProviders.loadingSummary")
                                 : error
                                     ? t("app.admin.research.sourceProviders.loadFailedSummary")
-                                    : t("app.admin.research.sourceProviders.providerSummary", {
+                                    : loaded ? t("app.admin.research.sourceProviders.providerSummary", {
                                         enabled: enabledProviderCount,
                                         total: providers.length,
-                                    })}
+                                    }) : t("app.admin.research.sourceProviders.deferredSummary")}
                         </Badge>
                         <ChevronDown className={cn("h-5 w-5 text-muted-foreground transition-transform", expanded && "rotate-180")} />
                         <span className="sr-only">

@@ -7,7 +7,7 @@ import {
     ProductTopbar,
     TopbarGlowActionButton,
 } from "@v8/product-ui";
-import { Bell, Loader2, Monitor, Search, Wrench } from "lucide-react";
+import { Bell, Loader2, Monitor, RefreshCw, Search, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminNavItem } from "@/lib/admin-navigation";
-import { fetchAdminJson } from "@/lib/admin-client-cache";
+import { fetchAdminJson, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
@@ -54,6 +54,9 @@ type RuntimeFeaturePack = {
 
 type RuntimeFeaturePackState = {
     engineAvailable: boolean;
+    refreshing?: boolean;
+    retryAfterMs?: number | null;
+    updatedAt?: number | null;
     packs: RuntimeFeaturePack[];
     summary: {
         total: number;
@@ -62,6 +65,13 @@ type RuntimeFeaturePackState = {
         installing: number;
         failed: number;
     };
+};
+
+type InboxPayload = {
+    items?: InboxItem[];
+    refreshing?: boolean;
+    retryAfterMs?: number | null;
+    updatedAt?: number | null;
 };
 
 const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
@@ -97,6 +107,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [seenInboxIds, setSeenInboxIds] = useState<Set<string>>(new Set());
     const [inboxLoading, setInboxLoading] = useState(false);
     const [inboxError, setInboxError] = useState<string | null>(null);
+    const [inboxRefreshAttempt, setInboxRefreshAttempt] = useState(0);
     const [installState, setInstallState] = useState<RuntimeFeaturePackState | null>(null);
     const [installLoading, setInstallLoading] = useState(false);
     const [installSubmittingPackId, setInstallSubmittingPackId] = useState<string | null>(null);
@@ -106,6 +117,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const installContainerRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const inboxLoadingRef = useRef(false);
+    const pendingInboxForceRef = useRef(false);
 
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
@@ -132,12 +144,16 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         [inboxItems, seenInboxIds],
     );
 
-    const loadInstallState = useCallback(async (force = false, silent = false) => {
+    const loadInstallState = useCallback(async (force = false, silent = false, refreshHealth = false) => {
         if (!silent) {
             setInstallLoading(true);
         }
         try {
-            const payload = await fetchAdminJson<RuntimeFeaturePackState>("/api/runtime-feature-packs", { force });
+            const url = refreshHealth ? "/api/runtime-feature-packs?refresh=1" : "/api/runtime-feature-packs";
+            const payload = await fetchAdminJson<RuntimeFeaturePackState>(url, { force });
+            if (refreshHealth) {
+                primeAdminJsonCache("/api/runtime-feature-packs", payload, 5_000);
+            }
             setInstallState(payload);
         } catch (error) {
             console.error("Failed to load runtime feature pack state:", error);
@@ -164,53 +180,82 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         closePanels();
         setSearchQuery("");
         router.push(href);
-    }, [closePanels, router]);
+    }, [closePanels, router, setSearchQuery]);
 
-    const loadInbox = useCallback(async (silent = false) => {
+    const loadInbox = useCallback(async (silent = false, force = false, refreshHealth = false) => {
         if (inboxLoadingRef.current) {
+            if (refreshHealth) {
+                pendingInboxForceRef.current = true;
+                if (!silent) setInboxLoading(true);
+            }
             return;
         }
         inboxLoadingRef.current = true;
         if (!silent) {
             setInboxLoading(true);
         }
+        let requestSilent = silent;
+        let requestForce = force;
+        let requestRefreshHealth = refreshHealth;
         try {
-            const response = await fetch("/api/admin-inbox", { cache: "no-store" });
-            const payload = await response.json().catch(() => ({ items: [] }));
-            if (!response.ok) {
-                const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
-                console.warn("Failed to load admin inbox:", message);
-                setInboxError(t("components.layout.Topbar.kaf9d80f8"));
-                if (!silent) {
-                    setInboxItems([]);
+            while (true) {
+                try {
+                    const url = requestRefreshHealth ? "/api/admin-inbox?refresh=1" : "/api/admin-inbox";
+                    const payload = await fetchAdminJson<InboxPayload>(url, {
+                        force: requestForce,
+                        ttlMs: 10_000,
+                    });
+                    if (requestRefreshHealth) {
+                        primeAdminJsonCache("/api/admin-inbox", payload, 10_000);
+                    }
+                    setInboxItems(Array.isArray(payload.items) ? payload.items : []);
+                    if (payload.refreshing) {
+                        setInboxRefreshAttempt((current) => current + 1);
+                    } else {
+                        setInboxRefreshAttempt(0);
+                    }
+                    setInboxError(null);
+                } catch (error) {
+                    console.error("Failed to load admin inbox:", error);
+                    setInboxError(t("components.layout.Topbar.kaf9d80f8"));
+                    if (!requestSilent) {
+                        setInboxItems([]);
+                    }
                 }
-                return;
-            }
-            setInboxItems(Array.isArray(payload.items) ? payload.items : []);
-            setInboxError(null);
-        } catch (error) {
-            console.error("Failed to load admin inbox:", error);
-            setInboxError(t("components.layout.Topbar.kaf9d80f8"));
-            if (!silent) {
-                setInboxItems([]);
+
+                if (!pendingInboxForceRef.current) break;
+                pendingInboxForceRef.current = false;
+                requestSilent = false;
+                requestForce = true;
+                requestRefreshHealth = true;
+                setInboxLoading(true);
             }
         } finally {
+            pendingInboxForceRef.current = false;
             inboxLoadingRef.current = false;
             setInboxLoading(false);
         }
     }, [t]);
 
     useEffect(() => {
+        if (inboxRefreshAttempt === 0) return;
+        const timeoutId = window.setTimeout(() => {
+            void loadInbox(true, true, true);
+        }, 1_500);
+        return () => window.clearTimeout(timeoutId);
+    }, [inboxRefreshAttempt, loadInbox]);
+
+    useEffect(() => {
         // Keep route transitions clear of non-critical governance reads.
         const initialLoadId = window.setTimeout(() => void loadInbox(true), 1200);
         const intervalId = window.setInterval(() => {
             if (document.visibilityState === "visible") {
-                void loadInbox(true);
+                void loadInbox(true, true);
             }
         }, 45000);
         const handleVisible = () => {
             if (document.visibilityState === "visible") {
-                void loadInbox(true);
+                void loadInbox(true, true);
             }
         };
         document.addEventListener("visibilitychange", handleVisible);
@@ -323,10 +368,12 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     }, [installState, loadInstallState]);
 
     useEffect(() => {
-        if (!installState?.packs.some((pack) => pack.status === "installing")) return;
+        const healthRefreshing = Boolean(installState?.refreshing);
+        const packInstalling = Boolean(installState?.packs.some((pack) => pack.status === "installing"));
+        if (!healthRefreshing && !packInstalling) return;
         const timeoutId = window.setTimeout(() => {
-            void loadInstallState(true, true);
-        }, 1500);
+            void loadInstallState(true, true, healthRefreshing || packInstalling);
+        }, installState?.retryAfterMs || 1_500);
         return () => window.clearTimeout(timeoutId);
     }, [installState, loadInstallState]);
 
@@ -346,7 +393,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                 title: t("components.layout.Topbar.featurePackInstallStartedTitle"),
                 description: t("components.layout.Topbar.featurePackInstallStartedDescription"),
             });
-            void loadInstallState(true, true);
+            void loadInstallState(true, true, true);
         } catch (error) {
             console.error("Failed to start feature pack install:", error);
             toast({
@@ -595,7 +642,21 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="text-sm font-semibold text-foreground dark:text-slate-100">{t("components.layout.Topbar.k3957f4b0")}</div>
-                                        {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+                                        <div className="flex items-center gap-1">
+                                            {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                onClick={() => void loadInbox(false, true, true)}
+                                                disabled={inboxLoading}
+                                                aria-label={t("components.layout.Topbar.refreshInbox")}
+                                                title={t("components.layout.Topbar.refreshInbox")}
+                                            >
+                                                <RefreshCw className="h-4 w-4" />
+                                            </Button>
+                                        </div>
                                     </div>
                                     {inboxError ? (
                                         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">

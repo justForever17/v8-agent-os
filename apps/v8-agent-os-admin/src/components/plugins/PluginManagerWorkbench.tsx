@@ -33,6 +33,12 @@ import { Input } from "@/components/ui/input";
 import { fetchAdminJson, peekAdminJsonCache, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 
+import {
+    createPluginDetailRequestCoordinator,
+    type PluginDetailRequestCoordinator,
+    type PluginDetailRequestToken,
+} from "./plugin-detail-request";
+
 type InstallState = {
     installed: boolean;
     state: string;
@@ -240,6 +246,9 @@ export function PluginManagerWorkbench() {
     const [tab, setTab] = useState<Tab>("store");
     const [query, setQuery] = useState("");
     const [selectedId, setSelectedId] = useState("");
+    const [detailsRequestedId, setDetailsRequestedId] = useState(requestedPluginId);
+    const [detailsRequestRevision, setDetailsRequestRevision] = useState(0);
+    const [detailsLoadingId, setDetailsLoadingId] = useState("");
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
@@ -248,6 +257,13 @@ export function PluginManagerWorkbench() {
     const [machineDiscovery, setMachineDiscovery] = useState<MachineDiscovery | null>(null);
     const [godotSetup, setGodotSetup] = useState<GodotSetup | null>(null);
     const godotSetupRequest = useRef(0);
+    const selectedIdRef = useRef(selectedId);
+    selectedIdRef.current = selectedId;
+    const detailRequestsRef = useRef<PluginDetailRequestCoordinator | null>(null);
+    if (!detailRequestsRef.current) {
+        detailRequestsRef.current = createPluginDetailRequestCoordinator();
+    }
+    const detailRequests = detailRequestsRef.current;
 
     const load = useCallback(async (refreshCatalog = false, force = false) => {
         setError("");
@@ -282,31 +298,55 @@ export function PluginManagerWorkbench() {
         }
     }, [requestedPluginId, t]);
 
-    const loadRequirements = useCallback(async (pluginId: string) => {
+    const commitPluginDetail = useCallback((
+        pluginId: string,
+        request: PluginDetailRequestToken | undefined,
+        apply: () => void,
+    ) => {
+        if (request) return detailRequests.commit(request, apply);
+        if (selectedIdRef.current !== pluginId) return false;
+        apply();
+        return true;
+    }, [detailRequests]);
+
+    const loadRequirements = useCallback(async (pluginId: string, request?: PluginDetailRequestToken) => {
         if (!pluginId) return;
-        const data = await jsonRequest<RequirementResponse>(`/api/plugins/${pluginId}/configuration-requirements`);
-        setRequirements(data);
-    }, []);
-    const loadMachineDiscovery = useCallback(async (pluginId: string, refresh = false) => {
+        const data = await jsonRequest<RequirementResponse>(
+            `/api/plugins/${pluginId}/configuration-requirements`,
+            request ? { signal: request.signal } : undefined,
+        );
+        commitPluginDetail(pluginId, request, () => setRequirements(data));
+        return data;
+    }, [commitPluginDetail]);
+    const loadMachineDiscovery = useCallback(async (pluginId: string, refresh = false, request?: PluginDetailRequestToken) => {
         if (!pluginId) return;
         const data = await jsonRequest<MachineDiscovery>(
             `/api/plugins/${pluginId}/machine-discovery${refresh ? "?refresh=true" : ""}`,
+            request ? { signal: request.signal } : undefined,
         );
-        setMachineDiscovery(data);
-    }, []);
-    const loadGodotSetup = useCallback(async (pluginId: string, refresh = false) => {
+        commitPluginDetail(pluginId, request, () => setMachineDiscovery(data));
+        return data;
+    }, [commitPluginDetail]);
+    const loadGodotSetup = useCallback(async (pluginId: string, refresh = false, request?: PluginDetailRequestToken) => {
         if (!pluginId) return;
         const requestId = ++godotSetupRequest.current;
         const data = await jsonRequest<GodotSetup>(
             `/api/plugins/${pluginId}/setup${refresh ? "/refresh" : ""}`,
-            refresh ? { method: "POST" } : undefined,
+            refresh || request ? {
+                ...(refresh ? { method: "POST" } : {}),
+                ...(request ? { signal: request.signal } : {}),
+            } : undefined,
         );
-        if (requestId === godotSetupRequest.current) setGodotSetup(data);
-    }, []);
+        if (requestId === godotSetupRequest.current) {
+            commitPluginDetail(pluginId, request, () => setGodotSetup(data));
+        }
+        return data;
+    }, [commitPluginDetail]);
     const selectedInstalled = Boolean(
         plugins.find((item) => item.id === selectedId)?.installation.installed,
     );
     const selectedSetupAdapter = plugins.find((item) => item.id === selectedId)?.setupAdapter;
+    const selectedDetailsRequested = Boolean(selectedId && detailsRequestedId === selectedId);
 
     useEffect(() => { void load(); }, [load]);
     useEffect(() => {
@@ -314,16 +354,34 @@ export function PluginManagerWorkbench() {
         setAuthorization(null);
         setMachineDiscovery(null);
         setGodotSetup(null);
-        void loadMachineDiscovery(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
-        if (selectedSetupAdapter === "godot_v1") {
-            void loadGodotSetup(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
-        }
-        if (!selectedInstalled) {
+        setDetailsLoadingId("");
+        setError("");
+        if (!selectedDetailsRequested) {
             setRequirements(null);
             return;
         }
-        void loadRequirements(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
-    }, [loadGodotSetup, loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled, selectedSetupAdapter]);
+        const request = detailRequests.begin(selectedId);
+        setDetailsLoadingId(selectedId);
+        const requests: Array<Promise<unknown>> = [loadMachineDiscovery(selectedId, false, request)];
+        if (selectedSetupAdapter === "godot_v1") requests.push(loadGodotSetup(selectedId, false, request));
+        if (selectedInstalled) {
+            requests.push(loadRequirements(selectedId, request));
+        } else {
+            setRequirements(null);
+        }
+        void Promise.all(requests)
+            .catch((nextError) => {
+                detailRequests.commit(request, () => {
+                    setError(nextError instanceof Error ? nextError.message : String(nextError));
+                });
+            })
+            .finally(() => {
+                detailRequests.commit(request, () => setDetailsLoadingId(""));
+            });
+        return () => {
+            detailRequests.cancel(request);
+        };
+    }, [detailRequests, detailsRequestRevision, loadGodotSetup, loadMachineDiscovery, loadRequirements, selectedDetailsRequested, selectedId, selectedInstalled, selectedSetupAdapter]);
     useEffect(() => {
         if (!installJob || TERMINAL_JOBS.has(installJob.state)) return;
         let cancelled = false;
@@ -394,6 +452,8 @@ export function PluginManagerWorkbench() {
         });
     }, [plugins, query, tab]);
     const selected = plugins.find((plugin) => plugin.id === selectedId) || visiblePlugins[0];
+    const selectedDetailsOpen = Boolean(selected && detailsRequestedId === selected.id);
+    const selectedDetailsLoading = Boolean(selected && detailsLoadingId === selected.id);
     const selectedDiscovery = machineDiscovery?.pluginId === selected?.id ? machineDiscovery : null;
     const selectedMissingUnits = selectedDiscovery?.summary.missingUnits ?? selectedDiscovery?.summary.needsCompletion ?? 0;
     const selectedPresentUnits = selectedDiscovery?.summary.presentUnits ?? selectedDiscovery?.summary.detected ?? 0;
@@ -412,6 +472,12 @@ export function PluginManagerWorkbench() {
         && requirements.requirements.some((requirement) => requirement.kind !== "oauth" && requirement.kind !== "cli_login"),
     );
 
+    const requestPluginDetails = (pluginId: string) => {
+        setSelectedId(pluginId);
+        setDetailsRequestedId(pluginId);
+        setDetailsRequestRevision((current) => current + 1);
+    };
+
     const runAction = async (key: string, action: () => Promise<void>) => {
         setBusy(key);
         setError("");
@@ -429,7 +495,7 @@ export function PluginManagerWorkbench() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ values }),
         });
-        if (requestId !== godotSetupRequest.current) return;
+        if (requestId !== godotSetupRequest.current || selectedIdRef.current !== selected.id) return;
         setGodotSetup(setup);
         setPreviewJob(null);
         await loadMachineDiscovery(selected.id, true);
@@ -465,7 +531,7 @@ export function PluginManagerWorkbench() {
         if (!selected || selected.setupAdapter !== "godot_v1") return;
         const requestId = ++godotSetupRequest.current;
         const setup = await jsonRequest<GodotSetup>(`/api/plugins/${selected.id}/setup/refresh`, { method: "POST" });
-        if (requestId !== godotSetupRequest.current) return;
+        if (requestId !== godotSetupRequest.current || selectedIdRef.current !== selected.id) return;
         setGodotSetup(setup);
         if (setup.status.editorOnline) setNotice(t("components.plugins.PluginManagerWorkbench.godot.connectionReady"));
     });
@@ -474,9 +540,11 @@ export function PluginManagerWorkbench() {
         const job = await jsonRequest<Job>(`/api/plugins/${plugin.id}/install`, {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: true }),
         });
-        setPreviewJob(job);
-        setMachineDiscovery(job.plan?.machineDiscovery || machineDiscovery);
-        setNotice(t("components.plugins.PluginManagerWorkbench.notice.planReady"));
+        if (selectedIdRef.current === plugin.id) {
+            setPreviewJob(job);
+            setMachineDiscovery(job.plan?.machineDiscovery || machineDiscovery);
+            setNotice(t("components.plugins.PluginManagerWorkbench.notice.planReady"));
+        }
         await load(false, true);
     });
 
@@ -487,8 +555,10 @@ export function PluginManagerWorkbench() {
             body: JSON.stringify({ dryRun: true }),
         });
         if (!planJob.planDigest) throw new Error(t("components.plugins.PluginManagerWorkbench.error.planRequired"));
-        setPreviewJob(planJob);
-        setMachineDiscovery(planJob.plan?.machineDiscovery || null);
+        if (selectedIdRef.current === plugin.id) {
+            setPreviewJob(planJob);
+            setMachineDiscovery(planJob.plan?.machineDiscovery || null);
+        }
         if (planJob.plan?.approvalRequired && !window.confirm(t("components.plugins.PluginManagerWorkbench.confirm.systemInstall", { name: plugin.displayName }))) return;
         const job = await jsonRequest<Job>(`/api/plugins/${plugin.id}/install`, {
             method: "POST",
@@ -502,7 +572,8 @@ export function PluginManagerWorkbench() {
     });
 
     const detect = (plugin: Plugin) => runAction(`detect:${plugin.id}`, async () => {
-        setRequirements(await jsonRequest<RequirementResponse>(`/api/plugins/${plugin.id}/configuration-detect`, { method: "POST" }));
+        const detected = await jsonRequest<RequirementResponse>(`/api/plugins/${plugin.id}/configuration-detect`, { method: "POST" });
+        if (selectedIdRef.current === plugin.id) setRequirements(detected);
     });
 
     const importExisting = (plugin: Plugin, requirement: Requirement, sourceId: string) => runAction(`import:${requirement.id}`, async () => {
@@ -555,7 +626,7 @@ export function PluginManagerWorkbench() {
     const uninstall = (plugin: Plugin) => runAction(`uninstall:${plugin.id}`, async () => {
         if (!window.confirm(t("components.plugins.PluginManagerWorkbench.confirm.uninstall", { name: plugin.displayName }))) return;
         await jsonRequest(`/api/plugins/${plugin.id}`, { method: "DELETE" });
-        setRequirements(null);
+        if (selectedIdRef.current === plugin.id) setRequirements(null);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.uninstalled"));
         await load(false, true);
     });
@@ -583,7 +654,7 @@ export function PluginManagerWorkbench() {
                         <div className="max-h-[420px] divide-y divide-border/55 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] lg:max-h-none lg:min-h-0 lg:flex-1">
                             {visiblePlugins.map((plugin) => {
                                 const state = stateLabel(plugin.installation);
-                                return <button key={plugin.id} onClick={() => setSelectedId(plugin.id)} className={cn("grid min-h-16 w-full grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected?.id === plugin.id && "bg-muted/55")}>
+                                return <button key={plugin.id} onClick={() => requestPluginDetails(plugin.id)} className={cn("grid min-h-16 w-full grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected?.id === plugin.id && "bg-muted/55")}>
                                     <Image src={`/api/plugins/${plugin.id}/logo`} alt="" width={32} height={32} unoptimized className="size-8 object-contain" />
                                     <span className="min-w-0"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium">{plugin.displayName}</span><span className="truncate text-xs text-muted-foreground">{plugin.publisher}</span></span><span className="mt-0.5 block truncate text-xs text-muted-foreground">{plugin.description}</span></span>
                                     <span className="flex items-center gap-2 pl-2 text-xs text-muted-foreground"><StatusDot tone={state.tone} />{t(state.key)}<ChevronRight className="size-3.5" /></span>
@@ -596,13 +667,19 @@ export function PluginManagerWorkbench() {
                         {selected ? <div className="space-y-5">
                             <div className="flex items-start gap-3"><Image src={`/api/plugins/${selected.id}/logo`} alt="" width={40} height={40} unoptimized className="size-10 object-contain" /><div className="min-w-0 flex-1"><h2 className="text-base font-semibold">{selected.displayName}</h2><p className="mt-1 text-sm leading-5 text-muted-foreground">{selected.description}</p></div></div>
                             <ComponentVersionStrip plugin={selected} discovery={selectedDiscovery} busy={busy} installActive={selectedInstallActive} onUpdate={() => void executeInstall(selected)} t={t} />
-                            {selected.setupAdapter === "godot_v1"
+                            {!selectedDetailsOpen
+                                ? <div className="space-y-3 border border-border/70 bg-background p-3"><p className="text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.description")}</p><Button type="button" variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => requestPluginDetails(selected.id)}><HardDrive className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.load")}</Button></div>
+                                : selected.setupAdapter === "godot_v1"
                                 ? godotSetup?.pluginId === selected.id
                                     ? <GodotSetupPanel setup={godotSetup} discovery={selectedDiscovery} busy={busy} onPickApplication={() => void pickGodotExecutable()} onPickProject={() => void pickGodotProject()} onScenarioChange={(scenario) => void updateGodotSetup({ scenario })} onRefreshMcp={() => void refreshGodotMcp()} t={t} />
-                                    : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.godot.loading")}</div>
+                                    : selectedDetailsLoading
+                                        ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.godot.loading")}</div>
+                                        : <Button type="button" variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => requestPluginDetails(selected.id)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button>
                                 : selectedDiscovery
                                     ? <MachineDiscoveryPanel discovery={selectedDiscovery} pluginId={selected.id} requirements={requirements} busy={busy} onRefresh={() => void loadMachineDiscovery(selected.id, true)} t={t} />
-                                    : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
+                                    : selectedDetailsLoading
+                                        ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>
+                                        : <Button type="button" variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => requestPluginDetails(selected.id)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button>}
                             <div><h3 className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.capabilities")}</h3><div className="flex flex-wrap gap-1.5">{selected.capabilities.map((item) => <span key={item} className="border border-border/70 bg-background px-2 py-1 text-xs">{item}</span>)}</div></div>
 
                             {selected.setupAdapter !== "godot_v1" && selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">

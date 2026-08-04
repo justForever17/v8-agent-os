@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import copy
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import pytest
+
 from core import mcp_config_service
+from core.interprocess_lock import interprocess_file_lock
 from core.native_tools import mcp_server_config
 
 
@@ -71,3 +80,71 @@ def test_mcp_server_config_rejects_missing_type(monkeypatch) -> None:
 
     assert "MCP server 配置无效" in output
     assert "必须声明 type" in output
+
+
+class _SlowCopyingStorage:
+    def __init__(self, *, fail_save: bool = False) -> None:
+        self.payload = {"mcpServers": {}}
+        self.fail_save = fail_save
+        self._lock = threading.Lock()
+
+    def get_mcp_config(self):
+        with self._lock:
+            snapshot = copy.deepcopy(self.payload)
+        time.sleep(0.05)
+        return snapshot
+
+    def save_mcp_config(self, data):
+        if self.fail_save:
+            raise OSError("simulated atomic save failure")
+        with self._lock:
+            self.payload = copy.deepcopy(data)
+
+
+def _stdio_server(package: str) -> dict:
+    return {"type": "stdio", "command": "npx", "args": ["--yes", package]}
+
+
+def test_different_mcp_installs_concurrently_preserve_both_servers(monkeypatch, tmp_path: Path) -> None:
+    fake_storage = _SlowCopyingStorage()
+    fake_runtime = _FakeExtensionsRuntimeService()
+    start = threading.Barrier(2)
+    monkeypatch.setattr(mcp_config_service, "storage", fake_storage)
+    monkeypatch.setattr(mcp_config_service, "extensions_runtime_service", fake_runtime)
+    monkeypatch.setattr(mcp_config_service, "_mcp_config_lock_path", lambda: tmp_path / "mcp-config.lock")
+
+    def install(name: str) -> dict:
+        start.wait(timeout=5)
+        return mcp_config_service.install_mcp_server_config(
+            {"mcpServers": {name: _stdio_server(f"@demo/{name}")}},
+            refresh_reason=f"test_{name}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(install, ["alpha", "beta"]))
+
+    assert set(fake_storage.payload["mcpServers"]) == {"alpha", "beta"}
+    assert sorted(result["serverCount"] for result in results) == [1, 2]
+    assert set(fake_runtime.refresh_reasons) == {"test_alpha", "test_beta"}
+
+
+def test_mcp_save_failure_releases_lock_for_retry(monkeypatch, tmp_path: Path) -> None:
+    fake_storage = _SlowCopyingStorage(fail_save=True)
+    fake_runtime = _FakeExtensionsRuntimeService()
+    lock_path = tmp_path / "mcp-config.lock"
+    monkeypatch.setattr(mcp_config_service, "storage", fake_storage)
+    monkeypatch.setattr(mcp_config_service, "extensions_runtime_service", fake_runtime)
+    monkeypatch.setattr(mcp_config_service, "_mcp_config_lock_path", lambda: lock_path)
+
+    with pytest.raises(OSError, match="simulated atomic save failure"):
+        mcp_config_service.install_mcp_server_config(
+            {"mcpServers": {"demo": _stdio_server("@demo/server")}},
+        )
+
+    with interprocess_file_lock(lock_path, timeout_seconds=0.2):
+        pass
+    fake_storage.fail_save = False
+    result = mcp_config_service.install_mcp_server_config(
+        {"mcpServers": {"demo": _stdio_server("@demo/server")}},
+    )
+    assert result["installedServers"] == ["demo"]

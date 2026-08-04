@@ -25,7 +25,7 @@ async function pickFolderWindows(initialPath: string) {
     const { stdout } = await execFileAsync(
         "powershell.exe",
         ["-NoProfile", "-STA", "-Command", script, initialPath || ""],
-        { windowsHide: false },
+        { windowsHide: true },
     );
     return normalizeSelectedPath(stdout);
 }

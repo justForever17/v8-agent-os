@@ -1,5 +1,4 @@
 import os
-import subprocess
 import importlib
 import sys
 import time
@@ -23,6 +22,9 @@ from erc.snapshot_service import snapshot_service
 from erc.workflow_ledger import workflow_ledger_service
 from runtimes.automation.runtime import automation_runtime
 from core.runtime_episodes import build_runtime_episode, enqueue_runtime_episode
+from core.process_launch import run_windowless_bounded
+
+_AUTOMATION_COMMAND_TIMEOUT_SECONDS = 60
 
 class ActionExecutor:
     """
@@ -836,7 +838,7 @@ class ActionExecutor:
             env["V8_AGENT_OS_HOOK_EVENT"] = str(kwargs["event_name"])
             
         print(f"[ActionExecutor] Executing Command: {command}")
-        process = subprocess.run(
+        process = run_windowless_bounded(
             command,
             shell=True,
             env=env,
@@ -844,6 +846,7 @@ class ActionExecutor:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=_AUTOMATION_COMMAND_TIMEOUT_SECONDS,
         )
         if process.returncode != 0:
             print(f"[ActionExecutor] Command '{command}' Failed with code {process.returncode}:\n{process.stderr}")

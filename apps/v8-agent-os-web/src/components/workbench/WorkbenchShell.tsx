@@ -274,6 +274,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const minimumPanelWidth = Math.min(280, Math.max(200, containerWidth * 0.28));
     const maximumPanelWidth = Math.max(200, containerWidth - 420);
     const panelWidth = Math.min(maximumPanelWidth, Math.max(minimumPanelWidth, desiredPanelWidth));
+    const animatedShellWidth = effectiveMode === "focus" ? "100%" : shouldShow ? panelWidth + 6 : 0;
     const document = activeTab.document;
 
     const content = (() => {
@@ -343,18 +344,23 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         <motion.div
             data-workbench-motion-shell
             aria-hidden={!shouldShow}
+            inert={!shouldShow}
             className={cn(
                 "z-[70] overflow-hidden",
                 effectiveMode === "focus" ? "absolute inset-0" : "relative flex h-full shrink-0",
-                !shouldShow && "invisible pointer-events-none",
+                !shouldShow && "pointer-events-none",
             )}
-            style={effectiveMode === "split" ? { width: shouldShow ? panelWidth + 6 : 0 } : undefined}
             initial={false}
             animate={{
+                width: animatedShellWidth,
                 opacity: shouldShow ? 1 : 0,
                 transform: shouldShow || shouldReduceMotion ? "translateX(0)" : "translateX(12px)",
             }}
-            transition={{ duration: isResizing ? 0 : shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] }}
+            transition={{
+                width: { duration: isResizing ? 0 : shouldReduceMotion ? 0.12 : 0.22, ease: [0.32, 0.72, 0, 1] },
+                opacity: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
+                transform: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
+            }}
         >
             {effectiveMode === "split" ? (
                 <div

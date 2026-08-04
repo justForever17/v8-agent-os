@@ -3,6 +3,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -105,17 +106,26 @@ import {
     type ConnectionIssue,
 } from "./creative-canvas/graph-operations";
 import {
+    canvasGraphNeedsPersistence,
+    canvasGraphPersistenceKey,
     createId,
     isEditableTarget,
     mediaNodeDimensions,
     mediaTypeOf,
+    mergeCanvasPresentationState,
     normalizeResource,
-    normalizeSnapshot,
     readSnapshot,
     recordOf,
+    resolveCanvasHydrationSnapshot,
     stringValue,
-    toWebResourceUrl,
 } from "./creative-canvas/serialization";
+import {
+    canvasGraphSessionIdentity,
+    createCanvasGraphSaveScheduler,
+    type CanvasGraphSaveRequest,
+    type CanvasGraphSaveResult,
+    type CanvasGraphSaveScheduler,
+} from "./creative-canvas/save-scheduler";
 import {
     CANVAS_DRAG_TYPE,
     EMPTY_GRAPH_HISTORY,
@@ -153,6 +163,60 @@ export type { CanvasTaskReference, CanvasTaskRequest } from "./creative-canvas/t
 
 const canvasMediaReconcileTasks = new Map<string, Promise<void>>();
 
+interface CanvasGraphSaveMeta {
+    runtime: CanvasGraphRuntime;
+    history: CanvasGraphHistory;
+    recoveredGraph?: CanvasSnapshot;
+}
+
+async function saveCanvasGraph(
+    request: CanvasGraphSaveRequest<CanvasSnapshot>,
+): Promise<CanvasGraphSaveResult<CanvasGraphSaveMeta>> {
+    const response = await fetch(request.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graph: request.graph, expectedRevision: request.expectedRevision }),
+        cache: "no-store",
+        signal: request.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        if (response.status === 409) {
+            const latest = await fetch(request.endpoint, { cache: "no-store", signal: request.signal });
+            const latestPayload = await latest.json().catch(() => ({}));
+            if (latest.ok && latestPayload?.graph) {
+                const recoveredGraph = mergeCanvasPresentationState(latestPayload.graph, request.graph);
+                return {
+                    accepted: false,
+                    revision: Number(latestPayload.revision || request.expectedRevision),
+                    persistenceKey: canvasGraphPersistenceKey(recoveredGraph),
+                    meta: {
+                        runtime: { ...EMPTY_GRAPH_RUNTIME, ...recordOf(latestPayload.runtime) } as CanvasGraphRuntime,
+                        history: { ...EMPTY_GRAPH_HISTORY, ...recordOf(latestPayload.history) } as CanvasGraphHistory,
+                        recoveredGraph,
+                    },
+                };
+            }
+        }
+        throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+    }
+    return {
+        accepted: true,
+        revision: Number(payload.revision || request.expectedRevision + 1),
+        meta: {
+            runtime: { ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime,
+            history: { ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory,
+        },
+    };
+}
+
+const graphSaveScheduler: CanvasGraphSaveScheduler<CanvasSnapshot, CanvasGraphSaveMeta> = (
+    createCanvasGraphSaveScheduler<CanvasSnapshot, CanvasGraphSaveMeta>({
+        persistenceKeyOf: canvasGraphPersistenceKey,
+        save: saveCanvasGraph,
+    })
+);
+
 function reconcileCanvasMediaCatalog(sessionId: string) {
     const existing = canvasMediaReconcileTasks.get(sessionId);
     if (existing) return existing;
@@ -187,8 +251,8 @@ export function CreativeArtifactCanvas({
 }) {
     const t = useT();
     const sessionId = document.subjectRef.sessionId;
-    const storageKey = `v8-web-creative-canvas:v3:${sessionId}`;
-    const legacyStorageKey = `v8-web-creative-canvas:v2:${sessionId}`;
+    const sessionIdentity = canvasGraphSessionIdentity(sessionId);
+    const { storageKey, legacyStorageKey } = sessionIdentity;
     const boardRef = useRef<HTMLDivElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
@@ -204,11 +268,11 @@ export function CreativeArtifactCanvas({
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const graphRevisionRef = useRef(0);
-    const graphSavingRef = useRef(false);
     const graphSubmittingRef = useRef(false);
     const clipboardRef = useRef<CanvasClipboard | null>(null);
-    const pendingGraphRef = useRef<CanvasSnapshot | null>(null);
     const lastSavedGraphRef = useRef("");
+    const graphPersistedRef = useRef(false);
+    const localGraphMigrationPendingRef = useRef(false);
     const {
         value: snapshot,
         replace: setSnapshot,
@@ -266,18 +330,75 @@ export function CreativeArtifactCanvas({
     const [enginePreflightIssues, setEnginePreflightIssues] = useState<CanvasPreflightIssue[]>([]);
     const [connectionIssue, setConnectionIssue] = useState<ConnectionIssue | null>(null);
     const [boardSize, setBoardSize] = useState({ width: 0, height: 0 });
+    const snapshotRef = useRef(snapshot);
+    const hydratedKeyRef = useRef(hydratedKey);
+
+    useLayoutEffect(() => {
+        snapshotRef.current = snapshot;
+        hydratedKeyRef.current = hydratedKey;
+    }, [hydratedKey, snapshot]);
 
     useEffect(() => {
         sessionRunningRef.current = sessionRunning;
     }, [sessionRunning]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         sessionIdRef.current = sessionId;
-    }, [sessionId]);
+        return graphSaveScheduler.setCallbacks({
+            onLaneState: (identity, lane) => {
+                if (!mountedRef.current || sessionIdRef.current !== identity.sessionId) return;
+                graphRevisionRef.current = lane.revision;
+                lastSavedGraphRef.current = lane.lastSavedKey;
+                graphPersistedRef.current = lane.persisted;
+                localGraphMigrationPendingRef.current = lane.migrationPending;
+                setGraphRevision(lane.revision);
+                setGraphSaving(lane.saving || lane.dirty);
+            },
+            onResult: (identity, savedGraph, result) => {
+                try {
+                    window.localStorage.removeItem(identity.legacyStorageKey);
+                } catch {
+                    // Browser cache is best effort; the Session graph remains authoritative in Engine.
+                }
+                if (!mountedRef.current || sessionIdRef.current !== identity.sessionId) return;
+                setGraphRuntime(result.meta.runtime);
+                setGraphHistory(result.meta.history);
+                const desired = graphSaveScheduler.getDesired(identity.sessionId);
+                if (result.meta.recoveredGraph && (
+                    !desired || desired.persistenceKey === canvasGraphPersistenceKey(savedGraph)
+                )) {
+                    resetSnapshot(mergeCanvasPresentationState(result.meta.recoveredGraph, desired?.graph ?? savedGraph));
+                }
+            },
+            onError: (identity, reason) => {
+                if (!mountedRef.current || sessionIdRef.current !== identity.sessionId) return;
+                setError(reason instanceof Error ? reason.message : String(reason));
+            },
+        });
+    }, [resetSnapshot, sessionId]);
 
     useEffect(() => {
         mountedRef.current = true;
-        return () => { mountedRef.current = false; };
+        return () => {
+            mountedRef.current = false;
+            const detachedSessionId = sessionIdRef.current;
+            const identity = canvasGraphSessionIdentity(detachedSessionId);
+            if (hydratedKeyRef.current !== identity.storageKey) return;
+            const candidate = snapshotRef.current;
+            try {
+                window.localStorage.setItem(identity.storageKey, JSON.stringify(candidate));
+            } catch {
+                // Browser cache is best effort; the Session graph remains authoritative in Engine.
+            }
+            if (!sessionRunningRef.current && canvasGraphNeedsPersistence(
+                candidate,
+                lastSavedGraphRef.current,
+                graphPersistedRef.current,
+                localGraphMigrationPendingRef.current,
+            )) {
+                graphSaveScheduler.flush(detachedSessionId, candidate);
+            }
+        };
     }, []);
 
     useEffect(() => {
@@ -291,58 +412,8 @@ export function CreativeArtifactCanvas({
     }, []);
 
     const persistGraph = useCallback(async (candidate: CanvasSnapshot): Promise<boolean> => {
-        pendingGraphRef.current = candidate;
-        if (graphSavingRef.current) {
-            while (graphSavingRef.current) {
-                await new Promise((resolve) => window.setTimeout(resolve, 25));
-            }
-            return lastSavedGraphRef.current === JSON.stringify(candidate);
-        }
-        graphSavingRef.current = true;
-        setGraphSaving(true);
-        try {
-            while (pendingGraphRef.current) {
-                const graph = pendingGraphRef.current;
-                pendingGraphRef.current = null;
-                const serialized = JSON.stringify(graph);
-                if (serialized === lastSavedGraphRef.current) continue;
-                const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ graph, expectedRevision: graphRevisionRef.current }),
-                    cache: "no-store",
-                });
-                const payload = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    if (response.status === 409) {
-                        const latest = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, { cache: "no-store" });
-                        const latestPayload = await latest.json().catch(() => ({}));
-                        if (latest.ok && sessionIdRef.current === sessionId && latestPayload?.graph) {
-                            const recovered = normalizeSnapshot(latestPayload.graph);
-                            graphRevisionRef.current = Number(latestPayload.revision || 0);
-                            setGraphRevision(graphRevisionRef.current);
-                            setGraphRuntime(recordOf(latestPayload.runtime) as CanvasGraphRuntime);
-                            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(latestPayload.history) } as CanvasGraphHistory);
-                            lastSavedGraphRef.current = JSON.stringify(recovered);
-                            resetSnapshot(recovered);
-                        }
-                    }
-                    throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-                }
-                if (sessionIdRef.current !== sessionId) return false;
-                graphRevisionRef.current = Number(payload.revision || graphRevisionRef.current + 1);
-                setGraphRevision(graphRevisionRef.current);
-                setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
-                setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
-                lastSavedGraphRef.current = serialized;
-                window.localStorage.removeItem(legacyStorageKey);
-            }
-            return true;
-        } finally {
-            graphSavingRef.current = false;
-            setGraphSaving(false);
-        }
-    }, [legacyStorageKey, sessionId]);
+        return graphSaveScheduler.enqueue(sessionId, candidate);
+    }, [sessionId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -352,13 +423,25 @@ export function CreativeArtifactCanvas({
             const cached = window.localStorage.getItem(storageKey)
                 ? readSnapshot(storageKey)
                 : readSnapshot(legacyStorageKey);
+            snapshotRef.current = cached;
             resetSnapshot(cached);
-            graphRevisionRef.current = 0;
-            setGraphRevision(0);
+            const initialLane = graphSaveScheduler.ensureSession(sessionId, {
+                revision: 0,
+                lastSavedKey: canvasGraphPersistenceKey(cached),
+                persisted: false,
+                migrationPending: false,
+            });
+            graphRevisionRef.current = initialLane?.revision || 0;
+            setGraphRevision(graphRevisionRef.current);
             setGraphRuntime(EMPTY_GRAPH_RUNTIME);
             setGraphHistory(EMPTY_GRAPH_HISTORY);
-            lastSavedGraphRef.current = "";
-            pendingGraphRef.current = null;
+            lastSavedGraphRef.current = initialLane?.lastSavedKey || canvasGraphPersistenceKey(cached);
+            graphPersistedRef.current = Boolean(initialLane?.persisted);
+            localGraphMigrationPendingRef.current = Boolean(initialLane?.migrationPending);
+            setGraphSaving(Boolean(initialLane?.saving || initialLane?.dirty));
+            setError(initialLane?.lastError
+                ? (initialLane.lastError instanceof Error ? initialLane.lastError.message : String(initialLane.lastError))
+                : "");
             setResources([]);
             setWorkspaceFolders([]);
             setActiveFolderId("");
@@ -389,14 +472,62 @@ export function CreativeArtifactCanvas({
             if (!actionResponse.ok) throw new Error(String(actionPayload?.detail || actionPayload?.error || `HTTP ${actionResponse.status}`));
             if (!templateResponse.ok) throw new Error(String(templatePayload?.detail || templatePayload?.error || `HTTP ${templateResponse.status}`));
             if (cancelled || sessionIdRef.current !== sessionId) return;
-            const recovered = graphPayload?.graph ? normalizeSnapshot(graphPayload.graph) : cached;
+            const authoritative = graphPayload?.graph
+                ? mergeCanvasPresentationState(graphPayload.graph, cached)
+                : cached;
             if (graphPayload?.graph) window.localStorage.removeItem(legacyStorageKey);
+            const responseRevision = Number(graphPayload?.revision || 0);
+            let lane = graphSaveScheduler.configureSession(sessionId, {
+                revision: responseRevision,
+                lastSavedKey: canvasGraphPersistenceKey(authoritative),
+                persisted: Boolean(graphPayload?.graph),
+                migrationPending: !graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length),
+            });
+            const liveSnapshot = snapshotRef.current;
+            const editedDuringHydration = canvasGraphPersistenceKey(liveSnapshot) !== canvasGraphPersistenceKey(cached);
+            if (editedDuringHydration) {
+                try {
+                    window.localStorage.setItem(storageKey, JSON.stringify(liveSnapshot));
+                } catch {
+                    // The shared Session lane remains the immediate-reopen recovery source.
+                }
+                lane = graphSaveScheduler.flush(sessionId, liveSnapshot);
+            }
+            const desired = graphSaveScheduler.getDesired(sessionId);
+            const settled = graphSaveScheduler.getSettled(sessionId);
+            const matchingSettled = settled && settled.result.revision === lane?.revision ? settled : null;
+            const localHydrationValue = editedDuringHydration
+                ? liveSnapshot
+                : (desired?.graph ?? matchingSettled?.graph ?? liveSnapshot);
+            const settledValue = matchingSettled
+                ? (matchingSettled.result.meta.recoveredGraph
+                    ?? (matchingSettled.result.accepted ? matchingSettled.graph : undefined))
+                : undefined;
+            const laneOwnsLocalGraph = Boolean(
+                editedDuringHydration || lane?.migrationPending || (lane?.dirty && desired),
+            );
+            const { snapshot: recovered, staleHydration } = resolveCanvasHydrationSnapshot({
+                engineValue: authoritative,
+                cachedValue: localHydrationValue,
+                responseRevision,
+                laneRevision: lane?.revision ?? responseRevision,
+                laneDirty: laneOwnsLocalGraph,
+                settledValue,
+            });
             resetSnapshot(recovered);
-            graphRevisionRef.current = Number(graphPayload?.revision || 0);
+            graphRevisionRef.current = lane?.revision ?? responseRevision;
             setGraphRevision(graphRevisionRef.current);
-            setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(graphPayload?.runtime) } as CanvasGraphRuntime);
-            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(graphPayload?.history) } as CanvasGraphHistory);
-            lastSavedGraphRef.current = graphPayload?.graph ? JSON.stringify(recovered) : "";
+            if (staleHydration && !laneOwnsLocalGraph && settledValue !== undefined && matchingSettled) {
+                setGraphRuntime(matchingSettled.result.meta.runtime);
+                setGraphHistory(matchingSettled.result.meta.history);
+            } else if (!staleHydration) {
+                setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(graphPayload?.runtime) } as CanvasGraphRuntime);
+                setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(graphPayload?.history) } as CanvasGraphHistory);
+            }
+            lastSavedGraphRef.current = lane?.lastSavedKey || canvasGraphPersistenceKey(authoritative);
+            graphPersistedRef.current = lane?.persisted ?? Boolean(graphPayload?.graph);
+            localGraphMigrationPendingRef.current = lane?.migrationPending
+                ?? (!graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length));
             setActionDefinitions((Array.isArray(actionPayload?.actions) ? actionPayload.actions : []).map((item: unknown) => {
                 const action = recordOf(item);
                 const output = recordOf(action.output);
@@ -438,22 +569,42 @@ export function CreativeArtifactCanvas({
             cancelled = true;
             window.clearTimeout(initialize);
         };
-    }, [legacyStorageKey, sessionId, storageKey]);
+    }, [legacyStorageKey, resetSnapshot, sessionId, storageKey]);
 
     useEffect(() => {
         if (hydratedKey !== storageKey) return;
-        const timeout = window.setTimeout(() => {
+        const persistLocal = () => {
             try {
                 window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
             } catch {
                 // Browser cache is best effort; the Session graph remains authoritative in Engine.
             }
-            if (!sessionRunningRef.current) {
-                void persistGraph(snapshot).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+        };
+        const needsPersistence = () => !sessionRunningRef.current && canvasGraphNeedsPersistence(
+            snapshot,
+            lastSavedGraphRef.current,
+            graphPersistedRef.current,
+            localGraphMigrationPendingRef.current,
+        );
+        const persistCurrent = () => {
+            persistLocal();
+            if (needsPersistence()) {
+                void persistGraph(snapshot).catch((reason) => {
+                    if (mountedRef.current && sessionIdRef.current === sessionId) {
+                        setError(reason instanceof Error ? reason.message : String(reason));
+                    }
+                });
             }
-        }, 420);
-        return () => window.clearTimeout(timeout);
-    }, [hydratedKey, persistGraph, snapshot, storageKey]);
+        };
+        const timeout = window.setTimeout(persistCurrent, 420);
+        return () => {
+            window.clearTimeout(timeout);
+            persistLocal();
+            if (mountedRef.current && sessionIdRef.current !== sessionId && needsPersistence()) {
+                graphSaveScheduler.flush(sessionId, snapshot);
+            }
+        };
+    }, [hydratedKey, persistGraph, sessionId, snapshot, storageKey]);
 
     const loadCatalog = useCallback(async (silent = false) => {
         catalogAbortRef.current?.abort();
@@ -1200,7 +1351,7 @@ export function CreativeArtifactCanvas({
     const applyGraphHistory = useCallback(async (direction: "undo" | "redo") => {
         if (sessionRunning || historyApplying) return;
         const allowed = direction === "undo" ? graphHistory.canUndo : graphHistory.canRedo;
-        if (!allowed && JSON.stringify(snapshot) === lastSavedGraphRef.current) return;
+        if (!allowed && canvasGraphPersistenceKey(snapshot) === lastSavedGraphRef.current) return;
         setHistoryApplying(true);
         setError("");
         try {
@@ -1222,13 +1373,20 @@ export function CreativeArtifactCanvas({
             if (sessionIdRef.current !== sessionId || !payload?.graph) {
                 throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
             }
-            const recovered = normalizeSnapshot(payload.graph);
-            graphRevisionRef.current = Number(payload.revision || graphRevisionRef.current + 1);
+            const recovered = mergeCanvasPresentationState(payload.graph, snapshot);
+            const lane = graphSaveScheduler.configureSession(sessionId, {
+                revision: Number(payload.revision || graphRevisionRef.current + 1),
+                lastSavedKey: canvasGraphPersistenceKey(recovered),
+                persisted: true,
+                migrationPending: false,
+            });
+            graphRevisionRef.current = lane?.revision ?? Number(payload.revision || graphRevisionRef.current + 1);
             setGraphRevision(graphRevisionRef.current);
             setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
             setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
-            lastSavedGraphRef.current = JSON.stringify(recovered);
-            pendingGraphRef.current = null;
+            lastSavedGraphRef.current = lane?.lastSavedKey || canvasGraphPersistenceKey(recovered);
+            graphPersistedRef.current = lane?.persisted ?? true;
+            localGraphMigrationPendingRef.current = lane?.migrationPending ?? false;
             resetSnapshot(recovered);
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
@@ -2146,12 +2304,20 @@ export function CreativeArtifactCanvas({
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
             if (sessionIdRef.current !== sessionId) return;
-            const graph = normalizeSnapshot(payload.graph);
-            graphRevisionRef.current = Number(payload.revision || 0);
+            const graph = mergeCanvasPresentationState(payload.graph, snapshot);
+            const lane = graphSaveScheduler.configureSession(sessionId, {
+                revision: Number(payload.revision || 0),
+                lastSavedKey: canvasGraphPersistenceKey(graph),
+                persisted: true,
+                migrationPending: false,
+            });
+            graphRevisionRef.current = lane?.revision ?? Number(payload.revision || 0);
             setGraphRevision(graphRevisionRef.current);
             setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
             setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
-            lastSavedGraphRef.current = JSON.stringify(graph);
+            lastSavedGraphRef.current = lane?.lastSavedKey || canvasGraphPersistenceKey(graph);
+            graphPersistedRef.current = lane?.persisted ?? true;
+            localGraphMigrationPendingRef.current = lane?.migrationPending ?? false;
             commitSnapshot(graph);
             setTemplateOpen(false);
         } catch (reason) {

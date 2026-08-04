@@ -16,4 +16,7 @@ test('desktop pet menu keeps actions visible and scrolls only the collapsed work
   assert.match(source, /\[&::-webkit-scrollbar\]:hidden/);
   assert.match(source, /flex w-\[320px\][\s\S]*flex-col overflow-hidden/);
   assert.doesNotMatch(source, /max-h-\[calc\(100vh-24px\)\] overflow-y-auto/);
+  assert.match(source, /interactionStatus/);
+  assert.match(source, /aria-live="polite"/);
+  assert.doesNotMatch(source, /\{v8Connection\?\.error\}/);
 });

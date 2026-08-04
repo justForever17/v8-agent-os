@@ -5,6 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
 
+from core.storage import storage
+
 from .models import (
     ComputerUseAgentBrowserOpenPayload,
     ComputerUseAppQueryPayload,
@@ -22,10 +24,15 @@ from .models import (
 
 router = APIRouter()
 
-_AVAILABILITY_CACHE_TTL_SECONDS = 5.0
+_AVAILABILITY_CACHE_TTL_SECONDS = 30.0
+_AVAILABILITY_FAILURE_RETRY_SECONDS = 10.0
+_AVAILABILITY_EXPLICIT_REFRESH_TIMEOUT_SECONDS = 30.0
 _availability_cache: dict[str, Any] | None = None
 _availability_cache_at = 0.0
+_availability_last_error: str | None = None
+_availability_last_failure_at = 0.0
 _availability_lock = asyncio.Lock()
+_availability_refresh_task: asyncio.Task[dict[str, Any]] | None = None
 
 
 def _computer_use_runtime():
@@ -66,6 +73,81 @@ def _build_computer_use_availability() -> dict[str, Any]:
     return dict(_computer_use_runtime().availability() or {})
 
 
+def _configuration_snapshot() -> dict[str, Any]:
+    try:
+        config = dict(storage.get_computer_use_config() or {})
+        browser_lane = dict(config.get("browserLane") or {})
+        return {
+            "available": None,
+            "details": {
+                "configuration": {
+                    "browserLaneEnabled": bool(browser_lane.get("enabled", False)),
+                    "browserLaneMode": str(browser_lane.get("mode") or "auto_if_available"),
+                    "browserLaneProvider": str(browser_lane.get("provider") or "engine_managed_cdp"),
+                }
+            },
+        }
+    except Exception as exc:
+        return {
+            "available": None,
+            "details": {
+                "configuration": {
+                    "available": False,
+                    "errorClass": exc.__class__.__name__,
+                }
+            },
+        }
+
+
+def _availability_response(
+    payload: dict[str, Any],
+    *,
+    state: str,
+    stale: bool,
+    error: str | None = None,
+) -> dict[str, Any]:
+    response = deepcopy(payload)
+    response["environmentProbe"] = {
+        "state": state,
+        "stale": stale,
+        "refreshing": state == "refreshing",
+        "error": error,
+    }
+    return response
+
+
+async def _refresh_computer_use_availability() -> dict[str, Any]:
+    global _availability_cache, _availability_cache_at
+    global _availability_last_error, _availability_last_failure_at
+
+    async with _availability_lock:
+        try:
+            payload = await asyncio.to_thread(_build_computer_use_availability)
+            _availability_cache = dict(payload or {})
+            _availability_cache_at = monotonic()
+            _availability_last_error = None
+            _availability_last_failure_at = 0.0
+            return _availability_response(_availability_cache, state="fresh", stale=False)
+        except Exception as exc:
+            _availability_last_error = f"{exc.__class__.__name__}: {exc}"
+            _availability_last_failure_at = monotonic()
+            fallback = _availability_cache if _availability_cache is not None else _configuration_snapshot()
+            return _availability_response(
+                fallback,
+                state="failed",
+                stale=_availability_cache is not None,
+                error=_availability_last_error,
+            )
+
+
+def _ensure_availability_refresh() -> asyncio.Task[dict[str, Any]]:
+    global _availability_refresh_task
+
+    if _availability_refresh_task is None or _availability_refresh_task.done():
+        _availability_refresh_task = asyncio.create_task(_refresh_computer_use_availability())
+    return _availability_refresh_task
+
+
 def _compat_invocation_metadata(endpoint: str) -> dict:
     return {
         "triggerSource": "computer_use_compat_http",
@@ -87,24 +169,53 @@ def _real_host_matrix_service():
 
 
 @router.get("/computer-use/availability")
-async def get_computer_use_availability():
-    global _availability_cache, _availability_cache_at
+async def get_computer_use_availability(refresh: bool = False):
+    now = monotonic()
+    cache_is_fresh = (
+        _availability_cache is not None
+        and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS
+    )
+    if cache_is_fresh and not refresh:
+        return _availability_response(_availability_cache or {}, state="fresh", stale=False)
 
-    try:
-        now = monotonic()
-        if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
-            return deepcopy(_availability_cache)
+    if refresh:
+        refresh_task = _ensure_availability_refresh()
+        try:
+            return deepcopy(
+                await asyncio.wait_for(
+                    asyncio.shield(refresh_task),
+                    timeout=_AVAILABILITY_EXPLICIT_REFRESH_TIMEOUT_SECONDS,
+                )
+            )
+        except TimeoutError:
+            fallback = _availability_cache if _availability_cache is not None else _configuration_snapshot()
+            return _availability_response(
+                fallback,
+                state="refreshing",
+                stale=_availability_cache is not None,
+                error=f"refresh_timeout_{_AVAILABILITY_EXPLICIT_REFRESH_TIMEOUT_SECONDS:g}s",
+            )
 
-        async with _availability_lock:
-            now = monotonic()
-            if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
-                return deepcopy(_availability_cache)
-            payload = await asyncio.to_thread(_build_computer_use_availability)
-            _availability_cache = dict(payload or {})
-            _availability_cache_at = monotonic()
-            return deepcopy(_availability_cache)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    retry_blocked = (
+        _availability_last_failure_at > 0
+        and (now - _availability_last_failure_at) < _AVAILABILITY_FAILURE_RETRY_SECONDS
+    )
+    if not retry_blocked:
+        _ensure_availability_refresh()
+
+    if _availability_cache is not None:
+        return _availability_response(
+            _availability_cache,
+            state="failed" if retry_blocked else "refreshing",
+            stale=True,
+            error=_availability_last_error,
+        )
+    return _availability_response(
+        _configuration_snapshot(),
+        state="failed" if retry_blocked else "refreshing",
+        stale=False,
+        error=_availability_last_error,
+    )
 
 
 @router.post("/agent-browser/open")

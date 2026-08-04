@@ -1,16 +1,32 @@
-const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, shell, session, screen, systemPreferences, desktopCapturer } = require('electron');
+const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, net, protocol, shell, session, screen, systemPreferences, desktopCapturer } = require('electron');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { createCanonicalConfigWatcher } = require('../lib/canonical-config-watcher.cjs');
 const { createShellControlClient } = require('../lib/shell-control-client.cjs');
 const { createShellLifecycleWatchdog } = require('../lib/shell-lifecycle-watchdog.cjs');
+const {
+  STABLE_RENDERER_ENTRY_URL,
+  createDevelopmentTransport,
+  createVerifiedTransport,
+  developmentRendererContentSecurityPolicy,
+  installStableRendererProtocol,
+  isTrustedRendererUrl,
+  registerStableRendererScheme,
+  rendererTransportView,
+} = require('../lib/stable-renderer-transport.cjs');
+
+registerStableRendererScheme(protocol);
 
 let mainWindow = null;
 let tray = null;
 let clickThrough = false;
 let bundledServer = null;
+let bundledServerReadyPromise = null;
+let verifiedLocalTransport = null;
+let creatingMainWindow = false;
 let panelOpen = false;
 let companionClosedSize = { width: 380, height: 380 };
 let shuttingDown = false;
@@ -23,30 +39,56 @@ let lastPetStatus = { state: 'waiting_v8os', activeSessionId: null };
 let shutdownTimer = null;
 let shutdownRequestId = '';
 
-const LOCAL_SERVER_URL = 'http://127.0.0.1:3000';
 const V8_WEB_URL = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 const MANAGED_BY_SHELL = process.env.V8_DESKTOP_PET_MANAGED_BY_SHELL === '1';
 const SHELL_SETTINGS_DEEP_LINK = 'v8os://open/admin/desktop-pet';
+const DEVELOPMENT_TRANSPORT = process.env.V8_DESKTOP_DEV_SERVER
+  ? createDevelopmentTransport(process.env.V8_DESKTOP_DEV_SERVER)
+  : null;
+const configuredLocalServerPort = process.env.V8_DESKTOP_PORT;
+const REQUESTED_LOCAL_SERVER_PORT = configuredLocalServerPort === undefined
+  ? 0
+  : Number(configuredLocalServerPort);
+
+if (
+  !Number.isInteger(REQUESTED_LOCAL_SERVER_PORT)
+  || REQUESTED_LOCAL_SERVER_PORT < 0
+  || REQUESTED_LOCAL_SERVER_PORT > 65535
+) {
+  throw new Error(`Invalid desktop pet server port: ${configuredLocalServerPort || ''}`);
+}
 const CLOSED_WIDTH = 380;
 const CLOSED_HEIGHT = 380;
 const PANEL_WIDTH = 940;
 const PANEL_HEIGHT = 720;
+const DESKTOP_PET_DESCRIPTOR_ID = crypto.randomUUID();
+const DESKTOP_PET_STARTED_AT = new Date().toISOString();
 
 function desktopPetProcessPath() {
   const stateRoot = process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), '.v8-agent-os');
   return path.join(stateRoot, 'runtime', 'desktop-pet.json');
 }
 
-function writeDesktopPetProcessDescriptor() {
+function writeDesktopPetProcessDescriptor(transport) {
   const filePath = desktopPetProcessPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify({
-    version: 1,
+  const descriptor = {
+    version: 2,
+    descriptorId: DESKTOP_PET_DESCRIPTOR_ID,
     pid: process.pid,
     managedByShell: MANAGED_BY_SHELL,
-    startedAt: new Date().toISOString(),
-  }, null, 2), 'utf8');
+    startedAt: DESKTOP_PET_STARTED_AT,
+  };
+  if (transport?.mode === 'production') {
+    descriptor.serverPid = transport.serverPid;
+    descriptor.localPort = transport.localPort;
+    descriptor.localBaseUrl = transport.localBaseUrl;
+    descriptor.instanceId = transport.instanceId;
+  } else if (transport?.mode === 'development') {
+    descriptor.devOrigin = transport.rendererOrigin;
+  }
+  fs.writeFileSync(temporaryPath, JSON.stringify(descriptor, null, 2), 'utf8');
   try {
     fs.renameSync(temporaryPath, filePath);
   } catch {
@@ -59,7 +101,12 @@ function removeOwnedDesktopPetProcessDescriptor() {
   const filePath = desktopPetProcessPath();
   try {
     const current = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (current?.pid === process.pid) fs.rmSync(filePath, { force: true });
+    if (
+      current?.pid === process.pid
+      && current?.descriptorId === DESKTOP_PET_DESCRIPTOR_ID
+    ) {
+      fs.rmSync(filePath, { force: true });
+    }
   } catch {}
 }
 
@@ -105,39 +152,149 @@ function createTrayIcon() {
   return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
 }
 
-function startBundledServer() {
-  if (bundledServer || process.env.V8_DESKTOP_DEV_SERVER) {
-    return;
+async function verifyBundledServer(baseUrl, instanceId, pid, port) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch(`${baseUrl}/api/pet/health`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (
+      !response.ok
+      || payload?.ok !== true
+      || payload?.service !== 'v8-agent-os-desktop-pet'
+      || payload?.version !== 1
+      || payload?.instanceId !== instanceId
+      || payload?.pid !== pid
+      || payload?.port !== port
+    ) {
+      throw new Error('桌宠本地服务身份校验失败');
+    }
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+function startBundledServer() {
+  if (bundledServerReadyPromise) return bundledServerReadyPromise;
+
   const serverPath = path.join(__dirname, '..', 'dist', 'server.cjs');
-  bundledServer = spawn(process.env.V8_DESKTOP_NODE || 'node', [serverPath], {
+  const instanceId = crypto.randomUUID();
+  const child = spawn(process.env.V8_DESKTOP_NODE || 'node', [serverPath], {
     cwd: path.join(__dirname, '..'),
     env: {
       ...process.env,
       NODE_ENV: 'production',
+      V8_DESKTOP_PORT: String(REQUESTED_LOCAL_SERVER_PORT),
+      V8_DESKTOP_SERVER_INSTANCE_ID: instanceId,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   });
-  bundledServer.stdout.on('data', (chunk) => {
+  bundledServer = child;
+  child.stdout.on('data', (chunk) => {
     console.log(`[CyberCore Server] ${String(chunk).trim()}`);
   });
-  bundledServer.stderr.on('data', (chunk) => {
+  child.stderr.on('data', (chunk) => {
     console.warn(`[CyberCore Server] ${String(chunk).trim()}`);
   });
-  bundledServer.on('exit', (code, signal) => {
-    console.warn('[CyberCore Server] exited', { code, signal });
-    bundledServer = null;
+  bundledServerReadyPromise = new Promise((resolve, reject) => {
+    let startupSettled = false;
+    let ready = false;
+    let validating = false;
+    const startupTimer = setTimeout(() => {
+      if (startupSettled) return;
+      startupSettled = true;
+      bundledServerReadyPromise = null;
+      reject(new Error('桌宠本地服务启动超时'));
+    }, 8000);
+
+    const rejectStartup = (error) => {
+      if (startupSettled) return;
+      startupSettled = true;
+      clearTimeout(startupTimer);
+      bundledServerReadyPromise = null;
+      reject(error instanceof Error ? error : new Error(String(error || '桌宠本地服务启动失败')));
+    };
+
+    child.on('message', async (message) => {
+      if (startupSettled || validating || message?.type !== 'v8-desktop-server-ready') return;
+      const port = Number(message.port);
+      if (
+        message.version !== 1
+        || message.instanceId !== instanceId
+        || message.pid !== child.pid
+        || !Number.isInteger(port)
+        || port < 1
+        || port > 65535
+        || (REQUESTED_LOCAL_SERVER_PORT !== 0 && port !== REQUESTED_LOCAL_SERVER_PORT)
+      ) {
+        rejectStartup(new Error('桌宠本地服务握手无效'));
+        return;
+      }
+      validating = true;
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        await verifyBundledServer(baseUrl, instanceId, child.pid, port);
+        if (startupSettled || bundledServer !== child) return;
+        const transport = createVerifiedTransport({
+          baseUrl,
+          instanceId,
+          serverPid: child.pid,
+        });
+        verifiedLocalTransport = transport;
+        writeDesktopPetProcessDescriptor(transport);
+        startupSettled = true;
+        ready = true;
+        clearTimeout(startupTimer);
+        resolve(transport);
+      } catch (error) {
+        rejectStartup(error);
+      } finally {
+        validating = false;
+      }
+    });
+    child.on('error', (error) => {
+      if (!ready) {
+        rejectStartup(error);
+        return;
+      }
+      console.error('[CyberCore Server] process error', error);
+      if (!shuttingDown) {
+        reportPetStatus('error');
+        emergencyHideWindow();
+        safeShutdown({ source: 'local_server_process_error' });
+      }
+    });
+    child.on('exit', (code, signal) => {
+      console.warn('[CyberCore Server] exited', { code, signal });
+      if (bundledServer === child) bundledServer = null;
+      if (verifiedLocalTransport?.serverPid === child.pid) verifiedLocalTransport = null;
+      bundledServerReadyPromise = null;
+      if (!startupSettled) {
+        rejectStartup(new Error(`桌宠本地服务提前退出（${code ?? signal ?? 'unknown'}）`));
+      } else if (ready && !shuttingDown) {
+        reportPetStatus('error');
+        emergencyHideWindow();
+        safeShutdown({ source: 'local_server_exited' });
+      }
+    });
   });
+
+  return bundledServerReadyPromise;
 }
 
 function killBundledServerTree() {
   const child = bundledServer;
+  bundledServerReadyPromise = null;
   if (!child) return;
   bundledServer = null;
+  if (verifiedLocalTransport?.serverPid === child.pid) verifiedLocalTransport = null;
   const pid = child.pid;
   try {
-    child.removeAllListeners('exit');
+    child.removeAllListeners();
   } catch {
     // best-effort cleanup
   }
@@ -310,18 +467,10 @@ function safeShutdown(options = {}) {
 }
 
 function setupPermissionHandlers() {
-  const allowMediaForLocalApp = (webContents) => {
-    const url = webContents?.getURL?.() || '';
-    // If the URL is empty or about:blank (which happens during initialization), allow it
-    if (!url || url === 'about:blank') {
-      return true;
-    }
-    // Allow any localhost, 127.0.0.1 on any port, or file: origin
-    return (
-      url.startsWith('http://localhost:') ||
-      url.startsWith('http://127.0.0.1:') ||
-      url.startsWith('file:')
-    );
+  const allowMediaForLocalApp = (webContents, requestingUrl = '') => {
+    const rendererUrl = webContents?.getURL?.() || '';
+    if (!isTrustedRendererUrl(rendererUrl, DEVELOPMENT_TRANSPORT)) return false;
+    return !requestingUrl || isTrustedRendererUrl(requestingUrl, DEVELOPMENT_TRANSPORT);
   };
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -333,7 +482,8 @@ function setupPermissionHandlers() {
       permission === 'audioCapture' ||
       permission === 'videoCapture';
       
-    if (isAllowedPermission && allowMediaForLocalApp(webContents)) {
+    const requestingUrl = details?.requestingUrl || details?.securityOrigin || '';
+    if (isAllowedPermission && allowMediaForLocalApp(webContents, requestingUrl)) {
       const requested = details?.mediaTypes || [];
       callback(!requested.length || requested.includes('video') || requested.includes('audio'));
       return;
@@ -341,7 +491,7 @@ function setupPermissionHandlers() {
     callback(false);
   });
 
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
     const isAllowedPermission = 
       permission === 'media' || 
       permission === 'camera' || 
@@ -351,7 +501,7 @@ function setupPermissionHandlers() {
       permission === 'videoCapture';
 
     if (isAllowedPermission) {
-      return allowMediaForLocalApp(webContents);
+      return allowMediaForLocalApp(webContents, requestingOrigin);
     }
     return false;
   });
@@ -409,32 +559,47 @@ function openMediaPrivacySettings(kind) {
   return false;
 }
 
-async function waitForLocalServer(timeoutMs = 10000) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const response = await fetch(LOCAL_SERVER_URL, { method: 'GET' });
-      if (response.ok) {
-        return true;
-      }
-    } catch {
-      // Server is still warming up.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 240));
+async function resolveEntry() {
+  if (DEVELOPMENT_TRANSPORT) {
+    writeDesktopPetProcessDescriptor(DEVELOPMENT_TRANSPORT);
+    return { type: 'url', value: DEVELOPMENT_TRANSPORT.entryUrl };
   }
-  return false;
+  await startBundledServer();
+  return { type: 'url', value: STABLE_RENDERER_ENTRY_URL };
 }
 
-async function resolveEntry() {
-  if (process.env.V8_DESKTOP_DEV_SERVER) {
-    return { type: 'url', value: process.env.V8_DESKTOP_DEV_SERVER };
-  }
-  startBundledServer();
-  await waitForLocalServer();
-  return { type: 'url', value: LOCAL_SERVER_URL };
+function setupDevelopmentContentSecurityPolicy() {
+  if (!DEVELOPMENT_TRANSPORT) return;
+  const contentSecurityPolicy = developmentRendererContentSecurityPolicy(DEVELOPMENT_TRANSPORT);
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (!isTrustedRendererUrl(details.url, DEVELOPMENT_TRANSPORT)) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    const responseHeaders = { ...(details.responseHeaders || {}) };
+    for (const name of Object.keys(responseHeaders)) {
+      if (name.toLowerCase() === 'content-security-policy' || name.toLowerCase() === 'content-security-policy-report-only') {
+        delete responseHeaders[name];
+      }
+    }
+    responseHeaders['Content-Security-Policy'] = [contentSecurityPolicy];
+    callback({ responseHeaders });
+  });
 }
 
 async function createMainWindow() {
+  if (creatingMainWindow || (mainWindow && !mainWindow.isDestroyed())) return;
+  creatingMainWindow = true;
+  try {
+    await createMainWindowInternal();
+  } finally {
+    creatingMainWindow = false;
+  }
+}
+
+async function createMainWindowInternal() {
+  const entry = await resolveEntry();
+  if (shuttingDown) return;
   const trayIcon = createTrayIcon();
   const primaryDisplay = screen.getPrimaryDisplay();
   const { x, y, width, height } = primaryDisplay.workArea;
@@ -460,13 +625,12 @@ async function createMainWindow() {
     },
   });
 
-  const entry = await resolveEntry();
-  void mainWindow.loadURL(entry.value);
-
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    if (errorCode === -3 || shuttingDown) return;
     console.error('[CyberCore Desktop] load failed:', errorCode, errorDescription, validatedURL);
-    mainWindow?.setBackgroundColor('#0f172a');
-    mainWindow?.show();
+    reportPetStatus('error');
+    emergencyHideWindow();
+    safeShutdown({ source: 'renderer_load_failed' });
   });
 
   mainWindow.webContents.on('console-message', (_event, level, message) => {
@@ -495,6 +659,8 @@ async function createMainWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  await mainWindow.loadURL(entry.value);
 }
 
 function resizeForPanel(open) {
@@ -504,7 +670,7 @@ function resizeForPanel(open) {
 
 function showOrFocusWindow() {
   if (!mainWindow) {
-    createMainWindow();
+    if (!shuttingDown) void createMainWindow().catch(handleMainWindowStartupFailure);
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -542,6 +708,13 @@ function updateTrayMenu() {
       { label: '关闭桌宠', click: safeShutdown },
     ]),
   );
+}
+
+function handleMainWindowStartupFailure(error) {
+  console.error('[CyberCore Desktop] startup failed:', error);
+  reportPetStatus('error');
+  emergencyHideWindow();
+  safeShutdown({ source: 'local_surface_startup_failed' });
 }
 
 ipcMain.handle('v8-desktop:set-click-through', (_event, enabled) => {
@@ -592,6 +765,19 @@ ipcMain.handle('v8-desktop:open-session', (_event, sessionId) => {
 
 ipcMain.handle('v8-desktop:get-active-session', () => {
   return { sessionId: lastShellActiveSessionId || null };
+});
+
+ipcMain.on('v8-desktop:get-transport', (event) => {
+  if (
+    !mainWindow
+    || mainWindow.isDestroyed()
+    || event.sender !== mainWindow.webContents
+    || !isTrustedRendererUrl(event.sender.getURL(), DEVELOPMENT_TRANSPORT)
+  ) {
+    event.returnValue = null;
+    return;
+  }
+  event.returnValue = rendererTransportView(DEVELOPMENT_TRANSPORT || verifiedLocalTransport);
 });
 
 ipcMain.handle('v8-desktop:shutdown-ready', (_event, requestId) => {
@@ -652,16 +838,21 @@ if (!hasSingleInstanceLock) {
   app.on('second-instance', showOrFocusWindow);
   app.whenReady().then(() => {
     app.setAppUserModelId('V8OS.CyberCoreDesktop');
-    writeDesktopPetProcessDescriptor();
+    if (!DEVELOPMENT_TRANSPORT) {
+      installStableRendererProtocol(protocol, net.fetch, () => verifiedLocalTransport);
+    }
+    setupDevelopmentContentSecurityPolicy();
     setupPermissionHandlers();
     startShellControlClient();
     startCanonicalConfigWatcher();
-    void createMainWindow();
+    void createMainWindow().catch(handleMainWindowStartupFailure);
     if (!MANAGED_BY_SHELL) createTray();
     globalShortcut.register('Control+Alt+V', showOrFocusWindow);
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+      if (BrowserWindow.getAllWindows().length === 0 && !shuttingDown) {
+        void createMainWindow().catch(handleMainWindowStartupFailure);
+      }
     });
   });
 }

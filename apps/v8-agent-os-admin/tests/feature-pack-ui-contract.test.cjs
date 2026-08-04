@@ -8,14 +8,21 @@ const adminRoot = path.resolve(__dirname, "..");
 test("Topbar uses feature pack API instead of legacy runtime install API", () => {
   const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
   const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const healthCacheSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "engine-health-snapshot.ts"), "utf8");
 
   assert.match(topbarSource, /\/api\/runtime-feature-packs/);
   assert.doesNotMatch(topbarSource, /\/api\/runtime-install/);
   assert.match(topbarSource, /v8os:open-feature-packs/);
-  assert.match(topbarSource, /loadInstallState = useCallback\(async \(force = false, silent = false\)/);
+  assert.match(topbarSource, /loadInstallState = useCallback\(async \(force = false, silent = false, refreshHealth = false\)/);
   assert.match(topbarSource, /loadInstallState\(false, installState !== null\)/);
+  assert.match(topbarSource, /loadInstallState\(true, true, true\)/);
+  assert.match(topbarSource, /\/api\/runtime-feature-packs\?refresh=1/);
   assert.match(topbarSource, /installLoading && !installState/);
   assert.match(installerSource, /productName: "可选本地识别包"/);
+  assert.match(installerSource, /readEngineHealthSnapshot/);
+  assert.match(installerSource, /configUpdatedAt > engineUpdatedAt \? configPack : enginePack/);
+  assert.doesNotMatch(installerSource, /fetch\(`\$\{resolveEngineOrigin\(\)\}\/health`/);
+  assert.match(healthCacheSource, /healthRequests = new Map<string, Promise<EngineHealthCache>>/);
 });
 
 test("feature pack API exposes GET/POST and legacy runtime install is deprecated", () => {
@@ -26,6 +33,7 @@ test("feature pack API exposes GET/POST and legacy runtime install is deprecated
   assert.match(routeSource, /export async function POST/);
   assert.match(routeSource, /dryRun/);
   assert.match(routeSource, /triggerFeaturePackInstall/);
+  assert.match(routeSource, /forceHealthRefresh: req\.nextUrl\.searchParams\.get\("refresh"\) === "1"/);
   assert.match(legacySource, /deprecated:\s*true/);
   assert.match(legacySource, /replacement:\s*"\/api\/runtime-feature-packs"/);
   assert.doesNotMatch(legacySource, /bootstrap\.ps1/);

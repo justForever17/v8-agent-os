@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
@@ -167,6 +168,7 @@ class ComputerUseAppCatalog:
         self._runtime_entries: Dict[str, Dict[str, Any]] = {}
         self._last_static_refresh_ts = 0.0
         self._last_running_refresh_ts = 0.0
+        self._refresh_lock = threading.RLock()
         self._load_cache()
 
     def warm_start(self) -> None:
@@ -375,21 +377,22 @@ class ComputerUseAppCatalog:
     ) -> None:
         if not app_id:
             return
-        self._ensure_static(force=False)
-        self._runtime_entries = copy.deepcopy(self._runtime_entries or self._static_entries)
-        self._merge(
-            self._runtime_entries,
-            {
-                "appId": str(app_id).strip(),
-                "profileId": str(profile_id or "").strip() or None,
-                "displayName": str(display_name or "").strip() or None,
-                "launchCommands": [list(launch_command or [])] if launch_command else [],
-                "runningWindows": [dict(window or {})] if isinstance(window, dict) else [],
-                "sources": ["runtime_window_binding"],
-            },
-        )
-        self._last_running_refresh_ts = time.time()
-        self._save_cache()
+        with self._refresh_lock:
+            self._ensure_static(force=False)
+            self._runtime_entries = copy.deepcopy(self._runtime_entries or self._static_entries)
+            self._merge(
+                self._runtime_entries,
+                {
+                    "appId": str(app_id).strip(),
+                    "profileId": str(profile_id or "").strip() or None,
+                    "displayName": str(display_name or "").strip() or None,
+                    "launchCommands": [list(launch_command or [])] if launch_command else [],
+                    "runningWindows": [dict(window or {})] if isinstance(window, dict) else [],
+                    "sources": ["runtime_window_binding"],
+                },
+            )
+            self._last_running_refresh_ts = time.time()
+            self._save_cache()
 
     def _entries(self, *, include_running: bool, force_refresh: bool) -> Dict[str, Dict[str, Any]]:
         self._ensure_static(force=force_refresh)
@@ -399,46 +402,50 @@ class ComputerUseAppCatalog:
         return self._static_entries
 
     def _ensure_static(self, *, force: bool) -> None:
-        now = time.time()
-        if not force and self._static_entries and (now - self._last_static_refresh_ts) <= self.static_ttl_seconds:
-            return
-        entries: Dict[str, Dict[str, Any]] = {}
-        for profile in self.app_profiles.list_profiles():
-            self._merge(entries, self._profile_entry(profile))
-        for provider in self.platform_providers:
-            try:
-                discovered = provider.discover_installed_apps()
-            except Exception:
-                continue
-            for entry in list(discovered or []):
-                if isinstance(entry, dict):
-                    self._merge(entries, entry)
-        self._static_entries = entries
-        self._runtime_entries = copy.deepcopy(entries)
-        self._last_static_refresh_ts = now
-        self._save_cache()
+        with self._refresh_lock:
+            now = time.time()
+            if not force and self._static_entries and (now - self._last_static_refresh_ts) <= self.static_ttl_seconds:
+                return
+            entries: Dict[str, Dict[str, Any]] = {}
+            for profile in self.app_profiles.list_profiles():
+                self._merge(entries, self._profile_entry(profile))
+            for provider in self.platform_providers:
+                try:
+                    discovered = provider.discover_installed_apps()
+                except Exception:
+                    continue
+                for entry in list(discovered or []):
+                    if isinstance(entry, dict):
+                        self._merge(entries, entry)
+            self._static_entries = entries
+            self._runtime_entries = copy.deepcopy(entries)
+            self._last_static_refresh_ts = now
+            self._save_cache()
 
     def _ensure_running(self, *, force: bool) -> None:
-        now = time.time()
-        if (
-            not force
-            and self._runtime_entries
-            and (now - self._last_running_refresh_ts) <= self.running_ttl_seconds
-        ):
-            return
-        self._ensure_static(force=False)
-        entries = copy.deepcopy(self._static_entries)
-        for provider in self.platform_providers:
-            try:
-                discovered = provider.discover_running_apps()
-            except Exception:
-                continue
-            for entry in list(discovered or []):
-                if isinstance(entry, dict):
-                    self._merge(entries, entry)
-        self._runtime_entries = entries
-        self._last_running_refresh_ts = now
-        self._save_cache()
+        with self._refresh_lock:
+            now = time.time()
+            if (
+                not force
+                and self._runtime_entries
+                and (now - self._last_running_refresh_ts) <= self.running_ttl_seconds
+            ):
+                return
+            self._ensure_static(force=False)
+            entries = copy.deepcopy(self._static_entries)
+            for provider in self.platform_providers:
+                try:
+                    discovered = provider.discover_running_apps()
+                except Exception:
+                    continue
+                for entry in list(discovered or []):
+                    if isinstance(entry, dict):
+                        self._merge(entries, entry)
+            changed = entries != self._runtime_entries
+            self._runtime_entries = entries
+            self._last_running_refresh_ts = now
+            if changed:
+                self._save_cache()
 
     def _profile_entry(self, profile) -> Dict[str, Any]:
         aliases = [

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports, @next/next/no-assign-module-variable */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -548,6 +549,166 @@ test("canvas cards preserve media proportions and connect through reusable edge 
   assert.match(media, /naturalHeight/);
   assert.match(media, /videoWidth/);
   assert.match(media, /videoHeight/);
+});
+
+test("canvas persistence ignores hydration presentation calibration but keeps graph edits", () => {
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const serialization = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts",
+    {
+      "../CreativeCanvasMedia": { creativeCanvasMediaType: () => "image" },
+      "./types": {
+        EMPTY_SNAPSHOT: {
+          schema: "v8.creative_canvas_graph.v1",
+          version: 3,
+          graphId: "",
+          nodes: [],
+          edges: [],
+          viewport: { x: 24, y: 24, scale: 1 },
+        },
+        MAX_EDGES: 320,
+        MAX_NODES: 160,
+        MEDIA_FOOTER_HEIGHT: 36,
+        NODE_HEIGHT: 190,
+        NODE_WIDTH: 280,
+      },
+    },
+  );
+  const base = {
+    schema: "v8.creative_canvas_graph.v1",
+    version: 3,
+    graphId: "canvas-a",
+    nodes: [{
+      nodeId: "source-a",
+      kind: "resource",
+      origin: "source",
+      resourceId: "source-a",
+      x: 40,
+      y: 60,
+      width: 280,
+      height: 190,
+      mediaType: "image",
+    }],
+    edges: [],
+    viewport: { x: 24, y: 24, scale: 1 },
+  };
+  const key = serialization.canvasGraphPersistenceKey(base);
+
+  assert.equal(serialization.canvasGraphPersistenceKey({
+    ...base,
+    viewport: { x: -420, y: 120, scale: 1.8 },
+  }), key);
+  assert.equal(serialization.canvasGraphPersistenceKey({
+    ...base,
+    nodes: [{ ...base.nodes[0], width: 420, height: 312 }],
+  }), key);
+  assert.notEqual(serialization.canvasGraphPersistenceKey({
+    ...base,
+    nodes: [{ ...base.nodes[0], x: 140 }],
+  }), key);
+  assert.notEqual(serialization.canvasGraphPersistenceKey({
+    ...base,
+    nodes: [{ ...base.nodes[0], mask: { revision: 1, strokes: [] } }],
+  }), key);
+  assert.notEqual(serialization.canvasGraphPersistenceKey({
+    ...base,
+    edges: [{
+      edgeId: "edge-a",
+      from: "source-a",
+      to: "action-a",
+      fromPort: "right",
+      toPort: "left",
+      fromPortId: "output",
+      toPortId: "input",
+      dataType: "image",
+      role: "data",
+      order: 0,
+      note: "",
+    }],
+  }), key);
+
+  assert.equal(serialization.canvasGraphNeedsPersistence(base, key, true, false), false);
+  assert.equal(serialization.canvasGraphNeedsPersistence(base, key, false, false), false);
+  assert.equal(serialization.canvasGraphNeedsPersistence(base, key, false, true), true);
+  assert.equal(serialization.canvasGraphNeedsPersistence(base, key, true, true), false);
+  assert.equal(serialization.canvasGraphNeedsPersistence({
+    ...base,
+    viewport: { x: -420, y: 120, scale: 1.8 },
+  }, key, true, false), false);
+  assert.equal(serialization.canvasGraphNeedsPersistence({
+    ...base,
+    nodes: [{ ...base.nodes[0], x: 140 }],
+  }, key, true, false), true);
+
+  const merged = serialization.mergeCanvasPresentationState({
+    ...base,
+    nodes: [
+      { ...base.nodes[0], x: 180, width: 300, height: 210 },
+      {
+        ...base.nodes[0],
+        nodeId: "source-b",
+        resourceId: "source-b",
+        x: 520,
+        width: 310,
+        height: 220,
+      },
+    ],
+    viewport: { x: 0, y: 0, scale: 1 },
+  }, {
+    ...base,
+    nodes: [{ ...base.nodes[0], x: 999, width: 420, height: 312 }],
+    viewport: { x: -420, y: 120, scale: 1.8 },
+  });
+  assert.deepEqual(merged.viewport, { x: -420, y: 120, scale: 1.8 });
+  assert.equal(merged.nodes[0].x, 180, "Engine remains authoritative for graph placement");
+  assert.equal(merged.nodes[0].width, 420, "local media calibration survives hydration");
+  assert.equal(merged.nodes[0].height, 312);
+  assert.equal(merged.nodes[1].width, 310, "new Engine nodes keep authoritative dimensions");
+
+  const cachedDuringFlush = {
+    ...base,
+    nodes: [{ ...base.nodes[0], x: 999, width: 420, height: 312 }],
+    viewport: { x: -420, y: 120, scale: 1.8 },
+  };
+  const pendingHydration = serialization.resolveCanvasHydrationSnapshot({
+    engineValue: { ...base, nodes: [{ ...base.nodes[0], x: 180 }] },
+    cachedValue: cachedDuringFlush,
+    responseRevision: 7,
+    laneRevision: 7,
+    laneDirty: true,
+  });
+  assert.equal(pendingHydration.snapshot.nodes[0].x, 999, "an immediate reopen keeps the dirty local graph");
+
+  const conflictHydration = serialization.resolveCanvasHydrationSnapshot({
+    engineValue: { ...base, nodes: [{ ...base.nodes[0], x: 180 }] },
+    cachedValue: cachedDuringFlush,
+    responseRevision: 7,
+    laneRevision: 8,
+    laneDirty: false,
+    settledValue: { ...base, nodes: [{ ...base.nodes[0], x: 260, width: 300, height: 210 }] },
+  });
+  assert.equal(conflictHydration.staleHydration, true);
+  assert.equal(conflictHydration.snapshot.nodes[0].x, 260, "the settled Engine conflict graph wins");
+  assert.equal(conflictHydration.snapshot.nodes[0].width, 420, "local presentation calibration still survives");
+
+  assert.match(canvas, /graphSaveScheduler\.configureSession\(sessionId,[\s\S]*lastSavedKey: canvasGraphPersistenceKey\(authoritative\)/);
+  assert.match(canvas, /persisted: Boolean\(graphPayload\?\.graph\)/);
+  assert.match(canvas, /migrationPending: !graphPayload\?\.graph && Boolean\(cached\.nodes\.length \|\| cached\.edges\.length\)/);
+  assert.match(canvas, /const graphSaveScheduler: CanvasGraphSaveScheduler/);
+  assert.match(canvas, /graphSaveScheduler\.getSettled\(sessionId\)/);
+  assert.match(canvas, /graphSaveScheduler\.getDesired\(sessionId\)/);
+  assert.match(canvas, /resolveCanvasHydrationSnapshot\(/);
+  assert.match(canvas, /graphSaveScheduler\.flush\(detachedSessionId, candidate\)/);
+  assert.match(canvas, /const liveSnapshot = snapshotRef\.current/);
+  assert.match(canvas, /const editedDuringHydration = canvasGraphPersistenceKey\(liveSnapshot\) !== canvasGraphPersistenceKey\(cached\)/);
+  assert.match(canvas, /lane = graphSaveScheduler\.flush\(sessionId, liveSnapshot\)/);
+  assert.match(canvas, /const laneOwnsLocalGraph = Boolean\(/);
+  assert.match(canvas, /laneDirty: laneOwnsLocalGraph/);
+  assert.match(canvas, /mergeCanvasPresentationState\(result\.meta\.recoveredGraph, desired\?\.graph \?\? savedGraph\)/);
+  assert.doesNotMatch(canvas, /graphSaveScheduler\.dispose\(\)/);
+  assert.match(canvas, /canvasGraphNeedsPersistence\([\s\S]*graphPersistedRef\.current,[\s\S]*localGraphMigrationPendingRef\.current/);
+  assert.match(canvas, /mergeCanvasPresentationState\(graphPayload\.graph, cached\)/);
+  assert.doesNotMatch(canvas, /graphPayload\?\.graph \? JSON\.stringify\(recovered\) : ""/);
 });
 
 test("canvas interaction layers expose reversible graph editing, contextual feedback, and bounded media work", () => {

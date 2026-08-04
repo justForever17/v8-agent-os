@@ -7,6 +7,7 @@ const { createShellControlServer, isValidSessionId } = require('../lib/shell-con
 const { parseShellDeepLink } = require('../lib/shell-route.cjs');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
+const { loadUrlSafely } = require('../lib/navigation-load.cjs');
 
 const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
   ? path.join(process.resourcesPath, 'v8os')
@@ -28,9 +29,11 @@ let desktopPetProcessRunning = false;
 let activeSessionId = null;
 let desktopPetActiveSessionId = null;
 let shellControl = null;
+let shellProcessRecordIdentity = null;
 let cliApiPromise = null;
 let coreServicesStartPromise = null;
 let coreServicesReady = false;
+let statusRefreshPromise = null;
 let pendingSurfaceUrl = null;
 let lastPublishedControlStatus = '';
 let surfaceRecoveryTimer = null;
@@ -118,7 +121,10 @@ function loadInMainWindow(url) {
   showMainWindow();
   if (!coreServicesReady) return Promise.resolve(false);
   pendingSurfaceUrl = null;
-  return mainWindow.loadURL(url);
+  return loadUrlSafely(
+    () => mainWindow.loadURL(url),
+    (error) => scheduleSurfaceRecovery(`navigation: ${error?.message || 'load failed'}`, url),
+  );
 }
 
 async function openAdmin() {
@@ -137,8 +143,7 @@ async function openWeb() {
 
 async function openWebSession(sessionId) {
   if (!isValidSessionId(sessionId)) return false;
-  await loadInMainWindow(`${webBaseUrl}/chat?id=${encodeURIComponent(sessionId)}`);
-  return true;
+  return loadInMainWindow(`${webBaseUrl}/chat?id=${encodeURIComponent(sessionId)}`);
 }
 
 function handleShellDeepLink(rawUrl) {
@@ -303,7 +308,7 @@ function scheduleSurfaceRecovery(reason, targetUrl = '') {
   surfaceRecoveryTimes = surfaceRecoveryTimes.filter((timestamp) => now - timestamp < SURFACE_RECOVERY_WINDOW_MS);
   if (surfaceRecoveryTimes.length >= MAX_SURFACE_RECOVERY_ATTEMPTS) {
     console.error(`[v8os-shell] surface recovery stopped: ${reason}`);
-    void mainWindow.loadURL(errorDataUrl(`界面连续恢复失败（${reason}）`));
+    void mainWindow.loadURL(errorDataUrl(`界面连续恢复失败（${reason}）`)).catch(() => undefined);
     return;
   }
   surfaceRecoveryTimes.push(now);
@@ -330,9 +335,22 @@ async function loadInitialSurface() {
     const defaultChatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
     const targetUrl = pendingSurfaceUrl || (loggedIn ? defaultChatUrl : `${adminBaseUrl}/login`);
     pendingSurfaceUrl = null;
-    await mainWindow.loadURL(targetUrl);
+    let navigationError = null;
+    const loaded = await loadUrlSafely(
+      () => mainWindow.loadURL(targetUrl),
+      (error) => { navigationError = error; },
+    );
+    if (!loaded && navigationError) {
+      await loadUrlSafely(
+        () => mainWindow.loadURL(errorDataUrl(navigationError)),
+        (fallbackError) => console.error('[v8os-shell] failed to show startup error surface', fallbackError),
+      );
+    }
   } catch (error) {
-    await mainWindow.loadURL(errorDataUrl(error));
+    await loadUrlSafely(
+      () => mainWindow.loadURL(errorDataUrl(error)),
+      (fallbackError) => console.error('[v8os-shell] failed to show startup error surface', fallbackError),
+    );
   }
 }
 
@@ -388,7 +406,7 @@ function reportActiveSession(sessionId) {
   shellControl?.send('active-session', { sessionId: normalized });
 }
 
-async function refreshStatus() {
+async function refreshStatusOnce() {
   try {
     const { shellStatus } = await cliApi();
     const statuses = await shellStatus(['desktop-pet']);
@@ -416,6 +434,14 @@ async function refreshStatus() {
   }
   publishShellControlStatus();
   updateTrayMenu();
+}
+
+function refreshStatus() {
+  if (statusRefreshPromise) return statusRefreshPromise;
+  statusRefreshPromise = refreshStatusOnce().finally(() => {
+    statusRefreshPromise = null;
+  });
+  return statusRefreshPromise;
 }
 
 async function showServiceStatus() {
@@ -458,7 +484,7 @@ async function stopDesktopPetGracefully() {
   if (!result.acked) {
     console.warn('[V8OS Shell] Desktop pet graceful shutdown failed; using CLI fallback', { reason: result.reason });
     const { shellStop } = await cliApi();
-    shellStop(['desktop-pet']);
+    await shellStop(['desktop-pet']);
   }
   setTimeout(() => { void refreshStatus(); }, result.acked ? 300 : 0).unref?.();
   return result;
@@ -521,17 +547,17 @@ async function quitV8OS() {
     const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
     const coreIds = ['engine', 'admin', 'web'];
     const stopOptions = { stopVerifiedPortOwners: coreIds };
-    const firstStop = shellStop(coreIds, stopOptions);
+    const firstStop = await shellStop(coreIds, stopOptions);
     let remaining = await waitForCoreServicesStopped(shellStatus);
     if (remaining.some((item) => item.pidAlive || item.portOpen)) {
-      const retryStop = shellStop(coreIds, stopOptions);
+      const retryStop = await shellStop(coreIds, stopOptions);
       remaining = await waitForCoreServicesStopped(shellStatus, 10);
       console.warn('[V8OS Shell] Core shutdown required reconciliation', { firstStop, retryStop, remaining });
     }
     if (remaining.some((item) => item.pidAlive || item.portOpen)) {
       console.error('[V8OS Shell] Core services remain after shutdown', { remaining });
     }
-    removeShellProcessRecord();
+    await removeShellProcessRecord(shellProcessRecordIdentity);
   } catch (error) {
     console.error('[V8OS Shell] Core shutdown phase failed', { reason: error?.message || 'unknown_error' });
   } finally {
@@ -581,7 +607,10 @@ function createMainWindow() {
       sandbox: false,
     },
   });
-  mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web...'));
+  void loadUrlSafely(
+    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web...')),
+    (error) => console.error('[v8os-shell] failed to show startup surface', error),
+  );
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
@@ -744,6 +773,12 @@ if (!hasSingleInstanceLock) {
     app.setAppUserModelId('V8OS.LocalShell');
     registerShellProtocol();
     try {
+      const { getShellProcessRecordIdentity } = await cliApi();
+      shellProcessRecordIdentity = getShellProcessRecordIdentity();
+    } catch (error) {
+      console.warn('[V8OS Shell] Unable to capture managed Shell identity', { reason: error?.message || 'unknown_error' });
+    }
+    try {
       await startShellControl();
     } catch (error) {
       console.warn('[V8OS Shell] Local control channel unavailable', { reason: error?.message || 'unknown_error' });
@@ -753,7 +788,7 @@ if (!hasSingleInstanceLock) {
     const initialDeepLink = deepLinkFromArgv();
     if (initialDeepLink) handleShellDeepLink(initialDeepLink);
     void refreshStatus();
-    setInterval(() => { void refreshStatus(); }, 1000).unref?.();
+    setInterval(() => { void refreshStatus(); }, 10_000).unref?.();
   });
 
   app.on('activate', () => {

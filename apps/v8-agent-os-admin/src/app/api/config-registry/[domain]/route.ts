@@ -14,9 +14,11 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const { domain } = await context.params;
+    const refreshEnvironment = ["1", "true"].includes(String(req.nextUrl.searchParams.get("refresh") || "").toLowerCase());
+    const enginePath = `/config-registry/${encodeURIComponent(domain)}${refreshEnvironment ? "?refresh=true" : ""}`;
 
     try {
-        const { response, data } = await proxyEngineJson(`/config-registry/${encodeURIComponent(domain)}`);
+        const { response, data } = await proxyEngineJson(enginePath);
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
         console.error("[Admin Config Registry] Failed to load domain:", error);

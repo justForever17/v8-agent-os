@@ -32,6 +32,7 @@ const RUNTIME_DISPLAY_NAME: Record<string, string> = {
     network_supervisor: "lib.runtime.admin.kfc56e3a6",
     desktop_live: "lib.runtime.admin.k2781e4c1",
     workflow: "lib.runtime.admin.kafb574aa",
+    runtime_broker: "lib.runtime.admin.runtimeBroker",
 };
 
 export const RUNTIME_CONTROL_HREF: Record<string, string> = {

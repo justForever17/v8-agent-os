@@ -70,6 +70,21 @@ test("plugin catalog and details remain bounded with internal scrolling", () => 
   assert.match(source, /<aside[^>]*lg:overflow-y-auto/);
 });
 
+test("plugin machine discovery waits for an explicit detail request", () => {
+  assert.match(source, /const \[detailsRequestedId, setDetailsRequestedId\] = useState\(requestedPluginId\)/);
+  assert.match(source, /if \(!selectedDetailsRequested\) \{\s*setRequirements\(null\);\s*return;/);
+  assert.match(source, /const request = detailRequests\.begin\(selectedId\)/);
+  assert.match(source, /loadMachineDiscovery\(selectedId, false, request\)/);
+  assert.match(source, /loadGodotSetup\(selectedId, false, request\)/);
+  assert.match(source, /loadRequirements\(selectedId, request\)/);
+  assert.match(source, /detailRequests\.commit\(request/);
+  assert.match(source, /detailRequests\.cancel\(request\)/);
+  assert.match(source, /request \? \{ signal: request\.signal \} : undefined/);
+  assert.match(source, /onClick=\{\(\) => requestPluginDetails\(plugin\.id\)\}/);
+  assert.match(source, /PluginManagerWorkbench\.machine\.load/);
+  assert.doesNotMatch(source, /setGodotSetup\(null\);\s*void loadMachineDiscovery\(selectedId\)/);
+});
+
 test("MediaKit presents local and cloud configuration as separate concise surfaces", () => {
   assert.match(source, /function MediaKitConfigurationPanel/);
   assert.match(source, /MEDIAKIT_API_KEY/);

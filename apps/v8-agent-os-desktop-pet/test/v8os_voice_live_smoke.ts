@@ -19,7 +19,7 @@ type AudioInputStatus = {
 };
 
 const adminBaseUrl = (process.env.V8_ADMIN_BASE_URL || "http://127.0.0.1:9528").replace(/\/+$/, "");
-const proxyBaseUrl = (process.env.V8_CYBERCORE_PROXY_BASE || "http://127.0.0.1:3000/api/v8").replace(/\/+$/, "");
+const proxyBaseUrl = (process.env.V8_CYBERCORE_PROXY_BASE || "").replace(/\/+$/, "");
 const useCyberCoreProxy = process.env.V8_CYBERCORE_USE_PROXY === "1";
 const workspacePath = process.env.V8_CYBERCORE_WORKSPACE || "";
 const voiceText = process.env.V8_CYBERCORE_VOICE_TEXT || "你好，请用一句话回复：CyberCore 语音链路已收到。";
@@ -163,6 +163,9 @@ async function waitForSupervisorReply(token: string, conversationId: string) {
 }
 
 async function main() {
+  if (useCyberCoreProxy && !proxyBaseUrl) {
+    fail("V8_CYBERCORE_USE_PROXY=1 requires V8_CYBERCORE_PROXY_BASE with the running desktop pet endpoint");
+  }
   if (!live) {
     console.log("DRY RUN: add --live to call Admin, TTS, STT/upload, and Supervisor.");
     console.log(JSON.stringify({

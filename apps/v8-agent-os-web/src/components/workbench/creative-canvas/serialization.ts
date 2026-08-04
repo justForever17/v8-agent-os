@@ -226,6 +226,85 @@ export function readSnapshot(storageKey: string): CanvasSnapshot {
     }
 }
 
+export function mergeCanvasPresentationState(
+    authoritativeValue: unknown,
+    localValue: unknown,
+): CanvasSnapshot {
+    const authoritative = normalizeSnapshot(authoritativeValue);
+    const local = normalizeSnapshot(localValue);
+    const localResources = new Map(
+        local.nodes
+            .filter((node) => node.kind === "resource" && node.resourceId)
+            .map((node) => [`${node.nodeId}:${node.resourceId}`, node]),
+    );
+    return {
+        ...authoritative,
+        nodes: authoritative.nodes.map((node) => {
+            if (node.kind !== "resource" || !node.resourceId) return node;
+            const localNode = localResources.get(`${node.nodeId}:${node.resourceId}`);
+            if (!localNode || localNode.width <= 0 || localNode.height <= 0) return node;
+            return { ...node, width: localNode.width, height: localNode.height };
+        }),
+        viewport: { ...local.viewport },
+    };
+}
+
+export function resolveCanvasHydrationSnapshot({
+    engineValue,
+    cachedValue,
+    responseRevision,
+    laneRevision,
+    laneDirty,
+    settledValue,
+}: {
+    engineValue: unknown;
+    cachedValue: unknown;
+    responseRevision: number;
+    laneRevision: number;
+    laneDirty: boolean;
+    settledValue?: unknown;
+}) {
+    const cached = normalizeSnapshot(cachedValue);
+    const staleHydration = laneRevision > responseRevision;
+    if (laneDirty) return { snapshot: cached, staleHydration };
+    if (staleHydration) {
+        return {
+            snapshot: settledValue === undefined
+                ? cached
+                : mergeCanvasPresentationState(settledValue, cached),
+            staleHydration,
+        };
+    }
+    return {
+        snapshot: mergeCanvasPresentationState(engineValue ?? cached, cached),
+        staleHydration,
+    };
+}
+
+export function canvasGraphPersistenceKey(snapshot: CanvasSnapshot) {
+    // Viewport and resource media dimensions are browser presentation state, not graph edits.
+    const nodes = snapshot.nodes.map((node) => node.kind === "resource"
+        ? { ...node, width: 0, height: 0 }
+        : node);
+    return JSON.stringify({
+        schema: snapshot.schema,
+        version: snapshot.version,
+        graphId: snapshot.graphId,
+        nodes,
+        edges: snapshot.edges,
+    });
+}
+
+export function canvasGraphNeedsPersistence(
+    snapshot: CanvasSnapshot,
+    lastSavedKey: string,
+    graphPersisted: boolean,
+    localGraphMigrationPending = false,
+) {
+    return canvasGraphPersistenceKey(snapshot) !== lastSavedKey
+        || (!graphPersisted && localGraphMigrationPending);
+}
+
 export function isEditableTarget(target: EventTarget | null) {
     return target instanceof HTMLInputElement
         || target instanceof HTMLTextAreaElement

@@ -1,18 +1,140 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureDir } from "./json_file.mjs";
 import { COMPONENTS, logPathsFor } from "./components.mjs";
 import { LOG_DIR, REPO_ROOT, STATE_ROOT } from "./paths.mjs";
 import { isPortOpen } from "./ports.mjs";
-import { isPidAlive, readProcessState, writeProcessState } from "./process_state.mjs";
+import {
+  compareAndSwapProcessRecord,
+  isPidAlive,
+  processRecordIdentity,
+  processRecordMatchesIdentity,
+  readProcessState,
+  withComponentProcessLease,
+} from "./process_state.mjs";
 
 function componentHasPort(component) {
   return Number.isInteger(component?.port) && component.port > 0;
 }
 
 function normalizeProcessText(value) {
-  return String(value || "").replaceAll("/", "\\").toLowerCase();
+  const normalized = String(value || "").replaceAll("/", "\\");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function normalizeResolvedProcessPath(value) {
+  const resolved = path.resolve(String(value || ""));
+  try {
+    return normalizeProcessText(fs.realpathSync(resolved));
+  } catch {
+    return normalizeProcessText(resolved);
+  }
+}
+
+function positivePid(value) {
+  const pid = Number(value);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function runChildCommand(command, args, options = {}) {
+  const timeoutMs = Math.max(100, Number(options.timeoutMs) || 2_500);
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      resolve({ status: null, stdout: "", stderr: "", error, timedOut: false });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timer = null;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ stdout, stderr, error: null, timedOut: false, ...result });
+    };
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => settle({ status: null, error }));
+    child.once("close", (status, signal) => settle({ status, signal }));
+    timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      settle({ status: null, timedOut: true, error: new Error(`Command timed out after ${timeoutMs}ms`) });
+    }, timeoutMs);
+  });
+}
+
+function waitForSpawn(child) {
+  return new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+}
+
+async function waitForPidExit(pid, timeoutMs = 2_500) {
+  const deadline = Date.now() + timeoutMs;
+  while (isPidAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  return !isPidAlive(pid);
+}
+
+function readPosixProcessStartToken(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fieldsAfterCommand = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+    const startTicks = fieldsAfterCommand[19];
+    return startTicks ? `proc:${startTicks}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function processExecutableMatchesCommand(candidate, command) {
+  const executable = normalizeProcessText(candidate?.executablePath);
+  const expected = normalizeProcessText(command);
+  if (!executable || !expected) return false;
+  if (path.isAbsolute(String(command))) {
+    if (path.isAbsolute(String(candidate?.executablePath || ""))
+      && normalizeResolvedProcessPath(candidate.executablePath) === normalizeResolvedProcessPath(command)) return true;
+    // POSIX `ps -o comm=` exposes only the executable basename on platforms
+    // without /proc. Accept that weaker executable evidence only when it is
+    // explicitly tagged by our POSIX reader; component signature and cwd
+    // checks still have to pass before a PID becomes managed.
+    if (candidate?.executablePathKind !== "posix_comm") return false;
+  }
+  const executableName = path.win32.basename(executable).replace(/\.exe$/i, "");
+  const expectedName = path.win32.basename(expected).replace(/\.exe$/i, "");
+  return executableName === expectedName;
+}
+
+function processCandidateMatchesJavaScriptRuntime(candidate, expectedCommand) {
+  if (processExecutableMatchesCommand(candidate, expectedCommand)) return true;
+  // The preview CLI launches Next with Node, while the resident Shell imports
+  // this module from Electron. Identity must describe the candidate process,
+  // not whichever JavaScript host happens to be doing the verification.
+  const executableName = path.win32.basename(normalizeProcessText(candidate?.executablePath)).replace(/\.exe$/i, "");
+  if (executableName === "node") return true;
+  if (executableName !== "electron") return false;
+  const executable = normalizeResolvedProcessPath(candidate.executablePath);
+  const controlledElectronRoot = normalizeResolvedProcessPath(path.join(
+    REPO_ROOT,
+    "apps",
+    "v8-agent-os-desktop-pet",
+    "node_modules",
+    "electron",
+  ));
+  return executable.startsWith(`${controlledElectronRoot}\\`);
 }
 
 function processCandidateMatchesEngine(candidate, commandSpec) {
@@ -33,11 +155,149 @@ function processCandidateMatchesNextApp(componentId, candidate) {
   const commandLine = normalizeProcessText(candidate.commandLine);
   const appDir = normalizeProcessText(path.join(REPO_ROOT, "apps", `v8-agent-os-${componentId}`));
   const port = COMPONENTS[componentId]?.port;
+  const runtimeMatches = processCandidateMatchesJavaScriptRuntime(
+    candidate,
+    COMPONENTS[componentId].command({ mode: "start" }).command,
+  );
   const standaloneSignature = commandLine.includes(`${appDir}\\.next\\standalone\\server.js`);
   const launcherSignature = commandLine.includes("scripts\\run-next-with-managed-auth.mjs")
     && commandLine.includes(`--app ${componentId}`)
     && commandLine.includes(`--port ${port}`);
-  return standaloneSignature || launcherSignature;
+  return runtimeMatches && (standaloneSignature || launcherSignature);
+}
+
+function processCandidateMatchesShell(candidate) {
+  if (!candidate || typeof candidate !== "object") return false;
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const executable = normalizeProcessText(candidate.executablePath);
+  const commandSpec = COMPONENTS.shell.command({ mode: "start" });
+  const launcherSignature = commandLine.includes("apps\\v8-agent-os-shell\\scripts\\launch-shell.mjs")
+    && processExecutableMatchesCommand(candidate, commandSpec.command);
+  const electronRoot = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet", "node_modules", "electron"));
+  const shellDir = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-shell"));
+  const electronSignature = executable.startsWith(`${electronRoot}\\`)
+    && commandLine.includes(shellDir);
+  return launcherSignature || electronSignature;
+}
+
+function processCandidateMatchesDesktopPet(candidate) {
+  if (!candidate || typeof candidate !== "object") return false;
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const executable = normalizeProcessText(candidate.executablePath);
+  const commandSpec = COMPONENTS["desktop-pet"].command({ mode: "start" });
+  const launcherSignature = commandLine.includes("apps\\v8-agent-os-shell\\scripts\\launch-desktop-pet.mjs")
+    && processExecutableMatchesCommand(candidate, commandSpec.command);
+  const petDir = normalizeProcessText(path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet"));
+  const electronRoot = `${petDir}\\node_modules\\electron`;
+  const mainEntry = `${petDir}\\electron\\main.cjs`;
+  const electronSignature = commandLine.includes(mainEntry)
+    && (executable.startsWith(`${electronRoot}\\`) || processExecutableMatchesCommand(candidate, commandSpec.command));
+  return launcherSignature || electronSignature;
+}
+
+function processCandidateMatchesCybercore(candidate) {
+  if (!candidate || typeof candidate !== "object") return false;
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const commandSpec = COMPONENTS.cybercore.command({ mode: commandLine.includes("npm run start") ? "start" : "dev" });
+  const executableName = path.win32.basename(normalizeProcessText(candidate.executablePath)).replace(/\.exe$/i, "");
+  const posixNpmInterpreter = candidate.processDescriptorSource === "posix_ps" && executableName === "node";
+  return (processExecutableMatchesCommand(candidate, commandSpec.command) || posixNpmInterpreter)
+    && /(?:^|\s)npm\s+run\s+(?:start|dev)(?:\s|$)/i.test(commandLine);
+}
+
+function processCandidateMatchesComponent(componentId, candidate) {
+  if (componentId === "engine") return processCandidateMatchesEngine(candidate, COMPONENTS.engine.command({ mode: "start" }));
+  if (componentId === "admin" || componentId === "web") return processCandidateMatchesNextApp(componentId, candidate);
+  if (componentId === "shell") return processCandidateMatchesShell(candidate);
+  if (componentId === "desktop-pet") return processCandidateMatchesDesktopPet(candidate);
+  if (componentId === "cybercore") return processCandidateMatchesCybercore(candidate);
+  return false;
+}
+
+function recordCommandLine(record) {
+  return [record?.command, ...(Array.isArray(record?.args) ? record.args : [])]
+    .filter((part) => part !== undefined && part !== null && String(part).length > 0)
+    .map(String)
+    .join(" ");
+}
+
+function expectedComponentCwd(componentId) {
+  const component = COMPONENTS[componentId];
+  return component?.command({ mode: "start" })?.cwd || component?.cwd || "";
+}
+
+function recordMatchesComponent(componentId, record) {
+  const component = COMPONENTS[componentId];
+  if (!component || !record || typeof record !== "object") return false;
+  if (normalizeProcessText(path.resolve(String(record.cwd || ""))) !== normalizeProcessText(path.resolve(expectedComponentCwd(componentId)))) return false;
+  return processCandidateMatchesComponent(componentId, {
+    pid: positivePid(record.pid),
+    executablePath: record.command,
+    commandLine: recordCommandLine(record),
+    cwd: record.cwd,
+  });
+}
+
+export function verifiedManagedComponentPid(componentId, record, descriptor) {
+  const pid = positivePid(record?.pid);
+  if (!pid || positivePid(descriptor?.pid) !== pid) return null;
+  if (!recordMatchesComponent(componentId, record)) return null;
+  const descriptorMatchesComponent = processCandidateMatchesComponent(componentId, descriptor);
+  if (!descriptorMatchesComponent) return null;
+  const executableMatches = processExecutableMatchesCommand(descriptor, record.command);
+  const verifiedPosixNpmInterpreter = componentId === "cybercore"
+    && descriptor.processDescriptorSource === "posix_ps"
+    && Boolean(descriptor.cwd);
+  if (!executableMatches && !verifiedPosixNpmInterpreter) return null;
+  if (record.processStartToken && descriptor.processStartToken !== record.processStartToken) return null;
+  if (descriptor.executablePathKind === "posix_comm" && !descriptor.cwd) return null;
+  if (descriptor.cwd
+    && normalizeProcessText(path.resolve(String(descriptor.cwd))) !== normalizeProcessText(path.resolve(expectedComponentCwd(componentId)))) return null;
+  return pid;
+}
+
+export function verifiedRuntimeComponentPid(componentId, descriptor) {
+  if (!["shell", "desktop-pet"].includes(componentId)) return null;
+  const pid = positivePid(descriptor?.pid);
+  return pid && processCandidateMatchesComponent(componentId, descriptor) ? pid : null;
+}
+
+function processDescriptorAt(processDescriptors, pid) {
+  if (!pid || !processDescriptors) return null;
+  if (processDescriptors instanceof Map) return processDescriptors.get(pid) || null;
+  return processDescriptors[pid] || processDescriptors[String(pid)] || null;
+}
+
+export function resolveManagedComponentIdentity(componentId, options = {}) {
+  const record = options.record || null;
+  const runtimeDescriptor = options.runtimeDescriptor || null;
+  const processDescriptors = options.processDescriptors || new Map();
+  const pidIsAlive = typeof options.pidIsAlive === "function" ? options.pidIsAlive : isPidAlive;
+  const recordPid = positivePid(record?.pid);
+  const runtimePid = positivePid(runtimeDescriptor?.pid);
+  const verifiedRecordPid = verifiedManagedComponentPid(componentId, record, processDescriptorAt(processDescriptors, recordPid));
+  const verifiedRuntimePid = verifiedRuntimeComponentPid(componentId, processDescriptorAt(processDescriptors, runtimePid));
+  const verifiedPids = [...new Set([verifiedRecordPid, verifiedRuntimePid].filter(Boolean))];
+  const processStartTokens = Object.fromEntries(verifiedPids.map((pid) => [
+    String(pid),
+    processDescriptorAt(processDescriptors, pid)?.processStartToken || null,
+  ]));
+  const stalePids = [];
+  const unverifiedPids = [];
+  for (const pid of [...new Set([recordPid, runtimePid].filter(Boolean))]) {
+    if (verifiedPids.includes(pid)) continue;
+    if (processDescriptorAt(processDescriptors, pid) || !pidIsAlive(pid)) stalePids.push(pid);
+    else unverifiedPids.push(pid);
+  }
+  return {
+    recordPid: verifiedRecordPid,
+    runtimePid: verifiedRuntimePid,
+    effectivePid: verifiedRuntimePid || verifiedRecordPid || null,
+    verifiedPids,
+    processStartTokens,
+    stalePids,
+    unverifiedPids,
+  };
 }
 
 export function verifiedComponentPortOwner(componentId, descriptor) {
@@ -49,11 +309,13 @@ export function verifiedComponentPortOwner(componentId, descriptor) {
     pid: Number(descriptor.pid),
     executablePath: descriptor.executablePath,
     commandLine: descriptor.commandLine,
+    processStartToken: descriptor.processStartToken,
   };
   const parent = {
     pid: Number(descriptor.parentPid),
     executablePath: descriptor.parentExecutablePath,
     commandLine: descriptor.parentCommandLine,
+    processStartToken: descriptor.parentProcessStartToken,
   };
   const matcher = componentId === "engine"
     ? (candidate) => processCandidateMatchesEngine(candidate, commandSpec)
@@ -61,14 +323,16 @@ export function verifiedComponentPortOwner(componentId, descriptor) {
   const ownerMatches = Number.isInteger(owner.pid) && owner.pid > 0 && matcher(owner);
   const parentMatches = Number.isInteger(parent.pid) && parent.pid > 0 && matcher(parent);
   if (!ownerMatches && !parentMatches) return null;
+  const processStartToken = parentMatches ? parent.processStartToken : owner.processStartToken;
   return {
     ownerPid: owner.pid,
     killPid: parentMatches ? parent.pid : owner.pid,
     matchedBy: parentMatches ? "verified_parent_runtime" : "verified_port_owner",
+    ...(processStartToken ? { processStartToken } : {}),
   };
 }
 
-function readWindowsListeningProcessDescriptor(port) {
+async function readWindowsListeningProcessDescriptor(port) {
   if (process.platform !== "win32" || !Number.isInteger(Number(port))) return null;
   const script = [
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
@@ -77,17 +341,104 @@ function readWindowsListeningProcessDescriptor(port) {
     "$process = Get-CimInstance Win32_Process -Filter \"ProcessId = $($connection.OwningProcess)\" -ErrorAction SilentlyContinue",
     "if (-not $process) { exit 0 }",
     "$parent = if ($process.ParentProcessId) { Get-CimInstance Win32_Process -Filter \"ProcessId = $($process.ParentProcessId)\" -ErrorAction SilentlyContinue } else { $null }",
-    "[pscustomobject]@{ pid = [int]$process.ProcessId; parentPid = [int]$process.ParentProcessId; executablePath = [string]$process.ExecutablePath; commandLine = [string]$process.CommandLine; parentExecutablePath = [string]$parent.ExecutablePath; parentCommandLine = [string]$parent.CommandLine } | ConvertTo-Json -Compress",
+    "$started = if ($process.CreationDate) { $process.CreationDate.ToUniversalTime().ToString('o') } else { '' }",
+    "$parentStarted = if ($parent -and $parent.CreationDate) { $parent.CreationDate.ToUniversalTime().ToString('o') } else { '' }",
+    "[pscustomobject]@{ pid = [int]$process.ProcessId; parentPid = [int]$process.ParentProcessId; executablePath = [string]$process.ExecutablePath; commandLine = [string]$process.CommandLine; processStartToken = $started; parentExecutablePath = [string]$parent.ExecutablePath; parentCommandLine = [string]$parent.CommandLine; parentProcessStartToken = $parentStarted } | ConvertTo-Json -Compress",
   ].join("; ");
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
   if (result.status !== 0 || !String(result.stdout || "").trim()) return null;
   try {
     return JSON.parse(String(result.stdout).trim());
   } catch {
     return null;
+  }
+}
+
+async function readProcessDescriptor(pid) {
+  const numeric = positivePid(pid);
+  if (!numeric) return null;
+  if (process.platform === "win32") {
+    const script = [
+      "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+      `$item = Get-CimInstance Win32_Process -Filter \"ProcessId = ${numeric}\" -ErrorAction SilentlyContinue`,
+      "if (-not $item) { exit 0 }",
+      "$started = if ($item.CreationDate) { $item.CreationDate.ToUniversalTime().ToString('o') } else { '' }",
+      "[pscustomobject]@{ pid = [int]$item.ProcessId; executablePath = [string]$item.ExecutablePath; commandLine = [string]$item.CommandLine; processStartToken = $started } | ConvertTo-Json -Compress",
+    ].join("; ");
+    const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+    if (result.status !== 0 || !String(result.stdout || "").trim()) return null;
+    try {
+      return JSON.parse(String(result.stdout).trim());
+    } catch {
+      return null;
+    }
+  }
+  const result = await runChildCommand("ps", ["-p", String(numeric), "-o", "pid=", "-o", "ppid=", "-o", "comm=", "-o", "args="]);
+  const match = String(result.stdout || "").trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+  if (result.status !== 0 || !match) return null;
+  let executablePath = match[3];
+  let executablePathKind = "posix_comm";
+  try {
+    executablePath = fs.realpathSync(`/proc/${numeric}/exe`);
+    executablePathKind = "exact";
+  } catch {}
+  let cwd = null;
+  try {
+    cwd = fs.realpathSync(`/proc/${numeric}/cwd`);
+  } catch {}
+  if (executablePathKind !== "exact" || !cwd) {
+    const lsof = await runChildCommand("lsof", ["-a", "-p", String(numeric), "-d", "cwd,txt", "-Fn"]);
+    if (lsof.status === 0) {
+      let descriptorKind = "";
+      for (const line of String(lsof.stdout || "").split(/\r?\n/)) {
+        if (line.startsWith("f")) {
+          descriptorKind = line.slice(1);
+          continue;
+        }
+        if (!line.startsWith("n")) continue;
+        const candidatePath = line.slice(1).trim();
+        if (!candidatePath) continue;
+        if (descriptorKind === "cwd" && !cwd) cwd = candidatePath;
+        if (descriptorKind === "txt" && executablePathKind !== "exact") {
+          executablePath = candidatePath;
+          executablePathKind = "exact";
+        }
+      }
+    }
+  }
+  return {
+    pid: Number(match[1]),
+    parentPid: Number(match[2]),
+    processDescriptorSource: "posix_ps",
+    executablePath,
+    executablePathKind,
+    commandLine: match[4],
+    cwd,
+    processStartToken: readPosixProcessStartToken(numeric),
+  };
+}
+
+async function readProcessDescriptors(pids) {
+  const uniquePids = [...new Set(pids.map(positivePid).filter(Boolean))];
+  if (!uniquePids.length) return new Map();
+  if (process.platform !== "win32") {
+    const descriptors = await Promise.all(uniquePids.map(async (pid) => [pid, await readProcessDescriptor(pid)]));
+    return new Map(descriptors.filter(([, descriptor]) => descriptor));
+  }
+  const filter = uniquePids.map((pid) => `ProcessId = ${pid}`).join(" OR ");
+  const script = [
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+    `$items = @(Get-CimInstance Win32_Process -Filter \"${filter}\" -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; executablePath = [string]$_.ExecutablePath; commandLine = [string]$_.CommandLine; processStartToken = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }) } })`,
+    "[pscustomobject]@{ items = $items } | ConvertTo-Json -Compress -Depth 3",
+  ].join("; ");
+  const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+  if (result.status !== 0 || !String(result.stdout || "").trim()) return new Map();
+  try {
+    const payload = JSON.parse(String(result.stdout).trim());
+    const items = Array.isArray(payload?.items) ? payload.items : payload?.items ? [payload.items] : [];
+    return new Map(items.map((item) => [positivePid(item?.pid), item]).filter(([pid]) => pid));
+  } catch {
+    return new Map();
   }
 }
 
@@ -116,80 +467,161 @@ function readShellControlDescriptor() {
   }
 }
 
-function effectiveManagedPid(componentId, record) {
-  if (componentId === "desktop-pet") {
-    const descriptor = readDesktopPetProcessDescriptor();
-    if (descriptor?.pid && isPidAlive(descriptor.pid)) return descriptor.pid;
+function runtimeProcessDescriptor(componentId) {
+  if (componentId === "desktop-pet") return readDesktopPetProcessDescriptor();
+  if (componentId === "shell") return readShellControlDescriptor();
+  return null;
+}
+
+async function managedIdentitySnapshot(componentIds, state) {
+  const runtimeDescriptors = new Map(componentIds.map((id) => [id, runtimeProcessDescriptor(id)]));
+  const pids = componentIds.flatMap((id) => [state.processes[id]?.pid, runtimeDescriptors.get(id)?.pid]);
+  return { runtimeDescriptors, processDescriptors: await readProcessDescriptors(pids) };
+}
+
+function resolveLiveManagedIdentity(componentId, record, snapshot) {
+  const runtimeDescriptor = snapshot.runtimeDescriptors.get(componentId) || null;
+  return {
+    runtimeDescriptor,
+    identity: resolveManagedComponentIdentity(componentId, {
+      record,
+      runtimeDescriptor,
+      processDescriptors: snapshot.processDescriptors,
+    }),
+  };
+}
+
+function removeRuntimeDescriptor(componentId, expectedPid) {
+  const filePath = componentId === "desktop-pet"
+    ? DESKTOP_PET_PROCESS_PATH
+    : componentId === "shell" ? SHELL_CONTROL_PATH : null;
+  if (!filePath) return;
+  const current = runtimeProcessDescriptor(componentId);
+  if (!current || current.pid === expectedPid) fs.rmSync(filePath, { force: true });
+}
+
+async function resolveCurrentManagedIdentity(componentId, state = readProcessState()) {
+  const snapshot = await managedIdentitySnapshot([componentId], state);
+  const record = state.processes[componentId] || null;
+  return { record, ...resolveLiveManagedIdentity(componentId, record, snapshot) };
+}
+
+async function cleanupConfirmedStaleRecord(componentId, expectedIdentity) {
+  if (!expectedIdentity) return false;
+  try {
+    return await withComponentProcessLease(componentId, async () => {
+      const state = readProcessState();
+      const record = state.processes[componentId] || null;
+      if (!processRecordMatchesIdentity(record, expectedIdentity)) return false;
+      const { identity } = await resolveCurrentManagedIdentity(componentId, state);
+      if (identity.unverifiedPids.length || !identity.stalePids.includes(expectedIdentity.pid)) return false;
+      return (await compareAndSwapProcessRecord(componentId, expectedIdentity, null)).applied;
+    }, { timeoutMs: 250 });
+  } catch {
+    return false;
   }
-  return record?.pid || null;
+}
+
+export function getManagedComponentProcessRecordIdentity(componentId) {
+  if (!COMPONENTS[componentId]) return null;
+  return processRecordIdentity(readProcessState().processes[componentId]);
+}
+
+export async function removeManagedComponentProcessRecord(componentId, expectedIdentity) {
+  if (!COMPONENTS[componentId] || !expectedIdentity) return false;
+  return withComponentProcessLease(componentId, async () => {
+    const record = readProcessState().processes[componentId] || null;
+    if (!processRecordMatchesIdentity(record, expectedIdentity)) return false;
+    return (await compareAndSwapProcessRecord(componentId, expectedIdentity, null)).applied;
+  });
 }
 
 export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
   const state = readProcessState();
+  const snapshot = await managedIdentitySnapshot(componentIds, state);
   const statuses = [];
+  const staleCleanups = [];
   for (const id of componentIds) {
     const component = COMPONENTS[id];
     if (!component) continue;
     const record = state.processes[id] || null;
-    const effectivePid = effectiveManagedPid(id, record);
-    const pidAlive = effectivePid ? isPidAlive(effectivePid) : false;
+    const { runtimeDescriptor, identity } = resolveLiveManagedIdentity(id, record, snapshot);
+    const recordIdentity = processRecordIdentity(record);
+    if (recordIdentity && !identity.unverifiedPids.length && identity.stalePids.includes(recordIdentity.pid)) {
+      staleCleanups.push(cleanupConfirmedStaleRecord(id, recordIdentity));
+    }
+    const effectivePid = identity.effectivePid || identity.unverifiedPids[0] || null;
+    const pidAlive = Boolean(identity.effectivePid || identity.unverifiedPids.length);
     const hasPort = componentHasPort(component);
     const portOpen = hasPort ? await isPortOpen(component.port) : false;
     statuses.push({
       id,
       label: component.label,
       port: component.port,
-      managed: Boolean((record && record.managed) || (id === "desktop-pet" && effectivePid)),
+      managed: Boolean(identity.effectivePid),
       pid: effectivePid,
       pidAlive,
       portOpen,
-      state: pidAlive ? "managed_running" : hasPort && portOpen ? "external_port_in_use" : "stopped",
-      startedAt: id === "desktop-pet"
-        ? (readDesktopPetProcessDescriptor()?.startedAt || record?.startedAt || null)
-        : (record?.startedAt || null),
+      state: identity.effectivePid
+        ? "managed_running"
+        : identity.unverifiedPids.length ? "managed_identity_unverified"
+          : hasPort && portOpen ? "external_port_in_use" : "stopped",
+      startedAt: runtimeDescriptor?.startedAt || record?.startedAt || null,
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
     });
   }
+  await Promise.all(staleCleanups);
   return statuses;
 }
 
-export async function startComponents(componentIds, options = {}) {
-  ensureDir(LOG_DIR);
-  const state = readProcessState();
-  const results = [];
-  for (const id of componentIds) {
-    const component = COMPONENTS[id];
-    if (!component) continue;
-    const record = state.processes[id] || null;
-    const effectivePid = effectiveManagedPid(id, record);
-    if (effectivePid && isPidAlive(effectivePid)) {
-      results.push({ id, status: "already_running", pid: effectivePid });
-      continue;
+async function startComponent(id, options) {
+  const component = COMPONENTS[id];
+  return withComponentProcessLease(id, async () => {
+    const state = readProcessState();
+    const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
+    if (identity.effectivePid) {
+      return { id, status: "already_running", pid: identity.effectivePid };
     }
+    if (identity.unverifiedPids.length) {
+      return { id, status: "identity_unavailable", pid: identity.unverifiedPids[0] };
+    }
+    if (record) {
+      const expectedIdentity = processRecordIdentity(record);
+      const removed = await compareAndSwapProcessRecord(id, expectedIdentity, null);
+      if (!removed.applied) return { id, status: "lifecycle_conflict", reason: "record_replaced_before_start" };
+    }
+    if (runtimeDescriptor) removeRuntimeDescriptor(id, runtimeDescriptor.pid);
     if (componentHasPort(component) && await isPortOpen(component.port)) {
-      results.push({ id, status: "port_in_use", port: component.port });
-      continue;
+      return { id, status: "port_in_use", port: component.port };
     }
     const commandSpec = component.command(options);
     if (!fs.existsSync(commandSpec.cwd)) {
-      results.push({ id, status: "missing_cwd", cwd: commandSpec.cwd });
-      continue;
+      return { id, status: "missing_cwd", cwd: commandSpec.cwd };
     }
     const logs = logPathsFor(id);
     const out = fs.openSync(logs.out, "a");
     const err = fs.openSync(logs.err, "a");
-    const child = spawn(commandSpec.command, commandSpec.args, {
-      cwd: commandSpec.cwd,
-      env: { ...process.env, ...commandSpec.env },
-      detached: true,
-      stdio: ["ignore", out, err],
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(commandSpec.command, commandSpec.args, {
+        cwd: commandSpec.cwd,
+        env: { ...process.env, ...commandSpec.env },
+        detached: true,
+        stdio: ["ignore", out, err],
+        windowsHide: true,
+      });
+      await waitForSpawn(child);
+    } finally {
+      fs.closeSync(out);
+      fs.closeSync(err);
+    }
     child.unref();
-    state.processes[id] = {
+    const spawnedDescriptor = await readProcessDescriptor(child.pid);
+    const recordToWrite = {
       managed: true,
       pid: child.pid,
+      launchId: crypto.randomUUID(),
       command: commandSpec.command,
       args: commandSpec.args,
       cwd: commandSpec.cwd,
@@ -197,14 +629,37 @@ export async function startComponents(componentIds, options = {}) {
       startedAt: new Date().toISOString(),
       logOut: logs.out,
       logErr: logs.err,
+      ...(spawnedDescriptor?.processStartToken ? { processStartToken: spawnedDescriptor.processStartToken } : {}),
     };
-    results.push({ id, status: "started", pid: child.pid, port: componentHasPort(component) ? component.port : null, logOut: logs.out, logErr: logs.err });
-  }
-  writeProcessState(state);
-  return results;
+    let inserted;
+    try {
+      inserted = await compareAndSwapProcessRecord(id, null, recordToWrite);
+    } catch (error) {
+      await killPid(child.pid);
+      throw error;
+    }
+    if (!inserted.applied) {
+      await killPid(child.pid);
+      return { id, status: "lifecycle_conflict", reason: "record_insert_conflict", pid: child.pid };
+    }
+    return {
+      id,
+      status: "started",
+      pid: child.pid,
+      launchId: recordToWrite.launchId,
+      port: componentHasPort(component) ? component.port : null,
+      logOut: logs.out,
+      logErr: logs.err,
+    };
+  });
 }
 
-function killPid(pid, options = {}) {
+export async function startComponents(componentIds, options = {}) {
+  ensureDir(LOG_DIR);
+  return Promise.all(componentIds.filter((id) => COMPONENTS[id]).map((id) => startComponent(id, options)));
+}
+
+async function killPid(pid, options = {}) {
   const numeric = Number(pid);
   if (!Number.isInteger(numeric) || numeric <= 0) return { ok: false, reason: "invalid_pid" };
   if (!isPidAlive(numeric)) return { ok: true, reason: "already_stopped" };
@@ -212,11 +667,15 @@ function killPid(pid, options = {}) {
     const args = ["/PID", String(numeric)];
     if (options.tree !== false) args.push("/T");
     args.push("/F");
-    const result = spawnSync("taskkill", args, { encoding: "utf8", windowsHide: true });
+    const result = await runChildCommand("taskkill", args, { timeoutMs: 5_000 });
     if (result.status !== 0 && !isPidAlive(numeric)) {
       return { ok: true, reason: "stopped_during_kill" };
     }
-    return { ok: result.status === 0, reason: result.status === 0 ? "killed" : (result.stderr || result.stdout || "taskkill_failed").trim() };
+    if (result.status !== 0) {
+      return { ok: false, reason: (result.stderr || result.stdout || "taskkill_failed").trim() };
+    }
+    const stopped = await waitForPidExit(numeric);
+    return { ok: stopped, reason: stopped ? "killed" : "termination_timeout" };
   }
   try {
     process.kill(-numeric, "SIGTERM");
@@ -227,61 +686,108 @@ function killPid(pid, options = {}) {
       return { ok: false, reason: error instanceof Error ? error.message : "kill_failed" };
     }
   }
-  return { ok: true, reason: "killed" };
+  const stopped = await waitForPidExit(numeric);
+  return { ok: stopped, reason: stopped ? "killed" : "termination_timeout" };
 }
 
-export function stopComponents(componentIds = Object.keys(COMPONENTS), options = {}) {
-  const state = readProcessState();
-  const results = [];
-  for (const id of componentIds) {
-    const component = COMPONENTS[id];
-    if (!component) continue;
-    const record = state.processes[id];
-    const desktopPetDescriptor = id === "desktop-pet" ? readDesktopPetProcessDescriptor() : null;
-    const shellControlDescriptor = id === "shell" ? readShellControlDescriptor() : null;
-    const recordedPidAlive = record?.pid ? isPidAlive(record.pid) : false;
+async function revalidateStopTarget(componentId, pid, context) {
+  const descriptor = await readProcessDescriptor(pid);
+  if (context.expectedProcessStartToken
+    && descriptor?.processStartToken !== context.expectedProcessStartToken) {
+    return { ok: false, processStartToken: descriptor?.processStartToken || null };
+  }
+  const currentRecord = readProcessState().processes[componentId] || null;
+  if (positivePid(context.record?.pid) === pid
+    && processRecordMatchesIdentity(currentRecord, context.expectedIdentity)
+    && verifiedManagedComponentPid(componentId, context.record, descriptor) === pid) {
+    return { ok: true, processStartToken: descriptor?.processStartToken || null };
+  }
+  const currentRuntimeDescriptor = runtimeProcessDescriptor(componentId);
+  if (positivePid(context.runtimeDescriptor?.pid) === pid
+    && positivePid(currentRuntimeDescriptor?.pid) === pid
+    && verifiedRuntimeComponentPid(componentId, descriptor) === pid) {
+    return { ok: true, processStartToken: descriptor?.processStartToken || null };
+  }
+  if (context.verifiedPortOwner?.killPid === pid) {
+    const currentPortOwner = verifiedComponentPortOwner(
+      componentId,
+      await readWindowsListeningProcessDescriptor(COMPONENTS[componentId]?.port),
+    );
+    const tokenMatches = !context.verifiedPortOwner.processStartToken
+      || currentPortOwner?.processStartToken === context.verifiedPortOwner.processStartToken;
+    if (currentPortOwner?.killPid === pid
+      && currentPortOwner.ownerPid === context.verifiedPortOwner.ownerPid
+      && tokenMatches) {
+      return { ok: true, processStartToken: currentPortOwner.processStartToken || null };
+    }
+  }
+  return { ok: false, processStartToken: null };
+}
+
+async function stopComponent(id, options) {
+  const component = COMPONENTS[id];
+  return withComponentProcessLease(id, async () => {
+    const state = readProcessState();
+    const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
+    const expectedIdentity = processRecordIdentity(record);
+    if (identity.unverifiedPids.length) {
+      return { id, status: "stop_failed", reason: "identity_unavailable", pid: identity.unverifiedPids[0] };
+    }
     const mayStopVerifiedPortOwner = Array.isArray(options.stopVerifiedPortOwners)
       && options.stopVerifiedPortOwners.includes(id)
       && componentHasPort(component)
-      && !recordedPidAlive;
+      && !identity.recordPid;
     const verifiedPortOwner = mayStopVerifiedPortOwner
-      ? verifiedComponentPortOwner(id, readWindowsListeningProcessDescriptor(component.port))
+      ? verifiedComponentPortOwner(id, await readWindowsListeningProcessDescriptor(component.port))
       : null;
-    if (!record && !desktopPetDescriptor && !shellControlDescriptor && !verifiedPortOwner) {
-      results.push({ id, status: "not_managed" });
-      continue;
+    if (!record && !runtimeDescriptor && !verifiedPortOwner) {
+      return { id, status: "not_managed" };
     }
     const targetPids = [...new Set([
-      desktopPetDescriptor?.pid,
-      shellControlDescriptor?.pid,
-      record?.pid,
+      ...identity.verifiedPids,
       verifiedPortOwner?.killPid,
     ].filter(Boolean))];
     // Windows keeps the original parent process relationship even for detached
     // children. Killing the whole Shell tree can therefore terminate the managed
     // desktop pet. Stop the Shell browser and launcher PIDs exactly; Electron
     // tears down its own renderer/GPU children when the browser process exits.
-    const killResults = targetPids.map((pid) => ({ pid, ...killPid(pid, { tree: id !== "shell" }) }));
+    const killResults = [];
+    for (const pid of targetPids) {
+      const revalidated = await revalidateStopTarget(id, pid, {
+        record,
+        expectedIdentity,
+        runtimeDescriptor,
+        verifiedPortOwner,
+        expectedProcessStartToken: identity.processStartTokens[String(pid)]
+          || (verifiedPortOwner?.killPid === pid ? verifiedPortOwner.processStartToken : null),
+      });
+      if (!revalidated.ok) {
+        killResults.push({ pid, ok: false, reason: "identity_changed_before_kill" });
+        break;
+      }
+      killResults.push({ pid, ...await killPid(pid, { tree: id !== "shell" }) });
+    }
     const failed = killResults.find((item) => !item.ok);
     if (!failed) {
-      delete state.processes[id];
-      if (id === "desktop-pet") fs.rmSync(DESKTOP_PET_PROCESS_PATH, { force: true });
-      if (id === "shell") {
-        const currentShellDescriptor = readShellControlDescriptor();
-        if (!currentShellDescriptor || currentShellDescriptor.pid === shellControlDescriptor?.pid) {
-          fs.rmSync(SHELL_CONTROL_PATH, { force: true });
+      if (record) {
+        const removed = await compareAndSwapProcessRecord(id, expectedIdentity, null);
+        if (!removed.applied) {
+          return { id, status: "stop_conflict", reason: "record_replaced_after_stop", pid: expectedIdentity?.pid || null };
         }
       }
+      if (runtimeDescriptor) removeRuntimeDescriptor(id, runtimeDescriptor.pid);
     }
-    results.push({
+    return {
       id,
-      status: failed ? "stop_failed" : "stopped",
+      status: failed ? "stop_failed" : targetPids.length ? "stopped" : "stale_state_removed",
       reason: failed?.reason || killResults.map((item) => item.reason).join(",") || "already_stopped",
-      pid: desktopPetDescriptor?.pid || shellControlDescriptor?.pid || record?.pid || verifiedPortOwner?.ownerPid || null,
+      pid: identity.effectivePid || positivePid(runtimeDescriptor?.pid) || positivePid(record?.pid) || verifiedPortOwner?.ownerPid || null,
       verifiedPortOwner: Boolean(verifiedPortOwner),
       matchedBy: verifiedPortOwner?.matchedBy || null,
-    });
-  }
-  writeProcessState(state);
-  return results;
+    };
+  });
+}
+
+export async function stopComponents(componentIds = Object.keys(COMPONENTS), options = {}) {
+  return Promise.all(componentIds.filter((id) => COMPONENTS[id]).map((id) => stopComponent(id, options)));
 }

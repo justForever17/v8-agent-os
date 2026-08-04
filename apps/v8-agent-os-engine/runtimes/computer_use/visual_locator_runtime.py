@@ -4,13 +4,13 @@ import importlib
 import importlib.util
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.process_launch import run_windowless
 from core.system_base import get_desktop_tools_config
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
@@ -283,7 +283,7 @@ def _run_tesseract_tsv(*, image_path: Path, tessdata_dir: Path | None, psm: int 
             command.append(tsv_config)
         else:
             command.append("tsv")
-        subprocess.run(
+        run_windowless(
             command,
             capture_output=True,
             text=True,

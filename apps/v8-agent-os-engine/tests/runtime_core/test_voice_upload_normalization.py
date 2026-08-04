@@ -64,7 +64,7 @@ def test_transcode_voice_upload_uses_compatible_mp3_contract(tmp_path, monkeypat
         Path(command[-1]).write_bytes(b"mp3")
         return type("Completed", (), {"returncode": 0, "stderr": ""})()
 
-    monkeypatch.setattr(chat_realtime_routes.subprocess, "run", fake_run)
+    monkeypatch.setattr(chat_realtime_routes, "run_windowless", fake_run)
     chat_realtime_routes._transcode_voice_upload_to_mp3(source, target)
 
     command = captured["command"]

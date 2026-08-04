@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ from core.agent_browser_profile import (
     resolve_agent_browser_profile_dir,
     system_agent_browser_candidates,
 )
+from core.process_launch import popen_windowless, run_windowless
 from runtimes.computer_use.input_policy import looks_like_url
 
 
@@ -253,6 +255,12 @@ class BrowserAutomationProvider:
                 "connected": False,
                 "status": "not_running",
             }
+        elif not self._is_loopback_port_open(self._proxy_port):
+            health = {
+                "connected": False,
+                "status": "unreachable",
+                "errorClass": "ConnectionError",
+            }
         else:
             try:
                 health = dict(
@@ -325,7 +333,7 @@ class BrowserAutomationProvider:
         if driver_package:
             env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
         try:
-            completed = subprocess.run(
+            completed = run_windowless(
                 [self._node_path, "-e", probe_script],
                 cwd=str(script_path.parent),
                 env=env,
@@ -975,7 +983,7 @@ class BrowserAutomationProvider:
                 ]
                 if not any(str(item).startswith("--headless") for item in prepared_command):
                     prepared_command.append("--headless=new")
-            process = subprocess.Popen(
+            process = popen_windowless(
                 prepared_command,
                 env=prepared_env,
                 stdout=subprocess.DEVNULL,
@@ -1376,7 +1384,7 @@ class BrowserAutomationProvider:
                 driver_package = self._resolve_playwright_driver_package()
                 if driver_package:
                     env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
-                self._proxy_process = subprocess.Popen(
+                self._proxy_process = popen_windowless(
                     [node_path, str(script_path)],
                     cwd=str(script_path.parent),
                     env=env,
@@ -1415,6 +1423,8 @@ class BrowserAutomationProvider:
     def _is_debug_port_reachable(self, port: int | None) -> bool:
         if not port:
             return False
+        if not self._is_loopback_port_open(int(port)):
+            return False
         try:
             response = requests.get(
                 f"http://127.0.0.1:{int(port)}/json/version",
@@ -1423,6 +1433,19 @@ class BrowserAutomationProvider:
             response.raise_for_status()
             return True
         except Exception:
+            return False
+
+    @staticmethod
+    def _is_loopback_port_open(port: int | None, *, timeout_seconds: float = 0.05) -> bool:
+        if not port:
+            return False
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", int(port)),
+                timeout=max(0.01, min(float(timeout_seconds), 0.25)),
+            ):
+                return True
+        except OSError:
             return False
 
     def _debug_browser_is_headless(self, port: int | None) -> bool:

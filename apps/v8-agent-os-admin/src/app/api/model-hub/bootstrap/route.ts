@@ -7,6 +7,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 type EngineModelsPayload = {
     providers?: Record<string, unknown>;
+    roles?: Record<string, unknown>;
 };
 
 type EngineProviderContainer = Parameters<typeof mapEngineProvider>[1];
@@ -21,15 +22,14 @@ export async function GET(req: NextRequest) {
     const engineBaseUrl = resolveEngineBaseUrl();
 
     try {
-        const [modelsResponse, hubResult, supervisorResult, catalogResponse, audioResponse] = await Promise.all([
-            fetch(`${engineBaseUrl}/models/public`, { cache: "no-store" }),
+        const [hubResult, catalogResponse, audioResponse] = await Promise.all([
             proxyEngineJson("/config-registry/models"),
-            proxyEngineJson("/config-registry/supervisor"),
             fetch(`${engineBaseUrl}/models/catalog`, { next: { revalidate: 60 } }),
             fetch(`${engineBaseUrl}/audio/config`, { cache: "no-store" }),
         ]);
 
-        const routesData = (await modelsResponse.json().catch(() => ({}))) as EngineModelsPayload;
+        const hubEnvelope = hubResult.data as { data?: { config?: EngineModelsPayload } };
+        const routesData: EngineModelsPayload = hubEnvelope.data?.config || {};
         const providersDict = routesData.providers || {};
         const providers = Object.keys(providersDict).map((providerKey) =>
             mapEngineProvider(providerKey, providersDict[providerKey] as EngineProviderContainer)
@@ -37,9 +37,7 @@ export async function GET(req: NextRequest) {
         const models = listEngineModels(providersDict as EngineProvidersMap);
         const catalog = await catalogResponse.json().catch(() => ({}));
         const audioConfig = await audioResponse.json().catch(() => ({}));
-        const modelRef = (
-            supervisorResult.data as { data?: { bindings?: { defaultReplyModel?: string } } }
-        ).data?.bindings?.defaultReplyModel || null;
+        const modelRef = String(routesData.roles?.default || "").trim() || null;
 
         return NextResponse.json({
             providers,

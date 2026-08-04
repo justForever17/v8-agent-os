@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import ToolMessage
 
 from core.cron_manager import CronManager
+from core import action_executor as action_executor_module
 from core.hooks_manager import hooks_manager
 from core.runtime_projection import build_projection_summary
 from core.storage import storage
@@ -15,6 +18,41 @@ from erc.runtime_context import bind_runtime_context
 from graph import tool_routing
 from runtimes.chat import runtime as chat_runtime_module
 from runtimes.chat.runtime import ChatRuntime, ChatStreamState
+
+
+def test_automation_command_uses_windowless_runner(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = dict(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(action_executor_module, "run_windowless_bounded", fake_run)
+
+    result = action_executor_module.ActionExecutor._execute_command(
+        "echo hook",
+        {},
+        event_name="on_tool_execute_start",
+    )
+
+    assert result.returncode == 0
+    assert captured["command"] == "echo hook"
+    assert captured["kwargs"]["shell"] is True
+    assert captured["kwargs"]["env"]["V8_AGENT_OS_HOOK_EVENT"] == "on_tool_execute_start"
+    assert captured["kwargs"]["timeout"] == 60
+
+
+def test_automation_command_timeout_surfaces_to_the_governed_failure_path(monkeypatch):
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(action_executor_module, "run_windowless_bounded", fake_run)
+
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        action_executor_module.ActionExecutor._execute_command("stalled-hook", {})
+
+    assert error.value.timeout == 60
 
 
 def test_manage_cron_add_binds_agent_created_job_to_current_session(monkeypatch):

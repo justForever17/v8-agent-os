@@ -1,5 +1,6 @@
 import { ik } from "@/i18n/admin-legacy";
 import {
+  applyAdminEngineOriginChange,
   fetchAdminJson,
   invalidateAdminJsonCache,
   peekAdminJsonCache,
@@ -18,18 +19,35 @@ export type ConfigRegistryEnvelope<T = Record<string, unknown>> = {
   advancedFields: string[];
 };
 
-function configDomainUrl(domain: string) {
-  return `/api/config-registry/${encodeURIComponent(domain)}`;
+function configDomainUrl(domain: string, refreshEnvironment = false) {
+  const baseUrl = `/api/config-registry/${encodeURIComponent(domain)}`;
+  return refreshEnvironment ? `${baseUrl}?refresh=true` : baseUrl;
+}
+
+function configuredEngineBaseUrl(envelope: unknown) {
+  if (!envelope || typeof envelope !== "object") return undefined;
+  const data = (envelope as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return undefined;
+  const bridge = (data as { bridge?: unknown }).bridge;
+  if (!bridge || typeof bridge !== "object") return undefined;
+  return (bridge as { engineBaseUrl?: unknown }).engineBaseUrl;
 }
 
 export function peekConfigDomain<T = Record<string, unknown>>(domain: string) {
   return peekAdminJsonCache<ConfigRegistryEnvelope<T>>(configDomainUrl(domain));
 }
 
-export async function fetchConfigDomain<T = Record<string, unknown>>(domain: string, options: { force?: boolean } = {}) {
-  const url = configDomainUrl(domain);
+export async function fetchConfigDomain<T = Record<string, unknown>>(
+  domain: string,
+  options: { force?: boolean; refreshEnvironment?: boolean } = {},
+) {
+  const url = configDomainUrl(domain, options.refreshEnvironment);
   try {
-    return await fetchAdminJson<ConfigRegistryEnvelope<T>>(url, { force: options.force });
+    const envelope = await fetchAdminJson<ConfigRegistryEnvelope<T>>(url, { force: options.force });
+    if (options.refreshEnvironment) {
+      primeAdminJsonCache(configDomainUrl(domain), envelope);
+    }
+    return envelope;
   } catch (error) {
     throw new Error(error instanceof Error && error.message
       ? error.message
@@ -38,6 +56,9 @@ export async function fetchConfigDomain<T = Record<string, unknown>>(domain: str
 }
 export async function saveConfigDomain<T = Record<string, unknown>>(domain: string, payload: Record<string, unknown>) {
   const url = configDomainUrl(domain);
+  const previousEnvelope = domain === "system-base"
+    ? peekAdminJsonCache<ConfigRegistryEnvelope<Record<string, unknown>>>(url)
+    : undefined;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -57,7 +78,16 @@ export async function saveConfigDomain<T = Record<string, unknown>>(domain: stri
       error?: string;
     }).error || translateCurrentClient(ik("k83498cb523")));
   }
-  invalidateAdminJsonCache(url);
-  primeAdminJsonCache(url, data);
+  const engineOriginChanged = previousEnvelope !== undefined
+    && domain === "system-base"
+    && applyAdminEngineOriginChange(
+      configuredEngineBaseUrl(previousEnvelope),
+      configuredEngineBaseUrl(data),
+      { reload: true },
+    );
+  if (!engineOriginChanged) {
+    invalidateAdminJsonCache(url);
+    primeAdminJsonCache(url, data);
+  }
   return data as ConfigRegistryEnvelope<T>;
 }

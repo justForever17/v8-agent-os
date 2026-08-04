@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from core.extensions_runtime import extensions_runtime_service
@@ -90,7 +92,12 @@ async def get_extensions_store_skills(
     refresh: bool = False,
 ):
     try:
-        return list_store_skills(query=query, limit=limit, refresh=refresh)
+        return await asyncio.to_thread(
+            list_store_skills,
+            query=query,
+            limit=limit,
+            refresh=refresh,
+        )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
@@ -100,7 +107,7 @@ async def get_extensions_store_skills(
 @router.post("/extensions/store/skills/install")
 async def install_extensions_store_skill(payload: dict = Body(...)):
     try:
-        return install_store_skill(payload)
+        return await asyncio.to_thread(install_store_skill, payload)
     except SkillInstallValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.to_payload())
     except ExtensionStoreError as exc:
@@ -116,7 +123,12 @@ async def get_extensions_store_skill_detail(
     refresh: bool = False,
 ):
     try:
-        return get_store_skill_detail(source=source, skill_id=skillId, refresh=refresh)
+        return await asyncio.to_thread(
+            get_store_skill_detail,
+            source=source,
+            skill_id=skillId,
+            refresh=refresh,
+        )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
@@ -130,7 +142,12 @@ async def get_extensions_store_mcp(
     refresh: bool = False,
 ):
     try:
-        return list_store_mcp(query=query, limit=limit, refresh=refresh)
+        return await asyncio.to_thread(
+            list_store_mcp,
+            query=query,
+            limit=limit,
+            refresh=refresh,
+        )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
@@ -143,7 +160,11 @@ async def get_extensions_store_mcp_detail(
     refresh: bool = False,
 ):
     try:
-        return get_store_mcp_detail(mcp_id=id, refresh=refresh)
+        return await asyncio.to_thread(
+            get_store_mcp_detail,
+            mcp_id=id,
+            refresh=refresh,
+        )
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
@@ -153,7 +174,7 @@ async def get_extensions_store_mcp_detail(
 @router.post("/extensions/store/mcp/install")
 async def install_extensions_store_mcp(payload: dict = Body(...)):
     try:
-        return install_store_mcp(payload)
+        return await asyncio.to_thread(install_store_mcp, payload)
     except McpConfigValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.to_payload())
     except ExtensionStoreError as exc:

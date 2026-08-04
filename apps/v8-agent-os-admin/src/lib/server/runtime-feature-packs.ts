@@ -12,7 +12,7 @@ import {
     writeCanonicalConfig,
     type CanonicalConfig,
 } from "@/lib/server/bridge-config";
-import { resolveEngineOrigin } from "@/lib/server/runtime-config";
+import { readEngineHealthSnapshot } from "@/lib/server/engine-health-snapshot";
 
 export type FeaturePackStatus = "installed" | "not_installed" | "installing" | "failed";
 
@@ -56,6 +56,9 @@ export type RuntimeFeaturePack = {
 
 export type RuntimeFeaturePackState = {
     engineAvailable: boolean;
+    refreshing: boolean;
+    retryAfterMs: number | null;
+    updatedAt: number | null;
     packs: RuntimeFeaturePack[];
     summary: {
         total: number;
@@ -375,39 +378,46 @@ function summarize(packs: RuntimeFeaturePack[]) {
     };
 }
 
-async function readEngineFeaturePacks() {
-    try {
-        const response = await fetch(`${resolveEngineOrigin()}/health`, { cache: "no-store" });
-        if (!response.ok) return { engineAvailable: false, packs: null as RuntimeFeaturePack[] | null };
-        const payload = await response.json().catch(() => ({}));
-        const rawPacks = Array.isArray(payload.featurePacks) ? payload.featurePacks : null;
-        if (!rawPacks) return { engineAvailable: true, packs: null as RuntimeFeaturePack[] | null };
-        const rawById = new Map<string, Record<string, unknown>>();
-        for (const pack of rawPacks) {
-            if (!pack || typeof pack !== "object") continue;
-            const raw = pack as Record<string, unknown>;
-            rawById.set(String(raw.id || ""), raw);
-        }
-        return {
-            engineAvailable: true,
-            packs: FEATURE_PACK_DEFINITIONS.map((definition) =>
-                normalizeFeaturePackFromEngine(definition, rawById.get(definition.id) || ({} as Record<string, unknown>)),
-            ).sort((a, b) => a.recommendedOrder - b.recommendedOrder),
-        };
-    } catch {
-        return { engineAvailable: false, packs: null as RuntimeFeaturePack[] | null };
+function readEngineFeaturePacks(payload: Record<string, unknown> | null) {
+    const rawPacks = Array.isArray(payload?.featurePacks) ? payload.featurePacks : null;
+    if (!rawPacks) return null;
+    const rawById = new Map<string, Record<string, unknown>>();
+    for (const pack of rawPacks) {
+        if (!pack || typeof pack !== "object") continue;
+        const raw = pack as Record<string, unknown>;
+        rawById.set(String(raw.id || ""), raw);
     }
+    return FEATURE_PACK_DEFINITIONS.map((definition) =>
+        normalizeFeaturePackFromEngine(definition, rawById.get(definition.id) || ({} as Record<string, unknown>)),
+    ).sort((a, b) => a.recommendedOrder - b.recommendedOrder);
 }
 
-export async function getRuntimeFeaturePackState(): Promise<RuntimeFeaturePackState> {
+function mergeFeaturePackTruth(configPacks: RuntimeFeaturePack[], enginePacks: RuntimeFeaturePack[] | null) {
+    if (!enginePacks) return configPacks;
+    const configById = new Map(configPacks.map((pack) => [pack.id, pack]));
+    return enginePacks.map((enginePack) => {
+        const configPack = configById.get(enginePack.id);
+        if (!configPack) return enginePack;
+        const configUpdatedAt = Date.parse(configPack.updatedAt || "") || 0;
+        const engineUpdatedAt = Date.parse(enginePack.updatedAt || "") || 0;
+        return configUpdatedAt > engineUpdatedAt ? configPack : enginePack;
+    }).sort((a, b) => a.recommendedOrder - b.recommendedOrder);
+}
+
+export async function getRuntimeFeaturePackState(options: { forceHealthRefresh?: boolean } = {}): Promise<RuntimeFeaturePackState> {
     const config = readCanonicalAdminRuntimeConfig();
-    const engineState = await readEngineFeaturePacks();
-    const packs = (
-        engineState.packs
-            || FEATURE_PACK_DEFINITIONS.map((definition) => normalizeFeaturePackFromConfig(definition, config))
-    ).sort((a, b) => a.recommendedOrder - b.recommendedOrder);
+    const engineHealth = await readEngineHealthSnapshot({
+        force: options.forceHealthRefresh,
+        waitForFresh: options.forceHealthRefresh,
+    });
+    const enginePacks = readEngineFeaturePacks(engineHealth.data);
+    const configPacks = FEATURE_PACK_DEFINITIONS.map((definition) => normalizeFeaturePackFromConfig(definition, config));
+    const packs = mergeFeaturePackTruth(configPacks, enginePacks);
     return {
-        engineAvailable: engineState.engineAvailable,
+        engineAvailable: engineHealth.available === true,
+        refreshing: engineHealth.refreshing,
+        retryAfterMs: engineHealth.refreshing ? 1_500 : null,
+        updatedAt: engineHealth.updatedAt || null,
         packs,
         summary: summarize(packs),
         installRoot: featurePackRoot(),

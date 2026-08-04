@@ -28,6 +28,7 @@ import { ChatMessage, PetEmotion, SystemMetric, PetSettings, type PetGlowColor }
 import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
 import type { V8DesktopPetConfig } from './lib/v8DesktopClient';
 import { isEventVoiceEnabled, normalizeAttachmentCapture, normalizeEventVoiceMode } from './lib/desktopPetConfigContract';
+import { createActivityRefreshScheduler } from './lib/activityRefreshScheduler';
 import {
   DesktopActivity,
   buildActivityFromRealtimeEvent,
@@ -67,6 +68,19 @@ type DesktopPetSessionState =
   | 'listening_running'
   | 'playback'
   | 'error';
+
+function humanSessionStatus(state: DesktopPetSessionState) {
+  switch (state) {
+    case 'idle_no_conversation': return '已连接，等待选择会话';
+    case 'attached_idle': return '已连接，等待任务';
+    case 'recording': return '正在聆听';
+    case 'sending_audio': return '正在发送';
+    case 'listening_running': return '任务运行中';
+    case 'playback': return '正在播报';
+    case 'error': return '连接异常';
+    default: return '等待 V8OS';
+  }
+}
 
 const RUNNING_STATUS_PATTERN = /(running|active|in_progress|processing|queued|streaming|executing|进行中|运行中)/i;
 const TERMINAL_STATUS_PATTERN = /(complete|completed|done|success|succeeded|failed|error|cancel|cancelled|interrupted|finished|结束|完成|失败|取消)/i;
@@ -870,28 +884,21 @@ If the user uploaded an image representation (which represents what you 'see' th
     if (!v8Session?.accessToken || !client) return;
     let stopped = false;
     let reconnectDelayMs = 500;
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
-
-    const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => {
-        refreshTimer = null;
-        if (!stopped) {
-          void refreshV8ListsRef.current(shellActiveConversationIdRef.current, {
-            silent: true,
-            includeProjects: false,
-          });
-        }
-      }, 120);
-    };
+    const refreshScheduler = createActivityRefreshScheduler(async () => {
+      if (stopped) return;
+      await refreshV8ListsRef.current(shellActiveConversationIdRef.current, {
+        silent: true,
+        includeProjects: false,
+      });
+    });
 
     const run = async () => {
       while (!stopped) {
         controller = new AbortController();
         try {
           await client.streamSessionActivity((eventName) => {
-            if (eventName === 'ready' || eventName === 'activity') scheduleRefresh();
+            if (eventName === 'ready' || eventName === 'activity') refreshScheduler.schedule();
           }, controller.signal);
           reconnectDelayMs = 500;
         } catch {
@@ -907,7 +914,7 @@ If the user uploaded an image representation (which represents what you 'see' th
     return () => {
       stopped = true;
       controller?.abort();
-      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshScheduler.stop();
     };
   }, [v8Session?.accessToken, v8Session?.adminBaseUrl]);
 
@@ -975,8 +982,10 @@ If the user uploaded an image representation (which represents what you 'see' th
         }
         setV8Session(session);
         setPetSessionState('idle_no_conversation');
-        await refreshDesktopPetConfig();
-        await refreshV8Lists(shellActiveConversationIdRef.current);
+        await Promise.all([
+          refreshDesktopPetConfig(),
+          refreshV8Lists(shellActiveConversationIdRef.current),
+        ]);
         setV8Status('V8OS 已连接');
         void window.v8CyberCore?.reportStatus?.({
           state: 'connected',
@@ -2128,6 +2137,7 @@ If the user uploaded an image representation (which represents what you 'see' th
           toggleWebcam={toggleWebcam}
           webcamStatus={webcamStatus}
           voiceStatus={voiceStatus}
+          interactionStatus={humanSessionStatus(petSessionState)}
           onReleaseCamera={() => stopWebcamStream('手动释放光学流')}
           onTestSpeech={(text?: string) => speakString(text || '主人，中文电子女声测试完成。')}
           videoRef={videoRef}

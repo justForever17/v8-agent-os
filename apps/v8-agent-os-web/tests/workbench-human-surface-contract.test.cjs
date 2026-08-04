@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -112,6 +113,7 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   const shell = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
   const picker = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchFilePicker.tsx");
   const canvas = readText("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const canvasSaveScheduler = readText("apps/v8-agent-os-web/src/components/workbench/creative-canvas/save-scheduler.ts");
   const actions = readText("apps/v8-agent-os-web/src/lib/workbench-actions.ts");
   const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
   const store = readText("apps/v8-agent-os-web/src/store/workbench-store.ts");
@@ -130,7 +132,8 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   assert.match(shell, /prefetchWorkspaceFiles\(props\.sessionId\)/);
   assert.match(workbench, /creative-canvas:\$\{sessionId\}/);
   assert.match(store, /isWorkbenchDocumentOwnedBySession/);
-  assert.match(canvas, /v8-web-creative-canvas:v2:\$\{sessionId\}/);
+  assert.match(canvasSaveScheduler, /v8-web-creative-canvas:v2:\$\{sessionId\}/);
+  assert.match(canvasSaveScheduler, /encodeURIComponent\(sessionId\).*canvas\/graph/);
   assert.match(canvas, /\/api\/artifacts/);
   assert.match(canvas, /\/api\/sources/);
   assert.match(route, /inline: bool = Query\(False\)/);

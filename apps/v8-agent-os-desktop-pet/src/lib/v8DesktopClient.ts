@@ -91,6 +91,38 @@ export type V8DesktopPetConfig = {
 const SESSION_STORAGE_KEY = "v8.desktopPet.auth";
 const ACTIVE_CONVERSATION_KEY = "v8.desktopPet.activeConversationId";
 const ADMIN_BASE_KEY = "v8.desktopPet.adminBaseUrl";
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const MEDIA_REQUEST_TIMEOUT_MS = 125_000;
+
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+) {
+  const controller = new AbortController();
+  const callerSignal = init.signal;
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) {
+    controller.abort();
+  } else {
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Math.max(1, timeoutMs));
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new Error("V8OS 本机服务响应超时");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
+}
 
 export function normalizeAdminBaseUrl(input: string) {
   const trimmed = String(input || "").trim();
@@ -109,6 +141,23 @@ function readJson<T>(value: string | null): T | null {
 function localProxyPath(path: string) {
   const normalized = path.startsWith("/") ? path : `/${path}`;
   return `/api/v8${normalized}`;
+}
+
+async function resolveEngineWebSocketUrl() {
+  const transport = window.v8CyberCore?.transport;
+  if (transport?.engineWebSocketUrl) {
+    const transportUrl = new URL(transport.engineWebSocketUrl);
+    if (!['ws:', 'wss:'].includes(transportUrl.protocol)) {
+      throw new Error('桌宠实时传输地址无效');
+    }
+    return transportUrl;
+  }
+  if (!['http:', 'https:'].includes(window.location.protocol)) {
+    throw new Error('桌宠实时传输尚未就绪');
+  }
+  const fallbackUrl = new URL('/api/v8/engine-ws', window.location.origin);
+  fallbackUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return fallbackUrl;
 }
 
 export class V8DesktopClientAdapter {
@@ -169,7 +218,7 @@ export class V8DesktopClientAdapter {
 
   async signInLocal(input?: { adminBaseUrl?: string; deviceName?: string }) {
     const adminBaseUrl = normalizeAdminBaseUrl(input?.adminBaseUrl || "");
-    const response = await fetch(localProxyPath("/api/client/auth/local-session"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/auth/local-session"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -195,7 +244,7 @@ export class V8DesktopClientAdapter {
   }
 
   private async validateSession(session: V8AuthSession) {
-    const response = await fetch(localProxyPath("/api/client/auth/me"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/auth/me"), {
       method: "GET",
       cache: "no-store",
       headers: {
@@ -234,7 +283,7 @@ export class V8DesktopClientAdapter {
   async refreshSession() {
     const current = this.session;
     if (!current?.refreshToken) return null;
-    const response = await fetch(localProxyPath("/api/client/auth/refresh"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/auth/refresh"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -271,7 +320,7 @@ export class V8DesktopClientAdapter {
     const headers = new Headers(init.headers || {});
     headers.set("Authorization", `Bearer ${session.accessToken}`);
     headers.set("x-v8-admin-base", session.adminBaseUrl);
-    const response = await fetch(localProxyPath(path), {
+    const response = await fetchWithTimeout(localProxyPath(path), {
       ...init,
       headers,
     });
@@ -340,7 +389,7 @@ export class V8DesktopClientAdapter {
     if (!session?.accessToken) {
       throw new Error("尚未连接 V8OS Admin");
     }
-    const response = await fetch(localProxyPath("/api/client/audio/tts"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/audio/tts"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -348,7 +397,7 @@ export class V8DesktopClientAdapter {
         "x-v8-admin-base": session.adminBaseUrl,
       },
       body: JSON.stringify({ text, voiceRef: input?.voiceRef || undefined }),
-    });
+    }, MEDIA_REQUEST_TIMEOUT_MS);
     if (!response.ok) {
       const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => "") }));
       throw new Error(payload?.error || payload?.detail || `V8OS TTS 失败：${response.status}`);
@@ -367,14 +416,14 @@ export class V8DesktopClientAdapter {
     if (input?.language) {
       form.append("language", input.language);
     }
-    const response = await fetch(localProxyPath("/api/client/audio/stt"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/audio/stt"), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
         "x-v8-admin-base": session.adminBaseUrl,
       },
       body: form,
-    });
+    }, MEDIA_REQUEST_TIMEOUT_MS);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload?.error || payload?.detail || `V8OS STT 失败：${response.status}`);
@@ -411,14 +460,14 @@ export class V8DesktopClientAdapter {
       form.append("workspacePath", scope.workspacePath);
     }
     form.append("sourceKind", scope.sourceKind || "desktop_pet_upload");
-    const response = await fetch(localProxyPath("/api/client/upload"), {
+    const response = await fetchWithTimeout(localProxyPath("/api/client/upload"), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${session.accessToken}`,
         "x-v8-admin-base": session.adminBaseUrl,
       },
       body: form,
-    });
+    }, MEDIA_REQUEST_TIMEOUT_MS);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload?.error || "文件上传失败");
@@ -477,8 +526,7 @@ export class V8DesktopClientAdapter {
       throw new Error("尚未连接 V8OS Admin");
     }
 
-    const wsUrl = new URL("/api/v8/engine-ws", window.location.origin);
-    wsUrl.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = await resolveEngineWebSocketUrl();
     wsUrl.searchParams.set("sessionId", conversationId);
 
     await new Promise<void>((resolve, reject) => {

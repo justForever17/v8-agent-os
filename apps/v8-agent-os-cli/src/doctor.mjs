@@ -17,9 +17,14 @@ import { getPortOwners, isPortOpen } from "./ports.mjs";
 import { readJsonFile } from "./json_file.mjs";
 
 function commandVersion(command, args = ["--version"]) {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: 2500 });
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 2500, windowsHide: true });
   if (result.error) {
-    const shellResult = spawnSync([command, ...args].join(" "), { encoding: "utf8", timeout: 2500, shell: true });
+    const shellResult = spawnSync([command, ...args].join(" "), {
+      encoding: "utf8",
+      timeout: 2500,
+      shell: true,
+      windowsHide: true,
+    });
     return {
       ok: shellResult.status === 0,
       value: (shellResult.stdout || shellResult.stderr || "").trim().split(/\r?\n/)[0] || "",

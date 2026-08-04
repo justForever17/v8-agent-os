@@ -10,7 +10,7 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
-test("Web spatial surfaces use symmetric presence motion and preserve direct resize tracking", () => {
+test("Web spatial surfaces preserve symmetric motion and direct resize tracking without unmounting the canvas", () => {
   const sidebar = readText("apps/v8-agent-os-web/src/components/layout/Sidebar.tsx");
   const workbench = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
 
@@ -19,8 +19,15 @@ test("Web spatial surfaces use symmetric presence motion and preserve direct res
   assert.match(sidebar, /transformOrigin: "top left"/);
   assert.match(sidebar, /inert=\{isCollapsed\}/);
   assert.match(workbench, /data-workbench-motion-shell/);
+  assert.match(workbench, /aria-hidden=\{!shouldShow\}/);
+  assert.match(workbench, /inert=\{!shouldShow\}/);
+  assert.match(workbench, /!shouldShow && "pointer-events-none"/);
+  assert.doesNotMatch(workbench, /!shouldShow && "invisible pointer-events-none"/);
+  assert.match(workbench, /const animatedShellWidth = effectiveMode === "focus" \? "100%" : shouldShow \? panelWidth \+ 6 : 0/);
+  assert.match(workbench, /animate=\{\{\s*width: animatedShellWidth/);
   assert.match(workbench, /width: \{ duration: isResizing \? 0/);
-  assert.match(workbench, /exit=\{\{ width: shouldReduceMotion \? panelWidth \+ 6 : 0/);
+  assert.match(workbench, /const canvasTab = useMemo/);
+  assert.match(workbench, /document=\{canvasTab\.document\}/);
 });
 
 test("Phone drawers defer Modal unmount until their symmetric exit completes", () => {

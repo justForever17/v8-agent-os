@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import json
 import base64
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 import pytest
@@ -95,6 +97,152 @@ def test_decorate_skill_items_pins_find_skills_and_filters_low_install_items(mon
         "vercel-labs/skills@find-skills",
         "example/skills@useful",
     ]
+
+
+def test_skill_list_never_fans_out_to_detail_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service, "_installed_skill_ids", lambda: set())
+    monkeypatch.setattr(service, "_read_cache", lambda *_args, **_kwargs: (None, "miss"))
+    monkeypatch.setattr(
+        service,
+        "get_store_skill_detail",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("list reads must not fetch detail")),
+    )
+    items = service._dedupe_skill_items(
+        [{"source": "example/skills", "skillId": "useful", "name": "useful", "installs": 400}]
+    )
+
+    decorated = service._decorate_skill_items(items, limit=10)
+
+    assert decorated[0]["id"] == "example/skills@useful"
+    assert decorated[0]["description"] == ""
+
+
+def test_cache_write_keeps_previous_value_when_atomic_replace_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("V8_AGENT_OS_EXTENSIONS_STORE_CACHE_DIR", str(tmp_path))
+    service._write_cache("atomic", {"version": "old"})
+    observed_during_replace: list[object] = []
+
+    def fail_replace(source, destination) -> None:
+        assert source.parent == destination.parent == tmp_path
+        observed_during_replace.append(service._read_cache("atomic", allow_stale=True)[0])
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(service.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        service._write_cache("atomic", {"version": "new"})
+
+    assert observed_during_replace == [{"version": "old"}]
+    assert service._read_cache("atomic", allow_stale=True) == ({"version": "old"}, "cached")
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+@pytest.mark.parametrize(("refresh", "seed_cache"), [(False, False), (True, True)])
+def test_same_cache_key_coalesces_concurrent_loads(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    refresh: bool,
+    seed_cache: bool,
+) -> None:
+    monkeypatch.setenv("V8_AGENT_OS_EXTENSIONS_STORE_CACHE_DIR", str(tmp_path))
+    cache_name = f"single-flight-{refresh}"
+    if seed_cache:
+        service._write_cache(cache_name, {"value": "old"})
+
+    loader_started = threading.Event()
+    follower_started = threading.Event()
+    follower_waiting = threading.Event()
+    release_loader = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+
+    def loader() -> dict[str, str]:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        loader_started.set()
+        assert release_loader.wait(timeout=2)
+        return {"value": "new"}
+
+    def invoke(*, follower: bool = False):
+        if follower:
+            follower_started.set()
+        return service._load_cached_value(
+            cache_name,
+            refresh=refresh,
+            loader=loader,
+            accepts=lambda value: isinstance(value, dict),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        leader = executor.submit(invoke)
+        assert loader_started.wait(timeout=2)
+        with service._CACHE_FLIGHTS_LOCK:
+            flight = service._CACHE_FLIGHTS[cache_name]
+            original_event = flight.event
+
+            class ObservedEvent:
+                def wait(self) -> None:
+                    follower_waiting.set()
+                    original_event.wait()
+
+                def set(self) -> None:
+                    original_event.set()
+
+            flight.event = ObservedEvent()
+        follower = executor.submit(invoke, follower=True)
+        assert follower_started.wait(timeout=2)
+        assert follower_waiting.wait(timeout=2)
+        with calls_lock:
+            assert calls == 1
+        assert not follower.done()
+        release_loader.set()
+        results = [leader.result(timeout=2), follower.result(timeout=2)]
+
+    assert [result[0] for result in results] == [{"value": "new"}, {"value": "new"}]
+    assert [result[1] for result in results] == ["live", "live"]
+    assert all(result[2] is None for result in results)
+    assert calls == 1
+    assert service._read_cache(cache_name) == ({"value": "new"}, "cached")
+
+
+def test_different_cache_keys_load_concurrently(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("V8_AGENT_OS_EXTENSIONS_STORE_CACHE_DIR", str(tmp_path))
+    loaders_met = threading.Barrier(2)
+
+    def invoke(cache_name: str):
+        return service._load_cached_value(
+            cache_name,
+            refresh=True,
+            loader=lambda: {"value": loaders_met.wait(timeout=2)},
+            accepts=lambda value: isinstance(value, dict),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(invoke, ["key-a", "key-b"]))
+
+    assert [result[1] for result in results] == ["live", "live"]
+
+
+def test_cache_load_preserves_stale_fallback(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("V8_AGENT_OS_EXTENSIONS_STORE_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(service, "_CACHE_TTL_SECONDS", -1)
+    service._write_cache("stale", {"value": "previous"})
+    upstream_error = RuntimeError("upstream unavailable")
+
+    payload, freshness, fallback_error = service._load_cached_value(
+        "stale",
+        refresh=False,
+        loader=lambda: (_ for _ in ()).throw(upstream_error),
+        accepts=lambda value: isinstance(value, dict),
+    )
+
+    assert payload == {"value": "previous"}
+    assert freshness == "cached"
+    assert fallback_error is upstream_error
 
 
 def test_install_store_skill_compiles_controlled_global_command(monkeypatch: pytest.MonkeyPatch) -> None:

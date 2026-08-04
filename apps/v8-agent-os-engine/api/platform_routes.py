@@ -1850,12 +1850,13 @@ async def get_telemetry_overview(days: int = 7):
 
 
 @router.get("/research-runtime/ledger")
-async def get_research_runtime_ledger(scope: str = "global", includeArchived: bool = False):
+async def get_research_runtime_ledger(scope: str = "global", includeArchived: bool = False, limit: int = 30):
     try:
         return await asyncio.to_thread(
             research_ledger_summary,
             scope=scope or "global",
             include_archived=includeArchived,
+            limit=max(1, min(limit, 100)),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

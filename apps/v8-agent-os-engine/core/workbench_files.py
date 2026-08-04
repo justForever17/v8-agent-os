@@ -4,10 +4,14 @@ import codecs
 import hashlib
 import mimetypes
 import os
-from dataclasses import dataclass
+import stat
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import quote
 
 from core.workspace_authority import workspace_authority_service
@@ -20,6 +24,8 @@ DEFAULT_CATALOG_LIMIT = 80
 MAX_CATALOG_LIMIT = 200
 MAX_CATALOG_SCAN = 10_000
 MAX_CATALOG_DEPTH = 12
+CATALOG_CACHE_TTL_SECONDS = 3.0
+CATALOG_CACHE_LIMIT = 16
 
 _LANGUAGE_BY_SUFFIX = {
     ".c": "c",
@@ -168,6 +174,21 @@ class ResolvedWorkbenchFile:
         }
 
 
+@dataclass(frozen=True)
+class _CatalogPathSnapshot:
+    paths: tuple[str, ...]
+    scanned: int
+    truncated: bool
+    expires_at: float
+
+
+@dataclass
+class _CatalogSnapshotFlight:
+    ready: threading.Event = field(default_factory=threading.Event)
+    snapshot: _CatalogPathSnapshot | None = None
+    error: BaseException | None = None
+
+
 def _is_within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -243,6 +264,31 @@ def _is_catalog_ignored_directory(name: str) -> bool:
     )
 
 
+def _is_catalog_link(path: Path) -> bool:
+    try:
+        path_stat = path.lstat()
+    except OSError:
+        return True
+    if stat.S_ISLNK(path_stat.st_mode):
+        return True
+    reparse_point = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    file_attributes = int(getattr(path_stat, "st_file_attributes", 0) or 0)
+    return bool(reparse_point and file_attributes & reparse_point)
+
+
+def _path_has_catalog_link(path: Path, root: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if _is_catalog_link(current):
+            return True
+    return False
+
+
 def _catalog_kind(path: Path, mime_type: str, language: str) -> str:
     if language == "markdown":
         return "markdown"
@@ -264,6 +310,20 @@ def _catalog_kind(path: Path, mime_type: str, language: str) -> str:
 
 
 class WorkbenchFileService:
+    def __init__(
+        self,
+        *,
+        catalog_cache_ttl_seconds: float = CATALOG_CACHE_TTL_SECONDS,
+        catalog_cache_limit: int = CATALOG_CACHE_LIMIT,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._catalog_cache_ttl_seconds = max(0.0, float(catalog_cache_ttl_seconds))
+        self._catalog_cache_limit = max(1, int(catalog_cache_limit))
+        self._catalog_clock = clock or time.monotonic
+        self._catalog_cache: OrderedDict[str, _CatalogPathSnapshot] = OrderedDict()
+        self._catalog_flights: dict[str, _CatalogSnapshotFlight] = {}
+        self._catalog_cache_lock = threading.Lock()
+
     @staticmethod
     def _workspace_root(*, session_id: str) -> tuple[Path, Any]:
         normalized_session_id = str(session_id or "").strip()
@@ -313,6 +373,137 @@ class WorkbenchFileService:
             etag=etag,
         )
 
+    @staticmethod
+    def _scan_catalog_paths(root: Path) -> tuple[tuple[str, ...], int, bool]:
+        paths: list[str] = []
+        scanned = 0
+        for current_root, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current_root)
+            try:
+                if _path_has_catalog_link(current_path, root):
+                    directory_names[:] = []
+                    continue
+                resolved_current = current_path.resolve(strict=True)
+                if not _is_within(resolved_current, root) or not resolved_current.is_dir():
+                    directory_names[:] = []
+                    continue
+                relative_root = current_path.relative_to(root)
+            except (OSError, ValueError):
+                directory_names[:] = []
+                continue
+
+            if len(relative_root.parts) >= MAX_CATALOG_DEPTH:
+                directory_names[:] = []
+            else:
+                directory_names[:] = sorted(
+                    name
+                    for name in directory_names
+                    if not _is_catalog_ignored_directory(name)
+                    and not _is_catalog_link(current_path / name)
+                )
+
+            for file_name in sorted(file_names):
+                if scanned >= MAX_CATALOG_SCAN:
+                    break
+                scanned += 1
+                candidate = current_path / file_name
+                suffix = candidate.suffix.lower()
+                if suffix not in _CATALOG_SUFFIXES or _is_catalog_sensitive(candidate):
+                    continue
+                try:
+                    paths.append(candidate.relative_to(root).as_posix())
+                except ValueError:
+                    continue
+            if scanned >= MAX_CATALOG_SCAN:
+                break
+
+        paths.sort(key=lambda path: (path.casefold(), path))
+        return tuple(paths), scanned, scanned >= MAX_CATALOG_SCAN
+
+    def _catalog_snapshot(self, root: Path) -> _CatalogPathSnapshot:
+        cache_key = os.path.normcase(os.path.normpath(str(root)))
+        now = self._catalog_clock()
+        with self._catalog_cache_lock:
+            cached = self._catalog_cache.get(cache_key)
+            if cached is not None and cached.expires_at > now:
+                self._catalog_cache.move_to_end(cache_key)
+                return cached
+            if cached is not None:
+                self._catalog_cache.pop(cache_key, None)
+
+            flight = self._catalog_flights.get(cache_key)
+            leader = flight is None
+            if flight is None:
+                flight = _CatalogSnapshotFlight()
+                self._catalog_flights[cache_key] = flight
+
+        if not leader:
+            flight.ready.wait()
+            if flight.error is not None:
+                raise flight.error
+            if flight.snapshot is None:
+                raise RuntimeError("Workbench file catalog snapshot was not produced")
+            return flight.snapshot
+
+        try:
+            paths, scanned, truncated = self._scan_catalog_paths(root)
+            snapshot = _CatalogPathSnapshot(
+                paths=paths,
+                scanned=scanned,
+                truncated=truncated,
+                expires_at=self._catalog_clock() + self._catalog_cache_ttl_seconds,
+            )
+        except BaseException as exc:
+            with self._catalog_cache_lock:
+                self._catalog_flights.pop(cache_key, None)
+                flight.error = exc
+                flight.ready.set()
+            raise
+
+        with self._catalog_cache_lock:
+            self._catalog_cache[cache_key] = snapshot
+            self._catalog_cache.move_to_end(cache_key)
+            while len(self._catalog_cache) > self._catalog_cache_limit:
+                self._catalog_cache.popitem(last=False)
+            self._catalog_flights.pop(cache_key, None)
+            flight.snapshot = snapshot
+            flight.ready.set()
+        return snapshot
+
+    @staticmethod
+    def _catalog_item(*, root: Path, workspace_path: str, session_id: str) -> dict[str, Any] | None:
+        portable = PurePosixPath(workspace_path)
+        if portable.is_absolute() or not portable.parts or ".." in portable.parts:
+            return None
+        candidate = root.joinpath(*portable.parts)
+        suffix = candidate.suffix.lower()
+        if suffix not in _CATALOG_SUFFIXES or _is_catalog_sensitive(candidate):
+            return None
+        try:
+            if _path_has_catalog_link(candidate, root):
+                return None
+            resolved = candidate.resolve(strict=True)
+            if not _is_within(resolved, root) or not resolved.is_file():
+                return None
+            if _path_has_catalog_link(candidate, root):
+                return None
+            stat = resolved.stat()
+        except OSError:
+            return None
+        mime_type = _mime_type(resolved)
+        language = _LANGUAGE_BY_SUFFIX.get(suffix, "text" if mime_type.startswith("text/") else "")
+        return {
+            "sessionId": session_id,
+            "workspacePath": workspace_path,
+            "name": resolved.name,
+            "mimeType": mime_type,
+            "language": language or None,
+            "kind": _catalog_kind(resolved, mime_type, language),
+            "previewable": True,
+            "size": stat.st_size,
+            "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        }
+
     def list_files(
         self,
         *,
@@ -326,66 +517,25 @@ class WorkbenchFileService:
         normalized_query = str(query or "").strip().casefold()
         normalized_cursor = max(0, int(cursor or 0))
         normalized_limit = min(MAX_CATALOG_LIMIT, max(1, int(limit or DEFAULT_CATALOG_LIMIT)))
-
-        candidates: list[dict[str, Any]] = []
-        scanned = 0
-        for current_root, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
-            current_path = Path(current_root)
-            try:
-                relative_root = current_path.relative_to(root)
-            except ValueError:
-                directory_names[:] = []
-                continue
-            if len(relative_root.parts) >= MAX_CATALOG_DEPTH:
-                directory_names[:] = []
-            else:
-                directory_names[:] = sorted(
-                    name
-                    for name in directory_names
-                    if not _is_catalog_ignored_directory(name)
-                    and not (current_path / name).is_symlink()
-                )
-
-            for file_name in sorted(file_names):
-                if scanned >= MAX_CATALOG_SCAN:
-                    break
-                scanned += 1
-                candidate = current_path / file_name
-                suffix = candidate.suffix.lower()
-                if suffix not in _CATALOG_SUFFIXES or _is_catalog_sensitive(candidate) or candidate.is_symlink():
-                    continue
-                try:
-                    resolved = candidate.resolve(strict=True)
-                    if not _is_within(resolved, root) or not resolved.is_file():
-                        continue
-                    workspace_path = resolved.relative_to(root).as_posix()
-                    if normalized_query and normalized_query not in workspace_path.casefold():
-                        continue
-                    stat = resolved.stat()
-                except OSError:
-                    continue
-                mime_type = _mime_type(resolved)
-                language = _LANGUAGE_BY_SUFFIX.get(suffix, "text" if mime_type.startswith("text/") else "")
-                candidates.append(
-                    {
-                        "sessionId": normalized_session_id,
-                        "workspacePath": workspace_path,
-                        "name": resolved.name,
-                        "mimeType": mime_type,
-                        "language": language or None,
-                        "kind": _catalog_kind(resolved, mime_type, language),
-                        "previewable": True,
-                        "size": stat.st_size,
-                        "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                    }
-                )
-            if scanned >= MAX_CATALOG_SCAN:
-                break
-
-        candidates.sort(key=lambda item: (str(item["workspacePath"]).casefold(), str(item["workspacePath"])))
-        page = candidates[normalized_cursor : normalized_cursor + normalized_limit]
-        next_cursor = normalized_cursor + len(page)
-        has_more = next_cursor < len(candidates)
+        snapshot = self._catalog_snapshot(root)
+        matching_paths = (
+            snapshot.paths
+            if not normalized_query
+            else tuple(path for path in snapshot.paths if normalized_query in path.casefold())
+        )
+        next_cursor = min(normalized_cursor, len(matching_paths))
+        page: list[dict[str, Any]] = []
+        while next_cursor < len(matching_paths) and len(page) < normalized_limit:
+            workspace_path = matching_paths[next_cursor]
+            next_cursor += 1
+            item = self._catalog_item(
+                root=root,
+                workspace_path=workspace_path,
+                session_id=normalized_session_id,
+            )
+            if item is not None:
+                page.append(item)
+        has_more = next_cursor < len(matching_paths)
         return {
             "sessionId": normalized_session_id,
             "workspaceId": str(authority.workspace_id or "") or None,
@@ -393,8 +543,8 @@ class WorkbenchFileService:
             "items": page,
             "nextCursor": str(next_cursor) if has_more else None,
             "hasMore": has_more,
-            "scanned": scanned,
-            "truncated": scanned >= MAX_CATALOG_SCAN,
+            "scanned": snapshot.scanned,
+            "truncated": snapshot.truncated,
         }
 
     @staticmethod

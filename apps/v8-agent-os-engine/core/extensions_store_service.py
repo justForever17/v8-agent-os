@@ -5,13 +5,14 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import base64
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from uuid import uuid4
 
 import httpx
 
@@ -37,6 +38,19 @@ _BRACE_PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z][A-Za-z0-9_.-]*)\}")
 _SECRET_HINT_PATTERN = re.compile(r"(api[_-]?key|apikey|token|secret|password|authorization|bearer|pat|credential)", re.I)
 _SKILL_RUN_COMMAND_PATTERN = re.compile(r"^run\s+(?:an?\s+|the\s+)?[`'\"]?/[A-Za-z0-9_.-]+", re.I)
 _MCP_EXPLICIT_HEADER_PATTERN = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b\s+header\b", re.I)
+
+
+class _CacheFlight:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.payload: Any = None
+        self.freshness = ""
+        self.fallback_error: Exception | None = None
+        self.error: Exception | None = None
+
+
+_CACHE_FLIGHTS: dict[str, _CacheFlight] = {}
+_CACHE_FLIGHTS_LOCK = threading.Lock()
 
 
 class ExtensionStoreError(ValueError):
@@ -84,10 +98,72 @@ def _read_cache(name: str, *, allow_stale: bool = False) -> tuple[Any | None, st
 
 def _write_cache(name: str, payload: Any) -> None:
     path = _cache_path(name)
-    path.write_text(
-        json.dumps({"cachedAt": time.time(), "payload": payload}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    serialized = json.dumps({"cachedAt": time.time(), "payload": payload}, ensure_ascii=False, indent=2)
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _load_cached_value(
+    name: str,
+    *,
+    refresh: bool,
+    loader: Callable[[], Any],
+    accepts: Callable[[Any], bool],
+) -> tuple[Any, str, Exception | None]:
+    if not refresh:
+        cached, _ = _read_cache(name)
+        if accepts(cached):
+            return cached, "cached", None
+
+    with _CACHE_FLIGHTS_LOCK:
+        flight = _CACHE_FLIGHTS.get(name)
+        if flight is None:
+            flight = _CacheFlight()
+            _CACHE_FLIGHTS[name] = flight
+            is_leader = True
+        else:
+            is_leader = False
+
+    if not is_leader:
+        flight.event.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.payload, flight.freshness, flight.fallback_error
+
+    try:
+        if not refresh:
+            cached, _ = _read_cache(name)
+            if accepts(cached):
+                flight.payload = cached
+                flight.freshness = "cached"
+                return cached, "cached", None
+        try:
+            loaded = loader()
+            _write_cache(name, loaded)
+            flight.payload = loaded
+            flight.freshness = "live"
+            return loaded, "live", None
+        except Exception as exc:
+            cached, _ = _read_cache(name, allow_stale=True)
+            if accepts(cached):
+                flight.payload = cached
+                flight.freshness = "cached"
+                flight.fallback_error = exc
+                return cached, "cached", exc
+            flight.error = exc
+            raise
+    finally:
+        with _CACHE_FLIGHTS_LOCK:
+            if _CACHE_FLIGHTS.get(name) is flight:
+                _CACHE_FLIGHTS.pop(name, None)
+        flight.event.set()
 
 
 def _fetch_text(url: str) -> str:
@@ -315,22 +391,19 @@ def get_store_skill_detail(*, source: str, skill_id: str, refresh: bool = False)
     if not _SKILL_ID_PATTERN.fullmatch(normalized_skill_id):
         raise ExtensionStoreError("invalid_skill_id", "Skills 详情请求缺少合法的 skillId。")
     cache_name = _skill_detail_cache_name(normalized_source, normalized_skill_id)
-    if not refresh:
-        cached, _ = _read_cache(cache_name)
-        if isinstance(cached, dict):
-            return {**cached, "freshness": "cached"}
     try:
-        detail = parse_skill_download_response(
-            _fetch_json(_skill_download_url(normalized_source, normalized_skill_id)),
-            source=normalized_source,
-            skill_id=normalized_skill_id,
+        detail, freshness, _ = _load_cached_value(
+            cache_name,
+            refresh=refresh,
+            accepts=lambda value: isinstance(value, dict),
+            loader=lambda: parse_skill_download_response(
+                _fetch_json(_skill_download_url(normalized_source, normalized_skill_id)),
+                source=normalized_source,
+                skill_id=normalized_skill_id,
+            ),
         )
-        _write_cache(cache_name, detail)
-        return {**detail, "freshness": "live"}
+        return {**detail, "freshness": freshness}
     except Exception as exc:
-        cached, _ = _read_cache(cache_name, allow_stale=True)
-        if isinstance(cached, dict):
-            return {**cached, "freshness": "cached"}
         raise ExtensionStoreError(
             "skill_detail_unavailable",
             "Skill 详情暂时不可用，请稍后重试。",
@@ -455,24 +528,17 @@ def _enrich_skill_summary(item: dict[str, Any]) -> dict[str, Any]:
         next_item = dict(item)
         next_item["description"] = cached_description
         return next_item
-    try:
-        detail = get_store_skill_detail(source=source, skill_id=skill_id)
-    except Exception:
-        return item
-    next_item = dict(item)
-    next_item["description"] = _clean_skill_description(str(detail.get("description") or ""))
-    return next_item
+    # A list read must stay bounded to one store request. Detail is fetched by
+    # the explicit detail endpoint and becomes available to later list reads
+    # through this cache without creating an external N+1 fanout.
+    return item
 
 
 def _decorate_skill_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     installed = _installed_skill_ids()
     sorted_items = sorted([item for item in items if _is_trusted_skill_item(item)], key=_skill_sort_key)
     selected_items = [dict(item) for item in sorted_items[:limit]]
-    if selected_items:
-        with ThreadPoolExecutor(max_workers=min(8, len(selected_items))) as executor:
-            enriched_items = list(executor.map(_enrich_skill_summary, selected_items))
-    else:
-        enriched_items = []
+    enriched_items = [_enrich_skill_summary(item) for item in selected_items]
     decorated: list[dict[str, Any]] = []
     for next_item in enriched_items:
         next_item["installed"] = str(next_item.get("skillId") or "").lower() in installed
@@ -488,32 +554,21 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
         fetch_limit = min(max(safe_limit * 3, safe_limit), 100)
         params = urlencode({"q": normalized_query, "limit": str(fetch_limit)})
         cache_name = _cache_key("skills-search", params)
-        if not refresh:
-            cached, state = _read_cache(cache_name)
-            if cached is not None:
-                return {
-                    "provider": "skills.sh",
-                    "sourceUrl": _SKILLS_HOME_URL,
-                    "query": normalized_query,
-                    "freshness": "cached",
-                    "items": _decorate_skill_items(cached if isinstance(cached, list) else [], limit=safe_limit),
-                    "warnings": [],
-                }
         try:
-            items = parse_skills_search_response(_fetch_json(f"{_SKILLS_SEARCH_URL}?{params}"))
-            _write_cache(cache_name, items)
-            freshness = "live"
+            items, freshness, fallback_error = _load_cached_value(
+                cache_name,
+                refresh=refresh,
+                accepts=lambda value: isinstance(value, list),
+                loader=lambda: parse_skills_search_response(_fetch_json(f"{_SKILLS_SEARCH_URL}?{params}")),
+            )
         except Exception as exc:
-            cached, _ = _read_cache(cache_name, allow_stale=True)
-            if cached is None:
-                raise ExtensionStoreError(
-                    "skills_source_unavailable",
-                    "Skills 商店暂时不可用，请稍后重试。",
-                    status_code=502,
-                    details={"error": str(exc)},
-                ) from exc
-            items = cached if isinstance(cached, list) else []
-            freshness = "cached"
+            raise ExtensionStoreError(
+                "skills_source_unavailable",
+                "Skills 商店暂时不可用，请稍后重试。",
+                status_code=502,
+                details={"error": str(exc)},
+            ) from exc
+        if fallback_error is not None:
             warnings.append("当前展示上次可用的 Skills 结果。")
         return {
             "provider": "skills.sh",
@@ -525,34 +580,28 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
         }
 
     cache_name = "skills-home-popular-v2"
-    if not refresh:
-        cached, _ = _read_cache(cache_name)
-        if cached is not None:
-            return {
-                "provider": "skills.sh",
-                "sourceUrl": _SKILLS_HOME_URL,
-                "query": normalized_query,
-                "freshness": "cached",
-                "items": _decorate_skill_items(cached if isinstance(cached, list) else [], limit=safe_limit),
-                "warnings": [],
-            }
-    try:
-        items = parse_skills_home_items(_fetch_text(_SKILLS_HOME_URL))
-        if not items:
+
+    def load_popular_skills() -> list[dict[str, Any]]:
+        loaded_items = parse_skills_home_items(_fetch_text(_SKILLS_HOME_URL))
+        if not loaded_items:
             raise ValueError("skills.sh 首页没有解析到热门 skill 数据。")
-        _write_cache(cache_name, items)
-        freshness = "live"
+        return loaded_items
+
+    try:
+        items, freshness, fallback_error = _load_cached_value(
+            cache_name,
+            refresh=refresh,
+            accepts=lambda value: isinstance(value, list),
+            loader=load_popular_skills,
+        )
     except Exception as exc:
-        cached, _ = _read_cache(cache_name, allow_stale=True)
-        if cached is None:
-            raise ExtensionStoreError(
-                "skills_home_unavailable",
-                "Skills 商店暂时不可用，请稍后重试。",
-                status_code=502,
-                details={"error": str(exc)},
-            ) from exc
-        items = cached if isinstance(cached, list) else []
-        freshness = "cached"
+        raise ExtensionStoreError(
+            "skills_home_unavailable",
+            "Skills 商店暂时不可用，请稍后重试。",
+            status_code=502,
+            details={"error": str(exc)},
+        ) from exc
+    if fallback_error is not None:
         warnings.append("当前展示上次可用的 Skills 结果。")
     return {
         "provider": "skills.sh",
@@ -689,34 +738,28 @@ def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False) -
     safe_limit = _normalize_limit(limit)
     warnings: list[str] = []
     cache_name = "github-mcp-list-v2"
-    if not refresh:
-        cached, _ = _read_cache(cache_name)
-        if cached is not None:
-            return {
-                "provider": "github.com/mcp",
-                "sourceUrl": _GITHUB_MCP_URL,
-                "query": normalized_query,
-                "freshness": "cached",
-                "items": _decorate_mcp_cards(cached if isinstance(cached, list) else [], query=normalized_query, limit=safe_limit),
-                "warnings": [],
-            }
-    try:
-        cards = parse_github_mcp_cards(_fetch_text(_GITHUB_MCP_URL))
-        if not cards:
+
+    def load_mcp_cards() -> list[dict[str, Any]]:
+        loaded_cards = parse_github_mcp_cards(_fetch_text(_GITHUB_MCP_URL))
+        if not loaded_cards:
             raise ValueError("GitHub MCP Registry 页面没有解析到卡片数据。")
-        _write_cache(cache_name, cards)
-        freshness = "live"
+        return loaded_cards
+
+    try:
+        cards, freshness, fallback_error = _load_cached_value(
+            cache_name,
+            refresh=refresh,
+            accepts=lambda value: isinstance(value, list),
+            loader=load_mcp_cards,
+        )
     except Exception as exc:
-        cached, _ = _read_cache(cache_name, allow_stale=True)
-        if cached is None:
-            raise ExtensionStoreError(
-                "github_mcp_source_unavailable",
-                "MCP 商店暂时不可用，请稍后重试。",
-                status_code=502,
-                details={"error": str(exc)},
-            ) from exc
-        cards = cached if isinstance(cached, list) else []
-        freshness = "cached"
+        raise ExtensionStoreError(
+            "github_mcp_source_unavailable",
+            "MCP 商店暂时不可用，请稍后重试。",
+            status_code=502,
+            details={"error": str(exc)},
+        ) from exc
+    if fallback_error is not None:
         warnings.append("当前展示上次可用的 MCP 结果。")
     return {
         "provider": "github.com/mcp",
@@ -1206,12 +1249,9 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
         raise ExtensionStoreError("invalid_mcp_id", "MCP 商店详情请求缺少合法的 GitHub MCP id。")
     detail_url = f"{_GITHUB_MCP_URL}/{quote(normalized_id, safe='/._-')}"
     cache_name = _mcp_detail_cache_name(normalized_id)
-    warnings: list[str] = []
-    if not refresh:
-        cached, _ = _read_cache(cache_name)
-        if isinstance(cached, dict):
-            return {**cached, "freshness": "cached"}
-    try:
+
+    def load_mcp_detail() -> dict[str, Any]:
+        warnings: list[str] = []
         page_html = _fetch_text(detail_url)
         detail_text = parse_mcp_detail_page_text(page_html)
         default_server_name = _server_name_from_mcp_name(normalized_id)
@@ -1236,20 +1276,27 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
             "canInstall": bool(public_candidates),
             "warnings": warnings,
         }
-        _write_cache(cache_name, payload)
-        return {**payload, "freshness": "live"}
+        return payload
+
+    try:
+        payload, freshness, fallback_error = _load_cached_value(
+            cache_name,
+            refresh=refresh,
+            accepts=lambda value: isinstance(value, dict),
+            loader=load_mcp_detail,
+        )
     except Exception as exc:
-        cached, _ = _read_cache(cache_name, allow_stale=True)
-        if isinstance(cached, dict):
-            cached_warnings = list(cached.get("warnings") or [])
-            cached_warnings.append("当前展示上次可用的 MCP 详情。")
-            return {**cached, "freshness": "cached", "warnings": cached_warnings}
         raise ExtensionStoreError(
             "github_mcp_detail_unavailable",
             "MCP 详情暂时不可用，请稍后重试。",
             status_code=502,
             details={"error": str(exc)},
         ) from exc
+    if fallback_error is not None:
+        cached_warnings = list(payload.get("warnings") or [])
+        cached_warnings.append("当前展示上次可用的 MCP 详情。")
+        return {**payload, "freshness": "cached", "warnings": cached_warnings}
+    return {**payload, "freshness": freshness}
 
 
 def _deep_replace(value: Any, replacements: dict[str, str]) -> Any:

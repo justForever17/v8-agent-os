@@ -83,7 +83,13 @@ type CapabilityPlatform = {
 type ComputerUseAvailability = {
     platform?: string;
     backend?: string;
-    available?: boolean;
+    available?: boolean | null;
+    environmentProbe?: {
+        state?: "fresh" | "refreshing" | "failed" | string;
+        stale?: boolean;
+        refreshing?: boolean;
+        error?: string | null;
+    };
     details?: {
         capabilityTruth?: {
             currentPlatform?: string;
@@ -165,19 +171,30 @@ export default function DesktopAutomationPage() {
     useEffect(() => {
         if (availabilityRefreshKey === 0) return;
         let active = true;
-        const timer = window.setTimeout(() => {
-            void fetchAdminJson<ComputerUseAvailability>("/api/computer-use/availability", {
-                force: availabilityRefreshKey > 1,
-                ttlMs: 5_000,
+        let pollTimer: number | undefined;
+        const availabilityUrl = availabilityRefreshKey > 1
+            ? "/api/computer-use/availability?refresh=true"
+            : "/api/computer-use/availability";
+        const loadAvailability = (attempt = 0) => {
+            const requestUrl = attempt > 0 ? "/api/computer-use/availability" : availabilityUrl;
+            void fetchAdminJson<ComputerUseAvailability>(requestUrl, {
+                force: availabilityRefreshKey > 1 || attempt > 0,
+                ttlMs: 30_000,
             }).then((computerAvailability) => {
-                if (active) setAvailability(computerAvailability || null);
+                if (!active) return;
+                setAvailability(computerAvailability || null);
+                if (computerAvailability?.environmentProbe?.refreshing && attempt < 20) {
+                    pollTimer = window.setTimeout(() => loadAvailability(attempt + 1), 2_000);
+                }
             }).catch(() => {
                 if (active) setAvailability(null);
             });
-        }, 1_000);
+        };
+        const timer = window.setTimeout(loadAvailability, 1_000);
         return () => {
             active = false;
             window.clearTimeout(timer);
+            if (pollTimer !== undefined) window.clearTimeout(pollTimer);
         };
     }, [availabilityRefreshKey]);
 
@@ -200,6 +217,31 @@ export default function DesktopAutomationPage() {
         [capabilityTruth]
     );
     const builtInPlaybooks = availability?.details?.builtInPlaybookSeeds || [];
+    const availabilityNotice = useMemo(() => {
+        const state = availability?.environmentProbe?.state || (availability ? "fresh" : "refreshing");
+        const stale = Boolean(availability?.environmentProbe?.stale);
+        if (state === "failed") {
+            return {
+                title: "app.admin.dashboard.desktop.automation.availability.failedTitle",
+                description: stale
+                    ? "app.admin.dashboard.desktop.automation.availability.failedStaleDescription"
+                    : "app.admin.dashboard.desktop.automation.availability.failedUnknownDescription",
+                tone: "warning" as const,
+            };
+        }
+        if (state === "refreshing") {
+            return {
+                title: stale
+                    ? "app.admin.dashboard.desktop.automation.availability.refreshingStaleTitle"
+                    : "app.admin.dashboard.desktop.automation.availability.refreshingTitle",
+                description: stale
+                    ? "app.admin.dashboard.desktop.automation.availability.refreshingStaleDescription"
+                    : "app.admin.dashboard.desktop.automation.availability.refreshingDescription",
+                tone: "info" as const,
+            };
+        }
+        return null;
+    }, [availability]);
     const statusLabel = (status?: string) => {
         const normalized = String(status || "unknown");
         return t(`app.admin.dashboard.desktop.automation.capabilityTruth.status.${normalized}`);
@@ -294,6 +336,14 @@ export default function DesktopAutomationPage() {
                 title={"app.admin.dashboard.desktop.automation.page.k528406eb"}
                 tone="info"
             />
+
+            {availabilityNotice ? (
+                <StatusNotice
+                    title={availabilityNotice.title}
+                    description={availabilityNotice.description}
+                    tone={availabilityNotice.tone}
+                />
+            ) : null}
 
             {featurePackMissing ? (
                 <StatusNotice

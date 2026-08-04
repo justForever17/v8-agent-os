@@ -102,7 +102,7 @@ async function runPreview(args) {
 
 async function commandStop(args) {
   const selected = hasFlag(args, "--only") ? parseComponentSelection(args) : ALL_COMPONENTS;
-  const results = stopComponents(selected);
+  const results = await stopComponents(selected);
   if (hasFlag(args, "--json")) printJson(results);
   else results.forEach((item) => console.log(`${item.id}: ${item.status}${item.reason ? ` (${item.reason})` : ""}`));
 }
@@ -217,7 +217,7 @@ function commandOpen(args) {
   const url = target === "web" ? `http://127.0.0.1:${DEFAULT_PORTS.web}/chat` : `http://127.0.0.1:${DEFAULT_PORTS.admin}/admin`;
   const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
   const commandArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  spawn(command, commandArgs, { detached: true, stdio: "ignore" }).unref();
+  spawn(command, commandArgs, { detached: true, stdio: "ignore", windowsHide: true }).unref();
   console.log(url);
 }
 

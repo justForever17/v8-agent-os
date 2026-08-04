@@ -50,6 +50,7 @@ interface CyberPetProps {
   toggleWebcam: () => Promise<void>;
   webcamStatus?: string;
   voiceStatus?: string;
+  interactionStatus?: string;
   onReleaseCamera?: () => void;
   onTestSpeech?: (text?: string) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -312,6 +313,7 @@ export default function CyberPet({
   toggleWebcam,
   webcamStatus,
   voiceStatus,
+  interactionStatus,
   onReleaseCamera,
   onTestSpeech,
   videoRef,
@@ -1426,6 +1428,11 @@ Always output your response as valid JSON matching the following schema structur
                 <div className="truncate text-[12px] font-medium text-slate-100" title={v8ActiveConversation?.title || ''}>
                   {v8ActiveConversation ? compactMenuText(v8ActiveConversation.title || v8ActiveConversation.id, '未命名会话', 26) : '未选择会话'}
                 </div>
+                {interactionStatus ? (
+                  <div className="mt-1 truncate text-[10px] text-slate-400" aria-live="polite">
+                    {interactionStatus}
+                  </div>
+                ) : null}
               </div>
 
               {v8RecentRunningConversation && String(v8RecentRunningConversation.id) !== String(v8ActiveConversation?.id || '') && (

@@ -6,7 +6,6 @@ import { Crown, Bot } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import SupervisorPage from "../supervisor/page";
 import SubagentsPage from "../subagents/page";
-import { prefetchAdminRouteData } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 
 export default function ChatRuntimePage() {
@@ -92,12 +91,7 @@ export default function ChatRuntimePage() {
                     </button>
                     <button
                         type="button"
-                        onPointerEnter={() => void prefetchAdminRouteData("/admin/subagents")}
-                        onFocus={() => void prefetchAdminRouteData("/admin/subagents")}
-                        onClick={() => {
-                            void prefetchAdminRouteData("/admin/subagents");
-                            setCurrentTab("subagents");
-                        }}
+                        onClick={() => setCurrentTab("subagents")}
                         className={cn(
                             "relative z-10 px-5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors duration-300",
                             currentTab === "subagents"

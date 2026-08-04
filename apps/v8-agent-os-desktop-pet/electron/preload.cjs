@@ -1,7 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const rawTransport = ipcRenderer.sendSync('v8-desktop:get-transport');
+const transport = rawTransport
+  ? Object.freeze({
+      engineWebSocketUrl: String(rawTransport.engineWebSocketUrl || ''),
+    })
+  : null;
+
 contextBridge.exposeInMainWorld('v8CyberCore', {
   platform: process.platform,
+  transport,
   openAdmin: () => ipcRenderer.invoke('v8-desktop:open-admin'),
   reportStatus: (payload) => ipcRenderer.invoke('v8-desktop:report-status', payload),
   openSession: (sessionId) => ipcRenderer.invoke('v8-desktop:open-session', sessionId),

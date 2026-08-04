@@ -109,11 +109,16 @@ test("Reasoning effort is persisted per model without growing the fixed model ca
   const modelCard = readText("src/components/models/ModelCardV2.tsx");
   const projection = readText("src/lib/models/model-admin.ts");
   const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const sharedControl = readText("../../packages/product-ui/src/ReasoningEffortControl.tsx");
 
   assert.match(modelCard, /h-\[128px\]/);
   assert.match(modelCard, /reasoningEffortControl/);
-  assert.match(modelCard, /type="range"/);
-  assert.match(modelCard, /aria-valuetext=/);
+  assert.match(modelCard, /import \{ ReasoningEffortControl \} from "@v8\/product-ui"/);
+  assert.match(modelCard, /<ReasoningEffortControl/);
+  assert.match(modelCard, /variant="track"/);
+  assert.match(modelCard, /onValueCommit=\{commitThinkingLevel\}/);
+  assert.match(sharedControl, /role="slider"/);
+  assert.match(sharedControl, /aria-valuetext=\{currentLabel\}/);
   assert.match(modelCard, /onSetReasoningLevel/);
   assert.match(projection, /payload\.reasoningEffortControl = data\.reasoningEffortControl/);
   assert.match(form, /handleSetReasoningLevel/);

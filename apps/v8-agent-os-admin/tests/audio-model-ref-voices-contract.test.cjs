@@ -132,10 +132,12 @@ test("Edge TTS remains the canonical no-key default and is not routed through vo
   assert.match(hub, /setTtsValue\("edge_tts", "voice", value\)/);
 });
 
-test("The audio surface does not expose the Edge fallback before canonical config loads", () => {
+test("The audio surface only exposes loaded or cached canonical audio config", () => {
   const hub = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
 
-  assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(false\)/);
+  assert.match(hub, /const cachedBootstrap = peekAdminJsonCache<ModelHubBootstrapPayload>\(MODEL_HUB_BOOTSTRAP_URL\)/);
+  assert.match(hub, /const \[hasLoadedAudioConfig, setHasLoadedAudioConfig\] = useState\(\(\) => Boolean\(cachedBootstrap\)\)/);
+  assert.match(hub, /const \[audioConfig, setAudioConfig\] = useState<AudioRuntimeConfig>\(\(\) => mergeAudioConfig\(cachedBootstrap\?\.audioConfig \|\| null\)\)/);
   assert.match(hub, /setAudioConfig\(mergeAudioConfig\(payload\.audioConfig \|\| null\)\);\s*setHasLoadedAudioConfig\(true\)/);
   assert.match(hub, /hasLoadedAudioConfig \? systemAudioConfigCard/);
   assert.match(hub, /audio\.loadingConfig/);

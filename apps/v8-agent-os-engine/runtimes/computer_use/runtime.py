@@ -12654,27 +12654,56 @@ class ComputerUseRuntime:
         return self.playbook_executor_registry.execute(context)
 
     def availability(self) -> Dict[str, Any]:
-        vision_state = self._vision_fallback_state()
-        self.browser_automation.configure(self._computer_use_config())
-        capability_matrix = self._runtime_capability_matrix()
-        browser_lane = self.browser_automation.availability_summary()
+        probe_started = time.perf_counter()
+        probe_durations_ms: Dict[str, float] = {}
+
+        def timed_probe(name: str, operation):
+            started = time.perf_counter()
+            try:
+                return operation()
+            finally:
+                probe_durations_ms[name] = round((time.perf_counter() - started) * 1000, 2)
+
+        vision_state = timed_probe("visionFallback", self._vision_fallback_state)
+        computer_use_config = timed_probe("configuration", self._computer_use_config)
+        self.browser_automation.configure(computer_use_config)
+        capability_matrix = timed_probe("capabilityMatrix", self._runtime_capability_matrix)
+        browser_lane = timed_probe("browserLane", self.browser_automation.availability_summary)
         try:
-            app_catalog_summary = self.app_catalog.summary(include_running=True)
+            app_catalog_summary = timed_probe(
+                "appCatalog",
+                lambda: self.app_catalog.summary(include_running=True),
+            )
         except Exception:
             app_catalog_summary = {}
         capability_truth = dict(capability_matrix.get("truth") or {})
-        capability_truth_payload = self._capability_truth_payload(
-            capability_matrix=capability_matrix,
-            browser_lane=browser_lane,
-            app_catalog_summary=app_catalog_summary,
+        capability_truth_payload = timed_probe(
+            "capabilityTruth",
+            lambda: self._capability_truth_payload(
+                capability_matrix=capability_matrix,
+                browser_lane=browser_lane,
+                app_catalog_summary=app_catalog_summary,
+            ),
         )
-        resolution_payload = self._resolution_policy_payload()
+        resolution_payload = timed_probe("resolutionPolicy", self._resolution_policy_payload)
         current_matrix = dict(capability_matrix.get("current") or {})
         capabilities = dict(current_matrix.get("facets") or {})
         capabilities["execution"] = {
             **dict(current_matrix.get("execution") or {}),
             **self._platform_route_policy_summary(capability_truth=capability_truth),
         }
+        visual_actor = timed_probe("visualActor", self._visual_actor_descriptor)
+        browser_profile = timed_probe(
+            "browserProfilePersistence",
+            lambda: self._browser_profile_persistence_payload(browser_lane),
+        )
+        platform_probe_matrix = timed_probe(
+            "platformProbeMatrix",
+            lambda: self._platform_probe_matrix_payload(browser_lane=browser_lane),
+        )
+        app_adapter = timed_probe("appAdapter", self._app_adapter_summary)
+        selector_stats = timed_probe("selectorStats", self.driver.selector_metrics)
+        probe_durations_ms["total"] = round((time.perf_counter() - probe_started) * 1000, 2)
         return {
             "platform": self.driver.platform,
             "backend": self.driver.backend,
@@ -12700,18 +12729,19 @@ class ComputerUseRuntime:
                 "resourceCleanupPolicy": dict(resolution_payload.get("resourceCleanupPolicy") or {}),
                 "experienceAssets": dict(capability_truth_payload.get("experienceAssets") or {}),
                 "builtInPlaybookSeeds": list(capability_truth_payload.get("builtInPlaybookSeeds") or []),
-                "visualActor": self._visual_actor_descriptor(),
+                "visualActor": visual_actor,
                 "candidateBoardSources": candidate_board_source_catalog(),
-                "browserProfilePersistence": self._browser_profile_persistence_payload(browser_lane),
-                "platformProbeMatrix": self._platform_probe_matrix_payload(browser_lane=browser_lane),
+                "browserProfilePersistence": browser_profile,
+                "platformProbeMatrix": platform_probe_matrix,
                 "routePolicy": capabilities.get("execution"),
                 "visionFallback": vision_state,
                 "offlineVisualBenchmark": self._offline_visual_benchmark_descriptor(),
                 "onlineVisualLocator": self._online_visual_locator_descriptor(),
                 "browserLane": browser_lane,
-                "appAdapter": self._app_adapter_summary(),
-                "selectorStats": self.driver.selector_metrics(),
+                "appAdapter": app_adapter,
+                "selectorStats": selector_stats,
                 "appCatalog": app_catalog_summary,
+                "probeDurationsMs": probe_durations_ms,
             },
         }
 

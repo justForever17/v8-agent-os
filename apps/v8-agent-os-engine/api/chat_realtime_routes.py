@@ -4,7 +4,6 @@ import logging
 import mimetypes
 import re
 import shutil
-import subprocess
 import threading
 import uuid
 import time
@@ -18,6 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from .models import ChatMessage, ChatRequest
 from core.database import db
 from core.json_safe import to_jsonable
+from core.process_launch import run_windowless
 from core.scoped_workspace_resource import build_workspace_resource_ref
 from core.workspace_capability import build_workspace_binding, ensure_workspace_side_effect_allowed
 from core.workspace_state_digest import mark_workspace_state_stale
@@ -699,7 +699,7 @@ def _transcode_voice_upload_to_mp3(source: Path, target: Path) -> None:
         raise RuntimeError("本机未找到 ffmpeg，无法把语音规范化为 MP3。")
     partial = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.partial.mp3")
     try:
-        result = subprocess.run(
+        result = run_windowless(
             [
                 ffmpeg,
                 "-hide_banner",

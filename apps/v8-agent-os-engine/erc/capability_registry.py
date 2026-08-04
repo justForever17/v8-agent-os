@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
 from core.system_tools.baseline import is_baseline_system_tool_name
-from core.runtime_tool_access import runtime_kind_available, runtime_tool_available
+from core.runtime_tool_access import runtime_kind_available, runtime_kind_for_tool_name, runtime_tool_available
 
 _SNAPSHOT_RUNTIME_ORDER = (
     "chat",
@@ -409,7 +409,12 @@ class CapabilityRegistry:
                 return True
         return False
 
-    def filter_direct_tools(self, tools: Iterable[Any]) -> list[Any]:
+    def filter_direct_tools(
+        self,
+        tools: Iterable[Any],
+        *,
+        runtime_availability: dict[str, bool] | None = None,
+    ) -> list[Any]:
         filtered: list[Any] = []
         descriptors = tuple(self.list())
         for tool_ref in tools:
@@ -417,7 +422,13 @@ class CapabilityRegistry:
             if not tool_name:
                 filtered.append(tool_ref)
                 continue
-            if not runtime_tool_available(tool_name):
+            runtime_kind = runtime_kind_for_tool_name(tool_name)
+            tool_available = (
+                runtime_availability.get(runtime_kind, True)
+                if runtime_availability is not None
+                else runtime_tool_available(tool_name)
+            )
+            if not tool_available:
                 continue
             if is_baseline_system_tool_name(tool_name):
                 filtered.append(tool_ref)
@@ -486,25 +497,35 @@ class CapabilityRegistry:
         return suggestions[: max(1, limit)]
 
     def snapshot(self, *, query: str | None = None, recommendation_limit: int = 5) -> Dict[str, Any]:
-        from core.runtime.startup_profile import build_installation_snapshot, runtime_family_installed
+        from core.runtime.startup_profile import build_installation_snapshot
         from core.storage import storage
 
         recommendations = self.recommend(query, limit=recommendation_limit) if query is not None else []
         descriptors = self._snapshot_descriptors()
         installation = build_installation_snapshot()
+        installed_runtime_families = {
+            str(item)
+            for item in list(installation.get("installedRuntimeFamilies") or [])
+        }
+        config_enabled_by_kind = {"network_supervisor": True, "engineering": True}
+        try:
+            config_enabled_by_kind["network_supervisor"] = bool(
+                storage.get_network_supervisor_runtime_config().get("enabled", False)
+            )
+        except Exception:
+            pass
+        try:
+            config_enabled_by_kind["engineering"] = bool(
+                storage.get_engineering_lane_config().get("enabled", True)
+            )
+        except Exception:
+            pass
 
         def _config_enabled(kind: str) -> bool:
-            try:
-                if kind == "network_supervisor":
-                    return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
-                if kind == "engineering":
-                    return bool(storage.get_engineering_lane_config().get("enabled", True))
-            except Exception:
-                return True
-            return True
+            return config_enabled_by_kind.get(kind, True)
 
         def _availability_reason(kind: str) -> str:
-            if not runtime_family_installed(kind):
+            if kind not in installed_runtime_families:
                 return "not_installed"
             if not _config_enabled(kind):
                 return "disabled_by_config"
@@ -512,21 +533,25 @@ class CapabilityRegistry:
                 return "disabled_by_policy"
             return "installed"
 
+        runtimes: list[dict[str, Any]] = []
+        for descriptor, registered in descriptors:
+            availability_reason = _availability_reason(descriptor.kind)
+            runtimes.append(
+                {
+                    **descriptor.as_dict(),
+                    "policy": self.get_policy(descriptor.kind).as_dict(),
+                    "registered": bool(registered),
+                    "availability": availability_reason,
+                    "availabilityReason": availability_reason,
+                }
+            )
+
         return {
             "count": len(descriptors),
             "query": str(query or "") if query is not None else None,
             **installation,
             "recommendations": [item.as_dict() for item in recommendations],
-            "runtimes": [
-                {
-                    **descriptor.as_dict(),
-                    "policy": self.get_policy(descriptor.kind).as_dict(),
-                    "registered": bool(registered),
-                    "availability": _availability_reason(descriptor.kind),
-                    "availabilityReason": _availability_reason(descriptor.kind),
-                }
-                for descriptor, registered in descriptors
-            ],
+            "runtimes": runtimes,
         }
 
     def build_supervisor_summary(

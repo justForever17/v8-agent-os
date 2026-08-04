@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import builtins
+import copy
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from runtimes.computer_use.browser_automation import BrowserAutomationProvider
+from runtimes.computer_use.app_catalog import ComputerUseAppCatalog
 from runtimes.computer_use.capability_truth import build_capability_truth
 from runtimes.computer_use.coordinate_anchor import resolve_absolute_click_point, spatial_anchor_compatibility
 from runtimes.computer_use.playbooks import built_in_playbook_seeds
@@ -112,6 +117,7 @@ def test_browser_availability_uses_short_cached_health_probe(monkeypatch):
     provider._node_path = None
     observed_timeouts = []
     monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(provider, "_is_loopback_port_open", lambda _port: True)
 
     def unavailable_health(*, timeout_seconds=None):
         observed_timeouts.append(timeout_seconds)
@@ -126,6 +132,116 @@ def test_browser_availability_uses_short_cached_health_probe(monkeypatch):
     assert first["helperHealth"]["status"] == "unreachable"
     assert second["helperHealth"] == first["helperHealth"]
     assert observed_timeouts == [0.25]
+
+
+def test_browser_availability_skips_http_health_when_proxy_port_is_closed(monkeypatch):
+    provider = BrowserAutomationProvider()
+    provider.configure({"browserLane": {"enabled": True}})
+    provider._node_path = None
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(provider, "_is_loopback_port_open", lambda _port: False)
+    monkeypatch.setattr(
+        provider,
+        "_health",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("closed ports must not use an HTTP timeout")),
+    )
+
+    summary = provider.availability_summary()
+
+    assert summary["helperHealth"] == {
+        "connected": False,
+        "status": "unreachable",
+        "errorClass": "ConnectionError",
+    }
+
+
+def test_platform_capability_inputs_rechecks_current_driver_truth(monkeypatch):
+    calls = 0
+
+    class CurrentDriver:
+        platform = "windows"
+
+        def capability_summary(self):
+            nonlocal calls
+            calls += 1
+            return {"platform": "windows", "revision": calls}
+
+    class PortableDriver:
+        def __init__(self, platform: str):
+            self.platform = platform
+
+        def capability_summary(self):
+            return {"platform": self.platform}
+
+    runtime = ComputerUseRuntime.__new__(ComputerUseRuntime)
+    runtime.driver = CurrentDriver()
+    real_import = builtins.__import__
+
+    def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "runtimes.computer_use.drivers.mac_ax":
+            return SimpleNamespace(MacAXUIDriver=lambda: PortableDriver("macos"))
+        if name == "runtimes.computer_use.drivers.linux_atspi":
+            return SimpleNamespace(LinuxATSPIADriver=lambda: PortableDriver("linux"))
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", controlled_import)
+
+    first = runtime._platform_capability_inputs()
+    second = runtime._platform_capability_inputs()
+
+    assert first["windows"]["revision"] == 1
+    assert second["windows"]["revision"] == 2
+    assert calls == 2
+
+
+def test_running_app_catalog_does_not_rewrite_unchanged_snapshot(monkeypatch):
+    catalog = ComputerUseAppCatalog.__new__(ComputerUseAppCatalog)
+    catalog.static_ttl_seconds = 300
+    catalog.running_ttl_seconds = 5
+    catalog._static_entries = {"demo": {"appId": "demo", "isRunning": False}}
+    catalog._runtime_entries = copy.deepcopy(catalog._static_entries)
+    catalog._last_static_refresh_ts = time.time()
+    catalog._last_running_refresh_ts = 0.0
+    catalog._refresh_lock = threading.RLock()
+    catalog.platform_providers = [SimpleNamespace(discover_running_apps=lambda: [])]
+    saves: list[bool] = []
+    monkeypatch.setattr(catalog, "_save_cache", lambda: saves.append(True))
+
+    catalog._ensure_running(force=False)
+
+    assert saves == []
+
+
+def test_running_app_catalog_coalesces_concurrent_refreshes(monkeypatch):
+    catalog = ComputerUseAppCatalog.__new__(ComputerUseAppCatalog)
+    catalog.static_ttl_seconds = 300
+    catalog.running_ttl_seconds = 5
+    catalog._static_entries = {"demo": {"appId": "demo", "isRunning": False}}
+    catalog._runtime_entries = copy.deepcopy(catalog._static_entries)
+    catalog._last_static_refresh_ts = time.time()
+    catalog._last_running_refresh_ts = 0.0
+    catalog._refresh_lock = threading.RLock()
+    catalog.app_profiles = SimpleNamespace(get=lambda _profile_id: None, infer=lambda **_kwargs: None)
+    catalog.app_adapters = None
+    calls = 0
+
+    def discover_running_apps():
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return [{"appId": "demo", "profileId": "demo", "runningWindows": [{"handle": 1}]}]
+
+    catalog.platform_providers = [SimpleNamespace(discover_running_apps=discover_running_apps)]
+    monkeypatch.setattr(catalog, "_save_cache", lambda: None)
+    workers = [threading.Thread(target=catalog._ensure_running, kwargs={"force": False}) for _ in range(2)]
+
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=1)
+
+    assert calls == 1
+    assert catalog._runtime_entries["demo"]["isRunning"] is True
 
 
 def test_capability_truth_flags_missing_playwright_separately():

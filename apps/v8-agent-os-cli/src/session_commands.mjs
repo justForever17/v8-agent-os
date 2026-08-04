@@ -92,7 +92,7 @@ function renderTurnMessages(messages) {
 function openUrl(url) {
   const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
   const commandArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  spawn(command, commandArgs, { detached: true, stdio: "ignore" }).unref();
+  spawn(command, commandArgs, { detached: true, stdio: "ignore", windowsHide: true }).unref();
 }
 
 export async function listSessions(args) {

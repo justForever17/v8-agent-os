@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { V8DesktopClientAdapter } from '../src/lib/v8DesktopClient';
+import { fetchWithTimeout, V8DesktopClientAdapter } from '../src/lib/v8DesktopClient';
 
 function installLocalStorage() {
   const values = new Map<string, string>();
@@ -116,6 +116,26 @@ test('ensureLocalSession reissues a trusted local session after a non-auth refre
     assert.equal(session.accessToken, 'access-4');
     assert.equal(client.getActiveConversationId(), 'session-live-preserved');
     assert.equal(calls.filter((url) => url.endsWith('/auth/local-session')).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('bounded requests expose a stable timeout and do not poison the next request', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout('/api/v8/slow', {}, 15),
+      /V8OS 本机服务响应超时/,
+    );
+    globalThis.fetch = (async () => jsonResponse(200, { ok: true })) as typeof fetch;
+    const response = await fetchWithTimeout('/api/v8/healthy', {}, 50);
+    assert.equal(response.ok, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

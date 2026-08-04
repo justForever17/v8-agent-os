@@ -8,10 +8,34 @@ import { createServer as createViteServer } from "vite";
 import { WebSocket, WebSocketServer } from "ws";
 
 const app = express();
-const PORT = 3000;
+const configuredPort = process.env.V8_DESKTOP_PORT;
+const PORT = configuredPort === undefined ? 0 : Number(configuredPort);
+const SERVER_INSTANCE_ID = String(process.env.V8_DESKTOP_SERVER_INSTANCE_ID || crypto.randomUUID()).trim();
+const DEFAULT_PROXY_TIMEOUT_MS = 8_000;
+const MEDIA_PROXY_TIMEOUT_MS = 120_000;
+let boundPort = 0;
+
+function desktopContentSecurityPolicy(port: number) {
+  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:${port}; img-src 'self' data: blob: http: https:; media-src 'self' data: blob: http: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'`;
+}
+
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
+  throw new Error(`Invalid V8_DESKTOP_PORT: ${configuredPort}`);
+}
 
 // Increase request size limit to handle webcam frame base64 uploads
 app.use(express.json({ limit: "15mb" }));
+
+app.get("/api/pet/health", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "v8-agent-os-desktop-pet",
+    version: 1,
+    instanceId: SERVER_INSTANCE_ID,
+    pid: process.pid,
+    port: boundPort,
+  });
+});
 
 function normalizeAdminBaseUrl(input: unknown) {
   const raw = String(input || process.env.V8_ADMIN_BASE_URL || "http://127.0.0.1:9528").trim();
@@ -25,6 +49,12 @@ function stripProxyOnlyQuery(originalUrl: string) {
   params.delete("adminBaseUrl");
   const suffix = params.toString();
   return suffix ? `${targetPath}?${suffix}` : targetPath;
+}
+
+function proxyTimeoutForPath(targetPath: string) {
+  return /\/api\/client\/(?:upload|audio\/(?:tts|stt))(?:[/?]|$)/.test(targetPath)
+    ? MEDIA_PROXY_TIMEOUT_MS
+    : DEFAULT_PROXY_TIMEOUT_MS;
 }
 
 type V8BridgeConfig = {
@@ -75,7 +105,8 @@ function buildEngineWsTicket(subject = "cybercore-desktop") {
 // Renderer code talks to same-origin /api/v8/*; this server forwards to Admin /api/client/*.
 app.all("/api/v8/*", async (req, res) => {
   const adminBaseUrl = normalizeAdminBaseUrl(req.header("x-v8-admin-base") || req.query.adminBaseUrl);
-  const targetUrl = `${adminBaseUrl}${stripProxyOnlyQuery(req.originalUrl)}`;
+  const targetPath = stripProxyOnlyQuery(req.originalUrl);
+  const targetUrl = `${adminBaseUrl}${targetPath}`;
   const headers = new Headers();
 
   for (const [key, value] of Object.entries(req.headers)) {
@@ -105,8 +136,31 @@ app.all("/api/v8/*", async (req, res) => {
     }
   }
 
+  const controller = new AbortController();
+  let timeoutTriggered = false;
+  const timeout = setTimeout(() => {
+    timeoutTriggered = true;
+    controller.abort();
+  }, proxyTimeoutForPath(targetPath));
+  let timeoutCleared = false;
+  const clearUpstreamTimeout = () => {
+    if (timeoutCleared) return;
+    timeoutCleared = true;
+    clearTimeout(timeout);
+  };
+  const streamingResponse = /\/stream(?:[?]|$)/.test(targetPath);
+  let responseCompleted = false;
+  let downstreamClosed = false;
+  const abortUpstreamWhenClientLeaves = () => {
+    if (responseCompleted) return;
+    downstreamClosed = true;
+    if (!controller.signal.aborted) controller.abort();
+  };
+  res.once("close", abortUpstreamWhenClientLeaves);
+  init.signal = controller.signal;
   try {
     const upstream = await fetch(targetUrl, init);
+    if (streamingResponse) clearUpstreamTimeout();
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => {
       if (["set-cookie", "content-encoding", "content-length"].includes(key.toLowerCase())) {
@@ -115,6 +169,8 @@ app.all("/api/v8/*", async (req, res) => {
       res.setHeader(key, value);
     });
     if (!upstream.body) {
+      clearUpstreamTimeout();
+      responseCompleted = true;
       res.end();
       return;
     }
@@ -125,22 +181,55 @@ app.all("/api/v8/*", async (req, res) => {
         if (done) break;
         res.write(Buffer.from(value));
       }
+      clearUpstreamTimeout();
+      responseCompleted = true;
       res.end();
     } finally {
       reader.releaseLock();
     }
   } catch (error: any) {
+    clearUpstreamTimeout();
+    if (downstreamClosed) return;
     console.error("[CyberCore V8 Proxy] request failed:", error);
-    res.status(502).json({
-      error: "v8_admin_proxy_failed",
-      message: error?.message || String(error),
-      adminBaseUrl,
+    if (res.headersSent) {
+      res.destroy(error);
+      return;
+    }
+    res.status(timeoutTriggered ? 504 : 502).json({
+      error: timeoutTriggered ? "v8_admin_proxy_timeout" : "v8_admin_proxy_failed",
+      message: timeoutTriggered ? "V8OS 本机服务响应超时" : "V8OS 本机服务请求失败",
     });
+  } finally {
+    clearUpstreamTimeout();
+    res.removeListener("close", abortUpstreamWhenClientLeaves);
   }
 });
 
 const httpServer = createServer(app);
 const engineRealtimeWss = new WebSocketServer({ noServer: true });
+
+let parentDisconnectShutdownStarted = false;
+function shutdownAfterParentDisconnect() {
+  if (parentDisconnectShutdownStarted) return;
+  parentDisconnectShutdownStarted = true;
+  for (const client of engineRealtimeWss.clients) client.terminate();
+  engineRealtimeWss.close();
+  const forceExit = setTimeout(() => process.exit(0), 2_000);
+  forceExit.unref();
+  if (!httpServer.listening) {
+    clearTimeout(forceExit);
+    process.exit(0);
+    return;
+  }
+  httpServer.close(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
+if (typeof process.send === "function") {
+  process.once("disconnect", shutdownAfterParentDisconnect);
+}
 
 httpServer.on("upgrade", (request, socket, head) => {
   const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
@@ -254,6 +343,10 @@ app.get("/api/pet/metrics", (req, res) => {
 
 // Setup Vite & static assets
 async function startServer() {
+  app.use((_req, res, next) => {
+    res.setHeader("Content-Security-Policy", desktopContentSecurityPolicy(boundPort));
+    next();
+  });
   if (process.env.NODE_ENV !== "production") {
     console.log("Setting up Vite middleware for full-stack integration...");
     const vite = await createViteServer({
@@ -270,7 +363,22 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, "127.0.0.1", () => {
-    console.log(`[CyberCore Server] Connected securely and active on http://127.0.0.1:${PORT}`);
+    const address = httpServer.address();
+    boundPort = address && typeof address === "object" ? address.port : PORT;
+    console.log(`[CyberCore Server] Connected securely and active on http://127.0.0.1:${boundPort}`);
+    if (typeof process.send === "function") {
+      try {
+        process.send({
+          type: "v8-desktop-server-ready",
+          version: 1,
+          port: boundPort,
+          instanceId: SERVER_INSTANCE_ID,
+          pid: process.pid,
+        });
+      } catch (error) {
+        console.error("[CyberCore Server] failed to report readiness:", error);
+      }
+    }
   });
 }
 

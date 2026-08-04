@@ -7,7 +7,12 @@ from core.computer_use_tool_surface import (
     DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES,
     select_supervisor_native_tools,
 )
-from core.runtime_tool_access import runtime_kind_available, runtime_tool_available
+from core.runtime_tool_access import (
+    FEATURE_PACK_GATED_RUNTIME_KINDS,
+    runtime_kind_available,
+    runtime_kind_for_tool_name,
+    runtime_tool_available,
+)
 
 FALLBACK_NATIVE_TOOL_NAMES = {
     "delegation_broker",
@@ -96,13 +101,50 @@ class _FallbackToolRef:
     description: str = "系统默认可用工具。"
 
 
-def _native_tool_definitions() -> list[SupervisorToolDefinition]:
+def _runtime_availability_snapshot() -> dict[str, bool]:
+    try:
+        from core.runtime.startup_profile import installed_runtime_families
+
+        installed = set(installed_runtime_families())
+    except Exception:
+        installed = set()
+    return {
+        runtime_kind: runtime_kind in installed
+        for runtime_kind in FEATURE_PACK_GATED_RUNTIME_KINDS
+    }
+
+
+def _runtime_kind_is_available(runtime_kind: Any, runtime_availability: dict[str, bool] | None) -> bool:
+    normalized = str(runtime_kind or "").strip()
+    if runtime_availability is None:
+        return runtime_kind_available(normalized)
+    return runtime_availability.get(normalized, True)
+
+
+def _runtime_tool_is_available(tool_name: Any, runtime_availability: dict[str, bool] | None) -> bool:
+    if runtime_availability is None:
+        return runtime_tool_available(tool_name)
+    return runtime_availability.get(runtime_kind_for_tool_name(tool_name), True)
+
+
+def _native_tool_definitions(
+    *,
+    runtime_availability: dict[str, bool] | None = None,
+    runtime_defs: list[SupervisorToolDefinition] | None = None,
+) -> list[SupervisorToolDefinition]:
     from erc.capability_registry import capability_registry
-    runtime_defs = _runtime_managed_definitions()
+    bound_runtime_defs = (
+        runtime_defs
+        if runtime_defs is not None
+        else _runtime_managed_definitions(runtime_availability=runtime_availability)
+    )
     try:
         from core.native_tools import NATIVE_TOOLS
 
-        filtered_native_tools = capability_registry.filter_direct_tools(NATIVE_TOOLS)
+        filtered_native_tools = capability_registry.filter_direct_tools(
+            NATIVE_TOOLS,
+            runtime_availability=runtime_availability,
+        )
         selected_native_tools = select_supervisor_native_tools(
             filtered_native_tools=filtered_native_tools,
             supervisor_allowed_tools=None,
@@ -113,9 +155,9 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
             tool_name = str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
             if not tool_name:
                 continue
-            if not runtime_tool_available(tool_name):
+            if not _runtime_tool_is_available(tool_name, runtime_availability):
                 continue
-            if _matches_runtime_managed_tool(tool_name, runtime_defs):
+            if _matches_runtime_managed_tool(tool_name, bound_runtime_defs):
                 continue
             definitions.append(
                 SupervisorToolDefinition(
@@ -128,7 +170,8 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
         return definitions
     except Exception:
         filtered_names = capability_registry.filter_direct_tools(
-            [_FallbackToolRef(name=item) for item in sorted(FALLBACK_NATIVE_TOOL_NAMES)]
+            [_FallbackToolRef(name=item) for item in sorted(FALLBACK_NATIVE_TOOL_NAMES)],
+            runtime_availability=runtime_availability,
         )
         selected_names = select_supervisor_native_tools(
             filtered_native_tools=filtered_names,
@@ -140,9 +183,9 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
             normalized = str(getattr(tool_ref, "name", tool_ref) or "").strip()
             if not normalized:
                 continue
-            if not runtime_tool_available(normalized):
+            if not _runtime_tool_is_available(normalized, runtime_availability):
                 continue
-            if _matches_runtime_managed_tool(normalized, runtime_defs):
+            if _matches_runtime_managed_tool(normalized, bound_runtime_defs):
                 continue
             definitions.append(
                 SupervisorToolDefinition(
@@ -154,7 +197,10 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
         return definitions
 
 
-def _ensure_runtime_managed_descriptors_loaded() -> None:
+def _ensure_runtime_managed_descriptors_loaded(
+    *,
+    runtime_availability: dict[str, bool] | None = None,
+) -> None:
     try:
         from erc.runtime_registry import runtime_registry
 
@@ -166,21 +212,24 @@ def _ensure_runtime_managed_descriptors_loaded() -> None:
         from runtimes.automation.runtime import automation_runtime  # noqa: F401
         from runtimes.network_supervisor.runtime import network_supervisor_runtime  # noqa: F401
         from runtimes.plugin_manager.runtime import plugin_manager_service  # noqa: F401
-        if runtime_kind_available("computer_use"):
+        if _runtime_kind_is_available("computer_use", runtime_availability):
             from runtimes.computer_use.runtime import computer_use_runtime  # noqa: F401
-        if runtime_kind_available("rpa"):
+        if _runtime_kind_is_available("rpa", runtime_availability):
             from runtimes.rpa.runtime import rpa_runtime  # noqa: F401
     except Exception:
         return
 
 
-def _runtime_managed_definitions() -> list[SupervisorToolDefinition]:
+def _runtime_managed_definitions(
+    *,
+    runtime_availability: dict[str, bool] | None = None,
+) -> list[SupervisorToolDefinition]:
     from erc.capability_registry import capability_registry
 
-    _ensure_runtime_managed_descriptors_loaded()
+    _ensure_runtime_managed_descriptors_loaded(runtime_availability=runtime_availability)
     definitions: list[SupervisorToolDefinition] = []
     for descriptor in capability_registry.list():
-        if not runtime_kind_available(descriptor.kind):
+        if not _runtime_kind_is_available(descriptor.kind, runtime_availability):
             continue
         metadata = descriptor.metadata or {}
         exact_names = [str(item).strip() for item in list(metadata.get("managedToolNames") or []) if str(item).strip()]
@@ -227,12 +276,17 @@ def _matches_runtime_managed_tool(tool_name: str, runtime_defs: list[SupervisorT
     return None
 
 
-def sanitize_supervisor_allowed_tools(raw_allowed_tools: Any) -> list[str] | None:
-    raw_names = [str(item).strip() for item in list(raw_allowed_tools or []) if str(item).strip()]
-    if not raw_names:
-        return None
-    native_names = {item.name for item in _native_tool_definitions()}
-    runtime_defs = _runtime_managed_definitions()
+def _raw_allowed_tool_names(raw_allowed_tools: Any) -> list[str]:
+    return [str(item).strip() for item in list(raw_allowed_tools or []) if str(item).strip()]
+
+
+def _sanitize_supervisor_allowed_tool_names(
+    raw_names: list[str],
+    *,
+    native_defs: list[SupervisorToolDefinition],
+    runtime_defs: list[SupervisorToolDefinition],
+) -> list[str] | None:
+    native_names = {item.name for item in native_defs}
     sanitized: list[str] = []
     for tool_name in raw_names:
         if tool_name in native_names:
@@ -246,10 +300,40 @@ def sanitize_supervisor_allowed_tools(raw_allowed_tools: Any) -> list[str] | Non
     return sanitized or None
 
 
+def sanitize_supervisor_allowed_tools(raw_allowed_tools: Any) -> list[str] | None:
+    raw_names = _raw_allowed_tool_names(raw_allowed_tools)
+    if not raw_names:
+        return None
+    runtime_availability = _runtime_availability_snapshot()
+    runtime_defs = _runtime_managed_definitions(runtime_availability=runtime_availability)
+    native_defs = _native_tool_definitions(
+        runtime_availability=runtime_availability,
+        runtime_defs=runtime_defs,
+    )
+    return _sanitize_supervisor_allowed_tool_names(
+        raw_names,
+        native_defs=native_defs,
+        runtime_defs=runtime_defs,
+    )
+
+
 def build_supervisor_tool_policy_snapshot(raw_allowed_tools: Any) -> dict[str, Any]:
-    native_defs = _native_tool_definitions()
-    runtime_defs = _runtime_managed_definitions()
-    sanitized = sanitize_supervisor_allowed_tools(raw_allowed_tools)
+    runtime_availability = _runtime_availability_snapshot()
+    runtime_defs = _runtime_managed_definitions(runtime_availability=runtime_availability)
+    native_defs = _native_tool_definitions(
+        runtime_availability=runtime_availability,
+        runtime_defs=runtime_defs,
+    )
+    raw_names = _raw_allowed_tool_names(raw_allowed_tools)
+    sanitized = (
+        _sanitize_supervisor_allowed_tool_names(
+            raw_names,
+            native_defs=native_defs,
+            runtime_defs=runtime_defs,
+        )
+        if raw_names
+        else None
+    )
 
     return {
         "allowedTools": sanitized,

@@ -44,6 +44,12 @@ test("explicitly clearing all capability modes remains empty", () => {
 
 test("only currently supported media families expose checkbox options", () => {
   assert.equal(getMediaCapabilityOptions("VIDEO").length, 5);
-  assert.equal(getMediaCapabilityOptions("WORKFLOW").length, 0);
+  assert.deepEqual(getMediaCapabilityOptions("WORKFLOW"), [
+    {
+      id: "video.action_transfer",
+      labelKey: "app.admin.dashboard.model.hub.capability.workflow.actionTransfer",
+      operationKind: "video.action_transfer",
+    },
+  ]);
   assert.equal(getMediaCapabilityOptions("TEXT").length, 0);
 });

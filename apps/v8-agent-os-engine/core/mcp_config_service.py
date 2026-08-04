@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from core.extensions_runtime import extensions_runtime_service
+from core.interprocess_lock import interprocess_file_lock
 from core.storage import storage
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+
+
+_MCP_CONFIG_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+def _mcp_config_lock_path() -> Path:
+    return V8_AGENT_OS_HOME / "locks" / "extensions" / "mcp-config.lock"
 
 
 class McpConfigValidationError(ValueError):
@@ -103,14 +113,18 @@ def request_mcp_inventory_refresh(reason: str) -> None:
 
 def install_mcp_server_config(config: dict[str, Any], *, refresh_reason: str = "mcp_config_tool_install") -> dict[str, Any]:
     new_servers = validate_mcp_server_map(config)
-    existing = storage.get_mcp_config() or {"mcpServers": {}}
-    existing_servers = existing.get("mcpServers", {})
-    if not isinstance(existing_servers, dict):
-        existing_servers = {}
-    next_servers = dict(existing_servers)
-    replaced_servers = sorted(name for name in new_servers if name in next_servers)
-    next_servers.update(new_servers)
-    storage.save_mcp_config({"mcpServers": next_servers})
+    with interprocess_file_lock(
+        _mcp_config_lock_path(),
+        timeout_seconds=_MCP_CONFIG_LOCK_TIMEOUT_SECONDS,
+    ):
+        existing = storage.get_mcp_config() or {"mcpServers": {}}
+        existing_servers = existing.get("mcpServers", {})
+        if not isinstance(existing_servers, dict):
+            existing_servers = {}
+        next_servers = dict(existing_servers)
+        replaced_servers = sorted(name for name in new_servers if name in next_servers)
+        next_servers.update(new_servers)
+        storage.save_mcp_config({"mcpServers": next_servers})
     request_mcp_inventory_refresh(refresh_reason)
     return {
         "status": "success",
@@ -125,15 +139,19 @@ def remove_mcp_server_config(server_name: str, *, refresh_reason: str = "mcp_con
     normalized_name = str(server_name or "").strip()
     if not normalized_name:
         raise McpConfigValidationError("empty_server_name", "MCP server 名称不能为空。")
-    existing = storage.get_mcp_config() or {"mcpServers": {}}
-    existing_servers = existing.get("mcpServers", {})
-    if not isinstance(existing_servers, dict):
-        existing_servers = {}
-    removed = normalized_name in existing_servers
-    next_servers = dict(existing_servers)
-    next_servers.pop(normalized_name, None)
-    if removed:
-        storage.save_mcp_config({"mcpServers": next_servers})
+    with interprocess_file_lock(
+        _mcp_config_lock_path(),
+        timeout_seconds=_MCP_CONFIG_LOCK_TIMEOUT_SECONDS,
+    ):
+        existing = storage.get_mcp_config() or {"mcpServers": {}}
+        existing_servers = existing.get("mcpServers", {})
+        if not isinstance(existing_servers, dict):
+            existing_servers = {}
+        removed = normalized_name in existing_servers
+        next_servers = dict(existing_servers)
+        next_servers.pop(normalized_name, None)
+        if removed:
+            storage.save_mcp_config({"mcpServers": next_servers})
     request_mcp_inventory_refresh(refresh_reason)
     return {
         "status": "success",

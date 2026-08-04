@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 import importlib
+import json
+import logging
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, HTTPException
@@ -33,6 +38,20 @@ from erc.safety_guardian import safety_guardian
 
 
 router = APIRouter()
+
+
+logger = logging.getLogger(__name__)
+
+
+SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS = 30.0
+SYSTEM_BASE_ENVIRONMENT_FAILURE_BACKOFF_SECONDS = 10.0
+
+
+_system_base_environment_lock = threading.Lock()
+_system_base_environment_cache: dict[str, Any] | None = None
+_system_base_environment_failures: dict[str, dict[str, Any]] = {}
+_system_base_environment_inflight: dict[str, Future[dict[str, Any]]] = {}
+_system_base_environment_latest_key = ""
 
 
 ConfigBuilder = Callable[[], dict[str, Any]]
@@ -157,6 +176,12 @@ def _build_supervisor_domain() -> dict[str, Any]:
     supervisor_config = storage.get_supervisor_config() or {}
     supervisor_profile = storage.get_supervisor_profile()
     supervisor_prompt = storage.get_supervisor_prompt()
+    system_identity = storage.get_system_identity()
+    models_config = model_control_plane.get_config()
+    role_bindings: dict[str, str] = {}
+    for role in ("supervisor", "default"):
+        resolved = model_control_plane.resolve_model_for_role(role, models_config)
+        role_bindings[role] = str(resolved.get("resolvedModelRef") or resolved.get("resolvedModelId") or "")
     prompt_budget = enforce_prompt_budget(
         source="V8_AGENT_OS.md",
         text=supervisor_prompt,
@@ -173,8 +198,8 @@ def _build_supervisor_domain() -> dict[str, Any]:
         "data": {
             "systemPrompt": supervisor_prompt,
             "promptBudgetDiagnostics": [prompt_budget.diagnostic()],
-            "identity": storage.get_system_identity(),
-            "identityBlock": render_system_identity_block(storage.get_system_identity()),
+            "identity": system_identity,
+            "identityBlock": render_system_identity_block(system_identity),
             "allowedTools": tool_policy["allowedTools"],
             "lockedNativeTools": tool_policy["lockedNativeTools"],
             "runtimeManagedTools": tool_policy["runtimeManagedTools"],
@@ -184,12 +209,12 @@ def _build_supervisor_domain() -> dict[str, Any]:
                 "avatar": supervisor_profile.get("avatar") or "",
             },
             "bindings": {
-                "supervisorModel": model_control_plane.get_role_model_id("supervisor") or "",
-                "defaultReplyModel": model_control_plane.get_role_model_id("default") or "",
+                "supervisorModel": role_bindings["supervisor"],
+                "defaultReplyModel": role_bindings["default"],
             },
             "modelParameters": {
-                "supervisor": model_control_plane.get_role_parameters("supervisor"),
-                "subagent": model_control_plane.get_role_parameters("subagent"),
+                "supervisor": model_control_plane.get_role_parameters("supervisor", models_config),
+                "subagent": model_control_plane.get_role_parameters("subagent", models_config),
             },
             "delegation": {
                 "externalWorkers": list(delegation.get("externalWorkers") or []),
@@ -1022,21 +1047,82 @@ def _save_ui_domain(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_ui_domain()
 
 
-def _build_system_base_domain() -> dict[str, Any]:
-    system_base = storage.get_system_base_config()
+def _system_base_environment_input_key(system_base: dict[str, Any]) -> str:
+    bridge = dict(system_base.get("bridge") or {})
+    projection = {
+        "bridge": {
+            "adminBaseUrl": bridge.get("adminBaseUrl") or "",
+            "engineBaseUrl": bridge.get("engineBaseUrl") or "",
+        },
+        "desktopTools": dict(system_base.get("desktopTools") or {}),
+        "remoteLink": dict(system_base.get("remoteLink") or {}),
+    }
+    return json.dumps(projection, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _desktop_readiness_projection(readiness: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": readiness.get("status"),
+        "ocrReady": readiness.get("ocrReady"),
+        "imageLocatorReady": readiness.get("imageLocatorReady"),
+        "pointLocatorReady": readiness.get("pointLocatorReady"),
+        "missingItems": list(readiness.get("missingItems") or []),
+    }
+
+
+def _pending_system_base_environment_snapshot() -> dict[str, Any]:
+    try:
+        desktop_readiness = detect_desktop_tools_readiness()
+    except Exception:
+        desktop_readiness = {
+            "status": "checking",
+            "ocrReady": None,
+            "imageLocatorReady": None,
+            "pointLocatorReady": None,
+            "missingItems": [],
+            "detectedDesktopTools": {},
+        }
+    return {
+        "desktopReadiness": _desktop_readiness_projection(desktop_readiness),
+        "detectedDesktopTools": dict(desktop_readiness.get("detectedDesktopTools") or {}),
+        "dependencyStatus": [],
+        "remoteLinkMeshStatus": {
+            "ok": False,
+            "kind": "v8_mesh_provider_status",
+            "readOnly": True,
+            "status": "refreshing",
+            "providers": [],
+            "peerCandidates": [],
+            "policy": {
+                "installsClients": False,
+                "mutatesRoutes": False,
+                "managesKeys": False,
+                "requiresAuth": True,
+            },
+        },
+        "remoteLinkDiagnostics": {
+            "readOnly": True,
+            "status": "refreshing",
+            "candidateIps": [],
+            "vpn": {},
+            "reachability": {},
+            "warnings": [],
+            "info": [],
+            "notes": [],
+        },
+    }
+
+
+def _probe_system_base_environment(system_base: dict[str, Any]) -> dict[str, Any]:
     desktop_readiness = detect_desktop_tools_readiness()
     bridge = dict(system_base.get("bridge") or {})
     admin_base_url = bridge.get("adminBaseUrl") or ""
     engine_base_url = bridge.get("engineBaseUrl") or ""
-    remote_link = normalize_remote_link_config(
-        dict(system_base.get("remoteLink") or {}),
-        admin_base_url=admin_base_url,
-        engine_base_url=engine_base_url,
-    )
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="system-base-read") as executor:
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="system-base-probe") as executor:
         dependency_future = executor.submit(
             build_dependency_status,
             desktop_readiness=desktop_readiness,
+            refresh=True,
         )
         mesh_future = executor.submit(
             build_mesh_provider_status,
@@ -1051,6 +1137,178 @@ def _build_system_base_domain() -> dict[str, Any]:
         dependency_status = dependency_future.result()
         remote_link_mesh_status = mesh_future.result()
         remote_link_diagnostics = diagnostics_future.result()
+    return {
+        "desktopReadiness": _desktop_readiness_projection(desktop_readiness),
+        "detectedDesktopTools": dict(desktop_readiness.get("detectedDesktopTools") or {}),
+        "dependencyStatus": dependency_status,
+        "remoteLinkMeshStatus": remote_link_mesh_status,
+        "remoteLinkDiagnostics": remote_link_diagnostics,
+    }
+
+
+def _run_system_base_environment_probe(
+    input_key: str,
+    system_base: dict[str, Any],
+    future: Future[dict[str, Any]],
+) -> None:
+    global _system_base_environment_cache
+
+    try:
+        snapshot = _probe_system_base_environment(system_base)
+    except Exception as exc:
+        failure = {
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "checkedAtMonotonic": time.monotonic(),
+            "code": "system_base_environment_probe_failed",
+        }
+        with _system_base_environment_lock:
+            _system_base_environment_failures[input_key] = failure
+            if _system_base_environment_inflight.get(input_key) is future:
+                _system_base_environment_inflight.pop(input_key, None)
+        logger.warning("System-base environment probe failed: %s", type(exc).__name__, exc_info=True)
+        future.set_exception(exc)
+        return
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    with _system_base_environment_lock:
+        if _system_base_environment_latest_key == input_key:
+            _system_base_environment_cache = {
+                "inputKey": input_key,
+                "checkedAtMonotonic": time.monotonic(),
+                "checkedAt": checked_at,
+                "snapshot": deepcopy(snapshot),
+            }
+        _system_base_environment_failures.pop(input_key, None)
+        if _system_base_environment_inflight.get(input_key) is future:
+            _system_base_environment_inflight.pop(input_key, None)
+    future.set_result(snapshot)
+
+
+def _schedule_system_base_environment_probe(
+    input_key: str,
+    system_base: dict[str, Any],
+) -> Future[dict[str, Any]]:
+    global _system_base_environment_latest_key
+
+    with _system_base_environment_lock:
+        _system_base_environment_latest_key = input_key
+        existing = _system_base_environment_inflight.get(input_key)
+        if existing is not None and not existing.done():
+            return existing
+        future: Future[dict[str, Any]] = Future()
+        _system_base_environment_inflight[input_key] = future
+        worker = threading.Thread(
+            target=_run_system_base_environment_probe,
+            args=(input_key, deepcopy(system_base), future),
+            name="system-base-environment-probe",
+            daemon=True,
+        )
+        worker.start()
+        return future
+
+
+def _resolve_system_base_environment(
+    system_base: dict[str, Any],
+    *,
+    refresh: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    input_key = _system_base_environment_input_key(system_base)
+    now = time.monotonic()
+    with _system_base_environment_lock:
+        cached = deepcopy(_system_base_environment_cache)
+        failure = deepcopy(_system_base_environment_failures.get(input_key))
+        inflight = _system_base_environment_inflight.get(input_key)
+    cache_matches = bool(cached and cached.get("inputKey") == input_key)
+    cache_age = now - float(cached.get("checkedAtMonotonic") or 0.0) if cache_matches else None
+    cache_fresh = bool(cache_matches and cache_age is not None and cache_age < SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS)
+    failure_age = now - float(failure.get("checkedAtMonotonic") or 0.0) if failure else None
+    failure_backoff = bool(
+        failure_age is not None
+        and failure_age < SYSTEM_BASE_ENVIRONMENT_FAILURE_BACKOFF_SECONDS
+    )
+
+    if cache_fresh and not refresh and inflight is None:
+        return deepcopy(cached.get("snapshot") or {}), {
+            "status": "ready",
+            "stale": False,
+            "checkedAt": cached.get("checkedAt"),
+            "ttlSeconds": SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS,
+        }
+
+    if failure_backoff and not refresh and inflight is None:
+        fallback = deepcopy(cached.get("snapshot") or {}) if cache_matches else _pending_system_base_environment_snapshot()
+        return fallback, {
+            "status": "error",
+            "stale": cache_matches,
+            "checkedAt": cached.get("checkedAt") if cache_matches else None,
+            "failedAt": failure.get("checkedAt"),
+            "failureCode": failure.get("code") or "system_base_environment_probe_failed",
+            "retryAfterSeconds": max(
+                1,
+                round(SYSTEM_BASE_ENVIRONMENT_FAILURE_BACKOFF_SECONDS - float(failure_age or 0.0)),
+            ),
+            "ttlSeconds": SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS,
+        }
+
+    future = inflight or _schedule_system_base_environment_probe(input_key, system_base)
+    if refresh:
+        try:
+            snapshot = future.result()
+        except Exception:
+            with _system_base_environment_lock:
+                cached = deepcopy(_system_base_environment_cache)
+                failure = deepcopy(_system_base_environment_failures.get(input_key))
+            cache_matches = bool(cached and cached.get("inputKey") == input_key)
+            fallback = deepcopy(cached.get("snapshot") or {}) if cache_matches else _pending_system_base_environment_snapshot()
+            return fallback, {
+                "status": "error",
+                "stale": cache_matches,
+                "checkedAt": cached.get("checkedAt") if cache_matches else None,
+                "failedAt": (failure or {}).get("checkedAt"),
+                "failureCode": (failure or {}).get("code") or "system_base_environment_probe_failed",
+                "ttlSeconds": SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS,
+            }
+        with _system_base_environment_lock:
+            cached = deepcopy(_system_base_environment_cache)
+        return deepcopy(snapshot), {
+            "status": "ready",
+            "stale": False,
+            "checkedAt": (cached or {}).get("checkedAt"),
+            "ttlSeconds": SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS,
+        }
+
+    fallback = deepcopy(cached.get("snapshot") or {}) if cache_matches else _pending_system_base_environment_snapshot()
+    probe_status = {
+        "status": "refreshing",
+        "stale": cache_matches,
+        "checkedAt": cached.get("checkedAt") if cache_matches else None,
+        "ttlSeconds": SYSTEM_BASE_ENVIRONMENT_TTL_SECONDS,
+    }
+    if failure:
+        probe_status["lastFailureAt"] = failure.get("checkedAt")
+        probe_status["lastFailureCode"] = failure.get("code")
+    return fallback, probe_status
+
+
+def _build_system_base_domain(*, refresh_environment: bool = False) -> dict[str, Any]:
+    system_base = storage.get_system_base_config()
+    environment, environment_probe = _resolve_system_base_environment(
+        system_base,
+        refresh=refresh_environment,
+    )
+    bridge = dict(system_base.get("bridge") or {})
+    admin_base_url = bridge.get("adminBaseUrl") or ""
+    engine_base_url = bridge.get("engineBaseUrl") or ""
+    remote_link = normalize_remote_link_config(
+        dict(system_base.get("remoteLink") or {}),
+        admin_base_url=admin_base_url,
+        engine_base_url=engine_base_url,
+    )
+    remote_link_mesh_status = dict(environment.get("remoteLinkMeshStatus") or {})
+    remote_link_diagnostics = dict(environment.get("remoteLinkDiagnostics") or {})
+    warnings = []
+    if environment_probe.get("status") == "error":
+        warnings.append("system_base_environment_probe_failed")
     return {
         "domain": "system-base",
         "title": "系统基础配置",
@@ -1067,15 +1325,10 @@ def _build_system_base_domain() -> dict[str, Any]:
             ),
             "remoteLinkMeshStatus": remote_link_mesh_status,
             "s3": dict(system_base.get("s3") or {}),
-            "desktopReadiness": {
-                "status": desktop_readiness.get("status"),
-                "ocrReady": desktop_readiness.get("ocrReady"),
-                "imageLocatorReady": desktop_readiness.get("imageLocatorReady"),
-                "pointLocatorReady": desktop_readiness.get("pointLocatorReady"),
-                "missingItems": list(desktop_readiness.get("missingItems") or []),
-            },
-            "detectedDesktopTools": dict(desktop_readiness.get("detectedDesktopTools") or {}),
-            "dependencyStatus": dependency_status,
+            "desktopReadiness": dict(environment.get("desktopReadiness") or {}),
+            "detectedDesktopTools": dict(environment.get("detectedDesktopTools") or {}),
+            "dependencyStatus": list(environment.get("dependencyStatus") or []),
+            "environmentProbe": environment_probe,
             "runtimeInfo": {
                 "engineHost": str(os.getenv("ENGINE_HOST") or "0.0.0.0"),
                 "enginePort": int(str(os.getenv("ENGINE_PORT") or "9530")),
@@ -1085,8 +1338,8 @@ def _build_system_base_domain() -> dict[str, Any]:
         "source": _config_source("systemBase"),
         "savePath": _config_save_path("systemBase"),
         "reloadRequired": False,
-        "warnings": [],
-        "advancedFields": ["webFetch", "desktopTools", "desktopLive", "remoteLink", "detectedDesktopTools", "dependencyStatus", "runtimeInfo"],
+        "warnings": warnings,
+        "advancedFields": ["webFetch", "desktopTools", "desktopLive", "remoteLink", "detectedDesktopTools", "dependencyStatus", "environmentProbe", "runtimeInfo"],
     }
 
 
@@ -1210,9 +1463,11 @@ async def list_config_registry_domains():
 
 
 @router.get("/config-registry/{domain}")
-async def get_config_registry_domain(domain: str):
+async def get_config_registry_domain(domain: str, refresh: bool = False):
     try:
         builder, _ = _resolve_domain(domain)
+        if builder is _build_system_base_domain:
+            return await asyncio.to_thread(builder, refresh_environment=refresh)
         return await asyncio.to_thread(builder)
     except HTTPException:
         raise

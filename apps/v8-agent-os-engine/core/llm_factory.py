@@ -1074,6 +1074,10 @@ class LLMFactory:
 
         final_kwargs = merge_model_request_patch(
             final_kwargs,
+            no_think_request_patch(meta.get("thinking_control")),
+        )
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
             reasoning_effort_request_patch(
                 meta.get("reasoning_effort_control"),
                 meta.get("request_reasoning_effort"),
@@ -1126,6 +1130,10 @@ class LLMFactory:
             }
         ):
             final_kwargs.setdefault("include_thoughts", True)
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
+            no_think_request_patch(meta.get("thinking_control")),
+        )
         final_kwargs = merge_model_request_patch(
             final_kwargs,
             reasoning_effort_request_patch(

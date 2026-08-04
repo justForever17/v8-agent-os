@@ -55,7 +55,6 @@ interface ModelCardV2Props {
   onSetDefault?: (modelRef: string, categoryKey?: string) => void;
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
-  onToggleNoThink?: (disabled: boolean) => Promise<void> | void;
   onSetReasoningLevel?: (level: string) => Promise<void> | void;
   onToggleProviderHostedTools?: (enabled: boolean) => Promise<void> | void;
   connectionStatus?: {
@@ -280,7 +279,6 @@ export function ModelCardV2({
   onSetDefault,
   onTestConnection,
   onRepairReasoning,
-  onToggleNoThink,
   onSetReasoningLevel,
   onToggleProviderHostedTools,
   connectionStatus,
@@ -428,6 +426,7 @@ export function ModelCardV2({
                                     value={configuredThinkingLevel}
                                     disabled={savingThinkingLevel}
                                     ariaLabel={t("components.models.ModelCardV2.thinkingEffort")}
+                                    labelFormatter={(level) => level === "none" ? "no think" : level}
                                     onValueCommit={commitThinkingLevel}
                                   />
                                 ) : null}
@@ -450,11 +449,6 @@ export function ModelCardV2({
           }} title={repairing ? t("components.models.ModelCardV2.reasoningRepairing") : t("components.models.ModelCardV2.reasoningRepairTitle")}>
 
                                 <Wrench className={`h-3.5 w-3.5 ${repairing ? "animate-pulse" : ""}`} />
-                            </Button>}
-                        {supportsNoThink && onToggleNoThink && !onSetReasoningLevel && <Button variant="ghost" size="icon" className={`h-7 w-7 ${noThinkDisabled ? "bg-sky-50 text-sky-700 hover:bg-sky-100 hover:text-sky-800" : "text-muted-foreground hover:text-primary"}`} onClick={async () => {
-            await onToggleNoThink(!noThinkDisabled);
-          }} title={noThinkDisabled ? t("components.models.ModelCardV2.thinkingDefaultRestoreTitle") : t("components.models.ModelCardV2.thinkingDisableTitle")}>
-                                <Brain className="h-3.5 w-3.5" />
                             </Button>}
                         {isResponsesModel && onToggleProviderHostedTools && <AdminHoverInfo
                             content={visibleRoute.providerHostedToolsEnabled

@@ -370,6 +370,122 @@ def test_provider_write_persists_only_credential_reference(monkeypatch):
     assert "api_key" not in plane.get_public_config()["providers"]["cpm"]["provider"]
 
 
+@pytest.mark.parametrize(
+    ("legacy_channel", "wire_protocol"),
+    [
+        ("anthropic", "anthropic.messages"),
+        ("gemini", "gemini.generate_content"),
+    ],
+)
+def test_partial_model_control_update_preserves_unrelated_legacy_endpoint_binding(
+    monkeypatch,
+    legacy_channel,
+    wire_protocol,
+):
+    legacy_binding = {
+        "channelId": legacy_channel,
+        "apiStandard": legacy_channel,
+        "wireProtocol": wire_protocol,
+        "endpointPath": "messages",
+        "providerModelId": "legacy-chat-model",
+    }
+    persisted = {
+        "providers": {
+            "proxy": {
+                "provider": {
+                    "name": "Proxy",
+                    "base_url": "https://proxy.example.test/v1",
+                    "api_standard": "openai",
+                    "channels": [
+                        {
+                            "id": "default",
+                            "label": "Default",
+                            "apiStandard": "openai",
+                            "baseUrl": "https://proxy.example.test/v1",
+                            "wireProtocols": ["openai.chat_completions"],
+                            "defaultWireProtocol": "openai.chat_completions",
+                        }
+                    ],
+                    "defaultChannelId": "default",
+                },
+                "models": {
+                    "legacy-chat-model": {
+                        "type": "TEXT",
+                        "capabilities": {"chat": True, "reasoning": True},
+                        "endpointBinding": deepcopy(legacy_binding),
+                    }
+                },
+            }
+        }
+    }
+    plane = ModelControlPlane(credential_store=CredentialRefStore(MemoryCredentialBackend()))
+    monkeypatch.setattr(storage, "get_models_config", lambda: deepcopy(persisted))
+
+    def save_config(config):
+        persisted.clear()
+        persisted.update(deepcopy(config))
+
+    monkeypatch.setattr(storage, "save_models_config", save_config)
+
+    plane.upsert_model_record(
+        provider_id="proxy",
+        model_id="legacy-chat-model",
+        model_patch={
+            "reasoningEffortControl": {
+                "supportsReasoningEffort": True,
+                "levels": ["low", "high"],
+                "selectedLevel": "high",
+                "source": "manual_selection",
+            }
+        },
+    )
+
+    saved_model = persisted["providers"]["proxy"]["models"]["legacy-chat-model"]
+    assert saved_model["endpointBinding"] == legacy_binding
+    assert saved_model["reasoningEffortControl"]["selectedLevel"] == "high"
+
+
+def test_explicit_model_endpoint_update_still_rejects_an_unknown_channel(monkeypatch):
+    persisted = {
+        "providers": {
+            "proxy": {
+                "provider": {
+                    "name": "Proxy",
+                    "base_url": "https://proxy.example.test/v1",
+                    "api_standard": "openai",
+                    "channels": [
+                        {
+                            "id": "default",
+                            "label": "Default",
+                            "apiStandard": "openai",
+                            "baseUrl": "https://proxy.example.test/v1",
+                            "wireProtocols": ["openai.chat_completions"],
+                            "defaultWireProtocol": "openai.chat_completions",
+                        }
+                    ],
+                    "defaultChannelId": "default",
+                },
+                "models": {
+                    "chat-model": {
+                        "type": "TEXT",
+                        "endpointBinding": {"channelId": "default"},
+                    }
+                },
+            }
+        }
+    }
+    plane = ModelControlPlane(credential_store=CredentialRefStore(MemoryCredentialBackend()))
+    monkeypatch.setattr(storage, "get_models_config", lambda: deepcopy(persisted))
+    monkeypatch.setattr(storage, "save_models_config", lambda config: None)
+
+    with pytest.raises(ValueError, match="unknown Provider channel: anthropic"):
+        plane.upsert_model_record(
+            provider_id="proxy",
+            model_id="chat-model",
+            model_patch={"endpointBinding": {"channelId": "anthropic"}},
+        )
+
+
 def test_provider_write_persists_multiple_channels_and_projects_them_publicly(monkeypatch):
     persisted = {"providers": {}}
     plane = ModelControlPlane(credential_store=CredentialRefStore(MemoryCredentialBackend()))

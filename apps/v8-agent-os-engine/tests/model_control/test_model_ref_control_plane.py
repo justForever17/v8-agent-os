@@ -474,10 +474,11 @@ def test_supported_no_think_models_expose_thinking_control():
     mimo_25_flash = model_provider_catalog.normalize_model(mimo, "mimo-v2.5-flash")
     mimo_25_tts = model_provider_catalog.normalize_model(mimo, "mimo-v2.5-tts")
     mimo_tokenplan_25_pro = model_provider_catalog.normalize_model(mimo_tokenplan, "mimo-v2.5-pro")
+    doubao_seed_21 = model_provider_catalog.normalize_model(volcengine_ark, "doubao-seed-2-1-pro-260628")
     doubao_seed = model_provider_catalog.normalize_model(volcengine_ark, "doubao-seed-2-0-pro-260215")
     doubao_code = model_provider_catalog.normalize_model(volcengine_ark, "doubao-seed-2-0-code-preview-260215")
 
-    assert deepseek_v4["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert deepseek_v4["thinkingControl"]["requestStyle"] == "deepseek_thinking_disabled"
     assert qwen["thinkingControl"]["requestStyle"] == "dashscope_enable_thinking_false"
     assert glm["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert glm_52["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
@@ -486,6 +487,7 @@ def test_supported_no_think_models_expose_thinking_control():
     assert mimo_25_flash["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert not mimo_25_tts.get("thinkingControl")
     assert mimo_tokenplan_25_pro["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert doubao_seed_21["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert doubao_seed["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert doubao_code["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
 
@@ -516,7 +518,7 @@ def test_model_control_plane_surfaces_saved_no_think_state():
 
     assert row["thinkingControl"]["supportsNoThink"] is True
     assert row["thinkingControl"]["disabled"] is True
-    assert row["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
+    assert row["thinkingControl"]["requestStyle"] == "deepseek_thinking_disabled"
 
 
 def test_minimax_model_list_probe_uses_site_specific_models_endpoint():
@@ -1474,6 +1476,132 @@ def test_no_think_request_patch_merges_existing_extra_body():
     assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
 
 
+def test_deepseek_v4_projects_protocol_specific_effort_contracts():
+    flash_responses = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-flash",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "openai.responses"},
+            },
+        }
+    )
+    pro_chat = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-pro",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "openai.chat_completions"},
+            },
+        }
+    )
+    pro_anthropic = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-pro",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "anthropic.messages"},
+            },
+        }
+    )
+
+    responses_kwargs = llm_factory._build_openai_kwargs(
+        "deepseek-v4-flash",
+        {
+            "api_key": "sk-test",
+            "wire_protocol": "openai.responses",
+            "reasoning_effort_control": flash_responses,
+            "request_reasoning_effort": "low",
+        },
+    )
+    chat_kwargs = llm_factory._build_openai_kwargs(
+        "deepseek-v4-pro",
+        {
+            "api_key": "sk-test",
+            "wire_protocol": "openai.chat_completions",
+            "reasoning_effort_control": pro_chat,
+            "request_reasoning_effort": "low",
+        },
+    )
+    anthropic_kwargs = llm_factory._build_anthropic_kwargs(
+        "deepseek-v4-pro",
+        {
+            "api_key": "sk-test",
+            "reasoning_effort_control": pro_anthropic,
+            "request_reasoning_effort": "xhigh",
+        },
+    )
+
+    assert responses_kwargs["reasoning"] == {"effort": "low"}
+    assert responses_kwargs["use_responses_api"] is True
+    assert "extra_body" not in responses_kwargs
+    assert chat_kwargs["reasoning_effort"] == "high"
+    assert chat_kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+    assert anthropic_kwargs["effort"] == "max"
+    assert anthropic_kwargs["thinking"] == {"type": "enabled"}
+
+
+def test_single_no_think_control_reaches_anthropic_gemini_and_responses_requests():
+    opus_thinking = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-opus-5",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "anthropic.messages"},
+                "thinkingControl": {"disabled": True},
+            },
+        }
+    )
+    gemini_thinking = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "model_id": "gemini-2.5-flash",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "gemini.generate_content"},
+                "thinkingControl": {"disabled": True},
+            },
+        }
+    )
+    deepseek_thinking = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "deepseek",
+            "model_id": "deepseek-v4-flash",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "openai.responses"},
+                "thinkingControl": {"disabled": True},
+            },
+        }
+    )
+
+    opus_kwargs = llm_factory._build_anthropic_kwargs(
+        "claude-opus-5",
+        {"api_key": "sk-test", "thinking_control": opus_thinking},
+    )
+    gemini_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-2.5-flash",
+        {"api_key": "sk-test", "thinking_control": gemini_thinking},
+    )
+    deepseek_kwargs = llm_factory._build_openai_kwargs(
+        "deepseek-v4-flash",
+        {
+            "api_key": "sk-test",
+            "wire_protocol": "openai.responses",
+            "thinking_control": deepseek_thinking,
+        },
+    )
+
+    assert opus_kwargs["thinking"] == {"type": "disabled"}
+    assert gemini_kwargs["thinking_budget"] == 0
+    assert deepseek_kwargs["reasoning"] == {"effort": "none"}
+    assert deepseek_kwargs["use_responses_api"] is True
+
+
 def test_reasoning_effort_control_is_limited_to_openai_reasoning_families():
     openai_control = resolve_reasoning_effort_control_for_metadata(
         {
@@ -1523,8 +1651,8 @@ def test_reasoning_effort_control_is_limited_to_openai_reasoning_families():
     assert embedding_control == {}
 
 
-def test_reasoning_effort_control_supports_official_anthropic_and_gemini_styles():
-    anthropic_budget_control = resolve_reasoning_effort_control_for_metadata(
+def test_reasoning_effort_control_exposes_only_native_discrete_levels():
+    legacy_anthropic_control = resolve_reasoning_effort_control_for_metadata(
         {
             "provider_id": "anthropic",
             "model_id": "claude-sonnet-4-5",
@@ -1567,11 +1695,11 @@ def test_reasoning_effort_control_supports_official_anthropic_and_gemini_styles(
         }
     )
 
-    assert anthropic_budget_control["requestStyle"] == "anthropic_thinking_budget"
+    assert legacy_anthropic_control == {}
     assert anthropic_effort_control["requestStyle"] == "anthropic_effort"
     assert anthropic_effort_control["levels"] == ["auto", "low", "medium", "high", "xhigh", "max"]
     assert gemini_level_control["requestStyle"] == "gemini_thinking_level"
-    assert gemini_budget_control["requestStyle"] == "gemini_thinking_budget"
+    assert gemini_budget_control == {}
     assert custom_gemini_control["requestStyle"] == "gemini_thinking_level"
 
 
@@ -1613,7 +1741,10 @@ def test_reasoning_effort_request_patch_maps_vendor_specific_official_controls()
     assert reasoning_effort_request_patch(anthropic_budget_control, "low") == {
         "thinking": {"type": "enabled", "budget_tokens": 4096}
     }
-    assert reasoning_effort_request_patch(anthropic_effort_control, "medium") == {"effort": "medium"}
+    assert reasoning_effort_request_patch(anthropic_effort_control, "medium") == {
+        "thinking": {"type": "adaptive"},
+        "effort": "medium",
+    }
     assert reasoning_effort_request_patch(gemini_level_control, "high") == {"thinking_level": "high"}
     assert reasoning_effort_request_patch(gemini_budget_control, "medium") == {"thinking_budget": 4096}
 
@@ -1658,16 +1789,12 @@ def test_openai_kwargs_apply_supervisor_reasoning_effort_after_no_think():
 
 
 def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom():
-    budget_control = resolve_reasoning_effort_control_for_metadata(
-        {
-            "provider_id": "anthropic",
-            "model_id": "claude-sonnet-4-5",
-            "model_record": {
-                "capabilities": {"chat": True, "reasoning": True},
-                "reasoningSurface": {"requestStyle": "anthropic_thinking"},
-            },
-        }
-    )
+    budget_control = {
+        "supportsReasoningEffort": True,
+        "levels": ["auto", "low", "medium", "high"],
+        "requestStyle": "anthropic_thinking_budget",
+        "budgetByLevel": {"low": 4096, "medium": 8192, "high": 16000},
+    }
     effort_control = resolve_reasoning_effort_control_for_metadata(
         {
             "provider_id": "anthropic",
@@ -1700,6 +1827,7 @@ def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom()
 
     assert budget_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     assert budget_kwargs["max_tokens_to_sample"] == 5120
+    assert effort_kwargs["thinking"] == {"type": "adaptive"}
     assert effort_kwargs["effort"] == "high"
 
 
@@ -1711,13 +1839,12 @@ def test_gemini_kwargs_apply_reasoning_effort_controls_without_instantiating_opt
             "model_record": {"capabilities": {"chat": True, "reasoning": True}},
         }
     )
-    budget_control = resolve_reasoning_effort_control_for_metadata(
-        {
-            "provider_id": "gemini-api",
-            "model_id": "gemini-2.5-pro",
-            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
-        }
-    )
+    budget_control = {
+        "supportsReasoningEffort": True,
+        "levels": ["auto", "low", "medium", "high"],
+        "requestStyle": "gemini_thinking_budget",
+        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 32768},
+    }
 
     level_kwargs = llm_factory._build_gemini_kwargs(
         "gemini-3.1-pro-preview",
@@ -1795,14 +1922,12 @@ def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai()
             "model_record": {"capabilities": {"chat": True, "reasoning": True}},
         }
     )
-    budget_control = resolve_reasoning_effort_control_for_metadata(
-        {
-            "provider_id": "gemini-api",
-            "api_standard": "gemini",
-            "model_id": "gemini-2.5-pro",
-            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
-        }
-    )
+    budget_control = {
+        "supportsReasoningEffort": True,
+        "levels": ["auto", "low", "medium", "high"],
+        "requestStyle": "gemini_thinking_budget",
+        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 32768},
+    }
 
     level_kwargs = llm_factory._build_gemini_kwargs(
         "gemini-3.1-pro-preview",

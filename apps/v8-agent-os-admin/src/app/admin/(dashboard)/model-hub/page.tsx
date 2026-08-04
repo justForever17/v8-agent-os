@@ -1205,55 +1205,34 @@ export default function ModelHubPage() {
         setEditingModel(null);
         await fetchData(true);
     };
-    const handleToggleNoThink = async (model: AIModel, controlMeta: ControlPlaneModel | null, disabled: boolean) => {
-        const thinkingControl = {
-            ...(model.thinkingControl || {}),
-            ...(controlMeta?.thinkingControl || {}),
-            supportsNoThink: true,
-            disabled,
-        };
-        const response = await fetch("/api/models", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                providerId: model.providerId,
-                modelId: model.modelId,
-                type: model.type || controlMeta?.type || "TEXT",
-                contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
-                maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
-                rerankApiFlavor: model.rerankApiFlavor || "",
-                thinkingControl,
-            }),
-        });
-        if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"));
-            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"), description: errorMessage });
-            return;
-        }
-        toast({
-            title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
-            description: model.modelId,
-        });
-        await fetchData(true, true);
-    };
     const handleSetReasoningLevel = async (model: AIModel, controlMeta: ControlPlaneModel | null, level: string) => {
         const supportsNoThink = Boolean(controlMeta?.thinkingControl?.supportsNoThink);
         const disabled = supportsNoThink && level === "none";
-        const reasoningEffortControl = {
-            ...(model.reasoningEffortControl || {}),
-            ...(controlMeta?.reasoningEffortControl || {}),
-            supportsReasoningEffort: Boolean(controlMeta?.reasoningEffortControl?.supportsReasoningEffort),
-            selectedLevel: disabled ? "auto" : level,
-            source: "manual",
-        };
-        const thinkingControl = supportsNoThink
+        const effortProfileDriven = Boolean(controlMeta?.reasoningEffortControl?.profileId);
+        const reasoningEffortControl = effortProfileDriven
             ? {
-                ...(model.thinkingControl || {}),
-                ...(controlMeta?.thinkingControl || {}),
-                supportsNoThink: true,
-                disabled,
-                source: "manual",
+                supportsReasoningEffort: true,
+                selectedLevel: disabled ? "auto" : level,
+                source: "manual_selection",
             }
+            : {
+                ...(model.reasoningEffortControl || {}),
+                ...(controlMeta?.reasoningEffortControl || {}),
+                supportsReasoningEffort: Boolean(controlMeta?.reasoningEffortControl?.supportsReasoningEffort),
+                selectedLevel: disabled ? "auto" : level,
+                source: "manual_selection",
+            };
+        const noThinkProfileDriven = Boolean(controlMeta?.thinkingControl?.profileId);
+        const thinkingControl = supportsNoThink
+            ? noThinkProfileDriven
+                ? { disabled, source: "manual_selection" }
+                : {
+                    ...(model.thinkingControl || {}),
+                    ...(controlMeta?.thinkingControl || {}),
+                    supportsNoThink: true,
+                    disabled,
+                    source: "manual_selection",
+                }
             : model.thinkingControl || undefined;
         const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, {
             method: "PUT",
@@ -3166,7 +3145,7 @@ export default function ModelHubPage() {
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setComfyWorkflow(comfyWorkflowDraft(model.mediaLimits));
                     setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
                         })}
                     </div>)}
             </ConfigCard>

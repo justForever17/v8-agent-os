@@ -75,7 +75,7 @@ def test_llm_provider_catalog_contains_new_model_providers():
 
     gemini = next(item for item in payload["providers"] if item["id"] == "gemini-api")
     gemini_model_ids = {item["id"] for item in gemini["models"]}
-    assert {"gemini-3.5-flash", "gemini-3.1-flash-lite"}.issubset(gemini_model_ids)
+    assert {"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"}.issubset(gemini_model_ids)
     assert "gemini-3.1-flash-preview" not in gemini_model_ids
     assert "gemini-3.1-flash-lite-preview" not in gemini_model_ids
 
@@ -87,9 +87,28 @@ def test_llm_provider_catalog_contains_new_model_providers():
         "gpt-5.6-terra",
         "gpt-5.6-luna",
     ]
-    assert {"claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"}.issubset(
+    assert {"claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"}.issubset(
         {item["id"] for item in anthropic["models"]}
     )
+    deepseek = next(item for item in payload["providers"] if item["id"] == "deepseek")
+    assert [
+        (item["id"], item["defaultWireProtocol"])
+        for item in deepseek["channels"]
+    ] == [
+        ("openai", "openai.chat_completions"),
+        ("responses", "openai.responses"),
+        ("anthropic", "anthropic.messages"),
+    ]
+    assert {item["id"] for item in deepseek["models"]} == {
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    }
+    dashscope = next(item for item in payload["providers"] if item["id"] == "dashscope")
+    assert "qwen3.8-max-preview" in {item["id"] for item in dashscope["models"]}
+    moonshot = next(item for item in payload["providers"] if item["id"] == "moonshot")
+    assert "kimi-k3" in {item["id"] for item in moonshot["models"]}
+    volcengine = next(item for item in payload["providers"] if item["id"] == "volcengine-ark")
+    assert "doubao-seed-2-1-pro-260628" in {item["id"] for item in volcengine["models"]}
     assert agnes["baseUrl"] == "https://apihub.agnes-ai.com/v1"
     assert agnes["probeStrategy"] == "openai_models"
     assert agnes["probeModelAllowlist"] == [
@@ -167,6 +186,11 @@ def test_quick_connect_multi_channel_catalog_is_explicit_and_runtime_supported()
             assert set(channel["wireProtocols"]).issubset(SUPPORTED_CHAT_WIRE_PROTOCOLS), (provider_id, channel["id"])
 
     expected_new_channels = {
+        "deepseek": [
+            ("openai", "https://api.deepseek.com", "openai.chat_completions"),
+            ("responses", "https://api.deepseek.com", "openai.responses"),
+            ("anthropic", "https://api.deepseek.com/anthropic", "anthropic.messages"),
+        ],
         "siliconflow": [
             ("chat-completions", "https://api.siliconflow.cn/v1", "openai.chat_completions"),
             ("anthropic-messages", "https://api.siliconflow.cn", "anthropic.messages"),

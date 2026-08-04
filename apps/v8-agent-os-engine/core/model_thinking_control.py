@@ -10,6 +10,7 @@ from typing import Any, Dict, Mapping
 _THINKING_PROFILE_PATH = Path(__file__).resolve().parent / "model_catalog" / "model_thinking_profiles.json"
 _KNOWN_REASONING_LEVELS = ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 _REASONING_EFFORT_EXCLUDED_CLASSES = {"embedding", "reranker", "rerank", "media_generation"}
+_PROFILE_OWNED_CONTROL_SOURCES = {"model_thinking_profile", "manual_selection"}
 _ANTHROPIC_THINKING_BUDGET_BY_LEVEL = {
     "low": 4096,
     "medium": 8192,
@@ -118,6 +119,22 @@ def _matches_any_pattern(value: str, patterns: Any) -> bool:
     return any(re.search(pattern, normalized, flags=re.IGNORECASE) is not None for pattern in candidates)
 
 
+def _profile_owns_control_facts(explicit: Mapping[str, Any], matched_profile: Mapping[str, Any]) -> bool:
+    source = str(explicit.get("source") or "").strip().lower()
+    if not matched_profile:
+        return False
+    if source in _PROFILE_OWNED_CONTROL_SOURCES:
+        return True
+    explicit_profile_id = str(explicit.get("profileId") or explicit.get("profile_id") or "").strip()
+    matched_profile_id = str(matched_profile.get("id") or "").strip()
+    return bool(
+        source == "manual"
+        and explicit_profile_id
+        and matched_profile_id
+        and explicit_profile_id == matched_profile_id
+    )
+
+
 def _matching_profiles(*, provider_id: str, model_id: str) -> list[Dict[str, Any]]:
     return [
         profile
@@ -175,6 +192,17 @@ def _effort_request_style(*, transport: str, effort: Mapping[str, Any]) -> str:
     return "openai_reasoning_effort"
 
 
+def _reasoning_effort_aliases(value: Any) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for raw_source, raw_target in _as_dict(value).items():
+        source = normalize_reasoning_effort(raw_source)
+        target_text = str(raw_target or "").strip().lower()
+        target = "disabled" if target_text == "disabled" else normalize_reasoning_effort(target_text)
+        if source != "auto" and (target == "disabled" or target != "auto"):
+            aliases[source] = target
+    return aliases
+
+
 def _no_think_request_style(*, transport: str, profile: Mapping[str, Any]) -> str:
     no_think = _as_dict(profile.get("noThink"))
     if transport == "openrouter":
@@ -209,12 +237,13 @@ def resolve_thinking_control_for_metadata(
     no_think_profile = _as_dict(matched_profile.get("noThink"))
     native_family = str(matched_profile.get("nativeFamily") or "").strip()
     transport = _transport_kind(meta=meta, model_record=model_record, native_family=native_family)
+    profile_owns_facts = _profile_owns_control_facts(explicit, matched_profile)
     profile_supports = no_think_profile.get("supported") is True
-    request_style = str(explicit.get("requestStyle") or "").strip()
+    request_style = "" if profile_owns_facts else str(explicit.get("requestStyle") or "").strip()
     if not request_style and profile_supports:
         request_style = _no_think_request_style(transport=transport, profile=matched_profile)
 
-    supports = bool(explicit.get("supportsNoThink")) or profile_supports
+    supports = profile_supports if profile_owns_facts else bool(explicit.get("supportsNoThink")) or profile_supports
     disabled = bool(explicit.get("disabled") or explicit.get("noThinkDisabled") or explicit.get("thinkingDisabled"))
     if not supports:
         return {}
@@ -224,7 +253,11 @@ def resolve_thinking_control_for_metadata(
         "disabled": disabled,
         "requestStyle": request_style,
         "source": explicit.get("source") or "model_thinking_profile",
-        "defaultDisabled": bool(explicit.get("defaultDisabled", False)),
+        "defaultDisabled": bool(
+            no_think_profile.get("defaultDisabled", False)
+            if profile_owns_facts
+            else explicit.get("defaultDisabled", no_think_profile.get("defaultDisabled", False))
+        ),
         "profileId": str(matched_profile.get("id") or ""),
         "sourceRefs": list(matched_profile.get("sourceRefs") or []),
         "wireProtocol": _model_wire_protocol(meta, model_record),
@@ -264,11 +297,16 @@ def resolve_reasoning_effort_control_for_metadata(
 
     native_family = str(matched_profile.get("nativeFamily") or "").strip()
     transport = _transport_kind(meta=meta, model_record=model_record, native_family=native_family)
-    request_style = str(explicit.get("requestStyle") or "").strip() or _effort_request_style(
+    profile_owns_facts = _profile_owns_control_facts(explicit, matched_profile)
+    request_style = ("" if profile_owns_facts else str(explicit.get("requestStyle") or "").strip()) or _effort_request_style(
         transport=transport,
         effort=effort_profile,
     )
-    declared_levels = explicit.get("levels") if isinstance(explicit.get("levels"), list) else effort_profile.get("levels")
+    declared_levels = (
+        effort_profile.get("levels")
+        if profile_owns_facts
+        else explicit.get("levels") if isinstance(explicit.get("levels"), list) else effort_profile.get("levels")
+    )
     levels = [
         level
         for level in (normalize_reasoning_effort(item) for item in declared_levels or [])
@@ -278,11 +316,23 @@ def resolve_reasoning_effort_control_for_metadata(
     if not levels:
         return {}
     selected_level = normalize_reasoning_effort(explicit.get("selectedLevel") or explicit.get("level") or "auto")
-    if selected_level != "auto" and selected_level not in levels:
-        selected_level = "auto"
-    default_level = normalize_reasoning_effort(explicit.get("defaultLevel") or effort_profile.get("defaultLevel") or "auto")
+    default_level = normalize_reasoning_effort(
+        effort_profile.get("defaultLevel")
+        if profile_owns_facts
+        else explicit.get("defaultLevel") or effort_profile.get("defaultLevel") or "auto"
+    )
     if default_level != "auto" and default_level not in levels:
         default_level = "auto"
+    request_aliases = _reasoning_effort_aliases(
+        effort_profile.get("requestAliases")
+        if profile_owns_facts
+        else explicit.get("requestAliases") or effort_profile.get("requestAliases")
+    )
+    selected_alias = request_aliases.get(selected_level)
+    if selected_alias and selected_alias != "disabled":
+        selected_level = normalize_reasoning_effort(selected_alias)
+    if selected_level != "auto" and selected_level not in levels:
+        selected_level = "auto"
 
     return {
         "supportsReasoningEffort": True,
@@ -290,8 +340,17 @@ def resolve_reasoning_effort_control_for_metadata(
         "levels": ["auto", *levels],
         "defaultLevel": default_level,
         "selectedLevel": selected_level,
-        "mandatory": bool(explicit.get("mandatory", effort_profile.get("mandatory", False))),
-        "budgetByLevel": _as_dict(explicit.get("budgetByLevel") or effort_profile.get("budgetByLevel")),
+        "mandatory": bool(
+            effort_profile.get("mandatory", False)
+            if profile_owns_facts
+            else explicit.get("mandatory", effort_profile.get("mandatory", False))
+        ),
+        "budgetByLevel": _as_dict(
+            effort_profile.get("budgetByLevel")
+            if profile_owns_facts
+            else explicit.get("budgetByLevel") or effort_profile.get("budgetByLevel")
+        ),
+        "requestAliases": request_aliases,
         "source": explicit.get("source") or "model_thinking_profile",
         "profileId": str(matched_profile.get("id") or ""),
         "sourceRefs": list(matched_profile.get("sourceRefs") or []),
@@ -309,6 +368,17 @@ def no_think_request_patch(thinking_control: Mapping[str, Any] | None) -> Dict[s
     style = str(control.get("requestStyle") or "").strip()
     if style == "dashscope_enable_thinking_false":
         return {"extra_body": {"enable_thinking": False}}
+    if style == "dashscope_reasoning_effort_none":
+        if str(control.get("wireProtocol") or "").strip() == "openai.responses":
+            return {"reasoning": {"effort": "none"}}
+        return {"extra_body": {"enable_thinking": False}}
+    if style == "deepseek_thinking_disabled":
+        wire_protocol = str(control.get("wireProtocol") or "").strip()
+        if wire_protocol == "anthropic.messages":
+            return {"thinking": {"type": "disabled"}}
+        if wire_protocol == "openai.responses":
+            return {"reasoning": {"effort": "none"}}
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
     if style == "openai_thinking_disabled":
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     if style == "anthropic_thinking_disabled":
@@ -331,9 +401,17 @@ def reasoning_effort_request_patch(
     control = _as_dict(reasoning_effort_control)
     if not control.get("supportsReasoningEffort"):
         return {}
-    level = normalize_reasoning_effort(requested_effort)
-    if level == "auto":
+    requested_level = normalize_reasoning_effort(requested_effort)
+    if requested_level == "auto":
         return {}
+    alias_target = _reasoning_effort_aliases(control.get("requestAliases")).get(requested_level)
+    if alias_target == "disabled":
+        if str(control.get("requestStyle") or "").strip() == "dashscope_reasoning_effort":
+            if str(control.get("wireProtocol") or "").strip() == "openai.responses":
+                return {"reasoning": {"effort": "none"}}
+            return {"extra_body": {"enable_thinking": False}}
+        return {}
+    level = normalize_reasoning_effort(alias_target or requested_level)
     declared_levels = control.get("levels") or ("low", "medium", "high")
     supported_levels = {
         normalize_reasoning_effort(item)
@@ -350,8 +428,28 @@ def reasoning_effort_request_patch(
         return {"reasoning": {"effort": level}}
     if style == "openrouter_reasoning_effort":
         return {"reasoning": {"effort": level}}
+    if style == "deepseek_reasoning_effort":
+        wire_protocol = str(control.get("wireProtocol") or "").strip()
+        if wire_protocol == "anthropic.messages":
+            return {
+                "thinking": {"type": "enabled"},
+                "effort": level,
+            }
+        if wire_protocol == "openai.responses":
+            return {"reasoning": {"effort": level}}
+        return {
+            "reasoning_effort": level,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+    if style == "dashscope_reasoning_effort":
+        if str(control.get("wireProtocol") or "").strip() == "openai.responses":
+            return {"reasoning": {"effort": level}}
+        return {"reasoning_effort": level}
     if style == "anthropic_effort":
-        return {"effort": level}
+        return {
+            "thinking": {"type": "adaptive"},
+            "effort": level,
+        }
     if style == "anthropic_thinking_budget":
         budget = _as_dict(control.get("budgetByLevel")).get(level) or _ANTHROPIC_THINKING_BUDGET_BY_LEVEL.get(level)
         return {"thinking": {"type": "enabled", "budget_tokens": int(budget)}} if budget else {}

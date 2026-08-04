@@ -16,6 +16,7 @@
     {
       "id": "openrouter-deepseek-r1",
       "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^openrouter$"],
       "modelPatterns": ["^(?:deepseek/)?deepseek-r1(?:$|-)"],
       "effort": {
         "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -31,7 +32,7 @@
       "modelPatterns": ["^(?:openai/)?gpt-5\\.6(?:-(?:sol|terra|luna))?(?:$|-20\\d{2})"],
       "effort": {
         "levels": ["none", "low", "medium", "high", "xhigh", "max"],
-        "defaultLevel": "none",
+        "defaultLevel": "medium",
         "mandatory": false
       },
       "noThink": {"supported": true},
@@ -155,6 +156,18 @@
       "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
     },
     {
+      "id": "anthropic-opus-5",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-opus-5(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "anthropic_thinking_disabled"},
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
       "id": "anthropic-opus-4.8",
       "nativeFamily": "anthropic",
       "modelPatterns": ["^(?:anthropic/)?claude-opus-4[.-]8(?:$|-)"],
@@ -199,19 +212,6 @@
       "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
     },
     {
-      "id": "anthropic-legacy-manual-thinking",
-      "nativeFamily": "anthropic",
-      "modelPatterns": ["^(?:anthropic/)?claude-(?:sonnet-4[.-]5|3[.-]7-sonnet|3[.-]5-(?:sonnet|haiku))(?:$|-)"],
-      "effort": {
-        "levels": ["low", "medium", "high"],
-        "defaultLevel": "medium",
-        "mandatory": false,
-        "nativeRequestStyle": "anthropic_thinking_budget",
-        "budgetByLevel": {"low": 4096, "medium": 8192, "high": 16000}
-      },
-      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/extended-thinking"]
-    },
-    {
       "id": "anthropic-sonnet-5",
       "nativeFamily": "anthropic",
       "modelPatterns": ["^(?:anthropic/)?claude-sonnet-5(?:$|-)"],
@@ -233,6 +233,18 @@
         "mandatory": false
       },
       "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3[.-]6-flash(?:$|-)"],
+      "effort": {
+        "levels": ["minimal", "low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
     },
     {
       "id": "gemini-3.5-flash",
@@ -298,12 +310,6 @@
       "id": "gemini-2.5-pro",
       "nativeFamily": "gemini",
       "modelPatterns": ["^(?:google/)?gemini-2[.-]5-pro(?:$|-)"],
-      "effort": {
-        "levels": ["low", "medium", "high"],
-        "defaultLevel": "high",
-        "mandatory": true,
-        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 32768}
-      },
       "noThink": {"supported": false},
       "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
     },
@@ -311,14 +317,42 @@
       "id": "gemini-2.5-flash",
       "nativeFamily": "gemini",
       "modelPatterns": ["^(?:google/)?gemini-2[.-]5-flash(?:$|-)"],
-      "effort": {
-        "levels": ["low", "medium", "high"],
-        "defaultLevel": "medium",
-        "mandatory": false,
-        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 24576}
-      },
       "noThink": {"supported": true, "nativeRequestStyle": "gemini_thinking_budget_zero"},
       "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "dashscope-qwen-3.8-max-preview",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:dashscope|qwen)$"],
+      "modelPatterns": ["^qwen3[.-]8-max-preview$"],
+      "effort": {
+        "levels": ["low", "medium", "xhigh"],
+        "defaultLevel": "xhigh",
+        "mandatory": false,
+        "nativeRequestStyle": "dashscope_reasoning_effort",
+        "requestAliases": {
+          "minimal": "low",
+          "high": "xhigh",
+          "max": "xhigh",
+          "none": "disabled"
+        }
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "dashscope_reasoning_effort_none"},
+      "sourceRefs": ["https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions"]
+    },
+    {
+      "id": "moonshot-kimi-k3",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:moonshot|kimi)$"],
+      "modelPatterns": ["^kimi-k3$"],
+      "effort": {
+        "levels": ["low", "high", "max"],
+        "defaultLevel": "max",
+        "mandatory": true,
+        "nativeRequestStyle": "openai_reasoning_effort"
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"]
     },
     {
       "id": "dashscope-qwen-no-think",
@@ -337,11 +371,36 @@
       "sourceRefs": ["https://docs.z.ai/guides/capabilities/thinking-mode"]
     },
     {
-      "id": "deepseek-v4-no-think",
+      "id": "deepseek-v4-flash",
       "nativeFamily": "openai_compatible",
       "providerPatterns": ["^deepseek$"],
-      "modelPatterns": ["^deepseek-v4-(?:flash|pro)(?:$|-)"],
-      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "modelPatterns": ["^deepseek-v4-flash(?:$|-)"],
+      "effort": {
+        "levels": ["low", "high", "max"],
+        "defaultLevel": "high",
+        "mandatory": false,
+        "nativeRequestStyle": "deepseek_reasoning_effort",
+        "requestAliases": {"xhigh": "high"}
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "deepseek_thinking_disabled"},
+      "sourceRefs": [
+        "https://api-docs.deepseek.com/guides/thinking_mode",
+        "https://api-docs.deepseek.com/guides/responses_api"
+      ]
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^deepseek$"],
+      "modelPatterns": ["^deepseek-v4-pro(?:$|-)"],
+      "effort": {
+        "levels": ["high", "max"],
+        "defaultLevel": "high",
+        "mandatory": false,
+        "nativeRequestStyle": "deepseek_reasoning_effort",
+        "requestAliases": {"low": "high", "xhigh": "max"}
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "deepseek_thinking_disabled"},
       "sourceRefs": ["https://api-docs.deepseek.com/guides/thinking_mode"]
     },
     {

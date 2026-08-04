@@ -117,10 +117,19 @@ test("Reasoning effort is persisted per model without growing the fixed model ca
   assert.match(modelCard, /<ReasoningEffortControl/);
   assert.match(modelCard, /variant="track"/);
   assert.match(modelCard, /onValueCommit=\{commitThinkingLevel\}/);
+  assert.match(modelCard, /level === "none" \? "no think" : level/);
   assert.match(sharedControl, /role="slider"/);
   assert.match(sharedControl, /aria-valuetext=\{currentLabel\}/);
   assert.match(modelCard, /onSetReasoningLevel/);
+  assert.doesNotMatch(modelCard, /onToggleNoThink/);
   assert.match(projection, /payload\.reasoningEffortControl = data\.reasoningEffortControl/);
   assert.match(form, /handleSetReasoningLevel/);
   assert.match(form, /selectedLevel: disabled \? "auto" : level/);
+  assert.match(form, /profileId/);
+  assert.match(form, /source: "manual_selection"/);
+  const reasoningMutation = form.slice(
+    form.indexOf("const handleSetReasoningLevel"),
+    form.indexOf("const handleToggleProviderHostedTools"),
+  );
+  assert.doesNotMatch(reasoningMutation, /endpointBinding/);
 });

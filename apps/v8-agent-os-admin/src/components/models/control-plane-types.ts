@@ -91,6 +91,7 @@ export type ControlPlaneModel = {
         requestStyle?: string;
         source?: string;
         defaultDisabled?: boolean;
+        profileId?: string;
     } | null;
     reasoningEffortControl?: {
         supportsReasoningEffort?: boolean;

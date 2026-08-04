@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-07-19",
+  "lastCheckedAt": "2026-08-04",
   "providers": [
     {
       "id": "openai",
@@ -233,6 +233,30 @@
           }
         },
         {
+          "id": "claude-opus-5",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "official",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/about-claude/models/overview"
+            ],
+            "notes": "Claude Opus 5 has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+          }
+        },
+        {
           "id": "claude-opus-4-8",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
@@ -445,17 +469,53 @@
           }
         },
         {
-          "id": "gemini-3.5-flash",
+          "id": "gemini-3.6-flash",
           "type": "MULTIMODAL",
-          "contextWindow": 1000000,
-          "maxOutputTokens": 64000,
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
           "capabilities": [
             "chat",
             "reasoning",
             "tools",
             "vision",
             "streaming",
-            "multimodal"
+            "multimodal",
+            "structured_output"
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "adapter_verified",
+            "requestStyle": "gemini_include_thoughts",
+            "responseFields": [
+              "content[type=thinking]"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              {
+                "source": "google_gemini_thinking_docs",
+                "url": "https://ai.google.dev/gemini-api/docs/generate-content/thinking"
+              },
+              {
+                "source": "v8_adapter_fixture",
+                "url": "apps/v8-agent-os-engine/core/model_catalog/reasoning_surface_fixtures/gemini_thought_summary.json"
+              }
+            ],
+            "notes": "Gemini GenerateContent returns display-safe thought summaries as thought parts when include_thoughts is enabled; the V8 adapter fixture verifies their content[type=thinking] projection."
+          }
+        },
+        {
+          "id": "gemini-3.5-flash",
+          "type": "MULTIMODAL",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal",
+            "structured_output"
           ],
           "reasoningSurface": {
             "mode": "reasoning_summary",
@@ -755,6 +815,7 @@
       "defaultChannelId": "openai",
       "channels": [
         { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://api.deepseek.com", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses (V4 Flash)", "apiStandard": "openai", "baseUrl": "https://api.deepseek.com", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
         { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.deepseek.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
       ],
       "auth": {
@@ -774,41 +835,57 @@
         {
           "id": "deepseek-v4-flash",
           "contextWindow": 1000000,
-          "maxOutputTokens": 360000,
+          "maxOutputTokens": 384000,
           "capabilities": [
             "chat",
             "reasoning",
             "tools",
-            "streaming"
+            "streaming",
+            "structured_output"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content",
+              "additional_kwargs.reasoning",
+              "reasoning"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              "https://api-docs.deepseek.com/guides/thinking_mode"
+            ],
+            "notes": "DeepSeek V4 returns thinking separately in reasoning_content; V8 keeps it out of normal message text."
           }
         },
         {
           "id": "deepseek-v4-pro",
           "contextWindow": 1000000,
-          "maxOutputTokens": 360000,
+          "maxOutputTokens": 384000,
           "capabilities": [
             "chat",
             "reasoning",
             "tools",
-            "streaming"
+            "streaming",
+            "structured_output"
           ],
           "reasoningSurface": {
-            "mode": "hidden",
-            "trust": "unknown",
-            "requestStyle": "none",
-            "responseFields": [],
-            "displayKind": "hidden",
-            "sourceRefs": [],
-            "notes": "Reasoning capability may exist, but no V8 adapter fixture verifies a display-safe reasoning field."
+            "mode": "provider_reasoning",
+            "trust": "adapter_verified",
+            "requestStyle": "openai_compatible",
+            "responseFields": [
+              "additional_kwargs.reasoning_content",
+              "reasoning_content",
+              "additional_kwargs.reasoning",
+              "reasoning"
+            ],
+            "displayKind": "provider_reasoning",
+            "sourceRefs": [
+              "https://api-docs.deepseek.com/guides/thinking_mode"
+            ],
+            "notes": "DeepSeek V4 returns thinking separately in reasoning_content; V8 keeps it out of normal message text."
           }
         }
       ],
@@ -857,6 +934,26 @@
       },
       "confidence": "official",
       "models": [
+        {
+          "id": "qwen3.8-max-preview",
+          "type": "MULTIMODAL",
+          "contextWindow": 983616,
+          "maxOutputTokens": 131072,
+          "availability": "token_plan_only",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal",
+            "structured_output"
+          ],
+          "sourceRefs": [
+            "https://help.aliyun.com/en/model-studio/text-generation-model/",
+            "https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions"
+          ]
+        },
         {
           "id": "qwen-max",
           "contextWindow": 1000000,
@@ -1520,20 +1617,43 @@
       "name": "Moonshot Kimi",
       "apiStandard": "openai",
       "baseUrl": "https://api.moonshot.ai/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.moonshot.ai/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "sourceUrl": "https://platform.kimi.ai/docs/api/list-models",
+      "sourceUrl": "https://platform.kimi.ai/docs/models",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
-        "url": "https://platform.moonshot.ai/console/api-keys"
+        "url": "https://platform.kimi.ai/console/api-keys"
       },
       "confidence": "official",
-      "models": [],
+      "models": [
+        {
+          "id": "kimi-k3",
+          "type": "MULTIMODAL",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 1048576,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal",
+            "structured_output"
+          ],
+          "sourceRefs": [
+            "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"
+          ]
+        }
+      ],
       "providerKind": "chat",
       "logoAsset": "/model-assets/lobe/kimi-color.svg",
       "reasoningSurface": {
@@ -1548,7 +1668,7 @@
         ],
         "displayKind": "provider_reasoning",
         "sourceRefs": [
-          "https://platform.moonshot.ai/docs"
+          "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"
         ],
         "notes": "Kimi thinking output is displayed only when returned as a separated reasoning_content/reasoning field by the adapter."
       }
@@ -1895,6 +2015,22 @@
       },
       "confidence": "provider_docs",
       "models": [
+        {
+          "id": "doubao-seed-2-1-pro-260628",
+          "type": "MULTIMODAL",
+          "contextWindow": 256000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "sourceRefs": [
+            "https://www.volcengine.com/product/yunque"
+          ]
+        },
         {
           "id": "doubao-seed-2-0-pro-260215",
           "contextWindow": 256000,

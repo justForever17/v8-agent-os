@@ -114,6 +114,24 @@ def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str) -> Dict
     return patch
 
 
+def _model_patch_changes_endpoint_contract(
+    existing_model: Dict[str, Any],
+    model_patch: Dict[str, Any],
+) -> bool:
+    if not existing_model or not existing_model.get("endpointBinding"):
+        return True
+    if any(
+        key in model_patch
+        for key in ("endpointBinding", "mediaLimits", "operationKinds", "adapter", "capabilityClass")
+    ):
+        return True
+    if "type" in model_patch:
+        existing_type = str(existing_model.get("type") or "TEXT").strip().upper()
+        requested_type = str(model_patch.get("type") or "TEXT").strip().upper()
+        return requested_type != existing_type
+    return False
+
+
 def _role_doctor_for_missing_binding(role_key: str, binding_state: str) -> Dict[str, Any]:
     code = "role_model_unbound" if binding_state == "unbound" else "role_model_invalid"
     message = (
@@ -1093,12 +1111,21 @@ class ModelControlPlane:
             source_models = dict(source_container.get("models") or {})
             existing_model = dict(source_models.get(source_model_key) or {})
             annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source)
-            next_model = persist_model_endpoint_binding(
-                normalized_provider_id,
-                normalized_model_id,
-                target_provider,
-                {**existing_model, **annotated_patch},
-                source=source,
+            merged_model = {**existing_model, **annotated_patch}
+            binding_identity_changed = (
+                source_provider_key != normalized_provider_id
+                or source_model_key != normalized_model_id
+            )
+            next_model = (
+                persist_model_endpoint_binding(
+                    normalized_provider_id,
+                    normalized_model_id,
+                    target_provider,
+                    merged_model,
+                    source=source,
+                )
+                if binding_identity_changed or _model_patch_changes_endpoint_contract(existing_model, model_patch)
+                else merged_model
             )
             target_models = {} if replace_provider_models else dict(target.get("models") or {})
             if source_provider_key == normalized_provider_id:

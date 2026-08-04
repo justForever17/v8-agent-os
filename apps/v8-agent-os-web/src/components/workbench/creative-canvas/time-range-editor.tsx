@@ -38,11 +38,17 @@ export function CanvasTimeRangeEditor({
     const [draftRange, setDraftRange] = useState(range);
     const [mediaDuration, setMediaDuration] = useState(0);
     const [playheadSeconds, setPlayheadSeconds] = useState(0);
+    const [indexingExact, setIndexingExact] = useState(false);
     const draftRangeRef = useRef(range);
-    onChangeRef.current = onChange;
-    rangeRef.current = range;
-    draftRangeRef.current = draftRange;
     useEffect(() => {
+        onChangeRef.current = onChange;
+    }, [onChange]);
+    useEffect(() => {
+        rangeRef.current = range;
+    }, [range]);
+    useEffect(() => {
+        // The persisted Graph range may be hydrated after this editor mounts.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setDraftRange(range);
         draftRangeRef.current = range;
     }, [
@@ -68,9 +74,12 @@ export function CanvasTimeRangeEditor({
         : 0;
 
     useEffect(() => {
+        // Reset local playback telemetry when the selected governed resource changes.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setMediaDuration(0);
         setPlayheadSeconds(0);
         playheadSecondsRef.current = 0;
+        setIndexingExact(false);
     }, [resource?.id, resource?.origin]);
 
     useEffect(() => () => {
@@ -121,7 +130,7 @@ export function CanvasTimeRangeEditor({
                 probeFingerprint: String(payload?.fingerprint || ""),
                 displayPrecision: Math.max(3, Math.min(9, Number(timeline.displayPrecision) || 6)),
                 exact: !approximate,
-                loading: approximate,
+                loading: false,
             };
             const reconciledRange = reconcileCanvasTimeRange(previous, nextRange, mode);
             setDraftRange(reconciledRange);
@@ -130,7 +139,7 @@ export function CanvasTimeRangeEditor({
         };
         const loadProbe = async () => {
             try {
-                const requestProbe = async (detail?: "preview") => {
+                const requestProbe = async (detail?: "preview" | "sparse") => {
                     const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/media/probe`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -144,6 +153,12 @@ export function CanvasTimeRangeEditor({
                 const previewPayload = await requestProbe("preview");
                 applyProbe(previewPayload);
                 if (recordOf(previewPayload.timeline).approximate === true) {
+                    setIndexingExact(true);
+                    try {
+                        applyProbe(await requestProbe("sparse"));
+                    } catch (reason) {
+                        if (controller.signal.aborted) throw reason;
+                    }
                     applyProbe(await requestProbe());
                 }
             } catch (reason) {
@@ -157,6 +172,8 @@ export function CanvasTimeRangeEditor({
                     draftRangeRef.current = failed;
                     onChangeRef.current(failed);
                 }
+            } finally {
+                if (!controller.signal.aborted) setIndexingExact(false);
             }
         };
         void loadProbe();
@@ -336,8 +353,8 @@ export function CanvasTimeRangeEditor({
             ) : null}
             <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
                 <div className="mb-3 flex items-center gap-2 text-[10px] text-muted-foreground">
-                    {draftRange.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
-                    <span>{draftRange.loading
+                    {draftRange.loading || indexingExact ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                    <span>{draftRange.loading || indexingExact
                         ? t("web.workbench.canvas.timeline.loading")
                         : t(mode === "frame" ? "web.workbench.canvas.timeline.frameSelection" : "web.workbench.canvas.timeline.selection")}</span>
                     {duration ? <span className="ml-auto font-mono">{draftRange.durationSeconds}s</span> : null}

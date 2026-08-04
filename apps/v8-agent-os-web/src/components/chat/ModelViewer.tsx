@@ -5,6 +5,7 @@ import { Bounds, Center, OrbitControls, useAnimations, useGLTF } from "@react-th
 import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Box, FileWarning, Loader2 } from "lucide-react";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { acquireGltfResourceLease } from "./gltf-resource-lease";
 
 interface ModelViewerProps {
     src: string;
@@ -19,6 +20,12 @@ function Model({ url, active }: { url: string; active: boolean }) {
     const { scene, animations } = useGLTF(url);
     const copiedScene = useMemo(() => cloneSkeleton(scene), [scene]);
     const { actions, names } = useAnimations(animations, copiedScene);
+
+    useEffect(() => acquireGltfResourceLease({
+        url,
+        scene,
+        clear: () => useGLTF.clear(url),
+    }), [scene, url]);
 
     useEffect(() => {
         const action = names.length ? actions[names[0]] : undefined;

@@ -184,6 +184,53 @@ async def get_canvas_graph(session_id: str):
         _raise_canvas_http(error)
 
 
+@router.get("/sessions/{session_id}/canvas/graph/runs/{graph_run_id}")
+async def get_canvas_graph_run(session_id: str, graph_run_id: str):
+    try:
+        return await asyncio.to_thread(
+            creative_canvas_graph_service.get_run,
+            session_id=session_id,
+            graph_run_id=graph_run_id,
+        )
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
+@router.post("/sessions/{session_id}/canvas/graph/runs/{graph_run_id}/cancel")
+async def cancel_canvas_graph_run(session_id: str, graph_run_id: str, body: dict = Body(default_factory=dict)):
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        return await creative_canvas_graph_service.cancel_run(
+            creative_media_runtime,
+            session_id=session_id,
+            graph_run_id=graph_run_id,
+            reason=str(body.get("reason") or "user_cancelled"),
+        )
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
+@router.post("/sessions/{session_id}/canvas/graph/runs/{graph_run_id}/retry-failed-branch")
+async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        job = await creative_canvas_graph_service.retry_failed_run(
+            creative_media_runtime,
+            session_id=session_id,
+            graph_run_id=graph_run_id,
+        )
+        run = await asyncio.to_thread(
+            creative_canvas_graph_service.get_run,
+            session_id=session_id,
+            graph_run_id=graph_run_id,
+        )
+        return {"job": job, "run": run}
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
 @router.post("/sessions/{session_id}/canvas/graph")
 async def save_canvas_graph(session_id: str, body: dict = Body(...)):
     try:

@@ -156,6 +156,8 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   const serialization = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/serialization.ts");
   const timelineEditor = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/time-range-editor.tsx");
   const model = read("apps/v8-agent-os-web/src/components/chat/ModelViewer.tsx");
+  const modelLease = read("apps/v8-agent-os-web/src/components/chat/gltf-resource-lease.ts");
+  const engineGraph = read("apps/v8-agent-os-engine/core/creative_canvas_graph.py");
   const zh = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json"));
   const en = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/en.json"));
 
@@ -179,6 +181,8 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(canvas, /<textarea[^>]+taskPlaceholder/);
   assert.match(shell, /sessionRunning=\{props\.sessionRunning\}/);
   assert.match(shell, /visible=\{document\.kind === "creative_canvas"\}/);
+  assert.match(shell, /containerWidth > 0 && containerWidth < 760/);
+  assert.match(shell, /mode === "focus" \|\| compactWorkbench \? "focus" : "split"/);
   assert.match(shell, /dynamic\([\s\S]*import\("\.\/CreativeArtifactCanvas"\)/);
   assert.match(chat, /if \(activeConversationRunning \|\| activeConversationIdRef\.current !== canvasSessionId\) return false/);
   assert.match(chat, /composerPresentation/);
@@ -194,9 +198,13 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(media, /dynamic\(/);
   assert.match(media, /usesOriginalResource = kind === "model_3d" \|\| kind === "motion"/);
   assert.match(media, /const previewRequested = inspect \|\| modelPreviewKey === cacheKey/);
-  assert.match(media, /const shouldRenderModel = effectiveVisible && !compact && \(inspect \|\| \(active && previewRequested\)\)/);
-  assert.match(media, /shouldRenderModel \? <ModelViewer[\s\S]*active interactive=\{inspect\}/);
+  assert.match(media, /const shouldRenderModel = !compact && previewRequested && \(inspect \? effectiveVisible : active\)/);
+  assert.match(media, /shouldRenderModel \? <ModelViewer[\s\S]*active=\{effectiveVisible\} interactive=\{inspect\}/);
   assert.match(media, /web\.workbench\.canvas\.media\.load3d/);
+  assert.match(model, /acquireGltfResourceLease/);
+  assert.match(model, /useGLTF\.clear\(url\)/);
+  assert.match(modelLease, /MAX_IDLE_GLTF_RESOURCES = 8/);
+  assert.match(modelLease, /disposeSceneResources/);
   assert.match(canvas, /active=\{selected && inspectNodeId !== node\.nodeId\}/);
   assert.match(canvas, /visible=\{visible && visibleNodeIds\.has\(node\.nodeId\)\}/);
   assert.match(canvas, /<CreativeCanvasMedia resource=\{inspectResource\} inspect visible=\{visible\} \/>/);
@@ -214,11 +222,36 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(wheelHandler, /x: point\.x - worldX \* scale, y: point\.y - worldY \* scale/);
   assert.doesNotMatch(wheelHandler, /event\.ctrlKey|event\.metaKey|viewport\.x - event\.deltaX|viewport\.y - event\.deltaY/);
   assert.match(canvas, /pendingConnectionDrop/);
+  assert.match(canvas, /retryFailedGraph/);
+  assert.match(canvas, /operationId: retry\?\.canvasOperationId \|\| createId\("canvas-operation"\)/);
+  assert.match(canvas, /retryGraphRunId: retry\.graphRunId/);
+  assert.match(canvas, /graphRuntime\.targetNodeIds \|\| \[\]/);
+  assert.match(engineGraph, /"graphRevision": int\(run_data\.get\("graph_revision"\) or 0\) or None/);
+  assert.match(engineGraph, /_json\(run_data\.get\("target_node_ids_json"\), \[\]\)/);
+  assert.doesNotMatch(canvas, /actionState === "failed"[\s\S]{0,400}requestGraphRun\(\[node\.nodeId\]\)/);
+  const taskContract = read("apps/v8-agent-os-web/src/lib/creative-canvas-task-contract.ts");
+  assert.match(taskContract, /retryGraphRunId: String\(parameters\.retryGraphRunId\)\.trim\(\)/);
   assert.match(canvas, /adoptWorkspaceResource\(dropped\)/);
   assert.match(canvas, /catalogAbortRef\.current\?\.abort\(\)/);
-  assert.match(canvas, /Promise\.all\(\[[\s\S]*\/api\/artifacts[\s\S]*\/api\/sources[\s\S]*mediaBase\}\/assets[\s\S]*mediaBase\}\/folders/);
+  const initializationLoad = canvas.slice(
+    canvas.indexOf("const loadPayload = async"),
+    canvas.indexOf("}, 0);", canvas.indexOf("const loadPayload = async")),
+  );
+  assert.match(initializationLoad, /void loadGraph\(\)\.catch\(reportLoadError\)\.finally/);
+  assert.match(initializationLoad, /void loadActions\(\)\.catch\(reportLoadError\)/);
+  assert.match(initializationLoad, /void loadTemplates\(\)\.catch\(reportLoadError\)/);
+  assert.doesNotMatch(initializationLoad, /Promise\.all\(/);
+  const catalogLoad = canvas.slice(canvas.indexOf("const loadCatalog"), canvas.indexOf("const reconcileCatalog"));
+  assert.match(catalogLoad, /Promise\.allSettled/);
+  assert.match(catalogLoad, /\["artifacts", loadResources\("\/api\/artifacts"/);
+  assert.match(catalogLoad, /\["sources", loadResources\("\/api\/sources"/);
+  assert.match(catalogLoad, /\["assets", loadWorkspaceAssets\(\)\]/);
+  assert.match(catalogLoad, /\["folders", loadWorkspaceFolders\(\)\]/);
+  assert.match(catalogLoad, /replaceResourceChannel/);
+  assert.match(catalogLoad, /reportChannelError\(channel, reason\)/);
+  assert.match(canvas, /data-canvas-catalog-error=\{channel\}/);
   assert.match(canvas, /reconcileCanvasMediaCatalog\(sessionId\)\.then/);
-  assert.doesNotMatch(canvas.slice(canvas.indexOf("const loadCatalog"), canvas.indexOf("const reconcileCatalog")), /mediaBase\}\/reconcile/);
+  assert.doesNotMatch(catalogLoad, /mediaBase\}\/reconcile/);
   assert.match(canvas, /sessionIdRef\.current !== sessionId/);
   assert.match(timelineEditor, /onChangeRef\.current\(/);
   assert.match(timelineEditor, /\[mode, resource\?\.id, resource\?\.origin, sessionId, t\]/);
@@ -747,9 +780,14 @@ test("canvas interaction layers expose reversible graph editing, contextual feed
   assert.match(media, /useSyncExternalStore/);
   assert.match(media, /documentVisibilitySubscribers/);
   assert.match(media, /readyResourceUrls/);
-  assert.match(canvas, /const DRAWER_WINDOW_SIZE = 60/);
-  assert.match(canvas, /visibleWorkspaceResources\.slice\(0, visibleAssetLimit\)/);
+  assert.match(canvas, /const DRAWER_COLUMN_COUNT = 3/);
+  assert.match(canvas, /const DRAWER_ROW_HEIGHT = 116/);
+  assert.match(canvas, /const DRAWER_OVERSCAN_ROWS = 2/);
+  assert.match(canvas, /getCanvasAssetWindow\(visibleWorkspaceResources\.length, assetViewport\.scrollTop, assetViewport\.height\)/);
+  assert.match(canvas, /visibleWorkspaceResources\.slice\(workspaceAssetWindow\.startIndex, workspaceAssetWindow\.endIndex\)/);
+  assert.match(canvas, /data-canvas-asset-window-start=\{workspaceAssetWindow\.startIndex\}/);
   assert.match(canvas, /onScroll=\{handleDrawerScroll\}/);
+  assert.doesNotMatch(canvas, /visibleAssetLimit|setVisibleAssetLimit|slice\(0, visibleAssetLimit\)/);
   assert.match(canvas, /const board = boardRef\.current;[\s\S]*new ResizeObserver\(update\);[\s\S]*\}, \[visible\]\);/);
   assert.match(canvas, /if \(mountedRef\.current && sessionIdRef\.current !== sessionId\) \{[\s\S]*persistLocal\(\)/);
 

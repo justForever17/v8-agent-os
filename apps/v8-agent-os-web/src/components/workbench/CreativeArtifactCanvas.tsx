@@ -163,7 +163,30 @@ import {
 export type { CanvasTaskReference, CanvasTaskRequest } from "./creative-canvas/types";
 
 const canvasMediaReconcileTasks = new Map<string, Promise<number>>();
-const DRAWER_WINDOW_SIZE = 60;
+const DRAWER_COLUMN_COUNT = 3;
+const DRAWER_ROW_HEIGHT = 116;
+const DRAWER_OVERSCAN_ROWS = 2;
+const CATALOG_CHANNELS = ["artifacts", "sources", "assets", "folders"] as const;
+
+type CatalogChannel = typeof CATALOG_CHANNELS[number];
+
+function getCanvasAssetWindow(itemCount: number, scrollTop: number, viewportHeight: number) {
+    const rowCount = Math.ceil(Math.max(0, itemCount) / DRAWER_COLUMN_COUNT);
+    const totalHeight = rowCount * DRAWER_ROW_HEIGHT;
+    const safeViewportHeight = Math.max(0, viewportHeight);
+    const safeScrollTop = Math.min(Math.max(0, totalHeight - safeViewportHeight), Math.max(0, scrollTop));
+    const firstVisibleRow = Math.floor(safeScrollTop / DRAWER_ROW_HEIGHT);
+    const visibleRowCount = Math.max(1, Math.ceil(safeViewportHeight / DRAWER_ROW_HEIGHT));
+    const startRow = Math.max(0, firstVisibleRow - DRAWER_OVERSCAN_ROWS);
+    const endRow = Math.min(rowCount, firstVisibleRow + visibleRowCount + DRAWER_OVERSCAN_ROWS);
+    return {
+        startIndex: startRow * DRAWER_COLUMN_COUNT,
+        endIndex: Math.min(itemCount, endRow * DRAWER_COLUMN_COUNT),
+        offsetY: startRow * DRAWER_ROW_HEIGHT,
+        totalHeight,
+        safeScrollTop,
+    };
+}
 
 interface CanvasGraphSaveMeta {
     runtime: CanvasGraphRuntime;
@@ -302,7 +325,8 @@ export function CreativeArtifactCanvas({
     const [resources, setResources] = useState<CanvasResource[]>([]);
     const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceMediaFolder[]>([]);
     const [activeFolderId, setActiveFolderId] = useState("");
-    const [visibleAssetLimit, setVisibleAssetLimit] = useState(DRAWER_WINDOW_SIZE);
+    const [assetViewport, setAssetViewport] = useState({ scrollTop: 0, height: 0 });
+    const [catalogErrors, setCatalogErrors] = useState<Partial<Record<CatalogChannel, string>>>({});
     const [newFolderTitle, setNewFolderTitle] = useState("");
     const [newFolderKind, setNewFolderKind] = useState<WorkspaceMediaFolder["folderKind"]>("custom");
     const [creatingFolder, setCreatingFolder] = useState(false);
@@ -422,6 +446,7 @@ export function CreativeArtifactCanvas({
 
     useEffect(() => {
         let cancelled = false;
+        let controller: AbortController | null = null;
         const initialize = window.setTimeout(() => {
             if (cancelled) return;
             setHydratedKey("");
@@ -461,117 +486,130 @@ export function CreativeArtifactCanvas({
             setConnectionDraft(null);
             setEdgeNote(null);
             setTemplateOpen(false);
+            setActionDefinitions([]);
+            setTemplates([]);
+            setCatalogErrors({});
             interactionRef.current = null;
             const base = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas`;
-            void Promise.all([
-            fetch(`${base}/graph`, { cache: "no-store" }),
-            fetch(`${base}/actions`, { cache: "no-store" }),
-            fetch(`${base}/templates`, { cache: "no-store" }),
-        ]).then(async ([graphResponse, actionResponse, templateResponse]) => {
-            const [graphPayload, actionPayload, templatePayload] = await Promise.all([
-                graphResponse.json().catch(() => ({})),
-                actionResponse.json().catch(() => ({})),
-                templateResponse.json().catch(() => ({})),
-            ]);
-            if (!graphResponse.ok) throw new Error(String(graphPayload?.detail || graphPayload?.error || `HTTP ${graphResponse.status}`));
-            if (!actionResponse.ok) throw new Error(String(actionPayload?.detail || actionPayload?.error || `HTTP ${actionResponse.status}`));
-            if (!templateResponse.ok) throw new Error(String(templatePayload?.detail || templatePayload?.error || `HTTP ${templateResponse.status}`));
-            if (cancelled || sessionIdRef.current !== sessionId) return;
-            const authoritative = graphPayload?.graph
-                ? mergeCanvasPresentationState(graphPayload.graph, cached)
-                : cached;
-            if (graphPayload?.graph) window.localStorage.removeItem(legacyStorageKey);
-            const responseRevision = Number(graphPayload?.revision || 0);
-            let lane = graphSaveScheduler.configureSession(sessionId, {
-                revision: responseRevision,
-                lastSavedKey: canvasGraphPersistenceKey(authoritative),
-                persisted: Boolean(graphPayload?.graph),
-                migrationPending: !graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length),
-            });
-            const liveSnapshot = snapshotRef.current;
-            const editedDuringHydration = canvasGraphPersistenceKey(liveSnapshot) !== canvasGraphPersistenceKey(cached);
-            if (editedDuringHydration) {
-                try {
-                    window.localStorage.setItem(storageKey, JSON.stringify(liveSnapshot));
-                } catch {
-                    // The shared Session lane remains the immediate-reopen recovery source.
-                }
-                lane = graphSaveScheduler.flush(sessionId, liveSnapshot);
-            }
-            const desired = graphSaveScheduler.getDesired(sessionId);
-            const settled = graphSaveScheduler.getSettled(sessionId);
-            const matchingSettled = settled && settled.result.revision === lane?.revision ? settled : null;
-            const localHydrationValue = editedDuringHydration
-                ? liveSnapshot
-                : (desired?.graph ?? matchingSettled?.graph ?? liveSnapshot);
-            const settledValue = matchingSettled
-                ? (matchingSettled.result.meta.recoveredGraph
-                    ?? (matchingSettled.result.accepted ? matchingSettled.graph : undefined))
-                : undefined;
-            const laneOwnsLocalGraph = Boolean(
-                editedDuringHydration || lane?.migrationPending || (lane?.dirty && desired),
-            );
-            const { snapshot: recovered, staleHydration } = resolveCanvasHydrationSnapshot({
-                engineValue: authoritative,
-                cachedValue: localHydrationValue,
-                responseRevision,
-                laneRevision: lane?.revision ?? responseRevision,
-                laneDirty: laneOwnsLocalGraph,
-                settledValue,
-            });
-            resetSnapshot(recovered);
-            graphRevisionRef.current = lane?.revision ?? responseRevision;
-            setGraphRevision(graphRevisionRef.current);
-            if (staleHydration && !laneOwnsLocalGraph && settledValue !== undefined && matchingSettled) {
-                setGraphRuntime(matchingSettled.result.meta.runtime);
-                setGraphHistory(matchingSettled.result.meta.history);
-            } else if (!staleHydration) {
-                setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(graphPayload?.runtime) } as CanvasGraphRuntime);
-                setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(graphPayload?.history) } as CanvasGraphHistory);
-            }
-            lastSavedGraphRef.current = lane?.lastSavedKey || canvasGraphPersistenceKey(authoritative);
-            graphPersistedRef.current = lane?.persisted ?? Boolean(graphPayload?.graph);
-            localGraphMigrationPendingRef.current = lane?.migrationPending
-                ?? (!graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length));
-            setActionDefinitions((Array.isArray(actionPayload?.actions) ? actionPayload.actions : []).map((item: unknown) => {
-                const action = recordOf(item);
-                const output = recordOf(action.output);
-                return {
-                    actionId: stringValue(action, "actionId"),
-                    inputs: (Array.isArray(action.inputs) ? action.inputs : []).map((raw: unknown) => {
-                        const port = recordOf(raw);
-                        return {
-                            portId: stringValue(port, "portId"),
-                            mediaTypes: (Array.isArray(port.mediaTypes) ? port.mediaTypes : []).map(String) as CreativeCanvasMediaType[],
-                            min: Number(port.min || 0),
-                            max: Number(port.max || 1),
-                            ordered: Boolean(port.ordered),
-                        };
-                    }),
-                    output: {
-                        portId: stringValue(output, "portId") || "output",
-                        slot: stringValue(output, "slot") || "output",
-                        mediaTypes: (Array.isArray(output.mediaTypes) ? output.mediaTypes : ["unknown"]).map(String) as CreativeCanvasMediaType[],
-                    },
-                    requiresPrompt: Boolean(action.requiresPrompt),
-                    parameterEditor: ["frame_pick", "time_range", "psd_composition", "psd_layers"].includes(String(action.parameterEditor))
-                        ? action.parameterEditor as CanvasActionDefinition["parameterEditor"]
-                        : undefined,
-                    networkRequired: Boolean(action.networkRequired),
-                    mayIncurCost: Boolean(action.mayIncurCost),
-                } satisfies CanvasActionDefinition;
-            }).filter((item: CanvasActionDefinition) => Boolean(item.actionId)));
-            setTemplates((Array.isArray(templatePayload?.templates) ? templatePayload.templates : []) as CanvasWorkflowTemplate[]);
-            setHydratedKey(storageKey);
-        }).catch((reason) => {
-            if (!cancelled) {
+            const requestController = new AbortController();
+            controller = requestController;
+            const loadPayload = async (channel: "graph" | "actions" | "templates") => {
+                const response = await fetch(`${base}/${channel}`, { cache: "no-store", signal: requestController.signal });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+                return payload;
+            };
+            const isCurrentSession = () => !cancelled && sessionIdRef.current === sessionId;
+            const reportLoadError = (reason: unknown) => {
+                if (!isCurrentSession() || requestController.signal.aborted) return;
                 setError(reason instanceof Error ? reason.message : String(reason));
-                setHydratedKey(storageKey);
-            }
-        });
+            };
+            const loadGraph = async () => {
+                const graphPayload = await loadPayload("graph");
+                if (!isCurrentSession()) return;
+                const authoritative = graphPayload?.graph
+                    ? mergeCanvasPresentationState(graphPayload.graph, cached)
+                    : cached;
+                if (graphPayload?.graph) window.localStorage.removeItem(legacyStorageKey);
+                const responseRevision = Number(graphPayload?.revision || 0);
+                let lane = graphSaveScheduler.configureSession(sessionId, {
+                    revision: responseRevision,
+                    lastSavedKey: canvasGraphPersistenceKey(authoritative),
+                    persisted: Boolean(graphPayload?.graph),
+                    migrationPending: !graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length),
+                });
+                const liveSnapshot = snapshotRef.current;
+                const editedDuringHydration = canvasGraphPersistenceKey(liveSnapshot) !== canvasGraphPersistenceKey(cached);
+                if (editedDuringHydration) {
+                    try {
+                        window.localStorage.setItem(storageKey, JSON.stringify(liveSnapshot));
+                    } catch {
+                        // The shared Session lane remains the immediate-reopen recovery source.
+                    }
+                    lane = graphSaveScheduler.flush(sessionId, liveSnapshot);
+                }
+                const desired = graphSaveScheduler.getDesired(sessionId);
+                const settled = graphSaveScheduler.getSettled(sessionId);
+                const matchingSettled = settled && settled.result.revision === lane?.revision ? settled : null;
+                const localHydrationValue = editedDuringHydration
+                    ? liveSnapshot
+                    : (desired?.graph ?? matchingSettled?.graph ?? liveSnapshot);
+                const settledValue = matchingSettled
+                    ? (matchingSettled.result.meta.recoveredGraph
+                        ?? (matchingSettled.result.accepted ? matchingSettled.graph : undefined))
+                    : undefined;
+                const laneOwnsLocalGraph = Boolean(
+                    editedDuringHydration || lane?.migrationPending || (lane?.dirty && desired),
+                );
+                const { snapshot: recovered, staleHydration } = resolveCanvasHydrationSnapshot({
+                    engineValue: authoritative,
+                    cachedValue: localHydrationValue,
+                    responseRevision,
+                    laneRevision: lane?.revision ?? responseRevision,
+                    laneDirty: laneOwnsLocalGraph,
+                    settledValue,
+                });
+                resetSnapshot(recovered);
+                graphRevisionRef.current = lane?.revision ?? responseRevision;
+                setGraphRevision(graphRevisionRef.current);
+                if (staleHydration && !laneOwnsLocalGraph && settledValue !== undefined && matchingSettled) {
+                    setGraphRuntime(matchingSettled.result.meta.runtime);
+                    setGraphHistory(matchingSettled.result.meta.history);
+                } else if (!staleHydration) {
+                    setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(graphPayload?.runtime) } as CanvasGraphRuntime);
+                    setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(graphPayload?.history) } as CanvasGraphHistory);
+                }
+                lastSavedGraphRef.current = lane?.lastSavedKey || canvasGraphPersistenceKey(authoritative);
+                graphPersistedRef.current = lane?.persisted ?? Boolean(graphPayload?.graph);
+                localGraphMigrationPendingRef.current = lane?.migrationPending
+                    ?? (!graphPayload?.graph && Boolean(cached.nodes.length || cached.edges.length));
+            };
+            const loadActions = async () => {
+                const actionPayload = await loadPayload("actions");
+                if (!isCurrentSession()) return;
+                setActionDefinitions((Array.isArray(actionPayload?.actions) ? actionPayload.actions : []).map((item: unknown) => {
+                    const action = recordOf(item);
+                    const output = recordOf(action.output);
+                    return {
+                        actionId: stringValue(action, "actionId"),
+                        inputs: (Array.isArray(action.inputs) ? action.inputs : []).map((raw: unknown) => {
+                            const port = recordOf(raw);
+                            return {
+                                portId: stringValue(port, "portId"),
+                                mediaTypes: (Array.isArray(port.mediaTypes) ? port.mediaTypes : []).map(String) as CreativeCanvasMediaType[],
+                                min: Number(port.min || 0),
+                                max: Number(port.max || 1),
+                                ordered: Boolean(port.ordered),
+                            };
+                        }),
+                        output: {
+                            portId: stringValue(output, "portId") || "output",
+                            slot: stringValue(output, "slot") || "output",
+                            mediaTypes: (Array.isArray(output.mediaTypes) ? output.mediaTypes : ["unknown"]).map(String) as CreativeCanvasMediaType[],
+                        },
+                        requiresPrompt: Boolean(action.requiresPrompt),
+                        parameterEditor: ["frame_pick", "time_range", "psd_composition", "psd_layers"].includes(String(action.parameterEditor))
+                            ? action.parameterEditor as CanvasActionDefinition["parameterEditor"]
+                            : undefined,
+                        networkRequired: Boolean(action.networkRequired),
+                        mayIncurCost: Boolean(action.mayIncurCost),
+                    } satisfies CanvasActionDefinition;
+                }).filter((item: CanvasActionDefinition) => Boolean(item.actionId)));
+            };
+            const loadTemplates = async () => {
+                const templatePayload = await loadPayload("templates");
+                if (!isCurrentSession()) return;
+                setTemplates((Array.isArray(templatePayload?.templates) ? templatePayload.templates : []) as CanvasWorkflowTemplate[]);
+            };
+            void loadGraph().catch(reportLoadError).finally(() => {
+                if (isCurrentSession()) setHydratedKey(storageKey);
+            });
+            void loadActions().catch(reportLoadError);
+            void loadTemplates().catch(reportLoadError);
         }, 0);
         return () => {
             cancelled = true;
+            controller?.abort();
             window.clearTimeout(initialize);
         };
     }, [legacyStorageKey, resetSnapshot, sessionId, storageKey]);
@@ -616,39 +654,60 @@ export function CreativeArtifactCanvas({
         const controller = new AbortController();
         catalogAbortRef.current = controller;
         if (!silent) setLoading(true);
-        const load = async (path: string, key: "artifacts" | "sources", origin: ResourceOrigin) => {
+        const isCurrentSession = () => !controller.signal.aborted && sessionIdRef.current === sessionId;
+        const clearChannelError = (channel: CatalogChannel) => {
+            if (!isCurrentSession()) return;
+            setCatalogErrors((current) => {
+                if (!current[channel]) return current;
+                const next = { ...current };
+                delete next[channel];
+                return next;
+            });
+        };
+        const reportChannelError = (channel: CatalogChannel, reason: unknown) => {
+            if (!isCurrentSession()) return;
+            const message = reason instanceof Error ? reason.message : String(reason);
+            setCatalogErrors((current) => current[channel] === message ? current : { ...current, [channel]: message });
+        };
+        const replaceResourceChannel = (origin: ResourceOrigin, nextResources: CanvasResource[]) => {
+            if (!isCurrentSession()) return;
+            setResources((current) => {
+                const byKey = new Map<string, CanvasResource>();
+                for (const item of current) {
+                    if (item.origin !== origin) byKey.set(`${item.origin}:${item.id}`, item);
+                }
+                for (const item of nextResources) byKey.set(`${item.origin}:${item.id}`, item);
+                return [...byKey.values()];
+            });
+        };
+        const loadResources = async (path: string, key: "artifacts" | "sources", origin: ResourceOrigin, channel: CatalogChannel) => {
             const params = new URLSearchParams({ sessionId, limit: "100" });
             if (origin === "source") params.set("includeUnbound", "true");
             const response = await fetch(`${path}?${params.toString()}`, { cache: "no-store", signal: controller.signal });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-            return (Array.isArray(payload?.[key]) ? payload[key] : [])
+            const nextResources = (Array.isArray(payload?.[key]) ? payload[key] : [])
                 .map((entry: unknown, index: number) => normalizeResource(entry, origin, sessionId, index))
                 .filter((item: CanvasResource | null): item is CanvasResource => Boolean(item));
+            replaceResourceChannel(origin, nextResources);
+            clearChannelError(channel);
         };
-        try {
-            const mediaBase = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media`;
-            const [artifacts, sources, assetResponse, folderResponse] = await Promise.all([
-                load("/api/artifacts", "artifacts", "artifact"),
-                load("/api/sources", "sources", "source"),
-                fetch(`${mediaBase}/assets?limit=500`, { cache: "no-store", signal: controller.signal }),
-                fetch(`${mediaBase}/folders`, { cache: "no-store", signal: controller.signal }),
-            ]);
-            const [assetPayload, folderPayload] = await Promise.all([
-                assetResponse.json().catch(() => ({})),
-                folderResponse.json().catch(() => ({})),
-            ]);
-            if (controller.signal.aborted || sessionIdRef.current !== sessionId) return;
+        const mediaBase = `/api/workbench/sessions/${encodeURIComponent(sessionId)}/media`;
+        const loadWorkspaceAssets = async () => {
+            const assetResponse = await fetch(`${mediaBase}/assets?limit=500`, { cache: "no-store", signal: controller.signal });
+            const assetPayload = await assetResponse.json().catch(() => ({}));
             if (!assetResponse.ok) throw new Error(String(assetPayload?.detail || assetPayload?.error || `HTTP ${assetResponse.status}`));
-            if (!folderResponse.ok) throw new Error(String(folderPayload?.detail || folderPayload?.error || `HTTP ${folderResponse.status}`));
             const workspaceAssets = (Array.isArray(assetPayload?.assets) ? assetPayload.assets : [])
                 .map((entry: unknown, index: number) => normalizeResource(entry, "workspace_asset", sessionId, index))
                 .filter((item: CanvasResource | null): item is CanvasResource => Boolean(item));
-            const byKey = new Map<string, CanvasResource>();
-            for (const item of [...artifacts, ...sources, ...workspaceAssets]) {
-                byKey.set(`${item.origin}:${item.id}`, item);
-            }
-            setResources([...byKey.values()]);
+            replaceResourceChannel("workspace_asset", workspaceAssets);
+            clearChannelError("assets");
+        };
+        const loadWorkspaceFolders = async () => {
+            const folderResponse = await fetch(`${mediaBase}/folders`, { cache: "no-store", signal: controller.signal });
+            const folderPayload = await folderResponse.json().catch(() => ({}));
+            if (!folderResponse.ok) throw new Error(String(folderPayload?.detail || folderPayload?.error || `HTTP ${folderResponse.status}`));
+            if (!isCurrentSession()) return;
             setWorkspaceFolders((Array.isArray(folderPayload?.folders) ? folderPayload.folders : []).flatMap((raw: unknown) => {
                 const folder = recordOf(raw);
                 const folderId = stringValue(folder, "folderId", "folder_id");
@@ -662,14 +721,24 @@ export function CreativeArtifactCanvas({
                     assetCount: Number(folder.assetCount || folder.asset_count || 0),
                 }];
             }));
-            setError("");
-        } catch (reason) {
-            if (!controller.signal.aborted && sessionIdRef.current === sessionId && !silent) setError(reason instanceof Error ? reason.message : String(reason));
-        } finally {
-            if (catalogAbortRef.current === controller) {
-                catalogAbortRef.current = null;
-                if (!silent && !controller.signal.aborted && sessionIdRef.current === sessionId) setLoading(false);
+            clearChannelError("folders");
+        };
+        const tasks: Array<[CatalogChannel, Promise<void>]> = [
+            ["artifacts", loadResources("/api/artifacts", "artifacts", "artifact", "artifacts")],
+            ["sources", loadResources("/api/sources", "sources", "source", "sources")],
+            ["assets", loadWorkspaceAssets()],
+            ["folders", loadWorkspaceFolders()],
+        ];
+        await Promise.allSettled(tasks.map(async ([channel, task]) => {
+            try {
+                await task;
+            } catch (reason) {
+                reportChannelError(channel, reason);
             }
+        }));
+        if (catalogAbortRef.current === controller) {
+            catalogAbortRef.current = null;
+            if (isCurrentSession()) setLoading(false);
         }
     }, [sessionId]);
 
@@ -1548,21 +1617,21 @@ export function CreativeArtifactCanvas({
         return verdicts;
     }, [actionDefinitions, connectionDraft, snapshot]);
     const visibleNodeIds = useMemo(() => {
-        if (!visible || !boardSize.width || !boardSize.height) return new Set<string>();
+        if (!boardSize.width || !boardSize.height) return new Set<string>();
         const padding = 220 / snapshot.viewport.scale;
         const left = -snapshot.viewport.x / snapshot.viewport.scale - padding;
         const top = -snapshot.viewport.y / snapshot.viewport.scale - padding;
         const right = left + boardSize.width / snapshot.viewport.scale + padding * 2;
         const bottom = top + boardSize.height / snapshot.viewport.scale + padding * 2;
         return new Set(snapshot.nodes.filter((node) => node.x + node.width >= left && node.x <= right && node.y + node.height >= top && node.y <= bottom).map((node) => node.nodeId));
-    }, [boardSize.height, boardSize.width, snapshot.nodes, snapshot.viewport, visible]);
+    }, [boardSize.height, boardSize.width, snapshot.nodes, snapshot.viewport]);
     const renderedNodes = useMemo(() => snapshot.nodes.filter((node) => (
         visibleNodeIds.has(node.nodeId)
         || selectedIdSet.has(node.nodeId)
         || inspectNodeId === node.nodeId
         || maskNodeId === node.nodeId
     )), [inspectNodeId, maskNodeId, selectedIdSet, snapshot.nodes, visibleNodeIds]);
-    const renderedEdges = useMemo(() => visible ? snapshot.edges : [], [snapshot.edges, visible]);
+    const renderedEdges = snapshot.edges;
     const actionRunSummary = useMemo(() => {
         const actions = snapshot.nodes.filter((node) => node.kind === "action");
         const completed = actions.filter((node) => graphRuntime.nodeStates[node.nodeId]?.state === "succeeded").length;
@@ -2166,7 +2235,11 @@ export function CreativeArtifactCanvas({
         }
     }, [composer, sessionRunning, submitting]);
 
-    const runGraph = useCallback(async (targetNodeIds: string[], acknowledgeWarnings = false) => {
+    const runGraph = useCallback(async (
+        targetNodeIds: string[],
+        acknowledgeWarnings = false,
+        retry?: { graphRunId: string; canvasOperationId: string; graphRevision: number },
+    ) => {
         if (sessionRunning || submitting || graphSubmittingRef.current || !onSubmitTask) return;
         const targetIds = Array.from(new Set(targetNodeIds.filter(Boolean)));
         graphSubmittingRef.current = true;
@@ -2220,7 +2293,9 @@ export function CreativeArtifactCanvas({
                 throw new Error(t("web.workbench.canvas.graph.resourceUnavailable"));
             }
             const runToHere = targetIds.length > 0;
-            const label = t(runToHere ? "web.workbench.canvas.graph.runToHere" : "web.workbench.canvas.graph.runAll");
+            const label = retry
+                ? t("web.workbench.canvas.graph.retry")
+                : t(runToHere ? "web.workbench.canvas.graph.runToHere" : "web.workbench.canvas.graph.runAll");
             const accepted = await onSubmitTask({
                 sessionId,
                 text: label,
@@ -2239,8 +2314,8 @@ export function CreativeArtifactCanvas({
                     size: resource.size,
                 })),
                 operation: {
-                    operationId: createId("canvas-operation"),
-                    actionId: runToHere ? "canvas.graph.run_to_here" : "canvas.graph.run_all",
+                    operationId: retry?.canvasOperationId || createId("canvas-operation"),
+                    actionId: retry ? "canvas.graph.retry_failed_branch" : runToHere ? "canvas.graph.run_to_here" : "canvas.graph.run_all",
                     label,
                     nodeIds: targetIds,
                     outputKind: "artifacts",
@@ -2250,6 +2325,7 @@ export function CreativeArtifactCanvas({
                         graphId: snapshot.graphId,
                         graphRevision: graphRevisionRef.current,
                         targetNodeIds: targetIds,
+                        ...(retry ? { retryGraphRunId: retry.graphRunId } : {}),
                     },
                 },
             });
@@ -2262,6 +2338,27 @@ export function CreativeArtifactCanvas({
             setSubmitting(false);
         }
     }, [onSubmitTask, persistGraph, resources, sessionId, sessionRunning, snapshot, submitting, t]);
+
+    const retryFailedGraph = useCallback(() => {
+        const graphRunId = String(graphRuntime.graphRunId || "").trim();
+        const canvasOperationId = String(graphRuntime.canvasOperationId || "").trim();
+        const originalRevision = Number(graphRuntime.graphRevision || 0);
+        if (
+            !graphRuntime.recovery?.canRetry
+            || graphRuntime.recovery.mode !== "failed_branch"
+            || !graphRunId
+            || !canvasOperationId
+            || !originalRevision
+        ) {
+            setError(String(graphRuntime.errorDetail?.message || graphRuntime.error || t("web.workbench.canvas.graph.submitRejected")));
+            return;
+        }
+        if (originalRevision !== graphRevisionRef.current) {
+            setError(t("web.workbench.canvas.graph.sessionChanged"));
+            return;
+        }
+        void runGraph(graphRuntime.targetNodeIds || [], false, { graphRunId, canvasOperationId, graphRevision: originalRevision });
+    }, [graphRuntime, runGraph, t]);
 
     const requestGraphRun = useCallback((targetNodeIds: string[]) => {
         const targets = Array.from(new Set(targetNodeIds.filter(Boolean)));
@@ -2495,21 +2592,67 @@ export function CreativeArtifactCanvas({
         visit(undefined, 0);
         return rows;
     }, [workspaceFolders]);
-    const renderedWorkspaceResources = useMemo(
-        () => visibleWorkspaceResources.slice(0, visibleAssetLimit),
-        [visibleAssetLimit, visibleWorkspaceResources],
+    const workspaceAssetWindow = useMemo(
+        () => getCanvasAssetWindow(visibleWorkspaceResources.length, assetViewport.scrollTop, assetViewport.height),
+        [assetViewport, visibleWorkspaceResources.length],
     );
+    const renderedWorkspaceResources = useMemo(
+        () => visibleWorkspaceResources.slice(workspaceAssetWindow.startIndex, workspaceAssetWindow.endIndex),
+        [visibleWorkspaceResources, workspaceAssetWindow.endIndex, workspaceAssetWindow.startIndex],
+    );
+    const catalogErrorEntries = useMemo(
+        () => CATALOG_CHANNELS.flatMap((channel) => catalogErrors[channel] ? [[channel, catalogErrors[channel]] as const] : []),
+        [catalogErrors],
+    );
+    const catalogChannelLabels = useMemo<Record<CatalogChannel, string>>(() => ({
+        artifacts: t("web.workbench.canvas.library.folderKind.outputs"),
+        sources: t("web.workbench.canvas.library.folderKind.sources"),
+        assets: t("web.workbench.canvas.library.materials"),
+        folders: t("web.workbench.canvas.library.folderKind.custom"),
+    }), [t]);
+
+    useLayoutEffect(() => {
+        if (!trayOpen) return;
+        const element = drawerScrollRef.current;
+        if (element) element.scrollTop = 0;
+        setAssetViewport({ scrollTop: 0, height: element?.clientHeight || 0 });
+    }, [activeFolderId, trayOpen]);
 
     useEffect(() => {
         if (!trayOpen) return;
-        setVisibleAssetLimit(DRAWER_WINDOW_SIZE);
-        if (drawerScrollRef.current) drawerScrollRef.current.scrollTop = 0;
-    }, [activeFolderId, trayOpen]);
+        const element = drawerScrollRef.current;
+        if (!element) return;
+        const update = () => setAssetViewport((current) => {
+            const scrollTop = Math.min(current.scrollTop, Math.max(0, element.scrollHeight - element.clientHeight));
+            const height = element.clientHeight;
+            return current.scrollTop === scrollTop && current.height === height ? current : { scrollTop, height };
+        });
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [trayOpen]);
+
+    useEffect(() => {
+        if (!trayOpen) return;
+        const element = drawerScrollRef.current;
+        if (!element || Math.abs(element.scrollTop - workspaceAssetWindow.safeScrollTop) < 1) return;
+        element.scrollTop = workspaceAssetWindow.safeScrollTop;
+        setAssetViewport((current) => ({ ...current, scrollTop: workspaceAssetWindow.safeScrollTop }));
+    }, [trayOpen, workspaceAssetWindow.safeScrollTop]);
 
     const handleDrawerScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
         const element = event.currentTarget;
-        if (element.scrollHeight - element.scrollTop - element.clientHeight > 180) return;
-        setVisibleAssetLimit((current) => Math.min(visibleWorkspaceResources.length, current + DRAWER_WINDOW_SIZE));
+        setAssetViewport((current) => {
+            const currentWindow = getCanvasAssetWindow(visibleWorkspaceResources.length, current.scrollTop, current.height);
+            const nextWindow = getCanvasAssetWindow(visibleWorkspaceResources.length, element.scrollTop, element.clientHeight);
+            if (
+                currentWindow.startIndex === nextWindow.startIndex
+                && currentWindow.endIndex === nextWindow.endIndex
+                && current.height === element.clientHeight
+            ) return current;
+            return { scrollTop: element.scrollTop, height: element.clientHeight };
+        });
     }, [visibleWorkspaceResources.length]);
 
     return (
@@ -2750,7 +2893,7 @@ export function CreativeArtifactCanvas({
                                                 <span className="rounded-md bg-background/75 px-1.5 py-1 text-[8px] text-muted-foreground">{t(actionDefinition?.networkRequired ? "web.workbench.canvas.graph.network" : "web.workbench.canvas.graph.local")}</span>
                                                 {actionDefinition?.mayIncurCost ? <span className="rounded-md bg-amber-500/10 px-1.5 py-1 text-[8px] text-amber-700 dark:text-amber-300">{t("web.workbench.canvas.graph.cost")}</span> : null}
                                                 {stale ? <span className="rounded-md bg-amber-500/10 px-1.5 py-1 text-[8px] text-amber-700 dark:text-amber-300">{t("web.workbench.canvas.graph.stale")}</span> : null}
-                                                {actionState === "failed" ? <button type="button" disabled={sessionRunning || submitting} onClick={(event) => { event.stopPropagation(); requestGraphRun([node.nodeId]); }} className="rounded-lg border border-red-300/60 bg-background px-2 py-1 text-[9px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-35">{t("web.workbench.canvas.graph.retry")}</button> : null}
+                                                {actionState === "failed" ? <button type="button" disabled={sessionRunning || submitting || !graphRuntime.recovery?.canRetry} onClick={(event) => { event.stopPropagation(); retryFailedGraph(); }} className="rounded-lg border border-red-300/60 bg-background px-2 py-1 text-[9px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-35">{t("web.workbench.canvas.graph.retry")}</button> : null}
                                                 <button type="button" disabled={sessionRunning} onClick={(event) => { event.stopPropagation(); openActionEditor(node); }} className="ml-auto rounded-lg border border-border/60 bg-background px-2 py-1 text-[9px] font-medium text-foreground hover:bg-muted disabled:opacity-35">{t("web.workbench.canvas.graph.configure")}</button>
                                             </div>
                                         </div>
@@ -2924,15 +3067,15 @@ export function CreativeArtifactCanvas({
             </button>
 
             {trayOpen ? (
-                <div data-canvas-wheel-isolation className="absolute right-3 top-14 z-40 flex max-h-[min(620px,calc(100%-72px))] w-[380px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-[20px] border border-white/80 bg-background/94 shadow-[0_24px_72px_rgba(15,23,42,.2)] backdrop-blur-xl dark:border-white/10">
+                <div data-canvas-wheel-isolation className="absolute right-3 top-14 z-40 flex h-[min(620px,calc(100%-72px))] w-[380px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-[20px] border border-white/80 bg-background/94 shadow-[0_24px_72px_rgba(15,23,42,.2)] backdrop-blur-xl dark:border-white/10">
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
                         <PackageOpen className="h-4 w-4 text-muted-foreground" />
                         <span className="flex-1 text-xs font-semibold">{t("web.workbench.canvas.library.title")}</span>
                         <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label={t("web.workbench.canvas.graph.upload")}><Plus className="h-4 w-4" /></button>
                         <button type="button" onClick={() => setTrayOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.library.close")}><X className="h-4 w-4" /></button>
                     </div>
-                    <div ref={drawerScrollRef} onScroll={handleDrawerScroll} className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
-                        <div className="mb-2 space-y-1 rounded-xl border border-border/60 bg-muted/15 p-1.5">
+                    <div className="max-h-[35%] shrink-0 overflow-hidden px-2.5 pt-2.5">
+                        <div className="custom-scrollbar h-full max-h-[210px] space-y-1 overflow-y-auto rounded-xl border border-border/60 bg-muted/15 p-1.5">
                             <button type="button" onClick={() => setActiveFolderId("")} className={cn("flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[10px] font-medium hover:bg-muted", !activeFolderId && "bg-muted text-primary")}>
                                 <Archive className="h-3.5 w-3.5" /><span className="flex-1">{t("web.workbench.canvas.library.all")}</span><span className="text-[9px] text-muted-foreground">{workspaceResources.length}</span>
                             </button>
@@ -2955,44 +3098,60 @@ export function CreativeArtifactCanvas({
                                 <button type="button" onClick={() => void createWorkspaceFolder()} disabled={!newFolderTitle.trim() || sessionRunning || creatingFolder} className="grid h-8 w-8 place-items-center rounded-lg border border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label={t("web.workbench.canvas.library.createFolder")}>{creatingFolder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />}</button>
                             </div>
                         </div>
-                        {loading ? <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : null}
-                        {!loading && !visibleWorkspaceResources.length ? <div className="px-5 py-10 text-center text-xs leading-5 text-muted-foreground">{t("web.workbench.canvas.library.emptyFolder")}</div> : null}
-                        <div className="grid grid-cols-3 gap-2">
-                            {renderedWorkspaceResources.map((resource) => (
-                                <div
-                                    key={`${resource.origin}:${resource.id}`}
-                                    draggable={!sessionRunning}
-                                    onDragStart={(event) => event.dataTransfer.setData(CANVAS_DRAG_TYPE, `${resource.origin}:${resource.id}`)}
-                                    title={resource.name}
-                                    className="group overflow-hidden rounded-xl border border-border/60 bg-muted/25 text-left hover:border-violet-400 hover:bg-muted/45"
-                                >
-                                    <button
-                                        type="button"
-                                        disabled={sessionRunning}
-                                        onClick={() => {
-                                            void adoptAndPlaceResource(resource, pendingConnectionDrop?.point, pendingConnectionDrop ? {
-                                                fromNodeId: pendingConnectionDrop.fromNodeId,
-                                                fromPort: pendingConnectionDrop.fromPort,
-                                                direction: pendingConnectionDrop.direction,
-                                            } : undefined).then(() => {
-                                                setPendingConnectionDrop(null);
-                                            }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-                                        }}
-                                        className="block w-full disabled:cursor-not-allowed disabled:opacity-55"
-                                    >
-                                        <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact visible={visible} /></span>
-                                        <span className="flex items-center gap-1 border-t border-border/50 px-1.5 py-1.5"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" /><span className="truncate text-[9px] font-medium">{resource.name}</span></span>
-                                    </button>
-                                    <select value={resource.folderId || ""} onChange={(event) => void moveWorkspaceAsset(resource.id, event.target.value)} disabled={sessionRunning} aria-label={t("web.workbench.canvas.library.organize", { name: resource.name })} className="h-6 w-full border-0 border-t border-border/50 bg-transparent px-1 text-[8px] text-muted-foreground outline-none">
-                                        <option value="">{t("web.workbench.canvas.library.uncategorized")}</option>
-                                        {folderRows.map((folder) => <option key={folder.folderId} value={folder.folderId}>{`${"· ".repeat(folder.depth)}${folder.title}`}</option>)}
-                                    </select>
+                    </div>
+                    {catalogErrorEntries.length ? (
+                        <div className="mx-2.5 mt-2 shrink-0 space-y-1 rounded-xl border border-amber-300/60 bg-amber-50/80 p-1.5 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/50 dark:text-amber-100">
+                            {catalogErrorEntries.map(([channel, message]) => (
+                                <div key={channel} data-canvas-catalog-error={channel} className="flex min-w-0 items-center gap-1.5 text-[9px]">
+                                    <span className="shrink-0 font-semibold">{catalogChannelLabels[channel]}</span>
+                                    <span className="min-w-0 flex-1 truncate" title={message}>{message}</span>
+                                    <button type="button" onClick={() => void loadCatalog()} className="shrink-0 rounded-md px-1.5 py-1 font-semibold hover:bg-amber-500/10">{t("web.workbench.canvas.graph.retry")}</button>
                                 </div>
                             ))}
                         </div>
-                        {renderedWorkspaceResources.length < visibleWorkspaceResources.length ? (
-                            <div aria-hidden="true" className="flex h-10 items-center justify-center">
-                                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                    ) : null}
+                    <div ref={drawerScrollRef} onScroll={handleDrawerScroll} className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
+                        {loading ? <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : null}
+                        {!loading && !visibleWorkspaceResources.length ? <div className="px-5 py-10 text-center text-xs leading-5 text-muted-foreground">{t("web.workbench.canvas.library.emptyFolder")}</div> : null}
+                        {visibleWorkspaceResources.length ? (
+                            <div data-canvas-asset-window style={{ height: workspaceAssetWindow.totalHeight }} className="relative">
+                                <div
+                                    data-canvas-asset-window-start={workspaceAssetWindow.startIndex}
+                                    style={{ transform: `translateY(${workspaceAssetWindow.offsetY}px)` }}
+                                    className="absolute inset-x-0 top-0 grid grid-cols-3 gap-2"
+                                >
+                                    {renderedWorkspaceResources.map((resource) => (
+                                        <div
+                                            key={`${resource.origin}:${resource.id}`}
+                                            draggable={!sessionRunning}
+                                            onDragStart={(event) => event.dataTransfer.setData(CANVAS_DRAG_TYPE, `${resource.origin}:${resource.id}`)}
+                                            title={resource.name}
+                                            className="group h-[108px] overflow-hidden rounded-xl border border-border/60 bg-muted/25 text-left hover:border-violet-400 hover:bg-muted/45"
+                                        >
+                                            <button
+                                                type="button"
+                                                disabled={sessionRunning}
+                                                onClick={() => {
+                                                    void adoptAndPlaceResource(resource, pendingConnectionDrop?.point, pendingConnectionDrop ? {
+                                                        fromNodeId: pendingConnectionDrop.fromNodeId,
+                                                        fromPort: pendingConnectionDrop.fromPort,
+                                                        direction: pendingConnectionDrop.direction,
+                                                    } : undefined).then(() => {
+                                                        setPendingConnectionDrop(null);
+                                                    }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+                                                }}
+                                                className="block w-full disabled:cursor-not-allowed disabled:opacity-55"
+                                            >
+                                                <span className="flex h-[66px] items-center justify-center overflow-hidden bg-background/60"><CreativeCanvasMedia resource={resource} compact visible={visible} /></span>
+                                                <span className="flex items-center gap-1 border-t border-border/50 px-1.5 py-1.5"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" /><span className="truncate text-[9px] font-medium">{resource.name}</span></span>
+                                            </button>
+                                            <select value={resource.folderId || ""} onChange={(event) => void moveWorkspaceAsset(resource.id, event.target.value)} disabled={sessionRunning} aria-label={t("web.workbench.canvas.library.organize", { name: resource.name })} className="h-6 w-full border-0 border-t border-border/50 bg-transparent px-1 text-[8px] text-muted-foreground outline-none">
+                                                <option value="">{t("web.workbench.canvas.library.uncategorized")}</option>
+                                                {folderRows.map((folder) => <option key={folder.folderId} value={folder.folderId}>{`${"· ".repeat(folder.depth)}${folder.title}`}</option>)}
+                                            </select>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         ) : null}
                     </div>

@@ -1,6 +1,6 @@
 # Creative Artifact Canvas 测试矩阵
 
-更新：2026-07-29
+更新：2026-08-05
 范围：V8OS Web / Phone / Workbench / Creative Media runtime
 原则：`Supervisor First, Runtime Grounded`。STATIC、MOCK、REAL-LIVE 与桌面 Preview 的结果分开记录，未跑项不得写成通过。
 
@@ -115,7 +115,7 @@ Real-live 时限：
 | UI-09 | BROWSER | 其他产物以微缩图留在素材抽屉，拉出才成节点 | PASS |
 | UI-10 | BROWSER | 运行中拖动、删除、连线、蒙版、上传全部禁用 | PASS |
 | UI-11 | CONTRACT | 抽帧、分割和生成结果 | 结果槽解析为真实 Artifact 媒体类型，可继续蒙版、连动作或在文件管理器中定位；不生成预览/下载终点卡 | PASS（Web 10；Shell 1） |
-| UI-12 | BROWSER | 画布级滚轮始终以鼠标位置缩放，不再上下/横向平移；菜单、抽屉、时间轴和编辑器保持自身滚动 | PASS（当前源码浏览器；桌面待复跑） |
+| UI-12 | BROWSER | 画布级滚轮始终以鼠标位置缩放，不再上下/横向平移；菜单、抽屉、时间轴和编辑器保持自身滚动 | PASS（production preview + 桌面截图） |
 
 ### 5.0 十维交互审计
 
@@ -126,9 +126,9 @@ Real-live 时限：
 | 连线交互 | 左右 typed ports、多线、合法性说明、环路/重复/容量拒绝；普通边可重连或断开，固定动作结果边不可拆 | 浏览器普通边 `2 -> 1 -> Ctrl+Z -> 2`，固定边拖拽后仍为 2；全程无 message/run/task POST | PASS |
 | 右键菜单 | 按选区/节点/边/空白过滤；首层最多 5 项，其余搜索展开；菜单滚轮不驱动画布 | 浏览器菜单 `scrollTop=30` 且 viewport 不变；overlay 合同校验首层限制 | PASS |
 | 状态反馈 | 配置真相、输入数量、治理来源、运行/等待/失败/过期、进度、重试和预检原因均可见；禁止仅靠 prompt 猜“已配置” | 当前动作卡显示“已完成 / 已配置 / video 1/1 / 受治理 / 本地”；Engine validate 预检可打开且不触发执行 | PASS |
-| 素材预览 | 图片/视频/音频/3D/PSD 使用对应查看器；离屏暂停、URL 就绪缓存和稳定占位避免重开白屏；时间轴媒体只预载 metadata | 当前源码连续 5 次概览/画布切换恢复 85/61/60/58/52ms，视频均 readyState=4、图片 1920x1080、零新增媒体请求；3D 复用 ModelViewer | PASS |
+| 素材预览 | 图片/视频/音频/3D/PSD 使用对应查看器；离屏暂停、URL 就绪缓存和稳定占位避免重开白屏；时间轴媒体只预载 metadata | 真实 GLB 在桌面/390px 均通过截图像素检查；30 次切换只保留 1 个 WebGL Canvas，租约最多保留 8 个 idle GLTF 资源 | PASS |
 | 效率工具 | 快捷键、框选后浮动工具条、批量对齐/分布、拓扑整理、小地图、工作区模板和“运行到此”服务重度使用 | typecheck/合同通过；当前源码浏览器验证框选工具条与 Undo | PASS |
-| 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | 11 项 Web Canvas 契约、25 项 Engine Graph/Creative 定向测试；断线/撤销实测零执行请求 | PASS |
+| 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | Web Canvas 12/12；Graph/Creative/时间轴 107/107；取消、重启对账与失败分支恢复均持久化错误码 | PASS |
 | 视觉动效 | 数据类型线色、关系虚线、选中高亮/非相关降噪、拖线反馈与运行状态过渡明确，并尊重 reduced-motion | 当前源码浏览器视觉 smoke；连接颜色/透明度/`motion-reduce` 合同 | PASS |
 | 生成业务 | Session 可恢复 Graph、显式运行、动作持久结果槽、旧版本缩略图、素材/动作分层、Engine 权威编译与模板去 Session 化 | Graph/Creative Engine 定向 25 项；当前源码预检与结果槽浏览器 smoke | PASS |
 
@@ -150,6 +150,9 @@ Real-live 时限：
 | GRAPH-10 | UNIT | 同工作区另一 Session 实例化模板 | 图可恢复但未绑定输入不可执行；显式绑定素材后才可运行 | PASS |
 | GRAPH-11 | UNIT | 不同物理工作区读取/删除模板 | workspace_key authority 拒绝；同工作区删除后双方均不可见 | PASS |
 | GRAPH-12 | MIGRATION | 从已发布 v2 Session 本地画布迁移 | 首次写入 Engine/v3 后删除 v2 key，旧图不能在清缓存后复活 | PASS（合同；桌面待复跑） |
+| GRAPH-13 | UNIT / API | 运行中取消 Graph | 停止本地轮询；尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PASS（Engine 107） |
+| GRAPH-14 | STARTUP | Engine 在 queued/running/cancelling 时重启 | 启动对账写为 `interrupted`，保留成功节点与产物版本，活动节点标记可恢复 | PASS（Engine 107） |
+| GRAPH-15 | CONTRACT | 失败分支重试 | Web 复用原 `graphRunId/canvasOperationId` 走正常消息链；只重跑非成功节点；成功付费祖先的同 Run 产物缺失时拒绝 | PASS（Web 12；Engine 107） |
 
 兼容债务：旧 Graph `sink` 节点只在 Engine 输入解析层保留两个完整客户端迁移周期；当前 Web 加载时直接丢弃，且不再创建或渲染。迁移期须补旧 Graph 读取量观测，降至可忽略后删除 Engine parser 分支。
 
@@ -195,7 +198,7 @@ Real-live 时限：
 | TIME-04 | LOCAL | 视频按 PTS/time base 建立 frame boundary；输出 postflight 帧数等于 `[start,end)` | PASS（24fps 真实短片，12/12 帧） |
 | TIME-05 | LOCAL | 音频按 sample index 分割；无损输出 postflight 样本数等于 `[start,end)` | PASS（48kHz 真实音频，12000/12000 样本） |
 | TIME-06 | LOCAL | 视频按 `frameIndex` 抽取单帧；产出正式 PNG artifact，postflight 仅 1 帧 | PASS（真实短片第 9 帧，PNG 签名与 1/1 帧） |
-| TIME-07 | CONTRACT | 首次打开先用 ffprobe stream header 返回近似 FPS/time base/帧数；后台逐帧 probe 完成前禁止保存或执行动作 | PASS（Engine 5；当前源码浏览器；桌面待复跑） |
+| TIME-07 | LOCAL / CONTRACT | 首次打开按 header → sparse keyframe → exact frame 三级建立索引；精确索引完成前可播放/拖动但禁止保存或执行 | PASS（10 分钟/18,000 帧：45ms → 83ms → 715ms；重启缓存读取 1ms；Engine 107） |
 | TIME-08 | BROWSER | 独立播放头与开始/结束手柄拖动时合并为约 20Hz 快速 seek，视频帧合成后回写实际位置；松手才做精确 seek，保存按钮才写入 Graph 参数 | PASS（Web 10；桌面待复跑） |
 | TIME-09 | BROWSER | 完整 frame boundary 到达后保留用户已选秒数并吸附到最近真实边界，显示实际边界时间；首次读取已有 Graph 参数时保留 frame/sample index | PASS（当前源码 `F602 -> F602 / 20.06667s`；桌面待复跑） |
 | TIME-10 | REAL-LIVE | 新片段按当前 Session/Run/tool/operation lineage 登记并回填持久结果槽 | NOT-RUN |
@@ -219,6 +222,16 @@ Real-live 时限：
 | PSD-02 | UNIT | 多张图片合成 PSD | 图层顺序、位置、缩放、透明度和可见性写入新 Artifact，原素材不变 | PASS（Engine Creative 定向） |
 | PSD-03 | UNIT | 编辑已有 PSD 图层 | 只接受结构化图层变更并生成新 Artifact/version；lineage 绑定当前 Session/Run/tool/operation | PASS（Engine Creative 定向） |
 | PSD-04 | BROWSER | Canvas 操作 PSD | 图层树、拖拽位置、层级调整和参数编辑由专用浮层表达，动作仍需“运行全部/运行到此”才执行 | PASS（typecheck；桌面待复跑） |
+
+### 5.7 Provider 与分段加载合同
+
+| ID | 模式 | 场景 | 硬断言 | 状态 |
+|---|---|---|---|---|
+| PROVIDER-01 | UNIT | Seedance 2.x 多模态参考路由 | `volcengine_ark` readiness 与能力注册同时声明 `video.reference_to_video`；仍以用户实际 provider/model 配置为第一真相 | PASS（Creative runtime 85） |
+| PROVIDER-02 | UNIT | DashScope Canvas 输入物化 | 已配置 provider/model 精确绑定；本地图片经格式/尺寸/透明通道校验后物化为 data URI；Provider 只接受 HTTP/HTTPS/OSS 的本地视频/音频必须诚实失败 | PASS（Creative runtime 85） |
+| PROVIDER-03 | RESTART | Provider 返回远程产物 URL 后重启 Engine | `external_url` 随 Artifact 持久化；内存映射清空后可从 Artifact store 恢复参考传输 URL | PASS（Creative runtime 85） |
+| LOAD-01 | CONTRACT | graph/actions/templates 任一请求失败 | 三路独立完成；成功通道立即可用，失败通道单独显示并可重试，不清空其他状态 | PASS（Web 12） |
+| LOAD-02 | CONTRACT | artifacts/sources/assets/folders 任一请求失败 | 四路 `allSettled` 独立投影；单通道错误不让素材抽屉全白或覆盖其他来源 | PASS（Web 12） |
 
 ## 6. 蒙版局部编辑 Real-live
 
@@ -258,7 +271,7 @@ Real-live 时限：
 | VIEW-01 | REAL-LIVE | 新 Markdown 经 artifact content endpoint 打开 | PASS |
 | VIEW-02 | REAL-LIVE | 新 JSON 可查看源码/格式化内容 | PASS |
 | VIEW-03 | INTEGRATION | 非法 JSON/大 Markdown 显示诊断，不空白 | NOT-RUN |
-| VIEW-04 | BROWSER | 消息气泡 `.glb` Viewer 可旋转、缩放、释放资源 | NOT-RUN |
+| VIEW-04 | BROWSER | 消息气泡 `.glb` Viewer 可旋转、缩放、释放资源 | PASS（真实 GLB；桌面/390px 截图像素；GLTF lease 2/2） |
 | VIEW-05 | BROWSER | Canvas 复用同一 3D Viewer 契约 | PASS（合同） |
 | VIEW-06 | INTEGRATION | 私有资源不发送给第三方 Viewer | NOT-RUN |
 
@@ -279,25 +292,25 @@ Real-live 时限：
 
 | ID | 模式 | 通过标准 | 状态 |
 |---|---|---|---|
-| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS（Canvas 合同 11、typecheck、1025 个 i18n 键与 production build 通过） |
-| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS（当前 Canvas Human Surface 合同 1、typecheck、i18n 通过） |
-| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（Graph、Creative Media、PSD、时间轴、身份投影定向 40） |
+| BUILD-01 | STATIC | Web 合同测试全过、TypeScript 通过 | PASS（Canvas 12/12、保存调度 9/9、窗口化 2/2、GLTF lease 2/2、typecheck、production build） |
+| BUILD-02 | STATIC | Phone 定向合同与 typecheck 通过 | PASS（Workbench Human Surface 13/13；既有 Phone typecheck、i18n 证据保持有效） |
+| BUILD-03 | STATIC | Engine 目标测试通过 | PASS（Graph、Creative Media、Provider materialization、三级时间轴 107/107；编排合同合并 61/61） |
 | BUILD-04 | STATIC | Admin 合同、session-realtime build/verify 通过 | PASS（Admin 定向 6；共享契约 47；Admin production build；完整 Admin 套件另有 3 项既有源码断言失败） |
-| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS（当前 Graph 候选 136s；Engine/Admin/Web/Shell 拉起，9530/9528/9527 均为 200） |
-| PERF-01 | BROWSER | 100 节点/200 边相对基线退化不超过 10% | NOT-RUN |
-| PERF-02 | BROWSER | 30 次 Canvas/消息/3D 切换无持续内存增长 | NOT-RUN |
+| BUILD-05 | PREVIEW | `node apps\v8-agent-os-cli\bin\v8os.mjs preview --rebuild` 通过 | PASS（最终候选；Engine/Admin/Web/Shell 拉起，9530/9528/9527 均为 200） |
+| PERF-01 | BROWSER | 120 节点/200 边/500 素材相对同负载 HEAD 基线退化不超过 10% | PASS（基线 P95 118.69ms；当前 113.86ms，-4.07%；素材窗口 14–15 张） |
+| PERF-02 | BROWSER | 30 次 Canvas/消息/3D 切换无持续内存增长 | PASS（GC 后 heap 斜率 0.0436 MiB/轮；DOM 斜率 0；WebGL 始终 1；零 page error） |
 | PERF-03 | CONTRACT | 画布包含 idle 动作卡但无运行任务 | 不启动素材目录轮询；只有 Session 运行或结果槽处于 reserved/running/waiting 才每 3.5 秒对账 | PASS（Web 10；网络面板待复跑） |
 | SAFE-01 | STATIC | scoped `git diff --check` 通过 | PASS |
-| SAFE-02 | ROLLBACK | scoped patch apply/reverse-apply check 通过 | PASS（当前 52 文件 staged patch） |
+| SAFE-02 | ROLLBACK | scoped patch apply/reverse-apply check 通过 | PASS（最终 Canvas staged patch 完整 reverse-apply check） |
 | SAFE-03 | ROLLBACK | 隔离副本实际回滚与再应用 smoke 通过 | PASS（detached worktree 两轮 apply -> rollback，均恢复干净） |
-| SAFE-04 | GIT | staged hunk 不含 Memory/Research/Plugin 等旁线 | PASS（`database.py` 仅暂存 Canvas 建表 hunk；Research lease hunk留在工作树） |
-| SAFE-05 | GIT | scoped commit 完成且无 secret/日志/本地生成物 | NOT-RUN |
+| SAFE-04 | GIT | staged hunk 不含 Memory/Research/Plugin 等旁线 | PASS（初始工作树干净；最终仅暂存本矩阵对应的 Engine/Web Canvas 文件） |
+| SAFE-05 | GIT | scoped commit 完成且无 secret/日志/本地生成物 | PASS（精确文件清单；提交后以 `git show` 与空工作树复核） |
 
 ## 11. 当前证据
 
 当前源码十维浏览器 smoke：
 
-- 独立 Web dev 实例运行在 `localhost:9547`，复用当前 Engine，但不替代 production build 或桌面 Preview。
+- 独立基线 Web 实例曾运行在 `localhost:9547`，同负载基准完成后已停止；结果与截图保存在仓外 `out/canvas-performance`，不替代 production build 或桌面 Preview。
 - 画布滚轮按指针缩放；菜单内部滚轮只滚菜单；节点拖动、框选、撤销、预检和窄屏 Composer 边界均通过。
 - 普通边拖到空白后边数 `2 -> 1`，Ctrl+Z 后恢复为 2；固定动作结果边拖拽后仍为 2；过程无消息、Run 或 Canvas task POST。
 - 精确时间轴加载期保留 `frameIndex=602` 且禁用输入，不显示临时伪时间；完整 boundary 到达后仍为 `F602 / 20.06667s` 并恢复编辑。

@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 import threading
+import uuid
 from collections import OrderedDict
 from copy import deepcopy
 from fractions import Fraction
@@ -13,11 +15,15 @@ from typing import Any
 
 from core.dependency_registry import build_dependency_status
 from core.process_launch import run_windowless
+from core.v8_agent_os_paths import RUNTIME_DATA_HOME
 from core.workspace_media_library import workspace_media_library
 
 
 MAX_TIMELINE_UNITS = 300_000
 MAX_PROBE_CACHE_ENTRIES = 16
+MAX_SPARSE_ANCHORS = 2048
+TIMELINE_INDEX_CACHE_VERSION = "v2"
+TIMELINE_INDEX_CACHE_ROOT = RUNTIME_DATA_HOME / "cache" / "governed-media-index"
 _PROBE_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _PROBE_CACHE_LOCK = threading.Lock()
 _PROBE_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
@@ -237,6 +243,7 @@ def _video_timeline(ffprobe: str, path: Path, stream: dict[str, Any]) -> dict[st
         "durationSeconds": _decimal(Fraction(boundaries[-1], 1) * time_base),
         "displayPrecision": min(9, max(3, len(str(time_base.denominator)))),
         "approximate": False,
+        "indexTier": "exact",
     }
 
 
@@ -270,7 +277,123 @@ def _video_preview_timeline(stream: dict[str, Any], format_payload: dict[str, An
         "durationSeconds": _decimal(duration),
         "displayPrecision": min(9, max(3, len(str(time_base.denominator)))),
         "approximate": True,
+        "indexTier": "header",
     }
+
+
+def _bounded_sparse_anchors(anchors: list[dict[str, int]]) -> list[dict[str, int]]:
+    if len(anchors) <= MAX_SPARSE_ANCHORS:
+        return anchors
+    stride = max(1, math.ceil(len(anchors) / MAX_SPARSE_ANCHORS))
+    bounded = anchors[::stride]
+    if anchors[-1] != bounded[-1]:
+        bounded.append(anchors[-1])
+    return bounded[:MAX_SPARSE_ANCHORS]
+
+
+def _video_sparse_timeline(
+    ffprobe: str,
+    path: Path,
+    stream: dict[str, Any],
+    format_payload: dict[str, Any],
+) -> dict[str, Any]:
+    timeline = _video_preview_timeline(stream, format_payload)
+    time_base = _fraction(stream.get("time_base"))
+    rate = _fraction(stream.get("avg_frame_rate")) or _fraction(stream.get("r_frame_rate"))
+    payload = _run_json([
+        ffprobe,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-skip_frame", "nokey",
+        "-show_frames",
+        "-show_entries", "frame=best_effort_timestamp,pts",
+        "-of", "json",
+        str(path),
+    ], timeout=300)
+    anchors: list[dict[str, int]] = []
+    first_pts: int | None = None
+    for raw in list(payload.get("frames") or []):
+        frame = dict(raw or {})
+        pts_raw = frame.get("best_effort_timestamp")
+        if pts_raw in {None, "N/A"}:
+            pts_raw = frame.get("pts")
+        if pts_raw in {None, "N/A"}:
+            continue
+        pts = int(pts_raw)
+        if first_pts is None:
+            first_pts = pts
+        relative_pts = max(0, pts - first_pts)
+        frame_index = max(0, round(float(Fraction(relative_pts, 1) * time_base * rate))) if rate > 0 else 0
+        anchors.append({"frameIndex": frame_index, "timestampTicks": relative_pts})
+    bounded = _bounded_sparse_anchors(anchors)
+    timeline.update({
+        "seekAnchors": bounded,
+        "keyframeIndices": [item["frameIndex"] for item in bounded],
+        "indexTier": "sparse",
+    })
+    return timeline
+
+
+def _timeline_cache_path(fingerprint: str, tier: str) -> Path:
+    safe_fingerprint = "".join(
+        character for character in fingerprint if character.isalnum() or character in {"_", "-"}
+    )
+    return TIMELINE_INDEX_CACHE_ROOT / TIMELINE_INDEX_CACHE_VERSION / f"{safe_fingerprint}.{tier}.json"
+
+
+def _load_timeline_cache(fingerprint: str, tier: str) -> dict[str, Any] | None:
+    path = _timeline_cache_path(fingerprint, tier)
+    try:
+        if not path.is_file() or path.stat().st_size > 32 * 1024 * 1024:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    timeline = payload.get("timeline") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "v8.governed_media_timeline_index.v1"
+        or payload.get("fingerprint") != fingerprint
+        or payload.get("tier") != tier
+        or not isinstance(timeline, dict)
+    ):
+        return None
+    count = int(timeline.get("count") or 0)
+    if count <= 0 or timeline.get("unit") != "frame" or timeline.get("indexTier") != tier:
+        return None
+    if tier == "exact":
+        boundaries = timeline.get("boundaryTicks")
+        if timeline.get("approximate") is not False or not isinstance(boundaries, list) or len(boundaries) != count + 1:
+            return None
+    elif tier == "sparse" and not isinstance(timeline.get("seekAnchors"), list):
+        return None
+    return dict(timeline)
+
+
+def _store_timeline_cache(fingerprint: str, tier: str, timeline: dict[str, Any]) -> None:
+    target = _timeline_cache_path(fingerprint, tier)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    payload = {
+        "schema": "v8.governed_media_timeline_index.v1",
+        "fingerprint": fingerprint,
+        "tier": tier,
+        "timeline": timeline,
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+    except OSError:
+        # The index accelerates future work but is not the editing authority.
+        return
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _audio_timeline(stream: dict[str, Any], format_payload: dict[str, Any]) -> dict[str, Any]:
@@ -294,6 +417,7 @@ def _audio_timeline(stream: dict[str, Any], format_payload: dict[str, Any]) -> d
         "durationSeconds": _decimal(Fraction(sample_count, sample_rate)),
         "displayPrecision": min(9, max(5, len(str(sample_rate)))),
         "approximate": False,
+        "indexTier": "exact",
     }
 
 
@@ -302,7 +426,9 @@ def probe_request(request: dict[str, Any]) -> dict[str, Any]:
     path, resource = _resource_path(request)
     fingerprint = _fingerprint(path)
     cache_key = (str(path.resolve()), fingerprint)
-    preview_only = str(request.get("detail") or "").strip().lower() == "preview"
+    detail = str(request.get("detail") or "exact").strip().lower()
+    preview_only = detail == "preview"
+    sparse_only = detail == "sparse"
     wait_for: threading.Event | None = None
     owns_exact_probe = False
     with _PROBE_CACHE_LOCK:
@@ -310,7 +436,7 @@ def probe_request(request: dict[str, Any]) -> dict[str, Any]:
         if cached is not None:
             _PROBE_CACHE.move_to_end(cache_key)
             return {**deepcopy(cached), "resource": resource}
-        if not preview_only:
+        if not preview_only and not sparse_only:
             wait_for = _PROBE_INFLIGHT.get(cache_key)
             if wait_for is None:
                 wait_for = threading.Event()
@@ -332,11 +458,19 @@ def probe_request(request: dict[str, Any]) -> dict[str, Any]:
         audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
         if video_streams:
             selected = video_streams[0]
-            timeline = (
-                _video_preview_timeline(selected, dict(payload.get("format") or {}))
-                if preview_only
-                else _video_timeline(ffprobe, path, selected)
-            )
+            format_payload = dict(payload.get("format") or {})
+            if preview_only:
+                timeline = _video_preview_timeline(selected, format_payload)
+            elif sparse_only:
+                timeline = _load_timeline_cache(fingerprint, "sparse")
+                if timeline is None:
+                    timeline = _video_sparse_timeline(ffprobe, path, selected, format_payload)
+                    _store_timeline_cache(fingerprint, "sparse", timeline)
+            else:
+                timeline = _load_timeline_cache(fingerprint, "exact")
+                if timeline is None:
+                    timeline = _video_timeline(ffprobe, path, selected)
+                    _store_timeline_cache(fingerprint, "exact", timeline)
             kind = "video"
         elif audio_streams:
             selected = audio_streams[0]
@@ -361,7 +495,7 @@ def probe_request(request: dict[str, Any]) -> dict[str, Any]:
             },
             "engine": {"ffmpegVersion": version, "timelineAuthority": "ffprobe"},
         }
-        if not preview_only or kind == "audio":
+        if (not preview_only and not sparse_only) or kind == "audio":
             with _PROBE_CACHE_LOCK:
                 _PROBE_CACHE[cache_key] = deepcopy(result)
                 _PROBE_CACHE.move_to_end(cache_key)

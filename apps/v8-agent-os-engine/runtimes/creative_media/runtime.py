@@ -797,9 +797,8 @@ class CreativeMediaRuntime:
     kind = "creative_media"
 
     def __init__(self) -> None:
-        # Provider result URLs may be short-lived or signed. Keep them inside the
-        # current Engine process so a follow-up media job can transport the
-        # artifact without exposing the provider URL on Human Surface.
+        # The artifact store is the recovery truth; this bounded map only avoids
+        # repeated lookups while the current Engine process is alive.
         self._provider_transport_urls: dict[str, str] = {}
 
     def runtime_descriptor(self) -> dict[str, Any]:
@@ -5054,6 +5053,91 @@ class CreativeMediaRuntime:
                 references[media_type].append(provider_url)
         return references
 
+    def _dashscope_references_from_request(self, request: dict[str, Any]) -> dict[str, list[str]]:
+        references = {
+            "image": self._request_url_list(
+                request,
+                "imageUrl", "image_url", "imageUrls", "image_urls",
+                "referenceImageUrl", "reference_image_url", "referenceImageUrls", "reference_image_urls",
+                allowed_prefixes=("http://", "https://", "oss://", "data:"),
+            ),
+            "video": self._request_url_list(
+                request,
+                "videoUrl", "video_url", "videoUrls", "video_urls",
+                "referenceVideoUrl", "reference_video_url", "referenceVideoUrls", "reference_video_urls",
+                allowed_prefixes=("http://", "https://", "oss://"),
+            ),
+            "audio": self._request_url_list(
+                request,
+                "audioUrl", "audio_url", "audioUrls", "audio_urls",
+                "referenceAudioUrl", "reference_audio_url", "referenceAudioUrls", "reference_audio_urls",
+                allowed_prefixes=("http://", "https://", "oss://"),
+            ),
+        }
+        session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
+        canvas_inputs = [dict(value) for value in list(request.get("canvasInputs") or []) if isinstance(value, dict)]
+        for index, item in enumerate(canvas_inputs):
+            media_type = str(item.get("mediaType") or "").strip().lower()
+            if media_type not in references:
+                raise ValueError(f"DashScope does not support Canvas {media_type or 'unknown'} references")
+            resource_id = str(item.get("id") or "").strip()
+            input_label = resource_id or f"#{index + 1}"
+            origin = str(item.get("origin") or "").strip()
+            provider_url = self._artifact_provider_transport_url(resource_id) if origin == "artifact" else ""
+            if provider_url:
+                if provider_url not in references[media_type]:
+                    references[media_type].append(provider_url)
+                continue
+            if media_type == "image":
+                local_url = self._local_dashscope_image_data_url(
+                    self._canvas_input_path(session_id=session_id, item=item)
+                )
+                if local_url not in references[media_type]:
+                    references[media_type].append(local_url)
+                continue
+            if origin not in {"source", "artifact", "workspace_asset"}:
+                raise ValueError(f"DashScope Canvas {media_type} input {input_label} has an ungoverned origin")
+            raise ValueError(
+                f"DashScope Canvas {media_type} input {input_label} is local-only; "
+                "reference video and audio require an HTTP/HTTPS or OSS URL"
+            )
+        if len(references["audio"]) > 1:
+            raise ValueError("DashScope video.reference_to_video supports at most one reference audio input")
+        return references
+
+    @staticmethod
+    def _local_dashscope_image_data_url(path: Path) -> str:
+        if not path.is_file():
+            raise ValueError(f"DashScope image reference is unavailable: {path.name}")
+        if path.stat().st_size > 20 * 1024 * 1024:
+            raise ValueError(f"DashScope image reference {path.name} exceeds the 20 MB limit")
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image_format = str(image.format or "").upper()
+                width, height = image.size
+                has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+                image.verify()
+        except Exception as exc:
+            raise ValueError(f"DashScope image reference {path.name} could not be decoded: {_exception_summary(exc)}") from exc
+        mime_type = {
+            "JPEG": "image/jpeg",
+            "PNG": "image/png",
+            "BMP": "image/bmp",
+            "WEBP": "image/webp",
+        }.get(image_format)
+        if not mime_type:
+            raise ValueError("DashScope reference image must be JPEG, JPG, PNG, BMP, or WebP")
+        if image_format == "PNG" and has_alpha:
+            raise ValueError("DashScope reference PNG must not contain an alpha channel")
+        if min(width, height) < 240 or max(width, height) > 8000:
+            raise ValueError("DashScope reference image width and height must be between 240 and 8000 pixels")
+        ratio = width / height
+        if ratio < 0.125 or ratio > 8:
+            raise ValueError("DashScope reference image aspect ratio must be between 1:8 and 8:1")
+        return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
     def _video_url_from_request(self, request: dict[str, Any], *keys: str) -> str:
         for key in keys or ("videoUrl", "video_url"):
             url = self._public_url_or_error(request.get(key), field_name=key)
@@ -5980,39 +6064,42 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _submit_dashscope_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        creds = self._dashscope_credentials()
-        if not creds["apiKey"]:
-            raise ValueError("DASHSCOPE_API_KEY is required for Alibaba Cloud Bailian / DashScope video jobs")
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("video", request))
-        model = str(request.get("model") or request.get("modelId") or (DASHSCOPE_BUILTIN_MODELS.get(operation_kind) or ["wan2.7-t2v"])[0])
+        default_model = str(request.get("model") or request.get("modelId") or (DASHSCOPE_BUILTIN_MODELS.get(operation_kind) or ["wan2.7-t2v"])[0])
+        binding: dict[str, Any] = {}
+        try:
+            binding = self._configured_endpoint_binding(request, default_model=default_model)
+        except ValueError:
+            if self._has_explicit_provider_or_model_selection(request):
+                raise
+        provider_meta = dict(binding.get("providerMeta") or {})
+        provider_id = str(binding.get("providerId") or "aliyun_bailian_dashscope")
+        fallback_creds = {} if binding else self._dashscope_credentials()
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or fallback_creds.get("apiKey") or "").strip()
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or fallback_creds.get("baseUrl") or "").rstrip("/")
+        model = str(binding.get("providerModelId") or default_model)
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
         prompt = str(request.get("prompt") or "").strip()
         duration = int(request.get("duration") or request.get("durationSeconds") or request.get("duration_seconds") or 5)
         input_payload: dict[str, Any] = {}
         if prompt:
             input_payload["prompt"] = prompt
-        image_urls = self._image_urls_from_request(request)
-        video_url = self._video_url_from_request(request, "videoUrl", "video_url", "sourceVideoUrl", "source_video_url")
-        audio_url = self._public_url_or_error(request.get("audioUrl") or request.get("audio_url"), field_name="audioUrl")
         if operation_kind == "video.reference_to_video":
-            ref_image = self._public_url_or_error(request.get("referenceImageUrl") or request.get("reference_image_url"), field_name="referenceImageUrl")
-            ref_video = self._public_url_or_error(request.get("referenceVideoUrl") or request.get("reference_video_url"), field_name="referenceVideoUrl")
-            raw_ref_images = request.get("referenceImageUrls") or request.get("reference_image_urls") or []
-            raw_ref_videos = request.get("referenceVideoUrls") or request.get("reference_video_urls") or []
-            if isinstance(raw_ref_images, str):
-                raw_ref_images = [raw_ref_images]
-            if isinstance(raw_ref_videos, str):
-                raw_ref_videos = [raw_ref_videos]
-            ref_images = [
-                self._public_url_or_error(item, field_name="referenceImageUrls")
-                for item in list(raw_ref_images)
-                if str(item or "").strip()
-            ]
-            ref_videos = [
-                self._public_url_or_error(item, field_name="referenceVideoUrls")
-                for item in list(raw_ref_videos)
-                if str(item or "").strip()
-            ]
+            references = self._dashscope_references_from_request(request)
+            image_urls = []
+            video_url = ""
+            ref_image = ""
+            ref_video = ""
+            ref_images = references["image"]
+            ref_videos = references["video"]
+            audio_url = references["audio"][0] if references["audio"] else ""
         else:
+            image_urls = self._image_urls_from_request(request)
+            video_url = self._video_url_from_request(request, "videoUrl", "video_url", "sourceVideoUrl", "source_video_url")
+            audio_url = self._public_url_or_error(request.get("audioUrl") or request.get("audio_url"), field_name="audioUrl")
             ref_image = ""
             ref_video = ""
             ref_images = []
@@ -6095,8 +6182,11 @@ class CreativeMediaRuntime:
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
-            f"{creds['baseUrl']}{self._dashscope_task_path_for_operation(operation_kind)}",
-            headers=self._dashscope_headers(creds["apiKey"], async_task=True),
+            self._join_api_path(
+                base_url,
+                str(binding.get("endpointPath") or self._dashscope_task_path_for_operation(operation_kind)),
+            ),
+            headers=self._dashscope_headers(api_key, async_task=True),
             json=payload,
             timeout=180,
         )
@@ -6106,7 +6196,7 @@ class CreativeMediaRuntime:
             raise RuntimeError(f"DashScope video response did not include task_id: {response}")
         job["status"] = normalize_provider_status(output.get("task_status") or "PENDING", provider="dashscope")
         job["providerTaskId"] = task_id
-        job["providerResponse"] = {"providerId": "aliyun_bailian_dashscope", "taskId": task_id, "model": model, "operationKind": operation_kind}
+        job["providerResponse"] = {"providerId": provider_id, "taskId": task_id, "model": model, "operationKind": operation_kind}
         return self._save_job(job)
 
     def _comfyui_binding(self, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, str]]:
@@ -6245,16 +6335,33 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _poll_dashscope_task(self, job: dict[str, Any]) -> dict[str, Any]:
-        creds = self._dashscope_credentials()
         task_id = str(job.get("providerTaskId") or "").strip()
         if not task_id:
             job["status"] = "failed"
             job["error"] = "Missing providerTaskId"
             return self._save_job(job)
+        request = dict(job.get("request") or {})
+        provider_response = dict(job.get("providerResponse") or {})
+        default_model = str(provider_response.get("model") or request.get("model") or "wan2.7-t2v")
+        binding: dict[str, Any] = {}
+        try:
+            binding = self._configured_endpoint_binding(request, default_model=default_model)
+        except ValueError:
+            if self._has_explicit_provider_or_model_selection(request):
+                raise
+        provider_meta = dict(binding.get("providerMeta") or {})
+        provider_id = str(binding.get("providerId") or provider_response.get("providerId") or "aliyun_bailian_dashscope")
+        fallback_creds = {} if binding else self._dashscope_credentials()
+        api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or fallback_creds.get("apiKey") or "").strip()
+        base_url = str(binding.get("baseUrl") or provider_meta.get("base_url") or provider_meta.get("baseUrl") or fallback_creds.get("baseUrl") or "").rstrip("/")
+        if not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url")
         response = await self._request_json(
             "GET",
-            f"{creds['baseUrl']}/tasks/{task_id}",
-            headers=self._dashscope_headers(creds["apiKey"]),
+            self._join_api_path(base_url, f"tasks/{task_id}"),
+            headers=self._dashscope_headers(api_key),
             timeout=60,
         )
         output = dict(response.get("output") or {})
@@ -6279,7 +6386,7 @@ class CreativeMediaRuntime:
                     result_url,
                     job=job,
                     kind="video",
-                    provider="aliyun_bailian_dashscope",
+                    provider=provider_id,
                     mime_hint="video/mp4",
                     metadata={
                         "model": job["providerResponse"].get("model"),
@@ -6364,6 +6471,7 @@ class CreativeMediaRuntime:
             job=job,
             kind=kind,
             mime_type=content_type,
+            external_url=url,
             metadata={
                 "provider": provider,
                 "origin": "provider_result",
@@ -6380,7 +6488,16 @@ class CreativeMediaRuntime:
                     self._provider_transport_urls.pop(next(iter(self._provider_transport_urls)))
         return artifact
 
-    def _record_local_artifact(self, *, file_path: Path, job: dict[str, Any], kind: str, mime_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    def _record_local_artifact(
+        self,
+        *,
+        file_path: Path,
+        job: dict[str, Any],
+        kind: str,
+        mime_type: str,
+        metadata: dict[str, Any],
+        external_url: str | None = None,
+    ) -> dict[str, Any]:
         workspace_root = Path(str(job.get("workspacePath") or "")).expanduser()
         try:
             workspace_relative_path = file_path.resolve().relative_to(workspace_root.resolve()).as_posix() if str(job.get("workspacePath") or "").strip() else ""
@@ -6393,6 +6510,7 @@ class CreativeMediaRuntime:
             run_id=str(job.get("runId") or "") or None,
             title=file_path.name,
             source_path=str(file_path),
+            external_url=external_url,
             metadata={
                 **metadata,
                 "creativeMediaJobId": job["jobId"],

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -431,6 +433,117 @@ class _FakeCreativeRuntime:
         }
 
 
+def _chain_graph(source_id: str) -> dict:
+    graph = _graph(source_id, prompt="First paid edit")
+    graph["nodes"][1]["nodeId"] = "action-a"
+    graph["nodes"][2]["nodeId"] = "result-a"
+    graph["nodes"][2]["producerActionNodeId"] = "action-a"
+    graph["edges"][0]["to"] = "action-a"
+    graph["edges"][1]["from"] = "action-a"
+    graph["edges"][1]["to"] = "result-a"
+    graph["nodes"].extend([
+        {
+            "nodeId": "action-b",
+            "kind": "action",
+            "actionDefinitionId": "creative_media.edit_image",
+            "prompt": "Second paid edit",
+            "parameters": {},
+            "configurationRevision": 1,
+            "title": "Second edit",
+            "x": 1140,
+            "y": 0,
+            "width": 280,
+            "height": 190,
+        },
+        {
+            "nodeId": "result-b",
+            "kind": "result",
+            "producerActionNodeId": "action-b",
+            "outputSlot": "image_derivative",
+            "mediaType": "image",
+            "title": "Final result",
+            "x": 1520,
+            "y": 0,
+            "width": 280,
+            "height": 190,
+        },
+    ])
+    graph["edges"].extend([
+        {
+            "edgeId": "result-a-action-b",
+            "from": "result-a",
+            "to": "action-b",
+            "fromPort": "right",
+            "toPort": "left",
+            "fromPortId": "output",
+            "toPortId": "image",
+            "dataType": "image",
+            "role": "data",
+            "order": 0,
+            "note": "Reuse the paid ancestor",
+        },
+        {
+            "edgeId": "action-b-result-b",
+            "from": "action-b",
+            "to": "result-b",
+            "fromPort": "right",
+            "toPort": "left",
+            "fromPortId": "output",
+            "toPortId": "input",
+            "dataType": "image",
+            "role": "data",
+            "order": 0,
+            "note": "",
+        },
+    ])
+    return graph
+
+
+class _BranchRetryRuntime(_FakeCreativeRuntime):
+    def __init__(self, database: DatabaseManager) -> None:
+        super().__init__(database)
+        self.node_attempts: dict[str, int] = {}
+
+    async def create_job(self, request: dict) -> dict:
+        node_id = str(request["canvasGraphNodeId"])
+        self.node_attempts[node_id] = self.node_attempts.get(node_id, 0) + 1
+        if node_id == "action-b" and self.node_attempts[node_id] == 1:
+            self.counter += 1
+            self.requests.append(dict(request))
+            return {"jobId": f"inner-{self.counter}", "status": "failed", "error": "provider exploded"}
+        return await super().create_job(request)
+
+
+class _PendingLifecycleRuntime(_FakeCreativeRuntime):
+    def __init__(self, database: DatabaseManager) -> None:
+        super().__init__(database)
+        self.poll_started = asyncio.Event()
+        self.release_poll = asyncio.Event()
+        self.cancelled_job_ids: list[str] = []
+        self.cleaned_job_ids: list[str] = []
+        self.jobs: dict[str, dict] = {}
+
+    async def create_job(self, request: dict) -> dict:
+        self.requests.append(dict(request))
+        job = {"jobId": "inner-pending", "status": "running", "artifacts": []}
+        self.jobs[job["jobId"]] = job
+        return dict(job)
+
+    async def refresh_job(self, job_id: str) -> dict:
+        self.poll_started.set()
+        await self.release_poll.wait()
+        return dict(self.jobs[job_id])
+
+    async def cancel_job(self, job_id: str) -> dict:
+        self.cancelled_job_ids.append(job_id)
+        self.jobs[job_id]["status"] = "cancelled"
+        self.release_poll.set()
+        return dict(self.jobs[job_id])
+
+    async def cleanup_job(self, job_id: str) -> None:
+        self.cleaned_job_ids.append(job_id)
+
+
 def test_execution_updates_persistent_result_slot_and_keeps_versions(canvas_service) -> None:
     service, database = canvas_service
     saved = service.save_graph(
@@ -508,6 +621,287 @@ def test_execution_rejects_a_second_active_graph_run_for_the_session(canvas_serv
     assert job["status"] == "failed"
     assert "already active" in job["error"]
     assert runtime.requests == []
+
+
+def test_cancel_run_propagates_to_current_provider_job_and_cleanup(
+    canvas_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Long provider edit"),
+        expected_revision=0,
+    )
+    runtime = _PendingLifecycleRuntime(database)
+    real_sleep = asyncio.sleep
+
+    async def immediate_sleep(_seconds: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(graph_module.asyncio, "sleep", immediate_sleep)
+
+    async def scenario() -> dict:
+        execution = asyncio.create_task(service.execute_as_creative_job(runtime, {
+            "modality": "workflow",
+            "operationKind": "canvas.graph.execute",
+            "sessionId": "session-a",
+            "graphId": saved["graph"]["graphId"],
+            "graphRevision": saved["revision"],
+            "canvasOperationId": "canvas-op-cancel",
+            "targetNodeIds": ["result-node"],
+        }))
+        await runtime.poll_started.wait()
+        active = service.get_graph(session_id="session-a")["runtime"]
+        cancelled = await service.cancel_run(
+            runtime,
+            session_id="session-a",
+            graph_run_id=active["graphRunId"],
+            reason="user_cancelled",
+        )
+        await execution
+        return cancelled
+
+    cancelled = asyncio.run(scenario())
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error"]["code"] == "user_cancelled"
+    assert cancelled["recovery"]["canRetry"] is False
+    assert runtime.cancelled_job_ids == ["inner-pending"]
+    assert runtime.cleaned_job_ids == ["inner-pending"]
+    recovered = service.get_graph(session_id="session-a")["runtime"]
+    assert recovered["status"] == "cancelled"
+    assert recovered["nodeStates"]["action-node"]["state"] == "cancelled"
+    assert recovered["nodeStates"]["action-node"]["providerCancellation"] == "completed"
+    assert recovered["nodeStates"]["action-node"]["providerCleanup"] == "completed"
+
+
+def test_parent_task_cancellation_cleans_provider_job_and_remains_cancelled(
+    canvas_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Long provider edit"),
+        expected_revision=0,
+    )
+    runtime = _PendingLifecycleRuntime(database)
+    real_sleep = asyncio.sleep
+
+    async def immediate_sleep(_seconds: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(graph_module.asyncio, "sleep", immediate_sleep)
+
+    async def scenario() -> None:
+        execution = asyncio.create_task(service.execute_as_creative_job(runtime, {
+            "modality": "workflow",
+            "operationKind": "canvas.graph.execute",
+            "sessionId": "session-a",
+            "graphId": saved["graph"]["graphId"],
+            "graphRevision": saved["revision"],
+            "canvasOperationId": "canvas-op-parent-cancel",
+            "targetNodeIds": ["result-node"],
+        }))
+        await runtime.poll_started.wait()
+        execution.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await execution
+
+    asyncio.run(scenario())
+    assert runtime.cancelled_job_ids == ["inner-pending"]
+    assert runtime.cleaned_job_ids == ["inner-pending"]
+    recovered = service.get_graph(session_id="session-a")["runtime"]
+    assert recovered["status"] == "cancelled"
+    assert recovered["nodeStates"]["action-node"]["errorCode"] == "parent_graph_cancelled"
+    assert recovered["nodeStates"]["action-node"]["providerCancellation"] == "completed"
+    assert recovered["nodeStates"]["action-node"]["providerCleanup"] == "completed"
+
+
+def test_startup_reconciliation_marks_orphaned_runs_interrupted_and_retryable(canvas_service) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_chain_graph("source-a"),
+        expected_revision=0,
+    )
+    plan = service.execution_contract_summary(
+        session_id="session-a",
+        graph_id=saved["graph"]["graphId"],
+        graph_revision=saved["revision"],
+        target_node_ids=["result-b"],
+    )
+    states = {
+        "action-a": {"state": "succeeded", "attempt": 1, "artifactId": "artifact-paid"},
+        "action-b": {"state": "running", "attempt": 1, "jobId": "provider-orphan"},
+    }
+    with database.get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO creative_canvas_graph_runs(
+                graph_run_id, graph_id, session_id, canvas_operation_id, graph_revision,
+                target_node_ids_json, plan_json, node_states_json, status, current_node_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', 'action-b', ?, ?)
+            """,
+            (
+                "canvas-run-orphan",
+                saved["graph"]["graphId"],
+                "session-a",
+                "canvas-op-orphan",
+                saved["revision"],
+                '["result-b"]',
+                graph_module.json.dumps(plan),
+                graph_module.json.dumps(states),
+                "2026-08-05T00:00:00Z",
+                "2026-08-05T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    result = service.reconcile_startup()
+    assert result == {"interruptedRuns": 1, "interruptedNodes": 1}
+    run = service.get_run(session_id="session-a", graph_run_id="canvas-run-orphan")
+    assert run["status"] == "interrupted"
+    assert run["error"]["code"] == "engine_restart_interrupted"
+    assert run["recovery"] == {
+        "canRetry": True,
+        "mode": "failed_branch",
+        "reason": "engine_restart_interrupted",
+    }
+    assert run["nodeStates"]["action-a"]["state"] == "succeeded"
+    assert run["nodeStates"]["action-b"]["state"] == "interrupted"
+    assert run["nodeStates"]["action-b"]["recoverable"] is True
+
+
+def test_retry_failed_branch_reuses_run_operation_and_paid_ancestor(canvas_service) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_chain_graph("source-a"),
+        expected_revision=0,
+    )
+    runtime = _BranchRetryRuntime(database)
+    request = {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "sessionId": "session-a",
+        "projectId": "project-a",
+        "workspaceId": "workspace-a",
+        "workspacePath": "C:/workspace-a",
+        "graphId": saved["graph"]["graphId"],
+        "graphRevision": saved["revision"],
+        "canvasOperationId": "canvas-op-branch",
+        "targetNodeIds": ["result-b"],
+    }
+
+    failed = asyncio.run(service.execute_as_creative_job(runtime, request))
+    assert failed["status"] == "failed"
+    failed_run_id = failed["canvasGraphRunId"]
+
+    rejected = asyncio.run(service.execute_as_creative_job(runtime, {
+        **request,
+        "retryGraphRunId": "canvas-run-not-this-operation",
+    }))
+    assert rejected["status"] == "failed"
+    assert "original run and operation ids" in rejected["error"]
+    assert runtime.node_attempts == {"action-a": 1, "action-b": 1}
+
+    retried = asyncio.run(service.execute_as_creative_job(runtime, {
+        **request,
+        "retryGraphRunId": failed_run_id,
+    }))
+    assert retried["status"] == "succeeded"
+    assert retried["canvasGraphRunId"] == failed_run_id
+    assert retried["canvasOperationId"] == "canvas-op-branch"
+    assert runtime.node_attempts == {"action-a": 1, "action-b": 2}
+    assert [item["canvasOperationId"] for item in runtime.requests] == [
+        "canvas-op-branch",
+        "canvas-op-branch",
+        "canvas-op-branch",
+    ]
+    assert runtime.requests[-1]["projectId"] == "project-a"
+    assert runtime.requests[-1]["workspaceId"] == "workspace-a"
+    assert Path(runtime.requests[-1]["workspacePath"]).name == "workspace"
+    run = service.get_run(session_id="session-a", graph_run_id=failed_run_id)
+    assert run["status"] == "succeeded"
+    assert run["nodeStates"]["action-a"]["attempt"] == 1
+    assert run["nodeStates"]["action-b"]["attempt"] == 2
+    with pytest.raises(CreativeCanvasGraphError, match="current session"):
+        service.get_run(session_id="session-b", graph_run_id=failed_run_id)
+    recovered = service.get_graph(session_id="session-a")["runtime"]
+    assert recovered["canvasOperationId"] == "canvas-op-branch"
+    assert recovered["graphRevision"] == saved["revision"]
+    assert recovered["targetNodeIds"] == ["result-b"]
+
+
+def test_engine_lifespan_awaits_canvas_graph_startup_reconciliation() -> None:
+    main_path = Path(__file__).resolve().parents[2] / "main.py"
+    tree = ast.parse(main_path.read_text(encoding="utf-8"))
+    lifespan = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    awaited_calls = {
+        node.value.func.id
+        for node in ast.walk(lifespan)
+        if isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    }
+    assert "_reconcile_creative_canvas_graph_runs" in awaited_calls
+
+
+def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api import creative_canvas_routes
+
+    runtime = object()
+    runtime_module = ModuleType("runtimes.creative_media.runtime")
+    runtime_module.creative_media_runtime = runtime
+    monkeypatch.setitem(sys.modules, "runtimes.creative_media.runtime", runtime_module)
+
+    class RouteService:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def get_run(self, **kwargs):
+            self.calls.append(("get", kwargs))
+            return {"status": "failed", **kwargs}
+
+        async def cancel_run(self, received_runtime, **kwargs):
+            self.calls.append(("cancel", received_runtime, kwargs))
+            return {"status": "cancelled", **kwargs}
+
+        async def retry_failed_run(self, received_runtime, **kwargs):
+            self.calls.append(("retry", received_runtime, kwargs))
+            return {"status": "succeeded", "canvasGraphRunId": kwargs["graph_run_id"]}
+
+    route_service = RouteService()
+    monkeypatch.setattr(creative_canvas_routes, "creative_canvas_graph_service", route_service)
+
+    fetched = asyncio.run(creative_canvas_routes.get_canvas_graph_run("session-a", "run-a"))
+    cancelled = asyncio.run(creative_canvas_routes.cancel_canvas_graph_run(
+        "session-a",
+        "run-a",
+        {"reason": "user_cancelled"},
+    ))
+    retried = asyncio.run(creative_canvas_routes.retry_canvas_graph_failed_branch("session-a", "run-a"))
+
+    assert fetched["session_id"] == "session-a"
+    assert cancelled["status"] == "cancelled"
+    assert retried["job"]["canvasGraphRunId"] == "run-a"
+    assert [call[0] for call in route_service.calls] == ["get", "cancel", "retry", "get"]
+    assert route_service.calls[1][1] is runtime
+    assert route_service.calls[1][2] == {
+        "session_id": "session-a",
+        "graph_run_id": "run-a",
+        "reason": "user_cancelled",
+    }
+    assert route_service.calls[2][1] is runtime
+    assert route_service.calls[2][2] == {"session_id": "session-a", "graph_run_id": "run-a"}
 
 
 def test_workspace_template_removes_session_resources_and_requires_rebinding(canvas_service) -> None:

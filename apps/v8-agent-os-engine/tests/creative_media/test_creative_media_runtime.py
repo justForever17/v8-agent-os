@@ -455,6 +455,118 @@ def test_seedance_canvas_artifact_reuses_provider_transport_url(monkeypatch):
     assert references["video"] == ["https://provider.example.com/output.mp4"]
 
 
+def test_dashscope_canvas_references_materialize_provider_artifact_urls(monkeypatch):
+    provider_urls = {
+        "artifact-image": "https://provider.example.com/reference.png",
+        "artifact-video": "https://provider.example.com/reference.mp4",
+        "artifact-audio": "https://provider.example.com/reference.mp3",
+    }
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_artifact_provider_transport_url",
+        lambda artifact_id: provider_urls.get(artifact_id, ""),
+    )
+
+    references = creative_media_runtime._dashscope_references_from_request({
+        "canvasInputs": [
+            {"origin": "artifact", "id": "artifact-image", "mediaType": "image"},
+            {"origin": "artifact", "id": "artifact-video", "mediaType": "video"},
+            {"origin": "artifact", "id": "artifact-audio", "mediaType": "audio"},
+        ],
+    })
+
+    assert references == {
+        "image": ["https://provider.example.com/reference.png"],
+        "video": ["https://provider.example.com/reference.mp4"],
+        "audio": ["https://provider.example.com/reference.mp3"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("origin", "resolver_name"),
+    [
+        ("source", "resolve_source_path"),
+        ("artifact", "resolve_artifact_path"),
+        ("workspace_asset", "resolve_asset_path"),
+    ],
+)
+def test_dashscope_local_canvas_images_become_validated_data_urls(
+    monkeypatch,
+    tmp_path: Path,
+    origin: str,
+    resolver_name: str,
+):
+    from PIL import Image
+
+    image_path = tmp_path / f"{origin}.png"
+    Image.new("RGB", (320, 240), color=(12, 34, 56)).save(image_path)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_provider_transport_url", lambda _artifact_id: "")
+    monkeypatch.setattr(
+        f"runtimes.creative_media.runtime.workspace_media_library.{resolver_name}",
+        lambda **_kwargs: image_path,
+    )
+
+    references = creative_media_runtime._dashscope_references_from_request({
+        "sessionId": "session-dashscope",
+        "canvasInputs": [
+            {"origin": origin, "id": f"{origin}-image", "mediaType": "image"},
+        ],
+    })
+
+    assert references["image"][0].startswith("data:image/png;base64,")
+
+
+def test_dashscope_local_canvas_video_fails_with_specific_input(monkeypatch):
+    monkeypatch.setattr(creative_media_runtime, "_artifact_provider_transport_url", lambda _artifact_id: "")
+
+    with pytest.raises(ValueError, match="video input source-video is local-only"):
+        creative_media_runtime._dashscope_references_from_request({
+            "sessionId": "session-dashscope",
+            "canvasInputs": [
+                {"origin": "source", "id": "source-video", "mediaType": "video"},
+            ],
+        })
+
+
+def test_dashscope_reference_contract_accepts_data_image_and_oss_media():
+    references = creative_media_runtime._dashscope_references_from_request({
+        "referenceImageUrl": "data:image/png;base64,AAAA",
+        "referenceVideoUrl": "oss://dashscope-instant/reference.mp4",
+        "referenceAudioUrl": "oss://dashscope-instant/reference.mp3",
+    })
+
+    assert references == {
+        "image": ["data:image/png;base64,AAAA"],
+        "video": ["oss://dashscope-instant/reference.mp4"],
+        "audio": ["oss://dashscope-instant/reference.mp3"],
+    }
+
+
+def test_dashscope_local_canvas_image_enforces_provider_dimensions(tmp_path: Path):
+    from PIL import Image
+
+    image_path = tmp_path / "too-small.png"
+    Image.new("RGB", (200, 200), color=(12, 34, 56)).save(image_path)
+
+    with pytest.raises(ValueError, match="between 240 and 8000 pixels"):
+        creative_media_runtime._local_dashscope_image_data_url(image_path)
+
+
+def test_dashscope_local_canvas_image_enforces_provider_format_and_size(tmp_path: Path):
+    from PIL import Image
+
+    gif_path = tmp_path / "reference.gif"
+    Image.new("RGB", (320, 240), color=(12, 34, 56)).save(gif_path)
+    with pytest.raises(ValueError, match="must be JPEG, JPG, PNG, BMP, or WebP"):
+        creative_media_runtime._local_dashscope_image_data_url(gif_path)
+
+    oversized_path = tmp_path / "oversized.png"
+    with open(oversized_path, "wb") as file:
+        file.truncate(20 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError, match="exceeds the 20 MB limit"):
+        creative_media_runtime._local_dashscope_image_data_url(oversized_path)
+
+
 def test_minimax_video_payloads_match_official_four_operation_contracts():
     t2v = _build_minimax_video_payload(
         model="MiniMax-Hailuo-2.3",
@@ -1027,18 +1139,20 @@ def test_user_configured_operations_override_registry_suggestions(monkeypatch):
         ("video.text_to_video", "model_control_plane", True),
         ("video.image_to_video", "model_control_plane", True),
         ("video.first_last_frame", "model_control_plane", True),
-        ("video.reference_to_video", "model_control_plane", False),
+        ("video.reference_to_video", "model_control_plane", True),
     ]
     assert rows["video.reference_to_video"]["optionCount"] == 1
-    assert rows["video.reference_to_video"]["selectedModelRefs"] == []
-    assert rows["video.reference_to_video"]["enabled"] is False
+    assert rows["video.reference_to_video"]["selectedModelRefs"] == [
+        "volcengine_seedance::doubao-seedance-1-0-pro-fast-251015"
+    ]
+    assert rows["video.reference_to_video"]["enabled"] is True
     assert rows["video.first_last_frame"]["optionCount"] == 1
     reference_candidate = next(
         item
         for item in prefs["connectedOptions"]
         if item["operationKind"] == "video.reference_to_video"
     )
-    assert reference_candidate["readiness"]["reasonCodes"] == ["adapter_operation_mismatch"]
+    assert reference_candidate["readiness"]["reasonCodes"] == []
 
 
 def test_media_candidate_exposes_native_audio_capability_profile(monkeypatch):
@@ -2034,6 +2148,102 @@ def test_dashscope_image_generation_uses_configured_binding_instead_of_env_crede
     assert result["status"] == "succeeded"
 
 
+def test_dashscope_reference_video_uses_configured_binding_and_canvas_inputs(monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "dashscope": {
+                    "provider": {
+                        "name": "DashScope",
+                        "base_url": "https://dashscope.example.test/api/v1",
+                        "api_key": "stored-key",
+                    },
+                    "models": {
+                        "services/aigc/video-generation/video-synthesis/wan2.7-r2v": {
+                            "type": "VIDEO",
+                            "endpointBinding": {
+                                "route": "services/aigc/video-generation/video-synthesis/wan2.7-r2v",
+                                "endpointPath": "services/aigc/video-generation/video-synthesis",
+                                "providerModelId": "wan2.7-r2v",
+                                "operationKind": "video.reference_to_video",
+                                "adapter": "dashscope",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_dashscope_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy credential path must not run")),
+    )
+    provider_urls = {
+        "artifact-image": "https://provider.example.com/reference.png",
+        "artifact-video": "https://provider.example.com/reference.mp4",
+        "artifact-audio": "https://provider.example.com/reference.mp3",
+    }
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_artifact_provider_transport_url",
+        lambda artifact_id: provider_urls.get(artifact_id, ""),
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.append({"method": method, "url": url, **kwargs})
+        if method == "POST":
+            return {"output": {"task_id": "dashscope-task", "task_status": "PENDING"}}
+        return {
+            "output": {
+                "task_id": "dashscope-task",
+                "task_status": "SUCCEEDED",
+                "video_url": "https://provider.example.com/result.mp4",
+            }
+        }
+
+    async def fake_artifact(url, **kwargs):
+        return {"artifactId": "artifact-result", "url": url, "provider": kwargs.get("provider")}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "providerId": "dashscope",
+        "modelId": "services/aigc/video-generation/video-synthesis/wan2.7-r2v",
+        "operationKind": "video.reference_to_video",
+        "prompt": "Keep the subject and motion references.",
+        "canvasInputs": [
+            {"origin": "artifact", "id": "artifact-image", "mediaType": "image"},
+            {"origin": "artifact", "id": "artifact-video", "mediaType": "video"},
+            {"origin": "artifact", "id": "artifact-audio", "mediaType": "audio"},
+        ],
+    }
+    job = creative_media_runtime._new_job(modality="video", adapter="dashscope", request=request)
+
+    submitted = asyncio.run(creative_media_runtime._submit_dashscope_video_job(job, request))
+    result = asyncio.run(creative_media_runtime._poll_dashscope_task(submitted))
+
+    assert requested[0]["url"] == "https://dashscope.example.test/api/v1/services/aigc/video-generation/video-synthesis"
+    assert requested[0]["headers"]["Authorization"] == "Bearer stored-key"
+    assert requested[0]["json"]["input"]["media"] == [
+        {
+            "type": "reference_image",
+            "url": "https://provider.example.com/reference.png",
+            "reference_voice": "https://provider.example.com/reference.mp3",
+        },
+        {
+            "type": "reference_video",
+            "url": "https://provider.example.com/reference.mp4",
+            "reference_voice": "https://provider.example.com/reference.mp3",
+        },
+    ]
+    assert requested[1]["url"] == "https://dashscope.example.test/api/v1/tasks/dashscope-task"
+    assert result["artifacts"][0]["provider"] == "dashscope"
+
+
 def test_implicit_provider_still_rejects_unregistered_media_model(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",
@@ -2489,11 +2699,72 @@ def test_creative_media_runtime_can_record_fake_result(monkeypatch, tmp_path: Pa
         kind="image",
         mime_type="image/png",
         metadata={"provider": "fake", "origin": "provider_result"},
+        external_url="https://provider.example.com/fake.png",
     )
 
     assert artifact["artifactId"] == "art_fake"
     assert captured["metadata"]["creativeMediaJobId"] == "cm_fake"
     assert captured["metadata"]["origin"] == "provider_result"
+    assert captured["external_url"] == "https://provider.example.com/fake.png"
+
+    creative_media_runtime._provider_transport_urls.pop("art_fake", None)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.db.get_runtime_artifact",
+        lambda artifact_id: {"external_url": captured["external_url"]} if artifact_id == "art_fake" else None,
+    )
+    assert creative_media_runtime._artifact_provider_transport_url("art_fake") == captured["external_url"]
+
+
+def test_provider_download_passes_external_url_to_artifact_store(monkeypatch, tmp_path: Path):
+    provider_url = "https://provider.example.com/result.png"
+    captured = {}
+
+    class FakeResponse:
+        headers = {"content-type": "image/png"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"provider-image"
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("runtimes.creative_media.runtime.httpx.AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(creative_media_runtime, "_output_path", lambda *_args: tmp_path / "result.png")
+
+    def fake_record_local_artifact(**kwargs):
+        captured.update(kwargs)
+        return {"artifactId": "artifact-provider-result"}
+
+    monkeypatch.setattr(creative_media_runtime, "_record_local_artifact", fake_record_local_artifact)
+
+    artifact = asyncio.run(
+        creative_media_runtime._artifact_from_url(
+            provider_url,
+            job={"jobId": "cm-provider", "modality": "image"},
+            kind="image",
+            provider="dashscope",
+            mime_hint="image/png",
+        )
+    )
+
+    assert artifact["artifactId"] == "artifact-provider-result"
+    assert captured["external_url"] == provider_url
 
 
 def test_project_scope_is_persisted_in_recipe_asset_and_artifact(monkeypatch, tmp_path: Path):

@@ -15,6 +15,7 @@ RUNTIME_ADAPTER_OPERATION_KINDS: dict[str, frozenset[str]] = {
             "video.text_to_video",
             "video.image_to_video",
             "video.first_last_frame",
+            "video.reference_to_video",
         }
     ),
     "dashscope": frozenset(

@@ -141,6 +141,9 @@ export function buildCreativeCanvasExecutionContract(input: {
                         targetNodeIds: Array.isArray(parameters.targetNodeIds)
                             ? parameters.targetNodeIds.map(String).filter(Boolean)
                             : [],
+                        ...(String(parameters.retryGraphRunId || "").trim()
+                            ? { retryGraphRunId: String(parameters.retryGraphRunId).trim() }
+                            : {}),
                     } : {
                         prompt: input.instruction.trim(),
                         ...(sourceIds[0] ? { sourceId: sourceIds[0] } : {}),

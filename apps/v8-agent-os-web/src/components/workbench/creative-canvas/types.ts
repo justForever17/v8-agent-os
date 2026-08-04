@@ -165,9 +165,14 @@ export type CanvasOutputVersion = {
 
 export type CanvasGraphRuntime = {
     graphRunId?: string;
+    canvasOperationId?: string;
+    graphRevision?: number;
+    targetNodeIds?: string[];
     status: string;
     currentNodeId?: string;
     error?: string;
+    errorDetail?: { code?: string; message?: string };
+    recovery?: { canRetry?: boolean; mode?: string; reason?: string };
     nodeStates: Record<string, Record<string, unknown>>;
     outputs: Record<string, CanvasOutputVersion[]>;
     updatedAt?: string;

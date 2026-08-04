@@ -289,6 +289,17 @@ async def _reconcile_engineering_workspaces():
         print(f"[Engine] Managed engineering workspace reconciliation error (non-fatal): {e}")
 
 
+async def _reconcile_creative_canvas_graph_runs():
+    try:
+        from core.creative_canvas_graph import creative_canvas_graph_service
+
+        result = await asyncio.to_thread(creative_canvas_graph_service.reconcile_startup)
+        if any(result.values()):
+            print("[Engine] Creative Canvas graph reconciliation completed.", result)
+    except Exception as e:
+        print(f"[Engine] Creative Canvas graph reconciliation error (non-fatal): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic: Load all SKILL.md files into the registry
@@ -355,6 +366,7 @@ async def lifespan(app: FastAPI):
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
     await _reconcile_engineering_workspaces()
+    await _reconcile_creative_canvas_graph_runs()
     async def _cleanup_terminal_engineering_workspaces() -> None:
         try:
             from core.engineering_sandbox.service import get_engineering_sandbox_service

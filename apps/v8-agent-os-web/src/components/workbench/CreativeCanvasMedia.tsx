@@ -431,10 +431,10 @@ export function CreativeCanvasMedia({
         const supported = /\.(?:glb|gltf)(?:$|[?#])/i.test(url) || /\.(?:glb|gltf)$/i.test(resource.name);
         if (supported) {
             const previewRequested = inspect || modelPreviewKey === cacheKey;
-            const shouldRenderModel = effectiveVisible && !compact && (inspect || (active && previewRequested));
+            const shouldRenderModel = !compact && previewRequested && (inspect ? effectiveVisible : active);
             return (
                 <div ref={rootRef} className="relative h-full w-full">
-                    {shouldRenderModel ? <ModelViewer src={url} className="h-full w-full rounded-none border-0" compact={!inspect} active interactive={inspect} /> : <FileFallback resource={resource} compact={compact} />}
+                    {shouldRenderModel ? <ModelViewer src={url} className="h-full w-full rounded-none border-0" compact={!inspect} active={effectiveVisible} interactive={inspect} /> : <FileFallback resource={resource} compact={compact} />}
                     {!compact && active && effectiveVisible && !previewRequested ? (
                         <button
                             type="button"

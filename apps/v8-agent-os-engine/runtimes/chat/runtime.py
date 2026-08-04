@@ -2203,6 +2203,7 @@ class ChatRuntime:
                 graph_id = str(execution_request.get("graphId") or "").strip()
                 graph_revision = execution_request.get("graphRevision")
                 target_node_ids = execution_request.get("targetNodeIds")
+                retry_graph_run_id = str(execution_request.get("retryGraphRunId") or "").strip()
                 if not graph_id or not isinstance(graph_revision, int) or isinstance(graph_revision, bool) or graph_revision < 1:
                     raise ValueError("canvasSupervisorDirect graph execution requires a persisted graph id and revision")
                 if not isinstance(target_node_ids, list) or any(not isinstance(item, str) for item in target_node_ids):
@@ -2213,6 +2214,16 @@ class ChatRuntime:
                     graph_revision=graph_revision,
                     target_node_ids=target_node_ids,
                 )
+                if retry_graph_run_id:
+                    retry_run = creative_canvas_graph_service.get_run(
+                        session_id=str(request.session_id or ""),
+                        graph_run_id=retry_graph_run_id,
+                    )
+                    if str(retry_run.get("canvasOperationId") or "") != canvas_operation_id:
+                        raise ValueError("canvasSupervisorDirect retry must reuse its original Canvas operation")
+                    recovery = retry_run.get("recovery") if isinstance(retry_run.get("recovery"), dict) else {}
+                    if not recovery.get("canRetry") or recovery.get("mode") != "failed_branch":
+                        raise ValueError("canvasSupervisorDirect retry is not recoverable as a failed branch")
                 plan_refs = [item for item in list(plan.get("resourceRefs") or []) if isinstance(item, dict)]
                 planned_source_ids = {
                     str(item.get("id") or "").strip()

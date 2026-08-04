@@ -269,7 +269,8 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     if (!activeTab || boundSessionId !== props.sessionId) return null;
 
     const shouldShow = mode !== "closed";
-    const effectiveMode = mode === "focus" ? "focus" : "split";
+    const compactWorkbench = containerWidth > 0 && containerWidth < 760;
+    const effectiveMode = mode === "focus" || compactWorkbench ? "focus" : "split";
     const desiredPanelWidth = width > 0 ? width : containerWidth / 3;
     const minimumPanelWidth = Math.min(280, Math.max(200, containerWidth * 0.28));
     const maximumPanelWidth = Math.max(200, containerWidth - 420);
@@ -312,14 +313,14 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                     onAddFile={() => setFilePickerOpen(true)}
                     onAddCanvas={() => openDocument(createCreativeCanvasDocument(props.sessionId), { activate: true, mode: "split" })}
                 />
-                <button
+                {!compactWorkbench ? <button
                     type="button"
                     onClick={() => setMode(mode === "focus" ? "split" : "focus")}
                     className="rounded-lg p-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
                     aria-label={mode === "focus" ? t("web.workbench.exitFocus") : t("web.workbench.focus")}
                 >
                     {mode === "focus" ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-                </button>
+                </button> : null}
             </div>
             <div role="tabpanel" className="relative min-h-0 flex-1 overflow-hidden">
                 <div className={cn("absolute inset-0", document.kind === "creative_canvas" && "invisible pointer-events-none")}>{content}</div>

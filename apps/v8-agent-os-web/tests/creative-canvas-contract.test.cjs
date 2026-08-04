@@ -744,8 +744,14 @@ test("canvas interaction layers expose reversible graph editing, contextual feed
   assert.match(canvas, /requestGraphRun/);
   assert.match(media, /IntersectionObserver/);
   assert.match(media, /preload=\{effectiveVisible \? "metadata" : "none"\}/);
-  assert.match(media, /document\.hidden/);
+  assert.match(media, /useSyncExternalStore/);
+  assert.match(media, /documentVisibilitySubscribers/);
   assert.match(media, /readyResourceUrls/);
+  assert.match(canvas, /const DRAWER_WINDOW_SIZE = 60/);
+  assert.match(canvas, /visibleWorkspaceResources\.slice\(0, visibleAssetLimit\)/);
+  assert.match(canvas, /onScroll=\{handleDrawerScroll\}/);
+  assert.match(canvas, /const board = boardRef\.current;[\s\S]*new ResizeObserver\(update\);[\s\S]*\}, \[visible\]\);/);
+  assert.match(canvas, /if \(mountedRef\.current && sessionIdRef\.current !== sessionId\) \{[\s\S]*persistLocal\(\)/);
 
   const snapshot = {
     schema: "v8.creative_canvas_graph.v1",
@@ -783,6 +789,9 @@ test("canvas interaction layers expose reversible graph editing, contextual feed
   const frameDefinition = configuredDefinitions.find((definition) => definition.actionId === "edit-b");
   assert.equal(graph.isCanvasActionConfigured(frameAction, frameDefinition), false);
   assert.equal(graph.isCanvasActionConfigured({ ...frameAction, parameters: { frameIndex: 12 } }, frameDefinition), true);
+  const psdDefinition = { ...frameDefinition, parameterEditor: "psd_layers" };
+  assert.equal(graph.isCanvasActionConfigured({ ...frameAction, parameters: { layerEdits: [{ layerPath: "0" }] } }, psdDefinition), false);
+  assert.equal(graph.isCanvasActionConfigured({ ...frameAction, parameters: { edits: [{ layerPath: "0" }] } }, psdDefinition), true);
   const storedFramePick = {
     unit: "frame",
     count: 0,

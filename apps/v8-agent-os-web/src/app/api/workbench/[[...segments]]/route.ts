@@ -7,7 +7,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 const ALLOWED_PATHS = [
     /^sessions\/[A-Za-z0-9_-]+\/files(?:\/(?:resolve|read))?$/,
     /^sessions\/[A-Za-z0-9_-]+\/media\/(?:reconcile|probe|assets(?:\/[A-Za-z0-9_-]+\/(?:use|placement|content))?|folders(?:\/[A-Za-z0-9_-]+)?)$/,
-    /^sessions\/[A-Za-z0-9_-]+\/canvas\/(?:actions|preview\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+|motion\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+\/(?:manifest|frames\/\d+)|graph(?:\/validate|\/history\/(?:undo|redo))?|templates(?:\/[A-Za-z0-9_.:-]+(?:\/instantiate)?)?)$/,
+    /^sessions\/[A-Za-z0-9_-]+\/canvas\/(?:actions|preview\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+|psd\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+\/(?:manifest|preview)|motion\/(?:source|artifact|workspace_asset)\/[A-Za-z0-9_.:-]+\/(?:manifest|frames\/\d+)|graph(?:\/validate|\/history\/(?:undo|redo))?|templates(?:\/[A-Za-z0-9_.:-]+(?:\/instantiate)?)?)$/,
 ];
 
 function enginePath(segments: string[]) {

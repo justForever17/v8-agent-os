@@ -118,6 +118,7 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
   const store = readText("apps/v8-agent-os-web/src/store/workbench-store.ts");
   const route = readText("apps/v8-agent-os-engine/api/session_workflow_routes.py");
+  const proxy = readText("apps/v8-agent-os-web/src/app/api/workbench/[[...segments]]/route.ts");
   const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   assert.ok(shell.indexOf("{tabs.map") < shell.indexOf("<DropdownMenu>"));
   assert.match(shell, /web\.workbench\.add\.file/);
@@ -136,6 +137,8 @@ test("Workbench add menu, files, and creative canvas remain session-scoped", () 
   assert.match(canvasSaveScheduler, /encodeURIComponent\(sessionId\).*canvas\/graph/);
   assert.match(canvas, /\/api\/artifacts/);
   assert.match(canvas, /\/api\/sources/);
+  assert.ok(proxy.includes("psd\\/(?:source|artifact|workspace_asset)"));
+  assert.ok(proxy.includes("\\/(?:manifest|preview)"));
   assert.match(route, /inline: bool = Query\(False\)/);
   assert.match(route, /content_disposition_type="attachment" if download else "inline"/);
   assert.match(chat, /handleCanvasTask/);

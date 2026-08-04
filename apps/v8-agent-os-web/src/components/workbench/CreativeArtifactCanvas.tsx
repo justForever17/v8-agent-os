@@ -10,6 +10,7 @@ import {
     type ChangeEvent,
     type DragEvent,
     type PointerEvent as ReactPointerEvent,
+    type UIEvent as ReactUIEvent,
 } from "react";
 import {
     Archive,
@@ -161,7 +162,8 @@ import {
 
 export type { CanvasTaskReference, CanvasTaskRequest } from "./creative-canvas/types";
 
-const canvasMediaReconcileTasks = new Map<string, Promise<void>>();
+const canvasMediaReconcileTasks = new Map<string, Promise<number>>();
+const DRAWER_WINDOW_SIZE = 60;
 
 interface CanvasGraphSaveMeta {
     runtime: CanvasGraphRuntime;
@@ -228,6 +230,7 @@ function reconcileCanvasMediaCatalog(sessionId: string) {
     }).then(async (response) => {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+        return Array.isArray(payload?.registeredAssetIds) ? payload.registeredAssetIds.length : 0;
     }).finally(() => {
         canvasMediaReconcileTasks.delete(sessionId);
     });
@@ -264,6 +267,7 @@ export function CreativeArtifactCanvas({
     const sessionIdRef = useRef(sessionId);
     const mountedRef = useRef(true);
     const catalogAbortRef = useRef<AbortController | null>(null);
+    const drawerScrollRef = useRef<HTMLDivElement | null>(null);
     const interactionRef = useRef<PointerInteraction | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
@@ -298,6 +302,7 @@ export function CreativeArtifactCanvas({
     const [resources, setResources] = useState<CanvasResource[]>([]);
     const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceMediaFolder[]>([]);
     const [activeFolderId, setActiveFolderId] = useState("");
+    const [visibleAssetLimit, setVisibleAssetLimit] = useState(DRAWER_WINDOW_SIZE);
     const [newFolderTitle, setNewFolderTitle] = useState("");
     const [newFolderKind, setNewFolderKind] = useState<WorkspaceMediaFolder["folderKind"]>("custom");
     const [creatingFolder, setCreatingFolder] = useState(false);
@@ -401,7 +406,7 @@ export function CreativeArtifactCanvas({
         };
     }, []);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const board = boardRef.current;
         if (!board) return;
         const update = () => setBoardSize({ width: board.clientWidth, height: board.clientHeight });
@@ -409,7 +414,7 @@ export function CreativeArtifactCanvas({
         const observer = new ResizeObserver(update);
         observer.observe(board);
         return () => observer.disconnect();
-    }, []);
+    }, [visible]);
 
     const persistGraph = useCallback(async (candidate: CanvasSnapshot): Promise<boolean> => {
         return graphSaveScheduler.enqueue(sessionId, candidate);
@@ -599,9 +604,9 @@ export function CreativeArtifactCanvas({
         const timeout = window.setTimeout(persistCurrent, 420);
         return () => {
             window.clearTimeout(timeout);
-            persistLocal();
-            if (mountedRef.current && sessionIdRef.current !== sessionId && needsPersistence()) {
-                graphSaveScheduler.flush(sessionId, snapshot);
+            if (mountedRef.current && sessionIdRef.current !== sessionId) {
+                persistLocal();
+                if (needsPersistence()) graphSaveScheduler.flush(sessionId, snapshot);
             }
         };
     }, [hydratedKey, persistGraph, sessionId, snapshot, storageKey]);
@@ -669,8 +674,8 @@ export function CreativeArtifactCanvas({
     }, [sessionId]);
 
     const reconcileCatalog = useCallback(() => {
-        void reconcileCanvasMediaCatalog(sessionId).then(() => {
-            if (mountedRef.current && sessionIdRef.current === sessionId) void loadCatalog(true);
+        void reconcileCanvasMediaCatalog(sessionId).then((registeredCount) => {
+            if (registeredCount > 0 && mountedRef.current && sessionIdRef.current === sessionId) void loadCatalog(true);
         }).catch((reason) => {
             console.warn("Canvas media reconciliation failed", reason);
         });
@@ -720,6 +725,15 @@ export function CreativeArtifactCanvas({
         () => new Map(resources.map((item) => [`${item.origin}:${item.id}`, item])),
         [resources],
     );
+    const nodeMap = useMemo(
+        () => new Map(snapshot.nodes.map((node) => [node.nodeId, node])),
+        [snapshot.nodes],
+    );
+    const actionDefinitionMap = useMemo(
+        () => new Map(actionDefinitions.map((definition) => [definition.actionId, definition])),
+        [actionDefinitions],
+    );
+    const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
     const resourceForNode = useCallback((node: CanvasNode) => {
         if (node.kind !== "resource" || !node.resourceId || node.origin === "placeholder") return null;
         return resourceMap.get(`${node.origin}:${node.resourceId}`) || null;
@@ -1469,8 +1483,8 @@ export function CreativeArtifactCanvas({
     }, [applyGraphHistory, cancelTransaction, copySelection, duplicateSelection, focusNodes, pasteSelection, removeNodes, selectedIds, sessionRunning]);
 
     const selectedNodes = useMemo(
-        () => snapshot.nodes.filter((node) => selectedIds.includes(node.nodeId)),
-        [selectedIds, snapshot.nodes],
+        () => snapshot.nodes.filter((node) => selectedIdSet.has(node.nodeId)),
+        [selectedIdSet, snapshot.nodes],
     );
     const selectedBounds = useMemo(() => {
         if (!selectedNodes.length) return null;
@@ -1534,14 +1548,21 @@ export function CreativeArtifactCanvas({
         return verdicts;
     }, [actionDefinitions, connectionDraft, snapshot]);
     const visibleNodeIds = useMemo(() => {
-        if (!boardSize.width || !boardSize.height) return new Set(snapshot.nodes.map((node) => node.nodeId));
+        if (!visible || !boardSize.width || !boardSize.height) return new Set<string>();
         const padding = 220 / snapshot.viewport.scale;
         const left = -snapshot.viewport.x / snapshot.viewport.scale - padding;
         const top = -snapshot.viewport.y / snapshot.viewport.scale - padding;
         const right = left + boardSize.width / snapshot.viewport.scale + padding * 2;
         const bottom = top + boardSize.height / snapshot.viewport.scale + padding * 2;
         return new Set(snapshot.nodes.filter((node) => node.x + node.width >= left && node.x <= right && node.y + node.height >= top && node.y <= bottom).map((node) => node.nodeId));
-    }, [boardSize.height, boardSize.width, snapshot.nodes, snapshot.viewport]);
+    }, [boardSize.height, boardSize.width, snapshot.nodes, snapshot.viewport, visible]);
+    const renderedNodes = useMemo(() => snapshot.nodes.filter((node) => (
+        visibleNodeIds.has(node.nodeId)
+        || selectedIdSet.has(node.nodeId)
+        || inspectNodeId === node.nodeId
+        || maskNodeId === node.nodeId
+    )), [inspectNodeId, maskNodeId, selectedIdSet, snapshot.nodes, visibleNodeIds]);
+    const renderedEdges = useMemo(() => visible ? snapshot.edges : [], [snapshot.edges, visible]);
     const actionRunSummary = useMemo(() => {
         const actions = snapshot.nodes.filter((node) => node.kind === "action");
         const completed = actions.filter((node) => graphRuntime.nodeStates[node.nodeId]?.state === "succeeded").length;
@@ -2442,11 +2463,25 @@ export function CreativeArtifactCanvas({
     const connectionDraftSource = connectionDraft
         ? snapshot.nodes.find((node) => node.nodeId === connectionDraft.fromNodeId) || null
         : null;
-    const workspaceResources = resources.filter((item) => item.origin === "workspace_asset");
-    const visibleWorkspaceResources = activeFolderId
-        ? workspaceResources.filter((item) => item.folderId === activeFolderId)
-        : workspaceResources;
-    const folderRows = (() => {
+    const workspaceResources = useMemo(
+        () => resources.filter((item) => item.origin === "workspace_asset"),
+        [resources],
+    );
+    const visibleWorkspaceResources = useMemo(
+        () => activeFolderId
+            ? workspaceResources.filter((item) => item.folderId === activeFolderId)
+            : workspaceResources,
+        [activeFolderId, workspaceResources],
+    );
+    const folderAssetCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const resource of workspaceResources) {
+            const folderId = resource.folderId || "";
+            counts.set(folderId, (counts.get(folderId) || 0) + 1);
+        }
+        return counts;
+    }, [workspaceResources]);
+    const folderRows = useMemo(() => {
         const rows: Array<WorkspaceMediaFolder & { depth: number }> = [];
         const visit = (parentFolderId: string | undefined, depth: number) => {
             workspaceFolders
@@ -2459,7 +2494,23 @@ export function CreativeArtifactCanvas({
         };
         visit(undefined, 0);
         return rows;
-    })();
+    }, [workspaceFolders]);
+    const renderedWorkspaceResources = useMemo(
+        () => visibleWorkspaceResources.slice(0, visibleAssetLimit),
+        [visibleAssetLimit, visibleWorkspaceResources],
+    );
+
+    useEffect(() => {
+        if (!trayOpen) return;
+        setVisibleAssetLimit(DRAWER_WINDOW_SIZE);
+        if (drawerScrollRef.current) drawerScrollRef.current.scrollTop = 0;
+    }, [activeFolderId, trayOpen]);
+
+    const handleDrawerScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+        const element = event.currentTarget;
+        if (element.scrollHeight - element.scrollTop - element.clientHeight > 180) return;
+        setVisibleAssetLimit((current) => Math.min(visibleWorkspaceResources.length, current + DRAWER_WINDOW_SIZE));
+    }, [visibleWorkspaceResources.length]);
 
     return (
         <div
@@ -2517,13 +2568,13 @@ export function CreativeArtifactCanvas({
                             <path d="M 0 0 L 8 4 L 0 8 z" className="fill-slate-400 dark:fill-slate-500" />
                         </marker>
                     </defs>
-                    {snapshot.edges.map((edge) => {
-                        const from = snapshot.nodes.find((node) => node.nodeId === edge.from);
-                        const to = snapshot.nodes.find((node) => node.nodeId === edge.to);
+                    {renderedEdges.map((edge) => {
+                        const from = nodeMap.get(edge.from);
+                        const to = nodeMap.get(edge.to);
                         if (!from || !to) return null;
                         const path = edgePath(from, to, edge);
                         const fixedResultEdge = from.kind === "action" && to.kind === "result" && to.producerActionNodeId === from.nodeId;
-                        const highlighted = hoveredEdgeId === edge.edgeId || selectedIds.includes(edge.from) || selectedIds.includes(edge.to);
+                        const highlighted = hoveredEdgeId === edge.edgeId || selectedIdSet.has(edge.from) || selectedIdSet.has(edge.to);
                         const semanticStroke = edge.role === "relation"
                             ? "rgb(148 163 184)"
                             : edge.dataType === "image" || edge.dataType === "psd"
@@ -2568,10 +2619,10 @@ export function CreativeArtifactCanvas({
                     ) : null}
                 </svg>
 
-                {snapshot.edges.map((edge) => {
+                {renderedEdges.map((edge) => {
                     if (hoveredEdgeId !== edge.edgeId) return null;
-                    const from = snapshot.nodes.find((node) => node.nodeId === edge.from);
-                    const to = snapshot.nodes.find((node) => node.nodeId === edge.to);
+                    const from = nodeMap.get(edge.from);
+                    const to = nodeMap.get(edge.to);
                     if (!from || !to) return null;
                     const start = portPoint(from, edge.fromPort);
                     const end = portPoint(to, edge.toPort);
@@ -2601,12 +2652,12 @@ export function CreativeArtifactCanvas({
                     );
                 })}
 
-                {snapshot.nodes.map((node) => {
+                {renderedNodes.map((node) => {
                     const resource = displayResourceForNode(node);
-                    const selected = selectedIds.includes(node.nodeId);
+                    const selected = selectedIdSet.has(node.nodeId);
                     const inputPlaceholder = node.kind === "input";
                     const actionState = String(graphRuntime.nodeStates[node.nodeId]?.state || "idle");
-                    const actionDefinition = actionDefinitions.find((item) => item.actionId === node.actionDefinitionId);
+                    const actionDefinition = actionDefinitionMap.get(node.actionDefinitionId || "");
                     const actionConfigured = Boolean(actionDefinition && isCanvasActionConfigured(node, actionDefinition));
                     const actionRuntime = graphRuntime.nodeStates[node.nodeId] || {};
                     const stale = actionState === "succeeded"
@@ -2880,7 +2931,7 @@ export function CreativeArtifactCanvas({
                         <button type="button" disabled={sessionRunning || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35" aria-label={t("web.workbench.canvas.graph.upload")}><Plus className="h-4 w-4" /></button>
                         <button type="button" onClick={() => setTrayOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.library.close")}><X className="h-4 w-4" /></button>
                     </div>
-                    <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
+                    <div ref={drawerScrollRef} onScroll={handleDrawerScroll} className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2.5">
                         <div className="mb-2 space-y-1 rounded-xl border border-border/60 bg-muted/15 p-1.5">
                             <button type="button" onClick={() => setActiveFolderId("")} className={cn("flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[10px] font-medium hover:bg-muted", !activeFolderId && "bg-muted text-primary")}>
                                 <Archive className="h-3.5 w-3.5" /><span className="flex-1">{t("web.workbench.canvas.library.all")}</span><span className="text-[9px] text-muted-foreground">{workspaceResources.length}</span>
@@ -2893,7 +2944,7 @@ export function CreativeArtifactCanvas({
                                     className={cn("flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-[10px] font-medium hover:bg-muted", activeFolderId === folder.folderId && "bg-muted text-primary")}
                                     style={{ paddingLeft: 8 + folder.depth * 14 }}
                                 >
-                                    <Folder className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">{folder.title}</span><span className="text-[9px] text-muted-foreground">{workspaceResources.filter((resource) => resource.folderId === folder.folderId).length}</span>
+                                    <Folder className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">{folder.title}</span><span className="text-[9px] text-muted-foreground">{folderAssetCounts.get(folder.folderId) || 0}</span>
                                 </button>
                             ))}
                             <div className="grid grid-cols-[1fr_94px_32px] gap-1 pt-1">
@@ -2907,7 +2958,7 @@ export function CreativeArtifactCanvas({
                         {loading ? <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : null}
                         {!loading && !visibleWorkspaceResources.length ? <div className="px-5 py-10 text-center text-xs leading-5 text-muted-foreground">{t("web.workbench.canvas.library.emptyFolder")}</div> : null}
                         <div className="grid grid-cols-3 gap-2">
-                            {visibleWorkspaceResources.map((resource) => (
+                            {renderedWorkspaceResources.map((resource) => (
                                 <div
                                     key={`${resource.origin}:${resource.id}`}
                                     draggable={!sessionRunning}
@@ -2939,6 +2990,11 @@ export function CreativeArtifactCanvas({
                                 </div>
                             ))}
                         </div>
+                        {renderedWorkspaceResources.length < visibleWorkspaceResources.length ? (
+                            <div aria-hidden="true" className="flex h-10 items-center justify-center">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground motion-reduce:animate-none" />
+                            </div>
+                        ) : null}
                     </div>
                     <div className="shrink-0 border-t border-border/60 px-3 py-2 text-[9px] text-muted-foreground">
                         {t(mediaKitStatus === "ready" ? "web.workbench.canvas.library.toolReady" : mediaKitStatus === "loading" ? "web.workbench.canvas.library.toolLoading" : "web.workbench.canvas.library.toolUnavailable")}

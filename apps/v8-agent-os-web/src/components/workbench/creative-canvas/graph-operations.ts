@@ -302,7 +302,7 @@ export function isCanvasActionConfigured(node: CanvasNode, definition: CanvasAct
             || Number.isInteger(parameters.startSampleIndex);
     }
     if (definition.parameterEditor === "psd_composition") return Array.isArray(parameters.layers) && parameters.layers.length > 0;
-    if (definition.parameterEditor === "psd_layers") return Array.isArray(parameters.layerEdits) && parameters.layerEdits.length > 0;
+    if (definition.parameterEditor === "psd_layers") return Array.isArray(parameters.edits) && parameters.edits.length > 0;
     return !definition.requiresPrompt || Boolean(node.prompt?.trim());
 }
 

@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- session resources include local and signed URLs without fixed dimensions */
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Activity, Box, FileText, ImageIcon, Loader2, Music2, Pause, Play, Video } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 
@@ -20,6 +20,31 @@ export type CreativeCanvasMediaResource = {
 
 const READY_RESOURCE_LIMIT = 128;
 const readyResourceUrls = new Map<string, true>();
+const documentVisibilitySubscribers = new Set<() => void>();
+let documentVisibilityListening = false;
+
+function notifyDocumentVisibilitySubscribers() {
+    for (const subscriber of documentVisibilitySubscribers) subscriber();
+}
+
+function subscribeDocumentVisibility(subscriber: () => void) {
+    documentVisibilitySubscribers.add(subscriber);
+    if (!documentVisibilityListening && typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", notifyDocumentVisibilitySubscribers);
+        documentVisibilityListening = true;
+    }
+    return () => {
+        documentVisibilitySubscribers.delete(subscriber);
+        if (documentVisibilityListening && !documentVisibilitySubscribers.size && typeof document !== "undefined") {
+            document.removeEventListener("visibilitychange", notifyDocumentVisibilitySubscribers);
+            documentVisibilityListening = false;
+        }
+    };
+}
+
+function documentVisibleSnapshot() {
+    return typeof document === "undefined" || !document.hidden;
+}
 
 function hasReadyResource(cacheKey: string) {
     if (!readyResourceUrls.has(cacheKey)) return false;
@@ -255,7 +280,11 @@ export function CreativeCanvasMedia({
     const [playbackState, setPlaybackState] = useState({ cacheKey, playing: false });
     const [modelPreviewKey, setModelPreviewKey] = useState("");
     const [inView, setInView] = useState(false);
-    const [documentVisible, setDocumentVisible] = useState(() => typeof document === "undefined" || !document.hidden);
+    const documentVisible = useSyncExternalStore(
+        subscribeDocumentVisibility,
+        documentVisibleSnapshot,
+        () => true,
+    );
     const effectiveVisible = visible && (inspect || inView) && documentVisible;
     const [resourceState, setResourceState] = useState<{ cacheKey: string; state: "loading" | "ready" | "error" }>(() => ({
         cacheKey,
@@ -278,21 +307,11 @@ export function CreativeCanvasMedia({
         return () => observer.disconnect();
     }, [compact]);
     useEffect(() => {
-        const sync = () => setDocumentVisible(!document.hidden);
-        document.addEventListener("visibilitychange", sync);
-        return () => document.removeEventListener("visibilitychange", sync);
-    }, []);
-    useEffect(() => {
         const media = playableRef.current;
         if (!media) return;
-        const sync = () => {
-            if (!active || !effectiveVisible || document.hidden) media.pause();
-            else if (media.readyState === HTMLMediaElement.HAVE_NOTHING) media.load();
-        };
-        sync();
-        document.addEventListener("visibilitychange", sync);
-        return () => document.removeEventListener("visibilitychange", sync);
-    }, [active, effectiveVisible]);
+        if (!active || !effectiveVisible || !documentVisible) media.pause();
+        else if (media.readyState === HTMLMediaElement.HAVE_NOTHING) media.load();
+    }, [active, documentVisible, effectiveVisible]);
     const markReady = () => {
         rememberReadyResource(cacheKey);
         setLoadState("ready");

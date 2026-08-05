@@ -19,7 +19,7 @@ test("context usage prefers the post-compaction model-aware estimate", () => {
   assert.equal(contextUsagePercent({ contextWindowTokens: 0, effectiveInputTokens: 1 }), null);
 });
 
-test("subagent returns keep direct lineage and nest grandchild truth without an avatar", () => {
+test("subagent returns keep configured identity and nested avatar lineage", () => {
   const projection = buildSubagentReturnProjection([
     {
       nodes: [
@@ -68,7 +68,7 @@ test("subagent returns keep direct lineage and nest grandchild truth without an 
   assert.deepEqual(projection[0].artifactRefs, ["artifact://proof"]);
   assert.equal(projection[0].children.length, 1);
   assert.equal(projection[0].children[0].name, "Scanner");
-  assert.equal(projection[0].children[0].avatar, null);
+  assert.equal(projection[0].children[0].avatar, "https://example.test/should-not-project.png");
   assert.equal(projection[0].children[0].summary, "Nested evidence returned.");
 });
 

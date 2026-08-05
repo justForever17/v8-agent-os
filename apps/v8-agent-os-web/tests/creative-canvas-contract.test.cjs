@@ -539,7 +539,7 @@ test("canvas Human Surface stays one opaque product message after authoritative 
   const zh = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/zh-CN.json"));
   const en = JSON.parse(read("apps/v8-agent-os-web/src/i18n/locales/en.json"));
   assert.equal(zh["web.workbench.canvas.humanMessage"], "本消息来自画布");
-  assert.equal(en["web.workbench.canvas.humanMessage"], "This message is from Canvas");
+  assert.equal(en["web.workbench.canvas.humanMessage"], "This message was sent from the canvas");
   assert.equal(contractModule.isCreativeCanvasCanonicalMessage(
     "本消息来自画布\n[CANVAS EXECUTION CONTRACT v1]\n{\"sourceId\":\"secret\"}",
     {},

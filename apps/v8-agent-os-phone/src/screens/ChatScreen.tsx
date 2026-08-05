@@ -58,6 +58,7 @@ import {
     buildAssistantMessage,
     isActiveAssistantStreamPhase,
     PHONE_STREAM_LIFECYCLE_OPTIONS,
+    type AgentProfile,
     type PhoneRealtimeUiEvent,
 } from "@/src/lib/chat-stream-state";
 import { buildApprovalFromEvent, buildAskUserInteractionFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
@@ -790,11 +791,11 @@ function removeUploadedWorkspaceFile(
     return current.filter((item) => buildUploadedFileStableKey(item) !== targetKey);
 }
 
-function buildAssistantPlaceholder(runId?: string): ChatMessage {
+function buildAssistantPlaceholder(runId?: string, agentProfile?: AgentProfile): ChatMessage {
     return buildAssistantMessage({
-        agentName: translateCurrent("shared.actor.supervisor"),
-        agentAvatar: "/brand-mark.png",
-        agentRoleLabel: translateCurrent("shared.actor.lead"),
+        agentName: agentProfile?.agentName || translateCurrent("shared.actor.supervisor"),
+        agentAvatar: agentProfile?.agentAvatar || "/brand-mark.png",
+        agentRoleLabel: agentProfile?.agentRoleLabel || translateCurrent("shared.actor.lead"),
     }, runId, "placeholder");
 }
 
@@ -2195,7 +2196,11 @@ export default function ChatScreen() {
     const [expandedFolderPaths, setExpandedFolderPaths] = useState<Set<string>>(() => new Set());
     const [loadingFolderPaths, setLoadingFolderPaths] = useState<Set<string>>(() => new Set());
     const [newFolderName, setNewFolderName] = useState("");
-    const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
+    const [scopeBindingState, setScopeBindingState] = useState<{ sessionId: string; binding: ScopeBindingView } | null>(null);
+    const scopeBinding = scopeBindingState?.sessionId === activeConversationId
+        ? scopeBindingState.binding
+        : null;
+    const scopeRequestSeqRef = useRef(0);
     const [scopeLoading, setScopeLoading] = useState(false);
     const [approvals, setApprovals] = useState<PendingApproval[]>([]);
     const [askUserInteractions, setAskUserInteractions] = useState<AskUserInteraction[]>([]);
@@ -3286,15 +3291,23 @@ export default function ChatScreen() {
     }, [loadFolderRoots, workspaceChooserVisible]);
 
     const loadSessionScope = useCallback(async (conversationId: string) => {
+        const requestSeq = ++scopeRequestSeqRef.current;
+        if (activeConversationIdRef.current === conversationId) {
+            setScopeBindingState(null);
+        }
         setScopeLoading(true);
         try {
             const binding = await getSessionScope(authorizedFetch, conversationId);
-            setScopeBinding(binding);
+            if (requestSeq !== scopeRequestSeqRef.current || activeConversationIdRef.current !== conversationId) return;
+            setScopeBindingState(binding ? { sessionId: conversationId, binding } : null);
         } catch (error) {
+            if (requestSeq !== scopeRequestSeqRef.current || activeConversationIdRef.current !== conversationId) return;
             console.warn("[phone/chat] loadSessionScope failed", error instanceof Error ? error.message : error);
-            setScopeBinding(null);
+            setScopeBindingState(null);
         } finally {
-            setScopeLoading(false);
+            if (requestSeq === scopeRequestSeqRef.current && activeConversationIdRef.current === conversationId) {
+                setScopeLoading(false);
+            }
         }
     }, [authorizedFetch]);
 
@@ -3320,7 +3333,7 @@ export default function ChatScreen() {
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
-        setScopeBinding(null);
+        setScopeBindingState(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
         setPendingContextSessionRefs([]);
@@ -5168,15 +5181,20 @@ export default function ChatScreen() {
     }, [status]);
 
     useEffect(() => {
+        scopeRequestSeqRef.current += 1;
+        setScopeBindingState(null);
         if (status !== "authenticated") {
+            setScopeLoading(false);
             return;
         }
         if (!activeConversationId) {
-            setScopeBinding(null);
             setScopeLoading(false);
             return;
         }
         void loadSessionScope(activeConversationId);
+        return () => {
+            scopeRequestSeqRef.current += 1;
+        };
     }, [activeConversationId, loadSessionScope, status]);
 
     useEffect(() => {
@@ -5373,7 +5391,7 @@ export default function ChatScreen() {
         setWorkspaceInfoOpen(false);
         setWorkspaceChooserVisible(true);
         setNewProjectPath("");
-        setScopeBinding(null);
+        setScopeBindingState(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
         setPendingContextSessionRefs([]);
@@ -5409,7 +5427,7 @@ export default function ChatScreen() {
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
-        setScopeBinding(null);
+        setScopeBindingState(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
         setPendingContextSessionRefs([]);
@@ -6580,7 +6598,10 @@ export default function ChatScreen() {
                 }
 
                 const acceptedUserMessage = normalizeAcceptedUserMessage(submitResult.userMessage, userMessage) || userMessage;
-                const assistantPlaceholder = buildAssistantPlaceholder();
+                const assistantPlaceholder = buildAssistantPlaceholder(
+                    undefined,
+                    realtimeMessageStateRef.current.activeAgentProfile,
+                );
                 assistantPlaceholder.metadata = {
                     ...(assistantPlaceholder.metadata || {}),
                     clientMessageId,
@@ -6622,7 +6643,10 @@ export default function ChatScreen() {
                 return;
             }
 
-            const assistantPlaceholder = buildAssistantPlaceholder();
+            const assistantPlaceholder = buildAssistantPlaceholder(
+                undefined,
+                realtimeMessageStateRef.current.activeAgentProfile,
+            );
             assistantPlaceholder.metadata = {
                 ...(assistantPlaceholder.metadata || {}),
                 clientMessageId,
@@ -7417,6 +7441,8 @@ export default function ChatScreen() {
                             ) : (
                                 <ChatWindow
                                     adminBaseUrl={adminBaseUrl}
+                                    sessionId={activeConversationId || undefined}
+                                    workspaceId={scopeBinding?.workspaceId || undefined}
                                     messages={projection.projectedMessages}
                                     scrollLocked={pickerOverlayVisible}
                                     refreshing={conversationBusy}
@@ -7517,7 +7543,9 @@ export default function ChatScreen() {
 
                 <SessionOverviewPanel
                     visible={overviewPanelOpen}
+                    adminBaseUrl={adminBaseUrl}
                     sessionId={activeConversationId || ""}
+                    workspaceId={scopeBinding?.workspaceId || undefined}
                     outputEvidence={projection.governancePendingApproval ? [projection.governancePendingApproval] : []}
                     messages={projection.projectedMessages}
                     runtimeActivities={projection.runtimeStageModel.messageActivities}

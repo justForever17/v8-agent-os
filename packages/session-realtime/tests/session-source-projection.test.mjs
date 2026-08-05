@@ -90,3 +90,114 @@ test("case-distinct relative paths and external origins are not collapsed", () =
   ]);
   assert.equal(projection.length, 4);
 });
+
+test("durable source projection fails closed on missing, cross-session, and cross-workspace authority", () => {
+  const projection = buildSessionSourceProjection([{
+    id: "user-current",
+    role: "user",
+    metadata: {
+      attachments: [{
+        id: "current-message-source",
+        name: "current.png",
+        workspaceRelativePath: "uploads/current.png",
+      }],
+    },
+  }], [
+    { sourceId: "source-current", sessionId: "session-a", workspaceId: "workspace-a", title: "current.wav" },
+    { sourceId: "source-other-session", sessionId: "session-b", workspaceId: "workspace-a", title: "other.wav" },
+    { sourceId: "source-other-workspace", sessionId: "session-a", workspaceId: "workspace-b", title: "other.png" },
+    { sourceId: "source-missing-authority", title: "unknown.json" },
+  ], {
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+  });
+
+  assert.deepEqual(
+    projection.map((item) => item.id),
+    ["source-current", "current-message-source"],
+  );
+});
+
+test("source projection rejects conflicting lineage and explicitly cross-scoped message attachments", () => {
+  const projection = buildSessionSourceProjection([{
+    id: "user-current",
+    role: "user",
+    metadata: {
+      attachments: [
+        { id: "inherited-current", name: "current.png" },
+        { id: "other-session", sessionId: "session-b", workspaceId: "workspace-a", name: "other.png" },
+        {
+          id: "conflicting-attachment",
+          sessionId: "session-a",
+          workspaceId: "workspace-a",
+          lineage: { sessionId: "session-b", workspaceId: "workspace-a" },
+          name: "conflict.png",
+        },
+        {
+          id: "conflicting-provenance",
+          sessionId: "session-a",
+          workspaceId: "workspace-a",
+          provenance: { sessionId: "session-b", workspaceId: "workspace-b" },
+          name: "provenance-conflict.png",
+        },
+        {
+          id: "conflicting-aliases",
+          sessionId: "session-a",
+          session_id: "session-b",
+          workspaceId: "workspace-a",
+          workspace_id: "workspace-b",
+          name: "alias-conflict.png",
+        },
+      ],
+    },
+  }, {
+    id: "other-message",
+    role: "user",
+    sessionId: "session-b",
+    workspaceId: "workspace-a",
+    metadata: { attachments: [{ id: "hidden-with-parent", name: "hidden.png" }] },
+  }], [{
+    sourceId: "canonical-current",
+    source_id: "canonical-current",
+    id: "local-row-current",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    title: "canonical-current.wav",
+  }, {
+    sourceId: "conflicting-durable",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    lineage: { sessionId: "session-b", workspaceId: "workspace-a" },
+    title: "conflict.wav",
+  }, {
+    sourceId: "conflicting-durable-provenance",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    metadata: { provenance: { sessionId: "session-b", workspaceId: "workspace-b" } },
+    title: "provenance-conflict.wav",
+  }, {
+    sourceId: "conflicting-resource-alias",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    resourceRef: { sessionId: "session-a", workspaceId: "workspace-a" },
+    resource_ref: { session_id: "session-b", workspace_id: "workspace-b" },
+    title: "resource-alias-conflict.wav",
+  }, {
+    sourceId: "conflicting-source-id-a",
+    source_id: "conflicting-source-id-b",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    title: "source-id-conflict.wav",
+  }, {
+    sourceId: "conflicting-nested-source-id",
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+    metadata: { source_id: "different-nested-source-id" },
+    title: "nested-source-id-conflict.wav",
+  }], {
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+  });
+
+  assert.deepEqual(projection.map((item) => item.id), ["canonical-current", "inherited-current"]);
+});

@@ -84,7 +84,7 @@ Real-live 时限：
 |---|---|---|---|---|
 | EVT-01 | STATIC | 审查 Canvas 提交入口 | 复用 ChatClient 正常发送，无第二套 Canvas API | PASS |
 | EVT-02 | INTEGRATION | Canvas 发送一次 | 仅一个 user message、一个 Run | PASS |
-| EVT-03 | Web + Phone | 用户气泡 | 中文只显示“本消息来自画布”，英文只显示“This message is from Canvas”；不显示附件、合同、路径、ID | PASS |
+| EVT-03 | Web + Phone | 用户气泡 | 中文只显示“本消息来自画布”，英文只显示“This message was sent from the canvas”；不显示附件、合同、路径、ID | PASS |
 | EVT-04 | RUNTIME | Canonical 请求 | Supervisor 仍收到精简结构化 execution contract | PASS |
 | EVT-05 | REAL-LIVE | 宽屏同时观察消息区和 Canvas | 同一时点可见 Supervisor 进度、Canvas 锁和占位卡 | PASS |
 | EVT-06 | REAL-LIVE | 成功终态 | 对应占位卡填充、消息区终态、Canvas 5 秒内解锁 | PASS |
@@ -334,7 +334,7 @@ Real-live 时限：
 - 来源、内部蒙版、Creative job 与结果 Artifact 均验证为同一 Session / Run / Workspace lineage。
 - 内部蒙版实际为 `surfaceVisible=false`、`previewable=false`、`downloadable=false`，且未绑定 Human message。
 - OpenAI `images/edits/gpt-image-2` 实际执行 `operationKind=image.edit`，生成了局部换头结果并通过视觉验收。
-- Web 用户气泡实际只显示“本消息来自画布”；Vision 分析作为后台进度出现，但未阻塞同 Run 的 Creative job 建立。
+- Web 用户气泡实际只显示“本消息来自画布”。该次历史 live 曾出现 Vision 后台分析；当前 typed Canvas direct 合同已改为跳过 Vision preannounce，普通聊天附件仍保留 Vision，正反组由 Engine 窄测分别锁定。
 - 该次历史 Supervisor 终态曾回显内部 ID，当前候选已在 typed handoff/Human Surface 分离层补回归；未为此重复触发付费图片生成。
 
 子代理认知纪律与桌面候选：

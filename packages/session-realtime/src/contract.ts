@@ -258,6 +258,7 @@ export type ActiveRunScopedTodos = {
 export type SessionSourceRef = {
   sourceId: string;
   sessionId?: string | null;
+  workspaceId?: string | null;
   messageId?: string | null;
   sourceKind?: string | null;
   title?: string | null;

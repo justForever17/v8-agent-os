@@ -7,6 +7,7 @@ import {
     buildCollaborationMicroStages,
     buildMessageTimelineSegments,
     isRuntimeEpisodeGraphActivity,
+    projectCreativeCanvasHumanSurfaceMessage,
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
     type MessageTimelineSegment,
@@ -39,6 +40,7 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type { ChatMessage, ComposerPresentation, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
+import { CanvasGraphStatus } from "@/src/components/chat/CanvasGraphStatus";
 import {
     CollaborationMicroStageScene,
     type CollaborationMicroStageDetailTarget,
@@ -49,6 +51,7 @@ import { MediaPlayer } from "@/src/components/chat/MediaRenderers";
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 import { SupervisorActivitySummary } from "@/src/components/chat/SupervisorActivitySummary";
 import {
+    projectLatestPhoneCanvasGraphRunState,
     type PhoneRuntimeStageActivity,
 } from "@/src/lib/runtime-stage";
 
@@ -694,35 +697,6 @@ function extractComposerPresentation(message: ChatMessage): ComposerPresentation
     return text && references.length > 0 ? { text, references } : null;
 }
 
-function hasCanvasUserMessageMetadata(message: ChatMessage): boolean {
-    const content = String(message.content || "");
-    if (content.includes("[CANVAS EXECUTION CONTRACT v1]")) {
-        return true;
-    }
-    const metadata = message.metadata && typeof message.metadata === "object"
-        ? message.metadata as Record<string, unknown>
-        : {};
-    const rawPresentation = metadata.composerPresentation && typeof metadata.composerPresentation === "object"
-        ? metadata.composerPresentation as Record<string, unknown>
-        : null;
-    const presentationReferences = Array.isArray(rawPresentation?.references)
-        ? rawPresentation.references
-        : [];
-    if (presentationReferences.some((item) => (
-        Boolean(item)
-        && typeof item === "object"
-        && String((item as Record<string, unknown>).kind || "").trim().toLowerCase() === "canvas_resource"
-    ))) {
-        return true;
-    }
-    const contextMentions = Array.isArray(metadata.contextMentions) ? metadata.contextMentions : [];
-    return contextMentions.some((item) => (
-        Boolean(item)
-        && typeof item === "object"
-        && String((item as Record<string, unknown>).kind || "").trim().toLowerCase() === "canvas_operation"
-    ));
-}
-
 type UserAttachmentItem = {
     key: string;
     name: string;
@@ -894,6 +868,8 @@ export const MessageBubble = memo(function MessageBubble({
     processes = [],
     runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
     executionActive = false,
+    sessionId,
+    workspaceId,
     onOpenOverview,
 }: {
     adminBaseUrl: string;
@@ -909,6 +885,8 @@ export const MessageBubble = memo(function MessageBubble({
     processes?: AdminProcessRef[];
     runtimeActivities?: PhoneRuntimeStageActivity[];
     executionActive?: boolean;
+    sessionId?: string;
+    workspaceId?: string;
     onOpenOverview?: () => void;
 }) {
     const { width, height } = useWindowDimensions();
@@ -945,10 +923,11 @@ export const MessageBubble = memo(function MessageBubble({
     const mentionReferences = useMemo(() => extractUserMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
     const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
-    const isCanvasUserMessage = useMemo(
-        () => isUser && hasCanvasUserMessageMetadata(message),
-        [isUser, message],
+    const canvasHumanSurface = useMemo(
+        () => isUser ? projectCreativeCanvasHumanSurfaceMessage(message, canvasUserMessageText) : null,
+        [canvasUserMessageText, isUser, message],
     );
+    const isCanvasUserMessage = Boolean(canvasHumanSurface);
     const composerPresentationSegments = useMemo(
         () => composerPresentation
             ? buildComposerInlineSegments(composerPresentation.text, composerPresentation.references)
@@ -1107,6 +1086,16 @@ export const MessageBubble = memo(function MessageBubble({
         [microStageAnchorIndex, rawRenderableNodes],
     );
     const microStageVisible = visibleBubbleMicroStages.length > 0;
+    const canvasGraphRunState = useMemo(() => {
+        if (isUser || !isLast) return null;
+        const scopedSessionId = String(sessionId || "").trim();
+        const scopedWorkspaceId = String(workspaceId || "").trim();
+        if (!scopedSessionId || !scopedWorkspaceId) return null;
+        return projectLatestPhoneCanvasGraphRunState(runtimeActivities, {
+            sessionId: scopedSessionId,
+            workspaceId: scopedWorkspaceId,
+        });
+    }, [isLast, isUser, runtimeActivities, sessionId, workspaceId]);
     const renderableNodes = useMemo(
         () => rawRenderableNodes.filter((node) => !isMicroStageSupersededTimelineNode(node)),
         [rawRenderableNodes],
@@ -1267,7 +1256,7 @@ export const MessageBubble = memo(function MessageBubble({
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
         const directContent = isUser
-            ? (isCanvasUserMessage ? canvasUserMessageText : (composerPresentation?.text || userContentText))
+            ? (canvasHumanSurface?.copyText || composerPresentation?.text || userContentText)
             : String(message.content || "").trim();
         if (directContent) {
             return directContent;
@@ -1305,7 +1294,7 @@ export const MessageBubble = memo(function MessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [canvasUserMessageText, commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isCanvasUserMessage, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
+    }, [canvasHumanSurface?.copyText, commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -1435,7 +1424,7 @@ export const MessageBubble = memo(function MessageBubble({
                                             </View>
                                         ) : null}
                                         {isCanvasUserMessage ? (
-                                            <Text selectable style={[styles.userText, styles.userTextInline]}>{canvasUserMessageText}</Text>
+                                            <Text selectable style={[styles.userText, styles.userTextInline]}>{canvasHumanSurface?.text}</Text>
                                         ) : composerPresentation ? (
                                             <Text selectable style={styles.userPresentationText}>
                                                 {composerPresentationSegments.map((segment, index) => (
@@ -1552,6 +1541,7 @@ export const MessageBubble = memo(function MessageBubble({
                         ]}
                     >
                         <View style={[styles.assistantInner, assistantEmptyActive && styles.assistantInnerActiveEmpty, voiceOnly && styles.assistantInnerVoiceOnly]}>
+                            {canvasGraphRunState ? <CanvasGraphStatus projection={canvasGraphRunState} /> : null}
                             {assistantEmptyActive ? (
                                 <AssistantActivityDots
                                     active={assistantActive}

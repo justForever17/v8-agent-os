@@ -46,8 +46,11 @@ test("session outputs stay session-bound and exclude uploads, adopted files, dir
     ],
   }];
   const artifacts = [
-    { id: "current", sessionId: "session-a", sourcePath: "media/final.png", origin: "provider_result" },
-    { id: "other", sessionId: "session-b", sourcePath: "other/leak.png", origin: "provider_result" },
+    { id: "current", sessionId: "session-a", workspaceId: "workspace-a", sourcePath: "media/final.png", origin: "provider_result" },
+    { id: "other-session", sessionId: "session-b", workspaceId: "workspace-a", sourcePath: "other/leak.png", origin: "provider_result" },
+    { id: "other-workspace", sessionId: "session-a", workspaceId: "workspace-b", sourcePath: "other/workspace-leak.png", origin: "provider_result" },
+    { id: "missing-session", sourcePath: "other/unbound.png", origin: "provider_result" },
+    { id: "missing-workspace", sessionId: "session-a", sourcePath: "other/unbound-workspace.png", origin: "provider_result" },
     { id: "upload", sessionId: "session-a", sourcePath: "uploads/input.png", origin: "os_web_upload" },
     { id: "adopted", sessionId: "session-a", sourcePath: "manual/copied.md", origin: "workspace_adopted" },
     { id: "folder", sessionId: "session-a", sourcePath: "src/", kind: "directory" },
@@ -55,6 +58,7 @@ test("session outputs stay session-bound and exclude uploads, adopted files, dir
 
   const projection = buildSessionOutputProjection(messages, artifacts, {
     sessionId: "session-a",
+    workspaceId: "workspace-a",
     evidence: [{
       request: {
         specBrief: {
@@ -162,4 +166,88 @@ test("runtime artifact overview keeps local paths on the Runtime Surface", () =>
   assert.equal(runtimeImage?.name, "edited-image.png");
   assert.equal(runtimeImage?.mimeType, "image/png");
   assert.equal(workspaceDoc?.path, "docs/README.md");
+});
+
+test("artifact projection rejects conflicting root, lineage, metadata, and resource authority", () => {
+  const projection = buildSessionOutputProjection([], [
+    {
+      id: "current",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      sourcePath: "media/current.png",
+      origin: "provider_result",
+    },
+    {
+      id: "local-row-current",
+      artifactId: "canonical-current",
+      artifact_id: "canonical-current",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      sourcePath: "media/canonical-current.png",
+      origin: "provider_result",
+    },
+    {
+      id: "conflicting-session",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      lineage: { sessionId: "session-b", workspaceId: "workspace-a" },
+      sourcePath: "media/session-leak.png",
+      origin: "provider_result",
+    },
+    {
+      id: "conflicting-workspace",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      resourceRef: { workspaceId: "workspace-b" },
+      sourcePath: "media/workspace-leak.png",
+      origin: "provider_result",
+    },
+    {
+      id: "conflicting-provenance",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      metadata: { provenance: { sessionId: "session-b", workspaceId: "workspace-b" } },
+      sourcePath: "media/provenance-leak.png",
+      origin: "provider_result",
+    },
+    {
+      id: "conflicting-aliases",
+      sessionId: "session-a",
+      session_id: "session-b",
+      workspaceId: "workspace-a",
+      workspace_id: "workspace-b",
+      sourcePath: "media/alias-leak.png",
+      origin: "provider_result",
+    },
+    {
+      id: "conflicting-resource-alias",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      resourceRef: { sessionId: "session-a", workspaceId: "workspace-a" },
+      resource_ref: { session_id: "session-b", workspace_id: "workspace-b" },
+      sourcePath: "media/resource-alias-leak.png",
+      origin: "provider_result",
+    },
+    {
+      artifactId: "conflicting-artifact-id-a",
+      artifact_id: "conflicting-artifact-id-b",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      sourcePath: "media/artifact-id-alias-leak.png",
+      origin: "provider_result",
+    },
+    {
+      artifactId: "conflicting-nested-artifact-id",
+      sessionId: "session-a",
+      workspaceId: "workspace-a",
+      metadata: { artifact_id: "different-nested-artifact-id" },
+      sourcePath: "media/artifact-id-nested-leak.png",
+      origin: "provider_result",
+    },
+  ], {
+    sessionId: "session-a",
+    workspaceId: "workspace-a",
+  });
+
+  assert.deepEqual(projection.map((item) => item.artifactId), ["canonical-current", "current"]);
 });

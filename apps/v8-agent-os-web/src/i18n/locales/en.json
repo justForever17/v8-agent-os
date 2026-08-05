@@ -544,7 +544,7 @@
   "web.workbench.filePicker.empty": "No displayable files were found in the workspace bound to this task.",
   "web.workbench.filePicker.loadMore": "Load more",
   "web.workbench.canvas.title": "Creative canvas",
-  "web.workbench.canvas.humanMessage": "This message is from Canvas",
+  "web.workbench.canvas.humanMessage": "This message was sent from the canvas",
   "web.workbench.canvas.timeline.loading": "Building the exact timeline…",
   "web.workbench.canvas.timeline.selection": "Choose the segment to split",
   "web.workbench.canvas.timeline.start": "Start boundary",

@@ -28,6 +28,8 @@ const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
 
 type ChatWindowProps = {
     adminBaseUrl: string;
+    sessionId?: string;
+    workspaceId?: string;
     messages: ChatMessage[];
     scrollLocked?: boolean;
     refreshing?: boolean;
@@ -124,6 +126,8 @@ function hasRenderableMessage(message: ChatMessage) {
 
 export const ChatWindow = memo(function ChatWindow({
     adminBaseUrl,
+    sessionId,
+    workspaceId,
     messages,
     scrollLocked = false,
     refreshing = false,
@@ -297,6 +301,8 @@ export const ChatWindow = memo(function ChatWindow({
                                     : EMPTY_RUNTIME_ACTIVITIES
                             }
                             executionActive={index === liveRuntimeMessageIndex && Boolean(sessionRunning || isActiveAssistantStreamPhase(message.uiStreamPhase))}
+                            sessionId={sessionId}
+                            workspaceId={workspaceId}
                         />
                     )}
                     onScroll={(event) => {

@@ -52,6 +52,108 @@ export function resolveAgentAvatar(value: unknown): string | undefined {
     return avatar;
 }
 
+function nonEmptyString(value: unknown) {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function readFirstString(records: Record<string, unknown>[], keys: string[]) {
+    for (const record of records) {
+        for (const key of keys) {
+            const value = nonEmptyString(record[key]);
+            if (value) return value;
+        }
+    }
+    return undefined;
+}
+
+function readEmbeddedAgentIdentity(message: ChatMessage) {
+    const rawMessage = message as ChatMessage & { parts?: unknown };
+    const metadata = recordOf(message.metadata);
+    const metadataAgent = recordOf(metadata.agent);
+    const parts = Array.isArray(rawMessage.parts)
+        ? rawMessage.parts.map(recordOf).filter((part) => {
+            const type = String(part.type || "").trim().toLowerCase();
+            return type === "text" || type === "reasoning";
+        }).reverse()
+        : [];
+    const narrativeNodes = (Array.isArray(message.nodes) ? [...message.nodes] : [])
+        .reverse()
+        .filter((node) => node.kind === "narrative" && node.role === "assistant")
+        .map((node) => node as unknown as Record<string, unknown>);
+    const identitySources = [metadataAgent, ...parts, ...narrativeNodes];
+    return {
+        agentName: readFirstString(identitySources, ["agentName", "agent_name", "name"])
+            || readFirstString([metadata], ["agentName", "agent_name"]),
+        agentAvatar: readFirstString(identitySources, ["agentAvatar", "agent_avatar", "avatar", "avatarUrl", "avatar_url"])
+            || readFirstString([metadata], ["agentAvatar", "agent_avatar", "avatarUrl", "avatar_url"]),
+        agentRoleLabel: readFirstString(identitySources, ["agentRoleLabel", "agent_role_label", "roleLabel", "role_label"])
+            || readFirstString([metadata], ["agentRoleLabel", "agent_role_label", "roleLabel", "role_label"]),
+        agentType: readFirstString(identitySources, ["agentType", "agent_type"])
+            || readFirstString([metadata], ["agentType", "agent_type"]),
+    };
+}
+
+function preferConfiguredIdentity(
+    incoming: string | undefined,
+    existing: string | undefined,
+    isDefault: (value: string) => boolean,
+) {
+    if (incoming && !isDefault(incoming)) return incoming;
+    if (existing && !isDefault(existing)) return existing;
+    return incoming || existing;
+}
+
+const CANONICAL_SUPERVISOR_NAMES = new Set(["supervisor", "\u667a\u80fd\u4e3b\u7ba1", "\u4e3b\u7406\u4eba"]);
+const CANONICAL_SUPERVISOR_ROLES = new Set(["supervisor", "lead", "\u667a\u80fd\u4e3b\u7ba1", "\u4e3b\u7406\u4eba"]);
+
+function isCanonicalSupervisorIdentity(
+    value: string,
+    localizedDefault: string,
+    canonicalValues: ReadonlySet<string>,
+) {
+    const normalized = value.trim().toLowerCase();
+    return normalized === localizedDefault.trim().toLowerCase() || canonicalValues.has(normalized);
+}
+
+export function resolveMessageAgentIdentity(message: ChatMessage) {
+    const embedded = readEmbeddedAgentIdentity(message);
+    const defaultName = translateCurrent("src.lib.chat_state.text");
+    const defaultRoleLabel = translateCurrent("src.lib.chat_state.text_2");
+    const directName = nonEmptyString(message.agentName);
+    const directRoleLabel = nonEmptyString(message.agentRoleLabel);
+    const directAvatar = resolveAgentAvatar(message.agentAvatar);
+    const embeddedAvatar = resolveAgentAvatar(embedded.agentAvatar);
+    const agentType = nonEmptyString(message.agentType) || embedded.agentType;
+    if (message.role !== "assistant") {
+        return {
+            agentName: directName,
+            agentAvatar: directAvatar,
+            agentRoleLabel: directRoleLabel,
+            agentType: agentType as ChatMessage["agentType"],
+        };
+    }
+    return {
+        agentName: directName && !isCanonicalSupervisorIdentity(directName, defaultName, CANONICAL_SUPERVISOR_NAMES)
+            ? directName
+            : embedded.agentName || directName || defaultName,
+        agentAvatar: directAvatar && directAvatar !== DEFAULT_AGENT_AVATAR
+            ? directAvatar
+            : embeddedAvatar || directAvatar || DEFAULT_AGENT_AVATAR,
+        agentRoleLabel: directRoleLabel && !isCanonicalSupervisorIdentity(directRoleLabel, defaultRoleLabel, CANONICAL_SUPERVISOR_ROLES)
+            ? directRoleLabel
+            : embedded.agentRoleLabel || directRoleLabel || defaultRoleLabel,
+        agentType: (agentType === "agent" || agentType === "user" || agentType === "supervisor")
+            ? agentType
+            : "supervisor",
+    } satisfies Pick<ChatMessage, "agentName" | "agentAvatar" | "agentRoleLabel" | "agentType">;
+}
+
 function buildArtifactKey(artifact: ChatArtifact) {
     return String(
         artifact.id
@@ -136,7 +238,7 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
             ? (existingContent || incomingContent)
             : (incomingContent.length >= existingContent.length ? incomingContent : existingContent);
 
-    return {
+    const mergedMessage: ChatMessage = {
         ...existing,
         ...incoming,
         id: preferIncomingId ? nextId : currentId || nextId || `message-${Date.now()}`,
@@ -150,12 +252,36 @@ function mergeMessageRecords(existing: ChatMessage, incoming: ChatMessage): Chat
             ...(existing.metadata || {}),
             ...(incoming.metadata || {}),
         },
-        agentName: incoming.agentName || existing.agentName,
-        agentAvatar: resolveAgentAvatar(incoming.agentAvatar) || resolveAgentAvatar(existing.agentAvatar) || DEFAULT_AGENT_AVATAR,
-        agentRoleLabel: incoming.agentRoleLabel || existing.agentRoleLabel,
+        agentName: preferConfiguredIdentity(
+            incoming.agentName,
+            existing.agentName,
+            (value) => isCanonicalSupervisorIdentity(
+                value,
+                translateCurrent("src.lib.chat_state.text"),
+                CANONICAL_SUPERVISOR_NAMES,
+            ),
+        ),
+        agentAvatar: preferConfiguredIdentity(
+            resolveAgentAvatar(incoming.agentAvatar),
+            resolveAgentAvatar(existing.agentAvatar),
+            (value) => value === DEFAULT_AGENT_AVATAR,
+        ),
+        agentRoleLabel: preferConfiguredIdentity(
+            incoming.agentRoleLabel,
+            existing.agentRoleLabel,
+            (value) => isCanonicalSupervisorIdentity(
+                value,
+                translateCurrent("src.lib.chat_state.text_2"),
+                CANONICAL_SUPERVISOR_ROLES,
+            ),
+        ),
         agentType: incoming.agentType || existing.agentType,
         uiEphemeral: typeof incoming.uiEphemeral === "boolean" ? incoming.uiEphemeral : existing.uiEphemeral,
         uiStreamPhase: incoming.uiStreamPhase || existing.uiStreamPhase,
+    };
+    return {
+        ...mergedMessage,
+        ...resolveMessageAgentIdentity(mergedMessage),
     };
 }
 
@@ -270,13 +396,11 @@ export function normalizeMessagesForState(messages: ChatMessage[]) {
     const indexByKey = new Map<string, number>();
 
     for (const message of messages) {
+        const identity = resolveMessageAgentIdentity(message);
+        const identifiedMessage: ChatMessage = { ...message, ...identity };
         const candidate: ChatMessage = {
-            ...message,
-            agentName: message.role === "assistant" ? (message.agentName || translateCurrent("src.lib.chat_state.text")) : message.agentName,
-            agentAvatar: resolveAgentAvatar(message.agentAvatar) || (message.role === "assistant" ? DEFAULT_AGENT_AVATAR : undefined),
-            agentRoleLabel: message.role === "assistant" ? (message.agentRoleLabel || translateCurrent("src.lib.chat_state.text_2")) : message.agentRoleLabel,
-            agentType: message.role === "assistant" ? (message.agentType || "supervisor") : message.agentType,
-            nodes: normalizeProjectedPartsToNodes(message),
+            ...identifiedMessage,
+            nodes: normalizeProjectedPartsToNodes(identifiedMessage),
             images: Array.isArray(message.images) ? [...message.images] : [],
             artifacts: Array.isArray(message.artifacts) ? message.artifacts.map((artifact) => ({ ...artifact })) : [],
             metadata: message.metadata ? { ...message.metadata } : undefined,

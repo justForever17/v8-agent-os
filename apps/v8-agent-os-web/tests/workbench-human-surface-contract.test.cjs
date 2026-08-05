@@ -201,7 +201,7 @@ test("Web and Phone summaries hide engineering counters and raw payload bodies",
   assert.match(phoneOverview, /readSessionWorkbenchFile/);
   assert.match(phoneOverview, /PAGE_LINES = 120/);
   assert.match(phoneOverview, /PanResponder\.create/);
-  assert.match(phoneOverview, /buildSessionOutputProjection\(messages, sessionArtifacts, \{ sessionId/);
+  assert.match(phoneOverview, /buildSessionOutputProjection\(messages, sessionArtifacts, \{[\s\S]*?sessionId,[\s\S]*?workspaceId: scopedWorkspaceId/);
   assert.match(phoneApi, /include_archived: "true"/);
   assert.doesNotMatch(phoneOverview, /runId/);
   assert.match(phoneChat, /const showOverviewRail = Boolean\(activeConversationId\)/);
@@ -272,7 +272,7 @@ test("User sources stay separate from session artifacts and Phone renders voice 
   assert.match(vision, /resource_role="source_derivative"/);
   assert.match(sourceProjection, /text\(message\.role\)\.toLowerCase\(\) !== "user"/);
   assert.match(webOverview, /buildSessionSourceProjection/);
-  assert.match(phoneOverview, /<SourcesSection items=\{sources\}/);
+  assert.match(phoneOverview, /<SourcesSection[\s\S]*?items=\{sources\}/);
   assert.match(phoneMedia, /useAudioPlayerStatus/);
   assert.match(phoneMedia, /InlineAudioPlayback/);
 });

@@ -23,3 +23,4 @@ export * from "./subagent-return-projection.js";
 export * from "./session-output-projection.js";
 export * from "./session-source-projection.js";
 export * from "./composer-inline-references.js";
+export * from "./creative-canvas-contract.js";

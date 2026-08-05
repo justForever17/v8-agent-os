@@ -11,7 +11,11 @@ import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
     buildAuthoritativeRuntimeTimelineEntryFromEvent,
     coerceAdminResourceRef,
+    normalizeCreativeCanvasGraphRunStateEvent,
+    projectCreativeCanvasGraphRunHumanSurface,
     type ContextGovernanceDigest,
+    type CreativeCanvasAuthorityScope,
+    type CreativeCanvasGraphRunHumanSurfaceProjection,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     isEffectiveContextGovernancePayload,
@@ -73,6 +77,67 @@ export type PhoneRuntimeStageModel = {
 };
 
 export const PHONE_RUNTIME_TIMELINE_LIMIT = 240;
+
+export type PhoneCanvasGraphRunStateTranslationKey =
+    | "src.lib.runtime_stage.canvas_graph_queued"
+    | "src.lib.runtime_stage.canvas_graph_running"
+    | "src.lib.runtime_stage.canvas_graph_cancelling"
+    | "src.lib.runtime_stage.canvas_graph_cancelled"
+    | "src.lib.runtime_stage.canvas_graph_failed"
+    | "src.lib.runtime_stage.canvas_graph_interrupted"
+    | "src.lib.runtime_stage.canvas_graph_recovered"
+    | "src.lib.runtime_stage.canvas_graph_completed"
+    | "src.lib.runtime_stage.canvas_graph_retry_failed_branch";
+
+export function getPhoneCanvasGraphRunStateTranslationKey(
+    projection: CreativeCanvasGraphRunHumanSurfaceProjection,
+): PhoneCanvasGraphRunStateTranslationKey {
+    if (projection.transition === "retry_failed_branch") {
+        return "src.lib.runtime_stage.canvas_graph_retry_failed_branch";
+    }
+    if (projection.transition === "recovered") {
+        return "src.lib.runtime_stage.canvas_graph_recovered";
+    }
+    return `src.lib.runtime_stage.canvas_graph_${projection.status}` as PhoneCanvasGraphRunStateTranslationKey;
+}
+
+function canvasGraphRunStateEventFromActivity(activity: PhoneRuntimeStageActivity) {
+    const nodeData = activity.node.kind === "execution"
+        && activity.node.data
+        && typeof activity.node.data === "object"
+        ? activity.node.data
+        : null;
+    const nodeTopic = activity.node.kind === "execution" || activity.node.kind === "governance"
+        ? activity.node.topic
+        : undefined;
+    const topic = String(activity.topic || nodeTopic || "").trim();
+    if (!topic || !nodeData) return null;
+    return { topic, data: nodeData };
+}
+
+export function projectLatestPhoneCanvasGraphRunState(
+    activities: PhoneRuntimeStageActivity[],
+    expectedScope: CreativeCanvasAuthorityScope,
+): CreativeCanvasGraphRunHumanSurfaceProjection | null {
+    const scope = {
+        sessionId: String(expectedScope.sessionId || "").trim(),
+        workspaceId: String(expectedScope.workspaceId || "").trim(),
+    };
+    if (!scope.sessionId || !scope.workspaceId) return null;
+    const ordered = [...activities].sort((left, right) => {
+        const leftSeq = Number(left.eventSeq || 0);
+        const rightSeq = Number(right.eventSeq || 0);
+        if (leftSeq > 0 && rightSeq > 0 && leftSeq !== rightSeq) return rightSeq - leftSeq;
+        return right.timestamp - left.timestamp;
+    });
+    for (const activity of ordered) {
+        const event = canvasGraphRunStateEventFromActivity(activity);
+        if (!event) continue;
+        const normalized = normalizeCreativeCanvasGraphRunStateEvent(event, scope);
+        if (normalized) return projectCreativeCanvasGraphRunHumanSurface(normalized);
+    }
+    return null;
+}
 
 function phoneRuntimeTimelineEntrySemanticallyEqual(
     left: PhoneRuntimeTimelineEntry,
@@ -521,7 +586,18 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(
     localeOrOptions: LocaleCode | { locale?: LocaleCode } = "zh-CN",
 ): PhoneRuntimeTimelineEntry | null {
     const locale = typeof localeOrOptions === "string" ? localeOrOptions : (localeOrOptions.locale || "zh-CN");
-    return buildAuthoritativeRuntimeTimelineEntryFromEvent(raw, { locale });
+    const entry = buildAuthoritativeRuntimeTimelineEntryFromEvent(raw, { locale });
+    if (!entry) return null;
+    const graphState = normalizeCreativeCanvasGraphRunStateEvent({
+        topic: entry.topic,
+        data: entry.metadata,
+    });
+    if (!graphState) return entry;
+    const humanSurface = projectCreativeCanvasGraphRunHumanSurface(graphState);
+    return {
+        ...entry,
+        summary: createTranslator(locale)(getPhoneCanvasGraphRunStateTranslationKey(humanSurface)),
+    };
 }
 
 function runtimeCardIdForActivity(activity: PhoneRuntimeStageActivity): PhoneRuntimeId {

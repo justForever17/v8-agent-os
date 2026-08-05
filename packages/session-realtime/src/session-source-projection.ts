@@ -1,4 +1,5 @@
 import type { SessionSourceRef } from "./contract.js";
+import { collectAliasedTextFromRecords, collectAuthorityDeclarations } from "./authority-declarations.js";
 
 export type SessionSourceProjection = {
   id: string;
@@ -18,7 +19,17 @@ export type SessionSourceProjection = {
 type SourceMessage = {
   id?: string | null;
   role?: string | null;
+  sessionId?: string | null;
+  session_id?: string | null;
+  workspaceId?: string | null;
+  workspace_id?: string | null;
+  lineage?: unknown;
   metadata?: unknown;
+};
+
+type BuildSessionSourceOptions = {
+  sessionId?: string | null;
+  workspaceId?: string | null;
 };
 
 function recordOf(value: unknown): Record<string, unknown> {
@@ -29,6 +40,41 @@ function recordOf(value: unknown): Record<string, unknown> {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+type SourceAuthority = {
+  sessionIds: Set<string>;
+  workspaceIds: Set<string>;
+  conflicted: boolean;
+};
+
+function sourceAuthority(raw: unknown): SourceAuthority {
+  const authority = collectAuthorityDeclarations(raw);
+  return {
+    sessionIds: authority.sessionIds,
+    workspaceIds: authority.workspaceIds,
+    conflicted: authority.conflicted,
+  };
+}
+
+function sourceMatchesAuthority(
+  raw: unknown,
+  options: BuildSessionSourceOptions,
+  allowInheritedAuthority = false,
+): boolean {
+  const expectedSessionId = text(options.sessionId);
+  const expectedWorkspaceId = text(options.workspaceId);
+  const authority = sourceAuthority(raw);
+  if (authority.conflicted) return false;
+  const declaredSessionId = authority.sessionIds.values().next().value || "";
+  const declaredWorkspaceId = authority.workspaceIds.values().next().value || "";
+  if (expectedSessionId && declaredSessionId !== expectedSessionId) {
+    if (declaredSessionId || !allowInheritedAuthority) return false;
+  }
+  if (expectedWorkspaceId && declaredWorkspaceId !== expectedWorkspaceId) {
+    if (declaredWorkspaceId || !allowInheritedAuthority) return false;
+  }
+  return true;
 }
 
 function decoded(value: string): string {
@@ -102,7 +148,10 @@ function normalizeSource(raw: unknown, fallbackMessageId: string | null = null):
   const metadata = recordOf(item.metadata);
   const resourceRef = recordOf(item.resourceRef || item.resource_ref);
   const resourceMetadata = recordOf(resourceRef.metadata);
-  const id = text(item.sourceId || item.source_id || item.id);
+  const authority = collectAuthorityDeclarations(item);
+  const canonicalSourceId = collectAliasedTextFromRecords(authority.records, ["sourceId", "source_id"]);
+  if (canonicalSourceId.conflicted) return null;
+  const id = canonicalSourceId.value || text(item.id);
   const url = text(item.externalUrl || item.external_url || item.publicUrl || item.public_url || item.url || resourceRef.adminPath) || null;
   const previewUrl = text(item.previewUrl || item.preview_url || item.publicUrl || item.public_url || item.url || resourceRef.adminPath) || url;
   const workspaceRelativePath = text(
@@ -169,6 +218,7 @@ function mergeSource(current: SessionSourceProjection, candidate: SessionSourceP
 export function buildSessionSourceProjection(
   messages: SourceMessage[] | null | undefined,
   sessionSources: SessionSourceRef[] | unknown[] | null | undefined = [],
+  options: BuildSessionSourceOptions = {},
 ): SessionSourceProjection[] {
   const output: SessionSourceProjection[] = [];
   const fingerprintToIndex = new Map<string, number>();
@@ -188,12 +238,19 @@ export function buildSessionSourceProjection(
     for (const fingerprint of fingerprints) fingerprintToIndex.set(fingerprint, nextIndex);
   };
 
-  for (const raw of sessionSources || []) append(normalizeSource(raw));
+  for (const raw of sessionSources || []) {
+    if (sourceMatchesAuthority(raw, options)) append(normalizeSource(raw));
+  }
   for (const message of messages || []) {
     if (text(message.role).toLowerCase() !== "user") continue;
+    if (!sourceMatchesAuthority(message, options, true)) continue;
     const metadata = recordOf(message.metadata);
     const attachments = Array.isArray(metadata.attachments) ? metadata.attachments : [];
-    for (const attachment of attachments) append(normalizeSource(attachment, text(message.id) || null));
+    for (const attachment of attachments) {
+      if (sourceMatchesAuthority(attachment, options, true)) {
+        append(normalizeSource(attachment, text(message.id) || null));
+      }
+    }
   }
   return output;
 }

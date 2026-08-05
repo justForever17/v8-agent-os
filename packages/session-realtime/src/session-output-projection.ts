@@ -1,3 +1,5 @@
+import { collectAliasedTextFromRecords, collectAuthorityDeclarations } from "./authority-declarations.js";
+
 export type SessionOutputNode = {
   id?: string | null;
   kind?: string | null;
@@ -32,6 +34,7 @@ export type SessionOutputProjection = {
 
 type BuildSessionOutputOptions = {
   sessionId?: string | null;
+  workspaceId?: string | null;
   limit?: number;
   evidence?: unknown[] | null;
 };
@@ -148,13 +151,38 @@ function isUserSuppliedArtifact(record: Record<string, unknown>): boolean {
     || /(user|web|phone|composer|attachment).*upload|upload.*(user|web|phone|composer|attachment)/.test(component);
 }
 
+type ArtifactAuthority = {
+  sessionIds: Set<string>;
+  workspaceIds: Set<string>;
+  conflicted: boolean;
+  artifactId: string;
+  identityConflicted: boolean;
+};
+
+function artifactAuthority(record: Record<string, unknown>): ArtifactAuthority {
+  const authority = collectAuthorityDeclarations(record);
+  const artifactId = collectAliasedTextFromRecords(authority.records, ["artifactId", "artifact_id"]);
+  return {
+    sessionIds: authority.sessionIds,
+    workspaceIds: authority.workspaceIds,
+    conflicted: authority.conflicted,
+    artifactId: artifactId.value,
+    identityConflicted: artifactId.conflicted,
+  };
+}
+
 function artifactProjection(
   raw: Record<string, unknown>,
   expectedSessionId: string,
+  expectedWorkspaceId: string,
   fallbackId: string,
 ): SessionOutputProjection | null {
-  const artifactSessionId = text(raw.sessionId || raw.session_id);
-  if (expectedSessionId && artifactSessionId && artifactSessionId !== expectedSessionId) return null;
+  const authority = artifactAuthority(raw);
+  if (authority.conflicted || authority.identityConflicted) return null;
+  const artifactSessionId = authority.sessionIds.values().next().value || "";
+  const artifactWorkspaceId = authority.workspaceIds.values().next().value || "";
+  if (expectedSessionId && artifactSessionId !== expectedSessionId) return null;
+  if (expectedWorkspaceId && artifactWorkspaceId !== expectedWorkspaceId) return null;
   if (raw.surfaceVisible === false || raw.surface_visible === false || isUserSuppliedArtifact(raw)) return null;
   const kind = text(raw.kind || raw.artifact_kind).toLowerCase();
   if (kind === "directory" || kind === "folder") return null;
@@ -163,7 +191,7 @@ function artifactProjection(
   const pathPlane = text(raw.pathPlane || raw.path_plane || metadata.pathPlane || metadata.path_plane).toLowerCase();
   const runtimePrivate = storageClass === "runtime_artifact" || pathPlane === "runtime" || pathPlane === "runtime_private";
   const path = runtimePrivate ? null : firstPath(raw) || null;
-  const artifactId = text(raw.artifactId || raw.artifact_id || raw.id) || null;
+  const artifactId = authority.artifactId || text(raw.id) || null;
   const title = text(raw.displayLabel || raw.title);
   if (!path && !artifactId) return null;
   return {
@@ -302,6 +330,7 @@ export function buildSessionOutputProjection(
   options: BuildSessionOutputOptions = {},
 ): SessionOutputProjection[] {
   const expectedSessionId = text(options.sessionId);
+  const expectedWorkspaceId = text(options.workspaceId);
   const projected = new Map<string, SessionOutputProjection>();
   for (const evidence of options.evidence || []) collectSpecOutputs(evidence, projected);
   const sourceMessages = messages || [];
@@ -309,17 +338,17 @@ export function buildSessionOutputProjection(
     collectSpecOutputs(message.metadata, projected);
     if (text(message.role).toLowerCase() === "user") continue;
     for (const rawArtifact of message.artifacts || []) {
-      const item = artifactProjection(recordOf(rawArtifact), expectedSessionId, text(message.id));
+      const item = artifactProjection(recordOf(rawArtifact), expectedSessionId, expectedWorkspaceId, text(message.id));
       if (item) projected.set((item.path || item.artifactId || item.id).toLowerCase(), item);
     }
     for (const node of message.nodes || []) {
       if (node.kind !== "artifact") continue;
-      const item = artifactProjection(recordOf(node.artifact), expectedSessionId, text(node.id));
+      const item = artifactProjection(recordOf(node.artifact), expectedSessionId, expectedWorkspaceId, text(node.id));
       if (item) projected.set((item.path || item.artifactId || item.id).toLowerCase(), item);
     }
   }
   for (const rawArtifact of runtimeArtifacts || []) {
-    const item = artifactProjection(recordOf(rawArtifact), expectedSessionId, "runtime");
+    const item = artifactProjection(recordOf(rawArtifact), expectedSessionId, expectedWorkspaceId, "runtime");
     if (item) projected.set((item.path || item.artifactId || item.id).toLowerCase(), item);
   }
   collectToolOutputs(sourceMessages, projected);

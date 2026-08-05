@@ -108,6 +108,10 @@
     "./composer-inline-references": {
       "types": "./dist/composer-inline-references.d.ts",
       "default": "./dist/composer-inline-references.js"
+    },
+    "./creative-canvas-contract": {
+      "types": "./dist/creative-canvas-contract.d.ts",
+      "default": "./dist/creative-canvas-contract.js"
     }
   },
   "devDependencies": {

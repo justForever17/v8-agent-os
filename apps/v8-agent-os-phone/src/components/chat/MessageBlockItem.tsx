@@ -9,8 +9,6 @@ import { MermaidRenderer } from "@/src/components/chat/MermaidRenderer";
 import { ImagePreview, MediaPlayer } from "@/src/components/chat/MediaRenderers";
 import { ModelViewer } from "@/src/components/chat/ModelViewer";
 import { HTMLFileCard } from "@/src/components/chat/HTMLFileCard";
-import { PDFFileCard } from "@/src/components/chat/PDFFileCard";
-import { PPTCard } from "@/src/components/chat/PPTCard";
 import { DownloadFileCard } from "@/src/components/chat/DownloadFileCard";
 import { ThinkingCard } from "@/src/components/chat/ThinkingCard";
 import { ToolCard } from "@/src/components/chat/ToolCard";
@@ -454,32 +452,6 @@ function inferFilenameFromUrl(url: string, fallback = "file") {
     }
 }
 
-function isPublicPreviewUrl(url: string) {
-    try {
-        const parsed = new URL(url);
-        const host = parsed.hostname.toLowerCase();
-        if (!/^https?:$/.test(parsed.protocol)) {
-            return false;
-        }
-        if (host === "localhost" || host === "::1" || host.endsWith(".local")) {
-            return false;
-        }
-        if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) {
-            return false;
-        }
-        const private172 = host.match(/^172\.(\d{1,2})\./);
-        if (private172) {
-            const second = Number(private172[1]);
-            if (second >= 16 && second <= 31) {
-                return false;
-            }
-        }
-        return true;
-    } catch {
-        return false;
-    }
-}
-
 function useStreamingRevealContent(content: string, _enabled: boolean) {
     return content;
 }
@@ -535,14 +507,10 @@ export const MessageBlockItem = memo(function MessageBlockItem({
             return <ModelViewer src={resolvedUrl} filename={filename} />;
         }
         if (viewerKind === "pdf") {
-            return isPublicPreviewUrl(resolvedUrl)
-                ? <PDFFileCard url={resolvedUrl} filename={filename} />
-                : <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "application/pdf"} />;
+            return <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "application/pdf"} />;
         }
         if (viewerKind === "ppt") {
-            return isPublicPreviewUrl(resolvedUrl)
-                ? <PPTCard url={resolvedUrl} filename={filename} />
-                : <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "presentation"} />;
+            return <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType || "presentation"} />;
         }
         return <DownloadFileCard url={resolvedUrl} filename={filename} mimeType={options.mimeType} />;
     };
@@ -761,6 +729,7 @@ export const MessageBlockItem = memo(function MessageBlockItem({
 
     if (block.type === "file-generic") {
         const url = resolveRenderableMediaUrl(adminBaseUrl, String(block.data?.url || block.content || "").trim());
+        const resourceRef = coerceAdminResourceRef(block.data?.resourceRef || null);
         return renderFileCard(url, {
             filename: typeof block.data?.filename === "string" ? block.data.filename : undefined,
             mimeType: typeof block.data?.mimeType === "string" ? block.data.mimeType : undefined,

@@ -258,7 +258,14 @@ class ModelReasoningRepairService:
             "backupPath": backup_path,
         }
 
-    def repair_reasoning_surface(self, *, model_id: str, provider_id: str = "", model_ref: str = "") -> Dict[str, Any]:
+    def repair_reasoning_surface(
+        self,
+        *,
+        model_id: str,
+        provider_id: str = "",
+        model_ref: str = "",
+        persist: bool = True,
+    ) -> Dict[str, Any]:
         runtime_model_id = _safe_text(model_ref or (make_model_ref(provider_id, model_id) if provider_id else model_id))
         if not runtime_model_id:
             raise ValueError("modelId or modelRef is required")
@@ -292,7 +299,32 @@ class ModelReasoningRepairService:
                 "reasoningTokens": probe.get("reasoningTokens") or 0,
                 "message": "No separated reasoning field was visible in the probe response.",
             }
-        write_result = self._write_surface(provider_id=provider_id, model_id=wire_model_id, surface=surface, decision=decision)
+        if persist:
+            write_result = self._write_surface(
+                provider_id=provider_id,
+                model_id=wire_model_id,
+                surface=surface,
+                decision=decision,
+            )
+        else:
+            old_surface = deepcopy(meta.get("model_record") or {}).get("reasoningSurface")
+            if (
+                _surface_signature(old_surface) == _surface_signature(surface)
+                and _safe_text(_as_dict(old_surface).get("source")) == "reasoning_repair_probe"
+            ):
+                write_result = {
+                    "saveStatus": "no_change",
+                    "oldReasoningSurface": old_surface,
+                    "newReasoningSurface": old_surface,
+                    "backupPath": "",
+                }
+            else:
+                write_result = {
+                    "saveStatus": "pending",
+                    "oldReasoningSurface": old_surface,
+                    "newReasoningSurface": surface,
+                    "backupPath": "",
+                }
         return {
             "ok": True,
             "status": decision.get("status") or "saved",
@@ -308,7 +340,11 @@ class ModelReasoningRepairService:
             "oldReasoningSurface": write_result.get("oldReasoningSurface"),
             "newReasoningSurface": write_result.get("newReasoningSurface"),
             "backupPath": write_result.get("backupPath") or "",
-            "message": "Reasoning surface repaired.",
+            "message": (
+                "Reasoning surface already matches the verified contract."
+                if write_result.get("saveStatus") == "no_change"
+                else "Reasoning surface repaired."
+            ),
         }
 
 

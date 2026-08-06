@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import importlib
+
 from fastapi import APIRouter, Body, HTTPException
 
-from runtimes.creative_media.runtime import creative_media_runtime
+
+class _LazyCreativeMediaRuntime:
+    def __getattr__(self, name: str):
+        runtime = importlib.import_module("runtimes.creative_media.runtime").creative_media_runtime
+        return getattr(runtime, name)
+
+
+creative_media_runtime = _LazyCreativeMediaRuntime()
 
 
 router = APIRouter(prefix="/creative-media", tags=["creative-media"])

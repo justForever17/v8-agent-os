@@ -88,6 +88,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.errors import GraphRecursionError
 from runtimes.engineering.service import engineering_lane_service
 from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+from runtimes.chat.stream_filter import StreamFilter
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
     scope_resolution_service,
@@ -184,38 +185,6 @@ def _chat_runtime_supervisor_tool_is_lightweight(tool_name: str, tool_inputs: di
         inputs = dict(tool_inputs or {})
         return _chat_runtime_readonly_command_allowed(str(inputs.get("command") or inputs.get("_raw") or ""))
     return False
-
-
-class StreamFilter:
-    """
-    仅在流开头抑制常见空输出/JSON 围栏碎片，
-    一旦出现有效正文就立刻透传后续内容。
-    """
-
-    def __init__(self, bad_words: list[str]):
-        self.bad_words = bad_words
-        self.buffer = ""
-        self.flushed = False
-
-    def process(self, chunk: str) -> str:
-        if self.flushed:
-            return chunk
-
-        self.buffer += chunk
-        if any(item == self.buffer for item in self.bad_words):
-            return ""
-        if any(item.startswith(self.buffer) for item in self.bad_words):
-            return ""
-        self.flushed = True
-        return self.buffer
-
-    def flush(self) -> str:
-        if self.flushed or not self.buffer:
-            return ""
-        if any(item == self.buffer for item in self.bad_words):
-            return ""
-        self.flushed = True
-        return self.buffer
 
 
 @dataclass(slots=True)

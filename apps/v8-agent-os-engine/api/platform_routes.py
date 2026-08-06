@@ -1,33 +1,30 @@
 from typing import Any
 import asyncio
 import hashlib
+import importlib
 import json
 import logging
-from urllib.parse import urlparse
 import uuid
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload, ModelReasoningRepairPayload
 from core.database import db
-from core.extensions_runtime import extensions_runtime_service
 from core.agents import build_specialist_family_registry
 from core.json_safe import to_jsonable
-from core.model_connection_tester import model_connection_tester
-from core.model_reasoning_repair import model_reasoning_repair_service
 from core.model_control_plane import model_control_plane
+from core.model_catalog_connection import build_catalog_model_connection_plan, provider_auth_contract
 from core.model_ref import make_model_ref
 from core.model_provider_catalog import model_provider_catalog
-from core.model_provider_channels import resolve_provider_channel
-from core.model_protocol_registry import suggest_model_protocol
 from core.model_role_doctor import diagnose_models
 from core.model_thinking_control import (
     normalize_reasoning_effort,
     resolve_reasoning_effort_control_for_metadata,
     resolve_session_reasoning_effort_override,
 )
-from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
+from core.provider_compatibility import normalize_provider_error
 from core.model_telemetry import model_telemetry_service
 from core.mcp_config_service import McpConfigValidationError, validate_mcp_server_map
 from core.skills_install_service import SkillInstallValidationError, install_skill_from_command, install_skills_from_zip
@@ -48,13 +45,41 @@ from core.tools.research_ledger import (
     search_experience_packs_with_options,
 )
 from core.ui_action_requests import UiActionRequestError, ui_action_request_service
-from core.config_broker_service import ConfigBrokerError, config_broker_service
-from runtimes.extensions.mcp.client import mcp_manager
+from core.config_broker_service import (
+    ConfigBrokerError,
+    _catalog_probe_url_in_scope,
+    _provider_target_fingerprint,
+    config_broker_service,
+)
 from runtimes.memory.project_registry import project_registry_service
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class _LazyExtensionsRuntimeService:
+    def __getattr__(self, name: str):
+        runtime = importlib.import_module("runtimes.extensions.runtime").extensions_runtime_service
+        return getattr(runtime, name)
+
+
+extensions_runtime_service = _LazyExtensionsRuntimeService()
+
+
+class _LazyService:
+    def __init__(self, module_name: str, attribute: str):
+        self._module_name = module_name
+        self._attribute = attribute
+
+    def __getattr__(self, name: str):
+        service = getattr(importlib.import_module(self._module_name), self._attribute)
+        return getattr(service, name)
+
+
+model_connection_tester = _LazyService("core.model_connection_tester", "model_connection_tester")
+model_reasoning_repair_service = _LazyService("core.model_reasoning_repair", "model_reasoning_repair_service")
+mcp_manager = _LazyService("runtimes.extensions.mcp.client", "mcp_manager")
 
 _ACTIVE_MCP_APP_GUIDANCE_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 _DEMO_MCP_APP_SERVER = "v8-demo-fixture"
@@ -66,29 +91,6 @@ _MCP_APP_LEGACY_METHODS = {
 }
 
 
-def _credential_realm(provider_id: str, provider_meta: dict[str, Any] | None = None) -> str:
-    meta = provider_meta or {}
-    explicit = str(meta.get("credentialRealm") or meta.get("credential_realm") or "").strip()
-    if explicit:
-        return explicit
-    probe = " ".join(
-        [
-            str(provider_id or ""),
-            str(meta.get("id") or ""),
-            str(meta.get("name") or ""),
-            str(meta.get("base_url") or meta.get("baseUrl") or ""),
-            str(meta.get("api_standard") or meta.get("apiStandard") or ""),
-        ]
-    ).lower()
-    if "volces.com" in probe or "volcengine" in probe or "doubao" in probe or "ark.cn-" in probe:
-        return "volcengine_ark"
-    if "xiaomimimo" in probe or "mimo" in probe:
-        return "xiaomi_mimo"
-    if "deepseek" in probe:
-        return "deepseek"
-    return ""
-
-
 def _stored_provider_credential(provider_id: str, catalog_provider: dict[str, Any] | None) -> tuple[str, str]:
     config = model_control_plane.get_config()
     providers = config.get("providers") or {}
@@ -96,17 +98,243 @@ def _stored_provider_credential(provider_id: str, catalog_provider: dict[str, An
     exact_key = str(exact_provider.get("api_key") or "").strip()
     if exact_key and not exact_key.startswith("oauth:"):
         return exact_key, "stored_provider"
-    target_realm = _credential_realm(provider_id, catalog_provider)
-    if not target_realm or not isinstance(providers, dict):
-        return "", ""
-    for saved_id, payload in providers.items():
-        saved_provider = ((payload or {}).get("provider") or {}) if isinstance(payload, dict) else {}
-        stored_key = str(saved_provider.get("api_key") or "").strip()
-        if not stored_key or stored_key.startswith("oauth:"):
-            continue
-        if _credential_realm(str(saved_id), saved_provider) == target_realm:
-            return stored_key, f"stored_provider_realm:{saved_id}"
     return "", ""
+
+
+def _stored_provider_record(provider_id: str) -> dict[str, Any]:
+    config = model_control_plane.get_config()
+    providers = config.get("providers") or {}
+    if not isinstance(providers, dict):
+        return {}
+    payload = providers.get(provider_id) or {}
+    return dict((payload or {}).get("provider") or {}) if isinstance(payload, dict) else {}
+
+
+def _provider_probe_target(
+    provider: dict[str, Any],
+    *,
+    base_url: str = "",
+    api_standard: str = "",
+    channels: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    auth = dict(provider.get("auth") or {})
+    return {
+        "base_url": str(base_url or provider.get("baseUrl") or provider.get("base_url") or "").strip().rstrip("/"),
+        "api_standard": str(
+            api_standard or provider.get("apiStandard") or provider.get("api_standard") or ""
+        ).strip(),
+        "credentialRealm": str(
+            provider.get("credentialRealm") or provider.get("credential_realm") or ""
+        ).strip(),
+        "type": "PLATFORM" if str(auth.get("type") or "").strip().lower() == "oauth_file" else "API",
+        "authContract": provider_auth_contract(provider),
+        "channels": list(channels if channels is not None else provider.get("channels") or []),
+    }
+
+
+def _execute_model_hub_connection(
+    *,
+    provider: dict[str, Any],
+    plan: dict[str, Any],
+    incoming_credential: str,
+    channel_id: str,
+    wire_protocol: str,
+) -> dict[str, Any]:
+    """Commit one validated Model Hub plan through Config Broker.
+
+    The Admin endpoint is synchronous for compatibility, so an API key already
+    submitted by that trusted local surface is passed through the same one-time
+    secret action used by interactive Config Broker flows. The cleartext value
+    never enters the model patch, transaction ledger, or API response.
+    """
+
+    provider_id = str(plan.get("providerId") or provider.get("id") or "").strip()
+    model_id = str(plan.get("modelId") or "").strip()
+    provider_patch = {
+        key: value
+        for key, value in dict(plan.get("providerPatch") or {}).items()
+        if key not in {"api_key", "apiKey", "credentialRef", "credentialSource"}
+    }
+    model_patch = dict(plan.get("modelPatch") or {})
+    auth_type = str((provider_patch.get("authContract") or {}).get("type") or "api_key").strip().lower()
+    scope_token = uuid.uuid4().hex
+    owner_id = "local-admin-model-hub"
+    session_id = f"admin-model-hub-{scope_token}"
+    run_id = f"config-model-hub-{scope_token}"
+
+    if auth_type == "oauth_file":
+        prepared = config_broker_service.prepare_catalog_model(
+            provider_id=provider_id,
+            model_id=str(plan.get("catalogModelId") or model_id),
+            channel_id=channel_id,
+            wire_protocol=wire_protocol,
+            discover_if_needed=False,
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    else:
+        prepared = config_broker_service.prepare_model(
+            provider_id=provider_id,
+            model_id=model_id,
+            provider_name=str(provider_patch.get("name") or provider.get("name") or provider_id),
+            base_url=str(provider_patch.get("base_url") or provider_patch.get("baseUrl") or ""),
+            api_standard=str(provider_patch.get("api_standard") or provider_patch.get("apiStandard") or "openai"),
+            channel_id="",
+            wire_protocol="",
+            endpoint_path="",
+            model_type=str(model_patch.get("type") or "TEXT"),
+            context_window=model_patch.get("contextWindow"),
+            max_tokens=model_patch.get("maxTokens"),
+            capabilities=dict(model_patch.get("capabilities") or {}),
+            evidence_refs=list(model_patch.get("sourceRefs") or []),
+            credential_required=bool(plan.get("credentialRequired")),
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+            provider_config=provider_patch,
+            model_config=model_patch,
+        )
+
+    if not prepared.get("ok"):
+        error = dict(prepared.get("error") or {})
+        raise ConfigBrokerError(
+            str(error.get("message") or prepared.get("summary") or "Model Hub 配置计划被阻断。"),
+            code=str(error.get("code") or "model_hub_config_blocked"),
+            status_code=409,
+        )
+    transaction_id = str(prepared.get("transactionId") or "").strip()
+    state = str(prepared.get("state") or "").strip()
+    if state == "awaiting_secret":
+        if not incoming_credential:
+            raise ConfigBrokerError(
+                "apiKey is required before connecting this Provider",
+                code="model_provider_credential_required",
+            )
+        action = dict(prepared.get("uiAction") or {})
+        action_id = str(action.get("actionRequestId") or "").strip()
+        if not action_id:
+            raise ConfigBrokerError(
+                "Config Broker 未创建安全凭据请求。",
+                code="model_hub_secret_action_missing",
+                status_code=409,
+            )
+        ui_action_request_service.submit(
+            action_id,
+            values={"apiKey": incoming_credential},
+            owner_id=owner_id,
+            session_id=session_id,
+        )
+        transaction = config_broker_service.get_transaction(
+            transaction_id,
+            owner_id=owner_id,
+        )
+        result = {
+            "ok": str(transaction.get("state") or "") == "committed",
+            "state": transaction.get("state"),
+            "transactionId": transaction_id,
+            "result": transaction.get("result") or {},
+            "error": transaction.get("error") or {},
+        }
+    elif state == "ready_to_commit":
+        result = config_broker_service.commit(
+            transaction_id,
+            owner_id=owner_id,
+            user_confirmed_target=True,
+        )
+    else:
+        raise ConfigBrokerError(
+            f"Config Broker 返回了不可提交状态：{state or 'unknown'}。",
+            code="model_hub_config_state_invalid",
+            status_code=409,
+        )
+    if not result.get("ok"):
+        error = dict(result.get("error") or {})
+        raise ConfigBrokerError(
+            str(error.get("message") or result.get("summary") or "模型连接验证失败。"),
+            code=str(error.get("code") or "model_hub_config_commit_failed"),
+            status_code=409,
+        )
+    return {
+        **dict(result),
+        "transactionId": transaction_id,
+        "ownerId": owner_id,
+        "config": model_control_plane.get_public_config(),
+    }
+
+
+def _model_admin_transaction_scope(label: str) -> tuple[str, str, str]:
+    token = uuid.uuid4().hex
+    return (
+        "local-admin-model-hub",
+        f"admin-model-hub-{token}",
+        f"config-{label}-{token}",
+    )
+
+
+def _commit_model_admin_transaction(
+    prepared: dict[str, Any],
+    *,
+    owner_id: str,
+    session_id: str,
+    incoming_credential: str = "",
+) -> dict[str, Any]:
+    transaction_id = str(prepared.get("transactionId") or "").strip()
+    state = str(prepared.get("state") or "").strip()
+    if not prepared.get("ok") or not transaction_id:
+        error = dict(prepared.get("error") or {})
+        raise ConfigBrokerError(
+            str(error.get("message") or prepared.get("summary") or "配置计划被阻断。"),
+            code=str(error.get("code") or "model_admin_config_blocked"),
+            status_code=409,
+        )
+    if state == "awaiting_secret":
+        if not incoming_credential:
+            raise ConfigBrokerError(
+                "API Key 尚未提交。",
+                code="model_provider_credential_required",
+            )
+        action_id = str((prepared.get("uiAction") or {}).get("actionRequestId") or "").strip()
+        if not action_id:
+            raise ConfigBrokerError(
+                "Config Broker 未创建安全凭据请求。",
+                code="model_admin_secret_action_missing",
+                status_code=409,
+            )
+        ui_action_request_service.submit(
+            action_id,
+            values={"apiKey": incoming_credential},
+            owner_id=owner_id,
+            session_id=session_id,
+        )
+        transaction = config_broker_service.get_transaction(transaction_id, owner_id=owner_id)
+        result = {
+            "ok": str(transaction.get("state") or "") == "committed",
+            "state": transaction.get("state"),
+            "transactionId": transaction_id,
+            "result": transaction.get("result") or {},
+            "error": transaction.get("error") or {},
+        }
+    elif state == "ready_to_commit":
+        result = config_broker_service.commit(
+            transaction_id,
+            owner_id=owner_id,
+            user_confirmed_target=True,
+        )
+    else:
+        raise ConfigBrokerError(
+            f"Config Broker 返回了不可提交状态：{state or 'unknown'}。",
+            code="model_admin_config_state_invalid",
+            status_code=409,
+        )
+    if not result.get("ok"):
+        error = dict(result.get("error") or {})
+        raise ConfigBrokerError(
+            str(error.get("message") or result.get("summary") or "配置提交失败。"),
+            code=str(error.get("code") or "model_admin_config_commit_failed"),
+            status_code=409,
+        )
+    return result
 
 
 @router.get("/mcp/config")
@@ -1231,13 +1459,39 @@ async def upsert_model_provider(provider_id: str, data: dict = Body(...)):
         provider_patch = dict(data.get("provider") or data)
         provider_patch.pop("providerId", None)
         provider_patch.pop("provider_id", None)
-        result = model_control_plane.upsert_provider_record(provider_id, provider_patch)
+        incoming_credential = str(
+            provider_patch.pop("api_key", provider_patch.pop("apiKey", "")) or ""
+        ).strip()
+        oauth_credential = incoming_credential if incoming_credential.startswith("oauth:") else ""
+        request_secret = bool(incoming_credential and incoming_credential != "****" and not oauth_credential)
+        owner_id, session_id, run_id = _model_admin_transaction_scope("provider-upsert")
+        prepared = config_broker_service.prepare_model_provider_change(
+            provider_id=provider_id,
+            operation="upsert",
+            provider_config=provider_patch,
+            request_secret=request_secret,
+            oauth_credential=oauth_credential,
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        _commit_model_admin_transaction(
+            prepared,
+            owner_id=owner_id,
+            session_id=session_id,
+            incoming_credential=incoming_credential if request_secret else "",
+        )
+        public_provider = dict((model_control_plane.get_public_config().get("providers") or {}).get(provider_id) or {})
         return {
             "ok": True,
             "providerId": provider_id,
-            "provider": model_control_plane.get_public_config().get("providers", {}).get(provider_id, {}).get("provider", {}),
-            "models": result.get("models") or {},
+            "provider": public_provider.get("provider") or {},
+            "models": public_provider.get("models") or {},
         }
+    except ConfigBrokerError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
+    except UiActionRequestError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -1247,10 +1501,21 @@ async def upsert_model_provider(provider_id: str, data: dict = Body(...)):
 @router.delete("/models/providers/{provider_id}")
 async def remove_model_provider(provider_id: str):
     try:
-        removed = model_control_plane.remove_provider_record(provider_id)
-        if not removed:
-            raise HTTPException(status_code=404, detail="provider not found")
+        owner_id, session_id, run_id = _model_admin_transaction_scope("provider-remove")
+        prepared = config_broker_service.prepare_model_provider_change(
+            provider_id=provider_id,
+            operation="remove",
+            provider_config=None,
+            request_secret=False,
+            oauth_credential="",
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
         return {"ok": True, "providerId": provider_id}
+    except ConfigBrokerError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
     except HTTPException:
         raise
     except ValueError as e:
@@ -1279,15 +1544,20 @@ async def upsert_model_binding(data: dict = Body(...)):
 
             media_limits["comfyuiWorkflow"] = validate_comfyui_workflow(media_limits.get("comfyuiWorkflow"))
             model_patch["mediaLimits"] = media_limits
-        result = model_control_plane.upsert_model_record(
+        owner_id, session_id, run_id = _model_admin_transaction_scope("binding-upsert")
+        prepared = config_broker_service.prepare_model_binding(
             provider_id=provider_id,
             model_id=model_id,
-            model_patch=model_patch,
+            model_config=model_patch,
             source_provider_id=str(data.get("sourceProviderId") or data.get("source_provider_id") or ""),
             source_model_id=str(data.get("sourceModelId") or data.get("source_model_id") or ""),
-            source=str(data.get("source") or "manual"),
+            source=str(data.get("source") or "manual").strip() or "manual",
             replace_provider_models=bool(data.get("replaceProviderModels", data.get("replace_provider_models", False))),
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
         )
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
         public_config = model_control_plane.get_public_config()
         public_provider = dict((public_config.get("providers") or {}).get(provider_id) or {})
         return {
@@ -1298,6 +1568,9 @@ async def upsert_model_binding(data: dict = Body(...)):
             "provider": public_provider.get("provider") or {},
             "model": dict((public_provider.get("models") or {}).get(model_id) or {}),
         }
+    except ConfigBrokerError as e:
+        status = 404 if e.code in {"provider_not_found", "model_not_found"} else e.status_code
+        raise HTTPException(status_code=status, detail={"code": e.code, "message": str(e)}) from e
     except ValueError as e:
         status = 404 if str(e) == "provider not found" else 422
         raise HTTPException(status_code=status, detail=str(e))
@@ -1310,10 +1583,19 @@ async def remove_model_binding(data: dict = Body(...)):
     try:
         provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
         model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
-        removed = model_control_plane.remove_model_record(provider_id=provider_id, model_id=model_id)
-        if not removed:
-            raise HTTPException(status_code=404, detail="model not found")
+        owner_id, session_id, run_id = _model_admin_transaction_scope("binding-remove")
+        prepared = config_broker_service.prepare_model_record_change(
+            model_ref=make_model_ref(provider_id, model_id),
+            operation="remove",
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
         return {"ok": True, "providerId": provider_id, "modelId": model_id}
+    except ConfigBrokerError as e:
+        status = 404 if e.code == "model_not_found" else e.status_code
+        raise HTTPException(status_code=status, detail={"code": e.code, "message": str(e)}) from e
     except HTTPException:
         raise
     except ValueError as e:
@@ -1468,7 +1750,7 @@ async def get_model_role_doctor(role: str | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/models/control-plane")
+@router.post("/models/control-plane", deprecated=True)
 async def save_model_control_plane(data: dict = Body(...)):
     try:
         config = model_control_plane.save_config(data)
@@ -1497,13 +1779,33 @@ async def set_model_default_category(data: dict = Body(...)):
                 model_ref = make_model_ref(provider_id, model_id)
         if not model_ref:
             raise HTTPException(status_code=422, detail="modelRef is required")
-        result = model_control_plane.set_default_model_for_category(
+        category = str(data.get("category") or data.get("categoryKey") or data.get("category_key") or "").strip()
+        owner_id, session_id, run_id = _model_admin_transaction_scope("default-model")
+        prepared = config_broker_service.prepare_model_default(
             model_ref=model_ref,
-            category=str(data.get("category") or data.get("categoryKey") or data.get("category_key") or "").strip() or None,
+            category=category,
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
         )
-        return {"status": "success", **result}
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
+        config = model_control_plane.get_config()
+        record = model_control_plane.get_model_record(model_ref, config) or {}
+        return {
+            "status": "success",
+            "ok": True,
+            "category": prepared.get("category"),
+            "role": prepared.get("role"),
+            "modelRef": str(record.get("model_ref") or model_ref),
+            "modelId": str(record.get("model_id") or ""),
+            "providerId": str(record.get("provider_id") or ""),
+            "defaultCategories": model_control_plane.get_default_categories(config),
+            "config": model_control_plane.get_public_config(config),
+        }
     except HTTPException:
         raise
+    except ConfigBrokerError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -1524,9 +1826,11 @@ async def test_model_connection(payload: ModelConnectionTestPayload):
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        normalized = normalize_provider_error(e, provider=payload.provider_id, model=payload.model_id)
+        raise HTTPException(status_code=422, detail=normalized)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        normalized = normalize_provider_error(e, provider=payload.provider_id, model=payload.model_id)
+        raise HTTPException(status_code=500, detail=normalized)
 
 
 @router.post("/models/repair-reasoning")
@@ -1536,12 +1840,31 @@ async def repair_model_reasoning(payload: ModelReasoningRepairPayload):
             model_id=payload.model_id or "",
             model_ref=payload.model_ref or "",
             provider_id=payload.provider_id or "",
+            persist=False,
         )
-        if result.get("ok"):
+        if not result.get("ok"):
+            raise HTTPException(status_code=422, detail=result)
+        if result.get("saveStatus") != "pending" or not isinstance(result.get("newReasoningSurface"), dict):
             return result
-        raise HTTPException(status_code=422, detail=result)
+        owner_id, session_id, run_id = _model_admin_transaction_scope("reasoning-repair")
+        prepared = config_broker_service.prepare_model_binding(
+            provider_id=str(result.get("providerId") or ""),
+            model_id=str(result.get("modelId") or ""),
+            model_config={"reasoningSurface": dict(result.get("newReasoningSurface") or {})},
+            source_provider_id=str(result.get("providerId") or ""),
+            source_model_id=str(result.get("modelId") or ""),
+            source="reasoning_repair_probe",
+            replace_provider_models=False,
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
+        return {**result, "saveStatus": "saved", "backupPath": ""}
     except HTTPException:
         raise
+    except ConfigBrokerError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -1593,14 +1916,49 @@ async def probe_model_provider(data: dict = Body(...)):
             provider_id = str(provider.get("id") or "")
         elif not credential:
             catalog_provider = model_provider_catalog.get_provider(provider_id)
+            provider = catalog_provider
             stored_key, stored_source = _stored_provider_credential(provider_id, catalog_provider)
-            if stored_key:
+            existing_provider = _stored_provider_record(provider_id)
+            proposed_target = _provider_probe_target(
+                dict(catalog_provider or {}),
+                base_url=base_url,
+                api_standard=str(data.get("apiStandard") or data.get("api_standard") or "").strip(),
+                channels=requested_channels if requested_channels else None,
+            )
+            if (
+                stored_key
+                and _provider_target_fingerprint(existing_provider)
+                and _provider_target_fingerprint(existing_provider)
+                == _provider_target_fingerprint(proposed_target)
+            ):
                 credential = stored_key
                 credential_source = stored_source
+        probe_provider = provider or model_provider_catalog.get_provider(provider_id)
+        if not probe_provider:
+            raise HTTPException(status_code=404, detail="provider not found")
+        probe_target = model_provider_catalog.resolve_probe_target(probe_provider, base_url=base_url)
+        if credential:
+            try:
+                _catalog_probe_url_in_scope(probe_provider, probe_target)
+            except ConfigBrokerError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail="provider probe target was not authorized",
+                ) from exc
+        decision = safety_guardian.assess_http_request(
+            "GET",
+            str(probe_target.get("url") or ""),
+            headers={"Authorization": "Bearer [redacted]"} if credential else {},
+            runtime_context={"source": "admin_model_provider_probe"},
+        )
+        if decision.is_block() or decision.is_review():
+            raise HTTPException(status_code=409, detail="provider probe target was not authorized")
         result = (
-            model_provider_catalog.probe_provider_entry(provider, credential=credential, base_url=base_url)
-            if provider
-            else model_provider_catalog.probe_provider(provider_id, credential=credential, base_url=base_url)
+            model_provider_catalog.probe_provider_entry(
+                probe_provider,
+                credential=credential,
+                base_url=str(probe_target.get("baseUrl") or ""),
+            )
         )
         if is_custom_probe and result.get("ok"):
             saved_provider = model_provider_catalog.save_custom_provider(provider or {})
@@ -1623,13 +1981,19 @@ async def probe_model_provider(data: dict = Body(...)):
 @router.delete("/models/providers/custom/{provider_id}")
 async def delete_custom_model_provider(provider_id: str):
     try:
-        provider = model_provider_catalog.get_provider(provider_id)
-        if not provider or not provider.get("isCustom"):
-            raise HTTPException(status_code=404, detail="custom provider not found")
-        deleted = model_provider_catalog.delete_custom_provider(provider_id)
-        return {"ok": deleted, "providerId": provider_id}
+        owner_id, session_id, run_id = _model_admin_transaction_scope("custom-provider-remove")
+        prepared = config_broker_service.prepare_custom_catalog_provider_removal(
+            provider_id=provider_id,
+            owner_id=owner_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        _commit_model_admin_transaction(prepared, owner_id=owner_id, session_id=session_id)
+        return {"ok": True, "providerId": provider_id}
     except HTTPException:
         raise
+    except ConfigBrokerError as e:
+        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -1638,6 +2002,22 @@ async def delete_custom_model_provider(provider_id: str):
 
 @router.post("/models/connect")
 async def connect_model_provider(data: dict = Body(...)):
+    pending_custom_provider: dict[str, Any] | None = None
+    committed_transaction: dict[str, Any] | None = None
+    custom_provider_saved = False
+
+    def _rollback_saved_custom_provider() -> None:
+        if not custom_provider_saved:
+            return
+        try:
+            if committed_transaction:
+                config_broker_service.rollback(
+                    str(committed_transaction.get("transactionId") or ""),
+                    owner_id=str(committed_transaction.get("ownerId") or ""),
+                )
+        finally:
+            model_provider_catalog.delete_custom_provider(provider_id)
+
     try:
         provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
         model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
@@ -1680,157 +2060,107 @@ async def connect_model_provider(data: dict = Body(...)):
             if requested_channels:
                 provider["channels"] = requested_channels
                 provider["defaultChannelId"] = requested_default_channel_id or channel_id
-            provider = model_provider_catalog.save_custom_provider(provider)
             provider_id = str(provider.get("id") or "")
+            saved_custom_provider = model_provider_catalog.get_provider(provider_id)
+            if saved_custom_provider and saved_custom_provider.get("isCustom"):
+                provider = saved_custom_provider
+            else:
+                pending_custom_provider = dict(provider)
         if not provider:
             raise HTTPException(status_code=404, detail="provider not found")
 
         model = model_provider_catalog.normalize_model(provider, model_id)
-        channel_provider = {
-            **provider,
-            **({"channels": requested_channels, "defaultChannelId": requested_default_channel_id or channel_id} if requested_channels else {}),
-        }
-        requested_channel = resolve_provider_channel(
-            channel_provider,
-            channel_id=channel_id,
-            wire_protocol=wire_protocol,
-        )
-        if channel_id and requested_channel.get("id") != channel_id:
-            raise HTTPException(status_code=422, detail=f"unknown Provider channel: {channel_id}")
-        if not wire_protocol and requested_channel.get("source") == "configured":
-            wire_protocol = str(requested_channel.get("defaultWireProtocol") or "")
-        protocol_advice = suggest_model_protocol(
-            provider_id,
-            api_standard or provider.get("apiStandard") or "openai",
-            provider_model_id or model.get("id") or model_id,
-            provider_meta=provider,
-            model_meta=model,
-        )
-        if not endpoint_path and wire_protocol and str(model.get("type") or "").upper() not in {
-            "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "MEDIA", "WORKFLOW", "MODEL3D",
-        }:
-            endpoint_path = str(protocol_advice.get("endpointPath") or "")
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
         existing = dict(providers.get(provider_id) or {})
         existing_provider = dict(existing.get("provider") or {})
-        auth = dict(provider.get("auth") or {})
-        credential = str(incoming_credential or existing_provider.get("api_key") or "").strip()
-        if auth.get("type") == "api_key" and not credential:
-            raise HTTPException(status_code=422, detail="apiKey is required before connecting this Provider")
-        credential_mode = "oauthFile" if auth.get("type") == "oauth_file" else "apiKey"
-        oauth_path = str(auth.get("path") or "")
-        next_provider = {
-            **existing_provider,
-            "name": provider.get("name") or provider_id,
-            "base_url": str(base_url or provider.get("baseUrl") or ""),
-            "api_standard": api_standard or provider.get("apiStandard") or "openai",
-            "providerKind": provider.get("providerKind") or existing_provider.get("providerKind") or "chat",
-            "mediaModality": provider.get("mediaModality") or media_modality or existing_provider.get("mediaModality") or "",
-            "type": "PLATFORM" if auth.get("type") == "oauth_file" else "API",
-            "api_key": credential if auth.get("type") != "oauth_file" else f"oauth:{oauth_path}",
-            "voice_app_id": voice_app_id or existing_provider.get("voice_app_id") or "",
-            "voice_resource_id": voice_resource_id or existing_provider.get("voice_resource_id") or "",
-            "credential_mode": credential_mode,
-            "oauth_preset": auth.get("preset") or existing_provider.get("oauth_preset") or "",
-            "logoAsset": provider.get("logoAsset") or existing_provider.get("logoAsset") or "",
-            "credentialRealm": provider.get("credentialRealm")
-            or existing_provider.get("credentialRealm")
-            or _credential_realm(provider_id, provider),
-            "promptCachingProfileId": provider.get("promptCachingProfileId")
-            or existing_provider.get("promptCachingProfileId")
-            or prompt_cache_profile_id_for_provider(provider_id),
-            "is_enabled": True,
+        existing_model = dict((existing.get("models") or {}).get(model_id) or {})
+        safe_existing_provider = {
+            key: value
+            for key, value in existing_provider.items()
+            if key not in {"api_key", "credentialRef", "credentialSource"}
         }
-        if requested_channels:
-            next_provider["channels"] = requested_channels
-            next_provider["defaultChannelId"] = requested_default_channel_id or channel_id
-        elif provider.get("channels"):
-            next_provider["channels"] = provider.get("channels")
-            next_provider["defaultChannelId"] = str(provider.get("defaultChannelId") or channel_id or "")
-        selected_channel = resolve_provider_channel(
-            next_provider,
+        plan = build_catalog_model_connection_plan(
+            provider=provider,
+            model=model,
+            model_id=model_id,
+            existing_provider=safe_existing_provider,
+            existing_model=existing_model,
+            base_url=base_url,
+            api_standard=api_standard,
+            requested_model_type=requested_model_type,
+            endpoint_path=endpoint_path,
+            provider_model_id=provider_model_id,
+            operation_kind=operation_kind,
+            adapter=adapter,
+            wire_protocol=wire_protocol,
+            channel_id=channel_id,
+            channels=requested_channels,
+            default_channel_id=requested_default_channel_id,
+            voice_app_id=voice_app_id,
+            voice_resource_id=voice_resource_id,
+            credential_value="",
+            source="quick_connect",
+        )
+        proposed_provider = dict(plan["providerPatch"])
+        credential_reusable = bool(
+            str(existing_provider.get("api_key") or "").strip()
+            and _provider_target_fingerprint(existing_provider)
+            and _provider_target_fingerprint(existing_provider)
+            == _provider_target_fingerprint(proposed_provider)
+        )
+        if plan.get("credentialRequired") and not incoming_credential:
+            if not credential_reusable:
+                raise HTTPException(
+                    status_code=422,
+                    detail="apiKey is required because the Provider credential target changed",
+                )
+        committed_transaction = _execute_model_hub_connection(
+            provider=dict(provider),
+            plan=plan,
+            incoming_credential=incoming_credential,
             channel_id=channel_id,
             wire_protocol=wire_protocol,
         )
-        if channel_id and selected_channel.get("id") != channel_id:
-            raise HTTPException(status_code=422, detail=f"unknown Provider channel: {channel_id}")
-        if selected_channel.get("source") == "configured":
-            next_provider["base_url"] = str(selected_channel.get("baseUrl") or next_provider.get("base_url") or "")
-            next_provider["api_standard"] = str(selected_channel.get("apiStandard") or next_provider.get("api_standard") or "openai")
-        is_custom_provider = bool(provider.get("isCustom"))
-        is_oauth_provider = auth.get("type") == "oauth_file"
-        media_model_types = {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
-        catalog_model_type = str(model.get("type") or "TEXT").upper()
-        catalog_capability_class = str(model.get("capabilityClass") or "")
-        if catalog_capability_class == "media_generation" and requested_model_type in {"", "TEXT", "MULTIMODAL"}:
-            normalized_model_type = catalog_model_type
-        else:
-            normalized_model_type = requested_model_type if requested_model_type in media_model_types | {"TEXT", "MULTIMODAL", "EMBEDDING", "RERANK"} else catalog_model_type
-        is_media_provider = str(provider.get("providerKind") or "") == "media_generation" or normalized_model_type in media_model_types
-        is_retrieval_model = normalized_model_type in {"EMBEDDING", "RERANK", "RERANKER"} or str(model.get("capabilityClass") or "").lower() in {"embedding", "reranker", "rerank"}
-        registry_known_chat_model = bool(model.get("capabilityRegistryMatched")) and not is_media_provider
-        clear_runtime_budget = is_media_provider or is_oauth_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
-        managed_context_window = None if clear_runtime_budget else model.get("contextWindow")
-        managed_max_tokens = None if clear_runtime_budget or is_retrieval_model else model.get("maxTokens")
-        next_model = {
-            "type": normalized_model_type or "TEXT",
-            "contextWindow": managed_context_window,
-            "maxTokens": managed_max_tokens,
-            "capabilities": model.get("capabilities") or {},
-            "capabilityClass": model.get("capabilityClass")
-            or ("media_generation" if is_media_provider else "vision_multimodal" if (model.get("capabilities") or {}).get("vision") else "chat_general"),
-            "capabilitySource": model.get("capabilitySource") or "manual",
-            "parameterProfile": model.get("parameterProfile") or ("media_generation" if is_media_provider else "chat"),
-            "mediaLimits": model.get("mediaLimits") or {},
-            "logoAsset": model.get("logoAsset") or "",
-            "capabilityRegistry": model.get("capabilityRegistry") or {},
-            "pricing": model.get("pricing") or {},
-            "driftWarnings": model.get("driftWarnings") or [],
-            "promptCachingProfileId": model.get("promptCachingProfileId")
-            or next_provider.get("promptCachingProfileId")
-            or prompt_cache_profile_id_for_provider(provider_id),
-            "isEnabled": True,
-        }
-        if endpoint_path or provider_model_id or operation_kind or adapter or wire_protocol or channel_id:
-            next_model["endpointBinding"] = {
-                "route": model_id,
-                "endpointPath": endpoint_path,
-                "providerModelId": provider_model_id,
-                "operationKind": operation_kind,
-                "adapter": adapter,
-                "wireProtocol": wire_protocol,
-                "channelId": str(selected_channel.get("id") or channel_id or ""),
-                "protocolConfidence": "authoritative" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("confidence") or "hint"),
-                "protocolSource": "channel" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("source") or "fallback"),
-                "protocolSourceRefs": list(protocol_advice.get("sourceRefs") or []),
-                "protocolWarning": "" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("warning") or ""),
-                "provenance": {
-                    "source": "quick_connect",
-                    "confidence": "authoritative",
-                },
-            }
-        mutation = model_control_plane.upsert_provider_model_records(
-            provider_id=provider_id,
-            provider_patch=next_provider,
-            model_id=model_id,
-            model_patch=next_model,
-            source="quick_connect",
-            replace_provider_models=bool(provider.get("singleActiveModel")),
-        )
-        saved = model_control_plane.get_public_config(dict(mutation.get("config") or {}))
+        if pending_custom_provider:
+            try:
+                model_provider_catalog.save_custom_provider(pending_custom_provider)
+                custom_provider_saved = True
+            except Exception:
+                config_broker_service.rollback(
+                    str(committed_transaction.get("transactionId") or ""),
+                    owner_id=str(committed_transaction.get("ownerId") or ""),
+                )
+                model_provider_catalog.delete_custom_provider(provider_id)
+                raise
+        saved = dict(committed_transaction.get("config") or model_control_plane.get_public_config())
         return {
             "ok": True,
             "providerId": provider_id,
-            "modelId": model_id,
-            "modelRef": make_model_ref(provider_id, model_id),
+            "modelId": plan["modelId"],
+            "modelRef": make_model_ref(provider_id, str(plan["modelId"])),
             "config": saved,
         }
     except HTTPException:
+        _rollback_saved_custom_provider()
         raise
+    except ConfigBrokerError as e:
+        _rollback_saved_custom_provider()
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    except UiActionRequestError as e:
+        _rollback_saved_custom_provider()
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": str(e)},
+        ) from e
     except ValueError as e:
+        _rollback_saved_custom_provider()
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        _rollback_saved_custom_provider()
         raise HTTPException(status_code=500, detail=str(e))
 
 

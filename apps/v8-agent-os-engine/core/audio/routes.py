@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import hmac
 from typing import Any
@@ -12,11 +14,34 @@ from core.model_control_plane import model_control_plane
 from core.system_base import get_internal_secret
 
 from .audio_config import AudioConfigManager
-from .stt_provider import STTManager
-from .tts_provider import TTSManager, TTSProviderError
-from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, voice_customization_manager
 
 router = APIRouter(prefix="/v1/audio", tags=["Audio"])
+
+
+def __getattr__(name: str):
+    if name in {"TTSManager", "TTSProviderError"}:
+        from . import tts_provider
+
+        return getattr(tts_provider, name)
+    raise AttributeError(name)
+
+
+def _get_tts_manager():
+    patched = globals().get("TTSManager")
+    if patched is not None:
+        return patched
+    from .tts_provider import TTSManager
+
+    return TTSManager
+
+
+def _get_tts_provider_error():
+    patched = globals().get("TTSProviderError")
+    if patched is not None:
+        return patched
+    from .tts_provider import TTSProviderError
+
+    return TTSProviderError
 
 class TTSRequest(BaseModel):
     text: str
@@ -32,7 +57,7 @@ def _require_voice_manager_secret(provided: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid V8OS service credential")
 
 
-def _voice_manager_error(error: VoiceManagerError) -> JSONResponse:
+def _voice_manager_error(error: Exception) -> JSONResponse:
     diagnostics = {
         key: value
         for key, value in {
@@ -274,6 +299,8 @@ async def manage_model_ref_voices(
     x_v8_agent_os_secret: str | None = Header(default=None),
 ):
     """Run model-declared voice customization without exposing Provider credentials."""
+    from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, voice_customization_manager
+
     _require_voice_manager_secret(x_v8_agent_os_secret)
     try:
         content_type = str(request.headers.get("content-type") or "").lower()
@@ -340,8 +367,8 @@ async def tts_stream(request: TTSRequest):
     """
     if not request.text:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
-        
-    provider = TTSManager.get_provider()
+
+    provider = _get_tts_manager().get_provider()
     
     # 强制让 FastAPI 识别为音频流的 MediaType
     return StreamingResponse(
@@ -353,6 +380,9 @@ async def tts_stream(request: TTSRequest):
 @router.post("/tts/preview")
 async def tts_preview(request: TTSPreviewRequest):
     """Synthesize a bounded preview with an unsaved Audio config."""
+    TTSManager = _get_tts_manager()
+    TTSProviderError = _get_tts_provider_error()
+
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -416,9 +446,11 @@ async def stt_transcribe(
     """
     audio_bytes = await file.read()
     format_type = file.filename.split('.')[-1] if '.' in file.filename else "wav"
-    
+
+    from .stt_provider import STTManager
+
     provider = STTManager.get_provider()
-    
+
     try:
         text = await provider.transcribe(audio_bytes, format_type)
         return {"text": text}

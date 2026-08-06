@@ -87,6 +87,36 @@ def test_reasoning_repair_registers_observed_adapter_field(tmp_path):
     assert result["backupPath"]
 
 
+def test_reasoning_repair_dry_run_reports_no_change_for_same_verified_surface(tmp_path):
+    current_surface = {
+        "mode": "provider_reasoning",
+        "trust": "adapter_verified",
+        "requestStyle": "openai",
+        "responseFields": ["additional_kwargs.reasoning_content"],
+        "displayKind": "provider_reasoning",
+        "source": "reasoning_repair_probe",
+    }
+    service = _service(tmp_path, _base_config(current_surface))
+    service._run_probe = lambda runtime_model_id: {  # type: ignore[method-assign]
+        "elapsedMs": 12,
+        "streamingUsed": True,
+        "reasoningTokens": 0,
+        "payloads": [{"additional_kwargs": {"reasoning_content": "short reasoning"}, "content": "OK"}],
+    }
+
+    result = service.repair_reasoning_surface(
+        model_id="demo-reasoner",
+        provider_id="demo",
+        persist=False,
+    )
+
+    assert result["ok"] is True
+    assert result["saveStatus"] == "no_change"
+    assert result["oldReasoningSurface"] == current_surface
+    assert result["newReasoningSurface"] == current_surface
+    assert service.control_plane.saved is None
+
+
 def test_reasoning_repair_does_not_fabricate_surface_for_token_only_signal(tmp_path):
     service = _service(tmp_path, _base_config())
     service._run_probe = lambda runtime_model_id: {  # type: ignore[method-assign]

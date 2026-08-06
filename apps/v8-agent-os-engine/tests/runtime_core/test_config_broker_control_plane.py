@@ -109,6 +109,71 @@ def test_ui_action_persists_schema_not_secret_and_is_one_time(tmp_path, monkeypa
     assert duplicate.value.code == "ui_action_already_terminal"
 
 
+def test_ui_action_preserves_credential_after_broker_takes_ownership(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as config_module
+    import core.ui_action_requests as action_module
+
+    test_db = DatabaseManager(tmp_path / "state.db")
+    memory_store = CredentialRefStore(MemoryCredentialBackend())
+    captured_bindings = []
+    monkeypatch.setattr(action_module, "db", test_db)
+    monkeypatch.setattr(action_module, "credential_ref_store", memory_store)
+
+    def commit_with_credentials(transaction_id, *, bindings, owner_id):
+        captured_bindings.extend(bindings)
+        return {"ok": True, "state": "committed", "summary": "configured"}
+
+    monkeypatch.setattr(
+        config_module.config_broker_service,
+        "attach_credentials_and_commit",
+        commit_with_credentials,
+    )
+    service = action_module.UiActionRequestService()
+    action = service.create(
+        kind="secret_input",
+        owner_id="owner@example.test",
+        session_id="session-test",
+        run_id="run-test",
+        title="Connect provider",
+        description="Exact target shown",
+        target_label="https://api.example.test/v1",
+        fields=[
+            {
+                "id": "apiKey",
+                "kind": "secret",
+                "label": "API Key",
+                "required": True,
+                "binding": {"namespace": "model", "target": "provider", "targetName": "api_key"},
+            }
+        ],
+        handler_type="config_broker_secret",
+        handler_ref="cfg_txn_test",
+    )
+
+    def fail_public_projection(action_id, *, owner_id, session_id):
+        raise RuntimeError("result projection failed")
+
+    monkeypatch.setattr(service, "public", fail_public_projection)
+    with pytest.raises(action_module.UiActionRequestError) as failed:
+        service.submit(
+            action["actionRequestId"],
+            values={"apiKey": "broker-owned-secret"},
+            owner_id="owner@example.test",
+            session_id="session-test",
+        )
+
+    assert failed.value.code == "ui_action_submit_failed"
+    assert len(captured_bindings) == 1
+    credential_ref = captured_bindings[0]["secretRef"]
+    assert memory_store.resolve(credential_ref) == "broker-owned-secret"
+    with test_db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT state FROM ui_action_requests WHERE id=?",
+            (action["actionRequestId"],),
+        ).fetchone()
+    assert row["state"] == "submitted"
+
+
 def test_ui_action_claim_prevents_concurrent_secret_submission(tmp_path, monkeypatch) -> None:
     import core.ui_action_requests as action_module
 
@@ -734,6 +799,7 @@ def test_model_prepare_keeps_explicit_channel_and_endpoint_contract(tmp_path, mo
         owner_id="local-cli",
         session_id="",
         run_id="",
+        provider_config={"authContract": {"type": "none"}},
     )
 
     transaction = service.get_transaction(
@@ -872,3 +938,116 @@ def test_precise_role_rollback_preserves_unrelated_changes_and_stops_on_target_c
 
     assert conflicted["state"] == "conflict"
     assert config["roles"]["default"] == "provider::newer"
+
+
+def test_startup_reconciles_committing_transaction_from_working_digest(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "providers": {},
+        "roles": {"default": "provider::old"},
+        "bindings": {"agents": {}},
+    }
+    _install_role_control_plane_fakes(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    transaction = service.get_transaction(prepared["transactionId"], owner_id="owner", include_private=True)
+    config["roles"]["default"] = "provider::new"
+    validation = dict(transaction["validation"])
+    validation["targetWorkingDigest"] = module._digest(
+        service._target_snapshot("model_role", "default", config)
+    )
+    service._update_transaction(
+        prepared["transactionId"],
+        state="committing",
+        validation_json=module._json(validation),
+    )
+
+    result = module.ConfigBrokerService().reconcile_incomplete_transactions()
+
+    assert result["ok"] is True
+    assert result["transactions"] == [{"transactionId": prepared["transactionId"], "state": "rolled_back"}]
+    assert config["roles"]["default"] == "provider::old"
+
+
+def test_rollback_retries_fail_once_credential_cleanup(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "providers": {},
+        "roles": {"default": "provider::old"},
+        "bindings": {"agents": {}},
+    }
+    _install_role_control_plane_fakes(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    assert service.commit(prepared["transactionId"], owner_id="owner")["state"] == "committed"
+    transaction = service.get_transaction(prepared["transactionId"], owner_id="owner", include_private=True)
+    proposed = dict(transaction["proposed"])
+    proposed["newCredentialRefs"] = ["cred:v8-model:test-cleanup"]
+    service._update_transaction(prepared["transactionId"], proposed_json=module._json(proposed))
+    attempts = []
+
+    def delete(reference):
+        attempts.append(reference)
+        if len(attempts) == 1:
+            raise RuntimeError("fail once")
+        return True
+
+    monkeypatch.setattr(module.credential_ref_store, "delete", delete)
+
+    first = service.rollback(prepared["transactionId"], owner_id="owner")
+    second = service.rollback(prepared["transactionId"], owner_id="owner")
+
+    assert first["state"] == "recovery_required"
+    assert first["rollback"]["targetRestored"] is True
+    assert second["state"] == "rolled_back"
+    assert attempts == ["cred:v8-model:test-cleanup", "cred:v8-model:test-cleanup"]
+    assert config["roles"]["default"] == "provider::old"
+
+
+def test_stale_commit_cleans_transaction_created_credentials_without_overwrite(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    config = {
+        "providers": {},
+        "roles": {"default": "provider::old"},
+        "bindings": {"agents": {}},
+    }
+    _install_role_control_plane_fakes(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_role_assignment(
+        role="default",
+        model_ref="provider::new",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    transaction = service.get_transaction(prepared["transactionId"], owner_id="owner", include_private=True)
+    proposed = dict(transaction["proposed"])
+    proposed["newCredentialRefs"] = ["cred:v8-model:stale-cleanup"]
+    service._update_transaction(prepared["transactionId"], proposed_json=module._json(proposed))
+    deleted = []
+    monkeypatch.setattr(module.credential_ref_store, "delete", lambda reference: deleted.append(reference) or True)
+    config["roles"]["default"] = "provider::concurrent"
+
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert committed["state"] == "conflict"
+    assert deleted == ["cred:v8-model:stale-cleanup"]
+    assert config["roles"]["default"] == "provider::concurrent"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import time
 import uuid
@@ -12,7 +13,6 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.system_base import get_internal_secret
-from runtimes.chat.runtime import chat_runtime
 from runtimes.network_supervisor.models import (
     NetworkDelegationRequestPayload,
     NetworkDiagnosticsPayload,
@@ -65,6 +65,21 @@ COMPAT_SSE_HEADERS = {
 }
 _COMPAT_MEMORY_PERSIST_VALUES = {"1", "true", "yes", "allow", "persist", "enabled", "on"}
 _COMPAT_REDACTION_MARKERS = ("authorization", "bearer ", "api key", "x-api-key", "sk-", "password", "token=")
+
+
+class _LazyChatRuntime:
+    def __getattr__(self, name: str):
+        runtime = importlib.import_module("runtimes.chat.runtime").chat_runtime
+        return getattr(runtime, name)
+
+
+# Keep the module-level injection seam used by compatibility tests and local
+# adapters without importing the full Chat Runtime during route registration.
+chat_runtime = _LazyChatRuntime()
+
+
+def _get_chat_runtime():
+    return chat_runtime
 
 
 def _sse_comment(message: str) -> bytes:
@@ -124,7 +139,7 @@ async def _iterate_chat_events_with_timeout(
     timeout_seconds: int | float | None,
 ) -> AsyncIterator[dict[str, Any]]:
     deadline = time.monotonic() + max(0.001, float(timeout_seconds or 180))
-    source = chat_runtime.stream_legacy_events(chat_request, transport=transport, run_id=run_id)
+    source = _get_chat_runtime().stream_legacy_events(chat_request, transport=transport, run_id=run_id)
     iterator = source.__aiter__()
     try:
         while True:

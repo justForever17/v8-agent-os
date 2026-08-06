@@ -13,8 +13,6 @@ from typing import Any
 import yaml
 from langchain_core.tools import tool
 
-from core.llm_factory import llm_factory
-from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import parse_background_json_object
 from core.model_control_plane import model_control_plane
 from core.storage import storage
@@ -1131,6 +1129,9 @@ class SkillLoader:
         )
 
         def _invoke() -> dict[str, Any] | None:
+            from core.background_context_guard import prepare_background_model_messages
+            from core.llm_factory import llm_factory
+
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
             prepared = prepare_background_model_messages(
                 system_prompt=(
@@ -1301,6 +1302,9 @@ class SkillLoader:
         )
 
         def _invoke() -> dict[str, Any] | None:
+            from core.background_context_guard import prepare_background_model_messages
+            from core.llm_factory import llm_factory
+
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
             prepared = prepare_background_model_messages(
                 system_prompt=(

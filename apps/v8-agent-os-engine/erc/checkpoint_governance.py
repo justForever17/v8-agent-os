@@ -11,12 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agents.runners.supervisor_runner import supervisor_runner
 from core.database import db
 from core.engine_config_resolver import resolve_engine_config_for_role
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
-from erc.checkpoint_security import build_checkpoint_serializer, strict_checkpoint_serializer
-from graph.supervisor import AgentState
 
 
 CHECKPOINT_OPERATION_TABLE = "v8_checkpoint_operations"
@@ -30,6 +27,26 @@ CHECKPOINT_OPERATION_ACTIVE_RUN_STATES = {
     "paused",
     "interrupted",
 }
+
+
+def __getattr__(name: str):
+    if name == "supervisor_runner":
+        from agents.runners.supervisor_runner import supervisor_runner
+
+        return supervisor_runner
+    raise AttributeError(name)
+
+
+def _get_supervisor_runner():
+    from agents.runners.supervisor_runner import supervisor_runner
+
+    return supervisor_runner
+
+
+def _agent_state_fields() -> set[str]:
+    from graph.supervisor import AgentState
+
+    return set(AgentState.__annotations__)
 _FORBIDDEN_STATE_PATCH_KEYS = {
     "session_id",
     "sessionId",
@@ -63,6 +80,8 @@ def _json_dump(value: Any) -> str:
 
 
 def _encode_state_patch(value: dict[str, Any]) -> str:
+    from erc.checkpoint_security import build_checkpoint_serializer, strict_checkpoint_serializer
+
     serializer = build_checkpoint_serializer()
     strict_checkpoint_serializer(serializer).assert_write_safe(value, root="checkpoint_governance.state_patch")
     serialization_type, payload = serializer.dumps_typed(value)
@@ -80,6 +99,8 @@ def _decode_state_patch(value: str) -> dict[str, Any]:
     if not isinstance(envelope, dict):
         raise CheckpointGovernanceError("checkpoint statePatch envelope is invalid.")
     if {"type", "payload"}.issubset(envelope):
+        from erc.checkpoint_security import build_checkpoint_serializer
+
         try:
             payload = base64.b64decode(str(envelope["payload"]).encode("ascii"), validate=True)
         except (ValueError, UnicodeError) as exc:
@@ -193,7 +214,7 @@ class CheckpointGovernanceService:
             return {}
         if mode != "fork" or not isinstance(patch, dict):
             raise CheckpointGovernanceError("只有 fork 允许提交结构化 statePatch。")
-        unknown = set(patch) - set(AgentState.__annotations__)
+        unknown = set(patch) - _agent_state_fields()
         if unknown:
             raise CheckpointGovernanceError(f"statePatch 包含未知状态字段: {', '.join(sorted(unknown))}")
         forbidden = set(patch) & _FORBIDDEN_STATE_PATCH_KEYS
@@ -264,7 +285,7 @@ class CheckpointGovernanceService:
         patch = self._normalize_state_patch(normalized_mode, state_patch)
 
         engine_config = resolve_engine_config_for_role("supervisor").get("engine_config")
-        graph, _ = await supervisor_runner.build_graph(engine_config)
+        graph, _ = await _get_supervisor_runner().build_graph(engine_config)
         source_config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -498,7 +519,7 @@ class CheckpointGovernanceService:
         self._update_operation(operation_id, state="running")
         try:
             engine_config = resolve_engine_config_for_role("supervisor").get("engine_config")
-            graph, _ = await supervisor_runner.build_graph(engine_config)
+            graph, _ = await _get_supervisor_runner().build_graph(engine_config)
             source_config = {
                 "configurable": {
                     "thread_id": operation["source_thread_id"],

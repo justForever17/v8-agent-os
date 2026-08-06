@@ -20,7 +20,18 @@ test('packaged shell starts core services before waiting for them', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /ensureCoreServicesStarted/);
   assert.match(mainSource, /shellStart\(\['engine', 'admin', 'web'\], \{ mode: 'start' \}\)/);
-  assert.match(mainSource, /await ensureCoreServicesStarted\(\);\s*await waitForServices\(\);/);
+  assert.match(mainSource, /await ensureCoreServicesStarted\(\);[\s\S]*await waitForServices\(\);/);
+  assert.match(mainSource, /Promise\.all\(\[/);
+  assert.match(mainSource, /\$\{engineBaseUrl\}\/readyz/);
+  assert.doesNotMatch(mainSource, /\$\{engineBaseUrl\}\/health/);
+  assert.match(mainSource, /fetchTextWithTimeout/);
+  assert.match(mainSource, /credentials:\s*'omit'/);
+  assert.match(mainSource, /validateReadinessResponse/);
+  assert.match(mainSource, /kind: 'engine'/);
+  assert.match(mainSource, /kind: 'admin'/);
+  assert.match(mainSource, /kind: 'web'/);
+  assert.match(mainSource, /!\['started', 'already_running'\]\.includes\(item\.status\)/);
+  assert.match(mainSource, /核心服务启动失败/);
 });
 
 test('shell recovers a failed local surface without an unbounded reload loop', () => {

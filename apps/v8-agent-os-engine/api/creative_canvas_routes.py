@@ -14,13 +14,7 @@ from core.creative_canvas_graph import (
     creative_canvas_graph_service,
 )
 from core.creative_canvas_preview import CreativeCanvasPreviewError, resolve_canvas_preview
-from core.tools.native.creative_media_psd import inspect_psd_manifest, render_psd_preview_image
 from core.workspace_media_library import workspace_media_library
-from runtimes.creative_media.motion_capture import (
-    MotionCaptureError,
-    inspect_motion_package,
-    read_motion_frame,
-)
 
 
 router = APIRouter()
@@ -57,12 +51,16 @@ def _resolve_motion_path(*, session_id: str, origin: str, resource_id: str) -> P
 @lru_cache(maxsize=32)
 def _cached_psd_preview(path_value: str, modified_ns: int, byte_size: int) -> bytes:
     del modified_ns, byte_size
+    from core.tools.native.creative_media_psd import render_psd_preview_image
+
     buffer = io.BytesIO()
     render_psd_preview_image(Path(path_value)).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
 def _raise_canvas_http(error: Exception) -> None:
+    from runtimes.creative_media.motion_capture import MotionCaptureError
+
     if isinstance(error, CreativeCanvasGraphConflict):
         raise HTTPException(status_code=409, detail=str(error)) from error
     if isinstance(error, PermissionError):
@@ -114,6 +112,8 @@ async def get_canvas_resource_preview(session_id: str, origin: str, resource_id:
 @router.get("/sessions/{session_id}/canvas/psd/{origin}/{resource_id}/manifest")
 async def get_canvas_psd_manifest(session_id: str, origin: str, resource_id: str):
     try:
+        from core.tools.native.creative_media_psd import inspect_psd_manifest
+
         path = await asyncio.to_thread(
             _resolve_psd_path,
             session_id=session_id,
@@ -151,6 +151,8 @@ async def get_canvas_psd_preview(session_id: str, origin: str, resource_id: str)
 @router.get("/sessions/{session_id}/canvas/motion/{origin}/{resource_id}/manifest")
 async def get_canvas_motion_manifest(session_id: str, origin: str, resource_id: str):
     try:
+        from runtimes.creative_media.motion_capture import inspect_motion_package
+
         path = await asyncio.to_thread(
             _resolve_motion_path,
             session_id=session_id,
@@ -165,6 +167,8 @@ async def get_canvas_motion_manifest(session_id: str, origin: str, resource_id: 
 @router.get("/sessions/{session_id}/canvas/motion/{origin}/{resource_id}/frames/{frame_index}")
 async def get_canvas_motion_frame(session_id: str, origin: str, resource_id: str, frame_index: int):
     try:
+        from runtimes.creative_media.motion_capture import read_motion_frame
+
         path = await asyncio.to_thread(
             _resolve_motion_path,
             session_id=session_id,

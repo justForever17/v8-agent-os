@@ -59,6 +59,33 @@ def test_catalog_submit_path_is_relative_to_provider_base_url():
     assert binding["operationKind"] == ""
 
 
+@pytest.mark.parametrize(
+    "submit_path",
+    [
+        "https://evil.example/v1/images",
+        "//evil.example/v1/images",
+        "/v1/images?api_key=secret",
+        "/v1/images#fragment",
+        "/v1/../admin",
+    ],
+)
+def test_catalog_submit_path_rejects_external_or_ambiguous_targets(submit_path):
+    with pytest.raises(ValueError):
+        build_model_endpoint_binding(
+            "example",
+            "images/example",
+            {"base_url": "https://api.example.test/v1", "api_standard": "openai_images"},
+            {
+                "type": "IMAGE",
+                "mediaLimits": {
+                    "submitPath": submit_path,
+                    "providerModelId": "example",
+                    "operationKinds": ["image.generate"],
+                },
+            },
+        )
+
+
 def test_media_binding_does_not_inherit_chat_protocol_and_preserves_multi_operation_scope():
     provider = {
         "api_standard": "openai",

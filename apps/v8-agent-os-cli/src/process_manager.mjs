@@ -724,6 +724,18 @@ async function revalidateStopTarget(componentId, pid, context) {
   return { ok: false, processStartToken: null };
 }
 
+export function orderedManagedStopPids(componentId, identity, verifiedPortOwner = null) {
+  const verifiedPids = Array.isArray(identity?.verifiedPids) ? identity.verifiedPids : [];
+  const preferredPids = componentId === "shell"
+    ? [identity?.runtimePid, identity?.recordPid]
+    : verifiedPids;
+  return [...new Set([
+    ...preferredPids,
+    ...verifiedPids,
+    verifiedPortOwner?.killPid,
+  ].filter(Boolean))];
+}
+
 async function stopComponent(id, options) {
   const component = COMPONENTS[id];
   return withComponentProcessLease(id, async () => {
@@ -743,10 +755,7 @@ async function stopComponent(id, options) {
     if (!record && !runtimeDescriptor && !verifiedPortOwner) {
       return { id, status: "not_managed" };
     }
-    const targetPids = [...new Set([
-      ...identity.verifiedPids,
-      verifiedPortOwner?.killPid,
-    ].filter(Boolean))];
+    const targetPids = orderedManagedStopPids(id, identity, verifiedPortOwner);
     // Windows keeps the original parent process relationship even for detached
     // children. Killing the whole Shell tree can therefore terminate the managed
     // desktop pet. Stop the Shell browser and launcher PIDs exactly; Electron
@@ -762,6 +771,10 @@ async function stopComponent(id, options) {
           || (verifiedPortOwner?.killPid === pid ? verifiedPortOwner.processStartToken : null),
       });
       if (!revalidated.ok) {
+        if (!isPidAlive(pid)) {
+          killResults.push({ pid, ok: true, reason: "already_stopped" });
+          continue;
+        }
         killResults.push({ pid, ok: false, reason: "identity_changed_before_kill" });
         break;
       }

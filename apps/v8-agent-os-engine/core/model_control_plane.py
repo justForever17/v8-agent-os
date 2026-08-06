@@ -1092,6 +1092,8 @@ class ModelControlPlane:
         source_model_id: str = "",
         source: str = "manual",
         replace_provider_models: bool = False,
+        precondition=None,
+        before_persist=None,
     ) -> Dict[str, Any]:
         normalized_provider_id = str(provider_id or "").strip()
         normalized_model_id = str(model_id or "").strip().strip("/")
@@ -1099,6 +1101,8 @@ class ModelControlPlane:
             raise ValueError("providerId and modelId are required")
         with self._mutation_lock:
             config = self.get_config()
+            if callable(precondition):
+                precondition(deepcopy(config))
             providers = dict(config.get("providers") or {})
             target = dict(providers.get(normalized_provider_id) or {})
             if not target:
@@ -1143,6 +1147,8 @@ class ModelControlPlane:
                 "models": target_models,
             }
             config["providers"] = providers
+            if callable(before_persist):
+                before_persist(deepcopy(config))
             saved = self.save_config(config)
             saved_provider = dict((saved.get("providers") or {}).get(normalized_provider_id) or {})
             return {
@@ -1164,6 +1170,7 @@ class ModelControlPlane:
         source: str,
         replace_provider_models: bool = False,
         precondition=None,
+        before_persist=None,
     ) -> Dict[str, Any]:
         normalized_provider_id = str(provider_id or "").strip()
         normalized_model_id = str(model_id or "").strip().strip("/")
@@ -1200,6 +1207,8 @@ class ModelControlPlane:
                 "models": models,
             }
             config["providers"] = providers
+            if callable(before_persist):
+                before_persist(deepcopy(config))
             saved = self.save_config(config)
             saved_provider = dict((saved.get("providers") or {}).get(normalized_provider_id) or {})
             return {
@@ -1424,6 +1433,12 @@ class ModelControlPlane:
     def _is_model_compatible(self, role_definition: Dict[str, Any], model_record: Optional[Dict[str, Any]]) -> bool:
         if not model_record:
             return False
+        provider = dict(model_record.get("provider") or {})
+        model = dict(model_record.get("model") or {})
+        if provider.get("is_enabled") is False or provider.get("isEnabled") is False:
+            return False
+        if model.get("isEnabled") is False:
+            return False
         allowed = {
             str(item or "").strip()
             for item in list(role_definition.get("capabilityClasses") or [])
@@ -1431,7 +1446,6 @@ class ModelControlPlane:
         }
         if not allowed:
             return True
-        model = dict(model_record.get("model") or {})
         capability_class = str(model.get("capabilityClass") or "").strip()
         capabilities = dict(model.get("capabilities") or {})
         available = {capability_class} if capability_class else set()

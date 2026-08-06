@@ -15,6 +15,7 @@ import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import {
+  orderedManagedStopPids,
   resolveManagedComponentIdentity,
   verifiedComponentPortOwner,
   verifiedManagedComponentPid,
@@ -29,6 +30,9 @@ import {
   previewBuildLogPaths,
   previewRebuildStopComponentIds,
   removeOwnedShellRestartLease,
+  validateComponentStartResults,
+  validateShellControlDescriptor,
+  waitForShellControlDescriptor,
 } from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 import { main as runCli } from "../src/cli.mjs";
@@ -182,6 +186,19 @@ test("Shell exit uses scoped process-state deletion instead of rewriting a stale
 
   assert.match(source, /removeManagedComponentProcessRecord\("shell", expectedIdentity\)/);
   assert.doesNotMatch(source, /readProcessState|writeProcessState/);
+});
+
+test("Shell shutdown stops the verified Electron browser before its launcher", () => {
+  assert.deepEqual(orderedManagedStopPids("shell", {
+    runtimePid: 2202,
+    recordPid: 1101,
+    verifiedPids: [1101, 2202],
+  }), [2202, 1101]);
+  assert.deepEqual(orderedManagedStopPids("web", {
+    runtimePid: null,
+    recordPid: 3303,
+    verifiedPids: [3303],
+  }, { killPid: 4404 }), [3303, 4404]);
 });
 
 test("independent CLI hosts serialize scoped process-state mutations", async () => {
@@ -834,11 +851,119 @@ test("preview build logs are written to CLI logs", () => {
   assert.match(logs.err, /web\.build\.err\.log$/);
 });
 
+test("preview startup validation rejects missing and failed components", () => {
+  assert.deepEqual(validateComponentStartResults([
+    { id: "engine", status: "started" },
+    { id: "admin", status: "already_running" },
+    { id: "web", status: "port_in_use" },
+  ], ["engine", "admin", "web", "shell"]), {
+    ok: false,
+    rejected: [
+      { id: "web", status: "port_in_use" },
+      { id: "shell", status: "missing" },
+    ],
+  });
+  assert.equal(validateComponentStartResults([
+    { id: "engine", status: "started" },
+    { id: "admin", status: "already_running" },
+  ], ["engine", "admin"]).ok, true);
+});
+
+test("preview waits for a fresh live Shell control descriptor", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-shell-control-ready-"));
+  const descriptorPath = path.join(root, "shell-control.json");
+  const nowMs = Date.now();
+  const descriptor = {
+    version: 1,
+    endpoint: "test-shell-control",
+    pid: 4242,
+    token: "a".repeat(64),
+    createdAt: new Date(nowMs).toISOString(),
+    surfaceReady: true,
+    surfaceKind: "web",
+    surfaceReadyAt: new Date(nowMs).toISOString(),
+  };
+  try {
+    fs.writeFileSync(descriptorPath, JSON.stringify(descriptor), "utf8");
+    assert.equal(validateShellControlDescriptor(descriptor, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: (pid) => pid === 4242,
+    }), true);
+    assert.equal(validateShellControlDescriptor(descriptor, {
+      nowMs,
+      notBeforeMs: nowMs + 1,
+      pidIsAlive: () => true,
+    }), false);
+    assert.equal(validateShellControlDescriptor({ ...descriptor, surfaceReady: false }, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: () => true,
+    }), false);
+    assert.equal(validateShellControlDescriptor({ ...descriptor, pid: 5252 }, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      expectedPid: 4242,
+      pidIsAlive: () => true,
+    }), false);
+    assert.equal(validateShellControlDescriptor(descriptor, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      expectedPid: 4242,
+      pidIsAlive: () => true,
+    }), true);
+    assert.equal(validateShellControlDescriptor({ ...descriptor, surfaceKind: "admin-login" }, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: () => true,
+    }), true);
+    assert.equal(validateShellControlDescriptor({ ...descriptor, surfaceKind: "startup" }, {
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: () => true,
+    }), false);
+    assert.deepEqual(await waitForShellControlDescriptor({
+      descriptorPath,
+      timeoutMs: 20,
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: () => true,
+    }), descriptor);
+    assert.equal(await waitForShellControlDescriptor({
+      descriptorPath,
+      timeoutMs: 20,
+      nowMs,
+      notBeforeMs: nowMs + 1,
+      pidIsAlive: () => true,
+    }), null);
+    fs.writeFileSync(descriptorPath, JSON.stringify({
+      ...descriptor,
+      surfaceReady: false,
+      surfaceKind: null,
+      surfaceReadyAt: null,
+    }), "utf8");
+    assert.equal(await waitForShellControlDescriptor({
+      descriptorPath,
+      timeoutMs: 20,
+      nowMs,
+      notBeforeMs: nowMs - 1,
+      pidIsAlive: () => true,
+    }), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("preview rebuild restarts shell and adopts verified Next/Engine port owners before verification", () => {
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web", "engine"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
   const previewSource = fs.readFileSync(path.join(cliRoot, "src", "preview_commands.mjs"), "utf8");
   assert.match(previewSource, /stopVerifiedPortOwners:\s*\["admin", "web", "engine"\]/);
+  assert.match(previewSource, /assertStarted\(serviceResults, \["engine", "admin", "web"\]/);
+  assert.match(previewSource, /assertStarted\(shellResults, \["shell"\]/);
+  assert.match(previewSource, /waitForShellControlDescriptor\(\{/);
+  assert.match(previewSource, /timeoutMs:\s*30_000/);
+  assert.match(previewSource, /stopComponents\(\[\.\.\.new Set\(startedByThisAttempt\)\]\)/);
 });
 
 test("preview rebuild adopts only a verified current-repo Engine port owner", () => {

@@ -8,6 +8,12 @@ const { parseShellDeepLink } = require('../lib/shell-route.cjs');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
+const {
+  classifyProductSurface,
+  fetchTextWithTimeout,
+  validateReadinessResponse,
+  verifyProductSurfaceDom,
+} = require('../lib/readiness-probe.cjs');
 
 const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
   ? path.join(process.resourcesPath, 'v8os')
@@ -115,6 +121,7 @@ function emitWindowState() {
 
 function loadInMainWindow(url) {
   pendingSurfaceUrl = url;
+  shellControl?.setSurfaceStatus({ surfaceReady: false });
   if (!mainWindow) {
     createMainWindow();
   }
@@ -164,34 +171,52 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithTimeout(url, timeoutMs = 1500, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await net.fetch(url, {
-      signal: controller.signal,
-      cache: 'no-store',
-      headers: options.headers,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function waitForUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 90000;
   const intervalMs = options.intervalMs ?? 700;
   const startedAt = Date.now();
   let lastError = null;
+  let lastReportedReason = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const response = await fetchWithTimeout(url, options.fetchTimeoutMs ?? 1800);
-      if (response.status >= 200 && response.status < 500) {
-        return true;
+      const expectedOrigin = options.expectedOrigin || new URL(url).origin;
+      const { response, body, responseUrl } = await fetchTextWithTimeout(
+        net.fetch.bind(net),
+        url,
+        options.fetchTimeoutMs ?? 1800,
+        {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { Accept: 'text/html' },
+        },
+      );
+      const validation = validateReadinessResponse(options.kind, {
+        ok: response.ok,
+        status: response.status,
+        contentType: response.headers.get('content-type') || '',
+        body,
+        responseUrl,
+        expectedOrigin,
+      });
+      if (validation.ok) return true;
+      lastError = new Error(validation.reason);
+      if (validation.reason !== lastReportedReason) {
+        lastReportedReason = validation.reason;
+        reportSurfaceStage('readiness_probe_waiting', {
+          service: options.kind || 'unknown',
+          reason: validation.reason,
+        });
       }
-      lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
+      const reason = error?.name === 'AbortError' ? 'request_timeout' : 'request_failed';
+      if (reason !== lastReportedReason) {
+        lastReportedReason = reason;
+        reportSurfaceStage('readiness_probe_waiting', {
+          service: options.kind || 'unknown',
+          reason,
+        });
+      }
     }
     await sleep(intervalMs);
   }
@@ -199,15 +224,27 @@ async function waitForUrl(url, options = {}) {
 }
 
 async function waitForServices() {
-  await waitForUrl(`${engineBaseUrl}/health`, { timeoutMs: 120000 });
-  await waitForUrl(`${adminBaseUrl}/login`, { timeoutMs: 120000 });
-  await waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000 });
+  await Promise.all([
+    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: 120000, kind: 'engine' })
+      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
+    waitForUrl(`${adminBaseUrl}/login`, { timeoutMs: 120000, kind: 'admin', expectedOrigin: new URL(adminBaseUrl).origin })
+      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'admin' })),
+    waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000, kind: 'web' })
+      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'web' })),
+  ]);
 }
 
 async function ensureCoreServicesStarted() {
   if (!coreServicesStartPromise) {
     coreServicesStartPromise = cliApi()
-      .then(({ shellStart }) => shellStart(['engine', 'admin', 'web'], { mode: 'start' }))
+      .then(async ({ shellStart }) => {
+        const results = await shellStart(['engine', 'admin', 'web'], { mode: 'start' });
+        const failures = results.filter((item) => !['started', 'already_running'].includes(item.status));
+        if (failures.length > 0) {
+          throw new Error(`核心服务启动失败：${failures.map((item) => `${item.id}:${item.status}`).join(', ')}`);
+        }
+        return results;
+      })
       .catch((error) => {
         coreServicesStartPromise = null;
         throw error;
@@ -222,13 +259,19 @@ async function isAdminLoggedIn() {
     const cookieHeader = cookies
       .map((cookie) => `${cookie.name}=${cookie.value}`)
       .join('; ');
-    const response = await fetchWithTimeout(`${adminBaseUrl}/api/auth/session`, 2000, {
-      headers: cookieHeader ? { Cookie: cookieHeader } : undefined,
-    });
+    const { response, body } = await fetchTextWithTimeout(
+      net.fetch.bind(net),
+      `${adminBaseUrl}/api/auth/session`,
+      2000,
+      {
+        cache: 'no-store',
+        headers: cookieHeader ? { Cookie: cookieHeader } : undefined,
+      },
+    );
     if (!response.ok) {
       return false;
     }
-    const payload = await response.json().catch(() => ({}));
+    const payload = JSON.parse(body || '{}');
     return payload?.user?.role === 'ADMIN' || Boolean(payload?.user?.email);
   } catch {
     return false;
@@ -298,11 +341,21 @@ function errorDataUrl(error) {
   return startupDataUrl(`启动未完成：${error?.message || error || '未知错误'}。请从托盘查看服务状态或运行 v8os doctor。`);
 }
 
+function reportSurfaceStage(stage, details = {}) {
+  console.log('[v8os-shell] surface', JSON.stringify({ stage, ...details }));
+}
+
 function isLocalProductSurface(url) {
-  return String(url || '').startsWith(webBaseUrl) || String(url || '').startsWith(adminBaseUrl);
+  try {
+    const origin = new URL(String(url || '')).origin;
+    return origin === new URL(webBaseUrl).origin || origin === new URL(adminBaseUrl).origin;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleSurfaceRecovery(reason, targetUrl = '') {
+  shellControl?.setSurfaceStatus({ surfaceReady: false });
   if (quitting || !mainWindow || mainWindow.isDestroyed() || surfaceRecoveryTimer) return;
   const now = Date.now();
   surfaceRecoveryTimes = surfaceRecoveryTimes.filter((timestamp) => now - timestamp < SURFACE_RECOVERY_WINDOW_MS);
@@ -327,13 +380,24 @@ function scheduleSurfaceRecovery(reason, targetUrl = '') {
 
 async function loadInitialSurface() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  shellControl?.setSurfaceStatus({ surfaceReady: false });
+  reportSurfaceStage('starting_core_services');
   try {
     await ensureCoreServicesStarted();
+    reportSurfaceStage('waiting_for_readiness');
     await waitForServices();
+    reportSurfaceStage('core_services_ready');
     const loggedIn = await isAdminLoggedIn();
     coreServicesReady = true;
     const defaultChatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
     const targetUrl = pendingSurfaceUrl || (loggedIn ? defaultChatUrl : `${adminBaseUrl}/login`);
+    const expectedSurfaceKind = classifyProductSurface({
+      coreServicesReady: true,
+      loadedUrl: targetUrl,
+      webBaseUrl,
+      adminBaseUrl,
+    });
+    reportSurfaceStage('loading_product_surface', { expectedSurfaceKind });
     pendingSurfaceUrl = null;
     let navigationError = null;
     const loaded = await loadUrlSafely(
@@ -345,8 +409,12 @@ async function loadInitialSurface() {
         () => mainWindow.loadURL(errorDataUrl(navigationError)),
         (fallbackError) => console.error('[v8os-shell] failed to show startup error surface', fallbackError),
       );
+    } else if (loaded) {
+      reportSurfaceStage('product_navigation_completed', { expectedSurfaceKind });
     }
   } catch (error) {
+    reportSurfaceStage('startup_failed', { reason: error?.message || String(error) });
+    shellControl?.setSurfaceStatus({ surfaceReady: false });
     await loadUrlSafely(
       () => mainWindow.loadURL(errorDataUrl(error)),
       (fallbackError) => console.error('[v8os-shell] failed to show startup error surface', fallbackError),
@@ -607,10 +675,6 @@ function createMainWindow() {
       sandbox: false,
     },
   });
-  void loadUrlSafely(
-    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web...')),
-    (error) => console.error('[v8os-shell] failed to show startup surface', error),
-  );
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
@@ -624,21 +688,66 @@ function createMainWindow() {
   mainWindow.on('restore', emitWindowState);
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (details?.reason === 'clean-exit') return;
+    shellControl?.setSurfaceStatus({ surfaceReady: false });
     scheduleSurfaceRecovery(`renderer ${details?.reason || 'gone'} (${details?.exitCode ?? 'unknown'})`, mainWindow?.webContents.getURL());
   });
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 || !isLocalProductSurface(validatedUrl)) return;
+    shellControl?.setSurfaceStatus({ surfaceReady: false });
     scheduleSurfaceRecovery(`load ${errorCode}: ${errorDescription}`, validatedUrl);
   });
   mainWindow.webContents.on('did-finish-load', () => {
-    if (!isLocalProductSurface(mainWindow?.webContents.getURL())) return;
-    if (surfaceStabilityTimer) clearTimeout(surfaceStabilityTimer);
-    surfaceStabilityTimer = setTimeout(() => {
-      surfaceRecoveryTimes = [];
-      surfaceStabilityTimer = null;
-    }, 15_000);
+    const contents = mainWindow?.webContents;
+    const loadedUrl = contents?.getURL() || '';
+    const surfaceKind = classifyProductSurface({
+      coreServicesReady,
+      loadedUrl,
+      webBaseUrl,
+      adminBaseUrl,
+    });
+    if (!surfaceKind || !contents) {
+      shellControl?.setSurfaceStatus({ surfaceReady: false });
+      reportSurfaceStage('surface_loaded', { surfaceKind: null, domReady: false });
+      return;
+    }
+    void verifyProductSurfaceDom(
+      (script) => contents.executeJavaScript(script, true),
+      surfaceKind,
+    ).then((domReady) => {
+      if (contents.isDestroyed() || mainWindow?.webContents !== contents) return;
+      const currentUrl = contents.getURL() || '';
+      const currentSurfaceKind = classifyProductSurface({
+        coreServicesReady,
+        loadedUrl: currentUrl,
+        webBaseUrl,
+        adminBaseUrl,
+      });
+      const surfaceReady = domReady && currentSurfaceKind === surfaceKind && currentUrl === loadedUrl;
+      shellControl?.setSurfaceStatus({
+        surfaceReady,
+        surfaceKind: surfaceReady ? surfaceKind : null,
+      });
+      reportSurfaceStage('surface_loaded', {
+        surfaceKind: surfaceReady ? surfaceKind : null,
+        domReady: surfaceReady,
+      });
+      if (!surfaceReady) {
+        scheduleSurfaceRecovery('product DOM marker missing', currentUrl);
+        return;
+      }
+      if (surfaceStabilityTimer) clearTimeout(surfaceStabilityTimer);
+      surfaceStabilityTimer = setTimeout(() => {
+        surfaceRecoveryTimes = [];
+        surfaceStabilityTimer = null;
+      }, 15_000);
+    });
   });
-  loadInitialSurface();
+  void loadUrlSafely(
+    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web...')),
+    (error) => console.error('[v8os-shell] failed to show startup surface', error),
+  ).finally(() => {
+    void loadInitialSurface();
+  });
 }
 
 ipcMain.on('v8os-shell:minimize', () => {

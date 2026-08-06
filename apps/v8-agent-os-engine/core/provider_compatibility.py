@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+import re
+from typing import Any, Dict, Iterable
+from urllib.parse import quote, quote_plus
 
 from core.reasoning_payload_contract import REASONING_KEYS, SIGNATURE_KEYS
 
@@ -57,9 +59,49 @@ def install_provider_compatibility_patches() -> None:
     _PATCHED = True
 
 
-def normalize_provider_error(exc: Exception, *, provider: str | None = None, model: str | None = None) -> Dict[str, Any]:
-    message = str(exc or "").strip() or "Unknown provider error"
-    lower = message.lower()
+def _redact_provider_error_message(message: Any, *, sensitive_values: Iterable[Any] | None = None) -> str:
+    redacted = str(message or "").strip()
+    sensitive_variants: set[str] = set()
+    for item in sensitive_values or ():
+        value = str(item or "")
+        if len(value) < 4:
+            continue
+        sensitive_variants.update(
+            {
+                value,
+                quote(value),
+                quote(value, safe=""),
+                quote_plus(value),
+            }
+        )
+    for value in sorted(sensitive_variants, key=len, reverse=True):
+        redacted = redacted.replace(value, "[redacted]")
+    patterns = (
+        (r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic)\s+)[^\s\"',}\]]+", r"\1[redacted]"),
+        (r"(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passphrase|secret|cookie)[\"']?\s*[:=]\s*[\"']?)[^\s\"',}&\]]+", r"\1[redacted]"),
+        (r"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|signature|sig)=)[^&#\s]+", r"\1[redacted]"),
+        (r"(?i)([?&][A-Za-z0-9._~-]+)=([^&#\s\"']+)", r"\1=[redacted]"),
+        (r"(?i)(https?://[^\s#]+#)[^\s\"']+", r"\1[redacted]"),
+        (r"(?i)\b(?:sk|rk|pk|xox[abprs])-[-A-Za-z0-9_]{8,}\b", "[redacted]"),
+        (r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@", r"\1[redacted]@"),
+    )
+    for pattern, replacement in patterns:
+        redacted = re.sub(pattern, replacement, redacted)
+    return redacted
+
+
+def normalize_provider_error(
+    exc: Exception,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    sensitive_values: Iterable[Any] | None = None,
+) -> Dict[str, Any]:
+    raw_message = str(exc or "").strip() or "Unknown provider error"
+    lower = raw_message.lower()
+    supplied_sensitive_values = tuple(
+        str(item or "") for item in sensitive_values or () if len(str(item or "")) >= 4
+    )
 
     code = "unknown_provider_error"
     retryable = False
@@ -119,6 +161,33 @@ def normalize_provider_error(exc: Exception, *, provider: str | None = None, mod
         code = "content_policy_block"
         user_action = "请求触发了供应商安全策略，请调整输入。"
 
+    safe_messages = {
+        "auth_error": "Provider authentication failed.",
+        "context_window_overflow": "Provider rejected the request because the context window was exceeded.",
+        "rate_limit": "Provider rate limit was reached.",
+        "quota_exceeded": "Provider quota was exceeded.",
+        "timeout": "Provider request timed out.",
+        "provider_unavailable": "Provider is temporarily unavailable.",
+        "capability_mismatch": "Provider or model capability does not match this request.",
+        "invalid_request": "Provider rejected the request parameters or model configuration.",
+        "content_policy_block": "Provider blocked the request under its content policy.",
+        "unknown_provider_error": "Provider request failed.",
+    }
+    redacted_message = _redact_provider_error_message(
+        raw_message,
+        sensitive_values=supplied_sensitive_values,
+    )
+    message = safe_messages.get(code, "Provider request failed.")
+    if (
+        not supplied_sensitive_values
+        and redacted_message
+        and redacted_message == raw_message
+        and len(redacted_message) <= 160
+        and code != "unknown_provider_error"
+    ):
+        # Preserve a short non-secret provider diagnostic only after the
+        # credential-aware scrubber has found nothing to remove.
+        message = redacted_message
     return {
         "code": code,
         "provider": provider or "unknown",
@@ -127,6 +196,3 @@ def normalize_provider_error(exc: Exception, *, provider: str | None = None, mod
         "message": message,
         "userAction": user_action,
     }
-
-
-install_provider_compatibility_patches()

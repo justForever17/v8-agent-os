@@ -32,7 +32,6 @@ from erc.models import RuntimeSource
 from erc.run_service import run_service
 from erc.runtime_context import get_runtime_context
 from erc.workflow_ledger import workflow_ledger_service
-from runtimes.chat.runtime import chat_runtime
 from runtimes.network_supervisor.compat_ingress_filter import get_recent_compat_ingress_events
 from runtimes.network_supervisor.models import (
     NetworkEnvelope,
@@ -2297,7 +2296,7 @@ class NetworkSupervisorService:
         aggregated_text = ""
         last_progress_at = 0.0
         try:
-            async for event in chat_runtime.stream_legacy_events(request, transport="network_supervisor"):
+            async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_supervisor"):
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "connected":
                     child_run_id = str(event.get("run_id") or "").strip() or None
@@ -2397,3 +2396,7 @@ class NetworkSupervisorService:
 
 
 network_supervisor_service = NetworkSupervisorService()
+def _get_chat_runtime():
+    from runtimes.chat.runtime import chat_runtime
+
+    return chat_runtime

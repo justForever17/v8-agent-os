@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+from urllib.parse import quote, quote_plus
+
+import pytest
 
 from core.model_connection_tester import ModelConnectionTester
+from core.observability_db import ObservabilityDatabaseManager
 
 
 class _FakeChatClient:
@@ -304,3 +309,64 @@ def test_openai_failure_does_not_retry_a_guessed_anthropic_route(monkeypatch):
     assert result["error"]["code"] != "protocol_mismatch"
     assert result["nativeAnthropicProbe"] is None
     assert result["recommendedApiStandard"] is None
+
+
+@pytest.mark.parametrize("leak_surface", ["raw", "quote", "quote_plus", "header", "query"])
+def test_provider_error_never_exposes_supplied_key_in_response_or_health_db(
+    monkeypatch,
+    tmp_path,
+    leak_surface,
+):
+    tester = ModelConnectionTester()
+    api_key = "opaque/key+with space=value"
+    encoded = quote(api_key)
+    fully_encoded = quote(api_key, safe="")
+    plus_encoded = quote_plus(api_key)
+    leaked_value = {
+        "raw": api_key,
+        "quote": encoded,
+        "quote_plus": plus_encoded,
+        "header": f"Authorization: Bearer {api_key}",
+        "query": f"https://provider.example.test/v1?api_key={plus_encoded}",
+    }[leak_surface]
+    meta = {
+        "model_id": "model-a",
+        "model_ref": "provider::model-a",
+        "provider_id": "provider",
+        "provider_name": "Provider",
+        "base_url": "https://provider.example.test/v1",
+        "api_key": api_key,
+        "api_standard": "openai",
+        "runtime_ready": True,
+        "effective_capability_matrix": {},
+        "provider_record": {"id": "provider", "type": "API", "apiKey": api_key},
+        "model_record": {"type": "TEXT"},
+    }
+    health_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+
+    monkeypatch.setattr("core.model_connection_tester.db", health_db)
+    monkeypatch.setattr(tester, "_resolve_metadata", lambda *_args, **_kwargs: meta)
+    monkeypatch.setattr(tester, "_probe_local_capability", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tester,
+        "_test_chat_model",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(f"401 unauthorized: {leaked_value}")),
+    )
+
+    result = tester.test_model_connection(model_id="model-a", provider_id="provider")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "auth_error"
+    assert result["error"]["message"] == "Provider authentication failed."
+    response_payload = json.dumps(result, ensure_ascii=False)
+    with health_db.get_connection() as conn:
+        health_row = conn.execute(
+            "SELECT error_code, error_message, detail_json FROM provider_health_logs"
+        ).fetchone()
+    assert health_row is not None
+    assert health_row["error_code"] == "auth_error"
+    assert health_row["error_message"] == "Provider authentication failed."
+    persisted_payload = json.dumps(dict(health_row), ensure_ascii=False)
+    for secret_variant in {api_key, encoded, fully_encoded, plus_encoded}:
+        assert secret_variant not in response_payload
+        assert secret_variant not in persisted_payload

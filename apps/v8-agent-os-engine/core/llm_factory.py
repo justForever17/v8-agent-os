@@ -47,7 +47,10 @@ from core.model_thinking_control import (
     resolve_thinking_control_for_metadata,
 )
 from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oauth_credential
-from core.provider_compatibility import normalize_provider_error
+from core.provider_compatibility import (
+    install_provider_compatibility_patches,
+    normalize_provider_error,
+)
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 from erc.runtime_context import get_runtime_context
 from langchain_core.embeddings import Embeddings
@@ -68,6 +71,42 @@ def _safe_log_text(value: Any, *, limit: int = 1200) -> str:
         return text
     except UnicodeEncodeError:
         return text.encode(encoding, errors="backslashreplace").decode(encoding, errors="replace")
+
+
+def _normalized_auth_contract(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {"type", "header", "scheme", "query", "preset", "path"}
+    return {
+        str(key): str(item or "").strip()
+        for key, item in value.items()
+        if str(key) in allowed and str(item or "").strip()
+    }
+
+
+def _credential_transport(
+    api_key: str,
+    auth_contract: Any,
+    *,
+    default_header: str,
+    default_scheme: str,
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    contract = _normalized_auth_contract(auth_contract)
+    auth_type = str(contract.get("type") or "api_key").strip().lower()
+    if auth_type == "none":
+        return {}, {}
+    if auth_type != "api_key":
+        return {}, {}
+    credential = str(api_key or "")
+    if not credential:
+        return {}, {}
+    query_name = str(contract.get("query") or "").strip()
+    if query_name:
+        return {}, {query_name: credential}
+    header_name = str(contract.get("header") or default_header).strip()
+    scheme = str(contract.get("scheme") or (default_scheme if not contract.get("header") else "")).strip()
+    header_value = f"{scheme} {credential}".strip() if scheme else credential
+    return ({header_name: header_value} if header_name else {}), {}
 
 
 def _extract_observed_token_limit(error_text: str) -> int | None:
@@ -224,7 +263,7 @@ def parse_rerank_response_payload(payload: Dict[str, Any], documents: List[str])
 
 
 class OpenAICompatibleEmbedding(BaseEmbedding):
-    def __init__(self, model_name: str, api_key: str, base_url: str = None, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "embedding", capability_class: str = "embedding"):
+    def __init__(self, model_name: str, api_key: str, base_url: str = None, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "embedding", capability_class: str = "embedding", auth_contract: Dict[str, Any] | None = None):
         self.model_name = model_name
         self.api_key = api_key
         self.max_tokens = int(max_tokens) if max_tokens else None
@@ -233,6 +272,12 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         self.provider_name = provider_name or provider_id
         self.role = role
         self.capability_class = capability_class
+        self.auth_headers, self.auth_query = _credential_transport(
+            api_key,
+            auth_contract,
+            default_header="Authorization",
+            default_scheme="Bearer",
+        )
 
     def _observed_limit_key(self) -> str:
         return "|".join([str(self.provider_id or ""), str(self.endpoint or ""), str(self.model_name or ""), str(self.role or "embedding")])
@@ -326,10 +371,7 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
             )
         original_texts = list(texts)
         texts = [self._truncate_text(t) for t in original_texts]
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = {**self.auth_headers, "Content-Type": "application/json"}
         payload = {
             "model": self.model_name,
             "input": texts,
@@ -337,7 +379,10 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         }
         # In an async context, this synchronous request might block. 
         # But for Langchain compatibility, standard embed_documents often remains sync.
-        res = requests.post(self.endpoint, json=payload, headers=headers)
+        request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers}
+        if self.auth_query:
+            request_kwargs["params"] = self.auth_query
+        res = requests.post(self.endpoint, **request_kwargs)
         if res.status_code != 200:
             observed_limit = _extract_observed_token_limit(res.text)
             current_limit = self._effective_max_tokens()
@@ -349,7 +394,10 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
                 retry_payload = dict(payload)
                 retry_payload["input"] = retry_texts
                 retry_started = time.perf_counter()
-                retry_res = requests.post(self.endpoint, json=retry_payload, headers=headers)
+                retry_kwargs: Dict[str, Any] = {"json": retry_payload, "headers": headers}
+                if self.auth_query:
+                    retry_kwargs["params"] = self.auth_query
+                retry_res = requests.post(self.endpoint, **retry_kwargs)
                 if retry_res.status_code == 200:
                     res = retry_res
                     texts = retry_texts
@@ -494,7 +542,7 @@ class EmbeddingSimilarityReranker(BaseReranker):
 
 
 class RestReranker(BaseReranker):
-    def __init__(self, model_name: str, api_key: str, base_url: str, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "reranker", capability_class: str = "reranker", api_flavor: str = "generic"):
+    def __init__(self, model_name: str, api_key: str, base_url: str, max_tokens: int = None, provider_id: str = "", provider_name: str = "", role: str = "reranker", capability_class: str = "reranker", api_flavor: str = "generic", auth_contract: Dict[str, Any] | None = None):
         self.model_name = model_name
         self.api_key = api_key
         self.max_tokens = int(max_tokens) if max_tokens else None
@@ -504,6 +552,12 @@ class RestReranker(BaseReranker):
         self.provider_name = provider_name or provider_id
         self.role = role
         self.capability_class = capability_class
+        self.auth_headers, self.auth_query = _credential_transport(
+            api_key,
+            auth_contract,
+            default_header="Authorization",
+            default_scheme="Bearer",
+        )
 
     def _observed_query_limit_key(self) -> str:
         return "|".join([str(self.provider_id or ""), str(self.model_name or ""), str(self.role or "reranker")])
@@ -593,7 +647,10 @@ class RestReranker(BaseReranker):
 
     def _post_rerank(self, endpoint: str, payload: dict[str, Any], headers: dict[str, str]):
         import requests
-        return requests.post(endpoint, json=payload, headers=headers, timeout=30)
+        request_kwargs: Dict[str, Any] = {"json": payload, "headers": headers, "timeout": 30}
+        if self.auth_query:
+            request_kwargs["params"] = self.auth_query
+        return requests.post(endpoint, **request_kwargs)
 
     def rerank(self, query: str, documents: list[str], top_k: int = 3) -> list[Dict[str, Any]]:
         import requests
@@ -610,10 +667,7 @@ class RestReranker(BaseReranker):
             model_id=self.model_name,
         )
             
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = {**self.auth_headers, "Content-Type": "application/json"}
         trimmed_query, trimmed_documents, limit_meta = self._prepare_payload_documents(query, documents)
         payload = {
             "model": self.model_name,
@@ -873,6 +927,11 @@ class LLMFactory:
                 "provider_record": p_conf,
                 "model_record": meta,
                 "endpoint_binding": endpoint_binding,
+                "auth_contract": dict(
+                    endpoint_binding.get("authContract")
+                    or p_conf.get("authContract")
+                    or {}
+                ),
                 "wire_protocol": str(endpoint_binding.get("wireProtocol") or endpoint_binding.get("wire_protocol") or "").strip(),
                 "provider_hosted_tools": normalize_provider_hosted_tools(endpoint_binding.get("providerHostedTools")),
                 "base_url": t_base_url,
@@ -895,6 +954,11 @@ class LLMFactory:
                 "project_id": oauth_resolution.get("projectId") or "",
                 "runtime_ready": runtime_ready,
                 "runtime_unsupported_reason": runtime_unsupported_reason,
+                "provider_enabled": not (
+                    p_conf.get("is_enabled") is False
+                    or p_conf.get("isEnabled") is False
+                ),
+                "model_enabled": meta.get("isEnabled") is not False,
                 "provider_adapter": provider_adapter,
                 "provider_adapter_label": provider_adapter_label,
                 "global_temperature": normalize_config_temperature(meta.get("temperature")),
@@ -966,6 +1030,21 @@ class LLMFactory:
         timeouts = dict(meta.get("timeouts") or {})
         return timeouts.get("request") or timeouts.get("read") or None
 
+    @staticmethod
+    def _assert_runtime_enabled(meta: Dict[str, Any], model_id: str) -> None:
+        if bool(meta.get("provider_enabled", True)) and bool(meta.get("model_enabled", True)):
+            return
+        disabled_scope = "provider" if not bool(meta.get("provider_enabled", True)) else "model"
+        raise V8LLMCapabilityMismatchError(
+            code=f"{disabled_scope}_disabled",
+            message="当前模型配置已明确禁用，运行时拒绝创建请求客户端。",
+            provider=str(meta.get("provider_name") or meta.get("provider_id") or "unknown"),
+            model=str(meta.get("model_id") or model_id),
+            retryable=False,
+            user_action="请在模型控制台重新启用该配置，或切换到可用模型。",
+            details={"disabledScope": disabled_scope},
+        )
+
     @classmethod
     def _build_openai_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         final_kwargs: Dict[str, Any] = dict(model=model_id)
@@ -976,14 +1055,31 @@ class LLMFactory:
             final_kwargs["organization"] = meta["organization_id"]
         if meta.get("proxy"):
             final_kwargs["openai_proxy"] = meta["proxy"]
-        if meta.get("extra_headers"):
-            final_kwargs["default_headers"] = meta["extra_headers"]
+        default_headers = dict(meta.get("extra_headers") or {})
 
         timeout = cls._extract_timeout(meta, **kwargs)
         if timeout is not None:
             final_kwargs["timeout"] = timeout
 
-        final_kwargs["api_key"] = meta.get("api_key") or "sk-dummy"
+        credential = str(meta.get("api_key") or "")
+        auth_headers, auth_query = _credential_transport(
+            credential,
+            meta.get("auth_contract"),
+            default_header="Authorization",
+            default_scheme="Bearer",
+        )
+        native_authorization = (
+            not auth_query
+            and set(auth_headers) == {"Authorization"}
+            and auth_headers.get("Authorization") == f"Bearer {credential}"
+        )
+        final_kwargs["api_key"] = credential if native_authorization else "sk-dummy"
+        if not native_authorization:
+            default_headers.update(auth_headers)
+        if default_headers:
+            final_kwargs["default_headers"] = default_headers
+        if auth_query:
+            final_kwargs["default_query"] = auth_query
 
         if "temperature" in kwargs and kwargs.get("temperature") is not None:
             final_kwargs["temperature"] = kwargs["temperature"]
@@ -1034,17 +1130,33 @@ class LLMFactory:
 
     @classmethod
     def _build_anthropic_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        credential = str(meta.get("api_key") or "")
+        auth_headers, auth_query = _credential_transport(
+            credential,
+            meta.get("auth_contract"),
+            default_header="x-api-key",
+            default_scheme="",
+        )
+        if auth_query:
+            raise ValueError("Anthropic runtime does not support query-string credential transport")
+        native_api_key = (
+            set(auth_headers) == {"x-api-key"}
+            and auth_headers.get("x-api-key") == credential
+        )
         final_kwargs: Dict[str, Any] = {
             "model_name": model_id,
-            "api_key": meta.get("api_key") or "sk-dummy",
+            "api_key": credential if native_api_key else "sk-dummy",
         }
 
         if meta.get("base_url"):
             final_kwargs["base_url"] = meta["base_url"]
         if meta.get("proxy"):
             final_kwargs["anthropic_proxy"] = meta["proxy"]
-        if meta.get("extra_headers"):
-            final_kwargs["default_headers"] = meta["extra_headers"]
+        default_headers = dict(meta.get("extra_headers") or {})
+        if not native_api_key:
+            default_headers.update(auth_headers)
+        if default_headers:
+            final_kwargs["default_headers"] = default_headers
 
         timeout = cls._extract_timeout(meta, **kwargs)
         if timeout is not None:
@@ -1087,9 +1199,16 @@ class LLMFactory:
 
     @classmethod
     def _build_gemini_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        auth_contract = _normalized_auth_contract(meta.get("auth_contract"))
+        auth_type = str(auth_contract.get("type") or "api_key").strip().lower()
+        if auth_type == "api_key" and (
+            auth_contract.get("header")
+            or str(auth_contract.get("query") or "key").strip() != "key"
+        ):
+            raise ValueError("Gemini runtime only supports its native 'key' query credential transport")
         final_kwargs = {
             "model": model_id,
-            "google_api_key": meta.get("api_key") or "",
+            "google_api_key": "" if auth_type == "none" else meta.get("api_key") or "",
         }
         if meta.get("base_url"):
             # langchain-google-genai forwards client_options to google-genai's
@@ -1214,6 +1333,10 @@ class LLMFactory:
         2. Global models.json `temperature` / `maxTokens`
         3. Fallback to `api_key="sk-dummy"` if missing so as not to immediately crash initialization.
         """
+        # The compatibility patch imports the provider-specific LangChain
+        # adapters. Keep startup lean, but make every direct factory caller
+        # safe even when the post-startup prewarm has not completed yet.
+        install_provider_compatibility_patches()
         role = str(kwargs.pop("_role", "") or "")
         request_kind = str(kwargs.pop("_request_kind", "") or "chat")
         capability_class_override = str(kwargs.pop("_capability_class", "") or "")
@@ -1251,6 +1374,7 @@ class LLMFactory:
                 ),
             )
 
+        cls._assert_runtime_enabled(meta, model_id)
         if meta.get("oauth_error"):
             raise RuntimeError(str(meta["oauth_error"]))
         if not bool(meta.get("runtime_ready", True)):
@@ -1375,11 +1499,13 @@ class LLMFactory:
         meta = cls._resolve_model_metadata(model_id)
         if not meta.get("is_found"):
             raise ValueError(f"Embedding model '{model_id}' is not mapped in models.json")
+        cls._assert_runtime_enabled(meta, model_id)
         if meta.get("oauth_error"):
             raise ValueError(str(meta["oauth_error"]))
             
         api_key = meta.get("api_key")
-        if not api_key:
+        auth_type = str(_normalized_auth_contract(meta.get("auth_contract")).get("type") or "api_key").lower()
+        if not api_key and auth_type != "none":
             raise ValueError(f"Could not resolve API key for embedding model '{model_id}'")
             
         role = str(kwargs.pop("role", "") or "embedding")
@@ -1394,6 +1520,7 @@ class LLMFactory:
             provider_name=str(meta.get("provider_name") or meta.get("provider_id") or ""),
             role=role,
             capability_class=capability_class,
+            auth_contract=dict(meta.get("auth_contract") or {}),
         )
 
     @classmethod
@@ -1404,11 +1531,13 @@ class LLMFactory:
         meta = cls._resolve_model_metadata(model_id)
         if not meta.get("is_found"):
             raise ValueError(f"Reranker model '{model_id}' is not mapped in models.json")
+        cls._assert_runtime_enabled(meta, model_id)
         if meta.get("oauth_error"):
             raise ValueError(str(meta["oauth_error"]))
             
         api_key = meta.get("api_key")
-        if not api_key:
+        auth_type = str(_normalized_auth_contract(meta.get("auth_contract")).get("type") or "api_key").lower()
+        if not api_key and auth_type != "none":
             raise ValueError(f"Could not resolve API key for reranker model '{model_id}'")
         role = str(kwargs.pop("role", "") or "reranker")
         capability_class = str(kwargs.pop("capability_class", "") or meta.get("capability_class") or "reranker")
@@ -1447,6 +1576,7 @@ class LLMFactory:
             role=role,
             capability_class=capability_class,
             api_flavor=str(kwargs.pop("api_flavor", "") or meta.get("rerank_api_flavor") or "generic"),
+            auth_contract=dict(meta.get("auth_contract") or {}),
         )
 
     @classmethod

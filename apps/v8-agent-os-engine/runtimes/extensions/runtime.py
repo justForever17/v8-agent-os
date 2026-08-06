@@ -4,10 +4,12 @@ import asyncio
 import concurrent.futures
 import contextvars
 import hashlib
+import importlib
 import json
 import logging
 import os
 import re
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -16,10 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.database import db
-from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import parse_background_json_object, sanitize_background_model_output
-from core.llm_factory import llm_factory
-from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_control_plane import model_control_plane
 from core.tools.plugin_cli import plugin_cli
 from core.skills_install_service import get_skill_dependency_policy
@@ -33,12 +32,37 @@ from erc.event_bus import event_bus
 from erc.models import RuntimeSource
 from erc.runtime_context import get_runtime_context
 from erc.runtime_registry import runtime_registry
-from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.extensions.skills.lexicons import get_extension_lexicon_registry
 from runtimes.extensions.skills.loader import SkillLoader
 
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyMcpManager:
+    def __getattr__(self, name: str):
+        manager = importlib.import_module("runtimes.extensions.mcp.client").mcp_manager
+        return getattr(manager, name)
+
+
+mcp_manager = _LazyMcpManager()
+
+
+def __getattr__(name: str):
+    if name == "select_family_keys_with_llm":
+        from core.llm_tree_prefilter import select_family_keys_with_llm
+
+        return select_family_keys_with_llm
+    raise AttributeError(name)
+
+
+def _get_family_selector():
+    patched = globals().get("select_family_keys_with_llm")
+    if patched is not None:
+        return patched
+    from core.llm_tree_prefilter import select_family_keys_with_llm
+
+    return select_family_keys_with_llm
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.-]+|[\u4e00-\u9fff]{2,}")
@@ -1918,6 +1942,7 @@ class ExtensionsRuntimeService:
         self._skills_inventory_watcher_task: asyncio.Task | None = None
         self._mcp_inventory_watcher_task: asyncio.Task | None = None
         self._refresh_lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
         self._route_cache: dict[str, tuple[float, ExtensionRouteBundle]] = {}
         self._route_cache_ttl_seconds = 20.0
         self._last_skill_inventory_change: dict[str, Any] | None = None
@@ -2377,6 +2402,9 @@ class ExtensionsRuntimeService:
         )
 
         def _invoke() -> dict[str, Any] | None:
+            from core.background_context_guard import prepare_background_model_messages
+            from core.llm_factory import llm_factory
+
             model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
             prepared = prepare_background_model_messages(
                 system_prompt=(
@@ -2558,17 +2586,35 @@ class ExtensionsRuntimeService:
         return decorated
 
     def _persist_cache(self) -> None:
-        if self._cached_catalog is None or self._cached_health is None:
+        payload = self._cache_payload_snapshot()
+        if payload is None:
             return
-        cache_path = self._cache_path()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
+        self._persist_cache_payload(payload)
+
+    def _cache_payload_snapshot(self) -> dict[str, Any] | None:
+        if self._cached_catalog is None or self._cached_health is None:
+            return None
+        return {
             "version": 1,
             "updatedAt": self._last_refresh_at or self._now_iso(),
-            "catalog": self._cached_catalog,
-            "health": self._cached_health,
+            "catalog": json.loads(json.dumps(self._cached_catalog, ensure_ascii=False)),
+            "health": json.loads(json.dumps(self._cached_health, ensure_ascii=False)),
         }
-        cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _persist_cache_payload(self, payload: dict[str, Any]) -> None:
+        cache_path = self._cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temp_path, cache_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _load_cache(self) -> bool:
         cache_path = self._cache_path()
@@ -2760,6 +2806,20 @@ class ExtensionsRuntimeService:
             },
         }
 
+    def _build_live_snapshot(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        catalog = self._build_catalog_live()
+        return catalog, self._build_health_live(catalog)
+
+    async def _build_live_snapshot_async(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        snapshot: tuple[dict[str, Any], dict[str, Any]] | None = None
+        for _attempt in range(2):
+            revision_before = self._inventory_revision_key()
+            snapshot = await asyncio.to_thread(self._build_live_snapshot)
+            if revision_before == self._inventory_revision_key():
+                break
+        assert snapshot is not None
+        return snapshot
+
     async def _wait_optional_task(self, task: asyncio.Task | None, *, timeout: float, label: str) -> None:
         if not task:
             return
@@ -2773,6 +2833,7 @@ class ExtensionsRuntimeService:
         *,
         skill_refresh_task: asyncio.Task | None = None,
         mcp_init_task: asyncio.Task | None = None,
+        wait_for_optional_tasks: bool = True,
         force_skill_reload: bool = False,
         force_mcp_reload: bool = False,
         clear_route_cache: bool = True,
@@ -2783,16 +2844,15 @@ class ExtensionsRuntimeService:
             self._last_refresh_error = None
             if force_skill_reload:
                 await asyncio.to_thread(SkillLoader.reload_skills)
-            else:
+            elif wait_for_optional_tasks:
                 await self._wait_optional_task(skill_refresh_task, timeout=12.0, label="SkillLoader")
             if force_mcp_reload:
                 await mcp_manager.cleanup()
                 await mcp_manager.initialize()
-            else:
+            elif wait_for_optional_tasks:
                 await self._wait_optional_task(mcp_init_task, timeout=12.0, label="MCP")
 
-            catalog = self._build_catalog_live()
-            health = self._build_health_live(catalog)
+            catalog, health = await self._build_live_snapshot_async()
             self._cached_catalog = catalog
             self._cached_health = health
             self._startup_state = "ready"
@@ -2802,10 +2862,17 @@ class ExtensionsRuntimeService:
             if clear_route_cache:
                 self._route_cache.clear()
             self._clear_dynamic_family_profile_caches()
-            self._persist_cache()
+            cache_payload = self._cache_payload_snapshot()
+            if cache_payload is not None:
+                await asyncio.to_thread(self._persist_cache_payload, cache_payload)
             return self._decorate_health(health)
 
-    async def _refresh_skill_inventory_if_changed(self, *, reason: str = "watcher") -> dict[str, Any]:
+    async def _refresh_skill_inventory_if_changed(
+        self,
+        *,
+        reason: str = "watcher",
+        refresh_snapshot: bool = True,
+    ) -> dict[str, Any]:
         change = await asyncio.to_thread(SkillLoader.reload_if_changed)
         if not change.get("changed"):
             return change
@@ -2814,7 +2881,8 @@ class ExtensionsRuntimeService:
             "changedAt": self._now_iso(),
             "reason": reason,
         }
-        await self._refresh_runtime_snapshot(clear_route_cache=False)
+        if refresh_snapshot:
+            await self._refresh_runtime_snapshot(clear_route_cache=False)
         print(
             "[ExtensionsRuntime] Skills inventory changed: "
             f"reason={reason}, "
@@ -2865,7 +2933,12 @@ class ExtensionsRuntimeService:
 
         self._skills_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:skills_inventory_watcher")
 
-    async def _refresh_mcp_inventory_if_changed(self, *, reason: str = "watcher") -> dict[str, Any]:
+    async def _refresh_mcp_inventory_if_changed(
+        self,
+        *,
+        reason: str = "watcher",
+        refresh_snapshot: bool = True,
+    ) -> dict[str, Any]:
         change = await mcp_manager.reload_if_changed()
         if not change.get("changed"):
             return change
@@ -2874,7 +2947,8 @@ class ExtensionsRuntimeService:
             "changedAt": self._now_iso(),
             "reason": reason,
         }
-        await self._refresh_runtime_snapshot(clear_route_cache=False)
+        if refresh_snapshot:
+            await self._refresh_runtime_snapshot(clear_route_cache=False)
         self._clear_dynamic_family_profile_caches()
         print(
             "[ExtensionsRuntime] MCP inventory changed: "
@@ -2884,14 +2958,11 @@ class ExtensionsRuntimeService:
         return change
 
     async def refresh_inventory_if_changed(self, *, reason: str = "manual") -> dict[str, Any]:
-        skill_change = await self._refresh_skill_inventory_if_changed(reason=reason)
-        mcp_change = await self._refresh_mcp_inventory_if_changed(reason=reason)
+        skill_change = await self._refresh_skill_inventory_if_changed(reason=reason, refresh_snapshot=False)
+        mcp_change = await self._refresh_mcp_inventory_if_changed(reason=reason, refresh_snapshot=False)
         changed = bool(skill_change.get("changed") or mcp_change.get("changed"))
         if changed:
-            self._cached_catalog = self._build_catalog_live()
-            self._cached_health = self._build_health_live(self._cached_catalog)
-            self._last_refresh_at = self._now_iso()
-            self._persist_cache()
+            await self._refresh_runtime_snapshot(clear_route_cache=False)
         return {
             "changed": changed,
             "skills": skill_change,
@@ -2951,14 +3022,29 @@ class ExtensionsRuntimeService:
         *,
         skill_refresh_task: asyncio.Task | None = None,
         mcp_init_task: asyncio.Task | None = None,
+        wait_for_initial_refresh: bool = True,
+    ) -> None:
+        async with self._start_lock:
+            await self._start_unlocked(
+                skill_refresh_task=skill_refresh_task,
+                mcp_init_task=mcp_init_task,
+                wait_for_initial_refresh=wait_for_initial_refresh,
+            )
+
+    async def _start_unlocked(
+        self,
+        *,
+        skill_refresh_task: asyncio.Task | None = None,
+        mcp_init_task: asyncio.Task | None = None,
+        wait_for_initial_refresh: bool = True,
     ) -> None:
         self._loop = asyncio.get_running_loop()
         if self._cached_catalog is None or self._cached_health is None:
             self._load_cache()
         if self._cached_catalog is None or self._cached_health is None:
-            cold_catalog = self._build_catalog_live()
+            cold_catalog = await asyncio.to_thread(self._build_catalog_live)
             self._cached_catalog = cold_catalog
-            self._cached_health = self._build_health_live(cold_catalog)
+            self._cached_health = await asyncio.to_thread(self._build_health_live, cold_catalog)
         self._startup_state = "refreshing"
         self._snapshot_freshness = "cached" if self._last_refresh_at else "cold"
         self._last_refresh_error = None
@@ -2973,6 +3059,7 @@ class ExtensionsRuntimeService:
                 await self._refresh_runtime_snapshot(
                     skill_refresh_task=skill_refresh_task,
                     mcp_init_task=mcp_init_task,
+                    wait_for_optional_tasks=wait_for_initial_refresh,
                 )
             except Exception as exc:
                 self._startup_state = "error"
@@ -3780,6 +3867,8 @@ class ExtensionsRuntimeService:
             rerank_results: dict[str, tuple[list[str], dict[str, Any]]] = {}
             if rerank_specs:
                 try:
+                    select_family_keys_with_llm = _get_family_selector()
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=len(rerank_specs), thread_name_prefix="v8-ext-route") as executor:
                         future_map = {
                             executor.submit(select_family_keys_with_llm, **kwargs): family_label

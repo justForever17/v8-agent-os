@@ -3,13 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from core.extensions_runtime import extensions_runtime_service
 from core.interprocess_lock import interprocess_file_lock
 from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 
 _MCP_CONFIG_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+class _LazyExtensionsRuntimeService:
+    def __getattr__(self, name: str):
+        from runtimes.extensions.runtime import extensions_runtime_service
+
+        return getattr(extensions_runtime_service, name)
+
+
+extensions_runtime_service = _LazyExtensionsRuntimeService()
 
 
 def _mcp_config_lock_path() -> Path:

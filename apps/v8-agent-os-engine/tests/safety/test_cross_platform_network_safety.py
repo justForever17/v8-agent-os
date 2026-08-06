@@ -115,6 +115,43 @@ class CrossPlatformAndNetworkSafetyTests(unittest.TestCase):
         self.assertEqual(decision.verdict, "review")
         self.assertEqual(decision.risk_code, "unknown_credential_host_http")
 
+    def test_trusted_provider_match_rejects_host_prefix_and_path_prefix_confusion(self):
+        self.assertFalse(
+            safety_guardian._trusted_base_url_matches(
+                "https://api.anthropic.com.evil/v1/messages",
+                "https://api.anthropic.com",
+            )
+        )
+        self.assertFalse(
+            safety_guardian._trusted_base_url_matches(
+                "https://api.example.test/v10/messages",
+                "https://api.example.test/v1",
+            )
+        )
+        self.assertFalse(
+            safety_guardian._trusted_base_url_matches(
+                "https://user@api.example.test/v1/messages",
+                "https://api.example.test/v1",
+            )
+        )
+        self.assertTrue(
+            safety_guardian._trusted_base_url_matches(
+                "https://api.example.test:443/v1/messages",
+                "https://api.example.test/v1",
+            )
+        )
+
+    def test_provider_host_prefix_cannot_receive_bearer_credential(self):
+        decision = safety_guardian.assess_http_request(
+            "POST",
+            "https://api.anthropic.com.evil/v1/messages",
+            headers={"Authorization": "Bearer sk-test1234567890"},
+            body='{"model":"claude-test"}',
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "review")
+        self.assertEqual(decision.risk_code, "unknown_credential_host_http")
+
     def test_normal_web_get_is_allowed(self):
         decision = safety_guardian.assess_http_request(
             "GET",

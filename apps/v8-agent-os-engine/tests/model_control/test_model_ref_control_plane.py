@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from api import platform_routes
 from core.llm_factory import llm_factory
@@ -29,6 +30,29 @@ def _isolate_model_credentials(monkeypatch):
         "_credential_store",
         CredentialRefStore(MemoryCredentialBackend()),
     )
+
+
+def _use_in_memory_model_hub_commit(monkeypatch):
+    def _commit(*, plan, incoming_credential, **_kwargs):
+        provider_patch = dict(plan["providerPatch"])
+        if incoming_credential:
+            provider_patch["api_key"] = incoming_credential
+        mutation = platform_routes.model_control_plane.upsert_provider_model_records(
+            provider_id=str(plan["providerId"]),
+            provider_patch=provider_patch,
+            model_id=str(plan["modelId"]),
+            model_patch=dict(plan["modelPatch"]),
+            source="quick_connect",
+            replace_provider_models=bool(plan.get("replaceProviderModels")),
+        )
+        return {
+            "ok": True,
+            "transactionId": "cfg_txn_test",
+            "ownerId": "test",
+            "config": platform_routes.model_control_plane.get_public_config(dict(mutation.get("config") or {})),
+        }
+
+    monkeypatch.setattr(platform_routes, "_execute_model_hub_connection", _commit)
 
 
 def test_model_ref_roundtrip():
@@ -713,12 +737,25 @@ def test_set_default_model_for_category_infers_type_and_rejects_media(monkeypatc
 def test_platform_model_defaults_endpoint_accepts_model_ref(monkeypatch):
     captured = {}
 
-    def set_default_model_for_category(*, model_ref, category=None):
-        captured["model_ref"] = model_ref
-        captured["category"] = category
-        return {"ok": True, "category": category, "role": "embedding", "modelRef": model_ref}
+    def prepare_model_default(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "state": "ready_to_commit",
+            "transactionId": "cfg_txn_default",
+            "category": kwargs["category"],
+            "role": "embedding",
+        }
 
-    monkeypatch.setattr(platform_routes.model_control_plane, "set_default_model_for_category", set_default_model_for_category)
+    monkeypatch.setattr(platform_routes.config_broker_service, "prepare_model_default", prepare_model_default)
+    monkeypatch.setattr(
+        platform_routes,
+        "_commit_model_admin_transaction",
+        lambda prepared, **_kwargs: {"ok": True, "result": {"role": prepared["role"]}},
+    )
+    config = _layered_default_model_config()
+    config["roles"]["embedding"] = make_model_ref("demo", "embed")
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: config)
 
     result = asyncio.run(
         platform_routes.set_model_default_category(
@@ -727,7 +764,9 @@ def test_platform_model_defaults_endpoint_accepts_model_ref(monkeypatch):
     )
 
     assert result["status"] == "success"
-    assert captured == {"model_ref": make_model_ref("demo", "embed"), "category": "embedding"}
+    assert captured["model_ref"] == make_model_ref("demo", "embed")
+    assert captured["category"] == "embedding"
+    assert captured["owner_id"] == "local-admin-model-hub"
 
 
 def test_role_cards_expose_role_doctor_readiness():
@@ -827,10 +866,11 @@ def test_probe_uses_base_url_models_and_parses_online_response(tmp_path, monkeyp
         def json(self):
             return {"data": [{"id": "online-a"}, {"id": "models/online-b"}]}
 
-    def fake_get(url, headers=None, params=None, timeout=None):
+    def fake_get(url, headers=None, params=None, timeout=None, allow_redirects=None):
         captured["url"] = url
         captured["headers"] = headers or {}
         captured["params"] = params or {}
+        captured["allow_redirects"] = allow_redirects
         return FakeResponse()
 
     monkeypatch.setattr("core.model_provider_catalog.requests.get", fake_get)
@@ -839,6 +879,7 @@ def test_probe_uses_base_url_models_and_parses_online_response(tmp_path, monkeyp
 
     assert captured["url"] == "https://api.example.com/v1/models"
     assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    assert captured["allow_redirects"] is False
     assert result["ok"] is True
     assert result["source"] == "online"
     assert [item["modelId"] for item in result["models"]] == ["online-a", "online-b"]
@@ -871,8 +912,9 @@ def test_probe_honors_explicit_models_path(tmp_path, monkeypatch):
         def json(self):
             return {"data": [{"id": "online-a"}]}
 
-    def fake_get(url, headers=None, params=None, timeout=None):
+    def fake_get(url, headers=None, params=None, timeout=None, allow_redirects=None):
         captured["url"] = url
+        captured["allow_redirects"] = allow_redirects
         return FakeResponse()
 
     monkeypatch.setattr("core.model_provider_catalog.requests.get", fake_get)
@@ -880,6 +922,7 @@ def test_probe_honors_explicit_models_path(tmp_path, monkeypatch):
     result = catalog.probe_provider("demo", credential="sk-test")
 
     assert captured["url"] == "https://api.example.com/v1/open/models"
+    assert captured["allow_redirects"] is False
     assert result["ok"] is True
 
 
@@ -938,7 +981,7 @@ def test_probe_reuses_saved_provider_credential_by_exact_provider(monkeypatch):
     assert source == "stored_provider"
 
 
-def test_probe_reuses_volcengine_credential_by_realm(monkeypatch):
+def test_probe_does_not_reuse_volcengine_credential_by_realm(monkeypatch):
     monkeypatch.setattr(
         platform_routes.model_control_plane,
         "get_config",
@@ -961,8 +1004,8 @@ def test_probe_reuses_volcengine_credential_by_realm(monkeypatch):
         {"id": "volcengine-ark", "name": "Volcengine Ark / Doubao", "credentialRealm": "volcengine_ark"},
     )
 
-    assert credential == "sk-ark"
-    assert source == "stored_provider_realm:volcengine_seedance"
+    assert credential == ""
+    assert source == ""
 
 
 def test_probe_does_not_reuse_credentials_without_matching_realm(monkeypatch):
@@ -990,6 +1033,557 @@ def test_probe_does_not_reuse_credentials_without_matching_realm(monkeypatch):
 
     assert credential == ""
     assert source == ""
+
+
+@pytest.mark.parametrize(
+    ("requested_base_url", "expected_credential"),
+    [
+        ("", "sk-demo"),
+        ("https://other.example/v1", ""),
+    ],
+)
+def test_probe_only_reuses_key_for_the_exact_provider_target(
+    monkeypatch,
+    requested_base_url,
+    expected_credential,
+):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+    }
+    existing_provider = {
+        "name": "Demo",
+        "base_url": "https://api.example.com/v1",
+        "api_standard": "openai",
+        "type": "API",
+        "credential_mode": "apiKey",
+        "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "api_key": "sk-demo",
+    }
+    captured = {}
+
+    class _AllowDecision:
+        @staticmethod
+        def is_block():
+            return False
+
+        @staticmethod
+        def is_review():
+            return False
+
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {"providers": {"demo": {"provider": existing_provider}}},
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "get_provider",
+        lambda provider_id: provider if provider_id == "demo" else None,
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "resolve_probe_target",
+        lambda _provider, base_url="": {
+            "url": f"{base_url or provider['baseUrl']}/models",
+            "baseUrl": base_url or provider["baseUrl"],
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "probe_provider_entry",
+        lambda _provider, credential="", base_url="": captured.update(
+            {"credential": credential, "baseUrl": base_url}
+        )
+        or {"ok": True, "models": []},
+    )
+    monkeypatch.setattr(
+        platform_routes.safety_guardian,
+        "assess_http_request",
+        lambda *_args, **_kwargs: _AllowDecision(),
+    )
+
+    result = asyncio.run(
+        platform_routes.probe_model_provider(
+            {"providerId": "demo", "baseUrl": requested_base_url}
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["credential"] == expected_credential
+    assert result["usedStoredCredential"] is bool(expected_credential)
+
+
+def test_probe_blocks_stored_credential_for_cross_origin_models_url(monkeypatch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "modelsUrl": "https://collector.example.net/models",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+    }
+    existing_provider = {
+        "name": "Demo",
+        "base_url": "https://api.example.com/v1",
+        "api_standard": "openai",
+        "type": "API",
+        "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "api_key": "sk-never-forward",
+    }
+    called = []
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {"providers": {"demo": {"provider": existing_provider}}},
+    )
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: provider)
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "probe_provider_entry",
+        lambda *_args, **_kwargs: called.append(True) or {"ok": True},
+    )
+
+    with pytest.raises(HTTPException) as blocked:
+        asyncio.run(platform_routes.probe_model_provider({"providerId": "demo"}))
+
+    assert blocked.value.status_code == 409
+    assert called == []
+
+
+def test_probe_allows_cross_origin_catalog_preview_without_credential(monkeypatch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "modelsUrl": "https://public-catalog.example.net/models",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+    }
+    captured = {}
+
+    class _AllowDecision:
+        @staticmethod
+        def is_block():
+            return False
+
+        @staticmethod
+        def is_review():
+            return False
+
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: {"providers": {}})
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: provider)
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "probe_provider_entry",
+        lambda _provider, credential="", base_url="": captured.update(
+            {"credential": credential, "baseUrl": base_url}
+        ) or {"ok": True, "models": []},
+    )
+    monkeypatch.setattr(
+        platform_routes.safety_guardian,
+        "assess_http_request",
+        lambda *_args, **_kwargs: _AllowDecision(),
+    )
+
+    result = asyncio.run(platform_routes.probe_model_provider({"providerId": "demo"}))
+    assert result["ok"] is True
+    assert captured["credential"] == ""
+    assert result["usedStoredCredential"] is False
+
+
+def test_probe_allows_credential_target_declared_by_provider_realm_channel(monkeypatch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "modelsUrl": "https://catalog.example.net/v1/models",
+        "credentialRealm": "demo_controlled",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "channels": [
+            {
+                "id": "catalog",
+                "baseUrl": "https://catalog.example.net/v1",
+                "apiStandard": "openai",
+                "wireProtocols": ["openai.responses"],
+            }
+        ],
+    }
+    existing_provider = {
+        "name": "Demo",
+        "base_url": "https://api.example.com/v1",
+        "api_standard": "openai",
+        "type": "API",
+        "credentialRealm": "demo_controlled",
+        "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "channels": provider["channels"],
+        "api_key": "sk-controlled",
+    }
+    captured = {}
+
+    class _AllowDecision:
+        @staticmethod
+        def is_block():
+            return False
+
+        @staticmethod
+        def is_review():
+            return False
+
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {"providers": {"demo": {"provider": existing_provider}}},
+    )
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: provider)
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "probe_provider_entry",
+        lambda _provider, credential="", base_url="": captured.update(
+            {"credential": credential, "baseUrl": base_url}
+        ) or {"ok": True, "models": []},
+    )
+    monkeypatch.setattr(
+        platform_routes.safety_guardian,
+        "assess_http_request",
+        lambda *_args, **_kwargs: _AllowDecision(),
+    )
+
+    result = asyncio.run(platform_routes.probe_model_provider({"providerId": "demo"}))
+    assert result["ok"] is True
+    assert captured["credential"] == "sk-controlled"
+
+
+def test_binding_route_preserves_bounded_source_for_config_broker(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        platform_routes.config_broker_service,
+        "prepare_model_binding",
+        lambda **kwargs: captured.update(kwargs) or {
+            "ok": True,
+            "state": "ready_to_commit",
+            "transactionId": "cfg_txn_binding",
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes,
+        "_commit_model_admin_transaction",
+        lambda *_args, **_kwargs: {"ok": True, "state": "committed"},
+    )
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_public_config",
+        lambda: {"providers": {"provider": {"provider": {}, "models": {"model": {}}}}},
+    )
+
+    result = asyncio.run(
+        platform_routes.upsert_model_binding(
+            {
+                "providerId": "provider",
+                "modelId": "model",
+                "source": "catalog_import",
+            }
+        )
+    )
+    assert result["ok"] is True
+    assert captured["source"] == "catalog_import"
+
+
+def test_reasoning_repair_no_change_skips_config_broker_commit(monkeypatch):
+    monkeypatch.setattr(
+        platform_routes.model_reasoning_repair_service,
+        "repair_reasoning_surface",
+        lambda **_kwargs: {
+            "ok": True,
+            "saveStatus": "no_change",
+            "providerId": "provider",
+            "modelId": "model",
+            "newReasoningSurface": {"mode": "provider_reasoning"},
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes.config_broker_service,
+        "prepare_model_binding",
+        lambda **_kwargs: pytest.fail("no_change must not prepare another transaction"),
+    )
+
+    result = asyncio.run(
+        platform_routes.repair_model_reasoning(
+            platform_routes.ModelReasoningRepairPayload(
+                providerId="provider",
+                modelId="model",
+            )
+        )
+    )
+    assert result["saveStatus"] == "no_change"
+
+
+def test_model_hub_transaction_keeps_raw_key_out_of_config_plan(monkeypatch):
+    captured = {}
+    plan = {
+        "providerId": "demo",
+        "catalogModelId": "demo-model",
+        "modelId": "demo-model",
+        "credentialRequired": True,
+        "providerPatch": {
+            "name": "Demo",
+            "base_url": "https://api.example.com/v1",
+            "api_standard": "openai",
+            "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        },
+        "modelPatch": {
+            "type": "TEXT",
+            "contextWindow": 32_000,
+            "maxTokens": 4_096,
+            "capabilities": {"chat": True},
+        },
+    }
+
+    def _prepare_model(**kwargs):
+        captured["providerConfig"] = kwargs["provider_config"]
+        return {
+            "ok": True,
+            "state": "awaiting_secret",
+            "transactionId": "cfg_txn_demo",
+            "uiAction": {"actionRequestId": "ui_action_demo"},
+        }
+
+    monkeypatch.setattr(platform_routes.config_broker_service, "prepare_model", _prepare_model)
+    monkeypatch.setattr(
+        platform_routes.ui_action_request_service,
+        "submit",
+        lambda action_id, *, values, owner_id, session_id: captured.update(
+            {
+                "actionId": action_id,
+                "submittedValues": values,
+                "ownerId": owner_id,
+                "sessionId": session_id,
+            }
+        )
+        or {"state": "submitted"},
+    )
+    monkeypatch.setattr(
+        platform_routes.config_broker_service,
+        "get_transaction",
+        lambda *_args, **_kwargs: {
+            "state": "committed",
+            "result": {"providerId": "demo", "modelId": "demo-model"},
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_public_config",
+        lambda *_args, **_kwargs: {"providers": {"demo": {"models": {"demo-model": {}}}}},
+    )
+
+    result = platform_routes._execute_model_hub_connection(
+        provider={"id": "demo", "name": "Demo"},
+        plan=plan,
+        incoming_credential="sk-sensitive",
+        channel_id="",
+        wire_protocol="",
+    )
+
+    assert result["ok"] is True
+    assert captured["submittedValues"] == {"apiKey": "sk-sensitive"}
+    assert "api_key" not in captured["providerConfig"]
+    assert "apiKey" not in captured["providerConfig"]
+    assert "credentialRef" not in captured["providerConfig"]
+    assert "sk-sensitive" not in json.dumps(captured["providerConfig"])
+
+
+@pytest.mark.parametrize(
+    "target_patch",
+    [
+        {"baseUrl": "https://other.example/v1"},
+        {
+            "channels": [
+                {
+                    "id": "other",
+                    "baseUrl": "https://other.example/v1",
+                    "apiStandard": "openai",
+                    "wireProtocols": ["openai.chat_completions"],
+                    "defaultWireProtocol": "openai.chat_completions",
+                    "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+                }
+            ],
+            "channelId": "other",
+        },
+        {
+            "channels": [
+                {
+                    "id": "alternate-auth",
+                    "baseUrl": "https://api.example.com/v1",
+                    "apiStandard": "openai",
+                    "wireProtocols": ["openai.chat_completions"],
+                    "defaultWireProtocol": "openai.chat_completions",
+                    "auth": {"type": "api_key", "header": "X-API-Key", "scheme": ""},
+                }
+            ],
+            "channelId": "alternate-auth",
+        },
+    ],
+)
+def test_connect_never_reuses_key_after_target_or_auth_channel_change(monkeypatch, target_patch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "models": [
+            {
+                "id": "demo-model",
+                "type": "TEXT",
+                "contextWindow": 32_000,
+                "maxTokens": 4_096,
+                "capabilities": ["chat"],
+            }
+        ],
+    }
+    existing_provider = {
+        "name": "Demo",
+        "base_url": "https://api.example.com/v1",
+        "api_standard": "openai",
+        "type": "API",
+        "credential_mode": "apiKey",
+        "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "api_key": "sk-existing",
+    }
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "get_provider",
+        lambda provider_id: provider if provider_id == "demo" else None,
+    )
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {"providers": {"demo": {"provider": existing_provider, "models": {}}}},
+    )
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **_kwargs: pytest.fail("changed credential target must not reach commit"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            platform_routes.connect_model_provider(
+                {"providerId": "demo", "modelId": "demo-model", **target_patch}
+            )
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "credential target changed" in str(exc_info.value.detail)
+
+
+def test_connect_allows_broker_to_reuse_key_for_the_exact_provider_target(monkeypatch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "models": [
+            {
+                "id": "demo-model",
+                "type": "TEXT",
+                "contextWindow": 32_000,
+                "maxTokens": 4_096,
+                "capabilities": ["chat"],
+            }
+        ],
+    }
+    existing_provider = {
+        "name": "Demo",
+        "base_url": "https://api.example.com/v1",
+        "api_standard": "openai",
+        "type": "API",
+        "credential_mode": "apiKey",
+        "authContract": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "api_key": "sk-existing",
+    }
+    captured = {}
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "get_provider",
+        lambda provider_id: provider if provider_id == "demo" else None,
+    )
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {"providers": {"demo": {"provider": existing_provider, "models": {}}}},
+    )
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **kwargs: captured.update(kwargs)
+        or {
+            "ok": True,
+            "transactionId": "cfg_txn_exact",
+            "ownerId": "test",
+            "config": {"providers": {"demo": {"provider": {}, "models": {"demo-model": {}}}}},
+        },
+    )
+
+    result = asyncio.run(
+        platform_routes.connect_model_provider(
+            {"providerId": "demo", "modelId": "demo-model"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["incoming_credential"] == ""
+    assert "api_key" not in captured["plan"]["providerPatch"]
+    assert "credentialRef" not in captured["plan"]["providerPatch"]
+
+
+def test_failed_custom_connect_does_not_persist_catalog_provider(monkeypatch):
+    calls = {"save": 0, "delete": 0}
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: None)
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: {"providers": {}})
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            platform_routes.ConfigBrokerError(
+                "verification failed",
+                code="model_connection_validation_failed",
+                status_code=409,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "save_custom_provider",
+        lambda _provider: calls.__setitem__("save", calls["save"] + 1),
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "delete_custom_provider",
+        lambda _provider_id: calls.__setitem__("delete", calls["delete"] + 1),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            platform_routes.connect_model_provider(
+                {
+                    "providerId": "__custom__",
+                    "modelId": "custom-model",
+                    "customProviderName": "Custom Demo",
+                    "baseUrl": "https://custom.example/v1",
+                    "apiKey": "sk-test",
+                }
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert calls == {"save": 0, "delete": 0}
 
 
 def test_custom_provider_overlay_roundtrip(tmp_path):
@@ -1030,6 +1624,7 @@ def test_custom_provider_persists_declared_capabilities_without_inventing_models
 
 
 def test_connect_custom_provider_does_not_seed_runtime_budget_parameters(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = {
         "id": "custom-demo",
@@ -1061,6 +1656,7 @@ def test_connect_custom_provider_does_not_seed_runtime_budget_parameters(monkeyp
 
 
 def test_connect_custom_provider_inherits_known_model_capability_budget(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = {
         "id": "custom-openai-compatible",
@@ -1110,6 +1706,7 @@ def test_explicit_provider_capability_override_wins_over_registry():
 
 
 def test_connect_oauth_provider_does_not_seed_runtime_budget_parameters(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = {
         "id": "codex",
@@ -1140,6 +1737,7 @@ def test_connect_oauth_provider_does_not_seed_runtime_budget_parameters(monkeypa
 
 
 def test_connect_media_provider_does_not_seed_chat_budget_parameters(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = {
         "id": "openai_images",
@@ -1184,6 +1782,7 @@ def test_connect_media_provider_does_not_seed_chat_budget_parameters(monkeypatch
 
 
 def test_quick_connect_persists_the_visible_route_and_wire_model_binding(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     provider = {
         "id": "openai_images",
         "name": "OpenAI-compatible Images",
@@ -1257,6 +1856,7 @@ def test_legacy_models_write_preserves_credential_omitted_by_public_read(monkeyp
 
 
 def test_connect_detected_voice_model_keeps_voice_type_when_chat_purpose_submits_text(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = model_provider_catalog.get_provider("xiaomi-mimo-tokenplan")
     assert provider

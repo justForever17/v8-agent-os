@@ -792,7 +792,17 @@ class ModelConnectionTester:
                 **result,
             }
         except Exception as exc:
-            normalized = normalize_provider_error(exc, provider=provider_name, model=wire_model_id)
+            provider_record = dict(meta.get("provider_record") or {})
+            normalized = normalize_provider_error(
+                exc,
+                provider=provider_name,
+                model=wire_model_id,
+                sensitive_values=[
+                    meta.get("api_key"),
+                    provider_record.get("api_key"),
+                    provider_record.get("apiKey"),
+                ],
+            )
             # Protocol/channel probing is explicit in ModelHub. A failed model
             # test must not trigger model-name based requests against guessed
             # Gemini or Anthropic endpoints.

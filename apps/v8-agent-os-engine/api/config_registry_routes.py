@@ -52,6 +52,7 @@ _system_base_environment_cache: dict[str, Any] | None = None
 _system_base_environment_failures: dict[str, dict[str, Any]] = {}
 _system_base_environment_inflight: dict[str, Future[dict[str, Any]]] = {}
 _system_base_environment_latest_key = ""
+_INTERNAL_CONFIG_BROKER_OWNER = "local-admin"
 
 
 ConfigBuilder = Callable[[], dict[str, Any]]
@@ -68,6 +69,10 @@ def _get_network_relay_worker_service():
 
 def _get_project_registry_service():
     return importlib.import_module("runtimes.memory.project_registry").project_registry_service
+
+
+def _get_config_broker_service():
+    return importlib.import_module("core.config_broker_service").config_broker_service
 
 
 def _config_source(domain_path: str) -> str:
@@ -88,12 +93,57 @@ def _roles_snapshot(*keys: str) -> dict[str, str]:
     return {key: str(roles.get(key) or "").strip() for key in keys}
 
 
+def _commit_internal_config_transaction(
+    prepared: dict[str, Any],
+    *,
+    broker: Any | None = None,
+) -> dict[str, Any]:
+    target = broker or _get_config_broker_service()
+    result = target.commit(
+        str(prepared.get("transactionId") or ""),
+        owner_id=_INTERNAL_CONFIG_BROKER_OWNER,
+    )
+    if result.get("ok"):
+        return result
+    error = dict(result.get("error") or {})
+    code = str(error.get("code") or "config_commit_failed")
+    status_code = 409 if code in {"config_transaction_stale", "config_rollback_conflict"} else 500
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": str(error.get("message") or result.get("summary") or "配置提交失败。"),
+        },
+    )
+
+
+def _prepare_and_commit_role_bindings(updates: dict[str, str]) -> None:
+    broker = _get_config_broker_service()
+    ConfigBrokerError = importlib.import_module("core.config_broker_service").ConfigBrokerError
+    try:
+        prepared = broker.prepare_role_bindings(
+            updates=updates,
+            owner_id=_INTERNAL_CONFIG_BROKER_OWNER,
+            session_id="",
+            run_id="",
+        )
+        _commit_internal_config_transaction(prepared, broker=broker)
+    except ConfigBrokerError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
 def _update_role_bindings(updates: dict[str, Any]) -> dict[str, str]:
-    config = model_control_plane.get_config()
-    roles = dict(config.get("roles") or {})
-    for key, value in dict(updates or {}).items():
-        role_key = str(key)
-        model_ref = str(value or "").strip()
+    normalized_updates = {
+        str(key or "").strip(): str(value or "").strip()
+        for key, value in dict(updates or {}).items()
+        if str(key or "").strip()
+    }
+    if not normalized_updates:
+        return {}
+    for role_key, model_ref in normalized_updates.items():
         validation = validate_text_role_model_window(role_key, model_ref)
         if not validation.get("ok"):
             raise HTTPException(
@@ -107,23 +157,42 @@ def _update_role_bindings(updates: dict[str, Any]) -> dict[str, str]:
                     "participant": validation.get("participant"),
                 },
             )
-        roles[role_key] = model_ref
-    config["roles"] = roles
-    model_control_plane.save_config(config)
-    return {key: str(roles.get(key) or "").strip() for key in updates.keys()}
+    _prepare_and_commit_role_bindings(normalized_updates)
+    return _roles_snapshot(*normalized_updates.keys())
 
 
 def _update_role_parameters(updates: dict[str, Any]) -> dict[str, Any]:
     config = model_control_plane.get_config()
     role_parameters = dict(config.get("roleParameters") or {})
+    parameters_patch: dict[str, dict[str, Any]] = {}
     for role_key, value in dict(updates or {}).items():
         existing = dict(role_parameters.get(str(role_key)) or {})
         if isinstance(value, dict) and "temperature" in value:
             existing["temperature"] = normalize_config_temperature(value.get("temperature"))
-        role_parameters[str(role_key)] = existing
-    config["roleParameters"] = role_parameters
-    model_control_plane.save_config(config)
-    return {key: dict(role_parameters.get(str(key)) or {}) for key in updates.keys()}
+        parameters_patch[str(role_key)] = {
+            **({"temperature": existing.get("temperature")} if "temperature" in existing else {}),
+        }
+    if not parameters_patch:
+        return {}
+    broker = _get_config_broker_service()
+    ConfigBrokerError = importlib.import_module("core.config_broker_service").ConfigBrokerError
+    try:
+        prepared = broker.prepare_model_policy(
+            governance=None,
+            routing_policies=None,
+            role_parameters=parameters_patch,
+            owner_id=_INTERNAL_CONFIG_BROKER_OWNER,
+            session_id="",
+            run_id="",
+        )
+        _commit_internal_config_transaction(prepared, broker=broker)
+    except ConfigBrokerError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    saved_parameters = dict(model_control_plane.get_config().get("roleParameters") or {})
+    return {key: dict(saved_parameters.get(str(key)) or {}) for key in updates.keys()}
 
 
 def _build_models_domain() -> dict[str, Any]:

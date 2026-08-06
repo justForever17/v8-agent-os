@@ -11,7 +11,6 @@ from fastapi import HTTPException
 
 from api.models import ChatRequest
 from core.database import db
-from runtimes.chat.runtime import chat_runtime
 from runtimes.network_supervisor.models import NetworkEnvelope, NetworkTraceContext
 from runtimes.network_supervisor.neighbor_workspace import resolve_network_neighbor_workspace_binding
 from runtimes.network_supervisor.service import network_supervisor_service
@@ -545,7 +544,7 @@ class NetworkNeighborTaskService:
         aggregated = ""
         status = "completed"
         try:
-            async for event in chat_runtime.stream_legacy_events(request, transport="network_neighbor_task", run_id=run_id):
+            async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_neighbor_task", run_id=run_id):
                 event_type = str(event.get("type") or "").strip()
                 if event_type == "text_chunk":
                     aggregated += str(event.get("content") or "")
@@ -889,7 +888,7 @@ class NetworkNeighborTaskService:
             }
         )
         try:
-            async for event in chat_runtime.stream_legacy_events(request, transport="network_neighbor_result", run_id=run_id):
+            async for event in _get_chat_runtime().stream_legacy_events(request, transport="network_neighbor_result", run_id=run_id):
                 if str(event.get("type") or "") in {"done", "error"}:
                     break
         except Exception:
@@ -897,3 +896,7 @@ class NetworkNeighborTaskService:
 
 
 network_neighbor_task_service = NetworkNeighborTaskService()
+def _get_chat_runtime():
+    from runtimes.chat.runtime import chat_runtime
+
+    return chat_runtime

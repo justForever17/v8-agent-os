@@ -8,17 +8,13 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from core.context.delegation import build_delegation_context
 from core.database import db
-from core.delegation_broker import normalize_task_briefs, task_brief_query_text
-from core.delegation_result_contract import build_delegation_result_contract
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_continuation import (
@@ -27,32 +23,80 @@ from core.runtime_continuation import (
 )
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
-from core.tools.research_quality import (
-    TARGET_RESEARCH_SOURCE_COUNT,
-    research_acceptance_metrics,
-    research_answer_text,
-    research_as_of,
-    research_bundle_is_high_quality,
-    research_high_quality_issues,
-    research_independent_review,
-    research_claims,
-    research_critical_missing_evidence,
-    research_missing_evidence,
-    research_quality_tier,
-    research_review_decision,
-    research_selected_sources,
-)
-from core.tools.research_ledger import get_evidence_bundle
-from core.engineering_capsule import (
-    derive_grandchild_engineering_task,
-    engineering_capsule_mode,
-    ensure_engineering_task_capsule,
-)
-from core.engineering_kernel import build_engineering_kernel_context
-from erc.runtime_context import bind_runtime_context
 
 
 logger = logging.getLogger(__name__)
+
+
+# Keep queue startup independent from runtime-specific execution trees while
+# retaining module-level seams used by focused tests and diagnostics.
+def build_delegation_context(**kwargs: Any) -> dict[str, Any]:
+    from core.context.delegation import build_delegation_context as implementation
+
+    return implementation(**kwargs)
+
+
+def normalize_task_briefs(values: Any) -> list[dict[str, Any]]:
+    from core.delegation_broker import normalize_task_briefs as implementation
+
+    return implementation(values)
+
+
+def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
+    from core.delegation_broker import task_brief_query_text as implementation
+
+    return implementation(task_brief)
+
+
+def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
+    from core.delegation_result_contract import build_delegation_result_contract as implementation
+
+    return implementation(result)
+
+
+def get_evidence_bundle(evidence_id: str) -> dict[str, Any] | None:
+    from core.tools.research_ledger import get_evidence_bundle as implementation
+
+    return implementation(evidence_id)
+
+
+def derive_grandchild_engineering_task(
+    parent_task_brief: dict[str, Any],
+    child_task_brief: dict[str, Any],
+) -> dict[str, Any]:
+    from core.engineering_capsule import derive_grandchild_engineering_task as implementation
+
+    return implementation(parent_task_brief, child_task_brief)
+
+
+def engineering_capsule_mode(task_brief: dict[str, Any] | None) -> str:
+    from core.engineering_capsule import engineering_capsule_mode as implementation
+
+    return implementation(task_brief)
+
+
+def ensure_engineering_task_capsule(task_brief: dict[str, Any]) -> dict[str, Any]:
+    from core.engineering_capsule import ensure_engineering_task_capsule as implementation
+
+    return implementation(task_brief)
+
+
+def build_engineering_kernel_context(**kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+    from core.engineering_kernel import build_engineering_kernel_context as implementation
+
+    return implementation(**kwargs)
+
+
+def bind_runtime_context(**context: Any) -> Any:
+    from erc.runtime_context import bind_runtime_context as implementation
+
+    return implementation(**context)
+
+
+def _research_quality_module() -> Any:
+    from core.tools import research_quality
+
+    return research_quality
 
 
 class RuntimeEpisodeCancelled(asyncio.CancelledError):
@@ -461,7 +505,7 @@ def _research_expected_source_floor(brief: dict[str, Any], source_policy: str) -
         chinese_counts = {"二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
         raw_count = match.group(1)
         return int(raw_count) if raw_count.isdigit() else chinese_counts[raw_count]
-    return TARGET_RESEARCH_SOURCE_COUNT
+    return int(_research_quality_module().TARGET_RESEARCH_SOURCE_COUNT)
 
 
 def _research_handoff_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -680,9 +724,10 @@ def _research_evidence_status(
     reasons: list[str] = []
     if run_payload.get("_transportDeliveryReady") is False:
         reasons.append("research_delivery_gate_not_ready")
-    quality_accepted = research_bundle_is_high_quality(run_payload)
+    research_quality = _research_quality_module()
+    quality_accepted = research_quality.research_bundle_is_high_quality(run_payload)
     if not quality_accepted:
-        reasons.extend(research_high_quality_issues(run_payload))
+        reasons.extend(research_quality.research_high_quality_issues(run_payload))
     if not bool(run_payload.get("ok")):
         reasons.append("research_broker_failed")
     if not research_ref:
@@ -816,29 +861,55 @@ class RuntimeEpisodeRunner:
         self._task: asyncio.Task | None = None
         self._stop_event: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        self._thread_factory = threading.Thread
         self._thread_started = threading.Event()
+        self._queue_ready = threading.Event()
+        self._startup_resolved = threading.Event()
         self._thread_loop: asyncio.AbstractEventLoop | None = None
+        self._thread_failure: BaseException | None = None
+        self._has_successful_queue_poll = False
+        self._last_successful_poll_at: str | None = None
+        self._last_successful_poll_monotonic: float | None = None
+        self._consecutive_poll_failures = 0
+        self._last_poll_failure_type = ""
+        self._poll_failure_threshold = 3
         self._lease_seconds = 75
         self._poll_seconds = 0.8
+        self._poll_error_seconds = 1.0
         self._max_concurrent = max(1, int(os.getenv("V8_RUNTIME_EPISODE_CONCURRENCY", "4") or 4))
         self._agent_nodes_map_cache: dict[str, Any] | None = None
         self._agent_nodes_map_snapshot_hash: str = ""
         self._agent_nodes_map_snapshot_version: str = ""
 
     async def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self.is_ready():
             return
         if self._task and not self._task.done():
             return
         self._stop_event = threading.Event()
         self._thread_started.clear()
-        self._thread = threading.Thread(
+        self._queue_ready.clear()
+        self._startup_resolved.clear()
+        self._thread_failure = None
+        self._has_successful_queue_poll = False
+        self._last_successful_poll_at = None
+        self._last_successful_poll_monotonic = None
+        self._consecutive_poll_failures = 0
+        self._last_poll_failure_type = ""
+        self._thread = self._thread_factory(
             target=self._run_loop_in_thread,
             name="runtime-episode-runner",
             daemon=True,
         )
         self._thread.start()
-        await asyncio.to_thread(self._thread_started.wait, 2.0)
+        startup_resolved = await asyncio.to_thread(self._startup_resolved.wait, 2.0)
+        if not startup_resolved or not self.is_ready():
+            failure = self._thread_failure
+            if self._stop_event:
+                self._stop_event.set()
+            if self._thread and self._thread.is_alive():
+                await asyncio.to_thread(self._thread.join, 0.5)
+            raise RuntimeError("Runtime episode runner did not become ready") from failure
         print(f"[EpisodeRunner] Started worker {self.worker_id}.")
 
     async def stop(self) -> None:
@@ -848,28 +919,103 @@ class RuntimeEpisodeRunner:
             self._thread_loop.call_soon_threadsafe(lambda: None)
         if self._thread and self._thread.is_alive():
             await asyncio.to_thread(self._thread.join, 3.0)
+        if self._thread and self._thread.is_alive():
+            raise RuntimeError("Runtime episode runner did not stop within 3 seconds")
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._thread = None
+        self._stop_event = None
+        self._thread_loop = None
+        self._thread_started.clear()
+        self._queue_ready.clear()
+        self._startup_resolved.clear()
+        self._thread_failure = None
+        self._has_successful_queue_poll = False
+        self._last_successful_poll_at = None
+        self._last_successful_poll_monotonic = None
+        self._consecutive_poll_failures = 0
+        self._last_poll_failure_type = ""
         print(f"[EpisodeRunner] Stopped worker {self.worker_id}.")
 
+    def is_ready(self) -> bool:
+        thread = self._thread
+        loop = self._thread_loop
+        return bool(
+            self._thread_started.is_set()
+            and self._queue_ready.is_set()
+            and thread
+            and thread.is_alive()
+            and loop
+            and loop.is_running()
+            and self._thread_failure is None
+        )
+
+    def readiness_status(self) -> dict[str, Any]:
+        thread = self._thread
+        loop = self._thread_loop
+        return {
+            "ready": self.is_ready(),
+            "workerId": self.worker_id,
+            "threadAlive": bool(thread and thread.is_alive()),
+            "eventLoopRunning": bool(loop and loop.is_running()),
+            "queueReady": self._queue_ready.is_set(),
+            "lastSuccessfulPollAt": self._last_successful_poll_at,
+            "lastSuccessfulPollAgeMs": (
+                round((time.monotonic() - self._last_successful_poll_monotonic) * 1000, 2)
+                if self._last_successful_poll_monotonic is not None
+                else None
+            ),
+            "consecutivePollFailures": self._consecutive_poll_failures,
+            "pollFailureThreshold": self._poll_failure_threshold,
+            "lastPollFailureType": self._last_poll_failure_type,
+            "failureType": type(self._thread_failure).__name__ if self._thread_failure else "",
+        }
+
+    def _record_successful_queue_poll(self) -> None:
+        self._has_successful_queue_poll = True
+        self._last_successful_poll_at = utc_now_iso()
+        self._last_successful_poll_monotonic = time.monotonic()
+        self._consecutive_poll_failures = 0
+        self._last_poll_failure_type = ""
+        self._queue_ready.set()
+        self._startup_resolved.set()
+
+    def _record_queue_poll_failure(self, exc: BaseException) -> None:
+        self._consecutive_poll_failures += 1
+        self._last_poll_failure_type = type(exc).__name__
+        if not self._has_successful_queue_poll:
+            self._thread_failure = exc
+            self._queue_ready.clear()
+            self._startup_resolved.set()
+            return
+        if self._consecutive_poll_failures >= self._poll_failure_threshold:
+            self._queue_ready.clear()
+
     def _run_loop_in_thread(self) -> None:
-        loop = asyncio.new_event_loop()
-        self._thread_loop = loop
-        asyncio.set_event_loop(loop)
-        self._thread_started.set()
+        loop: asyncio.AbstractEventLoop | None = None
         try:
+            loop = asyncio.new_event_loop()
+            self._thread_loop = loop
+            asyncio.set_event_loop(loop)
             loop.run_until_complete(self._run_loop())
+        except BaseException as exc:
+            self._thread_failure = exc
+            logger.exception("Runtime episode runner thread stopped unexpectedly")
         finally:
-            loop.close()
-            if self._thread_loop is loop:
+            self._thread_started.set()
+            self._startup_resolved.set()
+            if loop is not None:
+                loop.close()
+            if loop is not None and self._thread_loop is loop:
                 self._thread_loop = None
 
     async def _run_loop(self) -> None:
         assert self._stop_event is not None
+        self._thread_started.set()
         active_tasks: set[asyncio.Task] = set()
         while not self._stop_event.is_set():
             try:
@@ -885,11 +1031,20 @@ class RuntimeEpisodeRunner:
 
                 claimed_any = False
                 while len(active_tasks) < self._max_concurrent:
-                    episode = db.claim_runtime_episode(
-                        worker_id=self.worker_id,
-                        lease_seconds=self._lease_seconds,
-                        require_bound_run=True,
-                    )
+                    try:
+                        episode = db.claim_runtime_episode(
+                            worker_id=self.worker_id,
+                            lease_seconds=self._lease_seconds,
+                            require_bound_run=True,
+                        )
+                    except Exception as exc:
+                        self._record_queue_poll_failure(exc)
+                        if not self._has_successful_queue_poll:
+                            raise
+                        print(f"[EpisodeRunner] Queue poll error: {type(exc).__name__}")
+                        await asyncio.sleep(self._poll_error_seconds)
+                        break
+                    self._record_successful_queue_poll()
                     if not episode:
                         break
                     episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
@@ -2045,15 +2200,16 @@ class RuntimeEpisodeRunner:
                 if isinstance(run_payload.get("researchAnswerPack"), dict)
                 else {}
             )
-            source_items = research_selected_sources(run_payload)
-            claim_items = research_claims(run_payload)
-            answer = research_answer_text(run_payload)
-            quality_metrics = research_acceptance_metrics(run_payload)
-            review_decision = research_review_decision(run_payload)
-            independent_review = research_independent_review(run_payload)
-            as_of = research_as_of(run_payload)
-            missing_evidence = research_missing_evidence(run_payload)
-            critical_missing_evidence = research_critical_missing_evidence(run_payload)
+            research_quality = _research_quality_module()
+            source_items = research_quality.research_selected_sources(run_payload)
+            claim_items = research_quality.research_claims(run_payload)
+            answer = research_quality.research_answer_text(run_payload)
+            quality_metrics = research_quality.research_acceptance_metrics(run_payload)
+            review_decision = research_quality.research_review_decision(run_payload)
+            independent_review = research_quality.research_independent_review(run_payload)
+            as_of = research_quality.research_as_of(run_payload)
+            missing_evidence = research_quality.research_missing_evidence(run_payload)
+            critical_missing_evidence = research_quality.research_critical_missing_evidence(run_payload)
             recommended_queries = _research_recommended_queries(run_payload)
             brief_coverage = [
                 dict(item)
@@ -2108,7 +2264,7 @@ class RuntimeEpisodeRunner:
                 seed_urls=seed_urls,
                 allowed_domains=allowed_domains,
             )
-            quality_tier = research_quality_tier(run_payload)
+            quality_tier = research_quality.research_quality_tier(run_payload)
             handoff_sources = [_research_handoff_source(item) for item in source_items]
             handoff_sources = [item for item in handoff_sources if item.get("url") or item.get("sourceId")]
             handoff_claims = [dict(item) for item in claim_items]
@@ -2400,7 +2556,10 @@ class RuntimeEpisodeRunner:
             consumer_hint=consumer_hint,
             extra={
                 **coverage_extra,
-                "refs": [*research_refs, *source_urls[:TARGET_RESEARCH_SOURCE_COUNT]],
+                "refs": [
+                    *research_refs,
+                    *source_urls[: int(_research_quality_module().TARGET_RESEARCH_SOURCE_COUNT)],
+                ],
                 "proofRefs": research_refs,
                 "evidenceBundleId": ready_evidence_ids[0] if len(ready_evidence_ids) == 1 else "",
                 "evidenceBundleIds": ready_evidence_ids,
@@ -4492,6 +4651,8 @@ class RuntimeEpisodeRunner:
         retry_branch["governanceSafeRetryCount"] = 1
         retry_arg["parallel_branch"] = retry_branch
         retry_messages = list(retry_arg.get("messages") or [])
+        from langchain_core.messages import SystemMessage
+
         retry_messages.append(
             SystemMessage(
                 content=(
@@ -6823,6 +6984,8 @@ class RuntimeEpisodeRunner:
             "runtimeAccess": task_runtime_access,
             **({"parentDelegationId": parent_episode_id} if parent_episode_id else {}),
         }
+        from langchain_core.messages import HumanMessage
+
         branch_state = {
             "messages": [
                 HumanMessage(

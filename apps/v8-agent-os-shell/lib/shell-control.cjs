@@ -177,6 +177,9 @@ function createShellControlServer(options = {}) {
         token,
         activeSessionId: previousActiveSessionId,
         createdAt: new Date().toISOString(),
+        surfaceReady: false,
+        surfaceKind: null,
+        surfaceReadyAt: null,
       };
       server = net.createServer(handleConnection);
       await new Promise((resolve, reject) => {
@@ -224,6 +227,16 @@ function createShellControlServer(options = {}) {
           : null,
         updatedAt: new Date().toISOString(),
       };
+      writeDescriptorAtomic(descriptorPath, descriptor);
+      return true;
+    },
+    setSurfaceStatus(status) {
+      if (!descriptor || !status || typeof status !== 'object') return false;
+      const allowedSurfaceKinds = new Set(['web', 'admin', 'admin-login']);
+      const surfaceReady = Boolean(status.surfaceReady) && allowedSurfaceKinds.has(status.surfaceKind);
+      descriptor.surfaceReady = surfaceReady;
+      descriptor.surfaceKind = surfaceReady ? status.surfaceKind : null;
+      descriptor.surfaceReadyAt = surfaceReady ? new Date().toISOString() : null;
       writeDescriptorAtomic(descriptorPath, descriptor);
       return true;
     },

@@ -2,24 +2,31 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
+import tempfile
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Set
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, quote, quote_plus, unquote_plus, urlparse, urlunparse
 
 import requests
 
 from core.model_capability_registry import model_capability_registry
 from core.media_model_capability_registry import media_model_capability_registry
 from core.model_ref import make_model_ref
-from core.model_thinking_control import resolve_thinking_control_for_metadata
+from core.model_thinking_control import (
+    resolve_reasoning_effort_control_for_metadata,
+    resolve_thinking_control_for_metadata,
+)
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.reasoning_surface_contract import resolve_reasoning_surface_for_metadata
 
 
 _CATALOG_PATH = Path(__file__).resolve().parent / "model_catalog" / "provider_catalog.json"
 _CUSTOM_CATALOG_PATH = Path.home() / ".v8-agent-os" / "model_provider_catalog.custom.json"
+_MANAGED_CATALOG_PATH = Path.home() / ".v8-agent-os" / "model_provider_catalog.managed.json"
 _CREATIVE_MEDIA_MATRIX_PATH = (
     Path(__file__).resolve().parents[1]
     / "runtimes"
@@ -27,6 +34,11 @@ _CREATIVE_MEDIA_MATRIX_PATH = (
     / "assets"
     / "media_provider_format_matrix.json"
 )
+
+
+def _catalog_payload_digest(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 _CREATIVE_MEDIA_CAPABILITY_OVERRIDES_PATH = (
     Path(__file__).resolve().parents[1]
     / "runtimes"
@@ -96,6 +108,317 @@ _PLUGIN_ONLY_MEDIA_MODEL_IDS = {
     "wan2.7-videoedit",
 }
 
+_MANAGED_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_MANAGED_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+\-\[\]]{0,255}$")
+_MANAGED_SENSITIVE_KEYS = {
+    "secret",
+    "secrets",
+    "secretkey",
+    "clientsecret",
+    "apikey",
+    "apikeys",
+    "token",
+    "tokens",
+    "accesstoken",
+    "refreshtoken",
+    "password",
+    "passphrase",
+    "cookie",
+    "cookies",
+    "credential",
+    "credentials",
+    "credentialref",
+    "credentialrefs",
+    "authorization",
+}
+_MANAGED_SENSITIVE_SUFFIXES = (
+    "apikey",
+    "clientsecret",
+    "accesstoken",
+    "refreshtoken",
+    "password",
+    "passphrase",
+    "credentialref",
+)
+_MANAGED_SENSITIVE_QUERY_KEYS = _MANAGED_SENSITIVE_KEYS | {
+    "key",
+    "auth",
+    "bearer",
+    "signature",
+    "sig",
+}
+_MANAGED_STRONG_SENSITIVE_WORDS = {
+    "authorization",
+    "cookie",
+    "cookies",
+    "credential",
+    "credentials",
+    "password",
+    "passphrase",
+    "secret",
+    "secrets",
+}
+_MANAGED_SAFE_TOKEN_KEY_PATTERNS = (
+    re.compile(r"^(?:missing)?(?:max|min)(?:input|output)?tokens$"),
+    re.compile(
+        r"^(?:accepted|budget|cached|completion|contextwindow|increment|input|output|prompt|reasoning|rejected|thinkingbudget|total)tokens$"
+    ),
+    re.compile(r"^(?:input|output)pricepermilliontokens$"),
+    re.compile(r"^(?:input|output)tokenlimit$"),
+    re.compile(r"^tokens?(?:budget|count|limit|window)$"),
+)
+_OAUTH_FILE_LOCKED_PROVIDER_FIELDS = {
+    "baseurl",
+    "apistandard",
+    "channels",
+    "defaultchannel",
+    "auth",
+    "transport",
+    "probestrategy",
+    "adapter",
+    "wireprotocol",
+}
+_OAUTH_FILE_MODEL_TRANSPORT_FIELDS = _OAUTH_FILE_LOCKED_PROVIDER_FIELDS | {
+    "endpoint",
+    "endpointurl",
+}
+
+
+def _normalized_catalog_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _catalog_key_words(value: Any) -> tuple[str, ...]:
+    expanded = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])",
+        " ",
+        str(value or ""),
+    )
+    return tuple(part.lower() for part in re.split(r"[^A-Za-z0-9]+", expanded) if part)
+
+
+def _is_sensitive_managed_field_key(value: Any) -> bool:
+    normalized_key = _normalized_catalog_key(value)
+    if (
+        normalized_key in _MANAGED_SENSITIVE_KEYS
+        or normalized_key.endswith(_MANAGED_SENSITIVE_SUFFIXES)
+    ):
+        return True
+    words = _catalog_key_words(value)
+    if _MANAGED_STRONG_SENSITIVE_WORDS.intersection(words):
+        return True
+    if ("api", "key") in zip(words, words[1:]):
+        return True
+    if any(word in {"token", "tokens"} for word in words):
+        return not any(
+            pattern.fullmatch(normalized_key)
+            for pattern in _MANAGED_SAFE_TOKEN_KEY_PATTERNS
+        )
+    return False
+
+
+def _is_sensitive_url_query_key(value: Any) -> bool:
+    decoded = str(value or "")
+    for _ in range(8):
+        next_value = unquote_plus(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    else:
+        return True
+    normalized_key = _normalized_catalog_key(decoded)
+    words = _catalog_key_words(decoded)
+    return (
+        normalized_key in _MANAGED_SENSITIVE_QUERY_KEYS
+        or any(word in {"auth", "bearer", "key", "sig", "signature"} for word in words)
+        or _is_sensitive_managed_field_key(decoded)
+    )
+
+
+def _redact_probe_error(value: Any, credential: str = "") -> str:
+    text = str(value or "")
+    secret = str(credential or "")
+    if secret:
+        encoded_candidates = {
+            secret,
+            quote(secret, safe=""),
+            quote_plus(secret, safe=""),
+        }
+        for candidate in sorted(encoded_candidates, key=len, reverse=True):
+            if candidate:
+                text = text.replace(candidate, "[redacted]")
+    text = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?([^\s,;&]+)",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|access[_-]?token|bearer|password|secret)\s*[:=]\s*)([^\s,;&]+)",
+        r"\1[redacted]",
+        text,
+    )
+    return text[:500]
+
+
+def _validated_http_url(value: Any, field_path: str) -> str:
+    raw = str(value or "").strip()
+    parsed = urlparse(raw)
+    try:
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"managed catalog {field_path} must contain an HTTP(S) URL") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+        raise ValueError(f"managed catalog {field_path} must contain an HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"managed catalog {field_path} must not contain URL userinfo")
+    if parsed.fragment:
+        raise ValueError(f"managed catalog {field_path} must not contain a URL fragment")
+    query_keys = [key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)]
+    query_keys.extend(
+        component.split("=", 1)[0]
+        for component in parsed.query.split("&")
+        if component
+    )
+    if any(_is_sensitive_url_query_key(key) for key in query_keys):
+        raise ValueError(f"managed catalog {field_path} must not contain sensitive URL query parameters")
+    return urlunparse(parsed)
+
+
+def _validate_managed_url(value: Any, field_path: str) -> None:
+    values = value if isinstance(value, list) else [value]
+    if not values:
+        raise ValueError(f"managed catalog {field_path} must contain an HTTP(S) URL")
+    for item in values:
+        _validated_http_url(item, field_path)
+
+
+def resolve_probe_target(provider: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
+    """Return a validated, secret-free HTTP probe target for broker preflight."""
+
+    if not isinstance(provider, dict):
+        raise ValueError("provider probe target must be an object")
+    raw_base_url = str(base_url or provider.get("baseUrl") or provider.get("base_url") or "").strip()
+    safe_base_url = _validated_http_url(raw_base_url, "probe base URL")
+    parsed_base = urlparse(safe_base_url)
+    explicit_url = str(provider.get("modelsUrl") or provider.get("models_url") or "").strip()
+    if explicit_url:
+        safe_url = _validated_http_url(explicit_url, "probe models URL")
+    else:
+        path = str(provider.get("modelsPath") or provider.get("models_path") or "/models").strip() or "/models"
+        parsed_path = urlparse(path)
+        if parsed_path.scheme or parsed_path.netloc or parsed_path.query or parsed_path.fragment:
+            raise ValueError("provider modelsPath must be a relative path without query or fragment")
+        clean_parts = [part for part in path.replace("\\", "/").strip("/").split("/") if part not in {"", "."}]
+        if any(part == ".." for part in clean_parts):
+            raise ValueError("provider modelsPath cannot traverse parent directories")
+        target_path = "/".join(
+            part
+            for part in [parsed_base.path.rstrip("/"), "/".join(clean_parts) or "models"]
+            if part
+        )
+        if not target_path.startswith("/"):
+            target_path = f"/{target_path}"
+        safe_url = _validated_http_url(
+            urlunparse(parsed_base._replace(path=target_path, fragment="")),
+            "probe models URL",
+        )
+    parsed = urlparse(safe_url)
+    return {
+        "url": safe_url,
+        "baseUrl": safe_base_url.rstrip("/") if not parsed_base.query else safe_base_url,
+        "scheme": parsed.scheme.lower(),
+        "host": parsed.hostname or "",
+        "port": parsed.port,
+        "path": parsed.path or "/",
+        "providerId": str(provider.get("id") or ""),
+        "channelId": str(provider.get("channelId") or ""),
+        "apiStandard": str(provider.get("apiStandard") or provider.get("api_standard") or ""),
+        "probeStrategy": str(provider.get("probeStrategy") or provider.get("probe_strategy") or ""),
+    }
+
+
+def _validate_managed_identifier(value: Any, field_path: str, *, model: bool = False) -> str:
+    raw = str(value or "").strip()
+    pattern = _MANAGED_MODEL_ID_PATTERN if model else _MANAGED_PROVIDER_ID_PATTERN
+    if not raw or not pattern.fullmatch(raw):
+        kind = "model" if model else "provider/channel"
+        raise ValueError(f"managed catalog {field_path} has an invalid {kind} id")
+    return raw
+
+
+def _validate_managed_tree(value: Any, field_path: str = "root") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized_key = _normalized_catalog_key(key)
+            if _is_sensitive_managed_field_key(key):
+                raise ValueError(f"managed catalog cannot contain sensitive field: {field_path}.{key}")
+            if normalized_key.endswith("url") or normalized_key.endswith("urls"):
+                _validate_managed_url(child, f"{field_path}.{key}")
+            if key in {"models", "channels"}:
+                if not isinstance(child, list):
+                    raise ValueError(f"managed catalog {field_path}.{key} must be a list")
+                seen_ids: Set[str] = set()
+                for index, entry in enumerate(child):
+                    if not isinstance(entry, dict):
+                        raise ValueError(f"managed catalog {field_path}.{key}[{index}] must be an object")
+                    entry_id = _validate_managed_identifier(
+                        entry.get("id"),
+                        f"{field_path}.{key}[{index}].id",
+                        model=key == "models",
+                    )
+                    if entry_id in seen_ids:
+                        raise ValueError(f"managed catalog {field_path}.{key} contains duplicate id")
+                    seen_ids.add(entry_id)
+            _validate_managed_tree(child, f"{field_path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_managed_tree(child, f"{field_path}[{index}]")
+
+
+def _validate_managed_catalog(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("managed catalog must be an object")
+    providers = payload.get("providers", [])
+    if not isinstance(providers, list):
+        raise ValueError("managed catalog providers must be a list")
+    seen_provider_ids: Set[str] = set()
+    for index, provider in enumerate(providers):
+        if not isinstance(provider, dict):
+            raise ValueError(f"managed catalog providers[{index}] must be an object")
+        provider_id = _validate_managed_identifier(provider.get("id"), f"providers[{index}].id")
+        if provider_id in seen_provider_ids:
+            raise ValueError("managed catalog contains duplicate provider id")
+        seen_provider_ids.add(provider_id)
+    _validate_managed_tree(payload)
+    return deepcopy(payload)
+
+
+def _merge_managed_keyed_list(base_items: Any, patch_items: Any) -> List[Dict[str, Any]]:
+    base = [deepcopy(item) for item in _as_list(base_items) if isinstance(item, dict)]
+    positions = {str(item.get("id") or ""): index for index, item in enumerate(base)}
+    for item_patch in _as_list(patch_items):
+        item_id = str(item_patch.get("id") or "")
+        if item_id in positions:
+            base[positions[item_id]] = _merge_managed_patch(base[positions[item_id]], item_patch)
+        else:
+            positions[item_id] = len(base)
+            base.append(deepcopy(item_patch))
+    return base
+
+
+def _merge_managed_patch(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in patch.items():
+        if key in {"models", "channels"}:
+            merged[key] = _merge_managed_keyed_list(merged.get(key), value)
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_managed_patch(dict(merged[key]), value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
 
 def _creative_media_public_operations(values: Any) -> List[str]:
     return [
@@ -135,6 +458,27 @@ def _url_host(value: Any) -> str:
         return ""
     parsed = urlparse(raw)
     return parsed.netloc.lower()
+
+
+def _provider_catalog_connectable(provider: Dict[str, Any]) -> bool:
+    if str(provider.get("apiStandard") or provider.get("api_standard") or "").strip().lower() == "catalog_only":
+        return False
+    if str(provider.get("adapter") or "").strip().lower() == "catalog_only":
+        return False
+    urls = [provider.get("baseUrl") or provider.get("base_url")]
+    urls.extend(
+        channel.get("baseUrl") or channel.get("base_url")
+        for channel in _as_list(provider.get("channels"))
+        if isinstance(channel, dict)
+    )
+    for value in urls:
+        try:
+            resolve_probe_target(provider, str(value or ""))
+        except ValueError:
+            continue
+        else:
+            return True
+    return False
 
 
 def _media_base_url_matches(root_provider: Dict[str, Any], media_provider: Dict[str, Any]) -> bool:
@@ -359,33 +703,666 @@ def _media_capability_profile(provider_id: str, model_id: str, operation_kind: s
 
 
 class ModelProviderCatalog:
-    def __init__(self, path: Path = _CATALOG_PATH, custom_path: Path = _CUSTOM_CATALOG_PATH) -> None:
+    def __init__(
+        self,
+        path: Path = _CATALOG_PATH,
+        custom_path: Path = _CUSTOM_CATALOG_PATH,
+        managed_path: Path | None = None,
+    ) -> None:
         self.path = path
         self.custom_path = custom_path
+        self.managed_path = (
+            managed_path
+            if managed_path is not None
+            else (
+                custom_path.with_name("model_provider_catalog.managed.json")
+                if custom_path != _CUSTOM_CATALOG_PATH
+                else _MANAGED_CATALOG_PATH
+            )
+        )
+        self.managed_backup_path = Path(f"{self.managed_path}.bak")
+        self.managed_rejected_path = Path(f"{self.managed_path}.rejected")
+        self._asset_cache_lock = threading.RLock()
         self._cache: Dict[str, Any] | None = None
+        self._creative_media_providers_cache: List[Dict[str, Any]] | None = None
+        self._root_media_mappings_cache: Dict[str, Set[str]] | None = None
+        self._custom_cache: Dict[str, Any] | None = None
+        self._custom_lock = threading.RLock()
+        self._managed_lock = threading.RLock()
+        self._managed_status: Dict[str, Any] = {
+            "ok": True,
+            "state": "not_loaded",
+            "path": str(self.managed_path),
+            "backupPath": str(self.managed_backup_path),
+            "backupAvailable": self.managed_backup_path.exists(),
+            "rejectedAvailable": self.managed_rejected_path.exists(),
+            "recoveryTombstoneAvailable": bool(self._managed_recovery_tombstones()),
+        }
 
     def _load_builtin(self) -> Dict[str, Any]:
-        if self._cache is None:
-            with self.path.open("r", encoding="utf-8") as handle:
-                self._cache = json.load(handle)
+        with self._asset_cache_lock:
+            if self._cache is None:
+                with self.path.open("r", encoding="utf-8") as handle:
+                    self._cache = json.load(handle)
         return deepcopy(self._cache)
 
-    def _load_custom(self) -> Dict[str, Any]:
-        if not self.custom_path.exists():
-            return {"version": 1, "providers": []}
-        try:
-            with self.custom_path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            if not isinstance(payload, dict):
+    def _load_custom(self, *, strict: bool = False) -> Dict[str, Any]:
+        with self._custom_lock:
+            if not self.custom_path.exists():
+                self._custom_cache = None
                 return {"version": 1, "providers": []}
-            return payload
-        except Exception:
-            return {"version": 1, "providers": []}
+            try:
+                with self.custom_path.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if not isinstance(payload, dict):
+                    raise ValueError("custom catalog must be an object")
+            except Exception as exc:
+                if strict:
+                    raise ValueError("custom provider catalog is invalid") from exc
+                return deepcopy(self._custom_cache or {"version": 1, "providers": []})
+            self._custom_cache = deepcopy(payload)
+            return deepcopy(payload)
 
     def _save_custom(self, payload: Dict[str, Any]) -> None:
-        self.custom_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.custom_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        with self._custom_lock:
+            self._atomic_write_managed_path(self.custom_path, payload)
+            self._custom_cache = deepcopy(payload)
+
+    def load_custom(self) -> Dict[str, Any]:
+        """Return the custom overlay without merging built-in or managed entries."""
+
+        return self._load_custom()
+
+    def custom_digest(self) -> str:
+        return _catalog_payload_digest(self._load_custom(strict=True))
+
+    def _validate_managed_payload(self, payload: Any) -> Dict[str, Any]:
+        validated = _validate_managed_catalog(payload)
+        builtin_by_id = {
+            str(provider.get("id") or ""): provider
+            for provider in _as_list(self._load_builtin().get("providers"))
+            if isinstance(provider, dict) and str(provider.get("id") or "").strip()
+        }
+        required_new_provider_fields = ("name", "baseUrl", "apiStandard", "auth", "probeStrategy")
+        for provider_patch in _as_list(validated.get("providers")):
+            provider_id = str(provider_patch.get("id") or "")
+            builtin_provider = builtin_by_id.get(provider_id)
+            effective_provider = (
+                _merge_managed_patch(builtin_provider, provider_patch)
+                if builtin_provider is not None
+                else deepcopy(provider_patch)
+            )
+            if builtin_provider is None:
+                missing = [
+                    field
+                    for field in required_new_provider_fields
+                    if not effective_provider.get(field)
+                ]
+                if missing:
+                    raise ValueError("managed catalog new provider is missing required fields")
+            auth = effective_provider.get("auth")
+            if not isinstance(auth, dict):
+                raise ValueError("managed catalog provider auth must be an object")
+            auth_type = str(auth.get("type") or "").strip()
+            builtin_auth = dict((builtin_provider or {}).get("auth") or {})
+            builtin_auth_type = str(builtin_auth.get("type") or "").strip()
+            if builtin_auth_type == "oauth_file":
+                locked_fields = [
+                    key
+                    for key in provider_patch
+                    if _normalized_catalog_key(key) in _OAUTH_FILE_LOCKED_PROVIDER_FIELDS
+                ]
+                if locked_fields:
+                    raise ValueError("managed catalog cannot change builtin oauth_file transport")
+                unexpected_fields = set(provider_patch) - {"id", "models"}
+                if unexpected_fields:
+                    raise ValueError("managed catalog builtin oauth_file overlays only allow model metadata")
+                for model_patch in _as_list(provider_patch.get("models")):
+                    if not isinstance(model_patch, dict):
+                        continue
+                    locked_model_fields = [
+                        key
+                        for key in model_patch
+                        if _normalized_catalog_key(key) in _OAUTH_FILE_MODEL_TRANSPORT_FIELDS
+                    ]
+                    if locked_model_fields:
+                        raise ValueError("managed catalog cannot change builtin oauth_file model transport")
+                if auth_type != "oauth_file":
+                    raise ValueError("managed catalog cannot replace builtin oauth_file auth")
+                if str(auth.get("path") or "") != str(builtin_auth.get("path") or ""):
+                    raise ValueError("managed catalog cannot change builtin oauth_file auth.path")
+            elif auth_type not in {"api_key", "none"}:
+                raise ValueError("managed catalog auth.type must be api_key or none")
+            for channel in _as_list(effective_provider.get("channels")):
+                if not isinstance(channel, dict):
+                    continue
+                for auth_field in ("authContract", "auth"):
+                    if auth_field not in channel:
+                        continue
+                    channel_auth = channel.get(auth_field)
+                    if not isinstance(channel_auth, dict):
+                        raise ValueError("managed catalog channel auth must be an object")
+                    channel_auth_type = str(channel_auth.get("type") or "").strip().lower()
+                    if channel_auth_type == "oauth_file":
+                        if builtin_auth_type != "oauth_file" or channel_auth != builtin_auth:
+                            raise ValueError(
+                                "managed catalog channel cannot introduce or change oauth_file auth"
+                            )
+                    elif channel_auth_type not in {"api_key", "none"}:
+                        raise ValueError(
+                            "managed catalog channel auth.type must be api_key or none"
+                        )
+            for field in ("name", "apiStandard", "probeStrategy"):
+                if not isinstance(effective_provider.get(field), str) or not str(effective_provider.get(field)).strip():
+                    raise ValueError(f"managed catalog provider {field} must be a non-empty string")
+        return validated
+
+    def _read_managed_path(self, path: Path) -> Dict[str, Any]:
+        if not path.exists():
+            raise ValueError("managed catalog file does not exist")
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("managed catalog is unreadable or invalid JSON") from exc
+        return self._validate_managed_payload(payload)
+
+    def _set_managed_status(
+        self,
+        *,
+        ok: bool,
+        state: str,
+        provider_count: int = 0,
+        error: str = "",
+    ) -> None:
+        self._managed_status = {
+            "ok": ok,
+            "state": state,
+            "backupAvailable": self.managed_backup_path.exists(),
+            "rejectedAvailable": self.managed_rejected_path.exists(),
+            "recoveryTombstoneAvailable": bool(self._managed_recovery_tombstones()),
+            "providerCount": provider_count,
+            **({"errorCode": "managed_catalog_invalid", "error": error} if error else {}),
+        }
+
+    def get_managed_status(self) -> Dict[str, Any]:
+        with self._managed_lock:
+            return deepcopy(self._managed_status)
+
+    def load_managed(self) -> Dict[str, Any]:
+        with self._managed_lock:
+            if not self.managed_path.exists():
+                self._set_managed_status(ok=True, state="absent")
+                return {"version": 1, "providers": []}
+            try:
+                payload = self._read_managed_path(self.managed_path)
+            except ValueError as exc:
+                self._set_managed_status(ok=False, state="invalid", error=str(exc))
+                raise
+            self._set_managed_status(
+                ok=True,
+                state="ready",
+                provider_count=len(_as_list(payload.get("providers"))),
+            )
+            return payload
+
+    @staticmethod
+    def _atomic_write_managed_path(path: Path, payload: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
+
+    def _save_managed(self, payload: Dict[str, Any], *, preserve_current_backup: bool = True) -> None:
+        validated = self._validate_managed_payload(payload)
+        validated["version"] = int(validated.get("version") or 1)
+        if preserve_current_backup and self.managed_path.exists():
+            current = self._read_managed_path(self.managed_path)
+            self._atomic_write_managed_path(self.managed_backup_path, current)
+        self._atomic_write_managed_path(self.managed_path, validated)
+        self._set_managed_status(
+            ok=True,
+            state="ready",
+            provider_count=len(_as_list(validated.get("providers"))),
+        )
+
+    def _assert_managed_digest_locked(self, expected_digest: str | None) -> None:
+        if expected_digest is None:
+            return
+        if self._managed_file_digest(self.managed_path) != str(expected_digest):
+            raise ValueError("managed catalog digest conflict")
+
+    @staticmethod
+    def _assert_file_digest(path: Path, expected_digest: str, label: str) -> None:
+        if not expected_digest or ModelProviderCatalog._managed_file_digest(path) != str(expected_digest):
+            raise ValueError(f"managed catalog {label} digest conflict")
+
+    def restore_managed_backup(
+        self,
+        *,
+        expected_managed_digest: str | None = None,
+    ) -> Dict[str, Any]:
+        with self._managed_lock:
+            self._assert_managed_digest_locked(expected_managed_digest)
+            payload = self._read_managed_path(self.managed_backup_path)
+            self._save_managed(payload, preserve_current_backup=False)
+        return deepcopy(payload)
+
+    @staticmethod
+    def _managed_file_digest(path: Path) -> str:
+        if not path.exists() or not path.is_file():
+            return ""
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return ""
+        return digest.hexdigest()
+
+    def _managed_recovery_tombstone_path(
+        self,
+        current_digest: str,
+        rejected_digest: str,
+    ) -> Path:
+        return Path(
+            f"{self.managed_path}.recovery.{current_digest}.{rejected_digest}.tombstone"
+        )
+
+    def _managed_recovery_tombstones(self) -> List[Dict[str, Any]]:
+        prefix = f"{self.managed_path.name}.recovery."
+        suffix = ".tombstone"
+        records: List[Dict[str, Any]] = []
+        for path in sorted(self.managed_path.parent.glob(f"{prefix}*{suffix}")):
+            identity = path.name[len(prefix) : -len(suffix)]
+            parts = identity.split(".", 1)
+            if len(parts) != 2:
+                continue
+            current_digest, rejected_digest = parts
+            records.append(
+                {
+                    "path": path,
+                    "currentDigest": current_digest,
+                    "rejectedDigest": rejected_digest,
+                    "digest": self._managed_file_digest(path),
+                }
+            )
+        return records
+
+    def managed_recovery_state(self) -> Dict[str, Any]:
+        def _valid(path: Path) -> bool:
+            try:
+                self._read_managed_path(path)
+            except ValueError:
+                return False
+            return True
+
+        with self._managed_lock:
+            tombstones = self._managed_recovery_tombstones()
+            return {
+                "managedExists": self.managed_path.exists(),
+                "managedDigest": self._managed_file_digest(self.managed_path),
+                "managedValid": _valid(self.managed_path) if self.managed_path.exists() else False,
+                "backupExists": self.managed_backup_path.exists(),
+                "backupDigest": self._managed_file_digest(self.managed_backup_path),
+                "backupValid": _valid(self.managed_backup_path) if self.managed_backup_path.exists() else False,
+                "rejectedExists": self.managed_rejected_path.exists(),
+                "rejectedDigest": self._managed_file_digest(self.managed_rejected_path),
+                "tombstoneExists": bool(tombstones),
+                "tombstoneCount": len(tombstones),
+                "tombstones": [
+                    {
+                        "currentDigest": item["currentDigest"],
+                        "rejectedDigest": item["rejectedDigest"],
+                        "digest": item["digest"],
+                    }
+                    for item in tombstones
+                ],
+            }
+
+    def recover_managed_from_backup(
+        self,
+        *,
+        expected_managed_digest: str,
+        expected_backup_digest: str,
+    ) -> Dict[str, Any]:
+        """Replace the current overlay with its last valid backup, retaining exact bytes."""
+
+        with self._managed_lock:
+            self._assert_file_digest(
+                self.managed_backup_path,
+                expected_backup_digest,
+                "backup",
+            )
+            backup = self._read_managed_path(self.managed_backup_path)
+            current_digest = self._managed_file_digest(self.managed_path)
+            rejected_digest = self._managed_file_digest(self.managed_rejected_path)
+            if self.managed_rejected_path.exists():
+                if self.managed_path.exists() or rejected_digest != str(expected_managed_digest):
+                    raise ValueError("managed catalog has an unresolved rejected recovery file")
+            else:
+                if not self.managed_path.exists() or current_digest != str(expected_managed_digest):
+                    raise ValueError("managed catalog managed digest conflict")
+                os.replace(self.managed_path, self.managed_rejected_path)
+            try:
+                self._atomic_write_managed_path(self.managed_path, backup)
+            except Exception:
+                if self.managed_path.exists():
+                    try:
+                        self.managed_path.unlink()
+                    except OSError:
+                        pass
+                if self.managed_rejected_path.exists() and not self.managed_path.exists():
+                    os.replace(self.managed_rejected_path, self.managed_path)
+                raise
+            self._set_managed_status(
+                ok=True,
+                state="recovered",
+                provider_count=len(_as_list(backup.get("providers"))),
+            )
+            return self.managed_recovery_state()
+
+    def finalize_managed_recovery(
+        self,
+        *,
+        expected_current_digest: str,
+        expected_rejected_digest: str,
+    ) -> Dict[str, Any]:
+        """Accept a recovered overlay after both recovery artifacts pass CAS checks."""
+
+        with self._managed_lock:
+            self._assert_file_digest(self.managed_path, expected_current_digest, "current")
+            self._assert_file_digest(self.managed_rejected_path, expected_rejected_digest, "rejected")
+            current = self._read_managed_path(self.managed_path)
+            tombstone_path = self._managed_recovery_tombstone_path(
+                str(expected_current_digest),
+                str(expected_rejected_digest),
+            )
+            if tombstone_path.exists():
+                raise ValueError("managed catalog recovery tombstone already exists")
+            try:
+                os.replace(self.managed_rejected_path, tombstone_path)
+            except OSError as exc:
+                raise ValueError("managed catalog rejected recovery finalization failed") from exc
+            self._set_managed_status(
+                ok=True,
+                state="ready",
+                provider_count=len(_as_list(current.get("providers"))),
+            )
+            return self.managed_recovery_state()
+
+    def rollback_managed_recovery(
+        self,
+        *,
+        expected_current_digest: str,
+        expected_rejected_digest: str = "",
+    ) -> Dict[str, Any]:
+        """Undo an active recovery or restore the pre-finalize recovery state."""
+
+        with self._managed_lock:
+            current_digest = self._managed_file_digest(self.managed_path)
+            if not expected_current_digest or current_digest != str(expected_current_digest):
+                raise ValueError("managed catalog changed after recovery")
+            if not self.managed_rejected_path.exists():
+                tombstones = [
+                    item
+                    for item in self._managed_recovery_tombstones()
+                    if item["currentDigest"] == str(expected_current_digest)
+                    and (
+                        not expected_rejected_digest
+                        or item["rejectedDigest"] == str(expected_rejected_digest)
+                    )
+                ]
+                if len(tombstones) != 1:
+                    raise ValueError("managed catalog recovery tombstone is missing or ambiguous")
+                tombstone = tombstones[0]
+                if tombstone["digest"] != tombstone["rejectedDigest"]:
+                    raise ValueError("managed catalog recovery tombstone digest conflict")
+                os.replace(tombstone["path"], self.managed_rejected_path)
+                current = self._read_managed_path(self.managed_path)
+                self._set_managed_status(
+                    ok=True,
+                    state="recovered",
+                    provider_count=len(_as_list(current.get("providers"))),
+                )
+                return self.managed_recovery_state()
+            rollback_temp = Path(f"{self.managed_path}.rollback-current")
+            if rollback_temp.exists():
+                raise ValueError("managed catalog rollback staging file already exists")
+            os.replace(self.managed_path, rollback_temp)
+            try:
+                os.replace(self.managed_rejected_path, self.managed_path)
+            except Exception:
+                if rollback_temp.exists() and not self.managed_path.exists():
+                    os.replace(rollback_temp, self.managed_path)
+                raise
+            finally:
+                if rollback_temp.exists():
+                    try:
+                        rollback_temp.unlink()
+                    except OSError:
+                        pass
+            try:
+                restored = self._read_managed_path(self.managed_path)
+            except ValueError as exc:
+                self._set_managed_status(ok=False, state="invalid", error=str(exc))
+            else:
+                self._set_managed_status(
+                    ok=True,
+                    state="ready",
+                    provider_count=len(_as_list(restored.get("providers"))),
+                )
+            return self.managed_recovery_state()
+
+    def get_managed_provider(self, provider_id: str) -> Dict[str, Any] | None:
+        target = _validate_managed_identifier(provider_id, "providerId")
+        for provider in _as_list(self.load_managed().get("providers")):
+            if str(provider.get("id") or "") == target:
+                return deepcopy(provider)
+        return None
+
+    @staticmethod
+    def _managed_provider_snapshot_digest(provider: Dict[str, Any] | None) -> str:
+        snapshot = {
+            "exists": provider is not None,
+            "value": deepcopy(provider) if provider is not None else None,
+        }
+        encoded = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def managed_provider_digest(self, provider_id: str) -> str:
+        """Return the target-scoped digest used by managed provider rollback CAS."""
+
+        target = _validate_managed_identifier(provider_id, "providerId")
+        with self._managed_lock:
+            provider = next(
+                (
+                    item
+                    for item in _as_list(self.load_managed().get("providers"))
+                    if str(item.get("id") or "") == target
+                ),
+                None,
+            )
+            return self._managed_provider_snapshot_digest(provider)
+
+    def validate_managed_provider(self, provider_patch: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate one secret-free managed overlay patch without writing it."""
+
+        if not isinstance(provider_patch, dict):
+            raise ValueError("managed provider patch must be an object")
+        stored_patch = deepcopy(provider_patch)
+        stored_patch.pop("isCustom", None)
+        stored_patch.pop("isManaged", None)
+        _validate_managed_catalog({"version": 1, "providers": [stored_patch]})
+        provider_id = str(stored_patch.get("id") or "")
+        with self._managed_lock:
+            payload = self.load_managed()
+            providers = _as_list(payload.get("providers"))
+            candidate_providers: List[Dict[str, Any]] = []
+            replaced = False
+            for provider in providers:
+                if str(provider.get("id") or "") == provider_id:
+                    candidate_providers.append(_merge_managed_patch(provider, stored_patch))
+                    replaced = True
+                else:
+                    candidate_providers.append(deepcopy(provider))
+            if not replaced:
+                candidate_providers.append(deepcopy(stored_patch))
+            self._validate_managed_payload(
+                {
+                    **payload,
+                    "providers": candidate_providers,
+                }
+            )
+        return stored_patch
+
+    def _store_managed_provider(
+        self,
+        provider_patch: Dict[str, Any],
+        *,
+        merge_existing: bool,
+        expected_managed_digest: str | None = None,
+    ) -> Dict[str, Any]:
+        stored_patch = self.validate_managed_provider(provider_patch)
+        provider_id = str(stored_patch.get("id") or "")
+        saved_patch = stored_patch
+        with self._managed_lock:
+            self._assert_managed_digest_locked(expected_managed_digest)
+            payload = self.load_managed()
+            providers = _as_list(payload.get("providers"))
+            next_providers: List[Dict[str, Any]] = []
+            replaced = False
+            for provider in providers:
+                if str(provider.get("id") or "") == provider_id:
+                    saved_patch = (
+                        _merge_managed_patch(provider, stored_patch)
+                        if merge_existing
+                        else stored_patch
+                    )
+                    next_providers.append(saved_patch)
+                    replaced = True
+                else:
+                    next_providers.append(deepcopy(provider))
+            if not replaced:
+                next_providers.append(stored_patch)
+            payload["providers"] = next_providers
+            self._save_managed(payload)
+        return deepcopy(saved_patch)
+
+    def upsert_managed_provider(
+        self,
+        provider_patch: Dict[str, Any],
+        *,
+        expected_managed_digest: str | None = None,
+    ) -> Dict[str, Any]:
+        return self._store_managed_provider(
+            provider_patch,
+            merge_existing=True,
+            expected_managed_digest=expected_managed_digest,
+        )
+
+    def restore_managed_provider(
+        self,
+        provider_id: str,
+        provider_snapshot: Dict[str, Any] | None,
+        *,
+        expected_managed_digest: str | None = None,
+        expected_provider_digest: str | None = None,
+    ) -> Dict[str, Any] | None:
+        target = _validate_managed_identifier(provider_id, "providerId")
+        stored_snapshot: Dict[str, Any] | None = None
+        if provider_snapshot is not None:
+            if not isinstance(provider_snapshot, dict):
+                raise ValueError("managed provider snapshot must be an object")
+            snapshot_id = _validate_managed_identifier(
+                provider_snapshot.get("id"),
+                "providerSnapshot.id",
+            )
+            if snapshot_id != target:
+                raise ValueError("managed provider snapshot id does not match providerId")
+            stored_snapshot = self.validate_managed_provider(provider_snapshot)
+
+        with self._managed_lock:
+            payload = self.load_managed()
+            providers = _as_list(payload.get("providers"))
+            current_provider = next(
+                (
+                    item
+                    for item in providers
+                    if str(item.get("id") or "") == target
+                ),
+                None,
+            )
+            if expected_provider_digest is not None:
+                current_provider_digest = self._managed_provider_snapshot_digest(current_provider)
+                if current_provider_digest != str(expected_provider_digest):
+                    raise ValueError("managed provider digest conflict")
+            else:
+                self._assert_managed_digest_locked(expected_managed_digest)
+
+            next_providers: List[Dict[str, Any]] = []
+            restored = False
+            for provider in providers:
+                if str(provider.get("id") or "") != target:
+                    next_providers.append(deepcopy(provider))
+                    continue
+                restored = True
+                if stored_snapshot is not None:
+                    next_providers.append(deepcopy(stored_snapshot))
+            if stored_snapshot is not None and not restored:
+                next_providers.append(deepcopy(stored_snapshot))
+            if stored_snapshot is None and not restored:
+                return None
+            payload["providers"] = next_providers
+            self._save_managed(payload, preserve_current_backup=False)
+        return deepcopy(stored_snapshot)
+
+    def delete_managed_provider(
+        self,
+        provider_id: str,
+        *,
+        expected_managed_digest: str | None = None,
+    ) -> bool:
+        target = _validate_managed_identifier(provider_id, "providerId")
+        with self._managed_lock:
+            self._assert_managed_digest_locked(expected_managed_digest)
+            payload = self.load_managed()
+            providers = _as_list(payload.get("providers"))
+            next_providers = [
+                deepcopy(provider)
+                for provider in providers
+                if str(provider.get("id") or "") != target
+            ]
+            if len(next_providers) == len(providers):
+                return False
+            payload["providers"] = next_providers
+            self._save_managed(payload)
+        return True
 
     def _media_capabilities(self, modality: str) -> List[str]:
         normalized = _normalized_modality(modality)
@@ -644,37 +1621,71 @@ class ModelProviderCatalog:
         }
 
     def _creative_media_matrix_providers(self) -> List[Dict[str, Any]]:
-        if not _CREATIVE_MEDIA_MATRIX_PATH.exists():
-            return []
-        try:
-            with _CREATIVE_MEDIA_MATRIX_PATH.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            return []
-        providers: List[Dict[str, Any]] = []
-        modalities = payload.get("modalities") if isinstance(payload, dict) else {}
-        if not isinstance(modalities, dict):
-            return []
-        for modality, entries in modalities.items():
-            for entry in _as_list(entries):
+        with self._asset_cache_lock:
+            if self._creative_media_providers_cache is not None:
+                return deepcopy(self._creative_media_providers_cache)
+            if not _CREATIVE_MEDIA_MATRIX_PATH.exists():
+                self._creative_media_providers_cache = []
+                return []
+            try:
+                with _CREATIVE_MEDIA_MATRIX_PATH.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            except Exception:
+                # Failed loads must be retried; do not turn a transient read failure into a cache entry.
+                return []
+            providers: List[Dict[str, Any]] = []
+            modalities = payload.get("modalities") if isinstance(payload, dict) else {}
+            if not isinstance(modalities, dict):
+                return []
+            for modality, entries in modalities.items():
+                for entry in _as_list(entries):
+                    if not isinstance(entry, dict):
+                        continue
+                    provider = self._provider_from_media_matrix_entry(str(modality), entry)
+                    if provider:
+                        providers.append(provider)
+            seen = {str(provider.get("id") or "") for provider in providers}
+            for entry in _as_list(media_model_capability_registry.load().get("providers")):
                 if not isinstance(entry, dict):
                     continue
-                provider_id = str(entry.get("id") or "").strip()
-                provider = self._provider_from_media_matrix_entry(str(modality), entry)
+                provider_id = str(entry.get("providerId") or "")
+                if provider_id in seen:
+                    continue
+                provider = self._provider_from_media_registry_entry(entry)
                 if provider:
                     providers.append(provider)
-        seen = {str(provider.get("id") or "") for provider in providers}
-        for entry in _as_list(media_model_capability_registry.load().get("providers")):
-            if not isinstance(entry, dict):
-                continue
-            provider_id = str(entry.get("providerId") or "")
-            if provider_id in seen:
-                continue
-            provider = self._provider_from_media_registry_entry(entry)
-            if provider:
-                providers.append(provider)
-                seen.add(provider_id)
-        return providers
+                    seen.add(provider_id)
+            self._creative_media_providers_cache = deepcopy(providers)
+            return deepcopy(self._creative_media_providers_cache)
+
+    def _root_media_mappings(self) -> Dict[str, Set[str]]:
+        with self._asset_cache_lock:
+            if self._root_media_mappings_cache is not None:
+                return {
+                    key: set(values)
+                    for key, values in self._root_media_mappings_cache.items()
+                }
+            mappings: Dict[str, Set[str]] = {}
+            for root in _as_list(self._load_builtin().get("providers")):
+                if not isinstance(root, dict):
+                    continue
+                root_id = str(root.get("id") or "").strip()
+                if not root_id:
+                    continue
+                for descriptor in _as_list(root.get("capabilityEntries")):
+                    if not isinstance(descriptor, dict):
+                        continue
+                    source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
+                    if source_provider_id:
+                        mappings.setdefault(source_provider_id, set()).add(root_id)
+            self._root_media_mappings_cache = {
+                key: set(values)
+                for key, values in mappings.items()
+            }
+            return {
+                key: set(values)
+                for key, values in self._root_media_mappings_cache.items()
+            }
 
     @staticmethod
     def _resolved_capability_entries(
@@ -728,6 +1739,12 @@ class ModelProviderCatalog:
 
     def load(self) -> Dict[str, Any]:
         builtin = self._load_builtin()
+        try:
+            managed = self.load_managed()
+        except ValueError:
+            # Runtime catalog remains usable while the strict managed surface
+            # reports the invalid overlay and offers backup restoration.
+            managed = {"version": 1, "providers": []}
         custom = self._load_custom()
         media_providers = self._creative_media_matrix_providers()
         media_providers_by_id = {
@@ -735,40 +1752,79 @@ class ModelProviderCatalog:
             for item in media_providers
             if str(item.get("id") or "").strip()
         }
+
+        effective_providers: List[Dict[str, Any]] = []
+        effective_positions: Dict[str, int] = {}
+        for entry in _as_list(builtin.get("providers")):
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            provider_id = str(entry.get("id") or "")
+            if provider_id in effective_positions:
+                continue
+            effective_positions[provider_id] = len(effective_providers)
+            effective_providers.append(deepcopy(entry))
+        for provider_patch in _as_list(managed.get("providers")):
+            provider_id = str(provider_patch.get("id") or "")
+            if provider_id in effective_positions:
+                position = effective_positions[provider_id]
+                effective_providers[position] = _merge_managed_patch(
+                    effective_providers[position],
+                    provider_patch,
+                )
+            else:
+                effective_positions[provider_id] = len(effective_providers)
+                effective_providers.append(deepcopy(provider_patch))
+            managed_position = effective_positions[provider_id]
+            effective_providers[managed_position]["isManaged"] = True
+            effective_providers[managed_position]["isCustom"] = False
+
         providers: List[Dict[str, Any]] = []
         seen_provider_ids: Set[str] = set()
         for entry in _as_list(custom.get("providers")):
             if not isinstance(entry, dict) or not entry.get("id"):
                 continue
+            provider_id = str(entry.get("id") or "")
+            if provider_id in seen_provider_ids:
+                continue
             item = deepcopy(entry)
             item["isCustom"] = True
-            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
+            item["isManaged"] = False
+            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(provider_id))
             capability_entries = self._resolved_capability_entries(item, media_providers_by_id)
             if capability_entries:
                 item["capabilityEntries"] = capability_entries
             providers.append(item)
-            seen_provider_ids.add(str(item.get("id") or ""))
-        for entry in _as_list(builtin.get("providers")):
+            seen_provider_ids.add(provider_id)
+        for entry in effective_providers:
             if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            provider_id = str(entry.get("id") or "")
+            if provider_id in seen_provider_ids:
                 continue
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
-            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
+            item.setdefault("isManaged", False)
+            item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(provider_id))
             capability_entries = self._resolved_capability_entries(item, media_providers_by_id)
             if capability_entries:
                 item["capabilityEntries"] = capability_entries
             providers.append(item)
-            seen_provider_ids.add(str(item.get("id") or ""))
+            seen_provider_ids.add(provider_id)
         for entry in media_providers:
             provider_id = str(entry.get("id") or "")
             if provider_id in seen_provider_ids:
                 continue
             item = deepcopy(entry)
             item.setdefault("isCustom", False)
+            item.setdefault("isManaged", False)
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(provider_id))
             providers.append(item)
             seen_provider_ids.add(provider_id)
-        return {**builtin, "providers": providers}
+        return {
+            **builtin,
+            "providers": providers,
+            "managedCatalogStatus": self.get_managed_status(),
+        }
 
     def list_providers(self) -> List[Dict[str, Any]]:
         return _as_list(self.load().get("providers"))
@@ -848,24 +1904,61 @@ class ModelProviderCatalog:
         provider_id = str(provider.get("id") or "").strip()
         if not provider_id:
             raise ValueError("provider id is required")
-        payload = self._load_custom()
-        providers = [item for item in _as_list(payload.get("providers")) if str((item or {}).get("id") or "") != provider_id]
-        providers.insert(0, {**provider, "isCustom": True, "models": _as_list(provider.get("models"))})
-        payload["version"] = int(payload.get("version") or 1)
-        payload["providers"] = providers
-        self._save_custom(payload)
-        return deepcopy(providers[0])
+        with self._custom_lock:
+            payload = self._load_custom(strict=True)
+            providers = [item for item in _as_list(payload.get("providers")) if str((item or {}).get("id") or "") != provider_id]
+            providers.insert(0, {**provider, "isCustom": True, "models": _as_list(provider.get("models"))})
+            payload["version"] = int(payload.get("version") or 1)
+            payload["providers"] = providers
+            self._save_custom(payload)
+            return deepcopy(providers[0])
 
-    def delete_custom_provider(self, provider_id: str) -> bool:
+    def delete_custom_provider(
+        self,
+        provider_id: str,
+        *,
+        expected_current_digest: str = "",
+        before_persist=None,
+    ) -> bool:
         target = str(provider_id or "").strip()
-        payload = self._load_custom()
-        before = _as_list(payload.get("providers"))
-        after = [item for item in before if str((item or {}).get("id") or "") != target]
-        if len(after) == len(before):
-            return False
-        payload["providers"] = after
-        self._save_custom(payload)
-        return True
+        with self._custom_lock:
+            payload = self._load_custom(strict=True)
+            if expected_current_digest and _catalog_payload_digest(payload) != expected_current_digest:
+                raise ValueError("custom catalog digest changed")
+            before = _as_list(payload.get("providers"))
+            after = [item for item in before if str((item or {}).get("id") or "") != target]
+            if len(after) == len(before):
+                return False
+            payload["providers"] = after
+            if callable(before_persist):
+                before_persist(deepcopy(payload))
+            self._save_custom(payload)
+            return True
+
+    def restore_custom_provider(
+        self,
+        provider_id: str,
+        provider: Dict[str, Any] | None,
+        *,
+        expected_current_digest: str = "",
+    ) -> Dict[str, Any] | None:
+        target = str(provider_id or "").strip()
+        with self._custom_lock:
+            payload = self._load_custom(strict=True)
+            if expected_current_digest and _catalog_payload_digest(payload) != expected_current_digest:
+                raise ValueError("custom catalog digest changed")
+            providers = [
+                deepcopy(item)
+                for item in _as_list(payload.get("providers"))
+                if str((item or {}).get("id") or "") != target
+            ]
+            restored = None
+            if provider is not None:
+                restored = {**deepcopy(provider), "id": target, "isCustom": True}
+                providers.insert(0, restored)
+            payload["providers"] = providers
+            self._save_custom(payload)
+            return deepcopy(restored)
 
     def _model_from_catalog(self, provider: Dict[str, Any], model_id: str) -> Dict[str, Any]:
         for item in _as_list(provider.get("models")):
@@ -902,19 +1995,7 @@ class ModelProviderCatalog:
         if "/" not in display_model_id and provider_kind != "media_generation" and media_modality not in _MEDIA_MODEL_TYPES:
             return None
         matches: List[tuple[int, int, str, Dict[str, Any], Dict[str, Any]]] = []
-        root_mappings: Dict[str, Set[str]] = {}
-        for root in _as_list(self._load_builtin().get("providers")):
-            if not isinstance(root, dict):
-                continue
-            root_id = str(root.get("id") or "").strip()
-            if not root_id:
-                continue
-            for descriptor in _as_list(root.get("capabilityEntries")):
-                if not isinstance(descriptor, dict):
-                    continue
-                source_provider_id = str(descriptor.get("sourceProviderId") or "").strip()
-                if source_provider_id:
-                    root_mappings.setdefault(source_provider_id, set()).add(root_id)
+        root_mappings = self._root_media_mappings()
         for media_provider in self._creative_media_matrix_providers():
             media_provider_id = str(media_provider.get("id") or "")
             root_provider_ids = root_mappings.get(media_provider_id, set())
@@ -959,14 +2040,11 @@ class ModelProviderCatalog:
             headers.setdefault("anthropic-version", "2023-06-01")
         return headers
 
+    def resolve_probe_target(self, provider: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
+        return resolve_probe_target(provider, base_url)
+
     def _models_url_for_probe(self, provider: Dict[str, Any], effective_base_url: str) -> str:
-        explicit_url = str(provider.get("modelsUrl") or provider.get("models_url") or "").strip()
-        if explicit_url:
-            return explicit_url
-        path = str(provider.get("modelsPath") or provider.get("models_path") or "/models").strip() or "/models"
-        if not path.startswith("/"):
-            path = f"/{path}"
-        return f"{effective_base_url}{path}"
+        return self.resolve_probe_target(provider, effective_base_url)["url"]
 
     def _classify_probe_exception(self, exc: Exception) -> str:
         message = str(exc).lower()
@@ -980,7 +2058,7 @@ class ModelProviderCatalog:
         try:
             return self._models_url_for_probe(provider, effective_base_url)
         except Exception:
-            return f"{effective_base_url}/models"
+            return ""
 
     def probe_provider(
         self,
@@ -1035,8 +2113,9 @@ class ModelProviderCatalog:
         if strategy == "comfyui":
             return self._probe_comfyui(provider, effective_base_url=effective_base_url, timeout=timeout)
 
-        url = self._models_url_for_probe(provider, effective_base_url)
+        url = ""
         try:
+            url = self._models_url_for_probe(provider, effective_base_url)
             params = {}
             if credential and auth.get("query"):
                 params[str(auth["query"])] = credential
@@ -1049,6 +2128,7 @@ class ModelProviderCatalog:
                         headers=self._headers_for_probe(provider, credential),
                         params=params,
                         timeout=timeout,
+                        allow_redirects=False,
                     )
                     break
                 except Exception as exc:
@@ -1057,6 +2137,17 @@ class ModelProviderCatalog:
                         raise
             if response is None:
                 raise last_exc or RuntimeError("online probe did not return a response")
+            if 300 <= response.status_code < 400:
+                return {
+                    "ok": False,
+                    "source": "online",
+                    "provider": provider,
+                    "models": [],
+                    "reason": "redirect_not_allowed",
+                    "statusCode": response.status_code,
+                    "resolvedModelsUrl": url,
+                    "error": "Provider probe redirects are not allowed.",
+                }
             if not response.ok:
                 reason = "online_probe_failed"
                 if response.status_code in (401, 403):
@@ -1071,7 +2162,7 @@ class ModelProviderCatalog:
                     "reason": reason,
                     "statusCode": response.status_code,
                     "resolvedModelsUrl": url,
-                    "error": response.text[:500],
+                    "error": _redact_probe_error(response.text, credential),
                 }
             payload = response.json()
             data = payload.get("data") if isinstance(payload, dict) else None
@@ -1125,13 +2216,35 @@ class ModelProviderCatalog:
                 "models": [],
                 "reason": reason,
                 "resolvedModelsUrl": url,
-                "error": str(exc),
+                "error": _redact_probe_error(exc, credential),
             }
 
     def _probe_comfyui(self, provider: Dict[str, Any], *, effective_base_url: str, timeout: float = 20.0) -> Dict[str, Any]:
-        url = f"{effective_base_url}/object_info"
+        url = ""
         try:
-            response = requests.get(url, timeout=timeout)
+            safe_base_url = _validated_http_url(effective_base_url, "probe base URL")
+            parsed_base_url = urlparse(safe_base_url)
+            url = _validated_http_url(
+                urlunparse(
+                    parsed_base_url._replace(
+                        path=f"{parsed_base_url.path.rstrip('/')}/object_info",
+                        fragment="",
+                    )
+                ),
+                "ComfyUI probe URL",
+            )
+            response = requests.get(url, timeout=timeout, allow_redirects=False)
+            if 300 <= response.status_code < 400:
+                return {
+                    "ok": False,
+                    "source": "online",
+                    "provider": provider,
+                    "models": [],
+                    "reason": "redirect_not_allowed",
+                    "statusCode": response.status_code,
+                    "resolvedModelsUrl": url,
+                    "error": "Provider probe redirects are not allowed.",
+                }
             if not response.ok:
                 return {
                     "ok": False,
@@ -1141,7 +2254,7 @@ class ModelProviderCatalog:
                     "reason": "online_probe_failed",
                     "statusCode": response.status_code,
                     "resolvedModelsUrl": url,
-                    "error": response.text[:500],
+                    "error": _redact_probe_error(response.text),
                 }
             payload = response.json()
             checkpoint_names: List[str] = []
@@ -1176,7 +2289,7 @@ class ModelProviderCatalog:
                 "models": [],
                 "reason": "online_probe_failed",
                 "resolvedModelsUrl": url,
-                "error": str(exc),
+                "error": _redact_probe_error(exc),
             }
 
     def _capabilities_from_online(self, metadata: Dict[str, Any]) -> Set[str]:
@@ -1451,6 +2564,35 @@ class ModelProviderCatalog:
                 "model_record": model,
             }
         )
+        reasoning_effort_control = resolve_reasoning_effort_control_for_metadata(
+            {
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "provider_record": provider,
+                "model_record": model,
+            }
+        )
+        media_limits = deepcopy(dict(model.get("mediaLimits") or {}))
+        raw_availability = model.get("availability")
+        availability = (
+            deepcopy(dict(raw_availability))
+            if isinstance(raw_availability, dict)
+            else {"status": str(raw_availability).strip()}
+            if str(raw_availability or "").strip()
+            else {}
+        )
+        catalog_connectable = _provider_catalog_connectable(provider)
+        availability["catalogConnectable"] = catalog_connectable
+        if not catalog_connectable:
+            catalog_only = (
+                str(provider.get("apiStandard") or provider.get("api_standard") or "").strip().lower() == "catalog_only"
+                or str(provider.get("adapter") or "").strip().lower() == "catalog_only"
+            )
+            availability["catalogConnectReason"] = (
+                "provider_runtime_unavailable" if catalog_only else "provider_endpoint_unconfigured"
+            )
+        else:
+            availability.pop("catalogConnectReason", None)
         return {
             "id": model_id,
             "modelId": model_id,
@@ -1464,6 +2606,7 @@ class ModelProviderCatalog:
             "capabilities": capability_map,
             "reasoningSurface": reasoning_surface,
             "thinkingControl": thinking_control,
+            "reasoningEffortControl": reasoning_effort_control,
             "capabilityTags": sorted(capability_tags),
             "capabilitySource": capability_source,
             "capabilityRegistryMatched": bool(registry_entry or media_registry),
@@ -1498,7 +2641,16 @@ class ModelProviderCatalog:
                 else "chat_general"
             ),
             "parameterProfile": self._parameter_profile_for_model(model, capability_map, provider_kind),
-            "mediaLimits": model.get("mediaLimits") or {},
+            "mediaLimits": media_limits,
+            "operationKinds": deepcopy(model.get("operationKinds") or media_limits.get("operationKinds") or []),
+            "adapter": model.get("adapter") or media_limits.get("adapter") or provider.get("adapter") or "",
+            "rerankApiFlavor": model.get("rerankApiFlavor") or provider.get("rerankApiFlavor") or "",
+            "availability": availability,
+            "sourceRefs": deepcopy(
+                model.get("sourceRefs")
+                or capability_registry_payload.get("sourceRefs")
+                or []
+            ),
         }
 
 

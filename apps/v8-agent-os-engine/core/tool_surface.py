@@ -843,22 +843,105 @@ def _render_config_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
                 if isinstance(item, dict)
             )
         )
+    try:
+        page_offset = max(0, int(payload.get("offset") or 0))
+    except (TypeError, ValueError):
+        page_offset = 0
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
     if models:
-        lines.append("Models:")
+        is_catalog_discover = mode == "catalog_discover"
+        lines.append("Discovered models:" if is_catalog_discover else "Models:")
         for item in models[:12]:
             if not isinstance(item, dict):
                 continue
             default = " [default]" if item.get("defaultCategories") else ""
             roles = ", ".join(str(role) for role in list(item.get("assignedRoles") or [])[:4])
             role_suffix = f"; roles={roles}" if roles else ""
+            provider_label = (
+                item.get("providerName")
+                or item.get("providerId")
+                or payload.get("providerName")
+                or payload.get("providerId")
+                or "unknown provider"
+            )
+            availability = item.get("availability") if isinstance(item.get("availability"), dict) else {}
+            status_label = item.get("statusLabel") or item.get("status") or availability.get("status")
+            if not status_label and availability.get("catalogConnectable") is True:
+                status_label = "connectable"
+            elif not status_label and availability.get("catalogConnectable") is False:
+                status_label = availability.get("catalogConnectReason") or "not connectable"
+            status_label = status_label or item.get("type") or item.get("capabilityClass") or "discovered"
             lines.append(
                 f"- {_short_text(item.get('modelId') or item.get('modelRef'), 100)}"
-                f" ({_short_text(item.get('providerName') or item.get('providerId'), 70)}): "
-                f"{_short_text(item.get('statusLabel') or item.get('status'), 70)}{default}{role_suffix}"
+                f" ({_short_text(provider_label, 70)}): "
+                f"{_short_text(status_label, 70)}{default}{role_suffix}"
             )
-        if int(payload.get("total") or len(models)) > len(models):
-            lines.append(f"- … use offset to read the remaining {int(payload.get('total') or 0) - len(models)} model(s)")
+        summary_omitted = max(0, len(models) - 12)
+        if summary_omitted:
+            lines.append(f"- ... {summary_omitted} model(s) omitted from this summary; inspect detail")
+        try:
+            model_total = max(0, int(payload.get("total") or len(models)))
+        except (TypeError, ValueError):
+            model_total = len(models)
+        remaining_model_count = max(0, model_total - page_offset - len(models))
+        if remaining_model_count:
+            lines.append(
+                f"- ... use offset={page_offset + len(models)} to read the remaining "
+                f"{remaining_model_count} model(s)"
+            )
+    providers = payload.get("providers") if isinstance(payload.get("providers"), list) else []
+    if providers:
+        lines.append("Model Hub providers:")
+        remaining_models = 12
+        for provider in providers[:8]:
+            if not isinstance(provider, dict):
+                continue
+            provider_id = _short_text(provider.get("providerId") or provider.get("id"), 80)
+            flags = []
+            if provider.get("isManaged"):
+                flags.append("managed")
+            if provider.get("isCustom"):
+                flags.append("custom")
+            flag_suffix = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"- {provider_id}: {_short_text(provider.get('name'), 90)}{flag_suffix}")
+            provider_models = provider.get("models") if isinstance(provider.get("models"), list) else []
+            if remaining_models > 0 and provider_models:
+                model_ids = [
+                    _short_text(item.get("modelId") or item.get("id"), 80)
+                    for item in provider_models[:remaining_models]
+                    if isinstance(item, dict)
+                ]
+                if model_ids:
+                    lines.append("  Models: " + ", ".join(model_ids))
+                    remaining_models -= len(model_ids)
+                provider_models_omitted = max(0, len(provider_models) - len(model_ids))
+                if provider_models_omitted:
+                    lines.append(
+                        f"  ... {provider_models_omitted} more model(s); filter by provider/query or inspect detail"
+                    )
+            elif provider_models:
+                lines.append(
+                    f"  ... {len(provider_models)} model(s) not shown; filter by provider/query or inspect detail"
+                )
+        summary_providers_omitted = max(0, len(providers) - 8)
+        if summary_providers_omitted:
+            lines.append(f"- ... {summary_providers_omitted} provider(s) omitted from this summary; inspect detail")
+        try:
+            provider_total = max(0, int(payload.get("total") or len(providers)))
+        except (TypeError, ValueError):
+            provider_total = len(providers)
+        remaining_provider_count = max(0, provider_total - page_offset - len(providers))
+        if remaining_provider_count:
+            lines.append(
+                f"- ... use offset={page_offset + len(providers)} to read the remaining "
+                f"{remaining_provider_count} provider(s)"
+            )
+    managed_status = payload.get("managedCatalogStatus") if isinstance(payload.get("managedCatalogStatus"), dict) else {}
+    if managed_status and managed_status.get("ok") is False:
+        lines.append(
+            "Managed catalog blocked: "
+            + _short_text(managed_status.get("error") or managed_status.get("errorCode") or "invalid overlay", 220)
+        )
     roles = payload.get("roles") if isinstance(payload.get("roles"), list) else []
     if roles:
         lines.append("Model consumers:")

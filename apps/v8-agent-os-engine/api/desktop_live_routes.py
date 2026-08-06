@@ -5,10 +5,13 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.desktop_live import desktop_live_service
-
-
 router = APIRouter()
+
+
+def _get_desktop_live_service():
+    from core.desktop_live import desktop_live_service
+
+    return desktop_live_service
 
 
 class DesktopLiveCreatePayload(BaseModel):
@@ -29,6 +32,7 @@ class DesktopLiveCandidatePayload(BaseModel):
 
 async def _frame_stream(session_id: str) -> AsyncIterator[bytes]:
     boundary = b"--frame\r\n"
+    desktop_live_service = _get_desktop_live_service()
     while True:
         try:
             frame = await asyncio.to_thread(desktop_live_service.capture_frame, session_id)
@@ -48,13 +52,13 @@ async def _frame_stream(session_id: str) -> AsyncIterator[bytes]:
 
 @router.get("/desktop-live/status")
 async def get_desktop_live_status():
-    return desktop_live_service.get_status()
+    return _get_desktop_live_service().get_status()
 
 
 @router.post("/desktop-live/session")
 async def create_desktop_live_session(payload: DesktopLiveCreatePayload):
     try:
-        return desktop_live_service.create_session(payload.viewer_id or "anonymous")
+        return _get_desktop_live_service().create_session(payload.viewer_id or "anonymous")
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -64,7 +68,7 @@ async def create_desktop_live_offer(payload: DesktopLiveOfferPayload):
     if not payload.sdp:
         raise HTTPException(status_code=400, detail="缺少 WebRTC offer SDP。")
     try:
-        return await desktop_live_service.create_webrtc_answer(
+        return await _get_desktop_live_service().create_webrtc_answer(
             payload.session_id,
             payload.viewer_id or "anonymous",
             payload.sdp,
@@ -77,7 +81,7 @@ async def create_desktop_live_offer(payload: DesktopLiveOfferPayload):
 @router.post("/desktop-live/candidate")
 async def create_desktop_live_candidate(payload: DesktopLiveCandidatePayload):
     try:
-        return await desktop_live_service.add_webrtc_candidate(payload.session_id, payload.candidate)
+        return await _get_desktop_live_service().add_webrtc_candidate(payload.session_id, payload.candidate)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -85,7 +89,7 @@ async def create_desktop_live_candidate(payload: DesktopLiveCandidatePayload):
 @router.get("/desktop-live/stream")
 async def stream_desktop_live(session_id: str = Query(..., alias="sessionId")):
     try:
-        desktop_live_service.touch_session(session_id)
+        _get_desktop_live_service().touch_session(session_id)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -102,4 +106,4 @@ async def stream_desktop_live(session_id: str = Query(..., alias="sessionId")):
 
 @router.delete("/desktop-live/session/{session_id}")
 async def delete_desktop_live_session(session_id: str):
-    return {"success": await desktop_live_service.delete_session(session_id)}
+    return {"success": await _get_desktop_live_service().delete_session(session_id)}

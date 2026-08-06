@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable
 
-from core.llm_factory import llm_factory
 from core.model_eligibility import evaluate_model_eligibility, model_kind
 from core.storage import storage
 
@@ -16,6 +15,16 @@ _NON_TEXT_ROLES = {
     "extensions_reranker",
     "computer_use_candidate_reranker",
 }
+
+
+class _LazyLlmFactory:
+    def __getattr__(self, name: str) -> Any:
+        from core.llm_factory import llm_factory as target
+
+        return getattr(target, name)
+
+
+llm_factory = _LazyLlmFactory()
 
 
 def _coerce_int(value: Any) -> int | None:

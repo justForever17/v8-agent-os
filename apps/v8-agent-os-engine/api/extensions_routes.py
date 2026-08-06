@@ -4,7 +4,6 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from core.extensions_runtime import extensions_runtime_service
 from core.extensions_store_service import (
     ExtensionStoreError,
     install_store_mcp,
@@ -21,6 +20,12 @@ from core.skills_install_service import SkillInstallValidationError
 router = APIRouter()
 
 
+def _get_extensions_runtime_service():
+    from core.extensions_runtime import extensions_runtime_service
+
+    return extensions_runtime_service
+
+
 @router.get("/extensions/catalog")
 async def get_extensions_catalog(
     workspacePath: str | None = None,
@@ -28,7 +33,7 @@ async def get_extensions_catalog(
     projectId: str | None = None,
 ):
     try:
-        return extensions_runtime_service.build_catalog(
+        return _get_extensions_runtime_service().build_catalog(
             workspace_path=workspacePath,
             workspace_id=workspaceId,
             project_id=projectId,
@@ -40,7 +45,7 @@ async def get_extensions_catalog(
 @router.get("/extensions/health")
 async def get_extensions_health():
     try:
-        return extensions_runtime_service.build_health()
+        return _get_extensions_runtime_service().build_health()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -48,7 +53,7 @@ async def get_extensions_health():
 @router.get("/extensions/usage-summary")
 async def get_extensions_usage_summary(window_hours: int = 24):
     try:
-        return extensions_runtime_service.build_usage_summary(window_hours=max(1, min(window_hours, 168)))
+        return _get_extensions_runtime_service().build_usage_summary(window_hours=max(1, min(window_hours, 168)))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -65,7 +70,7 @@ async def get_extensions_preview(
     if not normalized_query:
         raise HTTPException(status_code=400, detail="query is required")
     try:
-        return await extensions_runtime_service.build_prefilter_preview(
+        return await _get_extensions_runtime_service().build_prefilter_preview(
             user_query=normalized_query,
             refresh=bool(refresh),
             workspace_path=workspacePath,
@@ -79,7 +84,7 @@ async def get_extensions_preview(
 @router.post("/extensions/reload")
 async def reload_extensions():
     try:
-        payload = await extensions_runtime_service.reload()
+        payload = await _get_extensions_runtime_service().reload()
         return {"status": "success", **payload}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -192,7 +197,7 @@ async def delete_extension_skill(
     projectId: str | None = None,
 ):
     try:
-        return extensions_runtime_service.delete_skill(
+        return _get_extensions_runtime_service().delete_skill(
             skill_id,
             scope=scope,
             workspace_id=workspaceId,

@@ -46,6 +46,9 @@ test('local control channel authenticates the desktop pet and exchanges allowlis
   const descriptor = JSON.parse(fs.readFileSync(server.descriptorPath, 'utf8'));
   assert.equal(descriptor.version, 1);
   assert.match(descriptor.token, /^[a-f0-9]{64}$/);
+  assert.equal(descriptor.surfaceReady, false);
+  assert.equal(descriptor.surfaceKind, null);
+  assert.equal(descriptor.surfaceReadyAt, null);
 
   client.start();
   await authenticated.promise;
@@ -71,6 +74,20 @@ test('local control channel authenticates the desktop pet and exchanges allowlis
   assert.equal(runtimeStatus.controlConnected, true);
   assert.equal(runtimeStatus.desktopPetActiveSessionId, 'session-live-002');
   assert.equal('token' in runtimeStatus, false);
+  assert.equal(server.setSurfaceStatus({ surfaceReady: true, surfaceKind: 'web' }), true);
+  const readyDescriptor = JSON.parse(fs.readFileSync(server.descriptorPath, 'utf8'));
+  assert.equal(readyDescriptor.surfaceReady, true);
+  assert.equal(readyDescriptor.surfaceKind, 'web');
+  assert.ok(Date.parse(readyDescriptor.surfaceReadyAt));
+  assert.equal(server.setSurfaceStatus({ surfaceReady: true, surfaceKind: 'admin-login' }), true);
+  const adminLoginDescriptor = JSON.parse(fs.readFileSync(server.descriptorPath, 'utf8'));
+  assert.equal(adminLoginDescriptor.surfaceReady, true);
+  assert.equal(adminLoginDescriptor.surfaceKind, 'admin-login');
+  assert.equal(server.setSurfaceStatus({ surfaceReady: true, surfaceKind: 'startup' }), true);
+  const rejectedSurface = JSON.parse(fs.readFileSync(server.descriptorPath, 'utf8'));
+  assert.equal(rejectedSurface.surfaceReady, false);
+  assert.equal(rejectedSurface.surfaceKind, null);
+  assert.equal(rejectedSurface.surfaceReadyAt, null);
 });
 
 test('control protocol rejects unknown, oversized, and invalid session messages', () => {

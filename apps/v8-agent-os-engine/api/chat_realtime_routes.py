@@ -1,5 +1,6 @@
 import json
 import asyncio
+import importlib
 import logging
 import mimetypes
 import re
@@ -36,7 +37,6 @@ from erc.models import RuntimeCommand
 from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, session_scope_binding_service
-from runtimes.chat.runtime import chat_runtime
 
 
 router = APIRouter()
@@ -46,6 +46,10 @@ _VOICE_UPLOAD_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".
 _UPLOAD_COPY_CHUNK_SIZE = 1024 * 1024
 logger = logging.getLogger("v8chat.chat_realtime")
 _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS = 90.0
+
+
+def _get_chat_runtime():
+    return importlib.import_module("runtimes.chat.runtime").chat_runtime
 
 
 def _engine_now_ms() -> int:
@@ -624,7 +628,7 @@ runtime_command_router.configure(schedule_chat_run=_schedule_chat_run)
 
 async def iter_chat_events(request: ChatRequest, transport: str = "http", run_id: str | None = None):
     try:
-        async for event in chat_runtime.stream_legacy_events(request, transport=transport, run_id=run_id):
+        async for event in _get_chat_runtime().stream_legacy_events(request, transport=transport, run_id=run_id):
             if isinstance(event, dict):
                 event = _mark_engine_yield(event)
             yield event
@@ -1034,7 +1038,7 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
             }
     if not request.resume_run_id:
         try:
-            chat_run = chat_runtime.prepare_run_context(
+            chat_run = _get_chat_runtime().prepare_run_context(
                 request,
                 transport="submit",
                 run_id=run_id,
@@ -1042,7 +1046,7 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
             )
         except ScopeBindingConflictError as exc:
             raise HTTPException(status_code=409, detail=exc.payload) from exc
-        user_message = chat_runtime.record_request_inputs(chat_run)
+        user_message = _get_chat_runtime().record_request_inputs(chat_run)
         if not user_message:
             user_message = db.get_chat_canonical_message_by_run(
                 session_id=chat_run.session_id,
@@ -1058,7 +1062,7 @@ async def chat_submit(request: ChatRequest, background_tasks: BackgroundTasks = 
         )
         if request.attachments and not canvas_supervisor_direct:
             try:
-                chat_runtime.preannounce_attachment_preflight(chat_run)
+                _get_chat_runtime().preannounce_attachment_preflight(chat_run)
             except Exception:
                 logger.warning(
                     "Attachment preflight preannounce failed for run %s; background execution will retry",

@@ -11,6 +11,29 @@ from core.model_protocol_registry import suggest_model_protocol
 from core.provider_hosted_tools import provider_hosted_tool_schemas
 
 
+def _use_in_memory_model_hub_commit(monkeypatch):
+    def _commit(*, plan, incoming_credential, **_kwargs):
+        provider_patch = dict(plan["providerPatch"])
+        if incoming_credential:
+            provider_patch["api_key"] = incoming_credential
+        mutation = platform_routes.model_control_plane.upsert_provider_model_records(
+            provider_id=str(plan["providerId"]),
+            provider_patch=provider_patch,
+            model_id=str(plan["modelId"]),
+            model_patch=dict(plan["modelPatch"]),
+            source="quick_connect",
+            replace_provider_models=bool(plan.get("replaceProviderModels")),
+        )
+        return {
+            "ok": True,
+            "transactionId": "cfg_txn_test",
+            "ownerId": "test",
+            "config": platform_routes.model_control_plane.get_public_config(dict(mutation.get("config") or {})),
+        }
+
+    monkeypatch.setattr(platform_routes, "_execute_model_hub_connection", _commit)
+
+
 def test_first_party_openai_reasoning_model_suggests_responses_without_rewriting_legacy_binding():
     advice = suggest_model_protocol(
         "openai",
@@ -228,6 +251,7 @@ def test_embedding_models_do_not_receive_chat_protocol_advice():
 
 
 def test_quick_connect_exposes_but_does_not_persist_first_party_protocol_suggestion(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved: dict = {}
     provider = {
         "id": "openai",
@@ -256,6 +280,7 @@ def test_quick_connect_exposes_but_does_not_persist_first_party_protocol_suggest
 
 
 def test_quick_connect_custom_provider_keeps_chat_suggestion_without_silent_binding(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
     saved: dict = {}
     provider = {
         "id": "custom-cpm-a3678d32",

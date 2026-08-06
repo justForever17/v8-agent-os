@@ -200,6 +200,7 @@ class UiActionRequestService:
             raise UiActionRequestError("该操作正在提交，请勿重复操作。", code="ui_action_submit_in_progress", status_code=409)
         created_refs: list[str] = []
         bindings: list[dict[str, Any]] = []
+        broker_owns_refs = False
         try:
             for field in fields:
                 field_id = str(field.get("id") or "")
@@ -225,6 +226,7 @@ class UiActionRequestService:
                 bindings=bindings,
                 owner_id=owner_id,
             )
+            broker_owns_refs = True
             next_state = "submitted" if result.get("ok") else "failed"
             with db.get_connection() as conn:
                 conn.execute(
@@ -246,11 +248,12 @@ class UiActionRequestService:
                 conn.commit()
             return self.public(item["id"], owner_id=owner_id, session_id=session_id)
         except Exception as exc:
-            for reference in created_refs:
-                try:
-                    credential_ref_store.delete(reference)
-                except Exception:
-                    pass
+            if not broker_owns_refs:
+                for reference in created_refs:
+                    try:
+                        credential_ref_store.delete(reference)
+                    except Exception:
+                        pass
             code = getattr(exc, "code", "ui_action_submit_failed")
             with db.get_connection() as conn:
                 conn.execute(

@@ -46,6 +46,17 @@ def _normalize_wire_protocols(value: Any, api_standard: str) -> list[str]:
     return result
 
 
+def _normalize_auth_contract(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {"type", "header", "scheme", "query", "preset", "path"}
+    return {
+        str(key): str(item or "").strip()
+        for key, item in value.items()
+        if str(key) in allowed and str(item or "").strip()
+    }
+
+
 def normalize_provider_channels(provider_meta: Dict[str, Any] | None) -> Dict[str, Any]:
     """Project configured and legacy Provider endpoints into one channel contract.
 
@@ -102,6 +113,9 @@ def normalize_provider_channels(provider_meta: Dict[str, Any] | None) -> Dict[st
                 "apiVersion": str(raw.get("apiVersion") or raw.get("api_version") or "").strip().strip("/"),
                 "wireProtocols": wire_protocols,
                 "defaultWireProtocol": default_wire_protocol,
+                "authContract": _normalize_auth_contract(
+                    raw.get("authContract") or raw.get("auth")
+                ),
                 "credentialSource": "provider",
                 "source": source,
             }
@@ -191,6 +205,19 @@ def validate_provider_channels(provider_meta: Dict[str, Any] | None) -> None:
             raise ValueError(
                 f"Provider channel '{channel_id}' defaultWireProtocol must be listed in wireProtocols"
             )
+        raw_auth = raw.get("authContract") or raw.get("auth")
+        if raw_auth is not None:
+            if not isinstance(raw_auth, dict):
+                raise ValueError(f"Provider channel '{channel_id}' auth contract must be an object")
+            unknown_auth = sorted(
+                str(key)
+                for key in raw_auth
+                if str(key) not in {"type", "header", "scheme", "query", "preset", "path"}
+            )
+            if unknown_auth:
+                raise ValueError(
+                    f"Provider channel '{channel_id}' auth contract contains unsupported fields"
+                )
     default_channel_id = str(
         provider.get("defaultChannelId") or provider.get("default_channel_id") or ""
     ).strip().lower()

@@ -838,19 +838,29 @@ def test_retry_failed_branch_reuses_run_operation_and_paid_ancestor(canvas_servi
 def test_engine_lifespan_awaits_canvas_graph_startup_reconciliation() -> None:
     main_path = Path(__file__).resolve().parents[2] / "main.py"
     tree = ast.parse(main_path.read_text(encoding="utf-8"))
-    lifespan = next(
-        node
+    functions = {
+        node.name: node
         for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
-    )
-    awaited_calls = {
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    lifespan = functions["lifespan"]
+    startup = functions["_start_lifespan_services"]
+    lifespan_awaited_calls = {
         node.value.func.id
         for node in ast.walk(lifespan)
         if isinstance(node, ast.Await)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
     }
-    assert "_reconcile_creative_canvas_graph_runs" in awaited_calls
+    startup_awaited_calls = {
+        node.value.func.id
+        for node in ast.walk(startup)
+        if isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    }
+    assert "_start_lifespan_services" in lifespan_awaited_calls
+    assert "_reconcile_creative_canvas_graph_runs" in startup_awaited_calls
 
 
 def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(

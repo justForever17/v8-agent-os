@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 
 import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
 import { startComponents, stopComponents } from "./process_manager.mjs";
+import { isPidAlive } from "./process_state.mjs";
 
 export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web", "engine"];
 export const SHELL_RESTART_LEASE_PATH = path.join(STATE_ROOT, "runtime", "shell-restart.json");
@@ -89,14 +90,66 @@ export function removeOwnedShellRestartLease(lease) {
   }
 }
 
-async function waitForShellControlDescriptor(timeoutMs = 10_000) {
-  const descriptorPath = path.join(STATE_ROOT, "runtime", "shell-control.json");
+export function validateComponentStartResults(results, expectedIds) {
+  const items = Array.isArray(results) ? results : [];
+  const rejected = expectedIds.map((id) => {
+    const item = items.find((candidate) => candidate?.id === id);
+    if (!item) return { id, status: "missing" };
+    return ["started", "already_running"].includes(item.status) ? null : item;
+  }).filter(Boolean);
+  return { ok: rejected.length === 0, rejected };
+}
+
+export function validateShellControlDescriptor(descriptor, options = {}) {
+  const pid = Number(descriptor?.pid);
+  const expectedPid = Number(options.expectedPid);
+  const createdAtMs = Date.parse(String(descriptor?.createdAt || ""));
+  const surfaceReadyAtMs = Date.parse(String(descriptor?.surfaceReadyAt || ""));
+  const nowMs = Number(options.nowMs) || Date.now();
+  const notBeforeMs = Number(options.notBeforeMs) || 0;
+  const pidIsAlive = options.pidIsAlive || isPidAlive;
+  const readySurfaceKinds = new Set(["web", "admin", "admin-login"]);
+  return descriptor?.version === 1
+    && Number.isInteger(pid)
+    && pid > 0
+    && typeof descriptor?.endpoint === "string"
+    && descriptor.endpoint.length > 0
+    && typeof descriptor?.token === "string"
+    && descriptor.token.length >= 32
+    && Number.isFinite(createdAtMs)
+    && createdAtMs >= notBeforeMs
+    && createdAtMs <= nowMs + 5_000
+    && descriptor?.surfaceReady === true
+    && readySurfaceKinds.has(descriptor?.surfaceKind)
+    && Number.isFinite(surfaceReadyAtMs)
+    && surfaceReadyAtMs >= createdAtMs
+    && surfaceReadyAtMs >= notBeforeMs
+    && surfaceReadyAtMs <= nowMs + 5_000
+    && (!Number.isInteger(expectedPid) || expectedPid <= 0 || pid === expectedPid)
+    && pidIsAlive(pid);
+}
+
+export async function waitForShellControlDescriptor(options = {}) {
+  const descriptorPath = options.descriptorPath || path.join(STATE_ROOT, "runtime", "shell-control.json");
+  const timeoutMs = Math.max(1, Number(options.timeoutMs) || 10_000);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (fs.existsSync(descriptorPath)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+      if (validateShellControlDescriptor(descriptor, options)) return descriptor;
+    } catch {
+      // The Shell writes this descriptor atomically; missing/invalid data means it is not ready yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
   }
-  return false;
+  return null;
+}
+
+function assertStarted(results, expectedIds, label) {
+  const validation = validateComponentStartResults(results, expectedIds);
+  if (!validation.ok) {
+    throw new Error(`${label} failed: ${validation.rejected.map((item) => `${item.id}:${item.status}`).join(", ")}`);
+  }
 }
 
 export function runNextBuild(app) {
@@ -157,6 +210,7 @@ export async function commandPreview(args = {}) {
   const shellRestartLease = rebuildStopComponentIds.includes("shell")
     ? createShellRestartLease()
     : null;
+  const startedByThisAttempt = [];
   try {
     const rebuildStopResults = rebuildStopComponentIds.length > 0
       ? await stopComponents(rebuildStopComponentIds, { stopVerifiedPortOwners: ["admin", "web", "engine"] })
@@ -176,8 +230,24 @@ export async function commandPreview(args = {}) {
       buildResults.push({ ...item, status: "built", logOut: logs.out, logErr: logs.err });
     }
     const serviceResults = await startComponents(["engine", "admin", "web"], { mode: "start" });
+    startedByThisAttempt.push(...serviceResults.filter((item) => item.status === "started").map((item) => item.id));
+    assertStarted(serviceResults, ["engine", "admin", "web"], "Core service startup");
+    const shellStartedAtMs = Date.now();
     const shellResults = await startComponents(["shell"], { mode: "start" });
-    if (shellRestartLease) await waitForShellControlDescriptor();
+    startedByThisAttempt.push(...shellResults.filter((item) => item.status === "started").map((item) => item.id));
+    assertStarted(shellResults, ["shell"], "Shell startup");
+    const shellWasStarted = shellResults.some((item) => item.id === "shell" && item.status === "started");
+    const alreadyRunningShellPid = shellResults.find(
+      (item) => item.id === "shell" && item.status === "already_running",
+    )?.pid;
+    const shellControlDescriptor = await waitForShellControlDescriptor({
+      notBeforeMs: shellWasStarted ? shellStartedAtMs : 0,
+      expectedPid: alreadyRunningShellPid,
+      timeoutMs: 30_000,
+    });
+    if (!shellControlDescriptor) {
+      throw new Error("Shell startup failed: a fresh, live control descriptor was not published.");
+    }
     return {
       buildPlan,
       rebuildStopResults,
@@ -185,7 +255,18 @@ export async function commandPreview(args = {}) {
       buildResults,
       serviceResults,
       shellResults,
+      shellControl: {
+        pid: shellControlDescriptor.pid,
+        createdAt: shellControlDescriptor.createdAt,
+        surfaceKind: shellControlDescriptor.surfaceKind,
+        surfaceReadyAt: shellControlDescriptor.surfaceReadyAt,
+      },
     };
+  } catch (error) {
+    if (startedByThisAttempt.length > 0) {
+      await stopComponents([...new Set(startedByThisAttempt)]);
+    }
+    throw error;
   } finally {
     if (shellRestartLease) removeOwnedShellRestartLease(shellRestartLease);
   }

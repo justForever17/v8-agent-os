@@ -17,7 +17,6 @@ from erc.recovery_policy import derive_recovery_class
 from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
 from erc.workflow_ledger import workflow_ledger_service
-from runtimes.automation.runtime import automation_runtime
 from runtimes.memory.scope_resolution import session_scope_binding_service
 
 
@@ -26,6 +25,12 @@ RUNTIME_EPISODE_RESUME_METADATA_KEY = "runtimeEpisodeResume"
 RUNTIME_EPISODE_RESUME_TERMINAL_STATES = TERMINAL_EPISODE_STATES
 RUNTIME_EPISODE_RESUME_MAX_WORKER_RETRIES = 2
 SUPERVISOR_NATIVE_TOOL_CORRECTION_METADATA_KEY = "supervisorNativeToolCorrection"
+
+
+def _get_automation_runtime():
+    from runtimes.automation.runtime import automation_runtime
+
+    return automation_runtime
 
 
 class RuntimeCommandRouter:
@@ -766,6 +771,7 @@ class RuntimeCommandRouter:
         if not run_record:
             return
         if run_record.get("run_type") == "automation":
+            automation_runtime = _get_automation_runtime()
             invocation = automation_runtime.build_invocation_from_run(run_record)
             next_handle = automation_runtime.begin_run(
                 action_type=invocation["action_type"],
@@ -801,7 +807,7 @@ class RuntimeCommandRouter:
         resume_mode = self._resume_mode_for_run(run_record)
         resume_scheduled = False
         if resume_mode == "automation_agent":
-            invocation = automation_runtime.build_invocation_from_run(run_record)
+            invocation = _get_automation_runtime().build_invocation_from_run(run_record)
             invocation_kwargs = dict(invocation["kwargs"])
             invocation_kwargs["run_id"] = run_record["id"]
             invocation_kwargs["session_id"] = run_record["session_id"]
@@ -1308,7 +1314,7 @@ class RuntimeCommandRouter:
                 **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
             }
         if run_record.get("run_type") == "automation":
-            invocation = automation_runtime.build_invocation_from_run(run_record)
+            invocation = _get_automation_runtime().build_invocation_from_run(run_record)
             invocation_kwargs = dict(invocation["kwargs"])
             invocation_kwargs["run_id"] = run_record["id"]
             invocation_kwargs["session_id"] = run_record["session_id"]

@@ -36,7 +36,7 @@ from core.system_tools.baseline import build_baseline_system_tool_descriptors
 from core.workspace_capability import ensure_workspace_side_effect_allowed
 from core.workspace_resolution import workspace_resolution_service
 from core.workspace_guard import build_workspace_path_status
-from runtimes.chat.runtime import StreamFilter
+from runtimes.chat.stream_filter import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
 from runtimes.memory.project_registry import DEFAULT_AGENTS_TEMPLATE, WorkspaceTrustRequiredError, project_registry_service
 from runtimes.memory.runtime import memory_runtime
@@ -45,14 +45,58 @@ from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 
 
 router = APIRouter()
+_INTERNAL_CONFIG_BROKER_OWNER = "local-admin"
 
 
-def _update_role_binding(role: str, model_id: str | None):
-    config = model_control_plane.get_config()
-    roles = dict(config.get("roles") or {})
-    roles[role] = str(model_id or "").strip()
-    config["roles"] = roles
-    model_control_plane.save_config(config)
+def _get_config_broker_service():
+    from core.config_broker_service import config_broker_service
+
+    return config_broker_service
+
+
+def _update_role_bindings(updates: dict[str, str | None]) -> None:
+    normalized_updates = {
+        str(role or "").strip(): str(model_id or "").strip()
+        for role, model_id in dict(updates or {}).items()
+        if str(role or "").strip()
+    }
+    if not normalized_updates:
+        return
+    from core.config_broker_service import ConfigBrokerError
+
+    broker = _get_config_broker_service()
+    try:
+        prepared = broker.prepare_role_bindings(
+            updates=normalized_updates,
+            owner_id=_INTERNAL_CONFIG_BROKER_OWNER,
+            session_id="",
+            run_id="",
+        )
+        result = broker.commit(
+            str(prepared.get("transactionId") or ""),
+            owner_id=_INTERNAL_CONFIG_BROKER_OWNER,
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    if result.get("ok"):
+        return
+    error = dict(result.get("error") or {})
+    code = str(error.get("code") or "config_commit_failed")
+    status_code = 409 if code in {"config_transaction_stale", "config_rollback_conflict"} else 500
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": str(error.get("message") or result.get("summary") or "配置提交失败。"),
+        },
+    )
+
+
+def _update_role_binding(role: str, model_id: str | None) -> None:
+    _update_role_bindings({role: model_id})
 
 
 def _get_role_binding(role: str) -> str:
@@ -286,18 +330,20 @@ async def update_memory_config(config: dict = Body(...)):
             "recommended_durable_policy_preset",
         ):
             next_config.pop(ui_only_key, None)
+        role_updates: dict[str, str] = {}
         if "extraction_model" in next_config:
             extraction_model = str(next_config.get("extraction_model") or "").strip()
-            _update_role_binding("extraction", "" if extraction_model.lower() == "none" else extraction_model)
+            role_updates["extraction"] = "" if extraction_model.lower() == "none" else extraction_model
             next_config.pop("extraction_model", None)
         if "embedding_model" in next_config:
             embedding_model = str(next_config.get("embedding_model") or "").strip()
-            _update_role_binding("embedding", "" if embedding_model.lower() == "none" else embedding_model)
+            role_updates["embedding"] = "" if embedding_model.lower() == "none" else embedding_model
             next_config.pop("embedding_model", None)
         if "reranker_model" in next_config:
             reranker_model = str(next_config.get("reranker_model") or "").strip()
-            _update_role_binding("reranker", "" if reranker_model.lower() == "none" else reranker_model)
+            role_updates["reranker"] = "" if reranker_model.lower() == "none" else reranker_model
             next_config.pop("reranker_model", None)
+        _update_role_bindings(role_updates)
         if "recall_strategy" in next_config:
             recall_strategy = str(next_config.get("recall_strategy") or "balanced").strip().lower()
             next_config["recall_strategy"] = recall_strategy if recall_strategy in {"balanced", "semantic", "keyword"} else "balanced"
@@ -370,6 +416,8 @@ async def update_memory_config(config: dict = Body(...)):
             next_config["workflowMemory"] = normalized_workflow
         storage.save_memory_config(next_config)
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

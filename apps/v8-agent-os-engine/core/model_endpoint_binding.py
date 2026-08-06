@@ -40,8 +40,8 @@ def _clean_relative_path(value: Any) -> str:
     if not raw:
         return ""
     parsed = urlparse(raw)
-    if parsed.scheme or parsed.netloc:
-        raise ValueError("model endpoint paths must be relative to the Provider base URL")
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or raw.startswith("//"):
+        raise ValueError("model endpoint paths must be relative without query or fragment")
     clean = "/".join(part for part in raw.strip("/").split("/") if part not in {"", "."})
     if any(part == ".." for part in clean.split("/")):
         raise ValueError("model endpoint paths cannot traverse parent directories")
@@ -224,6 +224,12 @@ def build_model_endpoint_binding(
         else base_url
     )
     request_url = join_model_endpoint_url(request_base_url, endpoint_path)
+    auth_contract = dict(
+        explicit.get("authContract")
+        or channel.get("authContract")
+        or provider.get("authContract")
+        or {}
+    )
     persisted = bool(explicit)
     provenance = dict(explicit.get("provenance") or {})
     provenance.setdefault("source", source if persisted else "legacy_projection")
@@ -247,6 +253,7 @@ def build_model_endpoint_binding(
         "apiStandard": api_standard,
         "adapter": adapter,
         "wireProtocol": wire_protocol,
+        "authContract": auth_contract,
         "providerHostedTools": provider_hosted_tools,
         "protocolSuggestion": str(protocol_advice.get("wireProtocol") or ""),
         "protocolEndpointPath": str(protocol_advice.get("endpointPath") or ""),

@@ -3438,10 +3438,38 @@ class SafetyGuardian:
     def _trusted_base_url_matches(self, request_url: str, base_url: str) -> bool:
         if not base_url:
             return False
-        if "*" in base_url:
-            pattern = "^" + re.escape(base_url).replace(r"\*", r"[^/]+") + r"(?:/.*)?$"
-            return re.match(pattern, request_url, re.IGNORECASE) is not None
-        return request_url.lower().startswith(base_url.rstrip("/").lower())
+        request = urlparse(request_url)
+        trusted = urlparse(base_url)
+        try:
+            request_port = request.port or (443 if request.scheme.lower() == "https" else 80)
+            trusted_port = trusted.port or (443 if trusted.scheme.lower() == "https" else 80)
+        except ValueError:
+            return False
+        request_host = (request.hostname or "").lower()
+        trusted_host = (trusted.hostname or "").lower()
+        if (
+            request.scheme.lower() not in {"http", "https"}
+            or trusted.scheme.lower() != request.scheme.lower()
+            or not request_host
+            or not trusted_host
+            or request.username is not None
+            or request.password is not None
+            or trusted.username is not None
+            or trusted.password is not None
+            or trusted.query
+            or trusted.fragment
+            or request_port != trusted_port
+        ):
+            return False
+        if "*" in trusted_host:
+            host_pattern = "^" + re.escape(trusted_host).replace(r"\*", r"[^.]+") + "$"
+            if re.match(host_pattern, request_host, re.IGNORECASE) is None:
+                return False
+        elif request_host != trusted_host:
+            return False
+        trusted_path = trusted.path.rstrip("/")
+        request_path = request.path.rstrip("/")
+        return not trusted_path or request_path == trusted_path or request_path.startswith(f"{trusted_path}/")
 
     def _match_trusted_network_target(self, url: str, *, config: Dict[str, Any]) -> Dict[str, Any]:
         parsed = urlparse(url or "")

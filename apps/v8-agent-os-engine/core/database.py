@@ -18,6 +18,10 @@ from core.runtime_compatibility import (
 )
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
+
+DATABASE_SCHEMA_VERSION = 1
+
+
 class DatabaseManager:
     """
     Manages the SQLite database for V8Chat state persistence.
@@ -62,6 +66,16 @@ class DatabaseManager:
     def _init_db(self):
         """Initializes the database schema if it doesn't exist."""
         with self.get_connection() as conn:
+            schema_version_row = conn.execute("PRAGMA user_version").fetchone()
+            schema_version = int(schema_version_row[0] if schema_version_row else 0)
+            if schema_version == DATABASE_SCHEMA_VERSION:
+                return
+            if schema_version > DATABASE_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "Database schema version "
+                    f"{schema_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
+                )
+
             # 1. Sessions Table (Threads)
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -1735,6 +1749,7 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_expires ON ui_action_requests (state, expires_at)')
             
             # Simple Schema Migration (Adding missing columns if upgrading)
+            migration_succeeded = True
             try:
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(messages)")
@@ -1958,8 +1973,11 @@ class DatabaseManager:
                 self._backfill_internal_computer_use_probe_sessions(conn)
                 self._backfill_manual_rpa_sessions(conn)
             except Exception as e:
+                migration_succeeded = False
                 print(f"[Database] Migration note: {e}")
-            
+
+            if migration_succeeded:
+                conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             conn.commit()
 
     # --- Session Operations ---

@@ -106,6 +106,7 @@ function shellIcon() {
 
 function showMainWindow() {
   if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
 }

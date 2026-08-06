@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Play, Scissors } from "lucide-react";
+import { Loader2, Pause, Play, Scissors } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { mediaTypeOf, recordOf } from "./serialization";
@@ -38,6 +38,7 @@ export function CanvasTimeRangeEditor({
     const [draftRange, setDraftRange] = useState(range);
     const [mediaDuration, setMediaDuration] = useState(0);
     const [playheadSeconds, setPlayheadSeconds] = useState(0);
+    const [isPlaying, setIsPlaying] = useState(false);
     const [indexingExact, setIndexingExact] = useState(false);
     const draftRangeRef = useRef(range);
     useEffect(() => {
@@ -48,6 +49,14 @@ export function CanvasTimeRangeEditor({
     }, [range]);
     useEffect(() => {
         // The persisted Graph range may be hydrated after this editor mounts.
+        // A card only persists canonical execution fields (fingerprint + selected
+        // indices), not a potentially huge list of every frame boundary.  Do not
+        // replace a locally hydrated range with that compact snapshot while this
+        // card remains mounted.
+        const current = draftRangeRef.current;
+        const currentIsHydrated = current.count > 0 && Boolean(current.unit) && Boolean(current.probeFingerprint);
+        const incomingIsHydrated = range.count > 0 && Boolean(range.unit) && Boolean(range.probeFingerprint);
+        if (!incomingIsHydrated && currentIsHydrated) return;
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setDraftRange(range);
         draftRangeRef.current = range;
@@ -78,6 +87,7 @@ export function CanvasTimeRangeEditor({
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setMediaDuration(0);
         setPlayheadSeconds(0);
+        setIsPlaying(false);
         playheadSecondsRef.current = 0;
         setIndexingExact(false);
     }, [resource?.id, resource?.origin]);
@@ -92,7 +102,7 @@ export function CanvasTimeRangeEditor({
 
     useEffect(() => {
         const currentRange = rangeRef.current;
-        if (!resource || !currentRange.loading || currentRange.probeFingerprint) return;
+        if (!resource || !currentRange.loading) return;
         const controller = new AbortController();
         const reference = resource.origin === "source"
             ? { sourceId: resource.id }
@@ -289,35 +299,49 @@ export function CanvasTimeRangeEditor({
             setBoundary(kind, nearest);
         }
     };
+    const togglePlayback = () => {
+        const media = mediaRef.current;
+        if (!media) return;
+        if (media.paused) {
+            void media.play().catch(() => setIsPlaying(false));
+        } else {
+            media.pause();
+        }
+    };
     const preview = resource?.url && mediaType === "video" ? (
         <video
             ref={(element) => { mediaRef.current = element; }}
             src={resource.url}
-            controls
             playsInline
             preload="metadata"
+            onClick={togglePlayback}
             onLoadedMetadata={(event) => {
                 const nextDuration = Number(event.currentTarget.duration) || 0;
                 setMediaDuration(nextDuration);
             }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => setIsPlaying(false)}
             onTimeUpdate={(event) => {
                 if (event.currentTarget.seeking) return;
                 const seconds = Number(event.currentTarget.currentTime) || 0;
                 playheadSecondsRef.current = seconds;
                 setPlayheadSeconds(seconds);
             }}
-            className="max-h-40 w-full rounded-xl bg-black object-contain"
+            className="max-h-40 w-full cursor-pointer rounded-xl bg-black object-contain"
         />
     ) : resource?.url && mediaType === "audio" ? (
         <audio
             ref={(element) => { mediaRef.current = element; }}
             src={resource.url}
-            controls
             preload="metadata"
             onLoadedMetadata={(event) => {
                 const nextDuration = Number(event.currentTarget.duration) || 0;
                 setMediaDuration(nextDuration);
             }}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => setIsPlaying(false)}
             onTimeUpdate={(event) => {
                 if (event.currentTarget.seeking) return;
                 const seconds = Number(event.currentTarget.currentTime) || 0;
@@ -333,21 +357,11 @@ export function CanvasTimeRangeEditor({
             {preview}
             {preview && previewDuration > 0 ? (
                 <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/80 px-3 py-2 shadow-sm">
-                    <Play className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <button type="button" onClick={togglePlayback} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={isPlaying ? t("web.workbench.canvas.timeline.pause") : t("web.workbench.canvas.timeline.play")}>
+                        {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                    </button>
                     <span className="w-[84px] shrink-0 font-mono text-[9px] tabular-nums text-foreground">{formatPreviewSeconds(playheadSeconds)}</span>
-                    <input
-                        type="range"
-                        min={0}
-                        max={previewDuration}
-                        step={0.001}
-                        value={Math.min(playheadSeconds, previewDuration)}
-                        onInput={(event) => queueScrubPreview(Number(event.currentTarget.value))}
-                        onPointerUp={() => commitScrubPreview()}
-                        onKeyUp={() => commitScrubPreview()}
-                        onBlur={() => commitScrubPreview()}
-                        aria-label={t("web.workbench.canvas.timeline.selection")}
-                        className="min-w-0 flex-1 accent-violet-600"
-                    />
+                    <span className="min-w-0 flex-1 text-center text-[9px] text-muted-foreground">{t(mode === "frame" ? "web.workbench.canvas.timeline.frameSelection" : "web.workbench.canvas.timeline.selection")}</span>
                     <span className="w-[84px] shrink-0 text-right font-mono text-[9px] tabular-nums text-muted-foreground">{formatPreviewSeconds(previewDuration)}</span>
                 </div>
             ) : null}

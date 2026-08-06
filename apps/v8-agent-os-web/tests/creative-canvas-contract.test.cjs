@@ -140,6 +140,8 @@ test("canvas action catalog locks mutation and capability-gates MediaKit", () =>
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.extract_video_frame_exact")?.parameterEditor, "frame_pick");
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.parameterEditor, "time_range");
   assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.networkRequired, false);
+  assert.equal(actions.CREATIVE_MEDIA_NATIVE_ACTIONS.find((item) => item.actionId === "creative_media.trim_video_exact")?.executionClass, "graph_direct");
+  assert.equal(actions.CANVAS_MESSAGE_ACTIONS.find((item) => item.actionId === "message.submit_selection")?.executionClass, "supervisor_message");
   assert.equal(actions.MEDIAKIT_CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === "mediakit.video.probe-video-metadata")?.requiresPrompt, false);
   assert.match(canvas, /actionDefinitions\.some\(\(definition\) => definition\.actionId === action\.actionId\)/);
   assert.match(canvas, /if \(!definition \|\| sessionRunningRef\.current\) return;/);
@@ -223,9 +225,11 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(wheelHandler, /event\.ctrlKey|event\.metaKey|viewport\.x - event\.deltaX|viewport\.y - event\.deltaY/);
   assert.match(canvas, /pendingConnectionDrop/);
   assert.match(canvas, /retryFailedGraph/);
-  assert.match(canvas, /operationId: retry\?\.canvasOperationId \|\| createId\("canvas-operation"\)/);
-  assert.match(canvas, /retryGraphRunId: retry\.graphRunId/);
-  assert.match(canvas, /graphRuntime\.targetNodeIds \|\| \[\]/);
+  assert.match(canvas, /canvas\/graph\/runs\/\$\{encodeURIComponent\(graphRunId\)\}\/retry-failed-branch/);
+  assert.match(canvas, /canvasOperationId: String\(run\.canvasOperationId \|\| run\.canvas_operation_id \|\| current\.canvasOperationId \|\| ""\)/);
+  assert.doesNotMatch(canvas, /operationId: retry\?\.canvasOperationId/);
+  assert.match(canvas, /targetNodeIds: targetIds/);
+  assert.match(canvas, /Array\.isArray\(run\.targetNodeIds\) \? run\.targetNodeIds\.map\(String\) : current\.targetNodeIds/);
   assert.match(engineGraph, /"graphRevision": int\(run_data\.get\("graph_revision"\) or 0\) or None/);
   assert.match(engineGraph, /_json\(run_data\.get\("target_node_ids_json"\), \[\]\)/);
   assert.doesNotMatch(canvas, /actionState === "failed"[\s\S]{0,400}requestGraphRun\(\[node\.nodeId\]\)/);
@@ -449,71 +453,37 @@ test("canvas task contract gives Supervisor exact native, mask, tool and edge bi
   });
 });
 
-test("canvas graph edits stay inert until one explicit run enters the normal message pipeline", () => {
-  const contractModule = loadTypeScriptModule(
-    "apps/v8-agent-os-web/src/lib/creative-canvas-task-contract.ts",
-  );
-  const graphContract = contractModule.buildCreativeCanvasExecutionContract({
-    instruction: "运行到此",
-    refs: [
-      { id: "source-image", origin: "source", mediaType: "image" },
-      { id: "artifact-video", origin: "artifact", mediaType: "video" },
-      { id: "workspace-audio", origin: "workspace_asset", mediaType: "audio" },
-    ],
-    operation: {
-      operationId: "operation-graph",
-      actionId: "canvas.graph.run_to_here",
-      outputKind: "artifacts",
-      outputSlot: "canvas_graph",
-      binding: { kind: "creative_media", capability: "canvas.graph.execute" },
-      parameters: {
-        graphId: "canvas-graph-a",
-        graphRevision: 7,
-        targetNodeIds: ["result-a"],
-      },
-    },
-  });
-  assert.deepEqual(graphContract.execution.arguments.request, {
-    modality: "workflow",
-    operationKind: "canvas.graph.execute",
-    canvasOperationId: "operation-graph",
-    graphId: "canvas-graph-a",
-    graphRevision: 7,
-    targetNodeIds: ["result-a"],
-  });
-  assert.deepEqual(graphContract.resources, {
-    sourceIds: ["source-image"],
-    artifactIds: ["artifact-video"],
-    workspaceAssetIds: ["workspace-audio"],
-  });
-  assert.equal("prompt" in graphContract.execution.arguments.request, false);
-  assert.throws(() => contractModule.buildCreativeCanvasExecutionContract({
-    instruction: "运行全部",
-    refs: [],
-    operation: {
-      operationId: "operation-missing-graph",
-      actionId: "canvas.graph.run_all",
-      outputKind: "artifacts",
-      outputSlot: "canvas_graph",
-      binding: { kind: "creative_media", capability: "canvas.graph.execute" },
-      parameters: {},
-    },
-  }), /persisted graph id and revision/);
-
+test("canvas graph actions persist parameters and run through the direct session-scoped endpoint", () => {
   const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
   const graphOperations = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/graph-operations.ts");
   const timeline = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/timeline.ts");
   const timelineEditor = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/time-range-editor.tsx");
   const conversationGroups = read("apps/v8-agent-os-web/src/lib/conversation-groups.ts");
+  const actions = read("apps/v8-agent-os-web/src/lib/creative-canvas-actions.ts");
+  const route = read("apps/v8-agent-os-engine/api/creative_canvas_routes.py");
+  const workbenchProxy = read("apps/v8-agent-os-web/src/app/api/workbench/[[...segments]]/route.ts");
   const configSlice = canvas.slice(canvas.indexOf("const submitComposer"), canvas.indexOf("const runGraph"));
   const runSlice = canvas.slice(canvas.indexOf("const runGraph"), canvas.indexOf("const refreshTemplates"));
-  assert.doesNotMatch(configSlice, /onSubmitTask/);
-  assert.match(runSlice, /onSubmitTask\(\{/);
-  assert.match(runSlice, /sessionId,/);
+  assert.match(configSlice, /action\.executionClass === "supervisor_message"/);
+  assert.match(configSlice, /onSubmitTask\(\{/);
+  assert.doesNotMatch(runSlice, /onSubmitTask\(\{/);
+  assert.match(runSlice, /canvas\/graph\/runs/);
+  assert.match(runSlice, /startResponse/);
   assert.match(runSlice, /sessionIdRef\.current !== sessionId/);
   assert.match(runSlice, /graphSubmittingRef\.current/);
-  assert.match(canvas, /const selectedExecutableTargetIds/);
-  assert.match(canvas, /canvasTargetHasAction\(snapshot, nodeId\)/);
+  assert.match(canvas, /const runnablePreviewTargetIds/);
+  assert.match(canvas, /const canvasNodeTitle/);
+  assert.match(canvas, /const blockingIssues = issues\.filter\(\(issue\) => issue\.severity === "error"\)/);
+  assert.match(canvas, /结果槽\|结果\|result/);
+  assert.match(canvas, /web\.workbench\.canvas\.graph\.result/);
+  assert.match(canvas, /actionTimelineMode/);
+  assert.match(canvas, /<CanvasTimeRangeEditor/);
+  assert.match(canvas, /const actionTimelineReady = actionTimelineMode === "frame"/);
+  assert.match(canvas, /probeFingerprint && Number\.isInteger\(parameters\.frameIndex\)/);
+  assert.match(canvas, /startFrameIndex[\s\S]*endFrameIndexExclusive/);
+  assert.match(canvas, /loading: true,/);
+  assert.match(canvas, /web\.workbench\.canvas\.graph\.actionPrompt/);
+  assert.doesNotMatch(canvas, /web\.workbench\.canvas\.graph\.runToHere/);
   assert.match(graphOperations, /export function canvasPortsForNode/);
   assert.match(canvas, /const displayResourceForNode = useCallback/);
   assert.doesNotMatch(canvas, /const createSinkCard/);
@@ -521,15 +491,26 @@ test("canvas graph edits stay inert until one explicit run enters the normal mes
   assert.match(timelineEditor, /const queueScrubPreview/);
   assert.match(timelineEditor, /requestVideoFrameCallback/);
   assert.match(timelineEditor, /preload="metadata"/);
+  assert.doesNotMatch(timelineEditor, /\bcontrols\b/);
+  assert.match(timelineEditor, /const togglePlayback/);
   assert.match(canvas, /const hasPendingResult = snapshot\.nodes\.some/);
   assert.match(canvas, /\["reserved", "running", "waiting"\]\.includes/);
   assert.doesNotMatch(canvas, /hasPendingPlaceholder/);
   assert.match(timelineEditor, /requestProbe\("preview"\)/);
   assert.match(timeline, /range\.exact !== false/);
   assert.match(timelineEditor, /exact: !approximate/);
+  assert.match(timelineEditor, /if \(!incomingIsHydrated && currentIsHydrated\) return;/);
+  assert.match(timelineEditor, /if \(!resource \|\| !currentRange\.loading\) return;/);
   assert.match(timelineEditor, /onPointerUp=\{\(\) => commitDraftRange\("start"\)\}/);
   assert.match(canvas, /window\.localStorage\.removeItem\(legacyStorageKey\)/);
   assert.match(conversationGroups, /\["failed", "recoverable_failed", "cancelled", "degraded"\]/);
+  assert.match(actions, /"graph_direct"/);
+  assert.match(actions, /"supervisor_message"/);
+  assert.match(route, /@router\.post\("\/sessions\/\{session_id\}\/canvas\/graph\/runs"\)/);
+  assert.match(route, /prepare_direct_execution/);
+  assert.match(route, /asyncio\.create_task/);
+  assert.match(workbenchProxy, /\|runs\(\?:/);
+  assert.match(workbenchProxy, /retry-failed-branch/);
 });
 
 test("canvas Human Surface stays one opaque product message after authoritative replay", () => {

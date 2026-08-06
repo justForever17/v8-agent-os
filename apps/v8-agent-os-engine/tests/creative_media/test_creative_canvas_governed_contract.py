@@ -610,6 +610,10 @@ def test_job_and_artifact_keep_typed_canvas_source_lineage(tmp_path, monkeypatch
         request={
             "operationKind": "image.edit",
             "canvasOperationId": "canvas-op-1",
+            "canvasGraphId": "canvas-graph-1",
+            "canvasGraphRunId": "canvas-run-1",
+            "canvasGraphNodeId": "canvas-action-1",
+            "canvasResultNodeId": "canvas-result-1",
             "sourceId": "source-image",
             "maskSourceId": "source-mask",
         },
@@ -630,9 +634,17 @@ def test_job_and_artifact_keep_typed_canvas_source_lineage(tmp_path, monkeypatch
     )
 
     assert job["canvasOperationId"] == "canvas-op-1"
+    assert job["canvasGraphId"] == "canvas-graph-1"
+    assert job["canvasGraphRunId"] == "canvas-run-1"
+    assert job["canvasGraphNodeId"] == "canvas-action-1"
+    assert job["canvasResultNodeId"] == "canvas-result-1"
     assert job["sourceId"] == "source-image"
     assert job["maskSourceId"] == "source-mask"
     assert artifact["metadata"]["canvasOperationId"] == "canvas-op-1"
+    assert artifact["metadata"]["canvasGraphId"] == "canvas-graph-1"
+    assert artifact["metadata"]["canvasGraphRunId"] == "canvas-run-1"
+    assert artifact["metadata"]["canvasGraphNodeId"] == "canvas-action-1"
+    assert artifact["metadata"]["canvasResultNodeId"] == "canvas-result-1"
     assert artifact["metadata"]["sourceId"] == "source-image"
     assert artifact["metadata"]["maskSourceId"] == "source-mask"
     assert artifact["metadata"]["operationKind"] == "image.edit"

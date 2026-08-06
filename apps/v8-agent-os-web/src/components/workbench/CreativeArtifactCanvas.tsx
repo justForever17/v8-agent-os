@@ -80,15 +80,12 @@ import { useCanvasHistory } from "./creative-canvas/history";
 import { CanvasActionMenu, CanvasMiniMap, CanvasPreflightPanel } from "./creative-canvas/overlays";
 import { CanvasTimeRangeEditor } from "./creative-canvas/time-range-editor";
 import {
-    isValidCanvasFramePick,
-    isValidCanvasTimeRange,
 } from "./creative-canvas/timeline";
 import {
     alignCanvasNodes,
     appendCanvasEdge,
     canvasOutputNode,
     canvasPortsForNode,
-    canvasTargetHasAction,
     copyCanvasSubgraph,
     connectionPath,
     edgePath,
@@ -148,6 +145,7 @@ import {
     type CanvasResource,
     type CanvasSnapshot,
     type CanvasTaskRequest,
+    type CanvasTimeRange,
     type CanvasWorkflowTemplate,
     type ComposerState,
     type ConnectionDraft,
@@ -1565,10 +1563,6 @@ export function CreativeArtifactCanvas({
             top: snapshot.viewport.y + minY * snapshot.viewport.scale,
         };
     }, [selectedNodes, snapshot.viewport]);
-    const selectedExecutableTargetIds = useMemo(
-        () => selectedIds.filter((nodeId) => canvasTargetHasAction(snapshot, nodeId)),
-        [selectedIds, snapshot],
-    );
     const preflightIssues = useMemo(
         () => getCanvasPreflight(snapshot, actionDefinitions, graphRuntime),
         [actionDefinitions, graphRuntime, snapshot],
@@ -1637,6 +1631,12 @@ export function CreativeArtifactCanvas({
         const completed = actions.filter((node) => graphRuntime.nodeStates[node.nodeId]?.state === "succeeded").length;
         return { completed, total: actions.length };
     }, [graphRuntime.nodeStates, snapshot.nodes]);
+    const runnablePreviewTargetIds = useMemo(() => snapshot.nodes.flatMap((node) => {
+        if (node.kind !== "action") return [];
+        const definition = actionDefinitionMap.get(node.actionDefinitionId || "");
+        const preview = canvasOutputNode(snapshot, node);
+        return definition && preview && isCanvasActionConfigured(node, definition) ? [preview.nodeId] : [];
+    }), [actionDefinitionMap, snapshot]);
 
     useEffect(() => {
         const ids = new Set(snapshot.nodes.map((node) => node.nodeId));
@@ -1652,6 +1652,15 @@ export function CreativeArtifactCanvas({
     const actionLabel = useCallback((action: CreativeCanvasAction) => (
         isTranslationKey(action.labelKey) ? t(action.labelKey) : action.actionId
     ), [t]);
+    const canvasNodeTitle = useCallback((node: CanvasNode) => {
+        const title = String(node.title || "").trim();
+        if (node.kind !== "result") return title;
+        // Existing persisted graphs used the implementation term “结果槽 / Result
+        // slot”. Keep their durable node identity intact but project the current
+        // human label without requiring a locale-dependent graph migration.
+        const actionTitle = title.replace(/\s*·\s*(?:结果槽|结果|result(?:\s+slot)?|preview|预览)$/iu, "").trim();
+        return actionTitle ? `${actionTitle} · ${t("web.workbench.canvas.graph.result")}` : t("web.workbench.canvas.graph.result");
+    }, [t]);
     const connectionIssueLabel = useCallback((issue: ConnectionIssue) => (
         t(`web.workbench.canvas.graph.connection.${issue}` as Parameters<typeof t>[0])
     ), [t]);
@@ -1709,10 +1718,10 @@ export function CreativeArtifactCanvas({
         };
     }, [displayResourceForNode, snapshot]);
 
-    const openActionEditor = useCallback((node: CanvasNode) => {
+    const openPsdActionEditor = useCallback((node: CanvasNode) => {
         if (sessionRunning || node.kind !== "action" || !node.actionDefinitionId) return;
         const action = CREATIVE_CANVAS_ACTIONS.find((item) => item.actionId === node.actionDefinitionId);
-        if (!action) return;
+        if (!action || !["psd_composition", "psd_layers"].includes(String(action.parameterEditor))) return;
         const parameters = node.parameters || {};
         const incoming = snapshot.edges
             .filter((edge) => edge.role === "data" && edge.to === node.nodeId)
@@ -1729,18 +1738,6 @@ export function CreativeArtifactCanvas({
             operationId: createId("canvas-config"),
             nodeIds: incoming.map((edge) => edge.from),
             text: node.prompt || "",
-            ...(["frame_pick", "time_range"].includes(String(action.parameterEditor)) ? {
-                timeRange: {
-                    count: 0,
-                    startIndex: Number(parameters.frameIndex ?? parameters.startFrameIndex ?? parameters.startSampleIndex ?? 0),
-                    endIndexExclusive: Number(parameters.endFrameIndexExclusive ?? parameters.endSampleIndexExclusive ?? 0),
-                    durationSeconds: "0",
-                    timeBaseNumerator: 1,
-                    timeBaseDenominator: 1,
-                    displayPrecision: 6,
-                    loading: true,
-                },
-            } : {}),
             ...(action.parameterEditor === "psd_composition" ? {
                 psdComposition: buildPsdComposition(incoming.map((edge) => edge.from), parameters),
             } : {}),
@@ -1749,6 +1746,60 @@ export function CreativeArtifactCanvas({
             } : {}),
         });
     }, [buildPsdComposition, sessionRunning, snapshot.edges, snapshot.viewport]);
+
+    const updateActionConfiguration = useCallback((nodeId: string, updater: (parameters: Record<string, unknown>) => Record<string, unknown>) => {
+        if (sessionRunning) return;
+        commitSnapshot((current) => ({
+            ...current,
+            nodes: current.nodes.map((node) => {
+                if (node.nodeId !== nodeId) return node;
+                const parameters = updater({ ...(node.parameters || {}) });
+                const previous = JSON.stringify(node.parameters || {});
+                if (JSON.stringify(parameters) === previous) return node;
+                return {
+                    ...node,
+                    parameters,
+                    configurationRevision: Number(node.configurationRevision || 1) + 1,
+                };
+            }),
+        }));
+    }, [commitSnapshot, sessionRunning]);
+
+    const updateActionPrompt = useCallback((nodeId: string, prompt: string) => {
+        if (sessionRunning) return;
+        commitSnapshot((current) => ({
+            ...current,
+            nodes: current.nodes.map((node) => {
+                if (node.nodeId !== nodeId || (node.prompt || "") === prompt) return node;
+                return {
+                    ...node,
+                    prompt,
+                    configurationRevision: Number(node.configurationRevision || 1) + 1,
+                };
+            }),
+        }));
+    }, [commitSnapshot, sessionRunning]);
+
+    const timeRangeForAction = useCallback((node: CanvasNode): CanvasTimeRange => {
+        const parameters = node.parameters || {};
+        const startIndex = Number(parameters.frameIndex ?? parameters.startFrameIndex ?? parameters.startSampleIndex ?? 0);
+        const endIndexExclusive = Number(parameters.endFrameIndexExclusive ?? parameters.endSampleIndexExclusive ?? 0);
+        return {
+            count: 0,
+            startIndex: Number.isFinite(startIndex) ? startIndex : 0,
+            endIndexExclusive: Number.isFinite(endIndexExclusive) ? endIndexExclusive : 0,
+            durationSeconds: "0",
+            timeBaseNumerator: 1,
+            timeBaseDenominator: 1,
+            displayPrecision: 6,
+            probeFingerprint: typeof parameters.probeFingerprint === "string" ? parameters.probeFingerprint : undefined,
+            // Frame boundaries deliberately stay in the governed probe cache rather
+            // than inflating every persisted graph snapshot.  Rehydrate them when
+            // this card becomes visible; the canonical fingerprint + indices below
+            // remain the executable contract.
+            loading: true,
+        };
+    }, []);
 
     const menuActions = useMemo(() => {
         if (!contextMenu) return [];
@@ -1768,6 +1819,7 @@ export function CreativeArtifactCanvas({
         const graphActions = actions.filter((action) => (
             action.executionClass === "local_read"
             || action.executionClass === "local_mutation"
+            || action.executionClass === "supervisor_message"
             || action.actionId === "message.comment_connection"
             || actionDefinitions.some((definition) => definition.actionId === action.actionId)
         ));
@@ -1821,14 +1873,15 @@ export function CreativeArtifactCanvas({
             const actionX = drop?.x ?? (anchor ? anchor.x + anchor.width + 76 : (menu.x - current.viewport.x) / current.viewport.scale);
             const actionY = drop?.y ?? (anchor ? anchor.y : (menu.y - current.viewport.y) / current.viewport.scale);
             const outputMediaType = definition.output.mediaTypes[0] || "unknown";
+            const usesInlineTimeline = definition.parameterEditor === "frame_pick" || definition.parameterEditor === "time_range";
             const actionNode: CanvasNode = {
                 nodeId: actionNodeId,
                 kind: "action",
                 origin: "placeholder",
                 x: actionX,
                 y: actionY,
-                width: 300,
-                height: definition.parameterEditor ? 236 : 214,
+                width: usesInlineTimeline ? 480 : definition.requiresPrompt ? 350 : 214,
+                height: usesInlineTimeline ? 560 : definition.requiresPrompt ? 300 : 214,
                 title,
                 mediaType: outputMediaType,
                 actionDefinitionId: definition.actionId,
@@ -1840,7 +1893,7 @@ export function CreativeArtifactCanvas({
                 nodeId: resultNodeId,
                 kind: "result",
                 origin: "placeholder",
-                x: actionX + 380,
+                x: actionX + (usesInlineTimeline ? 560 : definition.requiresPrompt ? 430 : 380),
                 y: actionY,
                 width: NODE_WIDTH,
                 height: NODE_HEIGHT,
@@ -1897,34 +1950,41 @@ export function CreativeArtifactCanvas({
                 : withCards;
         });
         setSelectedIds([actionNodeId]);
+        if (definition.parameterEditor === "psd_composition" || definition.parameterEditor === "psd_layers") {
+            setComposer({
+                x: menu.x,
+                y: menu.y,
+                action,
+                actionNodeId,
+                operationId: createId("canvas-config"),
+                nodeIds: pendingConnectionDrop?.direction === "input" ? [] : selectedNodeIds,
+                text: "",
+                ...(definition.parameterEditor === "psd_composition" ? {
+                    psdComposition: buildPsdComposition(selectedNodeIds),
+                } : {}),
+                ...(definition.parameterEditor === "psd_layers" ? { psdEdits: [] } : {}),
+            });
+        }
+        setPendingConnectionDrop(null);
+        setContextMenu(null);
+    }
+
+    const openSupervisorComposer = useCallback((action: CreativeCanvasAction, menu: ContextMenuState) => {
+        if (sessionRunning) return;
+        setPreflightOpen(false);
+        setTemplateOpen(false);
+        setTrayOpen(false);
+        setContextMenu(null);
         setComposer({
             x: menu.x,
             y: menu.y,
             action,
-            actionNodeId,
-            operationId: createId("canvas-config"),
-            nodeIds: pendingConnectionDrop?.direction === "input" ? [] : selectedNodeIds,
+            operationId: createId("canvas-message"),
+            nodeIds: menu.nodeIds,
+            edgeId: menu.edgeId,
             text: "",
-            ...(["frame_pick", "time_range"].includes(String(definition.parameterEditor)) ? {
-                timeRange: {
-                    count: 0,
-                    startIndex: 0,
-                    endIndexExclusive: 0,
-                    durationSeconds: "0",
-                    timeBaseNumerator: 1,
-                    timeBaseDenominator: 1,
-                    displayPrecision: 6,
-                    loading: true,
-                },
-            } : {}),
-            ...(definition.parameterEditor === "psd_composition" ? {
-                psdComposition: buildPsdComposition(selectedNodeIds),
-            } : {}),
-            ...(definition.parameterEditor === "psd_layers" ? { psdEdits: [] } : {}),
         });
-        setPendingConnectionDrop(null);
-        setContextMenu(null);
-    }
+    }, [sessionRunning]);
 
     const executeLocalAction = useCallback((action: CreativeCanvasAction, menu: ContextMenuState) => {
         const ids = menu.nodeIds;
@@ -2002,6 +2062,15 @@ export function CreativeArtifactCanvas({
         if (action.actionId === "message.comment_connection" && menu.edgeId) {
             const edge = snapshot.edges.find((item) => item.edgeId === menu.edgeId);
             setEdgeNote({ edgeId: menu.edgeId, x: menu.x, y: menu.y, text: edge?.note || "" });
+            setContextMenu(null);
+            return;
+        }
+        if (action.executionClass === "supervisor_message") {
+            openSupervisorComposer(action, menu);
+            return;
+        }
+        if (action.executionClass !== "graph_direct") {
+            setError(t("web.workbench.canvas.graph.directUnavailable"));
             setContextMenu(null);
             return;
         }
@@ -2192,15 +2261,54 @@ export function CreativeArtifactCanvas({
     }, [sessionId, t]);
 
     const submitComposer = useCallback(async () => {
-        if (!composer?.actionNodeId || submitting || sessionRunning) return;
+        if (!composer || submitting || sessionRunning) return;
         if (composer.action.requiresPrompt && !composer.text.trim()) return;
-        if (composer.action.parameterEditor === "time_range" && !isValidCanvasTimeRange(composer.timeRange)) return;
-        if (composer.action.parameterEditor === "frame_pick" && !isValidCanvasFramePick(composer.timeRange)) return;
-        if (composer.action.parameterEditor === "psd_composition" && !composer.psdComposition?.layers.length) return;
-        if (composer.action.parameterEditor === "psd_layers" && !composer.psdEdits?.length) return;
         setSubmitting(true);
         setError("");
         try {
+            if (composer.action.executionClass === "supervisor_message") {
+                if (!onSubmitTask) throw new Error(t("web.workbench.canvas.graph.supervisorUnavailable"));
+                const refs = Array.from(new Map(composer.nodeIds.flatMap((nodeId) => {
+                    const node = snapshot.nodes.find((item) => item.nodeId === nodeId);
+                    const output = canvasOutputNode(snapshot, node);
+                    const resource = output ? displayResourceForNode(output) : node ? displayResourceForNode(node) : null;
+                    return resource ? [[`${resource.origin}:${resource.id}`, {
+                        id: resource.id,
+                        origin: resource.origin,
+                        name: resource.name,
+                        mimeType: resource.mimeType,
+                        mediaType: resource.mediaType,
+                        url: resource.url,
+                        caption: resource.caption,
+                        resourceRef: resource.resourceRef,
+                        workspacePath: resource.workspacePath,
+                        workspaceRelativePath: resource.workspaceRelativePath,
+                        sourceKind: resource.sourceKind,
+                        size: resource.size,
+                    }] as const] : [];
+                })).values());
+                const accepted = await onSubmitTask({
+                    sessionId,
+                    text: composer.text.trim(),
+                    refs,
+                    operation: {
+                        operationId: composer.operationId,
+                        actionId: composer.action.actionId,
+                        label: actionLabel(composer.action),
+                        nodeIds: composer.nodeIds,
+                        ...(composer.edgeId ? { edgeId: composer.edgeId } : {}),
+                        outputKind: composer.action.output.kind,
+                        outputSlot: composer.action.output.slot,
+                        binding: composer.action.binding,
+                    },
+                });
+                if (accepted === false) throw new Error(t("web.workbench.canvas.graph.submitRejected"));
+                setComposer(null);
+                return;
+            }
+            if (!composer.actionNodeId) return;
+            if (composer.action.parameterEditor === "psd_composition" && !composer.psdComposition?.layers.length) return;
+            if (composer.action.parameterEditor === "psd_layers" && !composer.psdEdits?.length) return;
             commitSnapshot((current) => ({
                 ...current,
                 nodes: current.nodes.map((node) => node.nodeId === composer.actionNodeId ? {
@@ -2210,20 +2318,7 @@ export function CreativeArtifactCanvas({
                         ? composer.psdComposition
                         : composer.action.parameterEditor === "psd_layers"
                             ? { edits: composer.psdEdits || [] }
-                            : composer.action.parameterEditor === "frame_pick" && composer.timeRange ? {
-                        probeFingerprint: composer.timeRange.probeFingerprint,
-                        frameIndex: composer.timeRange.startIndex,
-                    } : composer.action.parameterEditor === "time_range" && composer.timeRange ? (
-                        composer.timeRange.unit === "frame" ? {
-                            probeFingerprint: composer.timeRange.probeFingerprint,
-                            startFrameIndex: composer.timeRange.startIndex,
-                            endFrameIndexExclusive: composer.timeRange.endIndexExclusive,
-                        } : {
-                            probeFingerprint: composer.timeRange.probeFingerprint,
-                            startSampleIndex: composer.timeRange.startIndex,
-                            endSampleIndexExclusive: composer.timeRange.endIndexExclusive,
-                        }
-                    ) : node.parameters || {},
+                            : node.parameters || {},
                     configurationRevision: Number(node.configurationRevision || 1) + 1,
                 } : node),
             }));
@@ -2233,14 +2328,10 @@ export function CreativeArtifactCanvas({
         } finally {
             setSubmitting(false);
         }
-    }, [composer, sessionRunning, submitting]);
+    }, [actionLabel, commitSnapshot, composer, displayResourceForNode, onSubmitTask, sessionId, sessionRunning, snapshot, submitting, t]);
 
-    const runGraph = useCallback(async (
-        targetNodeIds: string[],
-        acknowledgeWarnings = false,
-        retry?: { graphRunId: string; canvasOperationId: string; graphRevision: number },
-    ) => {
-        if (sessionRunning || submitting || graphSubmittingRef.current || !onSubmitTask) return;
+    const runGraph = useCallback(async (targetNodeIds: string[], acknowledgeWarnings = false) => {
+        if (sessionRunning || submitting || graphSubmittingRef.current) return;
         const targetIds = Array.from(new Set(targetNodeIds.filter(Boolean)));
         graphSubmittingRef.current = true;
         setSubmitting(true);
@@ -2281,73 +2372,44 @@ export function CreativeArtifactCanvas({
                 setPreflightOpen(true);
                 return;
             }
-            const plan = recordOf(validationPayload?.plan);
-            const refs = (Array.isArray(plan.resourceRefs) ? plan.resourceRefs : []).flatMap((raw: unknown) => {
-                const reference = recordOf(raw);
-                const origin = String(reference.origin || "") as ResourceOrigin;
-                const id = String(reference.id || "");
-                const resource = resources.find((item) => item.origin === origin && item.id === id);
-                return resource ? [resource] : [];
+            const startResponse = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/runs`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    graphId: snapshot.graphId,
+                    graphRevision: graphRevisionRef.current,
+                    targetNodeIds: targetIds,
+                }),
+                cache: "no-store",
             });
-            if (refs.length !== (Array.isArray(plan.resourceRefs) ? plan.resourceRefs.length : 0)) {
-                throw new Error(t("web.workbench.canvas.graph.resourceUnavailable"));
+            const startPayload = await startResponse.json().catch(() => ({}));
+            if (!startResponse.ok || startPayload?.accepted === false) {
+                throw new Error(String(startPayload?.detail || startPayload?.error || `HTTP ${startResponse.status}`));
             }
-            const runToHere = targetIds.length > 0;
-            const label = retry
-                ? t("web.workbench.canvas.graph.retry")
-                : t(runToHere ? "web.workbench.canvas.graph.runToHere" : "web.workbench.canvas.graph.runAll");
-            const accepted = await onSubmitTask({
-                sessionId,
-                text: label,
-                refs: refs.map((resource) => ({
-                    id: resource.id,
-                    origin: resource.origin,
-                    name: resource.name,
-                    mimeType: resource.mimeType,
-                    mediaType: resource.mediaType,
-                    url: resource.url,
-                    caption: resource.caption,
-                    resourceRef: resource.resourceRef,
-                    workspacePath: resource.workspacePath,
-                    workspaceRelativePath: resource.workspaceRelativePath,
-                    sourceKind: resource.sourceKind,
-                    size: resource.size,
-                })),
-                operation: {
-                    operationId: retry?.canvasOperationId || createId("canvas-operation"),
-                    actionId: retry ? "canvas.graph.retry_failed_branch" : runToHere ? "canvas.graph.run_to_here" : "canvas.graph.run_all",
-                    label,
-                    nodeIds: targetIds,
-                    outputKind: "artifacts",
-                    outputSlot: "canvas_graph",
-                    binding: { kind: "creative_media", capability: "canvas.graph.execute" },
-                    parameters: {
-                        graphId: snapshot.graphId,
-                        graphRevision: graphRevisionRef.current,
-                        targetNodeIds: targetIds,
-                        ...(retry ? { retryGraphRunId: retry.graphRunId } : {}),
-                    },
-                },
-            });
-            if (accepted === false) throw new Error(t("web.workbench.canvas.graph.submitRejected"));
-            setGraphRuntime((current) => ({ ...current, status: "queued" }));
+            if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            setGraphRuntime((current) => ({
+                ...current,
+                status: String(startPayload?.status || "queued"),
+                graphRunId: String(startPayload?.graphRunId || ""),
+                canvasOperationId: String(startPayload?.canvasOperationId || ""),
+                graphRevision: graphRevisionRef.current,
+                targetNodeIds: targetIds,
+            }));
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
             graphSubmittingRef.current = false;
             setSubmitting(false);
         }
-    }, [onSubmitTask, persistGraph, resources, sessionId, sessionRunning, snapshot, submitting, t]);
+    }, [persistGraph, sessionId, sessionRunning, snapshot, submitting, t]);
 
     const retryFailedGraph = useCallback(() => {
         const graphRunId = String(graphRuntime.graphRunId || "").trim();
-        const canvasOperationId = String(graphRuntime.canvasOperationId || "").trim();
         const originalRevision = Number(graphRuntime.graphRevision || 0);
         if (
             !graphRuntime.recovery?.canRetry
             || graphRuntime.recovery.mode !== "failed_branch"
             || !graphRunId
-            || !canvasOperationId
             || !originalRevision
         ) {
             setError(String(graphRuntime.errorDetail?.message || graphRuntime.error || t("web.workbench.canvas.graph.submitRejected")));
@@ -2357,8 +2419,33 @@ export function CreativeArtifactCanvas({
             setError(t("web.workbench.canvas.graph.sessionChanged"));
             return;
         }
-        void runGraph(graphRuntime.targetNodeIds || [], false, { graphRunId, canvasOperationId, graphRevision: originalRevision });
-    }, [graphRuntime, runGraph, t]);
+        if (submitting || graphSubmittingRef.current) return;
+        graphSubmittingRef.current = true;
+        setSubmitting(true);
+        setError("");
+        void fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/runs/${encodeURIComponent(graphRunId)}/retry-failed-branch`, {
+            method: "POST",
+            cache: "no-store",
+        }).then(async (response) => {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            const run = recordOf(payload?.run);
+            setGraphRuntime((current) => ({
+                ...current,
+                status: String(run.status || payload?.status || "queued"),
+                graphRunId: String(run.graphRunId || run.graph_run_id || graphRunId),
+                canvasOperationId: String(run.canvasOperationId || run.canvas_operation_id || current.canvasOperationId || ""),
+                graphRevision: Number(run.graphRevision || run.graph_revision || originalRevision),
+                targetNodeIds: Array.isArray(run.targetNodeIds) ? run.targetNodeIds.map(String) : current.targetNodeIds,
+            }));
+        }).catch((reason) => {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        }).finally(() => {
+            graphSubmittingRef.current = false;
+            setSubmitting(false);
+        });
+    }, [graphRuntime, sessionId, submitting, t]);
 
     const requestGraphRun = useCallback((targetNodeIds: string[]) => {
         const targets = Array.from(new Set(targetNodeIds.filter(Boolean)));
@@ -2366,7 +2453,13 @@ export function CreativeArtifactCanvas({
         const issues = getCanvasPreflight(snapshot, actionDefinitions, graphRuntime).filter((issue) => actionIds.has(issue.nodeId));
         setPreflightTargets(targets);
         setEnginePreflightIssues([]);
-        if (issues.length) {
+        // A stale output only means this card's own parameters changed.  The user
+        // has already made that explicit choice by pressing its Run button, so it
+        // must re-execute directly instead of being routed through a generic
+        // graph-wide confirmation.  Hard graph errors and Engine-discovered
+        // network/cost warnings remain gated in runGraph below.
+        const blockingIssues = issues.filter((issue) => issue.severity === "error");
+        if (blockingIssues.length) {
             setPreflightOpen(true);
             return;
         }
@@ -2473,13 +2566,11 @@ export function CreativeArtifactCanvas({
         ? snapshot.nodes.find((node) => node.nodeId === composer.nodeIds[0]) || null
         : null;
     const composerResource = composerNode ? displayResourceForNode(composerNode) : null;
-    const composerUsesFramePick = composer?.action.parameterEditor === "frame_pick";
-    const composerUsesTimeRange = composer?.action.parameterEditor === "time_range";
-    const composerUsesTimeline = composerUsesFramePick || composerUsesTimeRange;
+    const composerIsSupervisor = composer?.action.executionClass === "supervisor_message";
     const composerUsesPsdComposition = composer?.action.parameterEditor === "psd_composition";
     const composerUsesPsdLayers = composer?.action.parameterEditor === "psd_layers";
     const composerUsesPsd = composerUsesPsdComposition || composerUsesPsdLayers;
-    const composerPreferredWidth = composerUsesTimeline || composerUsesPsd ? 620 : 340;
+    const composerPreferredWidth = composerUsesPsd ? 620 : composerIsSupervisor ? 420 : 340;
     const composerBoardWidth = boardSize.width || 380;
     const composerPanelWidth = Math.min(composerPreferredWidth, Math.max(280, composerBoardWidth - 24));
     const composerHalfWidth = composerPanelWidth / 2;
@@ -2497,8 +2588,6 @@ export function CreativeArtifactCanvas({
     const composerSubmitDisabled = Boolean(
         submitting
         || (composer?.action.requiresPrompt && !composer.text.trim())
-        || (composerUsesTimeRange && !isValidCanvasTimeRange(composer?.timeRange))
-        || (composerUsesFramePick && !isValidCanvasFramePick(composer?.timeRange))
         || (composerUsesPsdComposition && !composer?.psdComposition?.layers.length)
         || (composerUsesPsdLayers && !composer?.psdEdits?.length),
     );
@@ -2797,6 +2886,7 @@ export function CreativeArtifactCanvas({
 
                 {renderedNodes.map((node) => {
                     const resource = displayResourceForNode(node);
+                    const nodeTitle = resource?.name || canvasNodeTitle(node);
                     const selected = selectedIdSet.has(node.nodeId);
                     const inputPlaceholder = node.kind === "input";
                     const actionState = String(graphRuntime.nodeStates[node.nodeId]?.state || "idle");
@@ -2807,6 +2897,37 @@ export function CreativeArtifactCanvas({
                         && Number(actionRuntime.configurationRevision || 0) > 0
                         && Number(actionRuntime.configurationRevision) < Number(node.configurationRevision || 1);
                     const versions = graphRuntime.outputs[node.nodeId] || [];
+                    const actionTimelineMode = actionDefinition?.parameterEditor === "frame_pick"
+                        ? "frame"
+                        : actionDefinition?.parameterEditor === "time_range" ? "range" : null;
+                    const actionTimelineSource = actionTimelineMode ? snapshot.edges
+                        .filter((edge) => edge.role === "data" && edge.to === node.nodeId)
+                        .sort((left, right) => left.order - right.order)
+                        .map((edge) => nodeMap.get(edge.from))
+                        .flatMap((input) => input ? [displayResourceForNode(input)] : [])
+                        .find((resource): resource is CanvasResource => resource !== null && ["video", "audio"].includes(mediaTypeOf(resource))) || null : null;
+                    const actionTimeline = actionTimelineMode ? timeRangeForAction(node) : null;
+                    const actionOutput = node.kind === "action" ? canvasOutputNode(snapshot, node) : null;
+                    const parameters = node.parameters || {};
+                    const probeFingerprint = typeof parameters.probeFingerprint === "string" && parameters.probeFingerprint.trim();
+                    const actionTimelineReady = actionTimelineMode === "frame"
+                        ? Boolean(probeFingerprint && Number.isInteger(parameters.frameIndex) && Number(parameters.frameIndex) >= 0)
+                        : actionTimelineMode === "range"
+                            ? Boolean(probeFingerprint && (
+                                (Number.isInteger(parameters.startFrameIndex)
+                                    && Number.isInteger(parameters.endFrameIndexExclusive)
+                                    && Number(parameters.endFrameIndexExclusive) > Number(parameters.startFrameIndex))
+                                || (Number.isInteger(parameters.startSampleIndex)
+                                    && Number.isInteger(parameters.endSampleIndexExclusive)
+                                    && Number(parameters.endSampleIndexExclusive) > Number(parameters.startSampleIndex))
+                            ))
+                            : true;
+                    const actionRunDisabled = sessionRunning
+                        || submitting
+                        || graphSaving
+                        || !actionOutput
+                        || !actionConfigured
+                        || !actionTimelineReady;
                     return (
                         <div
                             key={node.nodeId}
@@ -2814,7 +2935,7 @@ export function CreativeArtifactCanvas({
                             onPointerDown={(event) => handleNodePointerDown(event, node)}
                             onDoubleClick={(event) => {
                                 event.stopPropagation();
-                                if (node.kind === "action") openActionEditor(node);
+                                if (node.kind === "action" && ["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor))) openPsdActionEditor(node);
                                 else if (resource) { setInspectResourceOverride(null); setInspectNodeId(node.nodeId); }
                             }}
                             onContextMenu={(event) => {
@@ -2869,23 +2990,71 @@ export function CreativeArtifactCanvas({
                                     {inputPlaceholder ? (
                                         <div className="flex flex-col items-center gap-3 px-5 text-center">
                                             <Upload className="h-6 w-6 text-violet-500" />
-                                            <div className="text-[11px] font-medium text-foreground">{node.title || t("web.workbench.canvas.graph.input")}</div>
+                                            <div className="text-[11px] font-medium text-foreground">{nodeTitle || t("web.workbench.canvas.graph.input")}</div>
                                             <div className="text-[10px] text-muted-foreground">{t("web.workbench.canvas.graph.bindInput")}</div>
                                         </div>
                                     ) : node.kind === "action" ? (
-                                        <div className="flex h-full w-full flex-col p-4 text-left">
-                                            <div className="flex items-center gap-2">
+                                        <div className="flex h-full w-full flex-col p-3 text-left">
+                                            <div className="flex shrink-0 items-center gap-2">
                                                 <span className="grid h-8 w-8 place-items-center rounded-lg bg-violet-500/12 text-violet-600"><Workflow className="h-4 w-4" /></span>
                                                 <div className="min-w-0 flex-1">
-                                                    <div className="truncate text-[11px] font-semibold text-foreground">{node.title}</div>
+                                                    <div className="truncate text-[11px] font-semibold text-foreground">{nodeTitle}</div>
                                                     <div className={cn("text-[9px]", actionState === "failed" ? "text-red-500" : actionState === "running" ? "text-violet-600" : "text-muted-foreground")}>{t(`web.workbench.canvas.graph.state.${actionState}` as Parameters<typeof t>[0])}</div>
                                                 </div>
                                                 {actionState === "running" ? <Loader2 className="h-4 w-4 animate-spin text-violet-500" /> : null}
                                             </div>
-                                            <div className="mt-3 line-clamp-3 min-h-[42px] rounded-lg border border-violet-200/60 bg-background/70 px-2.5 py-2 text-[10px] leading-4 text-foreground dark:border-violet-500/15">
-                                                {node.prompt || t(actionConfigured ? "web.workbench.canvas.graph.configured" : "web.workbench.canvas.graph.unconfigured")}
+                                            <div data-canvas-wheel-isolation className="custom-scrollbar mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                                                {actionDefinition?.requiresPrompt ? (
+                                                    <label className="block space-y-1.5">
+                                                        <span className="text-[9px] font-medium text-muted-foreground">{t("web.workbench.canvas.graph.actionPrompt")}</span>
+                                                        <textarea
+                                                            value={node.prompt || ""}
+                                                            rows={actionTimelineMode ? 2 : 5}
+                                                            disabled={sessionRunning}
+                                                            onChange={(event) => updateActionPrompt(node.nodeId, event.currentTarget.value)}
+                                                            onKeyDown={(event) => {
+                                                                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                                                                    event.preventDefault();
+                                                                    updateActionPrompt(node.nodeId, event.currentTarget.value);
+                                                                    if (actionOutput) requestGraphRun([actionOutput.nodeId]);
+                                                                }
+                                                            }}
+                                                            placeholder={t("web.workbench.canvas.graph.promptRequired")}
+                                                            className="w-full resize-y rounded-xl border border-violet-200/60 bg-background/85 px-2.5 py-2 text-[10px] leading-4 text-foreground outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15 disabled:opacity-45 dark:border-violet-500/15"
+                                                        />
+                                                    </label>
+                                                ) : null}
+                                                {actionTimelineMode && actionTimeline ? (
+                                                    actionTimelineSource ? (
+                                                        <CanvasTimeRangeEditor
+                                                            sessionId={sessionId}
+                                                            resource={actionTimelineSource}
+                                                            range={actionTimeline}
+                                                            mode={actionTimelineMode}
+                                                            onChange={(range) => updateActionConfiguration(node.nodeId, (parameters) => (
+                                                                actionTimelineMode === "frame" ? {
+                                                                    ...parameters,
+                                                                    probeFingerprint: range.probeFingerprint,
+                                                                    frameIndex: range.startIndex,
+                                                                } : range.unit === "sample" ? {
+                                                                    ...parameters,
+                                                                    probeFingerprint: range.probeFingerprint,
+                                                                    startSampleIndex: range.startIndex,
+                                                                    endSampleIndexExclusive: range.endIndexExclusive,
+                                                                } : {
+                                                                    ...parameters,
+                                                                    probeFingerprint: range.probeFingerprint,
+                                                                    startFrameIndex: range.startIndex,
+                                                                    endFrameIndexExclusive: range.endIndexExclusive,
+                                                                }
+                                                            ))}
+                                                        />
+                                                    ) : <div className="rounded-xl border border-dashed border-violet-300/70 bg-background/65 px-3 py-4 text-center text-[10px] leading-4 text-muted-foreground">{t("web.workbench.canvas.graph.connectTimelineSource")}</div>
+                                                ) : !actionDefinition?.requiresPrompt ? (
+                                                    <div className="rounded-lg border border-violet-200/60 bg-background/70 px-2.5 py-2 text-[10px] leading-4 text-foreground dark:border-violet-500/15">{t(actionConfigured ? "web.workbench.canvas.graph.configured" : "web.workbench.canvas.graph.unconfigured")}</div>
+                                                ) : null}
                                             </div>
-                                            <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-2">
+                                            <div className="mt-2 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-violet-200/50 pt-2 dark:border-violet-500/15">
                                                 {(actionDefinition?.inputs || []).map((port) => (
                                                     <span key={port.portId} className="rounded-md bg-background/75 px-1.5 py-1 text-[8px] text-muted-foreground">{port.portId} {snapshot.edges.filter((edge) => edge.role === "data" && edge.to === node.nodeId && edge.toPortId === port.portId).length}/{port.max}</span>
                                                 ))}
@@ -2893,8 +3062,9 @@ export function CreativeArtifactCanvas({
                                                 <span className="rounded-md bg-background/75 px-1.5 py-1 text-[8px] text-muted-foreground">{t(actionDefinition?.networkRequired ? "web.workbench.canvas.graph.network" : "web.workbench.canvas.graph.local")}</span>
                                                 {actionDefinition?.mayIncurCost ? <span className="rounded-md bg-amber-500/10 px-1.5 py-1 text-[8px] text-amber-700 dark:text-amber-300">{t("web.workbench.canvas.graph.cost")}</span> : null}
                                                 {stale ? <span className="rounded-md bg-amber-500/10 px-1.5 py-1 text-[8px] text-amber-700 dark:text-amber-300">{t("web.workbench.canvas.graph.stale")}</span> : null}
-                                                {actionState === "failed" ? <button type="button" disabled={sessionRunning || submitting || !graphRuntime.recovery?.canRetry} onClick={(event) => { event.stopPropagation(); retryFailedGraph(); }} className="rounded-lg border border-red-300/60 bg-background px-2 py-1 text-[9px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-35">{t("web.workbench.canvas.graph.retry")}</button> : null}
-                                                <button type="button" disabled={sessionRunning} onClick={(event) => { event.stopPropagation(); openActionEditor(node); }} className="ml-auto rounded-lg border border-border/60 bg-background px-2 py-1 text-[9px] font-medium text-foreground hover:bg-muted disabled:opacity-35">{t("web.workbench.canvas.graph.configure")}</button>
+                                                {actionState === "failed" ? <button type="button" disabled={sessionRunning || submitting || !graphRuntime.recovery?.canRetry} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); retryFailedGraph(); }} className="rounded-lg border border-red-300/60 bg-background px-2 py-1 text-[9px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-35">{t("web.workbench.canvas.graph.retry")}</button> : null}
+                                                {["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor)) ? <button type="button" disabled={sessionRunning} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); openPsdActionEditor(node); }} className="rounded-lg border border-border/60 bg-background px-2 py-1 text-[9px] font-medium text-foreground hover:bg-muted disabled:opacity-35">{t("web.workbench.canvas.graph.configure")}</button> : null}
+                                                <button type="button" disabled={actionRunDisabled} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (actionOutput) requestGraphRun([actionOutput.nodeId]); }} className="ml-auto flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1 text-[9px] font-semibold text-white hover:bg-violet-700 disabled:opacity-35"><Play className="h-3 w-3" />{t("web.workbench.canvas.graph.runAction")}</button>
                                             </div>
                                         </div>
                                     ) : resource ? (
@@ -2913,18 +3083,18 @@ export function CreativeArtifactCanvas({
                                     ) : (
                                         <div className="flex flex-col items-center gap-3 px-5 text-center">
                                             {node.kind === "result" && actionState === "running" ? <Loader2 className="h-6 w-6 animate-spin text-violet-500" /> : <PackageOpen className="h-6 w-6" />}
-                                            <div className="text-[11px] font-medium text-foreground">{node.title || t("web.workbench.canvas.graph.result")}</div>
+                                            <div className="text-[11px] font-medium text-foreground">{nodeTitle || t("web.workbench.canvas.graph.result")}</div>
                                             <div className="text-[10px] text-muted-foreground">{node.kind === "result" ? t("web.workbench.canvas.graph.awaitingResult") : t("web.workbench.canvas.graph.awaitingInput")}</div>
                                         </div>
                                     )}
                                 </div>
                                 <div
                                     data-canvas-title={node.nodeId}
-                                    title={resource?.name || node.title || t("web.workbench.canvas.graph.result")}
+                                    title={nodeTitle || t("web.workbench.canvas.graph.result")}
                                     className="group/title flex h-9 shrink-0 items-center gap-2 border-t border-border/50 px-3 transition-colors hover:bg-violet-500/[.06]"
                                 >
                                     <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", node.kind === "action" ? "bg-violet-500" : node.kind === "result" ? "bg-emerald-500" : node.origin === "source" ? "bg-cyan-500" : node.origin === "artifact" ? "bg-violet-500" : "bg-slate-400")} />
-                                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium transition-colors group-hover/title:text-violet-700 dark:group-hover/title:text-violet-300">{resource?.name || node.title || t("web.workbench.canvas.graph.result")}</span>
+                                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium transition-colors group-hover/title:text-violet-700 dark:group-hover/title:text-violet-300">{nodeTitle || t("web.workbench.canvas.graph.result")}</span>
                                     {node.kind === "result" && versions[0] ? <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">v{versions[0].version}</span> : null}
                                     {node.mask?.strokes.length ? <span className="rounded-full bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-rose-600">{t("web.workbench.canvas.graph.maskRevision", { revision: node.mask.revision })}</span> : null}
                                 </div>
@@ -3004,8 +3174,8 @@ export function CreativeArtifactCanvas({
                 <span className="w-10 text-center text-[10px] tabular-nums text-muted-foreground">{Math.round(snapshot.viewport.scale * 100)}%</span>
                 <button type="button" onClick={() => zoomAtCenter(0.15)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.graph.zoomIn")}><ZoomIn className="h-4 w-4" /></button>
                 <span className="mx-0.5 h-5 w-px bg-border" />
-                <button type="button" disabled={!actionRunSummary.total} onClick={() => { setPreflightTargets([]); setPreflightOpen((current) => !current); setTemplateOpen(false); setComposer(null); setContextMenu(null); setTrayOpen(false); }} className={cn("relative rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30", preflightOpen && "bg-muted text-foreground")} aria-label={t("web.workbench.canvas.graph.preflight")} title={t("web.workbench.canvas.graph.preflight")}><Check className="h-4 w-4" />{preflightIssues.length ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-red-500" /> : null}</button>
-                <button type="button" disabled={sessionRunning || submitting || graphSaving || !actionRunSummary.total} onClick={() => requestGraphRun([])} className="flex h-8 items-center gap-1.5 rounded-xl bg-violet-600 px-3 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-35"><Play className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.runAll")}</button>
+                <button type="button" disabled={!runnablePreviewTargetIds.length} onClick={() => { setPreflightTargets(runnablePreviewTargetIds); setPreflightOpen((current) => !current); setTemplateOpen(false); setComposer(null); setContextMenu(null); setTrayOpen(false); }} className={cn("relative rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30", preflightOpen && "bg-muted text-foreground")} aria-label={t("web.workbench.canvas.graph.preflight")} title={t("web.workbench.canvas.graph.preflight")}><Check className="h-4 w-4" />{preflightIssues.length ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-red-500" /> : null}</button>
+                <button type="button" disabled={sessionRunning || submitting || graphSaving || !runnablePreviewTargetIds.length} onClick={() => requestGraphRun(runnablePreviewTargetIds)} className="flex h-8 items-center gap-1.5 rounded-xl bg-violet-600 px-3 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-35"><Play className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.runAll")}</button>
                 <button type="button" disabled={sessionRunning} onClick={() => { setTemplateOpen((current) => !current); setPreflightOpen(false); setComposer(null); setContextMenu(null); setTrayOpen(false); }} className={cn("rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35", templateOpen && "bg-muted text-foreground")} aria-label={t("web.workbench.canvas.graph.templates")}><Workflow className="h-4 w-4" /></button>
                 <span className="px-1 text-[8px] tabular-nums text-muted-foreground">{sessionRunning ? t("web.workbench.canvas.graph.progress", actionRunSummary) : graphSaving ? t("web.workbench.canvas.graph.saving") : `r${graphRevision}`}</span>
             </div>
@@ -3043,7 +3213,7 @@ export function CreativeArtifactCanvas({
                     actionCount={executionActionIds.size}
                     title={t("web.workbench.canvas.graph.preflight")}
                     readyLabel={t("web.workbench.canvas.graph.preflightReady", { count: executionActionIds.size })}
-                    runLabel={preflightTargets.length ? t("web.workbench.canvas.graph.runToHere") : t("web.workbench.canvas.graph.runAll")}
+                    runLabel={t("web.workbench.canvas.graph.runAll")}
                     closeLabel={t("web.workbench.canvas.graph.close")}
                     issueLabel={preflightIssueLabel}
                     onFocus={(nodeId) => { setSelectedIds([nodeId]); focusNodes([nodeId]); }}
@@ -3180,7 +3350,6 @@ export function CreativeArtifactCanvas({
                 >
                     <span className="px-2 text-[10px] font-semibold text-muted-foreground">{t("web.workbench.canvas.graph.selectedCount", { count: selectedIds.length })}</span>
                     <button type="button" disabled={sessionRunning} onClick={openSelectionInteraction} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-primary disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.relationshipNote")}><MessageSquare className="h-4 w-4" /></button>
-                    {selectedExecutableTargetIds.length ? <button type="button" disabled={sessionRunning || submitting} onClick={() => requestGraphRun(selectedExecutableTargetIds)} className="flex h-8 items-center gap-1.5 rounded-xl bg-violet-600 px-2.5 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.runToHere")}><Play className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.runToHere")}</button> : null}
                     <button type="button" disabled={sessionRunning} onClick={() => selectedIds.length > 1 ? connectSelection(selectedIds) : setConnectionSourceId(selectedIds[0])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-emerald-600 disabled:opacity-30" aria-label={selectedIds.length > 1 ? t("web.workbench.canvas.graph.connectSelection") : t("web.workbench.canvas.graph.connectNode")}><Link2 className="h-4 w-4" /></button>
                     {selectedImageNode ? <button type="button" disabled={sessionRunning} onClick={() => setMaskNodeId(selectedImageNode.nodeId)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-rose-600 disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.drawMask")}><Sparkles className="h-4 w-4" /></button> : null}
                     <button type="button" disabled={sessionRunning} onClick={duplicateSelection} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.duplicate")} title={`${t("web.workbench.canvas.graph.duplicate")} Ctrl+D`}><Copy className="h-4 w-4" /></button>
@@ -3231,7 +3400,7 @@ export function CreativeArtifactCanvas({
                     style={{
                         left: composerLeft,
                         width: composerPanelWidth,
-                        top: composerUsesTimeline || composerUsesPsd
+                        top: composerUsesPsd
                             ? Math.min(Math.max(12, composer.y), Math.max(12, (boardSize.height || 520) - 430))
                             : Math.min(Math.max(84, composer.y), Math.max(84, (boardSize.height || 420) - 150)),
                     }}
@@ -3240,19 +3409,11 @@ export function CreativeArtifactCanvas({
                     onWheel={(event) => event.stopPropagation()}
                 >
                     <div className="flex items-center gap-2 px-1 pb-2">
-                        <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-600"><Sparkles className="h-3.5 w-3.5" /></span>
-                        <div className="min-w-0 flex-1"><div className="truncate text-[11px] font-semibold">{actionLabel(composer.action)}</div><div className="text-[9px] text-muted-foreground">{t("web.workbench.canvas.graph.configHint")}</div></div>
+                        <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-600">{composerIsSupervisor ? <MessageSquare className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}</span>
+                        <div className="min-w-0 flex-1"><div className="truncate text-[11px] font-semibold">{composerIsSupervisor ? t("web.workbench.canvas.graph.supervisor") : actionLabel(composer.action)}</div><div className="text-[9px] text-muted-foreground">{t(composerIsSupervisor ? "web.workbench.canvas.graph.supervisorHint" : "web.workbench.canvas.graph.configHint")}</div></div>
                         <button type="button" onClick={() => setComposer(null)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"><X className="h-3.5 w-3.5" /></button>
                     </div>
-                    {composerUsesTimeline && composer.timeRange ? (
-                        <CanvasTimeRangeEditor
-                            sessionId={sessionId}
-                            resource={composerResource}
-                            range={composer.timeRange}
-                            mode={composerUsesFramePick ? "frame" : "range"}
-                            onChange={(timeRange) => setComposer((current) => current?.operationId === composer.operationId ? { ...current, timeRange } : current)}
-                        />
-                    ) : composerUsesPsdComposition && composer.psdComposition ? (
+                    {composerUsesPsdComposition && composer.psdComposition ? (
                         <CreativeCanvasPsdCompositionEditor
                             sources={composerPsdSources}
                             value={composer.psdComposition}
@@ -3272,13 +3433,13 @@ export function CreativeArtifactCanvas({
                             value={composer.text}
                             onChange={(event) => setComposer((current) => current ? { ...current, text: event.target.value } : current)}
                             onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submitComposer(); }}
-                            placeholder={t(composer.action.requiresPrompt ? "web.workbench.canvas.graph.promptRequired" : "web.workbench.canvas.graph.promptOptional")}
+                            placeholder={t(composerIsSupervisor ? "web.workbench.canvas.graph.supervisorPlaceholder" : composer.action.requiresPrompt ? "web.workbench.canvas.graph.promptRequired" : "web.workbench.canvas.graph.promptOptional")}
                             className="w-full resize-none rounded-xl border border-border/70 bg-muted/25 px-3 py-2 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/15"
                         />
                     )}
                     <div className="mt-2 flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate px-1 text-[9px] text-muted-foreground">{t("web.workbench.canvas.graph.referenceCount", { count: composer.nodeIds.length })}{composer.action.requiresMask ? ` · ${t("web.workbench.canvas.graph.freezeMask")}` : ""}</span>
-                        <button type="button" disabled={composerSubmitDisabled} onClick={() => void submitComposer()} className="flex h-8 items-center gap-1.5 rounded-xl bg-primary px-3 text-[11px] font-semibold text-primary-foreground disabled:opacity-35">{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}{t("web.workbench.canvas.graph.saveConfig")}</button>
+                        <button type="button" disabled={composerSubmitDisabled} onClick={() => void submitComposer()} className="flex h-8 items-center gap-1.5 rounded-xl bg-primary px-3 text-[11px] font-semibold text-primary-foreground disabled:opacity-35">{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : composerIsSupervisor ? <MessageSquare className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}{t(composerIsSupervisor ? "web.workbench.canvas.graph.supervisorSend" : "web.workbench.canvas.graph.saveConfig")}</button>
                     </div>
                 </div>
             ) : null}

@@ -558,6 +558,41 @@ class CreativeCanvasGraphService:
             raise CreativeCanvasGraphError("Current session workspace identity is unavailable")
         return key
 
+    def _assert_graph_workspace_authority(
+        self,
+        *,
+        session_id: str,
+        graph_id: str,
+        authority: WorkspaceAuthorityDescriptor,
+    ) -> None:
+        row = self._graph_row(session_id=session_id)
+        if not row or str(row.get("graph_id") or "") != str(graph_id or ""):
+            raise CreativeCanvasGraphError("Canvas graph is not bound to the current session")
+        if str(row.get("workspace_key") or "") != self._workspace_key(authority):
+            raise CreativeCanvasGraphConflict("Canvas graph workspace binding changed before execution")
+
+    def prepare_direct_execution(
+        self,
+        *,
+        session_id: str,
+        graph_id: str,
+        graph_revision: int,
+        target_node_ids: list[str] | None,
+    ) -> dict[str, Any]:
+        """Validate a direct Canvas run before it becomes an async background task."""
+        authority = self._authority(session_id, require_write=True)
+        self._assert_graph_workspace_authority(
+            session_id=session_id,
+            graph_id=graph_id,
+            authority=authority,
+        )
+        return self.execution_contract_summary(
+            session_id=session_id,
+            graph_id=graph_id,
+            graph_revision=graph_revision,
+            target_node_ids=target_node_ids,
+        )
+
     @staticmethod
     def empty_graph(*, graph_id: str = "") -> dict[str, Any]:
         return {
@@ -1957,6 +1992,30 @@ class CreativeCanvasGraphService:
         session_id: str,
         graph_run_id: str,
     ) -> dict[str, Any]:
+        prepared = self.prepare_failed_retry(session_id=session_id, graph_run_id=graph_run_id)
+        authority = self._authority(session_id, require_write=True)
+        run = _record(prepared.get("run"))
+        graph_revision = int(prepared.get("graphRevision") or 0)
+        plan = _record(prepared.get("plan"))
+        context = _record(plan.get("executionContext"))
+        request = {
+            "modality": "workflow",
+            "operationKind": "canvas.graph.execute",
+            "sessionId": session_id,
+            "runId": str(run.get("chat_run_id") or ""),
+            "graphId": str(run.get("graph_id") or ""),
+            "graphRevision": graph_revision,
+            "canvasOperationId": str(run.get("canvas_operation_id") or ""),
+            "retryGraphRunId": graph_run_id,
+            "targetNodeIds": [str(item) for item in _list(_json(run.get("target_node_ids_json"), []))],
+            "projectId": str(authority.project_id or ""),
+            "workspaceId": str(authority.workspace_id or ""),
+            "workspacePath": str(authority.workspace_root or ""),
+            "timeoutSeconds": max(30.0, min(float(context.get("timeoutSeconds") or 600), 1800.0)),
+        }
+        return await self.execute_as_creative_job(runtime, request)
+
+    def prepare_failed_retry(self, *, session_id: str, graph_run_id: str) -> dict[str, Any]:
         authority = self._authority(session_id, require_write=True)
         with db.get_connection() as conn:
             row = conn.execute(
@@ -1970,6 +2029,11 @@ class CreativeCanvasGraphService:
         if not row:
             raise CreativeCanvasGraphError("Canvas graph run is not bound to the current session")
         run = dict(row)
+        self._assert_graph_workspace_authority(
+            session_id=session_id,
+            graph_id=str(run.get("graph_id") or ""),
+            authority=authority,
+        )
         status = str(run.get("status") or "")
         if status not in RETRYABLE_GRAPH_STATES:
             raise CreativeCanvasGraphConflict(f"Canvas graph run cannot retry from status={status or 'unknown'}")
@@ -1977,22 +2041,11 @@ class CreativeCanvasGraphService:
         if not graph_row or int(graph_row["revision"] or 0) != graph_revision:
             raise CreativeCanvasGraphConflict("Canvas graph revision changed before failed-branch retry")
         plan = _record(_json(run.get("plan_json"), {}))
-        context = _record(plan.get("executionContext"))
-        request = {
-            "modality": "workflow",
-            "operationKind": "canvas.graph.execute",
-            "sessionId": session_id,
-            "runId": str(run.get("chat_run_id") or ""),
-            "graphId": str(run.get("graph_id") or ""),
+        return {
+            "run": run,
             "graphRevision": graph_revision,
-            "canvasOperationId": str(run.get("canvas_operation_id") or ""),
-            "targetNodeIds": [str(item) for item in _list(_json(run.get("target_node_ids_json"), []))],
-            "projectId": str(authority.project_id or ""),
-            "workspaceId": str(authority.workspace_id or ""),
-            "workspacePath": str(authority.workspace_root or ""),
-            "timeoutSeconds": max(30.0, min(float(context.get("timeoutSeconds") or 600), 1800.0)),
+            "plan": plan,
         }
-        return await self.execute_as_creative_job(runtime, request)
 
     async def _wait_for_job(
         self,
@@ -2020,19 +2073,29 @@ class CreativeCanvasGraphService:
         graph_id = str(request.get("graphId") or "").strip()
         graph_revision = int(request.get("graphRevision") or 0)
         canvas_operation_id = str(request.get("canvasOperationId") or "").strip()
+        requested_graph_run_id = str(request.get("graphRunId") or "").strip()
         retry_graph_run_id = str(request.get("retryGraphRunId") or "").strip()
         chat_run_id = str(request.get("runId") or "").strip()
         target_node_ids = [str(item) for item in _list(request.get("targetNodeIds")) if str(item).strip()]
         if not session_id or not graph_id or not graph_revision or not canvas_operation_id:
             raise CreativeCanvasGraphError("Canvas graph execution requires session, graph, revision, and operation ids")
-        if retry_graph_run_id:
-            authority = self._authority(session_id, require_write=True)
-            request = {
-                **request,
-                "projectId": str(authority.project_id or ""),
-                "workspaceId": str(authority.workspace_id or ""),
-                "workspacePath": str(authority.workspace_root or ""),
-            }
+        if requested_graph_run_id and not re.fullmatch(r"canvas-run-[a-f0-9]{32}", requested_graph_run_id):
+            raise CreativeCanvasGraphError("Canvas graph run id is invalid")
+        # Canvas execution is session/workspace authoritative.  A direct Canvas
+        # run must never inherit arbitrary client-supplied workspace identity,
+        # and the same rule applies to the legacy Supervisor-mediated retry.
+        authority = self._authority(session_id, require_write=True)
+        self._assert_graph_workspace_authority(
+            session_id=session_id,
+            graph_id=graph_id,
+            authority=authority,
+        )
+        request = {
+            **request,
+            "projectId": str(authority.project_id or ""),
+            "workspaceId": str(authority.workspace_id or ""),
+            "workspacePath": str(authority.workspace_root or ""),
+        }
 
         outer_job = runtime._new_job(modality="workflow", adapter="canvas_graph", request=request)
         outer_job["operationKind"] = "canvas.graph.execute"
@@ -2088,7 +2151,7 @@ class CreativeCanvasGraphService:
                     if active:
                         conn.rollback()
                         raise CreativeCanvasGraphConflict("Another Canvas graph run is already active for this session")
-                    graph_run_id = f"canvas-run-{uuid.uuid4().hex}"
+                    graph_run_id = requested_graph_run_id or f"canvas-run-{uuid.uuid4().hex}"
                     node_states = {
                         entry["actionNodeId"]: {
                             "state": "queued",

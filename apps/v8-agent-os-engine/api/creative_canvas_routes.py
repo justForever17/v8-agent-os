@@ -4,6 +4,7 @@ import asyncio
 import io
 from functools import lru_cache
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, HTTPException, Response
 from fastapi.responses import FileResponse
@@ -200,6 +201,74 @@ async def get_canvas_graph_run(session_id: str, graph_run_id: str):
         _raise_canvas_http(error)
 
 
+@router.post("/sessions/{session_id}/canvas/graph/runs")
+async def start_canvas_graph_run(session_id: str, body: dict = Body(...)):
+    """Start a persisted Canvas graph run without creating a chat turn.
+
+    The graph already owns its typed action parameters and source lineage.  This
+    route deliberately reaches the Creative Media runtime directly instead of
+    proxying through ChatRuntime/Supervisor, so deterministic Canvas actions
+    remain reproducible graph work rather than synthetic user messages.
+    """
+    try:
+        from runtimes.creative_media.runtime import creative_media_runtime
+
+        graph_id = str(body.get("graphId") or "").strip()
+        graph_revision = int(body.get("graphRevision") or 0)
+        if not graph_id or graph_revision < 1:
+            raise CreativeCanvasGraphError("Canvas graph execution requires a persisted graph id and revision")
+        raw_targets = body.get("targetNodeIds")
+        target_node_ids = [str(item) for item in raw_targets if str(item).strip()] if isinstance(raw_targets, list) else []
+        # Operation identity is service-owned.  The browser is allowed to name
+        # graph targets, never to impersonate a previous graph operation.
+        canvas_operation_id = f"canvas-operation-{uuid4().hex}"
+        graph_run_id = f"canvas-run-{uuid4().hex}"
+        # Fail synchronously for a stale graph or invalid typed graph. Provider
+        # readiness is still enforced by the executor and reported on the run.
+        await asyncio.to_thread(
+            creative_canvas_graph_service.prepare_direct_execution,
+            session_id=session_id,
+            graph_id=graph_id,
+            graph_revision=graph_revision,
+            target_node_ids=target_node_ids,
+        )
+        task = asyncio.create_task(creative_canvas_graph_service.execute_as_creative_job(
+            creative_media_runtime,
+            {
+                "modality": "workflow",
+                "operationKind": "canvas.graph.execute",
+                "sessionId": session_id,
+                "graphId": graph_id,
+                "graphRevision": graph_revision,
+                "canvasOperationId": canvas_operation_id,
+                "graphRunId": graph_run_id,
+                "targetNodeIds": target_node_ids,
+            },
+        ))
+
+        def consume_background_error(completed: asyncio.Task[object]) -> None:
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # execute_as_creative_job persists the concrete failure on the
+                # graph run; retrieving it here prevents an unobserved-task log.
+                pass
+
+        task.add_done_callback(consume_background_error)
+        # Let the task claim its persisted run before the client begins polling.
+        await asyncio.sleep(0)
+        return {
+            "accepted": True,
+            "graphRunId": graph_run_id,
+            "canvasOperationId": canvas_operation_id,
+            "status": "queued",
+        }
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
 @router.post("/sessions/{session_id}/canvas/graph/runs/{graph_run_id}/cancel")
 async def cancel_canvas_graph_run(session_id: str, graph_run_id: str, body: dict = Body(default_factory=dict)):
     try:
@@ -220,17 +289,34 @@ async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        job = await creative_canvas_graph_service.retry_failed_run(
-            creative_media_runtime,
+        prepared = await asyncio.to_thread(
+            creative_canvas_graph_service.prepare_failed_retry,
             session_id=session_id,
             graph_run_id=graph_run_id,
         )
+        task = asyncio.create_task(creative_canvas_graph_service.retry_failed_run(
+            creative_media_runtime,
+            session_id=session_id,
+            graph_run_id=graph_run_id,
+        ))
+
+        def consume_background_error(completed: asyncio.Task[object]) -> None:
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # The original persisted run records retry failure details.
+                pass
+
+        task.add_done_callback(consume_background_error)
+        await asyncio.sleep(0)
         run = await asyncio.to_thread(
             creative_canvas_graph_service.get_run,
             session_id=session_id,
             graph_run_id=graph_run_id,
         )
-        return {"job": job, "run": run}
+        return {"accepted": True, "status": str(run.get("status") or "queued"), "prepared": prepared, "run": run}
     except Exception as error:
         _raise_canvas_http(error)
 

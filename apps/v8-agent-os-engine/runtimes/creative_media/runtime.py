@@ -3388,6 +3388,14 @@ class CreativeMediaRuntime:
             "jobId": f"cm_{uuid.uuid4().hex}",
             **self._scope_fields(request),
             "canvasOperationId": str(request.get("canvasOperationId") or "").strip(),
+            # Graph lineage is not merely request decoration: local and provider
+            # artifacts both need it to reconcile their persistent Preview slot
+            # after Engine restart.  Keep the service-owned values on every child
+            # job instead of only on the outer canvas workflow record.
+            "canvasGraphId": str(request.get("canvasGraphId") or "").strip(),
+            "canvasGraphRunId": str(request.get("canvasGraphRunId") or "").strip(),
+            "canvasGraphNodeId": str(request.get("canvasGraphNodeId") or "").strip(),
+            "canvasResultNodeId": str(request.get("canvasResultNodeId") or "").strip(),
             "sourceId": str(request.get("sourceId") or "").strip(),
             "artifactId": str(request.get("artifactId") or "").strip(),
             "workspaceAssetId": str(request.get("workspaceAssetId") or "").strip(),
@@ -6515,6 +6523,10 @@ class CreativeMediaRuntime:
                 **metadata,
                 "creativeMediaJobId": job["jobId"],
                 "canvasOperationId": job.get("canvasOperationId") or "",
+                "canvasGraphId": job.get("canvasGraphId") or "",
+                "canvasGraphRunId": job.get("canvasGraphRunId") or "",
+                "canvasGraphNodeId": job.get("canvasGraphNodeId") or "",
+                "canvasResultNodeId": job.get("canvasResultNodeId") or "",
                 "sourceId": job.get("sourceId") or "",
                 "artifactId": job.get("artifactId") or "",
                 "workspaceAssetId": job.get("workspaceAssetId") or "",

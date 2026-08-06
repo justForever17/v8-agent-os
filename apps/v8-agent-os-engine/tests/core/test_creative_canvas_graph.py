@@ -580,6 +580,45 @@ def test_execution_updates_persistent_result_slot_and_keeps_versions(canvas_serv
     assert runtime.requests[0]["workspaceId"] == "workspace-a"
 
 
+def test_direct_execution_preflight_binds_the_current_session_and_workspace(canvas_service) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Change the jacket to silver"),
+        expected_revision=0,
+    )
+
+    prepared = service.prepare_direct_execution(
+        session_id="session-a",
+        graph_id=saved["graph"]["graphId"],
+        graph_revision=saved["revision"],
+        target_node_ids=["result-node"],
+    )
+    assert prepared["targetNodeIds"] == ["result-node"]
+
+    with pytest.raises(CreativeCanvasGraphError, match="current session"):
+        service.prepare_direct_execution(
+            session_id="session-b",
+            graph_id=saved["graph"]["graphId"],
+            graph_revision=saved["revision"],
+            target_node_ids=["result-node"],
+        )
+
+    with database.get_connection() as conn:
+        conn.execute(
+            "UPDATE creative_canvas_graphs SET workspace_key = ? WHERE session_id = ?",
+            ("different-workspace", "session-a"),
+        )
+        conn.commit()
+    with pytest.raises(CreativeCanvasGraphConflict, match="workspace binding changed"):
+        service.prepare_direct_execution(
+            session_id="session-a",
+            graph_id=saved["graph"]["graphId"],
+            graph_revision=saved["revision"],
+            target_node_ids=["result-node"],
+        )
+
+
 def test_execution_rejects_a_second_active_graph_run_for_the_session(canvas_service) -> None:
     service, database = canvas_service
     saved = service.save_graph(
@@ -889,6 +928,18 @@ def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
             self.calls.append(("retry", received_runtime, kwargs))
             return {"status": "succeeded", "canvasGraphRunId": kwargs["graph_run_id"]}
 
+        def prepare_direct_execution(self, **kwargs):
+            self.calls.append(("prepare-direct", kwargs))
+            return {"actions": [], "targetNodeIds": kwargs["target_node_ids"]}
+
+        async def execute_as_creative_job(self, received_runtime, request):
+            self.calls.append(("execute-direct", received_runtime, request))
+            return {"status": "succeeded", "canvasGraphRunId": request["graphRunId"]}
+
+        def prepare_failed_retry(self, **kwargs):
+            self.calls.append(("prepare-retry", kwargs))
+            return {"graphRevision": 1}
+
     route_service = RouteService()
     monkeypatch.setattr(creative_canvas_routes, "creative_canvas_graph_service", route_service)
 
@@ -898,20 +949,44 @@ def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
         "run-a",
         {"reason": "user_cancelled"},
     ))
+    started = asyncio.run(creative_canvas_routes.start_canvas_graph_run(
+        "session-a",
+        {
+            "graphId": "graph-a",
+            "graphRevision": 1,
+            "targetNodeIds": ["result-a"],
+            "canvasOperationId": "browser-must-not-control-operation-id",
+        },
+    ))
     retried = asyncio.run(creative_canvas_routes.retry_canvas_graph_failed_branch("session-a", "run-a"))
 
     assert fetched["session_id"] == "session-a"
     assert cancelled["status"] == "cancelled"
-    assert retried["job"]["canvasGraphRunId"] == "run-a"
-    assert [call[0] for call in route_service.calls] == ["get", "cancel", "retry", "get"]
+    assert started["accepted"] is True
+    assert started["status"] == "queued"
+    assert retried["accepted"] is True
+    assert [call[0] for call in route_service.calls] == ["get", "cancel", "prepare-direct", "execute-direct", "prepare-retry", "retry", "get"]
     assert route_service.calls[1][1] is runtime
     assert route_service.calls[1][2] == {
         "session_id": "session-a",
         "graph_run_id": "run-a",
         "reason": "user_cancelled",
     }
-    assert route_service.calls[2][1] is runtime
-    assert route_service.calls[2][2] == {"session_id": "session-a", "graph_run_id": "run-a"}
+    assert route_service.calls[2][1] == {
+        "session_id": "session-a",
+        "graph_id": "graph-a",
+        "graph_revision": 1,
+        "target_node_ids": ["result-a"],
+    }
+    assert route_service.calls[3][1] is runtime
+    assert route_service.calls[3][2]["sessionId"] == "session-a"
+    assert route_service.calls[3][2]["graphId"] == "graph-a"
+    assert route_service.calls[3][2]["canvasOperationId"].startswith("canvas-operation-")
+    assert route_service.calls[3][2]["canvasOperationId"] != "browser-must-not-control-operation-id"
+    assert route_service.calls[3][2]["graphRunId"].startswith("canvas-run-")
+    assert route_service.calls[4][1] == {"session_id": "session-a", "graph_run_id": "run-a"}
+    assert route_service.calls[5][1] is runtime
+    assert route_service.calls[5][2] == {"session_id": "session-a", "graph_run_id": "run-a"}
 
 
 def test_workspace_template_removes_session_resources_and_requires_rebinding(canvas_service) -> None:

@@ -21,7 +21,7 @@ import type { CanvasSnapshot, ContextMenuState } from "./types";
 function ActionIcon({ action }: { action: CreativeCanvasAction }) {
     if (action.binding?.kind === "mediakit") return <Box className="h-3.5 w-3.5 text-cyan-600" />;
     if (action.binding?.kind === "creative_media") return <Sparkles className="h-3.5 w-3.5 text-violet-600" />;
-    if (action.executionClass === "chat_task") return <MessageSquare className="h-3.5 w-3.5 text-amber-600" />;
+    if (action.executionClass === "supervisor_message" || action.executionClass === "chat_task") return <MessageSquare className="h-3.5 w-3.5 text-amber-600" />;
     return <Check className="h-3.5 w-3.5 text-muted-foreground" />;
 }
 

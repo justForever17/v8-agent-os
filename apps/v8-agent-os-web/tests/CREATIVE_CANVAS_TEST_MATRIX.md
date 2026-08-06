@@ -20,7 +20,7 @@ Workspace
         ├── Workbench 标签与预览
         └── Canvas Graph
             ├── Session Graph / Revision / Run Lock
-            ├── 素材、动作、持久结果槽（成功后呈现为可继续处理的素材卡）
+            ├── 素材、动作、持久预览槽（成功后呈现为可继续处理的素材卡）
             ├── 结果版本与 Run/Tool/Artifact lineage
             └── Workspace Workflow Templates（资源转待绑定输入）
 ```
@@ -127,7 +127,7 @@ Real-live 时限：
 | 右键菜单 | 按选区/节点/边/空白过滤；首层最多 5 项，其余搜索展开；菜单滚轮不驱动画布 | 浏览器菜单 `scrollTop=30` 且 viewport 不变；overlay 合同校验首层限制 | PASS |
 | 状态反馈 | 配置真相、输入数量、治理来源、运行/等待/失败/过期、进度、重试和预检原因均可见；禁止仅靠 prompt 猜“已配置” | 当前动作卡显示“已完成 / 已配置 / video 1/1 / 受治理 / 本地”；Engine validate 预检可打开且不触发执行 | PASS |
 | 素材预览 | 图片/视频/音频/3D/PSD 使用对应查看器；离屏暂停、URL 就绪缓存和稳定占位避免重开白屏；时间轴媒体只预载 metadata | 真实 GLB 在桌面/390px 均通过截图像素检查；30 次切换只保留 1 个 WebGL Canvas，租约最多保留 8 个 idle GLTF 资源 | PASS |
-| 效率工具 | 快捷键、框选后浮动工具条、批量对齐/分布、拓扑整理、小地图、工作区模板和“运行到此”服务重度使用 | typecheck/合同通过；当前源码浏览器验证框选工具条与 Undo | PASS |
+| 效率工具 | 快捷键、框选后浮动工具条、批量对齐/分布、拓扑整理、小地图、工作区模板；单动作卡与运行全部均为显式执行入口 | typecheck/合同通过；当前源码浏览器验证框选工具条与 Undo | PASS |
 | 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | Web Canvas 12/12；Graph/Creative/时间轴 107/107；取消、重启对账与失败分支恢复均持久化错误码 | PASS |
 | 视觉动效 | 数据类型线色、关系虚线、选中高亮/非相关降噪、拖线反馈与运行状态过渡明确，并尊重 reduced-motion | 当前源码浏览器视觉 smoke；连接颜色/透明度/`motion-reduce` 合同 | PASS |
 | 生成业务 | Session 可恢复 Graph、显式运行、动作持久结果槽、旧版本缩略图、素材/动作分层、Engine 权威编译与模板去 Session 化 | Graph/Creative Engine 定向 25 项；当前源码预检与结果槽浏览器 smoke | PASS |
@@ -139,11 +139,11 @@ Real-live 时限：
 | ID | 模式 | 场景 | 硬断言 | 状态 |
 |---|---|---|---|---|
 | GRAPH-01 | UNIT | 保存草稿后重载 Session | 节点、边、关系说明、参数、viewport 与 revision 从 Engine 恢复 | PASS（Graph 10） |
-| GRAPH-02 | UNIT | `运行到此` 且画布含无关未配置动作 | 只编译目标祖先子图；无关草稿不阻断 | PASS |
+| GRAPH-02 | UNIT | 单动作运行且画布含无关未配置动作 | 只编译目标预览的祖先子图；无关草稿不阻断 | PASS |
 | GRAPH-03 | UNIT | S-B 提交 S-A graphId/revision/source | Engine fail closed；旧 revision 返回冲突 | PASS |
 | GRAPH-04 | UNIT | 动作重复运行 | 固定结果槽更新最新 Artifact，同时按 version 保留历史缩略图 | PASS |
-| GRAPH-05 | CONTRACT | 前端执行提交 | 只提交 graphId/revision/targets；Engine 从持久图重新编译资源、关系和精确动作 | PASS（Web 10；Engine Creative 20） |
-| GRAPH-06 | BROWSER | 框选素材/动作/结果 | 仅选区存在实际动作时出现“运行到此”；配置、连线和关系说明永不自动发送/执行 | PASS（当前源码浏览器；桌面待复跑） |
+| GRAPH-05 | CONTRACT | 前端执行提交 | 只提交 graphId/revision/targets 到 Canvas 直跑端点；Engine 从持久图重新编译资源、关系和精确动作，不创建聊天消息或唤醒主理人 | PASS（Web 10；Engine Creative 20） |
+| GRAPH-06 | BROWSER | 框选素材/动作/预览 | 框选只出现关系说明、连接、布局和删除；实际动作卡提供“运行”，配置、连线和关系说明永不自动发送/执行 | PASS（当前源码浏览器；桌面待复跑） |
 | GRAPH-07 | BROWSER | 从左右类型端口拖线 | 输入/输出方向与媒体类型受约束；空白落线只显示兼容动作或上传/选择素材，不再建立预览/下载终点 | PASS（合同；桌面待复跑） |
 | GRAPH-08 | BROWSER | 已连接边端点附近拖拽 | 可重连；空白释放即断开；动作到所属结果槽的内部边不可拆 | PASS（当前源码浏览器；桌面待复跑） |
 | GRAPH-09 | UNIT | 保存工作区模板 | 至少含一个动作；Session resource 转为 typed input，不保存 source/artifact/session URL | PASS |
@@ -199,7 +199,7 @@ Real-live 时限：
 | TIME-05 | LOCAL | 音频按 sample index 分割；无损输出 postflight 样本数等于 `[start,end)` | PASS（48kHz 真实音频，12000/12000 样本） |
 | TIME-06 | LOCAL | 视频按 `frameIndex` 抽取单帧；产出正式 PNG artifact，postflight 仅 1 帧 | PASS（真实短片第 9 帧，PNG 签名与 1/1 帧） |
 | TIME-07 | LOCAL / CONTRACT | 首次打开按 header → sparse keyframe → exact frame 三级建立索引；精确索引完成前可播放/拖动但禁止保存或执行 | PASS（10 分钟/18,000 帧：45ms → 83ms → 715ms；重启缓存读取 1ms；Engine 107） |
-| TIME-08 | BROWSER | 独立播放头与开始/结束手柄拖动时合并为约 20Hz 快速 seek，视频帧合成后回写实际位置；松手才做精确 seek，保存按钮才写入 Graph 参数 | PASS（Web 10；桌面待复跑） |
+| TIME-08 | BROWSER | 可移动动作卡内只有一套播放头与开始/结束手柄；拖动时合并为约 20Hz 快速 seek，视频帧合成后回写实际位置；松手才做精确 seek，参数直接写入 Graph | PASS（Web 10；桌面待复跑） |
 | TIME-09 | BROWSER | 完整 frame boundary 到达后保留用户已选秒数并吸附到最近真实边界，显示实际边界时间；首次读取已有 Graph 参数时保留 frame/sample index | PASS（当前源码 `F602 -> F602 / 20.06667s`；桌面待复跑） |
 | TIME-10 | REAL-LIVE | 新片段按当前 Session/Run/tool/operation lineage 登记并回填持久结果槽 | NOT-RUN |
 | TIME-11 | UNIT | 同一未变文件的并发精确 probe | 共享一个 ffprobe 任务；每个调用仍保留自己的 Session resource truth，文件指纹变化后不复用 | PASS（Engine exact 6） |
@@ -221,7 +221,7 @@ Real-live 时限：
 | PSD-01 | UNIT | 读取 PSD | 受治理 helper 返回画布尺寸、可见图层树、层级、边界和合成预览，不把绝对路径投影到 Human Surface | PASS（Engine Creative 定向） |
 | PSD-02 | UNIT | 多张图片合成 PSD | 图层顺序、位置、缩放、透明度和可见性写入新 Artifact，原素材不变 | PASS（Engine Creative 定向） |
 | PSD-03 | UNIT | 编辑已有 PSD 图层 | 只接受结构化图层变更并生成新 Artifact/version；lineage 绑定当前 Session/Run/tool/operation | PASS（Engine Creative 定向） |
-| PSD-04 | BROWSER | Canvas 操作 PSD | 图层树、拖拽位置、层级调整和参数编辑由专用浮层表达，动作仍需“运行全部/运行到此”才执行 | PASS（typecheck；桌面待复跑） |
+| PSD-04 | BROWSER | Canvas 操作 PSD | 图层树、拖拽位置、层级调整和参数编辑由专用浮层表达，动作仍需“运行”或“运行全部”才执行 | PASS（typecheck；桌面待复跑） |
 
 ### 5.7 Provider 与分段加载合同
 

@@ -16,6 +16,11 @@ export type CreativeCanvasActionScope = "local" | "manual" | "agent_only" | "gov
 export type CreativeCanvasExecutionClass =
     | "local_read"
     | "local_mutation"
+    /** Persisted graph action executed directly by the governed Canvas runtime. */
+    | "graph_direct"
+    /** Explicit natural-language handoff entered by the user, never an action fallback. */
+    | "supervisor_message"
+    /** Retained for plugin actions that still require a Chat-run task grant. */
     | "chat_task"
     | "agent_projection"
     | "governance_projection";
@@ -311,7 +316,7 @@ export const LOCAL_CREATIVE_CANVAS_ACTIONS: readonly CreativeCanvasAction[] = [
 const MANUAL_MESSAGE_DEFAULTS = {
     scope: "manual" as const,
     requiresMask: false,
-    executionClass: "chat_task" as const,
+    executionClass: "supervisor_message" as const,
     networkRequired: false,
     mayIncurCost: false,
     requiresGrant: false,
@@ -356,7 +361,7 @@ function creativeMediaAction(input: {
         requiresMask: input.requiresMask ?? false,
         parameterEditor: input.parameterEditor,
         output: input.output,
-        executionClass: "chat_task",
+        executionClass: "graph_direct",
         networkRequired: input.networkRequired ?? true,
         mayIncurCost: input.mayIncurCost ?? true,
         requiresGrant: false,

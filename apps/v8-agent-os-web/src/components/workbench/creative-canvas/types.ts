@@ -130,7 +130,6 @@ export type ComposerState = {
     nodeIds: string[];
     edgeId?: string;
     text: string;
-    timeRange?: CanvasTimeRange;
     psdComposition?: CanvasPsdComposition;
     psdEdits?: CanvasPsdLayerEdit[];
     actionNodeId?: string;

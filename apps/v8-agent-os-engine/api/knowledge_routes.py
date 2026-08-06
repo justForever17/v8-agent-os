@@ -27,6 +27,7 @@ from .models import (
 from core.database import db
 from core.model_control_plane import model_control_plane
 from core.memory_store import MEMORY_ROOT
+from core.supervisor_identity import is_identity_preference_key
 from core.memory_extraction_policy import normalize_memory_extraction_config
 from core.memory_extraction_service import memory_extraction_service
 from core.realtime_protocol import format_ndjson
@@ -471,18 +472,36 @@ async def get_memory_preferences():
 async def upsert_memory_preference(payload: PreferenceMutationPayload):
     try:
         value = (payload.value or "").strip()
-        if not payload.key.strip():
+        key = payload.key.strip()
+        scope = (payload.scope or "global").strip() or "global"
+        if not key:
             raise HTTPException(status_code=400, detail="Preference key is required.")
         if not value:
             raise HTTPException(status_code=400, detail="Preference value is required.")
-        memory_runtime.upsert_preference(
-            key=payload.key.strip(),
+        if is_identity_preference_key(key):
+            if scope != "global":
+                raise HTTPException(status_code=400, detail="Supervisor identity preferences must use global scope.")
+            update_kwargs = {key: value}
+            result = memory_runtime.update_supervisor_identity(
+                **update_kwargs,
+                source="human_admin",
+                reason="admin_identity_update",
+                metadata={"surface": "memory_preferences_api"},
+            )
+            return {"updated": True, "identity": result}
+        result = memory_runtime.upsert_preference(
+            key=key,
             value=value,
-            scope=(payload.scope or "global").strip() or "global",
+            scope=scope,
+            source="human_admin",
+            reason="admin_preference_update",
+            metadata={"surface": "memory_preferences_api"},
         )
-        return {"updated": True}
+        return {"updated": True, "mutation": result}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -490,11 +509,33 @@ async def upsert_memory_preference(payload: PreferenceMutationPayload):
 @router.delete("/memory/preferences")
 async def delete_memory_preference(payload: PreferenceMutationPayload):
     try:
-        deleted = memory_runtime.delete_preference(
-            key=payload.key.strip(),
-            scope=(payload.scope or "global").strip() or "global",
-        )
+        key = payload.key.strip()
+        scope = (payload.scope or "global").strip() or "global"
+        if not key:
+            raise HTTPException(status_code=400, detail="Preference key is required.")
+        identity_key = is_identity_preference_key(key)
+        if identity_key and scope != "global":
+            raise HTTPException(status_code=400, detail="Supervisor identity preferences must use global scope.")
+        if identity_key:
+            deleted = memory_runtime.clear_supervisor_identity(
+                key=key,
+                source="human_admin",
+                reason="admin_identity_revoke",
+                metadata={"surface": "memory_preferences_api"},
+            )
+        else:
+            deleted = memory_runtime.delete_preference(
+                key=key,
+                scope=scope,
+                source="human_admin",
+                reason="admin_preference_delete",
+                metadata={"surface": "memory_preferences_api"},
+            )
         return {"deleted": deleted}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

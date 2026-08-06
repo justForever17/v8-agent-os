@@ -199,6 +199,45 @@ def test_memory_agent_derives_evidence_refs_from_canonical_sources() -> None:
     ]
 
 
+def test_memory_agent_only_allows_stale_replacement_during_explicit_correction_mode() -> None:
+    result = memory_agent.MemoryExtractionResult(
+        summary="explicit correction",
+        tags=["memory"],
+        knowledge=[
+            memory_agent.KnowledgeExtraction(
+                fact="LangChain 使用 1.x，禁止低版本依赖",
+                category="dependency_rule",
+                scope="workspace:test8",
+                relation="replace",
+                target_fact_id="fact-stale-rule",
+                confidence=0.9,
+                importance=80,
+                durability="stable",
+            )
+        ],
+    )
+    captured: list[dict] = []
+
+    def _write(**kwargs):  # noqa: ANN003
+        captured.append(kwargs)
+        return {"factId": "fact-new", "canonicalFactId": "fact-new", "action": "replace"}
+
+    policy = {
+        "knowledge_importance_threshold": 0,
+        "knowledge_confidence_threshold": 0,
+        "global_knowledge_importance_threshold": 0,
+        "global_knowledge_confidence_threshold": 0,
+        "global_operational_importance_threshold": 0,
+        "global_operational_confidence_threshold": 0,
+    }
+    with patch.object(memory_agent.memory_runtime, "write_knowledge", side_effect=_write):
+        memory_agent._store_knowledge(result, "session-1", policy, allow_stale_replace=False)
+        memory_agent._store_knowledge(result, "session-1", policy, allow_stale_replace=True)
+
+    assert captured[0]["allow_stale_target"] is False
+    assert captured[1]["allow_stale_target"] is True
+
+
 def test_document_replacement_persists_evidence_and_lifecycle_audit(tmp_path: Path) -> None:
     database = KnowledgeDB(tmp_path / "knowledge.db")
     first = database.replace_user_document_chunks(

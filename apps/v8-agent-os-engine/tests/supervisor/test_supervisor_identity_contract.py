@@ -22,6 +22,7 @@ def test_legacy_naming_placeholders_do_not_become_identity_truth() -> None:
     assert identity.user_address == "用户"
     assert "Current self-name: Supervisor" in context
     assert "Address the human as: 用户" in context
+    assert "invite the user to give you a name" in context
     assert "Address the human as: 主理人" not in context
     assert non_identity_preferences(preferences) == {"preferred_language": "zh-CN"}
 

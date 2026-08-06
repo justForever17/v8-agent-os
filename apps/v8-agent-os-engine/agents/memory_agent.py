@@ -30,9 +30,10 @@ from langchain_core.exceptions import OutputParserException
 from core.database import db
 from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import sanitize_background_model_output
-from core.memory_canonicalization import canonicalize_memory_extraction_result
+from core.memory_canonicalization import canonicalize_memory_extraction_result, canonicalize_preference_key
 from core.llm_chat_adapter import _extract_json_payload
 from core.model_thinking_control import background_visible_output_request_patch
+from core.supervisor_identity import is_identity_preference_key, valid_assistant_name, valid_user_address
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.memory_router import MemoryRouter
 from core.knowledge_db import knowledge_db
@@ -103,6 +104,17 @@ _NOISY_PREFERENCE_HINTS = (
     ".wav",
 )
 
+# This flag never performs a replacement by itself.  It only permits the
+# extractor to receive bounded, exact-ID revision candidates; persistence still
+# requires a typed `relation=replace` and `target_fact_id`.
+_EXPLICIT_KNOWLEDGE_CORRECTION_RE = re.compile(
+    r"(?:更正|纠正|修正(?:旧|原|此前|之前)?(?:知识|规则|词条)?|"
+    r"替换(?:旧|原|此前|之前)?(?:知识|规则|词条)?|取代(?:旧|原|此前|之前)?(?:知识|规则|词条)?|"
+    r"撤销(?:旧|原|此前|之前)?(?:知识|规则|词条)?|废弃(?:旧|原|此前|之前)?(?:知识|规则|词条)?|"
+    r"不再(?:适用|使用)|以.+为准|\b(?:correct|correction|replace|supersede|revoke|deprecate)\b)",
+    re.IGNORECASE,
+)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -117,6 +129,18 @@ class PreferenceExtraction(BaseModel):
     confidence: float = Field(default=0.5, description="Confidence score from 0.0 to 1.0")
     durability: str = Field(default="stable", description="Durability: stable | operational | transient")
     target_store: str = Field(default="preference", description="Target store: preference | daily_log | skip")
+
+
+class IdentityExtraction(BaseModel):
+    """Typed global Supervisor identity; identity never belongs to a workspace."""
+
+    assistant_name: str = Field(default="", description="User-assigned Supervisor name; emit only for an explicit naming instruction")
+    user_call_name: str = Field(default="", description="User-assigned form of address; emit only for an explicit naming instruction")
+    importance: int = Field(default=90, description="Importance score from 0 to 100")
+    confidence: float = Field(default=0.95, description="Confidence score from 0.0 to 1.0")
+    durability: str = Field(default="stable", description="Identity must be stable")
+    target_store: str = Field(default="identity", description="Target store: identity | skip")
+
 
 class KnowledgeExtraction(BaseModel):
     fact: str = Field(description="A concise, atomic factual knowledge about the user's project, business, or environment")
@@ -163,6 +187,7 @@ class WorkflowEpisodeExtraction(BaseModel):
 class MemoryExtractionResult(BaseModel):
     summary: str = Field(description="A concise, one-sentence summary of the core outcome or discussed topic of the session")
     tags: List[str] = Field(description="A list of 3-5 tags describing the session")
+    identity: IdentityExtraction = Field(default_factory=IdentityExtraction)
     preferences: List[PreferenceExtraction] = Field(default_factory=list, description="Extracted user preferences")
     knowledge: List[KnowledgeExtraction] = Field(default_factory=list, description="Extracted non-transient semantic facts")
     entities: List[EntityExtraction] = Field(default_factory=list, description="Extracted entities for the knowledge graph")
@@ -686,6 +711,8 @@ def _repair_memory_extraction_payload(text: str) -> MemoryExtractionResult:
     if not payload:
         raise ValueError("memory extraction output did not contain a JSON object")
     payload["tags"] = [str(item).strip() for item in list(payload.get("tags") or []) if str(item or "").strip()][:8]
+    if not isinstance(payload.get("identity"), dict):
+        payload["identity"] = {}
     payload["preferences"] = _clean_required_dict_items(payload.get("preferences"), ("scope", "key", "value"))
     payload["knowledge"] = _clean_required_dict_items(payload.get("knowledge"), ("fact", "category", "scope"))
     payload["entities"] = _clean_required_dict_items(payload.get("entities"), ("name", "type"))
@@ -1114,7 +1141,17 @@ def _normalize_periodic_summary_payload(*, tier: str, payload: PeriodicSummaryPa
         "body": body,
     }
 
-def _build_historical_context(*, quick_summary: str, scope_chain: List[str]) -> str:
+def _has_explicit_knowledge_correction(text: str) -> bool:
+    """Whether the transcript asks to revise existing memory, not merely add it."""
+    return bool(_EXPLICIT_KNOWLEDGE_CORRECTION_RE.search(str(text or "")))
+
+
+def _build_historical_context(
+    *,
+    quick_summary: str,
+    scope_chain: List[str],
+    correction_mode: bool = False,
+) -> str:
     context_sections: List[str] = []
     try:
         past_knowledge = memory_runtime.query_knowledge(query=quick_summary, scopes=scope_chain, limit=5)
@@ -1135,6 +1172,44 @@ def _build_historical_context(*, quick_summary: str, scope_chain: List[str]) -> 
             context_sections.append("\n".join(lines))
     except Exception as e:
         logger.warning(f"[MemoryAgent] Failed to load historical preferences: {e}")
+
+    if correction_mode:
+        # FTS deliberately excludes stale facts.  For an explicit correction we
+        # expose a bounded set of exact IDs from the allowed scope chain so the
+        # extractor can request a governed replacement revision instead of
+        # guessing from semantic similarity.
+        try:
+            candidates: List[Dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            allowed_scopes = {str(item or "").strip() for item in scope_chain if str(item or "").strip()}
+            for candidate_scope in reversed(scope_chain):
+                for item in memory_runtime.list_knowledge(scope=candidate_scope, limit=24, status="active"):
+                    fact_id = str(item.get("id") or "").strip()
+                    item_scope = str(item.get("scope") or "global").strip() or "global"
+                    lifecycle = str(item.get("lifecycle_state") or "active").strip().lower() or "active"
+                    if not fact_id or fact_id in seen_ids or item_scope not in allowed_scopes:
+                        continue
+                    if lifecycle not in {"active", "stale"}:
+                        continue
+                    seen_ids.add(fact_id)
+                    candidates.append(item)
+                    if len(candidates) >= 16:
+                        break
+                if len(candidates) >= 16:
+                    break
+            if candidates:
+                lines = [
+                    "Explicit Correction Candidates (read-only; use an exact target_fact_id only for a user-confirmed correction):"
+                ]
+                for item in candidates:
+                    fact = " ".join(str(item.get("fact") or "").split())[:600]
+                    lines.append(
+                        f"- [id: {item['id']}] (scope: {item.get('scope', 'global')}; "
+                        f"lifecycle: {item.get('lifecycle_state', 'active')}) {fact}"
+                    )
+                context_sections.append("\n".join(lines))
+        except Exception as exc:
+            logger.warning("[MemoryAgent] Could not load explicit correction candidates: %s", exc)
 
     return "\n\n".join(context_sections) if context_sections else "No prior knowledge retrieved."
 
@@ -1249,6 +1324,8 @@ def classify_global_knowledge_risk(fact_text: str, category_text: str = "") -> s
 def _evaluate_preference_persistence(pref: PreferenceExtraction, policy: Dict[str, Any]) -> tuple[bool, str]:
     if _normalize_target_store(pref.target_store, default="preference") != "preference":
         return False, f"target_store_{_normalize_target_store(pref.target_store, default='preference')}"
+    if is_identity_preference_key(canonicalize_preference_key(pref.key)):
+        return False, "identity_routed_to_global"
     if _normalize_durability(pref.durability, default="stable") != "stable":
         return False, f"durability_{_normalize_durability(pref.durability, default='stable')}"
     noise_reason = _preference_noise_reason(pref)
@@ -1313,23 +1390,107 @@ def _should_store_preference(pref: PreferenceExtraction, policy: Dict[str, Any])
     return allowed
 
 
+def _identity_updates_for_persistence(
+    identity: IdentityExtraction,
+    policy: Dict[str, Any],
+) -> tuple[Dict[str, str], str]:
+    if _normalize_target_store(identity.target_store, default="identity") != "identity":
+        return {}, f"target_store_{_normalize_target_store(identity.target_store, default='identity')}"
+    if _normalize_durability(identity.durability, default="stable") != "stable":
+        return {}, f"durability_{_normalize_durability(identity.durability, default='stable')}"
+    if int(identity.importance or 0) < _policy_int(
+        policy,
+        "preference_importance_threshold",
+        int(MEMORY_DURABLE_POLICY_DEFAULTS["preference_importance_threshold"]),
+    ):
+        return {}, "importance_below_threshold"
+    if float(identity.confidence or 0.0) < _policy_float(
+        policy,
+        "preference_confidence_threshold",
+        float(MEMORY_DURABLE_POLICY_DEFAULTS["preference_confidence_threshold"]),
+    ):
+        return {}, "confidence_below_threshold"
+    updates: Dict[str, str] = {}
+    assistant_name = valid_assistant_name(identity.assistant_name)
+    if assistant_name:
+        updates["assistant_name"] = assistant_name
+    user_call_name = valid_user_address(identity.user_call_name)
+    if user_call_name:
+        updates["user_call_name"] = user_call_name
+    return updates, "persisted" if updates else "no_valid_identity_fields"
+
+
+def _store_identity(
+    result: MemoryExtractionResult,
+    policy: Dict[str, Any],
+    *,
+    session_id: str,
+    source_run: str | None = None,
+    source_message_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    updates, reason = _identity_updates_for_persistence(result.identity, policy)
+    if not updates:
+        return {"stored": False, "reason": reason, "updates": {}}
+    evidence_refs = [
+        *[f"message:{message_id}" for message_id in list(source_message_ids or []) if str(message_id or "").strip()],
+        *([f"run:{source_run}"] if str(source_run or "").strip() else []),
+        f"session:{session_id}",
+    ]
+    try:
+        persisted = memory_runtime.update_supervisor_identity(
+            assistant_name=updates.get("assistant_name"),
+            user_call_name=updates.get("user_call_name"),
+            source="memory_agent",
+            reason="explicit_identity_assignment",
+            evidence_refs=evidence_refs,
+            metadata={"memoryAgent": True, "sessionId": session_id, "sourceRun": source_run or ""},
+        )
+    except (OSError, ValueError) as exc:
+        logger.warning("[MemoryAgent] Identity update skipped: %s", exc)
+        return {"stored": False, "reason": f"identity_write_failed:{exc.__class__.__name__}", "updates": {}}
+    return {"stored": True, "reason": reason, "updates": updates, "result": persisted}
+
+
 def _should_store_knowledge(fact: KnowledgeExtraction, policy: Dict[str, Any]) -> bool:
     allowed, _ = _evaluate_knowledge_persistence(fact, policy)
     return allowed
 
 
-def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]) -> tuple[int, List[PreferenceExtraction]]:
+def _store_preferences(
+    result: MemoryExtractionResult,
+    policy: Dict[str, Any],
+    *,
+    session_id: str,
+    source_run: str | None = None,
+    source_message_ids: Optional[List[str]] = None,
+) -> tuple[int, List[PreferenceExtraction]]:
     """[专业工具] 将偏好存入 MEMORY.md（按评分与 store 约束过滤）"""
     stored = 0
     stored_items: List[PreferenceExtraction] = []
+    evidence_refs = [
+        *[f"message:{message_id}" for message_id in list(source_message_ids or []) if str(message_id or "").strip()],
+        *([f"run:{source_run}"] if str(source_run or "").strip() else []),
+        f"session:{session_id}",
+    ]
     for pref in result.preferences:
+        if is_identity_preference_key(canonicalize_preference_key(pref.key)):
+            logger.warning("[MemoryAgent] Identity preference was not normalized before persistence: %s", pref.key)
+            continue
         if not _should_store_preference(pref, policy):
             continue
         key = pref.key.strip()
         if not key:
             key = "preference"
         try:
-            memory_runtime.upsert_preference(key=key, value=pref.value, scope=pref.scope, source="memory_agent")
+            memory_runtime.upsert_preference(
+                key=key,
+                value=pref.value,
+                scope=pref.scope,
+                source="memory_agent",
+                reason="memory_extraction",
+                evidence_refs=evidence_refs,
+                metadata={"memoryAgent": True, "sessionId": session_id, "sourceRun": source_run or ""},
+            )
             stored += 1
             stored_items.append(pref)
             logger.info(f"[MemoryAgent] Preference → MEMORY.md [{pref.scope}] {key} = {pref.value}")
@@ -1345,6 +1506,7 @@ def _store_knowledge(
     source_run: str | None = None,
     source_message_ids: Optional[List[str]] = None,
     transcript_hash: str | None = None,
+    allow_stale_replace: bool = False,
 ) -> tuple[int, List[KnowledgeExtraction]]:
     """Persist knowledge through the canonical transactional write contract."""
     stored = 0
@@ -1381,6 +1543,7 @@ def _store_knowledge(
                 importance=fact.importance,
                 durability=_normalize_durability(fact.durability, default="operational"),
                 evidence_refs=evidence_refs,
+                allow_stale_target=bool(allow_stale_replace and relation == "replace"),
             )
             fact.persisted_fact_id = str(write_result.get("canonicalFactId") or write_result.get("factId") or "")
             stored += 1
@@ -1494,10 +1657,57 @@ def _global_promotion_reason(text: str) -> str | None:
     return None
 
 
+def _route_legacy_identity_preferences(result: MemoryExtractionResult) -> list[dict[str, Any]]:
+    """Keep older extractor payloads compatible without allowing local identity truth."""
+    identity = result.identity or IdentityExtraction()
+    retained: List[PreferenceExtraction] = []
+    decisions: list[dict[str, Any]] = []
+    for pref in result.preferences:
+        canonical_key = canonicalize_preference_key(pref.key)
+        if not is_identity_preference_key(canonical_key):
+            retained.append(pref)
+            continue
+        target_field = canonical_key
+        existing_value = str(getattr(identity, target_field, "") or "").strip()
+        candidate_value = str(pref.value or "").strip()
+        if existing_value:
+            decision = "legacy_identity_ignored_typed_value_present"
+        elif candidate_value:
+            setattr(identity, target_field, candidate_value)
+            identity.importance = max(int(identity.importance or 0), int(pref.importance or 0))
+            identity.confidence = max(float(identity.confidence or 0.0), float(pref.confidence or 0.0))
+            identity.durability = "stable"
+            identity.target_store = "identity"
+            decision = "legacy_identity_promoted_global"
+        else:
+            decision = "legacy_identity_empty"
+        decisions.append(
+            {
+                "itemType": "identity",
+                "requestedScope": str(pref.scope or "").strip() or None,
+                "finalScope": "global",
+                "scopeDecision": decision,
+                "key": canonical_key,
+            }
+        )
+    result.identity = identity
+    result.preferences = retained
+    if str(identity.assistant_name or "").strip() or str(identity.user_call_name or "").strip():
+        decisions.append(
+            {
+                "itemType": "identity",
+                "requestedScope": None,
+                "finalScope": "global",
+                "scopeDecision": "identity_global_truth",
+            }
+        )
+    return decisions
+
+
 def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str) -> list[dict[str, Any]]:
     specific_prefixes = ("project:", "channel:", "workspace:", "external_api_thread:")
     target_scope = str(effective_memory_scope or "").strip() or "global"
-    decisions: list[dict[str, Any]] = []
+    decisions = _route_legacy_identity_preferences(result)
 
     def _coerce_scope(value: str, text: str, item_type: str) -> str:
         normalized = (value or "").strip()
@@ -2350,7 +2560,12 @@ def analyze_session_memory(
     )
     
     # 3. FTS5 检索历史上下文（获取 Top 5 相关条目用于查重和更新覆盖）
-    context_text = _build_historical_context(quick_summary=quick_summary, scope_chain=scope_chain)
+    correction_mode = _has_explicit_knowledge_correction(chat_history_text)
+    context_text = _build_historical_context(
+        quick_summary=quick_summary,
+        scope_chain=scope_chain,
+        correction_mode=correction_mode,
+    )
     past_knowledge = []
     try:
         past_knowledge = memory_runtime.query_knowledge(query=quick_summary, scopes=scope_chain, limit=5)
@@ -2366,6 +2581,7 @@ def analyze_session_memory(
             "effective_memory_scope": effective_memory_scope,
             "query": quick_summary,
             "result_count": len(past_knowledge) if "past_knowledge" in locals() else 0,
+            "explicit_correction_mode": correction_mode,
         },
     )
 
@@ -2506,6 +2722,7 @@ def analyze_session_memory(
 
     scope_decisions = _align_extraction_scopes(result, effective_memory_scope)
     canonicalization = canonicalize_memory_extraction_result(result)
+    identity_updates, identity_candidate_reason = _identity_updates_for_persistence(result.identity, policy)
     _emit_memory_event(
         run_handle,
         "memory.extraction.completed",
@@ -2515,6 +2732,8 @@ def analyze_session_memory(
             "effective_memory_scope": effective_memory_scope,
             "summary": result.summary,
             "tags": result.tags,
+            "identity_field_count": len(identity_updates),
+            "identity_candidate_reason": identity_candidate_reason,
             "preference_count": len(result.preferences),
             "knowledge_count": len(result.knowledge),
             "workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
@@ -2536,6 +2755,8 @@ def analyze_session_memory(
     )
        
     # 5. 分别落库
+    stored_identity: Dict[str, Any] = {"stored": False, "reason": "memory_policy_not_durable", "updates": {}}
+    stored_identity_count = 0
     stored_preferences = 0
     stored_knowledge = 0
     stored_preference_items: List[PreferenceExtraction] = []
@@ -2544,7 +2765,21 @@ def analyze_session_memory(
     stored_workflow_records: List[Dict[str, Any]] = []
     graph_stats = {"entities": 0, "relations": 0}
     if memory_policy == "durable":
-        stored_preferences, stored_preference_items = _store_preferences(result, policy)
+        stored_identity = _store_identity(
+            result,
+            policy,
+            session_id=session_id,
+            source_run=getattr(run_handle, "run_id", None),
+            source_message_ids=sorted(incremental_message_ids),
+        )
+        stored_identity_count = len(dict(stored_identity.get("updates") or {})) if stored_identity.get("stored") else 0
+        stored_preferences, stored_preference_items = _store_preferences(
+            result,
+            policy,
+            session_id=session_id,
+            source_run=getattr(run_handle, "run_id", None),
+            source_message_ids=sorted(incremental_message_ids),
+        )
         stored_knowledge, stored_knowledge_items = _store_knowledge(
             result,
             session_id,
@@ -2552,6 +2787,7 @@ def analyze_session_memory(
             source_run=getattr(run_handle, "run_id", None),
             source_message_ids=sorted(incremental_message_ids),
             transcript_hash=hashlib.sha256(chat_history_text.encode("utf-8")).hexdigest(),
+            allow_stale_replace=correction_mode,
         )
         stored_workflows, stored_workflow_records = _store_workflow_episodes(
             result,
@@ -2573,6 +2809,19 @@ def analyze_session_memory(
     )
     filtered_preferences = max(0, len(result.preferences) - len(stored_preference_items))
     filtered_knowledge = max(0, len(result.knowledge) - len(stored_knowledge_items))
+    _emit_memory_event(
+        run_handle,
+        "memory.identity.updated",
+        {
+            "session_id": session_id,
+            "scope": "global",
+            "resolved_scope": scope,
+            "effective_memory_scope": effective_memory_scope,
+            "count": stored_identity_count,
+            "reason": stored_identity.get("reason"),
+            "memory_policy": memory_policy,
+        },
+    )
     _emit_memory_event(
         run_handle,
         "memory.preferences.updated",
@@ -2647,8 +2896,13 @@ def analyze_session_memory(
         no_persisted_memory_reason = "daily_summary_only"
     elif memory_policy == "skipped":
         no_persisted_memory_reason = "skipped"
-    elif stored_preferences + stored_knowledge + stored_workflows <= 0:
-        extracted_memory_items = len(result.preferences) + len(result.knowledge) + len(getattr(result, "workflow_episodes", []) or [])
+    elif stored_identity_count + stored_preferences + stored_knowledge + stored_workflows <= 0:
+        extracted_memory_items = (
+            len(identity_updates)
+            + len(result.preferences)
+            + len(result.knowledge)
+            + len(getattr(result, "workflow_episodes", []) or [])
+        )
         no_persisted_memory_reason = "policy_filtered" if extracted_memory_items > 0 else "model_empty"
     current_hash = _message_hash(transcript_entries)
     last_entry = transcript_entries[-1] if transcript_entries else {}
@@ -2673,11 +2927,18 @@ def analyze_session_memory(
                 "parserErrorPreview": extraction_attempt.parser_error_preview or None,
                 "extractionFailureStage": None,
                 "extractionFailureReason": None,
+                "extractedIdentityFieldCount": len(identity_updates),
                 "extractedPreferenceCount": len(result.preferences),
                 "extractedKnowledgeCount": len(result.knowledge),
                 "extractedWorkflowEpisodeCount": len(getattr(result, "workflow_episodes", []) or []),
                 "extractedEntityCount": len(result.entities),
                 "extractedRelationCount": len(result.relations),
+                "persistedIdentityFieldCount": stored_identity_count,
+                "identityPersistence": {
+                    "stored": bool(stored_identity.get("stored")),
+                    "reason": stored_identity.get("reason"),
+                    "fields": sorted(dict(stored_identity.get("updates") or {}).keys()),
+                },
                 "persistedPreferenceCount": stored_preferences,
                 "persistedKnowledgeCount": stored_knowledge,
                 "persistedWorkflowEpisodeCount": stored_workflows,
@@ -2701,6 +2962,7 @@ def analyze_session_memory(
                 "transcriptSource": transcript["source"],
                 "latestSeq": transcript["latest_seq"],
                 "extractionMode": extraction_mode,
+                "explicitCorrectionMode": correction_mode,
             }
         },
     )
@@ -2713,15 +2975,18 @@ def analyze_session_memory(
             "effective_memory_scope": effective_memory_scope,
             "summary": result.summary,
             "tags": result.tags,
+            "identity_field_count": stored_identity_count,
             "preference_count": stored_preferences,
             "knowledge_count": stored_knowledge,
             "entity_count": graph_stats["entities"],
             "relation_count": graph_stats["relations"],
+            "extracted_identity_field_count": len(identity_updates),
             "extracted_preference_count": len(result.preferences),
             "extracted_knowledge_count": len(result.knowledge),
             "extracted_workflow_episode_count": len(getattr(result, "workflow_episodes", []) or []),
             "extracted_entity_count": len(result.entities),
             "extracted_relation_count": len(result.relations),
+            "persisted_identity_field_count": stored_identity_count,
             "persisted_preference_count": stored_preferences,
             "persisted_knowledge_count": stored_knowledge,
             "persisted_workflow_episode_count": stored_workflows,

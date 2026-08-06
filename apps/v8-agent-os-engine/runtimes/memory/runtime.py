@@ -431,6 +431,7 @@ class MemoryRuntime:
             "total": profile_service.get_preference_count(),
             "globalQuarantine": profile_service.list_global_preference_quarantine(),
             "globalProfile": profile_service.get_global_profile_schema(),
+            "history": profile_service.list_preference_history(limit=100),
         }
 
     def load_preferences(
@@ -441,11 +442,96 @@ class MemoryRuntime:
     ) -> Dict[str, str]:
         return profile_service.load_preferences(scope=scope, scope_chain=scope_chain)
 
-    def upsert_preference(self, *, key: str, value: str, scope: str = "global", source: str = "human_admin") -> None:
-        profile_service.update_preference(key=key, value=value, scope=scope, source=source)
+    def upsert_preference(
+        self,
+        *,
+        key: str,
+        value: str,
+        scope: str = "global",
+        source: str = "human_admin",
+        reason: str = "explicit_update",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return profile_service.update_preference(
+            key=key,
+            value=value,
+            scope=scope,
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
 
-    def delete_preference(self, *, key: str, scope: str = "global") -> bool:
-        return profile_service.delete_preference(key=key, scope=scope)
+    def delete_preference(
+        self,
+        *,
+        key: str,
+        scope: str = "global",
+        source: str = "human_admin",
+        reason: str = "explicit_delete",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return profile_service.delete_preference(
+            key=key,
+            scope=scope,
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
+
+    def clear_supervisor_identity(
+        self,
+        *,
+        key: str,
+        source: str = "human_admin",
+        reason: str = "explicit_identity_revoke",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return profile_service.clear_supervisor_identity(
+            key=key,
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
+
+    def update_supervisor_identity(
+        self,
+        *,
+        assistant_name: Optional[str] = None,
+        user_call_name: Optional[str] = None,
+        source: str = "human_admin",
+        reason: str = "explicit_identity_update",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return profile_service.update_supervisor_identity(
+            assistant_name=assistant_name,
+            user_call_name=user_call_name,
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
+
+    def migrate_scoped_identity_to_global(
+        self,
+        *,
+        scope: str,
+        source: str = "memory_migration",
+        reason: str = "legacy_scoped_identity_migration",
+        evidence_refs: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return profile_service.migrate_scoped_identity_to_global(
+            scope=scope,
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+        )
 
     def restore_global_preference_quarantine(self, *, record_id: str) -> Optional[Dict[str, object]]:
         return profile_service.restore_global_preference_quarantine(record_id=record_id)
@@ -534,6 +620,7 @@ class MemoryRuntime:
         durability: str = "operational",
         evidence_refs: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        allow_stale_target: bool = False,
     ) -> Dict[str, object]:
         return knowledge_service.write_knowledge(
             fact=fact,
@@ -551,6 +638,7 @@ class MemoryRuntime:
             durability=durability,
             evidence_refs=evidence_refs,
             metadata=metadata,
+            allow_stale_target=allow_stale_target,
         )
 
     def update_knowledge(

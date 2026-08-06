@@ -61,6 +61,98 @@ def test_write_contract_reinforces_idempotently_and_replaces_with_revision(tmp_p
     assert db.fts_search("严格", scope="project:demo") == []
 
 
+def test_explicit_revision_can_supersede_a_stale_target_but_default_write_cannot(tmp_path: Path) -> None:
+    db = KnowledgeDB(tmp_path / "knowledge.db")
+    original = db.write_knowledge(
+        fact="LangChain 固定使用 0.x",
+        category="dependency_rule",
+        scope="workspace:test8",
+        fact_id="fact-langchain-old",
+    )
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE knowledge SET lifecycle_state = 'stale' WHERE id = ?",
+            (original["factId"],),
+        )
+
+    with pytest.raises(ValueError, match="not the current canonical fact"):
+        db.write_knowledge(
+            fact="LangChain 使用 1.x，禁止使用低版本依赖",
+            category="dependency_rule",
+            scope="workspace:test8",
+            relation="replace",
+            target_fact_id=str(original["factId"]),
+        )
+
+    replacement = db.write_knowledge(
+        fact="LangChain 使用 1.x，禁止使用低版本依赖",
+        category="dependency_rule",
+        scope="workspace:test8",
+        relation="replace",
+        target_fact_id=str(original["factId"]),
+        allow_stale_target=True,
+        maintainer_source="human_admin",
+        evidence_refs=["message:explicit-correction"],
+    )
+
+    with db._conn() as conn:
+        old_row = conn.execute(
+            "SELECT lifecycle_state, superseded_by FROM knowledge WHERE id = ?",
+            (original["factId"],),
+        ).fetchone()
+        new_row = conn.execute(
+            "SELECT lineage_id, revision_no, metadata_json FROM knowledge WHERE id = ?",
+            (replacement["factId"],),
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT reason, metadata_json FROM knowledge_lifecycle_audit "
+            "WHERE fact_id = ? AND action = 'superseded' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (original["factId"],),
+        ).fetchone()
+
+    assert old_row["lifecycle_state"] == "superseded"
+    assert old_row["superseded_by"] == replacement["factId"]
+    assert new_row["revision_no"] == 2
+    assert json.loads(new_row["metadata_json"])["replacedStaleTarget"] is True
+    assert audit["reason"] == "knowledge_replace_stale_target"
+    assert json.loads(audit["metadata_json"])["replacedStaleTarget"] is True
+
+
+def test_stale_revision_cannot_bypass_a_newer_canonical_lineage_fact(tmp_path: Path) -> None:
+    db = KnowledgeDB(tmp_path / "knowledge.db")
+    original = db.write_knowledge(
+        fact="旧规则",
+        category="rule",
+        scope="workspace:test8",
+        fact_id="fact-old",
+    )
+    db.write_knowledge(
+        fact="当前规则",
+        category="rule",
+        scope="workspace:test8",
+        relation="replace",
+        target_fact_id=str(original["factId"]),
+        fact_id="fact-current",
+    )
+    with db._conn() as conn:
+        # Simulate an imported/legacy row labelled stale after a newer revision
+        # already became canonical.  It must not be allowed to fork the lineage.
+        conn.execute(
+            "UPDATE knowledge SET lifecycle_state = 'stale' WHERE id = ?",
+            (original["factId"],),
+        )
+
+    with pytest.raises(ValueError, match="newer canonical revision"):
+        db.write_knowledge(
+            fact="错误地从旧规则再分叉",
+            category="rule",
+            scope="workspace:test8",
+            relation="replace",
+            target_fact_id=str(original["factId"]),
+            allow_stale_target=True,
+        )
+
+
 def test_concurrent_exact_writes_create_one_fact_and_three_observations(tmp_path: Path) -> None:
     db = KnowledgeDB(tmp_path / "knowledge.db")
 

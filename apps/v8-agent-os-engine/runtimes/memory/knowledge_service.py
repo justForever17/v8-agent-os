@@ -56,6 +56,7 @@ class KnowledgeService:
         fact_id: Optional[str] = None,
         lineage_id_override: Optional[str] = None,
         revision_no_override: Optional[int] = None,
+        allow_stale_target: bool = False,
     ) -> Dict[str, object]:
         normalized_scope = memory_store._validate_scope(scope)
         signature = (
@@ -90,6 +91,7 @@ class KnowledgeService:
             fact_id=fact_id,
             lineage_id_override=lineage_id_override,
             revision_no_override=revision_no_override,
+            allow_stale_target=allow_stale_target,
         )
         knowledge_projection_service.process_outbox(limit=10)
         result["projectionState"] = self._projection_state(str(result["factId"]))
@@ -169,7 +171,8 @@ class KnowledgeService:
             confidence=confidence if confidence is not None else float(current["confidence"] or 1.0),
             importance=int(current["importance"] or 50),
             durability=str(current["durability"] or "operational"),
-            metadata={"deprecatedOverwriteId": fact_id},
+            metadata={"explicitHumanRevision": True, "deprecatedOverwriteId": fact_id},
+            allow_stale_target=True,
         )
         return bool(result.get("factId"))
 

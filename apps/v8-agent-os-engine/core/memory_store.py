@@ -14,6 +14,7 @@ import re
 import json
 import uuid
 import logging
+import os
 import time
 import hashlib
 from pathlib import Path
@@ -21,7 +22,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 
 from core.memory_canonicalization import canonicalize_preference_key
-from core.supervisor_identity import non_identity_preferences, render_supervisor_identity_context
+from core.supervisor_identity import (
+    is_identity_preference_key,
+    non_identity_preferences,
+    render_supervisor_identity_context,
+    valid_assistant_name,
+    valid_user_address,
+)
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 logger = logging.getLogger("v8_agent_os.memory")
@@ -51,6 +58,7 @@ def _classify_vector_sync_error(exc: Exception) -> str:
 # === 配置 ===
 CONFIG_DIR = V8_AGENT_OS_HOME
 MEMORY_ROOT = CONFIG_DIR / "memory"
+PREFERENCE_HISTORY_FILENAME = "preference_history.jsonl"
 
 # === MEMORY.md 模板 ===
 MEMORY_TEMPLATE_V2 = """---
@@ -131,6 +139,7 @@ class MemoryStore:
     
     def __init__(self):
         self.memory_path = MEMORY_ROOT / "MEMORY.md"
+        self.preference_history_path = MEMORY_ROOT / PREFERENCE_HISTORY_FILENAME
         self._preferences_cache: Optional[Dict[str, Dict[str, str]]] = None
         self._cache_mtime: float = 0.0
         self._last_session_context_diagnostics: Dict[str, Any] = {}
@@ -256,6 +265,12 @@ class MemoryStore:
         return {
             "fixedKeys": list(GLOBAL_PROFILE_KEYS),
             "defaults": dict(GLOBAL_PROFILE_DEFAULTS),
+            "identity": {
+                "keys": ["assistant_name", "user_call_name"],
+                "scope": "global",
+                "updatePolicy": "typed_global_only",
+                "history": "append_only",
+            },
             "aliases": dict(GLOBAL_PROFILE_ALIASES),
             "removedKeys": sorted(REMOVED_GLOBAL_KEYS),
             "executionHints": {
@@ -462,7 +477,13 @@ class MemoryStore:
                         canonical_key, _ = self._canonicalize_global_profile_key(key)
                         merged[canonical_key] = value
                     else:
-                        merged[canonicalize_preference_key(key)] = value
+                        canonical_key = canonicalize_preference_key(key)
+                        # Supervisor identity is a single global truth. Legacy local
+                        # identity values may remain on disk until explicitly migrated,
+                        # but must never shadow global identity in a session prompt.
+                        if is_identity_preference_key(canonical_key):
+                            continue
+                        merged[canonical_key] = value
         
         return merged
     
@@ -473,8 +494,87 @@ class MemoryStore:
     def get_scope_preferences_raw(self, scope: str = "global") -> Dict[str, str]:
         normalized_scope = self._validate_scope(scope)
         return dict(self._load_raw_preferences().get(normalized_scope) or {})
-    
-    def update_preference(self, key: str, value: str, scope: str = "global", source: str = "human_admin"):
+
+    def _append_preference_history(
+        self,
+        *,
+        action: str,
+        scope: str,
+        key: str,
+        old_value: Optional[str],
+        new_value: Optional[str],
+        source: str,
+        reason: str,
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append an immutable preference mutation record alongside MEMORY.md."""
+        record = {
+            "id": f"prefhist:{uuid.uuid4().hex}",
+            "action": str(action or "updated").strip() or "updated",
+            "scope": str(scope or "global").strip() or "global",
+            "key": str(key or "preference").strip() or "preference",
+            "oldValue": old_value,
+            "newValue": new_value,
+            "source": str(source or "unknown").strip() or "unknown",
+            "reason": str(reason or "unspecified").strip() or "unspecified",
+            "evidenceRefs": [str(item).strip() for item in list(evidence_refs or []) if str(item).strip()],
+            "metadata": dict(metadata or {}),
+            "changedAt": _utc_now_iso(),
+        }
+        self.preference_history_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.preference_history_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return record
+
+    def list_preference_history(
+        self,
+        *,
+        scope: Optional[str] = None,
+        key: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return newest-first preference history without rewriting the append-only log."""
+        if not self.preference_history_path.exists():
+            return []
+        normalized_scope = self._validate_scope(scope) if scope else ""
+        normalized_key = canonicalize_preference_key(key) if key else ""
+        records: List[Dict[str, Any]] = []
+        try:
+            lines = self.preference_history_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            logger.warning("[MemoryStore] Could not read preference history: %s", exc)
+            return []
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if normalized_scope and str(record.get("scope") or "") != normalized_scope:
+                continue
+            if normalized_key and canonicalize_preference_key(str(record.get("key") or "")) != normalized_key:
+                continue
+            records.append(record)
+            if len(records) >= max(1, min(int(limit or 100), 500)):
+                break
+        return records
+
+    def update_preference(
+        self,
+        key: str,
+        value: str,
+        scope: str = "global",
+        source: str = "human_admin",
+        *,
+        reason: str = "explicit_update",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        _identity_write: bool = False,
+    ) -> Dict[str, Any]:
         """
         写入偏好到 MEMORY.md（覆盖同 scope 同 key）。
         """
@@ -495,7 +595,12 @@ class MemoryStore:
                     ]
                 )
                 logger.info(f"[MemoryStore] Quarantined removed global preference key={canonical_key}")
-                return
+                return {
+                    "changed": False,
+                    "scope": normalized_scope,
+                    "key": canonical_key,
+                    "quarantined": True,
+                }
             if normalized_source == "memory_agent" and key_kind == "custom":
                 self._append_global_preference_quarantine_records(
                     [
@@ -508,18 +613,64 @@ class MemoryStore:
                     ]
                 )
                 logger.info(f"[MemoryStore] Quarantined unmapped memory-agent global preference key={canonical_key}")
-                return
+                return {
+                    "changed": False,
+                    "scope": normalized_scope,
+                    "key": canonical_key,
+                    "quarantined": True,
+                }
         else:
             canonical_key = canonicalize_preference_key(key)
+
+        if is_identity_preference_key(canonical_key):
+            if normalized_scope != "global":
+                raise ValueError("Supervisor identity preferences must use global scope")
+            if not _identity_write:
+                raise ValueError("Use update_supervisor_identity for Supervisor identity preferences")
+
+        normalized_value = str(value or "").strip()
+        if not normalized_value:
+            raise ValueError("Preference value is required")
         
         if normalized_scope not in data:
             data[normalized_scope] = {}
-        data[normalized_scope][canonical_key] = value
+        previous_value = data[normalized_scope].get(canonical_key)
+        if previous_value == normalized_value:
+            return {
+                "changed": False,
+                "scope": normalized_scope,
+                "key": canonical_key,
+                "oldValue": previous_value,
+                "newValue": normalized_value,
+            }
+        data[normalized_scope][canonical_key] = normalized_value
         
         self._save_preferences(data)
-        logger.info(f"[MemoryStore] Updated preference [{normalized_scope}] {canonical_key} = {value}")
+        record = self._append_preference_history(
+            action="created" if previous_value is None else "updated",
+            scope=normalized_scope,
+            key=canonical_key,
+            old_value=previous_value,
+            new_value=normalized_value,
+            source=normalized_source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
+        logger.info("[MemoryStore] Updated preference [%s] %s", normalized_scope, canonical_key)
+        return {"changed": True, "scope": normalized_scope, "key": canonical_key, "record": record}
 
-    def delete_preference(self, key: str, scope: str = "global") -> bool:
+    def delete_preference(
+        self,
+        key: str,
+        scope: str = "global",
+        *,
+        source: str = "human_admin",
+        reason: str = "explicit_delete",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        _identity_write: bool = False,
+    ) -> bool:
         """
         从 MEMORY.md 删除某个 scope 下的单条偏好。
         """
@@ -529,13 +680,151 @@ class MemoryStore:
             canonical_key, _ = self._canonicalize_global_profile_key(key)
         else:
             canonical_key = canonicalize_preference_key(key)
+        if is_identity_preference_key(canonical_key):
+            if normalized_scope != "global" and not _identity_write:
+                raise ValueError("Supervisor identity preferences must use global scope")
+            if not _identity_write:
+                raise ValueError("Use clear_supervisor_identity for Supervisor identity preferences")
         if normalized_scope not in data or canonical_key not in data[normalized_scope]:
             return False
 
+        previous_value = data[normalized_scope][canonical_key]
         del data[normalized_scope][canonical_key]
-        self._save_preferences(data)
-        logger.info(f"[MemoryStore] Deleted preference [{normalized_scope}] {canonical_key}")
+        # Keep the fixed global profile schema complete in the same process as
+        # the deletion.  Without this normalization the cache can temporarily
+        # expose a missing default slot until the next disk reload.
+        next_data, _ = (
+            self._normalize_global_profile_data(data)
+            if normalized_scope == "global"
+            else (data, False)
+        )
+        self._save_preferences(next_data)
+        self._append_preference_history(
+            action="deleted",
+            scope=normalized_scope,
+            key=canonical_key,
+            old_value=previous_value,
+            new_value=None,
+            source=str(source or "human_admin").strip() or "human_admin",
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+        )
+        logger.info("[MemoryStore] Deleted preference [%s] %s", normalized_scope, canonical_key)
         return True
+
+    def clear_supervisor_identity(
+        self,
+        *,
+        key: str,
+        source: str = "human_admin",
+        reason: str = "explicit_identity_revoke",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Revoke one global identity field and retain a durable audit record."""
+        canonical_key = canonicalize_preference_key(key)
+        if not is_identity_preference_key(canonical_key):
+            raise ValueError("key is not a Supervisor identity field")
+        return self.delete_preference(
+            canonical_key,
+            scope="global",
+            source=source,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
+            _identity_write=True,
+        )
+
+    def update_supervisor_identity(
+        self,
+        *,
+        assistant_name: Optional[str] = None,
+        user_call_name: Optional[str] = None,
+        source: str = "human_admin",
+        reason: str = "explicit_identity_update",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update identity in the global profile only; it cannot be workspace-scoped."""
+        updates: Dict[str, str] = {}
+        if assistant_name is not None:
+            normalized_name = valid_assistant_name(assistant_name)
+            if not normalized_name:
+                raise ValueError("assistant_name must be a user-provided name, not an empty or placeholder value")
+            updates["assistant_name"] = normalized_name
+        if user_call_name is not None:
+            normalized_address = valid_user_address(user_call_name)
+            if not normalized_address:
+                raise ValueError("user_call_name must be a user-provided address, not an empty or placeholder value")
+            updates["user_call_name"] = normalized_address
+        if not updates:
+            raise ValueError("At least one supervisor identity field is required")
+
+        applied: Dict[str, Any] = {}
+        for identity_key, identity_value in updates.items():
+            applied[identity_key] = self.update_preference(
+                key=identity_key,
+                value=identity_value,
+                scope="global",
+                source=source,
+                reason=reason,
+                evidence_refs=evidence_refs,
+                metadata=metadata,
+                _identity_write=True,
+            )
+        return {"scope": "global", "updates": applied}
+
+    def migrate_scoped_identity_to_global(
+        self,
+        scope: str,
+        *,
+        source: str = "memory_migration",
+        reason: str = "legacy_scoped_identity_migration",
+        evidence_refs: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Move a legacy local identity to global truth, retaining append-only evidence."""
+        normalized_scope = self._validate_scope(scope)
+        if normalized_scope == "global":
+            raise ValueError("Only scoped identity values can be migrated to global")
+        raw_scope = self.get_scope_preferences_raw(normalized_scope)
+        migrated: List[Dict[str, Any]] = []
+        skipped: List[str] = []
+        for identity_key in ("assistant_name", "user_call_name"):
+            legacy_value = raw_scope.get(identity_key)
+            if legacy_value is None:
+                continue
+            try:
+                if identity_key == "assistant_name":
+                    global_result = self.update_supervisor_identity(
+                        assistant_name=legacy_value,
+                        source=source,
+                        reason=reason,
+                        evidence_refs=evidence_refs,
+                        metadata={"migratedFromScope": normalized_scope},
+                    )
+                else:
+                    global_result = self.update_supervisor_identity(
+                        user_call_name=legacy_value,
+                        source=source,
+                        reason=reason,
+                        evidence_refs=evidence_refs,
+                        metadata={"migratedFromScope": normalized_scope},
+                    )
+            except ValueError:
+                skipped.append(identity_key)
+                continue
+            deleted = self.delete_preference(
+                identity_key,
+                scope=normalized_scope,
+                source=source,
+                reason=reason,
+                evidence_refs=evidence_refs,
+                metadata={"migratedToScope": "global"},
+                _identity_write=True,
+            )
+            migrated.append({"key": identity_key, "global": global_result, "removedScopedValue": deleted})
+        return {"fromScope": normalized_scope, "toScope": "global", "migrated": migrated, "skipped": skipped}
 
     def _global_preference_quarantine_path(self) -> Path:
         return MEMORY_ROOT / "quarantine" / "global_preferences.json"

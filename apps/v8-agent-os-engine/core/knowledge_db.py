@@ -1244,6 +1244,7 @@ class KnowledgeDB:
         fact_id: Optional[str] = None,
         lineage_id_override: Optional[str] = None,
         revision_no_override: Optional[int] = None,
+        allow_stale_target: bool = False,
     ) -> Dict[str, object]:
         """Write canonical knowledge and its observation in one SQLite transaction.
 
@@ -1315,8 +1316,27 @@ class KnowledgeDB:
                 if target_scope != normalized_scope:
                     raise ValueError("knowledge replacement/refinement cannot cross scope boundaries")
                 target_lifecycle = str(target["lifecycle_state"] or "active").strip().lower()
-                if str(target["status"] or "active").strip().lower() != "active" or target_lifecycle != "active":
+                allow_explicit_stale_replacement = bool(
+                    allow_stale_target and requested_relation == "replace" and target_lifecycle == "stale"
+                )
+                if (
+                    str(target["status"] or "active").strip().lower() != "active"
+                    or (target_lifecycle != "active" and not allow_explicit_stale_replacement)
+                ):
                     raise ValueError("knowledge relation target is not the current canonical fact")
+                if allow_explicit_stale_replacement:
+                    current_lineage_fact = conn.execute(
+                        """
+                        SELECT id FROM knowledge
+                        WHERE lineage_id = ? AND status = 'active'
+                          AND COALESCE(lifecycle_state, 'active') = 'active'
+                        ORDER BY revision_no DESC, updated_at DESC
+                        LIMIT 1
+                        """,
+                        (str(target["lineage_id"] or target["id"]),),
+                    ).fetchone()
+                    if current_lineage_fact and str(current_lineage_fact["id"]) != str(target["id"]):
+                        raise ValueError("stale knowledge target already has a newer canonical revision")
 
             if requested_relation == "reinforce" and target is not None:
                 canonical_fact_id = str(target["id"])
@@ -1394,11 +1414,24 @@ class KnowledgeDB:
             lifecycle_state = "quarantined" if requested_relation == "conflict" else "active"
             status = "quarantined" if requested_relation == "conflict" else "active"
             replaced_fact_id: Optional[str] = None
+            replaced_stale_target = False
             if requested_relation == "replace" and target is not None:
                 lineage_id = str(target["lineage_id"] or target["id"])
-                revision_no = int(target["revision_no"] or 1) + 1
+                max_lineage_revision = int(
+                    conn.execute(
+                        "SELECT COALESCE(MAX(revision_no), 0) FROM knowledge WHERE lineage_id = ?",
+                        (lineage_id,),
+                    ).fetchone()[0]
+                )
+                revision_no = max(int(target["revision_no"] or 1), max_lineage_revision) + 1
                 replaced_fact_id = str(target["id"])
+                replaced_stale_target = str(target["lifecycle_state"] or "active").strip().lower() == "stale"
             metadata_payload = dict(metadata or {})
+            if replaced_stale_target:
+                # Stale facts are normally non-injectable.  A human-confirmed
+                # correction may still create a new revision, but never revives
+                # the old row or silently treats it as current truth.
+                metadata_payload["replacedStaleTarget"] = True
             if target is not None and requested_relation in {"refine", "conflict"}:
                 metadata_payload["relationTargetFactId"] = str(target["id"])
                 metadata_payload["knowledgeRelation"] = requested_relation
@@ -1464,9 +1497,9 @@ class KnowledgeDB:
                     fact_id=replaced_fact_id,
                     action="superseded",
                     actor=normalized_source,
-                    reason="knowledge_replace",
+                    reason="knowledge_replace_stale_target" if replaced_stale_target else "knowledge_replace",
                     evidence_refs=normalized_evidence_refs,
-                    metadata={"supersededBy": new_fact_id},
+                    metadata={"supersededBy": new_fact_id, "replacedStaleTarget": replaced_stale_target},
                 )
                 old_rowid = int(target["rowid"])
                 conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (old_rowid,))

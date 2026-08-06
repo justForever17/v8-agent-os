@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 CANONICAL_SUPERVISOR_ROLE = "Supervisor"
 DEFAULT_USER_ADDRESS = "用户"
-_IDENTITY_PREFERENCE_KEYS = frozenset({"assistant_name", "user_call_name"})
+IDENTITY_PREFERENCE_KEYS = frozenset({"assistant_name", "user_call_name"})
 _LEGACY_ASSISTANT_PLACEHOLDERS = frozenset({
     "please help me come up with a name.",
     "please help me come up with a name",
@@ -39,6 +39,21 @@ def _valid_user_address(value: Any) -> str:
     if not candidate or candidate.casefold() in _LEGACY_USER_PLACEHOLDERS:
         return ""
     return candidate
+
+
+def is_identity_preference_key(value: Any) -> bool:
+    """Identity keys are global truth, never scoped workspace preferences."""
+    return _single_line(value, max_chars=80).casefold() in IDENTITY_PREFERENCE_KEYS
+
+
+def valid_assistant_name(value: Any) -> str:
+    """Return a user-provided supervisor name, or an empty string if it is a placeholder."""
+    return _valid_assistant_name(value)
+
+
+def valid_user_address(value: Any) -> str:
+    """Return a user-provided address, or an empty string if it is a placeholder."""
+    return _valid_user_address(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +91,7 @@ def non_identity_preferences(preferences: Mapping[str, Any] | None) -> dict[str,
     return {
         str(key): value
         for key, value in dict(preferences or {}).items()
-        if str(key) not in _IDENTITY_PREFERENCE_KEYS
+        if not is_identity_preference_key(key)
     }
 
 
@@ -85,7 +100,11 @@ def render_supervisor_identity_context(preferences: Mapping[str, Any] | None) ->
     naming_rule = (
         f"The user has given you the name {identity.self_name!r}; use it consistently while your canonical role remains Supervisor."
         if identity.customized
-        else "No valid user-given name is stored. Identify yourself consistently as Supervisor; do not invent or request a name unless the user chooses to name you."
+        else (
+            "No valid user-given name is stored. Identify yourself consistently as Supervisor and never invent one. "
+            "At a natural, non-urgent opportunity, invite the user to give you a name; do not make the request the focus of every reply "
+            "or repeat it after the user declines or changes topic."
+        )
     )
     return (
         "[SUPERVISOR IDENTITY]\n"

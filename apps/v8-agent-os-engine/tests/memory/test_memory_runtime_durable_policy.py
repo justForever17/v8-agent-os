@@ -33,6 +33,7 @@ if "chromadb" not in sys.modules:
 from agents import memory_agent
 from agents.memory_agent import (
     EntityExtraction,
+    IdentityExtraction,
     KnowledgeExtraction,
     MemoryExtractionResult,
     PreferenceExtraction,
@@ -103,6 +104,80 @@ class _FakeResolutionRepo:
 
 
 class MemoryDurablePolicyTests(unittest.TestCase):
+    def test_legacy_scoped_identity_is_promoted_to_typed_global_identity(self):
+        result = MemoryExtractionResult(
+            summary="user named the supervisor",
+            tags=["identity"],
+            preferences=[
+                PreferenceExtraction(
+                    scope="workspace:test8",
+                    key="assistant_name",
+                    value="张三",
+                    importance=90,
+                    confidence=0.95,
+                    durability="stable",
+                )
+            ],
+        )
+
+        decisions = memory_agent._align_extraction_scopes(result, "workspace:test8")
+
+        self.assertEqual(result.identity.assistant_name, "张三")
+        self.assertEqual(result.preferences, [])
+        self.assertTrue(
+            any(item.get("scopeDecision") == "legacy_identity_promoted_global" for item in decisions)
+        )
+
+    def test_identity_persistence_is_global_and_carries_canonical_evidence(self):
+        result = MemoryExtractionResult(
+            summary="user named the supervisor",
+            tags=["identity"],
+            identity=IdentityExtraction(assistant_name="张三"),
+        )
+        captured = {}
+
+        def _store_identity(**kwargs):  # noqa: ANN003
+            captured.update(kwargs)
+            return {"scope": "global", "updates": {"assistant_name": {"changed": True}}}
+
+        with patch.object(memory_agent.memory_runtime, "update_supervisor_identity", side_effect=_store_identity):
+            persisted = memory_agent._store_identity(
+                result,
+                POLICY,
+                session_id="session-identity",
+                source_run="run-identity",
+                source_message_ids=["message-identity"],
+            )
+
+        self.assertTrue(persisted["stored"])
+        self.assertEqual(captured["assistant_name"], "张三")
+        self.assertEqual(captured["source"], "memory_agent")
+        self.assertEqual(captured["reason"], "explicit_identity_assignment")
+        self.assertEqual(
+            captured["evidence_refs"],
+            ["message:message-identity", "run:run-identity", "session:session-identity"],
+        )
+
+    def test_explicit_correction_mode_surfaces_exact_active_and_stale_candidates(self):
+        candidates = [
+            {"id": "fact-active", "scope": "workspace:test8", "fact": "LangChain 使用 0.x", "lifecycle_state": "active"},
+            {"id": "fact-stale", "scope": "workspace:test8", "fact": "旧版本约束", "lifecycle_state": "stale"},
+        ]
+        with patch.object(memory_agent.memory_runtime, "query_knowledge", return_value=[]), patch.object(
+            memory_agent.memory_runtime, "load_preferences", return_value={}
+        ), patch.object(memory_agent.memory_runtime, "list_knowledge", return_value=candidates):
+            context = memory_agent._build_historical_context(
+                quick_summary="请更正此前的 LangChain 版本规则",
+                scope_chain=["global", "workspace:test8"],
+                correction_mode=True,
+            )
+
+        self.assertTrue(memory_agent._has_explicit_knowledge_correction("请更正此前的 LangChain 版本规则"))
+        self.assertFalse(memory_agent._has_explicit_knowledge_correction("请新增一条 LangChain 版本规则"))
+        self.assertIn("Explicit Correction Candidates", context)
+        self.assertIn("[id: fact-active]", context)
+        self.assertIn("[id: fact-stale]", context)
+
     def test_preference_canonicalization_overwrites_old_alias_with_latest_value(self):
         result = MemoryExtractionResult(
             summary="shoe preference",
@@ -799,6 +874,83 @@ class MemoryScopeResolutionTests(unittest.TestCase):
 
 
 class MemoryStoreGovernanceTests(unittest.TestCase):
+    def test_typed_identity_revoke_returns_to_placeholder_and_records_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                store.update_supervisor_identity(
+                    assistant_name="张三",
+                    source="human_admin",
+                    reason="test_identity_assignment",
+                )
+                self.assertTrue(
+                    store.clear_supervisor_identity(
+                        key="assistant_name",
+                        source="human_admin",
+                        reason="test_identity_revoke",
+                    )
+                )
+                effective = store.load_preferences(scope="global", scope_chain=["global"])
+                history = store.list_preference_history(key="assistant_name")
+
+        self.assertEqual(effective["assistant_name"], "Please help me come up with a name.")
+        self.assertEqual([item["action"] for item in history[:2]], ["deleted", "updated"])
+        self.assertEqual(history[0]["reason"], "test_identity_revoke")
+
+    def test_identity_is_global_only_and_migration_preserves_append_only_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "CONFIG_DIR", Path(temp_dir)), patch.object(
+                memory_store_module,
+                "MEMORY_ROOT",
+                memory_root,
+            ):
+                store = memory_store_module.MemoryStore()
+                raw = store._load_raw_preferences()
+                raw["workspace:test8"] = {"assistant_name": "张三"}
+                store._save_preferences(raw)
+
+                # A legacy value never shadows the placeholder or a valid global name.
+                before_migration = store.load_preferences(
+                    scope="workspace:test8",
+                    scope_chain=["global", "workspace:test8"],
+                )
+                self.assertEqual(before_migration["assistant_name"], "Please help me come up with a name.")
+                with self.assertRaises(ValueError):
+                    store.update_preference("assistant_name", "局部名称", scope="workspace:test8")
+                with self.assertRaises(ValueError):
+                    store.update_preference("assistant_name", "绕过类型入口", scope="global")
+                with self.assertRaises(ValueError):
+                    store.delete_preference("assistant_name", scope="global")
+
+                migrated = store.migrate_scoped_identity_to_global(
+                    "workspace:test8",
+                    source="human_admin",
+                    reason="test_legacy_identity_migration",
+                    evidence_refs=["session:test8"],
+                )
+                merged = store.load_preferences(
+                    scope="workspace:test8",
+                    scope_chain=["global", "workspace:test8"],
+                )
+                raw_after = store._load_raw_preferences()
+                history = store.list_preference_history(key="assistant_name")
+
+        self.assertEqual(migrated["toScope"], "global")
+        self.assertEqual(merged["assistant_name"], "张三")
+        self.assertNotIn("assistant_name", raw_after["workspace:test8"])
+        self.assertEqual(history[0]["action"], "deleted")
+        self.assertEqual(history[0]["scope"], "workspace:test8")
+        self.assertEqual(history[1]["action"], "updated")
+        self.assertEqual(history[1]["scope"], "global")
+        self.assertEqual(history[1]["oldValue"], "Please help me come up with a name.")
+        self.assertEqual(history[1]["newValue"], "张三")
+
     def test_preference_overwrite_uses_latest_value_for_same_scope_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             memory_root = Path(temp_dir) / "memory"

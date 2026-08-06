@@ -211,34 +211,14 @@ def _build_models_domain() -> dict[str, Any]:
 
 
 def _save_models_domain(payload: dict[str, Any]) -> dict[str, Any]:
-    data = dict(payload.get("data") or payload or {})
-    current = model_control_plane.get_config()
-    current_roles = dict(current.get("roles") or {})
-    incoming_roles = dict(data.get("roles") or {})
-    changed_roles = {
-        str(key): str(value or "").strip()
-        for key, value in incoming_roles.items()
-        if str(current_roles.get(str(key)) or "").strip() != str(value or "").strip()
-    }
-    if changed_roles:
-        for role_key, model_ref in changed_roles.items():
-            validation = validate_text_role_model_window(role_key, model_ref)
-            if not validation.get("ok"):
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": validation.get("reason") or "invalid_context_window",
-                        "message": validation.get("message") or "该文本模型上下文窗口不满足长上下文运行时要求。",
-                        "role": role_key,
-                        "modelRef": model_ref,
-                        "minimumRequiredContextWindowTokens": validation.get("minimumRequiredContextWindowTokens"),
-                        "participant": validation.get("participant"),
-                    },
-                )
-    config = model_control_plane.save_config(data)
-    return _build_models_domain() | {
-        "data": model_control_plane.build_payload(config),
-    }
+    del payload
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "model_bulk_write_deprecated",
+            "message": "模型注册表整域写入已关闭；请使用 Config Broker 的细粒度事务。",
+        },
+    )
 
 
 def _build_supervisor_domain() -> dict[str, Any]:

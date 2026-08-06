@@ -1391,32 +1391,14 @@ async def config_broker_rollback(transaction_id: str, request: Request):
 
 
 @router.post("/models", deprecated=True)
-async def save_models_config(data: dict = Body(...)):
-    try:
-        # Legacy whole-config writes are compatibility-only. Preserve credentials
-        # omitted by the public GET response so an old read/modify/write client
-        # cannot erase a Provider secret. New clients use the atomic routes.
-        current = model_control_plane.get_config()
-        incoming = dict(data or {})
-        incoming_providers = dict(incoming.get("providers") or {})
-        current_providers = dict(current.get("providers") or {})
-        for provider_id, provider_data in incoming_providers.items():
-            if not isinstance(provider_data, dict):
-                continue
-            provider_meta = dict(provider_data.get("provider") or {})
-            existing_meta = dict((current_providers.get(provider_id) or {}).get("provider") or {})
-            incoming_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
-            if not incoming_key or incoming_key == "****":
-                existing_key = str(existing_meta.get("api_key") or existing_meta.get("apiKey") or "").strip()
-                if existing_key:
-                    provider_meta["api_key"] = existing_key
-            provider_data["provider"] = provider_meta
-            incoming_providers[provider_id] = provider_data
-        incoming["providers"] = incoming_providers
-        config = model_control_plane.save_config(incoming)
-        return {"status": "success", "config": model_control_plane.get_public_config(config)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def save_models_config(_data: dict = Body(...)):
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "model_bulk_write_deprecated",
+            "message": "整份模型配置写入已关闭；请通过 Config Broker 的 Provider、模型、角色或策略事务提交。",
+        },
+    )
 
 
 @router.get("/models/control-plane")
@@ -1751,12 +1733,14 @@ async def get_model_role_doctor(role: str | None = None):
 
 
 @router.post("/models/control-plane", deprecated=True)
-async def save_model_control_plane(data: dict = Body(...)):
-    try:
-        config = model_control_plane.save_config(data)
-        return {"status": "success", **model_control_plane.build_payload(config)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def save_model_control_plane(_data: dict = Body(...)):
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "model_bulk_write_deprecated",
+            "message": "整份模型配置写入已关闭；请通过 Config Broker 的 Provider、模型、角色或策略事务提交。",
+        },
+    )
 
 
 @router.get("/models/defaults")

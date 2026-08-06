@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -1972,6 +1973,12 @@ class StorageManager:
             payload = self._config_payload_for_persistence(dict(data or {}))
             serialized = json.dumps(payload, indent=2, ensure_ascii=False)
             filepath.parent.mkdir(parents=True, exist_ok=True)
+            # A Config Broker transaction can restore a model-target snapshot, but
+            # the file-level emergency recovery point must still be the previous
+            # payload.  The old implementation wrote the new serialized value to
+            # ``config.json.bak`` after replacing the live file, making the backup
+            # useless for an accidental whole-domain replacement.
+            self._save_config_preimage(filepath)
             temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
             with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(serialized)
@@ -1986,20 +1993,6 @@ class StorageManager:
                     except OSError:
                         pass
 
-            backup_path = self._json_backup_path(filepath)
-            backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
-            try:
-                with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
-                    backup_file.write(serialized)
-                    backup_file.flush()
-                    os.fsync(backup_file.fileno())
-                os.replace(backup_temp_path, backup_path)
-            finally:
-                if backup_temp_path.exists():
-                    try:
-                        backup_temp_path.unlink()
-                    except OSError:
-                        pass
             self._invalidate_config_payload_cache()
             return
 
@@ -2069,6 +2062,42 @@ class StorageManager:
                 raise ValueError("generic JSON mutator must return an object")
             self.write_json(normalized_name, proposed)
             return deepcopy(proposed)
+
+    def _save_config_preimage(self, filepath: Path) -> None:
+        """Persist the current config before atomically replacing it.
+
+        ``config.json.bak`` is the immediately previous payload for automatic
+        corruption recovery. A timestamped private history copy makes a
+        replacement mistake recoverable even after a later successful write.
+        The preimage write deliberately happens before the live replacement: if
+        the backup cannot be made, the mutation is refused rather than becoming
+        an unrecoverable overwrite.
+        """
+
+        if not filepath.exists():
+            return
+        previous = filepath.read_bytes()
+        backup_path = self._json_backup_path(filepath)
+        history_dir = backup_path.parent / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        digest = hashlib.sha256(previous).hexdigest()[:12]
+        history_path = history_dir / f"{filepath.name}.{timestamp}.{digest}.bak"
+
+        for target in (backup_path, history_path):
+            temp_path = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+            try:
+                with open(temp_path, "wb") as backup_file:
+                    backup_file.write(previous)
+                    backup_file.flush()
+                    os.fsync(backup_file.fileno())
+                os.replace(temp_path, target)
+            finally:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
 
     def _read_json_file(self, filepath: Path) -> Dict[str, Any]:
         with open(filepath, "r", encoding="utf-8") as f:

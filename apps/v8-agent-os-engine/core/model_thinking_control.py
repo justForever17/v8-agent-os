@@ -394,6 +394,21 @@ def no_think_request_patch(thinking_control: Mapping[str, Any] | None) -> Dict[s
     return {}
 
 
+def background_visible_output_request_patch(metadata: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Request visible output for a non-interactive structured background task.
+
+    Background consumers such as Memory must never promote private reasoning
+    into business data.  If a bound model explicitly advertises a supported
+    no-think request profile, derive a *request-local* disabled control instead
+    of changing the model's persisted user preference.  Models without that
+    capability retain their normal request contract.
+    """
+    control = _as_dict(_as_dict(metadata).get("thinking_control"))
+    if not control.get("supportsNoThink"):
+        return {}
+    return no_think_request_patch({**control, "disabled": True})
+
+
 def reasoning_effort_request_patch(
     reasoning_effort_control: Mapping[str, Any] | None,
     requested_effort: Any,

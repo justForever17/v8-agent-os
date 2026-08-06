@@ -165,6 +165,18 @@ def test_config_registry_stale_bundle_preserves_conflict_status(monkeypatch) -> 
     assert stale.value.detail == {"code": "config_transaction_stale", "message": "stale"}
 
 
+def test_config_registry_models_bulk_write_is_closed(monkeypatch) -> None:
+    from api import config_registry_routes as routes
+
+    monkeypatch.setattr(routes.model_control_plane, "save_config", _forbid_direct_model_save)
+
+    with pytest.raises(HTTPException) as blocked:
+        routes._save_models_domain({"data": {"providers": {"unsafe": {}}}})
+
+    assert blocked.value.status_code == 410
+    assert blocked.value.detail["code"] == "model_bulk_write_deprecated"
+
+
 def test_knowledge_memory_config_commits_three_roles_as_one_bundle(monkeypatch) -> None:
     from api import knowledge_routes as routes
 

@@ -42,6 +42,7 @@ ConfigBrokerMode = Literal[
     "catalog_custom_provider_remove_prepare",
     "catalog_recover_prepare",
     "catalog_recover_finalize_prepare",
+    "model_snapshot_recover_prepare",
     "model_provider_prepare",
     "model_binding_prepare",
     "model_default_prepare",
@@ -512,6 +513,7 @@ class ConfigBrokerArgs(_StrictConfigBrokerModel):
     enabled: bool = True
     priority: int | None = None
     transaction_id: str = ""
+    source_transaction_id: str = ""
     plan_digest: str = ""
     mcp_name: str = ""
     mcp_type: str = ""
@@ -686,6 +688,7 @@ def config_broker(
     enabled: bool = True,
     priority: int | None = None,
     transaction_id: str = "",
+    source_transaction_id: str = "",
     plan_digest: str = "",
     mcp_name: str = "",
     mcp_type: str = "",
@@ -724,7 +727,10 @@ def config_broker(
     provider, and `catalog_recover_prepare` restores the last verified managed
     backup while retaining reversible original bytes. After the restored
     catalog is accepted, use `catalog_recover_finalize_prepare` to prepare
-    removal of the isolated original. Updating or removing a preset does not
+    removal of the isolated original. `model_snapshot_recover_prepare` is the
+    emergency repair path for a known bad model-domain replacement: it accepts
+    only a prior durable Config Broker transaction id, never an arbitrary
+    configuration document. Updating or removing a preset does not
     connect or disconnect a runtime model. Use `model_provider_prepare` for a
     runtime Provider upsert/remove, `model_binding_prepare` for an explicit
     model binding, `model_default_prepare` for a category default, and
@@ -833,6 +839,13 @@ def config_broker(
             )
         elif normalized_mode == "catalog_recover_finalize_prepare":
             payload = config_broker_service.prepare_catalog_recovery_finalize(
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        elif normalized_mode == "model_snapshot_recover_prepare":
+            payload = config_broker_service.prepare_model_snapshot_recovery(
+                source_transaction_id=source_transaction_id,
                 owner_id=owner_id,
                 session_id=session_id,
                 run_id=run_id,

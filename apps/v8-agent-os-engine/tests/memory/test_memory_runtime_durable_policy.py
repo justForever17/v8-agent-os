@@ -238,6 +238,45 @@ class MemoryDurablePolicyTests(unittest.TestCase):
         self.assertIn("no-think", attempt.raw_output_preview)
         self.assertEqual(attempt.result.knowledge[0].scope, "global")
 
+    def test_extract_with_llm_uses_request_local_no_think_for_supported_background_model(self):
+        payload = {
+            "summary": "后台结构化抽取应使用可见输出，而不是把推理内容当作事实。",
+            "tags": ["memory", "visible-output"],
+            "preferences": [],
+            "knowledge": [],
+            "entities": [],
+            "relations": [],
+            "workflow_episodes": [],
+        }
+        calls = []
+
+        class _FakeLlm:
+            model_id = "memory-extractor-supported-no-think"
+            _meta = {
+                "thinking_control": {
+                    "supportsNoThink": True,
+                    "disabled": False,
+                    "requestStyle": "openai_thinking_disabled",
+                }
+            }
+
+            def invoke(self, _messages, **kwargs):  # noqa: ANN001, ANN201
+                calls.append(dict(kwargs))
+                return SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+
+        llm = _FakeLlm()
+        with patch.object(memory_agent, "_get_background_llm", return_value=llm):
+            attempt = memory_agent._extract_with_llm(
+                "USER: 后台记忆不可消费模型隐藏推理。",
+                "No prior knowledge retrieved.",
+                resolved_scope="global",
+                scope_chain=["global"],
+            )
+
+        self.assertIsNotNone(attempt.result)
+        self.assertEqual(calls, [{"extra_body": {"thinking": {"type": "disabled"}}}])
+        self.assertFalse(llm._meta["thinking_control"]["disabled"])
+
     def test_extract_with_llm_reports_repair_parser_failed_when_fixing_parser_still_fails(self):
         class _FakeParser:
             def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003

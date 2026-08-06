@@ -32,6 +32,7 @@ Precedence is `custom > managed > builtin > media-derived`.
 | Model lifecycle | Enable, disable, or remove one unbound model | Bound model removal is blocked; sibling drift stops rollback | extended contract tests |
 | Role lifecycle | Assign or unbind a role and registered Subagent | Unknown/ineligible roles or models are blocked | Config Broker tests |
 | Internal role bundle | Memory and Config Registry can atomically assign and unbind multiple runtime roles | Stale model facts, partial projection, and restart recovery cannot leave a half-applied role set | `test_config_broker_role_bundle.py`, `test_config_broker_internal_model_writes.py` |
+| Background memory extraction | A configured extraction role preserves visible structured JSON and persists it through the durable Memory path | Reasoning-only output remains rejected; request-local no-think is sent only when the selected model explicitly supports it, without changing its saved user preference | `test_memory_runtime_durable_policy.py`, `test_background_model_output_sanitizer.py` |
 | Policy bundle | Update validated governance, budgets, routing, and role temperature | Unknown fields, invalid routes, and stale target revisions are blocked | extended contract tests |
 | Human/Agent surface | Bounded provider and model ids remain visible | URLs, refs, keys, raw JSON, and managed local paths remain hidden | catalog surface tests |
 | Native tool dispatch | Every prepare/list/discover mode forwards runtime owner/session/run identity | Pydantic-reserved `model_config` is not exposed; public name is `model_settings` | native dispatch tests |
@@ -58,6 +59,8 @@ From `apps/v8-agent-os-engine`:
   tests/model_control/test_model_runtime_auth_contract.py `
   tests/model_control/test_model_reasoning_repair.py `
   tests/model_control/test_model_connection_tester.py `
+  tests/model_control/test_background_model_output_sanitizer.py `
+  tests/memory/test_memory_runtime_durable_policy.py `
   tests/safety/test_cross_platform_network_safety.py -q
 
 .\.venv\Scripts\python.exe tests/scripts/run_model_catalog_connection_matrix.py `
@@ -98,11 +101,11 @@ superseded refs which are no longer referenced by any current Provider and are
 outside the rollback window. Until then, these refs are recoverable but may
 remain in the OS credential store longer than necessary.
 
-The deprecated whole-model configuration writes in
-`/models`, `/models/control-plane`, and Config Registry's `models` domain remain
-compatibility-only bypasses. No current V8OS Admin page writes through them;
-active Provider, binding, default, reasoning, policy, and runtime-role writes
-use Config Broker transactions. A later deprecation cycle must add call-volume
-telemetry, migrate any external caller, and then close these bulk writes. Runtime
-observed embedding/rerank limits remain telemetry updates rather than operator
+The deprecated whole-model configuration writes at `/models`,
+`/models/control-plane`, and Config Registry's `models` domain now fail closed
+with `410 model_bulk_write_deprecated`. No current V8OS Admin page writes through
+them; active Provider, binding, default, reasoning, policy, and runtime-role
+writes use Config Broker transactions. This closes the accidental whole-domain
+replacement path that bypassed Config Broker revision checks. Runtime observed
+embedding/rerank limits remain telemetry updates rather than operator
 configuration transactions.

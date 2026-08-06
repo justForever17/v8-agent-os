@@ -6,6 +6,16 @@ from typing import Any
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config_file(tmp_path, monkeypatch) -> None:
+    from core.database import DatabaseManager
+    import core.config_broker_service as broker_module
+    import core.storage as storage_module
+
+    monkeypatch.setattr(storage_module, "CONFIG_JSON_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(broker_module, "db", DatabaseManager(tmp_path / "state.db"))
+
+
 def _invoke_config_broker(payload: dict[str, Any]) -> dict[str, Any]:
     from core.tools.native.mcp import config_broker
 
@@ -123,6 +133,40 @@ def test_catalog_connect_prepare_forwards_contract_and_runtime_identity_exactly(
             "channel_id": "responses",
             "wire_protocol": "openai.responses",
             "discover_if_needed": False,
+            "owner_id": "owner-catalog",
+            "session_id": "session-catalog",
+            "run_id": "run-catalog",
+        }
+    ]
+
+
+def test_model_snapshot_recovery_prepare_forwards_only_a_durable_source_transaction(monkeypatch) -> None:
+    import core.tools.native.mcp as module
+
+    calls: list[dict[str, Any]] = []
+    _install_runtime_identity(monkeypatch)
+
+    def _prepare_model_snapshot_recovery(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"ok": True, "mode": "model_snapshot_recover_prepare"}
+
+    monkeypatch.setattr(
+        module.config_broker_service,
+        "prepare_model_snapshot_recovery",
+        _prepare_model_snapshot_recovery,
+    )
+
+    result = _invoke_config_broker(
+        {
+            "mode": "model_snapshot_recover_prepare",
+            "source_transaction_id": "cfg_txn_durable_source",
+        }
+    )
+
+    assert result == {"ok": True, "mode": "model_snapshot_recover_prepare"}
+    assert calls == [
+        {
+            "source_transaction_id": "cfg_txn_durable_source",
             "owner_id": "owner-catalog",
             "session_id": "session-catalog",
             "run_id": "run-catalog",
@@ -262,6 +306,7 @@ def test_config_broker_schema_imports_with_public_patch_names_only() -> None:
         "governance",
         "routing_policies",
         "role_parameters",
+        "source_transaction_id",
     } <= set(properties)
     assert "model_config" not in properties
     assert "credential_required" not in properties
@@ -293,6 +338,7 @@ def test_config_broker_schema_declares_modes_and_forbids_unknown_config_fields()
         "catalog_custom_provider_remove_prepare",
         "catalog_recover_prepare",
         "catalog_recover_finalize_prepare",
+        "model_snapshot_recover_prepare",
         "model_provider_prepare",
         "model_binding_prepare",
         "model_default_prepare",

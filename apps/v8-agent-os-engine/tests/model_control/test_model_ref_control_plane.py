@@ -24,7 +24,10 @@ except ImportError:  # pragma: no cover - optional in partial dev environments
 
 
 @pytest.fixture(autouse=True)
-def _isolate_model_credentials(monkeypatch):
+def _isolate_model_credentials(monkeypatch, tmp_path):
+    import core.storage as storage_module
+
+    monkeypatch.setattr(storage_module, "CONFIG_JSON_PATH", tmp_path / "config.json")
     monkeypatch.setattr(
         platform_routes.model_control_plane,
         "_credential_store",
@@ -1821,38 +1824,12 @@ def test_quick_connect_persists_the_visible_route_and_wire_model_binding(monkeyp
     assert binding["provenance"] == {"source": "quick_connect", "confidence": "authoritative"}
 
 
-def test_legacy_models_write_preserves_credential_omitted_by_public_read(monkeypatch):
-    saved = {}
-    current = {
-        "providers": {
-            "demo": {
-                "provider": {"name": "Demo", "api_key": "sk-private"},
-                "models": {},
-            }
-        }
-    }
-    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: current)
-    monkeypatch.setattr(
-        platform_routes.model_control_plane,
-        "save_config",
-        lambda config: saved.setdefault("config", config),
-    )
+def test_legacy_models_write_is_closed_to_prevent_whole_domain_replacement() -> None:
+    with pytest.raises(HTTPException) as blocked:
+        asyncio.run(platform_routes.save_models_config({"providers": {"demo": {}}}))
 
-    result = asyncio.run(
-        platform_routes.save_models_config(
-            {
-                "providers": {
-                    "demo": {
-                        "provider": {"name": "Demo", "credentialConfigured": True},
-                        "models": {},
-                    }
-                }
-            }
-        )
-    )
-
-    assert saved["config"]["providers"]["demo"]["provider"]["api_key"] == "sk-private"
-    assert "api_key" not in result["config"]["providers"]["demo"]["provider"]
+    assert blocked.value.status_code == 410
+    assert blocked.value.detail["code"] == "model_bulk_write_deprecated"
 
 
 def test_connect_detected_voice_model_keeps_voice_type_when_chat_purpose_submits_text(monkeypatch):

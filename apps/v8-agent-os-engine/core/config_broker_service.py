@@ -133,6 +133,28 @@ _MODEL_BUDGET_KEYS = set(dict(DEFAULT_GOVERNANCE.get("budgets") or {}))
 _MODEL_ROUTING_KEYS = {*DEFAULT_ROUTING_POLICIES, "channel"}
 _MODEL_ROLE_PARAMETER_KEYS = {"temperature"}
 _MODEL_BINDING_SOURCES = {"manual", "catalog_import", "reasoning_repair_probe"}
+_MODEL_SNAPSHOT_SOURCE_KINDS = {
+    "model",
+    "model_record",
+    "model_provider",
+    "model_binding",
+    "model_role",
+    "model_role_bundle",
+    "agent_model_role",
+    "model_policy_bundle",
+    "model_snapshot_restore",
+}
+_MODEL_CONTROL_PLANE_TARGET_KINDS = {
+    "agent_model_role",
+    "model",
+    "model_binding",
+    "model_policy_bundle",
+    "model_provider",
+    "model_record",
+    "model_role",
+    "model_role_bundle",
+    "model_snapshot_restore",
+}
 
 
 def _get_model_connection_tester():
@@ -175,6 +197,38 @@ def _loads(value: Any, fallback: Any) -> Any:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _model_snapshot_authority_projection(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the durable, operator-owned portion of a model-domain snapshot.
+
+    Runtime readiness and reasoning/thinking display controls are recomputed
+    from the current model contracts. They are not durable user configuration,
+    so they must not make a valid historical recovery look stale after a model
+    capability profile evolves. Empty API-key placeholders are likewise not a
+    credential or a model-routing fact.
+    """
+
+    projection = deepcopy(dict(config or {}))
+    for provider_data in dict(projection.get("providers") or {}).values():
+        if not isinstance(provider_data, dict):
+            continue
+        provider = dict(provider_data.get("provider") or {})
+        if not str(provider.get("api_key") or provider.get("apiKey") or "").strip():
+            provider.pop("api_key", None)
+            provider.pop("apiKey", None)
+        provider_data["provider"] = provider
+        for model_data in dict(provider_data.get("models") or {}).values():
+            if not isinstance(model_data, dict):
+                continue
+            for key in (
+                "runtimeReady",
+                "reasoningSurface",
+                "thinkingControl",
+                "reasoningEffortControl",
+            ):
+                model_data.pop(key, None)
+    return projection
 
 
 def _safe_refs(values: Iterable[Any] | None, *, limit: int = 12) -> list[str]:
@@ -740,6 +794,8 @@ class ConfigBrokerService:
 
     @staticmethod
     def _target_snapshot(target_kind: str, target_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        if target_kind == "model_snapshot_restore":
+            return _model_snapshot_authority_projection(config)
         if target_kind == "model_provider":
             providers = dict(config.get("providers") or {})
             return {
@@ -834,6 +890,21 @@ class ConfigBrokerService:
         return {"unsupported": target_kind}
 
     @staticmethod
+    def _model_record_snapshot(model_ref: str, config: dict[str, Any]) -> dict[str, Any]:
+        """Snapshot a referenced model from the durable configuration view.
+
+        ``mutate_config`` supplies a provider-call view with a materialized
+        managed credential.  Role assignments protect the referenced model
+        separately from the role field, so they must use the same secret-free
+        revision as their prepare step.
+        """
+        return ConfigBrokerService._target_snapshot(
+            "model_record",
+            model_ref,
+            model_control_plane._storage_safe_config(config),
+        )
+
+    @staticmethod
     def _target_config(target_kind: str) -> dict[str, Any]:
         if target_kind == "mcp":
             return deepcopy(storage.get_mcp_config() or {"mcpServers": {}})
@@ -858,10 +929,22 @@ class ConfigBrokerService:
     ) -> dict[str, Any]:
         validation = dict(transaction.get("validation") or {})
         expected = str(validation.get("targetBeforeDigest") or "").strip()
+        target_kind = str(transaction.get("targetKind") or "")
+        # ModelControlPlane mutation helpers deliberately materialize a managed
+        # credential as ``api_key`` for the provider call.  The Broker plans
+        # from the storage-safe revision, where that ephemeral field is absent.
+        # Compare the same authority projection so a managed secret does not
+        # create a false CAS conflict, while all durable provider/model fields
+        # continue to participate in stale-write detection.
+        snapshot_config = (
+            model_control_plane._storage_safe_config(current_config)
+            if target_kind in _MODEL_CONTROL_PLANE_TARGET_KINDS
+            else current_config
+        )
         current_snapshot = self._target_snapshot(
-            str(transaction.get("targetKind") or ""),
+            target_kind,
             str(transaction.get("targetId") or ""),
-            current_config,
+            snapshot_config,
         )
         current_digest = _digest(current_snapshot)
         if expected and current_digest != expected:
@@ -1347,6 +1430,101 @@ class ConfigBrokerService:
             "summary": f"为 {role_label} 找到 {len(candidates)} 个可用候选。",
         }
 
+    def prepare_model_snapshot_recovery(
+        self,
+        *,
+        source_transaction_id: str,
+        owner_id: str,
+        session_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Prepare a full model-domain recovery from one durable Broker preimage.
+
+        This intentionally accepts only a Config Broker transaction id, never a
+        caller-provided configuration blob. It is an emergency repair path for a
+        known bad whole-domain replacement while retaining normal transaction
+        CAS, audit, and rollback behaviour.
+        """
+
+        source_id = str(source_transaction_id or "").strip()
+        if not source_id:
+            raise ConfigBrokerError("恢复需要来源配置事务。", code="model_snapshot_source_required")
+        owner = _session_owner(session_id, owner_id)
+        source = self.get_transaction(source_id, owner_id=owner, include_private=True)
+        source_kind = str(source.get("targetKind") or "")
+        if source_kind not in _MODEL_SNAPSHOT_SOURCE_KINDS or source.get("state") != "committed":
+            raise ConfigBrokerError(
+                "来源事务不是已提交的模型配置恢复点。",
+                code="model_snapshot_source_invalid",
+                status_code=409,
+            )
+        candidate = deepcopy(dict(source.get("before") or {}))
+        providers = dict(candidate.get("providers") or {})
+        if not providers:
+            raise ConfigBrokerError(
+                "来源恢复点不含有效模型 Provider。",
+                code="model_snapshot_source_invalid",
+                status_code=409,
+            )
+        for provider_data in providers.values():
+            provider_meta = dict((dict(provider_data or {})).get("provider") or {})
+            raw_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+            if raw_key and not raw_key.startswith("oauth:"):
+                raise ConfigBrokerError(
+                    "来源恢复点含未托管凭据，已拒绝恢复。",
+                    code="model_snapshot_source_contains_secret",
+                    status_code=409,
+                )
+
+        # Normalization verifies the stored model-domain shape without turning
+        # a caller request into a writable arbitrary config object.
+        candidate = model_control_plane._storage_safe_config(model_control_plane.normalize_config(candidate))
+        current = model_control_plane.get_storage_safe_config()
+        candidate_digest = _digest(_model_snapshot_authority_projection(candidate))
+        already_current = candidate_digest == _digest(_model_snapshot_authority_projection(current))
+        transaction = self._insert_transaction(
+            target_kind="model_snapshot_restore",
+            target_id=source_id,
+            operation="restore_snapshot",
+            state="ready_to_commit",
+            owner_id=owner,
+            session_id=session_id,
+            run_id=run_id,
+            before=current,
+            proposed={
+                "sourceTransactionId": source_id,
+                "sourceSnapshotDigest": candidate_digest,
+                "snapshot": candidate,
+                "alreadyCurrent": already_current,
+                "newCredentialRefs": [],
+            },
+            validation={
+                "source": {
+                    "transactionId": source_id,
+                    "targetKind": source_kind,
+                    "snapshotDigest": candidate_digest,
+                }
+            },
+        )
+        model_count = sum(
+            len(dict((dict(provider_data or {})).get("models") or {}))
+            for provider_data in providers.values()
+        )
+        return {
+            "ok": True,
+            "mode": "model_snapshot_recover_prepare",
+            "state": transaction["state"],
+            "transactionId": transaction["transactionId"],
+            "planDigest": transaction["planDigest"],
+            "summary": (
+                f"当前模型配置已与 {len(providers)} 个 Provider、{model_count} 个模型的恢复快照一致；"
+                "可提交只读核验记录。"
+                if already_current
+                else f"已准备恢复 {len(providers)} 个 Provider、{model_count} 个模型的已验证配置快照。"
+            ),
+            "nextAction": "提交配置事务。",
+        }
+
     def prepare_model_provider_change(
         self,
         *,
@@ -1719,7 +1897,7 @@ class ConfigBrokerService:
             wire_protocol=wire_protocol,
         )
         normalized_url = _valid_provider_endpoint(normalized_url)
-        effective_auth = dict(transport_provider.get("authContract") or {})
+        effective_auth = dict(transport_provider.get("authContract") or {}) or {"type": "api_key"}
         auth_type = str(effective_auth.get("type") or "api_key").strip().lower()
         if auth_type not in {"api_key", "none"}:
             raise ConfigBrokerError(
@@ -1867,12 +2045,20 @@ class ConfigBrokerService:
                 if "is_enabled" in provider_extra
                 else existing_meta.get("is_enabled", existing_meta.get("isEnabled", True))
             ),
-            "authContract": effective_auth or {"type": "api_key"},
+            "authContract": effective_auth,
         }
         existing_ref = str(existing_meta.get("credentialRef") or "").strip()
+        # Older connected providers may predate the explicit authContract
+        # field. Their managed credential is still safe to reuse only when the
+        # same normalized default API-key contract and exact target fingerprint
+        # match; endpoint or auth drift remains non-reusable.
+        existing_provider_for_fingerprint = {
+            **existing_meta,
+            "authContract": dict(existing_meta.get("authContract") or effective_auth),
+        }
         credential_reusable = _credential_ref_is_reusable(
             existing_ref,
-            existing_provider=existing_meta,
+            existing_provider=existing_provider_for_fingerprint,
             proposed_provider=provider_patch,
         )
         if credential_reusable:
@@ -3007,7 +3193,7 @@ class ConfigBrokerService:
                 "doctor": eligibility,
             }
             assignment_model_digests[role_key] = _digest(
-                self._target_snapshot("model_record", canonical_ref, before)
+                self._model_record_snapshot(canonical_ref, before)
             )
 
         owner = _session_owner(session_id, owner_id)
@@ -3092,7 +3278,7 @@ class ConfigBrokerService:
             validation={
                 "doctor": eligibility,
                 "assignmentModelDigest": _digest(
-                    self._target_snapshot("model_record", str(record.get("model_ref") or model_ref), before)
+                    self._model_record_snapshot(str(record.get("model_ref") or model_ref), before)
                 ),
             },
         )
@@ -3707,11 +3893,16 @@ class ConfigBrokerService:
             target_mutated = False
             self._update_transaction(transaction_id, state="committing", error_code=None, error_message=None)
 
-            def _capture_working_target(config: dict[str, Any]) -> None:
+            def _capture_working_target(_config: dict[str, Any]) -> None:
+                # Persisted, storage-safe state is authoritative. The return
+                # value of ModelControlPlane.save_config may still contain a
+                # materialized or empty credential field, which cannot serve as
+                # an exact rollback revision.
+                persisted_config = self._target_config(transaction["targetKind"])
                 working_target = self._target_snapshot(
                     transaction["targetKind"],
                     transaction["targetId"],
-                    config,
+                    persisted_config,
                 )
                 validation["targetWorkingDigest"] = _digest(working_target)
                 self._update_transaction(transaction_id, validation_json=_json(validation))
@@ -3726,7 +3917,57 @@ class ConfigBrokerService:
                 self._update_transaction(transaction_id, validation_json=_json(validation))
 
             try:
-                if transaction["targetKind"] == "model_provider":
+                if transaction["targetKind"] == "model_snapshot_restore":
+                    candidate = deepcopy(dict(proposed.get("snapshot") or {}))
+                    expected_snapshot_digest = str(proposed.get("sourceSnapshotDigest") or "")
+                    if (
+                        not candidate
+                        or _digest(_model_snapshot_authority_projection(candidate)) != expected_snapshot_digest
+                    ):
+                        raise ConfigBrokerError(
+                            "模型恢复快照校验失败。",
+                            code="model_snapshot_digest_invalid",
+                            status_code=409,
+                        )
+                    already_current = bool(proposed.get("alreadyCurrent"))
+                    if already_current:
+                        current_snapshot = self._target_snapshot(
+                            "model_snapshot_restore",
+                            transaction["targetId"],
+                            self._target_config("model_snapshot_restore"),
+                        )
+                        if _digest(current_snapshot) != expected_snapshot_digest:
+                            raise ConfigBrokerError(
+                                "模型恢复核验期间配置发生变化。",
+                                code="config_transaction_stale",
+                                status_code=409,
+                            )
+                    else:
+                        def _restore_model_snapshot(current: dict[str, Any]) -> dict[str, Any]:
+                            self._assert_target_revision_in_config(transaction, current)
+                            _capture_planned_target(candidate)
+                            return deepcopy(candidate)
+
+                        saved_model_config = model_control_plane.mutate_config(_restore_model_snapshot)
+                        target_mutated = True
+                        _capture_working_target(saved_model_config)
+                        persisted_snapshot = self._target_snapshot(
+                            "model_snapshot_restore",
+                            transaction["targetId"],
+                            self._target_config("model_snapshot_restore"),
+                        )
+                        if _digest(persisted_snapshot) != expected_snapshot_digest:
+                            raise ConfigBrokerError(
+                                "模型恢复后的配置投影不一致。",
+                                code="model_snapshot_projection_mismatch",
+                                status_code=409,
+                            )
+                    public_result = {
+                        "sourceTransactionId": str(proposed.get("sourceTransactionId") or ""),
+                        "recovered": True,
+                        "alreadyCurrent": already_current,
+                    }
+                elif transaction["targetKind"] == "model_provider":
                     provider_id = str(proposed.get("providerId") or "").strip()
                     operation = str(proposed.get("operation") or transaction.get("operation") or "").strip()
                     provider_patch = dict(proposed.get("provider") or {})
@@ -3945,7 +4186,7 @@ class ConfigBrokerService:
                         self._assert_target_revision_in_config(transaction, config)
                         if transaction.get("operation") != "unbind":
                             expected_model_digest = str(validation.get("assignmentModelDigest") or "")
-                            current_model = self._target_snapshot("model_record", str(proposed.get("modelRef") or ""), config)
+                            current_model = self._model_record_snapshot(str(proposed.get("modelRef") or ""), config)
                             if not expected_model_digest or _digest(current_model) != expected_model_digest:
                                 raise ConfigBrokerError("目标模型在角色绑定期间发生变化；请重新准备。", code="config_transaction_stale", status_code=409)
                         roles = dict(config.get("roles") or {})
@@ -3979,7 +4220,7 @@ class ConfigBrokerService:
                             if not model_ref:
                                 continue
                             expected_model_digest = str(assignment_model_digests.get(role_key) or "")
-                            current_model = self._target_snapshot("model_record", model_ref, config)
+                            current_model = self._model_record_snapshot(model_ref, config)
                             if not expected_model_digest or _digest(current_model) != expected_model_digest:
                                 raise ConfigBrokerError(
                                     "目标模型在多角色绑定期间发生变化；请重新准备。",
@@ -4015,7 +4256,7 @@ class ConfigBrokerService:
                         self._assert_target_revision_in_config(transaction, config)
                         if transaction.get("operation") != "unbind":
                             expected_model_digest = str(validation.get("assignmentModelDigest") or "")
-                            current_model = self._target_snapshot("model_record", str(proposed.get("modelRef") or ""), config)
+                            current_model = self._model_record_snapshot(str(proposed.get("modelRef") or ""), config)
                             if not expected_model_digest or _digest(current_model) != expected_model_digest:
                                 raise ConfigBrokerError("目标模型在 Agent 绑定期间发生变化；请重新准备。", code="config_transaction_stale", status_code=409)
                         bindings = dict(config.get("bindings") or {})
@@ -4435,9 +4676,12 @@ class ConfigBrokerService:
                 "model_role",
                 "model_role_bundle",
                 "agent_model_role",
+                "model_snapshot_restore",
             }:
                 def _restore_model_config(config: dict[str, Any]) -> dict[str, Any]:
                     _assert_restore_revision(config)
+                    if target_kind == "model_snapshot_restore":
+                        return deepcopy(before_config)
                     if target_kind in {"model", "model_record"}:
                         identity = parse_model_ref(target_id)
                         if not identity:

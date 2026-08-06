@@ -62,6 +62,53 @@ def test_known_config_write_preserves_ignored_domains_on_disk(tmp_path: Path, mo
     assert persisted["runtimeRegistry"]["startupProfile"] == "desktop"
 
 
+def test_config_write_keeps_the_previous_payload_as_a_recoverable_preimage(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtimeRegistry": {"installProfile": "minimal"},
+                "models": {"providers": {"before": {"models": {}}}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+
+    manager._write_config_payload(
+        {
+            "runtimeRegistry": {"installProfile": "desktop"},
+            "models": {"providers": {"after": {"models": {}}}},
+        }
+    )
+
+    backup = tmp_path / "backups" / "json" / "config.json.bak"
+    history = list((backup.parent / "history").glob("config.json.*.bak"))
+    assert config_path.read_bytes() != before
+    assert backup.read_bytes() == before
+    assert len(history) == 1
+    assert history[0].read_bytes() == before
+
+
+def test_config_write_refuses_to_replace_live_config_when_preimage_backup_fails(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"runtimeRegistry": {"installProfile": "minimal"}}), encoding="utf-8")
+    before = config_path.read_bytes()
+
+    monkeypatch.setattr(manager, "_save_config_preimage", lambda _path: (_ for _ in ()).throw(OSError("backup unavailable")))
+
+    try:
+        manager._write_config_payload({"runtimeRegistry": {"installProfile": "desktop"}})
+    except OSError as exc:
+        assert str(exc) == "backup unavailable"
+    else:
+        raise AssertionError("config replacement must stop when the preimage backup cannot be written")
+    assert config_path.read_bytes() == before
+
+
 def test_preserved_domain_can_be_read_and_mutated_without_replacing_siblings(tmp_path: Path, monkeypatch) -> None:
     manager = _storage_for_tmp(tmp_path, monkeypatch)
     config_path = tmp_path / "config.json"

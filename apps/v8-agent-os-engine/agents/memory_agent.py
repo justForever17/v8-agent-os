@@ -32,6 +32,7 @@ from core.background_context_guard import prepare_background_model_messages
 from core.background_model_output import sanitize_background_model_output
 from core.memory_canonicalization import canonicalize_memory_extraction_result
 from core.llm_chat_adapter import _extract_json_payload
+from core.model_thinking_control import background_visible_output_request_patch
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.memory_router import MemoryRouter
 from core.knowledge_db import knowledge_db
@@ -191,6 +192,24 @@ def _get_background_llm():
     return router.get_extractor_llm()
 
 
+def _background_visible_output_request_kwargs(llm: Any) -> Dict[str, Any]:
+    """Keep Memory's structured output on the visible channel when supported."""
+    metadata = getattr(llm, "_meta", None)
+    if not isinstance(metadata, dict):
+        metadata = getattr(llm, "meta", None)
+    return background_visible_output_request_patch(metadata if isinstance(metadata, dict) else None)
+
+
+def _invoke_background_llm(llm: Any, messages: List[Any]) -> Any:
+    request_kwargs = _background_visible_output_request_kwargs(llm)
+    return llm.invoke(messages, **request_kwargs)
+
+
+async def _ainvoke_background_llm(llm: Any, messages: List[Any]) -> Any:
+    request_kwargs = _background_visible_output_request_kwargs(llm)
+    return await llm.ainvoke(messages, **request_kwargs)
+
+
 def _extractor_model_name(llm: Any) -> str:
     for key in ("model_id", "model_name", "model"):
         value = getattr(llm, key, None)
@@ -228,7 +247,7 @@ def _generate_quick_summary(chat_text: str) -> str:
     try:
         llm = _get_background_llm()
         system_prompt = "You are a summarizing assistant. Read the chat log and output exactly ONE short sentence summarizing the core technical topic or outcome of the conversation. Output only the sentence, nothing else."
-        response = llm.invoke([
+        response = _invoke_background_llm(llm, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Chat Log:\n\n{chat_text[:2000]}...") # truncate for speed/cost
         ])
@@ -952,7 +971,7 @@ def _extract_with_llm(
             component="memory",
             node="session_extraction",
         )
-        raw_response = llm.invoke(prepared_context.messages)
+        raw_response = _invoke_background_llm(llm, prepared_context.messages)
         sanitized_output = sanitize_background_model_output(raw_response)
         str_content = sanitized_output.text
             
@@ -1046,7 +1065,7 @@ async def _synthesize_periodic_summary_payload(*, tier: str, content: str) -> Pe
         component="memory",
         node="periodic_summary",
     )
-    response = await llm.ainvoke(prepared_context.messages)
+    response = await _ainvoke_background_llm(llm, prepared_context.messages)
     text_content = sanitize_background_model_output(response).text
     try:
         payload = _extract_json_payload(text_content)

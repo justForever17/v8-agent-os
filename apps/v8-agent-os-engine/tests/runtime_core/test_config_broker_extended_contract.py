@@ -11,6 +11,15 @@ from core.database import DatabaseManager
 from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config_file(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as broker_module
+    import core.storage as storage_module
+
+    monkeypatch.setattr(storage_module, "CONFIG_JSON_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(broker_module, "db", DatabaseManager(tmp_path / "state.db"))
+
+
 def _copy(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
@@ -242,6 +251,120 @@ def test_model_policy_bundle_commit_rollback_and_target_cas(tmp_path, monkeypatc
     assert persisted["state"] == "conflict"
     assert persisted["error"]["code"] == "config_transaction_stale"
     assert config["governance"]["maxLocalRetries"] == 1
+
+
+def test_model_snapshot_recovery_restores_only_a_durable_safe_broker_preimage(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    clean = _model_config()
+    config = _copy(clean)
+    _install_model_config(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+
+    source = service._insert_transaction(
+        target_kind="model_role",
+        target_id="supervisor",
+        operation="assign",
+        state="ready_to_commit",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+        before=clean,
+        proposed={"role": "supervisor", "modelRef": "provider::target", "newCredentialRefs": []},
+    )
+    service._update_transaction(source["transactionId"], state="committed")
+    corrupt = {
+        "providers": {"corrupt": {"provider": {"name": "Corrupt"}, "models": {}}},
+        "roles": {"supervisor": "corrupt::missing"},
+        "bindings": {"agents": {}},
+    }
+    config.clear()
+    config.update(_copy(corrupt))
+
+    prepared = service.prepare_model_snapshot_recovery(
+        source_transaction_id=source["transactionId"],
+        owner_id="owner",
+        session_id="session",
+        run_id="recovery",
+    )
+    assert config == corrupt
+    assert prepared["state"] == "ready_to_commit"
+
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+    assert committed["state"] == "committed"
+    assert config == clean
+
+    rolled_back = service.rollback(prepared["transactionId"], owner_id="owner")
+    assert rolled_back["state"] == "rolled_back"
+    assert config == corrupt
+
+
+def test_model_snapshot_recovery_rejects_a_broker_preimage_with_raw_secret(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    clean = _model_config()
+    clean["providers"]["provider"]["provider"]["api_key"] = "sk-not-safe-to-recover"
+    config = _model_config()
+    _install_model_config(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    source = service._insert_transaction(
+        target_kind="model_role",
+        target_id="supervisor",
+        operation="assign",
+        state="ready_to_commit",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+        before=clean,
+        proposed={"newCredentialRefs": []},
+    )
+    service._update_transaction(source["transactionId"], state="committed")
+
+    with pytest.raises(module.ConfigBrokerError) as blocked:
+        service.prepare_model_snapshot_recovery(
+            source_transaction_id=source["transactionId"],
+            owner_id="owner",
+            session_id="session",
+            run_id="recovery",
+        )
+
+    assert blocked.value.code == "model_snapshot_source_contains_secret"
+
+
+def test_model_snapshot_recovery_records_an_already_restored_snapshot_without_rewrite(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    clean = _model_config()
+    config = _copy(clean)
+    _install_model_config(module, monkeypatch, config)
+    service = module.ConfigBrokerService()
+    source = service._insert_transaction(
+        target_kind="model_role",
+        target_id="supervisor",
+        operation="assign",
+        state="ready_to_commit",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+        before=clean,
+        proposed={"newCredentialRefs": []},
+    )
+    service._update_transaction(source["transactionId"], state="committed")
+
+    prepared = service.prepare_model_snapshot_recovery(
+        source_transaction_id=source["transactionId"],
+        owner_id="owner",
+        session_id="session",
+        run_id="recovery",
+    )
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert committed["state"] == "committed"
+    assert committed["result"]["alreadyCurrent"] is True
+    assert config == clean
 
 
 def test_model_policy_bundle_rejects_unknown_fields_without_transaction(tmp_path, monkeypatch) -> None:
@@ -895,6 +1018,168 @@ def test_model_prepare_reuses_existing_transport_without_partial_field_drift(tmp
     assert transaction["proposed"]["model"]["type"] == "TEXT"
     assert transaction["proposed"]["model"]["capabilities"] == {"chat": True, "reasoning": True}
     assert transaction["proposed"]["model"]["sourceRefs"] == ["https://docs.provider.test/model"]
+
+
+def test_model_prepare_reuses_a_legacy_managed_credential_without_auth_contract(tmp_path, monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    credential_store = CredentialRefStore(MemoryCredentialBackend())
+    credential_ref = credential_store.put("secret-value", namespace="model")
+    monkeypatch.setattr(module, "credential_ref_store", credential_store)
+    config = _model_config(enabled=True)
+    config["providers"]["provider"]["provider"].update(
+        {
+            "credentialRef": credential_ref,
+            "credentialSource": "os_credential_store",
+        }
+    )
+    config["providers"]["provider"]["models"]["target"].update(
+        {
+            "capabilities": {"chat": True, "reasoning": True},
+            "sourceRefs": ["https://docs.provider.test/model"],
+        }
+    )
+    _install_model_config(module, monkeypatch, config)
+
+    prepared = module.ConfigBrokerService().prepare_model(
+        provider_id="provider",
+        model_id="target",
+        provider_name="",
+        base_url="",
+        api_standard="",
+        model_type="",
+        context_window=None,
+        max_tokens=None,
+        capabilities=None,
+        evidence_refs=None,
+        credential_required=True,
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+    transaction = module.ConfigBrokerService().get_transaction(
+        prepared["transactionId"], owner_id="owner", include_private=True
+    )
+
+    assert prepared["state"] == "ready_to_commit"
+    assert transaction["proposed"]["credentialReuseAuthorized"] is True
+    assert transaction["proposed"]["provider"]["credentialRef"] == credential_ref
+
+
+def test_model_commit_does_not_treat_a_materialized_managed_credential_as_a_stale_revision(
+    tmp_path, monkeypatch
+) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    credential_store = CredentialRefStore(MemoryCredentialBackend())
+    credential_ref = credential_store.put("secret-value", namespace="model")
+    monkeypatch.setattr(module, "credential_ref_store", credential_store)
+    config = _model_config(enabled=True)
+    config["providers"]["provider"]["provider"].update(
+        {
+            "credentialRef": credential_ref,
+            "credentialSource": "os_credential_store",
+        }
+    )
+    _install_model_config(module, monkeypatch, config)
+
+    def materialized_config() -> dict[str, Any]:
+        current = _copy(config)
+        current["providers"]["provider"]["provider"]["api_key"] = "secret-value"
+        return current
+
+    monkeypatch.setattr(module.model_control_plane, "get_config", materialized_config)
+
+    def upsert_provider_model_records(**kwargs: Any) -> dict[str, Any]:
+        kwargs["precondition"](materialized_config())
+        config["providers"]["provider"] = {
+            "provider": _copy(kwargs["provider_patch"]),
+            "models": {
+                **dict(config["providers"]["provider"]["models"]),
+                "target": _copy(kwargs["model_patch"]),
+            },
+        }
+        kwargs["before_persist"](_copy(config))
+        return {"config": _copy(config)}
+
+    monkeypatch.setattr(module.model_control_plane, "upsert_provider_model_records", upsert_provider_model_records)
+    monkeypatch.setattr(
+        module.ConfigBrokerService,
+        "_verify_committed_model",
+        lambda *_args: {"ok": True, "status": "ok", "summary": "ok", "verifier": "test"},
+    )
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_model(
+        provider_id="provider",
+        model_id="target",
+        provider_name="",
+        base_url="",
+        api_standard="",
+        model_type="",
+        context_window=None,
+        max_tokens=None,
+        capabilities=None,
+        evidence_refs=None,
+        credential_required=True,
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert prepared["state"] == "ready_to_commit"
+    assert committed["state"] == "committed"
+
+
+def test_role_commit_does_not_treat_a_materialized_managed_credential_as_a_changed_model(
+    tmp_path, monkeypatch
+) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    credential_store = CredentialRefStore(MemoryCredentialBackend())
+    credential_ref = credential_store.put("secret-value", namespace="model")
+    monkeypatch.setattr(module, "credential_ref_store", credential_store)
+    config = _model_config(enabled=True)
+    config["providers"]["provider"]["provider"].update(
+        {
+            "credentialRef": credential_ref,
+            "credentialSource": "os_credential_store",
+        }
+    )
+    _install_model_config(module, monkeypatch, config)
+
+    def materialized_config() -> dict[str, Any]:
+        current = _copy(config)
+        current["providers"]["provider"]["provider"]["api_key"] = "secret-value"
+        return current
+
+    def mutate(mutator):
+        proposed = mutator(materialized_config())
+        safe = module.model_control_plane._storage_safe_config(proposed)
+        config.clear()
+        config.update(_copy(safe))
+        return _copy(config)
+
+    monkeypatch.setattr(module.model_control_plane, "get_config", materialized_config)
+    monkeypatch.setattr(module.model_control_plane, "mutate_config", mutate)
+    service = module.ConfigBrokerService()
+    prepared = service.prepare_role_assignment(
+        role="supervisor",
+        model_ref="provider::target",
+        owner_id="owner",
+        session_id="session",
+        run_id="run",
+    )
+
+    committed = service.commit(prepared["transactionId"], owner_id="owner")
+
+    assert prepared["state"] == "ready_to_commit"
+    assert committed["state"] == "committed"
+    assert config["roles"]["supervisor"] == "provider::target"
 
 
 def test_model_prepare_rejects_forged_provenance_and_secret_evidence(tmp_path, monkeypatch) -> None:

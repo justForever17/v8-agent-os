@@ -1,4 +1,5 @@
 # Linux desktop runtime extras for AT-SPI inspection and X11 interoperability.
 PyGObject>=3.46 ; sys_platform == "linux"
-pyatspi>=2.46 ; sys_platform == "linux"
+# pyatspi2 is not published on PyPI. prepare-posix-python-runtime.mjs copies
+# the pinned GNOME Python frontend after PyGObject has been built.
 python-xlib>=0.33 ; sys_platform == "linux"

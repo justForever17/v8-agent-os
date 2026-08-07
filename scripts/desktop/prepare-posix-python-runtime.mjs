@@ -10,6 +10,11 @@ const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
 const engineDir = path.join(repoRoot, "apps", "v8-agent-os-engine");
 const PYTHON_RELEASE = "20260805";
+const LINUX_PYATSPI_SOURCE = {
+  commit: "0633eea48b8eb423f051ec74647bcb3e4d217f17",
+  archive: "95fcc6f82ca5f63f698021a0119f73bb05f70d48ce146a13800b10be4fdf8cbb",
+  url: "https://gitlab.gnome.org/api/v4/projects/GNOME%2Fpyatspi2/repository/archive.tar.gz?sha=0633eea48b8eb423f051ec74647bcb3e4d217f17",
+};
 const RUNTIMES = {
   "macos-x64": {
     platform: "darwin",
@@ -93,6 +98,42 @@ function pythonExecutable(runtimeDir) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 }
 
+function installLinuxPyatspi(python, runtimeDir, workDir) {
+  const sitePackagesResult = spawnSync(
+    python,
+    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    { encoding: "utf8", timeout: 30000 },
+  );
+  if (sitePackagesResult.error || sitePackagesResult.status !== 0) {
+    fail(`Could not resolve portable Python site-packages: ${sitePackagesResult.error?.message || sitePackagesResult.stderr || "unknown error"}`);
+  }
+  const sitePackages = String(sitePackagesResult.stdout || "").trim();
+  const relativeSitePackages = path.relative(runtimeDir, sitePackages);
+  if (!sitePackages || relativeSitePackages.startsWith("..") || path.isAbsolute(relativeSitePackages)) {
+    fail(`Refusing unexpected portable Python site-packages path: ${sitePackages}`);
+  }
+
+  const archivePath = path.join(workDir, "pyatspi2.tar.gz");
+  const extractDir = path.join(workDir, "pyatspi2");
+  fs.mkdirSync(extractDir, { recursive: true });
+  return download(LINUX_PYATSPI_SOURCE.url, archivePath, LINUX_PYATSPI_SOURCE.archive)
+    .then(() => {
+      run("tar", ["-xzf", archivePath, "-C", extractDir]);
+      const sourceRoot = fs.readdirSync(extractDir, { withFileTypes: true })
+        .find((entry) => entry.isDirectory() && fs.existsSync(path.join(extractDir, entry.name, "pyatspi", "__init__.py")));
+      if (!sourceRoot) fail(`Pinned pyatspi2 archive did not contain the expected Python package: ${LINUX_PYATSPI_SOURCE.commit}`);
+      const sourcePackage = path.join(extractDir, sourceRoot.name, "pyatspi");
+      fs.cpSync(sourcePackage, path.join(sitePackages, "pyatspi"), { recursive: true });
+      const noticesDir = path.join(runtimeDir, "THIRD_PARTY_NOTICES");
+      fs.mkdirSync(noticesDir, { recursive: true });
+      fs.copyFileSync(
+        path.join(extractDir, sourceRoot.name, "COPYING"),
+        path.join(noticesDir, "pyatspi2-COPYING"),
+      );
+      run(python, ["-c", "import pyatspi; import gi; from gi.repository import Atspi; print('PYATSPI_IMPORT_OK')"]);
+    });
+}
+
 async function main() {
   const target = argValue("--target");
   const runtime = RUNTIMES[target];
@@ -141,6 +182,9 @@ async function main() {
     run(python, ["-m", "ensurepip", "--upgrade"]);
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel"]);
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", requirementsPath]);
+    if (runtime.platform === "linux") {
+      await installLinuxPyatspi(python, runtimeDir, workDir);
+    }
 
     fs.mkdirSync(browserDir, { recursive: true });
     if (hasFlag("--skip-playwright-browsers")) {

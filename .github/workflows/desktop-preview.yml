@@ -77,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - id: targets
         name: Resolve requested platforms
@@ -107,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify target runner architecture
         if: runner.os != 'Windows'
@@ -135,7 +135,7 @@ jobs:
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -340,7 +340,7 @@ jobs:
 
       - name: Upload Windows desktop smoke diagnostics
         if: failure() && matrix.os == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: v8os-desktop-smoke-diagnostics
           path: desktop-smoke-diagnostics/**
@@ -364,7 +364,7 @@ jobs:
           --output-dir apps/v8-agent-os-shell/desktop-release-assets
 
       - name: Upload desktop platform artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: v8os-desktop-${{ matrix.id }}
           path: apps/v8-agent-os-shell/desktop-release-assets/**

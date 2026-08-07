@@ -273,7 +273,7 @@ export function resolvePreparationIdentity({ manifest, version, channel = "previ
     throw new Error("Invalid --product. The deprecated compatibility values are phone or desktop.");
   }
   if (!isValidReleaseVersion(version)) {
-    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form with N >= 1.");
+    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form, year 2000-2099, and N 1-99 without a leading zero.");
   }
   if (channel !== "preview") {
     throw new Error("Only the preview channel is currently publishable; stable signing and installation gates are not implemented.");

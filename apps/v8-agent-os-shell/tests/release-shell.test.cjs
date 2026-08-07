@@ -215,7 +215,7 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:linux:preview/);
   assert.match(workflow, /prepare-posix-python-runtime\.mjs/);
   assert.match(workflow, /resolve-desktop-build-matrix\.mjs/);
-  assert.match(workflow, /resolve-desktop-platforms:[\s\S]*?uses: actions\/checkout@v4/);
+  assert.match(workflow, /resolve-desktop-platforms:[\s\S]*?uses: actions\/checkout@v7/);
   assert.match(workflow, /build-macos-ax-helper\.mjs/);
   assert.match(workflow, /verify-desktop-package-layout\.mjs/);
   assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
@@ -283,7 +283,7 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
   assert.match(workflow, /fail_on_unmatched_files: true/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
-  assert.equal((workflow.match(/softprops\/action-gh-release@v2/g) || []).length, 1);
+  assert.equal((workflow.match(/softprops\/action-gh-release@v3/g) || []).length, 1);
   assert.doesNotMatch(workflow, /environment: release/);
   assert.doesNotMatch(desktop, /softprops\/action-gh-release|contents: write/);
   assert.doesNotMatch(phone, /softprops\/action-gh-release|contents: write/);

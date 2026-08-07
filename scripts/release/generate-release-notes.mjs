@@ -61,7 +61,7 @@ function inferRelease(args) {
     throw new Error("Missing or invalid --product. Use phone, desktop, or all.");
   }
   if (!isValidReleaseVersion(version)) {
-    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form with N >= 1.");
+    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form, year 2000-2099, and N 1-99 without a leading zero.");
   }
 
   return {

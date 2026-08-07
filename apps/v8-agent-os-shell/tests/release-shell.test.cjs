@@ -122,6 +122,8 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(pkg.scripts['dist:mac:preview'], /--mac dmg --publish never/);
   assert.match(pkg.scripts['dist:linux:preview'], /--linux AppImage deb --publish never/);
   assert.match(pkg.repository.url, /v8-agent-os\.git$/);
+  assert.equal(pkg.author?.email, 'justforever17@users.noreply.github.com');
+  assert.equal(pkg.desktopName, 'v8-agent-os.desktop');
 
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
   assert.match(config, /target:\s*\n\s*- target: nsis/);
@@ -130,6 +132,8 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /mac:\s*\n\s+icon: assets\/icon\.icns/);
   assert.match(config, /target: dmg/);
   assert.match(config, /linux:\s*\n\s+icon: assets\/icon\.png/);
+  assert.match(config, /maintainer: V8 Agent OS <justforever17@users\.noreply\.github\.com>/);
+  assert.match(config, /syncDesktopName: true/);
   assert.match(config, /target: AppImage/);
   assert.match(config, /target: deb/);
   assert.match(config, /at-spi2-core/);

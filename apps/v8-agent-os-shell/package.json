@@ -3,7 +3,11 @@
   "private": true,
   "version": "2026.7.22-3",
   "description": "V8 Agent OS desktop preview shell",
-  "author": "V8 Agent OS",
+  "author": {
+    "name": "V8 Agent OS",
+    "email": "justforever17@users.noreply.github.com"
+  },
+  "desktopName": "v8-agent-os.desktop",
   "repository": {
     "type": "git",
     "url": "https://github.com/justForever17/v8-agent-os.git"

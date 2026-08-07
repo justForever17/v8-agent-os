@@ -161,7 +161,7 @@ jobs:
       always() &&
       startsWith(github.ref, 'refs/tags/v8-os-phone-v') &&
       needs.build-android.result == 'success' &&
-      needs.build-ios.result == 'skipped'
+      needs.build-ios.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

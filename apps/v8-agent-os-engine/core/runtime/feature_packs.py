@@ -340,6 +340,8 @@ def build_feature_pack_statuses(
         configured_status = str(configured.get("status") or "not_installed")
         legacy_runtime_match = bool(set(definition.runtime_families) & legacy_families)
         probe_match = _has_probe_modules(definition) if not definition.asset_manifest_file else False
+        legacy_runtime_verified = legacy_runtime_match and probe_match
+        legacy_runtime_unverified = legacy_runtime_match and not probe_match
         target_exists = target_dir.exists()
         asset_manifest = load_feature_pack_asset_manifest(definition.id)
         receipt_compatible = True
@@ -361,7 +363,7 @@ def build_feature_pack_statuses(
             )
         installed = (
             (configured_status == "installed" and target_exists and assets_exist and receipt_compatible)
-            or legacy_runtime_match
+            or legacy_runtime_verified
             or probe_match
         )
         if installed:
@@ -374,7 +376,7 @@ def build_feature_pack_statuses(
             status = "not_installed"
         missing_reason = None
         if status == "not_installed":
-            missing_reason = "not_installed"
+            missing_reason = "legacy_runtime_unverified" if legacy_runtime_unverified else "not_installed"
         elif status == "failed":
             missing_reason = receipt_reason or configured.get("lastError") or "install_failed"
         receipt_environment = dict(receipt.get("environment") or {})
@@ -411,8 +413,10 @@ def build_feature_pack_statuses(
                 "runtimePythonVersion": platform.python_version(),
                 "source": "feature_pack"
                 if configured_status == "installed" and target_exists
-                else "legacy_runtime_families"
-                if legacy_runtime_match
+                else "legacy_runtime_families_verified"
+                if legacy_runtime_verified
+                else "legacy_runtime_families_unverified"
+                if legacy_runtime_unverified
                 else "import_probe"
                 if probe_match
                 else "config",

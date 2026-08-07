@@ -13,6 +13,7 @@ from core.runtime.feature_packs import (
     load_feature_pack_receipt,
     preferred_feature_pack_execution_provider,
 )
+from core.runtime import startup_profile
 
 
 ENGINE_ROOT = Path(__file__).resolve().parents[2]
@@ -122,7 +123,7 @@ def test_feature_pack_receipt_projects_only_the_validated_execution_provider(tmp
     assert preferred_feature_pack_execution_provider("creative_media_motion_capture", registry) == "CPU"
 
 
-def test_feature_pack_status_uses_config_and_legacy_runtime_families(tmp_path):
+def test_feature_pack_status_does_not_trust_unverified_legacy_runtime_families(tmp_path):
     registry = {
         "installedRuntimeFamilies": ["rpa"],
         "featurePacks": {
@@ -143,14 +144,68 @@ def test_feature_pack_status_uses_config_and_legacy_runtime_families(tmp_path):
     by_id = {item["id"]: item for item in statuses}
 
     assert by_id["computer_use_desktop"]["status"] == "installed"
-    assert by_id["rpa_automation"]["status"] == "installed"
+    assert by_id["rpa_automation"]["status"] == "not_installed"
+    assert by_id["rpa_automation"]["missingReason"] == "legacy_runtime_unverified"
+    assert by_id["rpa_automation"]["source"] == "legacy_runtime_families_unverified"
     assert by_id["local_asr_ocr"]["status"] == "installed"
     assert by_id["local_asr_ocr"]["runtimeFamilies"] == []
     assert installed_runtime_families_from_feature_packs(statuses) == [
         "computer_use",
         "desktop_live",
-        "rpa",
     ]
+
+
+def test_runtime_registry_filters_unverified_legacy_packed_families(monkeypatch):
+    payload = {
+        "installProfile": "desktop",
+        "installPlatform": "linux",
+        "installedRuntimeFamilies": ["chat", "computer_use", "rpa"],
+    }
+    monkeypatch.setattr(startup_profile, "ensure_runtime_registry_installation_state", lambda: None)
+    monkeypatch.setattr(startup_profile.storage, "get_runtime_registry_config", lambda: payload)
+    monkeypatch.setattr(startup_profile, "apply_feature_pack_python_paths", lambda _payload: [])
+    monkeypatch.setattr(
+        startup_profile,
+        "build_feature_pack_statuses",
+        lambda _payload, **_kwargs: [
+            {"id": "computer_use_desktop", "status": "installed", "runtimeFamilies": ["computer_use"]},
+            {"id": "rpa_automation", "status": "not_installed", "runtimeFamilies": ["rpa"]},
+        ],
+    )
+
+    state = startup_profile.get_runtime_registry_state()
+
+    assert "computer_use" in state["installedRuntimeFamilies"]
+    assert "rpa" not in state["installedRuntimeFamilies"]
+
+
+def test_runtime_registry_keeps_a_legacy_computer_use_family_only_when_its_platform_probe_passes(monkeypatch):
+    payload = {
+        "installProfile": "desktop",
+        "installPlatform": "linux",
+        "installedRuntimeFamilies": ["computer_use", "rpa"],
+    }
+    monkeypatch.setattr(startup_profile, "ensure_runtime_registry_installation_state", lambda: None)
+    monkeypatch.setattr(startup_profile.storage, "get_runtime_registry_config", lambda: payload)
+    monkeypatch.setattr(startup_profile, "apply_feature_pack_python_paths", lambda _payload: [])
+    monkeypatch.setattr(
+        startup_profile,
+        "build_feature_pack_statuses",
+        lambda _payload, **_kwargs: [
+            {"id": "computer_use_desktop", "status": "not_installed", "runtimeFamilies": ["computer_use", "desktop_live"]},
+            {"id": "rpa_automation", "status": "not_installed", "runtimeFamilies": ["rpa"]},
+        ],
+    )
+    monkeypatch.setattr(
+        startup_profile,
+        "_detect_installed_runtime_families",
+        lambda _platform: ["chat", "computer_use"],
+    )
+
+    state = startup_profile.get_runtime_registry_state()
+
+    assert "computer_use" in state["installedRuntimeFamilies"]
+    assert "rpa" not in state["installedRuntimeFamilies"]
 
 
 def test_image_analysis_pack_fills_missing_modules_without_shadowing_engine_dependencies(monkeypatch, tmp_path):

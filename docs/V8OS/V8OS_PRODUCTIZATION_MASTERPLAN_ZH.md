@@ -20,7 +20,7 @@ V8OS 的开发重心从继续堆 runtime 功能，转为把现有能力分层产
 
 当前边界：
 
-- 已有 Windows unsigned preview installer 的 GitHub release workflow。
+- 已有 Windows x64、macOS Intel/Apple Silicon、Linux x64/arm64 unsigned preview 的构建与 fan-in GitHub release workflow；真实 GUI 主机验收仍按平台单独执行。
 - 仍不是 stable 正式安装包。
 - 没有自动更新和代码签名。
 - 小改 topbar、登录态、生产构建、Shell IPC、桌宠 managed mode 都可能破坏预览壳，必须跑预览验收。

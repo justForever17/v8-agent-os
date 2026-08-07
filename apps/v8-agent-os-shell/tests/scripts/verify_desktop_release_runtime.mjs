@@ -229,22 +229,31 @@ const adminRoot = path.join(repoRoot, "apps", "v8-agent-os-admin");
 const webRoot = path.join(repoRoot, "apps", "v8-agent-os-web");
 const petRoot = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet");
 const portablePythonRoot = path.join(engineRoot, ".python");
-const pythonExe = path.join(portablePythonRoot, "python.exe");
+const portablePythonCandidates = process.platform === "win32"
+  ? [path.join(portablePythonRoot, "python.exe")]
+  : [
+      path.join(portablePythonRoot, "bin", "python3"),
+      path.join(portablePythonRoot, "bin", "python"),
+    ];
+const pythonExe = portablePythonCandidates.find((candidate) => exists(candidate)) || portablePythonCandidates[0];
 const pythonwExe = path.join(portablePythonRoot, "pythonw.exe");
-const legacyVenvPython = path.join(engineRoot, ".venv", "Scripts", "python.exe");
+const legacyVenvPython = process.platform === "win32"
+  ? path.join(engineRoot, ".venv", "Scripts", "python.exe")
+  : path.join(engineRoot, ".venv", "bin", "python");
 const browserRoot = path.join(engineRoot, ".playwright-browsers");
 const adminStandaloneExpected = path.join(adminRoot, ".next", "standalone", "apps", "v8-agent-os-admin", "server.js");
 const webStandaloneExpected = path.join(webRoot, ".next", "standalone", "apps", "v8-agent-os-web", "server.js");
 const adminStandaloneServer = standaloneServerFor(adminRoot, "admin");
 const webStandaloneServer = standaloneServerFor(webRoot, "web");
+const macosHelper = process.platform === "darwin"
+  ? path.join(engineRoot, "runtimes", "computer_use", "drivers", "bin", `macos-${process.arch === "arm64" ? "arm64" : "x64"}`, "mac_ax_helper")
+  : "";
 
 const checks = [];
 const degraded = [];
 
-for (const [name, filePath] of [
+const requiredFiles = [
   ["engine.portablePython", pythonExe],
-  ["engine.portablePythonw", pythonwExe],
-  ["engine.portablePythonPathConfig", walkFor(portablePythonRoot, (_fullPath, fileName) => /^python.*\._pth$/i.test(fileName), 1)],
   ["engine.sandboxHost", path.join(engineRoot, "bin", process.platform === "win32" ? "v8-sandbox-host.exe" : "v8-sandbox-host")],
   ["admin.productionBuild", path.join(adminRoot, ".next", "BUILD_ID")],
   ["admin.standaloneServer", adminStandaloneServer || adminStandaloneExpected],
@@ -253,7 +262,15 @@ for (const [name, filePath] of [
   ["shell.main", path.join(shellRoot, "electron", "main.cjs")],
   ["shell.builderConfig", path.join(shellRoot, "electron-builder.yml")],
   ["desktopPet.serverBundle", path.join(petRoot, "dist", "server.cjs")],
-]) {
+];
+if (process.platform === "win32") {
+  requiredFiles.splice(1, 0,
+    ["engine.portablePythonw", pythonwExe],
+    ["engine.portablePythonPathConfig", walkFor(portablePythonRoot, (_fullPath, fileName) => /^python.*\._pth$/i.test(fileName), 1)],
+  );
+}
+if (macosHelper) requiredFiles.push(["computerUse.packagedMacAXHelper", macosHelper]);
+for (const [name, filePath] of requiredFiles) {
   pushCheck(checks, name, exists(filePath), { path: rel(filePath) });
 }
 
@@ -273,8 +290,17 @@ if (exists(pythonExe)) {
     ytDlp: "yt_dlp",
     psdTools: "psd_tools",
     pillow: "PIL",
-    pywin32: "win32api",
   };
+  if (process.platform === "win32") requiredModules.pywin32 = "win32api";
+  if (process.platform === "darwin") {
+    requiredModules.pyobjcAppKit = "AppKit";
+    requiredModules.pyobjcQuartz = "Quartz";
+  }
+  if (process.platform === "linux") {
+    requiredModules.pyGObject = "gi";
+    requiredModules.pyatspi = "pyatspi";
+    requiredModules.pythonXlib = "Xlib";
+  }
   const optionalModules = {
     pywinauto: "pywinauto",
     patchright: "patchright",
@@ -316,6 +342,26 @@ pushCheck(checks, "external.git", gitResult.ok, {
   requiredFor: "managed engineering workspaces",
   preview: gitResult.preview || "Git is required but was not found on PATH",
 });
+if (process.platform === "linux") {
+  const xdotoolResult = commandExists("xdotool");
+  const wmctrlResult = commandExists("wmctrl");
+  const xclipResult = commandExists("xclip");
+  const xselResult = commandExists("xsel");
+  const linuxDesktopToolsReady = xdotoolResult.ok
+    && wmctrlResult.ok
+    && (xclipResult.ok || xselResult.ok);
+  pushOptionalCheck(checks, degraded, "external.linuxX11DesktopTools", linuxDesktopToolsReady, {
+    externalHostDependency: true,
+    requiredFor: "Linux X11 computer-use assistive operations",
+    tools: {
+      xdotool: xdotoolResult.preview || "not found",
+      wmctrl: wmctrlResult.preview || "not found",
+      xclip: xclipResult.preview || "not found",
+      xsel: xselResult.preview || "not found",
+    },
+    reason: "Linux X11 desktop assistance requires xdotool, wmctrl, and either xclip or xsel. The DEB declares them; AppImage users must install them on the host. Wayland restrictions remain a real-host gate.",
+  });
+}
 const ffmpegResult = mediaToolVersion("ffmpeg");
 const ffprobeResult = mediaToolVersion("ffprobe");
 const ffmpegReady = ffmpegResult.meetsMinimum && ffprobeResult.meetsMinimum;
@@ -339,7 +385,8 @@ const payload = {
     `Git is a required managed-engineering dependency; FFmpeg and FFprobe ${minimumFfmpegVersionText}+ remain degraded external capabilities until bundled by the installer.`,
     "Hard checks cover portable Engine Python, the native sandbox host, production bundles, desktop pet bundle, and the slim preview Python runtime.",
     "Agent Browser uses an installed Edge, Chrome, or Chromium through CDP; no browser download is triggered at runtime.",
-    "Full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",
+    "Linux X11 assistive tools are declared by the DEB but remain host dependencies for AppImage; Wayland, TCC, and window-manager behavior require a real GUI host.",
+    "Full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds; a degraded capability is not an installed runtime claim.",
   ],
 };
 

@@ -107,20 +107,24 @@ function assetSection(product, version, channel) {
     ].join("\n");
   }
 
-  const desktopLabel = channel === "stable" ? "Windows 安装包" : "Windows unsigned preview 安装包";
+  const desktopLabel = channel === "stable" ? "桌面安装包" : "未签名桌面预览安装包";
   const desktopVersion = channel === "stable" ? version : `preview-${version}`;
   const desktopChannelNote = channel === "stable"
     ? "请确认本次桌面包已完成 stable 门禁；签名、更新和校验信息应与发布资产同批提供。"
-    : "当前桌面包未签名。Windows 可能显示安全确认；代码签名、SmartScreen 信誉和自动更新属于后续阶段。";
+    : "当前桌面包未签名。Windows 可能显示 SmartScreen 确认，macOS 可能要求在系统设置中确认打开；代码签名、信誉和自动更新属于后续阶段。";
   const assets = [
-    "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：" + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：Windows x64 " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg`：macOS Intel " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS Apple Silicon " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-x64.deb`：Linux x64 " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-linux-arm64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-arm64.deb`：Linux arm64 " + desktopLabel + "。",
   ];
   if (channel === "stable") {
     assets.push("- `V8-Agent-OS-" + desktopVersion + "-win-x64.zip`：Windows 免安装包。");
   }
   assets.push(
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
-    "- `RUNTIME_PROBE.json`：本次桌面包内置运行时与功能依赖探针结果；若 Git 或 FFmpeg/FFprobe 7.0+ 显示 degraded，请按探针结果理解实际可用范围。",
+    "- `RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json`：各构建平台的内置运行时、功能依赖和包内资源布局探针；若 Git、FFmpeg/FFprobe 7.0+ 或 Linux X11 辅助工具显示 degraded，请按探针结果理解实际可用范围。",
     "",
     desktopChannelNote,
   );
@@ -139,13 +143,13 @@ function knownLimits(product, channel) {
     return [
       "- 本版本属于 desktop-stable 通道，请仅在 stable 门禁完成后发布。",
       "- Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
-      "- macOS/Linux 安装包仍在后续版本中推进。",
+      "- macOS/Linux 的 GUI 权限、窗口管理器与桌面自动化需要在对应实体主机验收；Linux Wayland 的输入限制会被显式投影为 blocked。",
     ].join("\n");
   }
   return [
-    "- 本版本是 Windows 预览包，不代表 stable 版本。",
+    "- 本版本是未签名的多平台桌面预览包，不代表 stable 版本。",
     "- Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
-    "- 自动更新、代码签名、macOS/Linux 安装包仍在后续版本中推进。",
+    "- 自动更新与代码签名仍在后续阶段；macOS/Linux 的 GUI 权限、窗口管理器与桌面自动化需要在对应实体主机验收。Linux DEB 声明 X11 辅助工具；AppImage 仍要求宿主安装 xdotool、wmctrl 与 xclip/xsel 之一，Wayland 限制会显式显示为 blocked。",
   ].join("\n");
 }
 

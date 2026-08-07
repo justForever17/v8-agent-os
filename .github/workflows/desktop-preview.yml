@@ -2,10 +2,24 @@ name: Desktop Preview Build
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Desktop target platform
+        required: true
+        default: all
+        type: choice
+        options:
+          - windows-x64
+          - macos-x64
+          - macos-arm64
+          - linux-x64
+          - linux-arm64
+          - all
   pull_request:
     paths:
       - ".github/workflows/desktop-preview.yml"
       - "apps/v8-agent-os-admin/**"
+      - "apps/v8-agent-os-cli/**"
       - "apps/v8-agent-os-engine/**"
       - "apps/v8-agent-os-shell/**"
       - "apps/v8-agent-os-web/**"
@@ -22,6 +36,7 @@ on:
     paths:
       - ".github/workflows/desktop-preview.yml"
       - "apps/v8-agent-os-admin/**"
+      - "apps/v8-agent-os-cli/**"
       - "apps/v8-agent-os-engine/**"
       - "apps/v8-agent-os-shell/**"
       - "apps/v8-agent-os-web/**"
@@ -43,7 +58,7 @@ jobs:
     name: Desktop preview static contracts
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     permissions:
       contents: read
 
@@ -69,17 +84,66 @@ jobs:
           node --test apps/v8-agent-os-shell/tests/release-shell.test.cjs
           node --test apps/v8-agent-os-admin/tests/feature-pack-ui-contract.test.cjs
 
-  windows-preview:
-    name: Windows unsigned preview installer
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
-    runs-on: windows-latest
-    timeout-minutes: 90
+  resolve-desktop-platforms:
+    name: Resolve desktop build targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      enabled: ${{ steps.targets.outputs.enabled }}
+      matrix: ${{ steps.targets.outputs.matrix }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - id: targets
+        name: Resolve requested platforms
+        shell: bash
+        run: node scripts/desktop/resolve-desktop-build-matrix.mjs --event "${{ github.event_name }}" --ref "$GITHUB_REF" --platform "${{ github.event.inputs.platform || 'all' }}" --github-output "$GITHUB_OUTPUT"
+
+  desktop-package:
+    name: ${{ matrix.label }}
+    needs:
+      - resolve-desktop-platforms
+    if: needs.resolve-desktop-platforms.outputs.enabled == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-desktop-platforms.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify target runner architecture
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            x64) test "$(uname -m)" = "x86_64" ;;
+            arm64) test "$(uname -m)" = "arm64" || test "$(uname -m)" = "aarch64" ;;
+          esac
+
+      - name: Install Linux desktop runtime build dependencies
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          GI_DEV="libgirepository-2.0-dev"
+          if ! apt-cache show "$GI_DEV" >/dev/null 2>&1; then GI_DEV="libgirepository1.0-dev"; fi
+          sudo apt-get install -y \
+            build-essential pkg-config meson ninja-build \
+            "$GI_DEV" gobject-introspection libglib2.0-dev libcairo2-dev libffi-dev \
+            gir1.2-atspi-2.0 at-spi2-core libatk-adaptor-2.0-0 \
+            xdotool wmctrl xclip xsel \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -99,23 +163,20 @@ jobs:
 
       - name: Verify desktop release manifest
         if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
-        shell: pwsh
+        shell: bash
         timeout-minutes: 3
-        run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$env:GITHUB_REF_NAME"
+        run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$GITHUB_REF_NAME"
 
-      - name: Build shared Product UI package
-        shell: pwsh
+      - name: Build and verify shared Product UI package
         working-directory: packages/product-ui
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Verify shared Product UI archive
-        shell: pwsh
         timeout-minutes: 3
         run: node scripts/desktop/verify-product-ui-package.mjs --verify-build
 
       - name: Install shared realtime package dependencies
-        shell: pwsh
         working-directory: packages/session-realtime
         timeout-minutes: 8
         run: |
@@ -124,30 +185,27 @@ jobs:
           npm run build
 
       - name: Install Admin dependencies
-        shell: pwsh
         working-directory: apps/v8-agent-os-admin
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install Web dependencies
-        shell: pwsh
         working-directory: apps/v8-agent-os-web
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install desktop pet dependencies
-        shell: pwsh
         working-directory: apps/v8-agent-os-desktop-pet
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install Shell dependencies
-        shell: pwsh
         working-directory: apps/v8-agent-os-shell
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
-      - name: Prepare embedded Engine Python runtime
+      - name: Prepare embedded Engine Python runtime on Windows
+        if: matrix.os == 'windows'
         shell: pwsh
         timeout-minutes: 25
         run: |
@@ -156,43 +214,76 @@ jobs:
             -RequirementsPath apps/v8-agent-os-engine/requirements/desktop-preview.txt `
             -SkipPlaywrightBrowsers
 
+      - name: Prepare embedded Engine Python runtime on macOS or Linux
+        if: matrix.os != 'windows'
+        shell: bash
+        timeout-minutes: 45
+        run: |
+          node scripts/desktop/prepare-posix-python-runtime.mjs \
+            --target "${{ matrix.id }}" \
+            --requirements-path apps/v8-agent-os-engine/requirements/desktop-preview.txt \
+            --skip-playwright-browsers
+
       - name: Build native engineering sandbox host
-        shell: pwsh
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: node scripts/desktop/build-sandbox-host.mjs --force
 
       - name: Build Admin and Web production bundles
-        shell: pwsh
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           node scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528
           node scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527
 
       - name: Build desktop pet
-        shell: pwsh
         working-directory: apps/v8-agent-os-desktop-pet
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           npm exec -- vite --version
           npm exec -- esbuild --version
           npm run build
 
-      - name: Verify desktop runtime payload
-        shell: pwsh
+      - name: Build packaged macOS AX sidecar
+        if: matrix.os == 'macos'
+        shell: bash
         timeout-minutes: 5
+        run: node scripts/desktop/build-macos-ax-helper.mjs
+
+      - name: Verify desktop runtime payload
+        timeout-minutes: 8
         run: node apps/v8-agent-os-shell/tests/scripts/verify_desktop_release_runtime.mjs
 
       - name: Shell release contract tests
-        shell: pwsh
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: npm --prefix apps/v8-agent-os-shell test
 
+      - name: Generate macOS application icon
+        if: matrix.os == 'macos'
+        shell: bash
+        timeout-minutes: 3
+        run: node scripts/desktop/prepare-macos-icon.mjs
+
       - name: Build unsigned Windows desktop preview
+        if: matrix.os == 'windows'
         shell: pwsh
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: npm --prefix apps/v8-agent-os-shell run dist:win:preview
 
-      - name: Installed desktop smoke
+      - name: Build unsigned macOS desktop preview
+        if: matrix.os == 'macos'
+        shell: bash
+        timeout-minutes: 35
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm --prefix apps/v8-agent-os-shell run dist:mac:preview -- --${{ matrix.arch }}
+
+      - name: Build unsigned Linux desktop preview
+        if: matrix.os == 'linux'
+        shell: bash
+        timeout-minutes: 35
+        run: npm --prefix apps/v8-agent-os-shell run dist:linux:preview -- --${{ matrix.arch }}
+
+      - name: Installed Windows desktop smoke
+        if: matrix.os == 'windows'
         shell: pwsh
         timeout-minutes: 8
         run: |
@@ -200,8 +291,8 @@ jobs:
           if (-not $shellExe) { throw "No unpacked Shell executable found in apps/v8-agent-os-shell/dist/release" }
           node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs --shell-exe "$($shellExe.FullName)"
 
-      - name: Print desktop smoke service logs
-        if: failure()
+      - name: Print Windows desktop smoke service logs
+        if: failure() && matrix.os == 'windows'
         shell: pwsh
         run: |
           $logDir = Join-Path $env:USERPROFILE ".v8-agent-os\logs\cli"
@@ -210,20 +301,18 @@ jobs:
               Write-Host "--- $($_.Name) (last 200 lines) ---"
               Get-Content -LiteralPath $_.FullName -Tail 200
             }
-          } else {
-            Write-Host "No CLI service logs were created at $logDir"
           }
 
-      - name: Cleanup desktop smoke processes
-        if: always()
+      - name: Cleanup Windows desktop smoke processes
+        if: always() && matrix.os == 'windows'
         shell: pwsh
         run: |
           node apps/v8-agent-os-cli/bin/v8os.mjs stop --all
           Get-Process "V8 Agent OS" -ErrorAction SilentlyContinue | Stop-Process -Force
         continue-on-error: true
 
-      - name: Collect desktop smoke diagnostics
-        if: failure()
+      - name: Collect Windows desktop smoke diagnostics
+        if: failure() && matrix.os == 'windows'
         shell: pwsh
         run: |
           $diag = "desktop-smoke-diagnostics"
@@ -237,8 +326,8 @@ jobs:
           }
         continue-on-error: true
 
-      - name: Upload desktop smoke diagnostics
-        if: failure()
+      - name: Upload Windows desktop smoke diagnostics
+        if: failure() && matrix.os == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: v8os-desktop-smoke-diagnostics
@@ -248,66 +337,67 @@ jobs:
           compression-level: 0
         continue-on-error: true
 
-      - name: Normalize desktop artifact names
-        shell: pwsh
-        timeout-minutes: 3
-        run: |
-          $outDir = "apps/v8-agent-os-shell/dist/release"
-          if ($env:GITHUB_REF_NAME -match '^v8-os-desktop-v(.+)$') {
-            $releaseVersion = "preview-$($Matches[1])"
-          } else {
-            $releaseVersion = "preview-$env:GITHUB_RUN_NUMBER"
-          }
-          $exe = Get-ChildItem $outDir -File -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "No NSIS installer found in $outDir" }
-          Rename-Item -LiteralPath $exe.FullName -NewName "V8-Agent-OS-$releaseVersion-win-x64-setup.exe" -Force
+      - name: Verify packaged desktop resource layout
+        timeout-minutes: 5
+        run: node scripts/desktop/verify-desktop-package-layout.mjs --platform "${{ matrix.id }}"
 
-      - name: Generate SHA256 checksums
-        shell: pwsh
-        timeout-minutes: 3
-        run: |
-          $outDir = "apps/v8-agent-os-shell/dist/release"
-          $files = Get-ChildItem $outDir -File -Filter "*.exe"
-          if (-not $files) { throw "No desktop preview artifacts found in $outDir" }
-          $lines = foreach ($file in $files) {
-            $hash = Get-FileHash $file.FullName -Algorithm SHA256
-            "$($hash.Hash)  $($file.Name)"
-          }
-          $lines | Set-Content -Path "$outDir/SHA256SUMS.txt" -Encoding utf8
-          Get-Content "$outDir/SHA256SUMS.txt"
+      - name: Normalize platform release assets and checksums
+        timeout-minutes: 5
+        run: node scripts/desktop/prepare-desktop-release-assets.mjs --platform "${{ matrix.id }}" --output-dir apps/v8-agent-os-shell/desktop-release-assets
 
-      - name: Generate desktop release notes
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
-        shell: pwsh
-        timeout-minutes: 3
-        run: |
-          node scripts/release/generate-release-notes.mjs `
-            --product desktop `
-            --tag "$env:GITHUB_REF_NAME" `
-            --channel preview `
-            --out "apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md"
-
-      - name: Upload desktop preview artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/v8-os-desktop-v') }}
+      - name: Upload desktop platform artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: v8os-desktop-preview-windows
-          path: |
-            apps/v8-agent-os-shell/dist/release/*.exe
-            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
-            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
-            apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
+          name: v8os-desktop-${{ matrix.id }}
+          path: apps/v8-agent-os-shell/desktop-release-assets/**
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
 
+  release:
+    name: Publish Desktop release
+    needs:
+      - desktop-package
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v8-os-desktop-v') &&
+      needs.desktop-package.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v8os-desktop-*
+          path: desktop-release-assets
+          merge-multiple: true
+
+      - name: Merge desktop checksums
+        shell: bash
+        run: node scripts/desktop/merge-desktop-release-assets.mjs --input-dir desktop-release-assets
+
+      - name: Generate desktop release notes
+        shell: bash
+        run: |
+          node scripts/release/generate-release-notes.mjs \
+            --product desktop \
+            --tag "$GITHUB_REF_NAME" \
+            --channel preview \
+            --out desktop-release-assets/RELEASE_NOTES.md
+
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
-          body_path: apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
+          body_path: desktop-release-assets/RELEASE_NOTES.md
           files: |
-            apps/v8-agent-os-shell/dist/release/*.exe
-            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
-            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
+            desktop-release-assets/V8-Agent-OS-*
+            desktop-release-assets/SHA256SUMS.txt
+            desktop-release-assets/RUNTIME_PROBE-*.json
+            desktop-release-assets/PACKAGE_LAYOUT-*.json

@@ -82,18 +82,26 @@ function checkNodeAppDependencies(id, label, appDir, requiredRelativePaths = [])
 }
 
 function checkEngineVenv() {
-  const pythonCandidate = process.platform === "win32"
+  const portableCandidates = process.platform === "win32"
+    ? [path.join(ENGINE_DIR, ".python", "python.exe")]
+    : [
+        path.join(ENGINE_DIR, ".python", "bin", "python3"),
+        path.join(ENGINE_DIR, ".python", "bin", "python"),
+      ];
+  const venvCandidate = process.platform === "win32"
     ? path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe")
     : path.join(ENGINE_DIR, ".venv", "bin", "python");
+  const pythonCandidate = portableCandidates.find((candidate) => fs.existsSync(candidate)) || venvCandidate;
+  const runtimeLabel = portableCandidates.includes(pythonCandidate) ? "portable Python" : "venv";
   if (!fs.existsSync(pythonCandidate)) {
-    return { id: "engine_venv", status: "warning", summary: "Engine Python venv 缺失", path: pythonCandidate };
+    return { id: "engine_python", status: "warning", summary: "Engine Python runtime 缺失", path: pythonCandidate };
   }
   const python = commandVersion(pythonCandidate, ["--version"]);
   const pip = commandVersion(pythonCandidate, ["-m", "pip", "--version"]);
   return {
-    id: "engine_venv",
+    id: "engine_python",
     status: python.ok && pip.ok ? "ok" : "warning",
-    summary: `Engine venv ${python.value || "Python 不可用"}; pip ${pip.value || "不可用"}`,
+    summary: `Engine ${runtimeLabel} ${python.value || "Python 不可用"}; pip ${pip.value || "不可用"}`,
     path: pythonCandidate,
   };
 }
@@ -206,8 +214,18 @@ export async function runDoctor({ preferEngine = true } = {}) {
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
   const npm = commandVersion(npmCommand, ["--version"]);
   checks.push({ id: "npm", status: npm.ok ? "ok" : "warning", summary: `npm ${npm.value || "不可用"}` });
-  const pythonCandidate = process.platform === "win32" ? `${ENGINE_DIR}\\.venv\\Scripts\\python.exe` : `${ENGINE_DIR}/.venv/bin/python`;
-  const python = fs.existsSync(pythonCandidate) ? commandVersion(pythonCandidate, ["--version"]) : commandVersion("python", ["--version"]);
+  const pythonCandidates = process.platform === "win32"
+    ? [path.join(ENGINE_DIR, ".python", "python.exe"), path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe")]
+    : [
+        path.join(ENGINE_DIR, ".python", "bin", "python3"),
+        path.join(ENGINE_DIR, ".python", "bin", "python"),
+        path.join(ENGINE_DIR, ".venv", "bin", "python3"),
+        path.join(ENGINE_DIR, ".venv", "bin", "python"),
+      ];
+  const pythonCandidate = pythonCandidates.find((candidate) => fs.existsSync(candidate));
+  const python = pythonCandidate
+    ? commandVersion(pythonCandidate, ["--version"])
+    : commandVersion(process.platform === "win32" ? "python" : "python3", ["--version"]);
   checks.push({ id: "python", status: python.ok ? "ok" : "warning", summary: `Python ${python.value || "不可用"}` });
   checks.push(checkEngineVenv());
   checks.push(checkNodeAppDependencies("admin_dependencies", "Admin", ADMIN_DIR, ["node_modules/next/dist/bin/next"]));
@@ -250,7 +268,7 @@ export function buildLocalRepairPlan(checks) {
     if (check.id === "admin_auth_secret" && check.status !== "ok") {
       actions.push({ id: "refresh_admin_auth_secret", title: "生成缺失的 Admin auth secret", safe: true, path: check.path });
     }
-    if ((check.id === "npm" || check.id === "python" || check.id === "engine_venv") && check.status !== "ok") {
+    if ((check.id === "npm" || check.id === "python" || check.id === "engine_python") && check.status !== "ok") {
       actions.push({ id: `install_${check.id}`, title: `安装或修复 ${check.id} 运行时`, safe: false });
     }
     if (check.id?.endsWith("_dependencies") && check.status !== "ok") {

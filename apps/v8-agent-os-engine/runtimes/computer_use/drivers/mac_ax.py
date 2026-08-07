@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import platform
 import shutil
 import sys
 import time
@@ -61,8 +62,8 @@ class MacAXUIDriver:
     def ensure_available(self) -> None:
         if sys.platform != "darwin":
             raise MacAXUIDriverError("Mac AX driver 仅支持 macOS 主机。")
-        if not tool_exists("swiftc"):
-            raise MacAXUIDriverError("当前环境缺少 swiftc，无法编译 macOS AX sidecar helper。")
+        if not self._packaged_helper_binary_path().is_file() and not tool_exists("swiftc"):
+            raise MacAXUIDriverError("当前环境缺少已打包的 macOS AX helper 和 swiftc，无法启动 AX sidecar。")
 
     def capability_summary(self) -> Dict[str, Any]:
         probe = self._probe()
@@ -775,9 +776,19 @@ class MacAXUIDriver:
     def _helper_binary_path(self) -> Path:
         return ensure_v8_agent_os_tmp_path(scope="computer_use") / "mac_ax_helper"
 
+    def _packaged_helper_binary_path(self) -> Path:
+        machine = str(platform.machine() or "").strip().lower()
+        arch = "arm64" if machine in {"arm64", "aarch64"} else "x64" if machine in {"x86_64", "amd64"} else ""
+        if not arch:
+            return Path()
+        return Path(__file__).with_name("bin") / f"macos-{arch}" / "mac_ax_helper"
+
     def _ensure_helper_binary(self) -> Path:
         self.ensure_available()
         source_path = self._helper_source_path()
+        packaged_binary = self._packaged_helper_binary_path()
+        if packaged_binary.is_file():
+            return packaged_binary
         binary_path = self._helper_binary_path()
         if binary_path.exists() and binary_path.stat().st_mtime >= source_path.stat().st_mtime:
             return binary_path

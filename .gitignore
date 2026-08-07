@@ -39,6 +39,8 @@ test-results/
 **/.venv/
 **/venv/
 **/.python/
+apps/v8-agent-os-shell/assets/icon.icns
+apps/v8-agent-os-engine/runtimes/computer_use/drivers/bin/
 *.pyc
 *.pyo
 

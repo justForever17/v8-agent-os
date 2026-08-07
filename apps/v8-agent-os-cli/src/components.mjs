@@ -17,8 +17,13 @@ function enginePython() {
         path.join(ENGINE_DIR, ".venv", "Scripts", "pythonw.exe"),
         path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe"),
       ]
-    : [path.join(ENGINE_DIR, ".venv", "bin", "python")];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || "python";
+    : [
+        path.join(ENGINE_DIR, ".python", "bin", "python3"),
+        path.join(ENGINE_DIR, ".python", "bin", "python"),
+        path.join(ENGINE_DIR, ".venv", "bin", "python3"),
+        path.join(ENGINE_DIR, ".venv", "bin", "python"),
+      ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || (process.platform === "win32" ? "python" : "python3");
 }
 
 function nodeRuntime(extraEnv = {}) {

@@ -1,4 +1,6 @@
 -r base.txt
+-r platform-macos.txt
+-r platform-linux.txt
 
 edge_tts
 beautifulsoup4

@@ -23,8 +23,8 @@
 当前状态：
 
 - 已有源码树 `v8os preview`。
-- 已有 Windows unsigned preview installer workflow。
-- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 会创建 GitHub Release，上传 unsigned preview installer、zip、`RUNTIME_PROBE.json` 和 `SHA256SUMS.txt`。
+- 已有 Windows x64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview workflow；每个平台只负责构建和上传工件。
+- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 在所有构建 job 成功后由 fan-in release job 创建 GitHub Release，上传 Windows 安装包、macOS DMG、Linux AppImage/DEB、`RUNTIME_PROBE-<platform>.json`、`PACKAGE_LAYOUT-<platform>.json` 和 `SHA256SUMS.txt`。
 - 尚未签名，没有自动更新，不宣传为 stable。
 
 ### `desktop-stable`
@@ -33,7 +33,7 @@
 
 最小要求：
 
-- Windows 安装包优先，后续 macOS / Linux。
+- Windows、macOS、Linux 都必须完成对应平台的实体 GUI/权限验收，才可进入 stable。
 - 安装后启动不弹终端黑框。
 - Shell 是唯一本地产品窗口。
 - Engine/Admin/Web/桌宠由 Shell 看护。
@@ -45,7 +45,7 @@
 
 当前状态：
 
-- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会构建 Android APK；汇总 job 等待本次未选择的 iOS job 结束为 skipped 后创建 GitHub Release，并上传 APK 和 `SHA256SUMS.txt`。
+- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会构建 Android APK；只要 Android 成功，汇总 job 就发布 APK 和 `SHA256SUMS.txt`，iOS 未选择或因非交互签名不可用而失败不会阻断 Android 发布。
 - 旧 `phone-v*` tag 只作为历史发布入口，不再用于新版本。
 
 约束：
@@ -127,7 +127,8 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 6. 退出后清理受管进程。
 7. 产物资源在 Shell/Web 与 Phone 可访问。
 8. `SHA256SUMS.txt` 与发布资产同批生成。
-9. `RUNTIME_PROBE.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和 Playwright Chromium 存在；Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。
+9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
+10. Windows 可运行 CI 安装 smoke；macOS/Linux 的构建、包内布局与运行时依赖可在 CI 验证，但 GUI、TCC/辅助功能、X11/Wayland 与窗口管理器行为必须在同平台实体主机另行验收，不能被 CI 构建成功替代。
 
 最小命令：
 

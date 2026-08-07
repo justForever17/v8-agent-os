@@ -89,3 +89,37 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: V8 Agent OS
+mac:
+  icon: assets/icon.icns
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+linux:
+  icon: assets/icon.png
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - at-spi2-core
+    - libatk-adaptor-2.0-0
+    - xdotool
+    - wmctrl
+    - xclip
+    - xsel

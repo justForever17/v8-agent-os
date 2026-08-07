@@ -113,18 +113,30 @@ test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electr
   assert.match(launcherSource, /windowsHide:\s*true/);
 });
 
-test('desktop release scripts keep preview installer-only and stable portable output', () => {
+test('desktop release scripts build native installers for every supported desktop target', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts['dist:win'], 'npm run dist:win:preview');
   assert.match(pkg.scripts['dist:win:preview'], /--win nsis --publish never/);
   assert.doesNotMatch(pkg.scripts['dist:win:preview'], /\bzip\b/);
   assert.match(pkg.scripts['dist:win:stable'], /--win nsis zip --publish never/);
+  assert.match(pkg.scripts['dist:mac:preview'], /--mac dmg --publish never/);
+  assert.match(pkg.scripts['dist:linux:preview'], /--linux AppImage deb --publish never/);
   assert.match(pkg.repository.url, /v8-agent-os\.git$/);
 
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
   assert.match(config, /target:\s*\n\s*- target: nsis/);
   assert.doesNotMatch(config, /- target: zip/);
   assert.match(config, /icon: assets\/icon\.ico/);
+  assert.match(config, /mac:\s*\n\s+icon: assets\/icon\.icns/);
+  assert.match(config, /target: dmg/);
+  assert.match(config, /linux:\s*\n\s+icon: assets\/icon\.png/);
+  assert.match(config, /target: AppImage/);
+  assert.match(config, /target: deb/);
+  assert.match(config, /at-spi2-core/);
+  assert.match(config, /xdotool/);
+  assert.match(config, /wmctrl/);
+  assert.match(config, /xclip/);
+  assert.match(config, /xsel/);
   assert.match(config, /extraResources:/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-engine/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-web/);
@@ -132,7 +144,7 @@ test('desktop release scripts keep preview installer-only and stable portable ou
   assert.match(config, /!native\/\*\*\/target\/\*\*/);
 });
 
-test('desktop release notes only advertise portable archives on stable', () => {
+test('desktop release notes advertise the multi-platform unsigned preview assets', () => {
   const generator = path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs');
   const commonArgs = ['--product', 'desktop', '--version', '2026.07.22.1'];
   const preview = execFileSync(process.execPath, [generator, ...commonArgs, '--channel', 'preview'], {
@@ -147,6 +159,10 @@ test('desktop release notes only advertise portable archives on stable', () => {
   });
 
   assert.match(preview, /win-x64-setup\.exe/);
+  assert.match(preview, /macos-x64\.dmg/);
+  assert.match(preview, /macos-arm64\.dmg/);
+  assert.match(preview, /linux-x64\.AppImage/);
+  assert.match(preview, /linux-arm64\.deb/);
   assert.doesNotMatch(preview, /win-x64\.zip/);
   assert.match(stable, /win-x64-setup\.exe/);
   assert.match(stable, /win-x64\.zip/);
@@ -172,11 +188,10 @@ test('desktop release preparation verifies every packed workspace tarball', () =
   assert.match(output, /@v8\/session-realtime/);
 });
 
-test('desktop workflow exists and publishes checksummed Windows artifacts', () => {
+test('desktop workflow builds every native platform and uploads checksummed build artifacts', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml');
   assert.equal(fs.existsSync(workflowPath), true);
   const workflow = fs.readFileSync(workflowPath, 'utf8');
-  assert.match(workflow, /windows-latest/);
   assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
   assert.match(workflow, /packages\/product-ui\/\*\*/);
   assert.match(workflow, /packages\/product-ui\/package-lock\.json/);
@@ -188,12 +203,43 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /working-directory: packages\/session-realtime/);
   assert.match(workflow, /npm exec -- tsc --version/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win:preview/);
+  assert.match(workflow, /apps\/v8-agent-os-shell run dist:mac:preview/);
+  assert.match(workflow, /apps\/v8-agent-os-shell run dist:linux:preview/);
+  assert.match(workflow, /prepare-posix-python-runtime\.mjs/);
+  assert.match(workflow, /resolve-desktop-build-matrix\.mjs/);
+  assert.match(workflow, /resolve-desktop-platforms:[\s\S]*?uses: actions\/checkout@v4/);
+  assert.match(workflow, /build-macos-ax-helper\.mjs/);
+  assert.match(workflow, /verify-desktop-package-layout\.mjs/);
+  assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
   assert.doesNotMatch(workflow, /dist\/release\/\*\.zip/);
   assert.doesNotMatch(workflow, /desktop-preview-artifacts\/\*\.zip/);
   assert.match(workflow, /SHA256/);
+
+  const resolver = path.join(repoRoot, 'scripts', 'desktop', 'resolve-desktop-build-matrix.mjs');
+  const resolverSource = fs.readFileSync(resolver, 'utf8');
+  assert.match(resolverSource, /windows-latest/);
+  assert.match(resolverSource, /macos-13/);
+  assert.match(resolverSource, /macos-14/);
+  assert.match(resolverSource, /ubuntu-24\.04-arm/);
+  const selected = JSON.parse(execFileSync(process.execPath, [
+    resolver,
+    '--event', 'workflow_dispatch',
+    '--ref', 'refs/heads/main',
+    '--platform', 'linux-arm64',
+  ], { encoding: 'utf8' }));
+  assert.equal(selected.enabled, true);
+  assert.deepEqual(selected.matrix.include.map((target) => target.id), ['linux-arm64']);
+  const tag = JSON.parse(execFileSync(process.execPath, [
+    resolver,
+    '--event', 'push',
+    '--ref', 'refs/tags/v8-os-desktop-v2099.01.01.1',
+    '--platform', 'windows-x64',
+  ], { encoding: 'utf8' }));
+  assert.equal(tag.enabled, true);
+  assert.equal(tag.matrix.include.length, 5);
 });
 
-test('desktop workflow uses free-tier guardrails and keeps release permissions scoped', () => {
+test('desktop workflow uses fan-in publication with narrowly scoped release permissions', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
 
   assert.match(workflow, /concurrency:\s*\n\s+group: desktop-preview-/);
@@ -202,12 +248,13 @@ test('desktop workflow uses free-tier guardrails and keeps release permissions s
   assert.match(workflow, /Desktop release contract tests/);
   assert.match(workflow, /node --test apps\/v8-agent-os-shell\/tests\/release-shell\.test\.cjs/);
   assert.match(workflow, /node --test apps\/v8-agent-os-admin\/tests\/feature-pack-ui-contract\.test\.cjs/);
-  assert.match(workflow, /windows-preview:[\s\S]*if: github\.event_name == 'workflow_dispatch' \|\| startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
-  assert.match(workflow, /windows-preview:[\s\S]*permissions:\s*\n\s+contents: write/);
+  assert.match(workflow, /desktop-package:[\s\S]*strategy:\s*\n\s+fail-fast: false/);
+  assert.match(workflow, /release:\s*\n\s+name: Publish Desktop release[\s\S]*needs:\s*\n\s+- desktop-package/);
+  assert.match(workflow, /release:[\s\S]*permissions:\s*\n\s+contents: write/);
   assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
-  assert.match(workflow, /Upload desktop preview artifacts\s*\n\s+if: \$\{\{ !startsWith/);
-  assert.match(workflow, /Upload desktop smoke diagnostics[\s\S]*continue-on-error: true/);
-  assert.doesNotMatch(workflow, /actions\/download-artifact@v4/);
+  assert.match(workflow, /Download all platform artifacts[\s\S]*actions\/download-artifact@v4/);
+  assert.match(workflow, /merge-desktop-release-assets\.mjs/);
+  assert.match(workflow, /Upload Windows desktop smoke diagnostics[\s\S]*continue-on-error: true/);
   assert.match(workflow, /retention-days: 7/);
   assert.match(workflow, /compression-level: 0/);
 });
@@ -219,7 +266,7 @@ test('phone workflow honors dispatch inputs while preserving the proven Android 
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /build-ios:[\s\S]*?if: github\.event_name == 'workflow_dispatch' && \(github\.event\.inputs\.platform == 'ios' \|\| github\.event\.inputs\.platform == 'all'\)[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /release:\s*\n\s+name: Publish Phone release\s*\n\s+needs:\s*\n\s+- build-android\s*\n\s+- build-ios/);
-  assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result == 'skipped'/);
+  assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result != 'cancelled'/);
   assert.match(workflow, /actions\/download-artifact@v4/);
   assert.match(workflow, /Prepare phone release assets/);
   assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
@@ -247,6 +294,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(workflow, /-RequirementsPath apps\/v8-agent-os-engine\/requirements\/desktop-preview\.txt/);
   assert.match(workflow, /-SkipPlaywrightBrowsers/);
+  assert.match(workflow, /--skip-playwright-browsers/);
 
   const runtimeScript = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-python-runtime.ps1'),
@@ -262,6 +310,29 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(runtimeScript, /--prefer-binary/);
   assert.match(runtimeScript, /DEGRADED\.txt/);
   assert.match(runtimeScript, /discovers an installed Edge, Chrome, or Chromium at runtime/);
+
+  const posixRuntimeScript = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-posix-python-runtime.mjs'),
+    'utf8',
+  );
+  assert.match(posixRuntimeScript, /cpython-3\.11\.15\+20260805-x86_64-apple-darwin-install_only/);
+  assert.match(posixRuntimeScript, /sha256/);
+  assert.match(posixRuntimeScript, /--skip-playwright-browsers/);
+  assert.match(posixRuntimeScript, /V8OS_ENGINE_IMPORT_OK/);
+  assert.match(posixRuntimeScript, /process\.platform !== runtime\.platform/);
+
+  const macHelperBuild = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'build-macos-ax-helper.mjs'),
+    'utf8',
+  );
+  assert.match(macHelperBuild, /swiftc/);
+  assert.match(macHelperBuild, /macos-\$\{arch\}/);
+  const macDriver = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'runtimes', 'computer_use', 'drivers', 'mac_ax.py'),
+    'utf8',
+  );
+  assert.match(macDriver, /def _packaged_helper_binary_path/);
+  assert.match(macDriver, /if packaged_binary\.is_file\(\):/);
 
   const releaseRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'desktop-preview.txt'),
@@ -280,6 +351,13 @@ test('desktop preview uses a slim portable Python release profile', () => {
   ]) {
     assert.doesNotMatch(releaseRequirements, new RegExp(`^${heavyPackage}(?:[<=>\\[]|\\s|$)`, 'im'));
   }
+  assert.match(releaseRequirements, /-r platform-macos\.txt/);
+  assert.match(releaseRequirements, /-r platform-linux\.txt/);
+  const linuxRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-linux.txt'),
+    'utf8',
+  );
+  assert.match(linuxRequirements, /PyGObject/);
 });
 
 test('Admin and Web release builds use Next standalone servers', () => {
@@ -351,20 +429,21 @@ test('Engine release process forces UTF-8 output on Windows runners', () => {
   );
   assert.match(components, /PYTHONIOENCODING:\s*"utf-8"/);
   assert.match(components, /PYTHONUTF8:\s*"1"/);
+  assert.match(components, /\.python", "bin", "python3"/);
 });
 
 test('desktop release uses current desktop tag namespace and runtime probes', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(workflow, /v8-os-desktop-v\*/);
-  assert.match(workflow, /\^v8-os-desktop-v\(\.\+\)\$/);
+  assert.match(workflow, /startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
   assert.match(workflow, /Verify desktop runtime payload/);
   assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
-  assert.match(workflow, /Installed desktop smoke/);
-  assert.match(workflow, /Print desktop smoke service logs/);
+  assert.match(workflow, /Installed Windows desktop smoke/);
+  assert.match(workflow, /Print Windows desktop smoke service logs/);
   assert.match(workflow, /\.v8-agent-os\\logs\\cli/);
-  assert.match(workflow, /Upload desktop smoke diagnostics/);
+  assert.match(workflow, /Upload Windows desktop smoke diagnostics/);
   assert.match(workflow, /desktop-smoke-diagnostics/);
-  assert.match(workflow, /RUNTIME_PROBE\.json/);
+  assert.match(workflow, /RUNTIME_PROBE-\*\.json/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
 
   const runtimeProbe = fs.readFileSync(
@@ -415,12 +494,12 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
 
   const releaseNotes = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs'), 'utf8');
   assert.match(releaseNotes, /\^v8-os-\(phone\|desktop\)-v/);
-  assert.match(releaseNotes, /RUNTIME_PROBE\.json/);
+  assert.match(releaseNotes, /RUNTIME_PROBE-<platform>\.json/);
   assert.doesNotMatch(releaseNotes, /desktop-preview/);
 
   const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
   assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
-  assert.match(baseline, /RUNTIME_PROBE\.json/);
+  assert.match(baseline, /RUNTIME_PROBE/);
 });
 
 test('memory knowledge graph stays visible without advanced mode', () => {

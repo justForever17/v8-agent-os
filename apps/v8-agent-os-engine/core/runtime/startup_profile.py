@@ -278,25 +278,41 @@ def get_runtime_registry_state() -> dict[str, Any]:
     apply_feature_pack_python_paths(payload)
     feature_pack_statuses = build_feature_pack_statuses(payload, install_platform=install_platform)
     configured_families = _normalize_runtime_families(payload.get("installedRuntimeFamilies"))
+    # Packed families are capability claims, not historical intent.  Even old
+    # registries without featurePacks must pass the same pack/probe truth check;
+    # otherwise a stale `rpa`/`computer_use` entry exposes tools that are absent.
+    installed_runtime_families = _default_runtime_families_for_profile("minimal")
     has_feature_pack_truth = isinstance(payload.get("featurePacks"), dict) and bool(payload.get("featurePacks"))
-    if has_feature_pack_truth:
-        installed_runtime_families = _default_runtime_families_for_profile("minimal")
+    for family in configured_families:
+        if family in PACKED_RUNTIME_FAMILIES:
+            continue
+        if family not in installed_runtime_families:
+            installed_runtime_families.append(family)
+    for family in installed_runtime_families_from_feature_packs(feature_pack_statuses):
+        if family not in installed_runtime_families:
+            installed_runtime_families.append(family)
+    # Old registries predate feature-pack receipts.  Retain a packed family only
+    # when the narrower platform probe proves that exact runtime can execute;
+    # the full desktop feature-pack probe additionally covers Desktop Live and
+    # must not make a working basic computer-use driver disappear.
+    if configured_families and not has_feature_pack_truth:
+        detected_families = set(_detect_installed_runtime_families(install_platform))
         for family in configured_families:
+            if family in PACKED_RUNTIME_FAMILIES and family in detected_families and family not in installed_runtime_families:
+                installed_runtime_families.append(family)
+    if not configured_families:
+        legacy_startup_profile = str(payload.get("startupProfile") or "").strip().lower()
+        for family in _resolve_legacy_runtime_families(
+            startup_profile=legacy_startup_profile,
+            install_profile=install_profile,
+        ):
             if family in PACKED_RUNTIME_FAMILIES:
                 continue
             if family not in installed_runtime_families:
                 installed_runtime_families.append(family)
-        for family in installed_runtime_families_from_feature_packs(feature_pack_statuses):
-            if family not in installed_runtime_families:
+        for family in _detect_installed_runtime_families(install_platform):
+            if family in PACKED_RUNTIME_FAMILIES and family not in installed_runtime_families:
                 installed_runtime_families.append(family)
-    elif configured_families:
-        installed_runtime_families = configured_families
-    else:
-        legacy_startup_profile = str(payload.get("startupProfile") or "").strip().lower()
-        installed_runtime_families = _resolve_legacy_runtime_families(
-            startup_profile=legacy_startup_profile,
-            install_profile=install_profile,
-        )
     return {
         "version": int(payload.get("version") or 1),
         "installProfile": install_profile,

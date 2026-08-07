@@ -217,6 +217,11 @@ if ($SkipPlaywrightBrowsers) {
 }
 
 Invoke-Checked -FilePath $pythonExe -Arguments @("-V")
+if ($Architecture -notin @("amd64", "arm64")) {
+  throw "Unsupported portable Python architecture: $Architecture"
+}
+$expectedMachine = if ($Architecture -eq "arm64") { "arm64" } else { "amd64" }
+Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import platform; machine = platform.machine().lower(); print(machine); assert machine == '$expectedMachine', (machine, '$expectedMachine')")
 Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import sys; print(sys.executable); assert 'hostedtoolcache' not in sys.executable.lower(); assert '.venv' not in sys.executable.lower()")
 $probeHome = Join-Path $workDir "engine-import-probe"
 New-Item -ItemType Directory -Force -Path $probeHome | Out-Null

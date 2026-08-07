@@ -23,8 +23,8 @@
 当前状态：
 
 - 已有源码树 `v8os preview`。
-- 已有 Windows x64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview workflow；每个平台只负责构建和上传工件。
-- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 在所有构建 job 成功后由 fan-in release job 创建 GitHub Release，上传 Windows 安装包、macOS DMG、Linux AppImage/DEB、`RUNTIME_PROBE-<platform>.json`、`PACKAGE_LAYOUT-<platform>.json` 和 `SHA256SUMS.txt`。
+- 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview workflow；每个平台只负责构建和上传工件。
+- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 在所有构建 job 成功后由 fan-in release job 创建 GitHub Release，上传 Windows 安装包、macOS DMG、Linux AppImage/DEB 和 `SHA256SUMS.txt`。`RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json` 是 CI 验收证据，保留在对应 workflow artifact，而不占用普通下载资产列表。
 - 尚未签名，没有自动更新，不宣传为 stable。
 
 ### `desktop-stable`

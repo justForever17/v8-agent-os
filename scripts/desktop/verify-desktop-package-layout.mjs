@@ -28,8 +28,8 @@ function findDirectory(start, predicate, maxDepth = 4) {
 }
 
 function packageResources(platform) {
-  if (platform === "windows-x64") {
-    const unpacked = findDirectory(releaseDir, (name) => /win-unpacked$/i.test(name));
+  if (platform.startsWith("windows-")) {
+    const unpacked = findDirectory(releaseDir, (name) => /win(?:-[a-z0-9]+)?-unpacked$/i.test(name));
     return unpacked ? path.join(unpacked, "resources", "v8os") : "";
   }
   if (platform.startsWith("macos-")) {
@@ -79,7 +79,7 @@ try {
   if (!/^(windows|macos|linux)-(x64|arm64)$/.test(platform)) throw new Error(`Unsupported --platform ${JSON.stringify(platform)}`);
   const resourceRoot = packageResources(platform);
   const engineRoot = path.join(resourceRoot, "apps", "v8-agent-os-engine");
-  const posix = platform !== "windows-x64";
+  const posix = !platform.startsWith("windows-");
   const python = posix
     ? [path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python3"), path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python")]
     : [path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "python.exe")];

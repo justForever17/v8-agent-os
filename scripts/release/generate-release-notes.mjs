@@ -118,6 +118,7 @@ function assetSection(product, version, channel) {
     : "当前桌面包未签名。Windows 可能显示 SmartScreen 确认，macOS 可能要求在系统设置中确认打开；代码签名、信誉和自动更新属于后续阶段。";
   const assets = [
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：Windows x64 " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows ARM64 " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg`：macOS Intel " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS Apple Silicon " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-x64.deb`：Linux x64 " + desktopLabel + "。",
@@ -128,7 +129,7 @@ function assetSection(product, version, channel) {
   }
   assets.push(
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
-    "- `RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json`：各构建平台的内置运行时、功能依赖和包内资源布局探针；若 Git、FFmpeg/FFprobe 7.0+ 或 Linux X11 辅助工具显示 degraded，请按探针结果理解实际可用范围。",
+    "- 每个平台的运行时探针与包布局证据保留在对应 GitHub Actions artifact 中，避免把普通下载页塞满诊断 JSON。",
     "",
     desktopChannelNote,
   );

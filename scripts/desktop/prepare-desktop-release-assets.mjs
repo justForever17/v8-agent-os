@@ -10,6 +10,7 @@ const shellRoot = path.join(repoRoot, "apps", "v8-agent-os-shell");
 const releaseDir = path.join(shellRoot, "dist", "release");
 const ASSET_KINDS = {
   "windows-x64": [{ extension: ".exe", suffix: "win-x64-setup.exe" }],
+  "windows-arm64": [{ extension: ".exe", suffix: "win-arm64-setup.exe" }],
   "macos-x64": [{ extension: ".dmg", suffix: "macos-x64.dmg" }],
   "macos-arm64": [{ extension: ".dmg", suffix: "macos-arm64.dmg" }],
   "linux-x64": [

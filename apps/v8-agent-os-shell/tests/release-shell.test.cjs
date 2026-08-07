@@ -127,6 +127,7 @@ test('desktop release scripts build native installers for every supported deskto
 
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
   assert.match(config, /target:\s*\n\s*- target: nsis/);
+  assert.match(config, /win:[\s\S]*?arch:\s*\n\s*- x64\s*\n\s*- arm64/);
   assert.doesNotMatch(config, /- target: zip/);
   assert.match(config, /icon: assets\/icon\.ico/);
   assert.match(config, /mac:\s*\n\s+icon: assets\/icon\.icns/);
@@ -163,6 +164,7 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   });
 
   assert.match(preview, /win-x64-setup\.exe/);
+  assert.match(preview, /win-arm64-setup\.exe/);
   assert.match(preview, /macos-x64\.dmg/);
   assert.match(preview, /macos-arm64\.dmg/);
   assert.match(preview, /linux-x64\.AppImage/);
@@ -209,6 +211,7 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   assert.match(workflow, /working-directory: packages\/session-realtime/);
   assert.match(workflow, /npm exec -- tsc --version/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win:preview/);
+  assert.match(workflow, /--\$\{\{ matrix\.arch \}\}/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:mac:preview/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:linux:preview/);
   assert.match(workflow, /prepare-posix-python-runtime\.mjs/);
@@ -224,6 +227,8 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   const resolver = path.join(repoRoot, 'scripts', 'desktop', 'resolve-desktop-build-matrix.mjs');
   const resolverSource = fs.readFileSync(resolver, 'utf8');
   assert.match(resolverSource, /windows-latest/);
+  assert.match(resolverSource, /windows-11-arm/);
+  assert.match(resolverSource, /pythonArch: "arm64"/);
   assert.match(resolverSource, /macos-15-intel/);
   assert.match(resolverSource, /runner: "macos-15"/);
   assert.match(resolverSource, /ubuntu-24\.04-arm/);
@@ -235,6 +240,15 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   ], { encoding: 'utf8' }));
   assert.equal(selected.enabled, true);
   assert.deepEqual(selected.matrix.include.map((target) => target.id), ['linux-arm64']);
+  const windowsArm = JSON.parse(execFileSync(process.execPath, [
+    resolver,
+    '--event', 'workflow_dispatch',
+    '--ref', 'refs/heads/main',
+    '--platform', 'windows-arm64',
+  ], { encoding: 'utf8' }));
+  assert.deepEqual(windowsArm.matrix.include.map((target) => target.id), ['windows-arm64']);
+  assert.equal(windowsArm.matrix.include[0].runner, 'windows-11-arm');
+  assert.equal(windowsArm.matrix.include[0].pythonArch, 'arm64');
   const tag = JSON.parse(execFileSync(process.execPath, [
     resolver,
     '--event', 'push',
@@ -242,7 +256,7 @@ test('desktop workflow builds every native platform and uploads checksummed buil
     '--platform', 'windows-x64',
   ], { encoding: 'utf8' }));
   assert.equal(tag.enabled, true);
-  assert.equal(tag.matrix.include.length, 5);
+  assert.equal(tag.matrix.include.length, 6);
 });
 
 test('desktop workflow uses fan-in publication with narrowly scoped release permissions', () => {
@@ -264,6 +278,12 @@ test('desktop workflow uses fan-in publication with narrowly scoped release perm
   assert.match(workflow, /Upload Windows desktop smoke diagnostics[\s\S]*continue-on-error: true/);
   assert.match(workflow, /retention-days: 7/);
   assert.match(workflow, /compression-level: 0/);
+  assert.match(workflow, /Verify Windows runner and Node architecture/);
+  assert.match(workflow, /Verify Windows Rust native target/);
+  assert.match(workflow, /-Architecture "\$\{\{ matrix\.pythonArch \}\}"/);
+  const releaseJob = workflow.slice(workflow.indexOf('\n  release:'));
+  assert.doesNotMatch(releaseJob, /desktop-release-assets\/RUNTIME_PROBE-\*\.json/);
+  assert.doesNotMatch(releaseJob, /desktop-release-assets\/PACKAGE_LAYOUT-\*\.json/);
 });
 
 test('phone workflow honors dispatch inputs while preserving the proven Android tag release path', () => {
@@ -320,6 +340,8 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(runtimeScript, /Invoke-CheckedWithRetry/);
   assert.match(runtimeScript, /Install desktop preview Engine requirements/);
   assert.match(runtimeScript, /--prefer-binary/);
+  assert.match(runtimeScript, /Unsupported portable Python architecture/);
+  assert.match(runtimeScript, /\$expectedMachine/);
   assert.match(runtimeScript, /DEGRADED\.txt/);
   assert.match(runtimeScript, /discovers an installed Edge, Chrome, or Chromium at runtime/);
 
@@ -460,7 +482,7 @@ test('Engine release process forces UTF-8 output on Windows runners', () => {
   assert.match(components, /\.python", "bin", "python3"/);
 });
 
-test('desktop release uses current desktop tag namespace and runtime probes', () => {
+test('desktop release uses current desktop tag namespace and keeps runtime probes in CI evidence', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(workflow, /v8-os-desktop-v\*/);
   assert.match(workflow, /startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
@@ -471,7 +493,8 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(workflow, /\.v8-agent-os\\logs\\cli/);
   assert.match(workflow, /Upload Windows desktop smoke diagnostics/);
   assert.match(workflow, /desktop-smoke-diagnostics/);
-  assert.match(workflow, /RUNTIME_PROBE-\*\.json/);
+  assert.match(workflow, /Normalize platform release assets and checksums/);
+  assert.match(workflow, /Upload desktop platform artifacts/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
 
   const runtimeProbe = fs.readFileSync(
@@ -531,12 +554,15 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
 
   const releaseNotes = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs'), 'utf8');
   assert.match(releaseNotes, /\^v8-os-\(phone\|desktop\)-v/);
-  assert.match(releaseNotes, /RUNTIME_PROBE-<platform>\.json/);
+  assert.match(releaseNotes, /win-arm64-setup\.exe/);
+  assert.match(releaseNotes, /GitHub Actions artifact/);
+  assert.doesNotMatch(releaseNotes, /RUNTIME_PROBE-<platform>\.json/);
   assert.doesNotMatch(releaseNotes, /desktop-preview/);
 
   const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
   assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
-  assert.match(baseline, /RUNTIME_PROBE/);
+  assert.match(baseline, /Windows x64\/ARM64/);
+  assert.match(baseline, /workflow artifact/);
 });
 
 test('memory knowledge graph stays visible without advanced mode', () => {

@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - windows-x64
+          - windows-arm64
           - macos-x64
           - macos-arm64
           - linux-x64
@@ -171,8 +172,34 @@ jobs:
             apps/v8-agent-os-desktop-pet/package-lock.json
             apps/v8-agent-os-shell/package-lock.json
 
+      - name: Verify Windows runner and Node architecture
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $processor = Get-CimInstance Win32_Processor | Select-Object -First 1
+          $hostArchitecture = switch ([int]$processor.Architecture) {
+            9 { "x64" }
+            12 { "arm64" }
+            default { "unknown-$($processor.Architecture)" }
+          }
+          $expectedArchitecture = "${{ matrix.arch }}"
+          if ($hostArchitecture -ne $expectedArchitecture) {
+            throw "Windows host architecture mismatch: expected $expectedArchitecture, got $hostArchitecture"
+          }
+          node -e "if (process.arch !== '$expectedArchitecture') { throw new Error('Node architecture mismatch: expected $expectedArchitecture, got ' + process.arch) }"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Windows Rust native target
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $rustHost = (& rustc -vV | Select-String '^host:' | Select-Object -First 1 | ForEach-Object { $_.Line -replace '^host:\s*', '' })
+          $expectedRustHost = if ("${{ matrix.arch }}" -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
+          if ($rustHost -ne $expectedRustHost) {
+            throw "Rust host mismatch: expected $expectedRustHost, got $rustHost"
+          }
 
       - name: Verify desktop release manifest
         if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
@@ -224,6 +251,7 @@ jobs:
         run: |
           scripts/desktop/prepare-windows-python-runtime.ps1 `
             -PythonVersion 3.11.9 `
+            -Architecture "${{ matrix.pythonArch }}" `
             -RequirementsPath apps/v8-agent-os-engine/requirements/desktop-preview.txt `
             -SkipPlaywrightBrowsers
 
@@ -279,7 +307,7 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         timeout-minutes: 30
-        run: npm --prefix apps/v8-agent-os-shell run dist:win:preview
+        run: npm --prefix apps/v8-agent-os-shell run dist:win:preview -- --${{ matrix.arch }}
 
       - name: Build unsigned macOS desktop preview
         if: matrix.os == 'macos'
@@ -412,5 +440,3 @@ jobs:
           files: |
             desktop-release-assets/V8-Agent-OS-*
             desktop-release-assets/SHA256SUMS.txt
-            desktop-release-assets/RUNTIME_PROBE-*.json
-            desktop-release-assets/PACKAGE_LAYOUT-*.json

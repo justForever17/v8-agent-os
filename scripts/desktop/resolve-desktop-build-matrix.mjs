@@ -2,7 +2,11 @@
 import fs from "node:fs";
 
 const TARGETS = [
-  { id: "windows-x64", label: "Windows x64 unsigned preview installer", runner: "windows-latest", os: "windows", arch: "x64" },
+  { id: "windows-x64", label: "Windows x64 unsigned preview installer", runner: "windows-latest", os: "windows", arch: "x64", pythonArch: "amd64" },
+  // Windows ARM64 is a native GitHub-hosted runner target. Keep its Python
+  // architecture explicit: the Windows embeddable package calls x64 "amd64",
+  // while the Electron/Rust target calls it "arm64".
+  { id: "windows-arm64", label: "Windows ARM64 unsigned preview installer", runner: "windows-11-arm", os: "windows", arch: "arm64", pythonArch: "arm64" },
   // GitHub's public labels are architecture-qualified for Intel; macos-15 is
   // the native Apple Silicon label (macos-15-intel is the x64 counterpart).
   { id: "macos-x64", label: "macOS Intel unsigned preview installer", runner: "macos-15-intel", os: "macos", arch: "x64" },

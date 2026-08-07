@@ -555,6 +555,7 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /Python\.h/);
   assert.match(windowsPythonRuntime, /python311\.lib/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 tiktoken wheel/);
+  assert.match(windowsPythonRuntime, /"--no-deps", "--no-index"/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_RUNTIME_OK/);
   assert.match(windowsPythonRuntime, /build-only Python development files were not removed/);

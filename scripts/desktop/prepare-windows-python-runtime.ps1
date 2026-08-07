@@ -284,7 +284,7 @@ if ($Architecture -eq "arm64") {
     throw "Expected exactly one native win_arm64 tiktoken wheel, found: $($tiktokenWheels.Name -join ', ')"
   }
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
-    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-index",
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-deps", "--no-index",
     "--find-links", $wheelhouse, "tiktoken==0.13.0"
   ) -Description "Install native Windows ARM64 tiktoken wheel"
   Invoke-Checked -FilePath $pythonExe -Arguments @(

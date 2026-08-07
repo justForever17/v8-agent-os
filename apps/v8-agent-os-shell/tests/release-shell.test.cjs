@@ -555,12 +555,14 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /2F5B3BEE38850FDDE1B44227A23B8130D329839558376D2EB11099CE2B2CC33C/);
   assert.match(windowsPythonRuntime, /Python\.h/);
   assert.match(windowsPythonRuntime, /python311\.lib/);
+  assert.match(windowsPythonRuntime, /python3\.lib/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 tiktoken wheel/);
   assert.match(windowsPythonRuntime, /"--no-deps", "--no-index"/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_RUNTIME_OK/);
   assert.match(windowsPythonRuntime, /numpy==2\.4\.6/);
   assert.match(windowsPythonRuntime, /maturin==1\.14\.1/);
+  assert.match(windowsPythonRuntime, /Join-Path \$runtimeDir 'Scripts'/);
   assert.match(windowsPythonRuntime, /chromadb==1\.5\.9/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 Chroma wheel/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_NATIVE_OK/);

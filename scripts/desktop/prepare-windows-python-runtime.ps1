@@ -260,14 +260,20 @@ if ($Architecture -eq "arm64") {
   $pythonDevTools = Join-Path $pythonDevRoot "tools"
   $pythonDevInclude = Join-Path $pythonDevTools "include"
   $pythonDevImportLib = Join-Path $pythonDevTools "libs\python311.lib"
-  if (-not (Test-Path (Join-Path $pythonDevInclude "Python.h")) -or -not (Test-Path $pythonDevImportLib)) {
-    throw "Python ARM64 development package is missing Python.h or python311.lib"
+  $pythonDevStableAbiImportLib = Join-Path $pythonDevTools "libs\python3.lib"
+  if (
+    -not (Test-Path (Join-Path $pythonDevInclude "Python.h")) -or
+    -not (Test-Path $pythonDevImportLib) -or
+    -not (Test-Path $pythonDevStableAbiImportLib)
+  ) {
+    throw "Python ARM64 development package is missing Python.h, python311.lib, or python3.lib"
   }
   $runtimeInclude = Join-Path $runtimeDir "include"
   $runtimeLibs = Join-Path $runtimeDir "libs"
   Copy-Item -LiteralPath $pythonDevInclude -Destination $runtimeInclude -Recurse
   New-Item -ItemType Directory -Force -Path $runtimeLibs | Out-Null
   Copy-Item -LiteralPath $pythonDevImportLib -Destination (Join-Path $runtimeLibs "python311.lib")
+  Copy-Item -LiteralPath $pythonDevStableAbiImportLib -Destination (Join-Path $runtimeLibs "python3.lib")
 
   $wheelhouse = Join-Path $workDir "wheelhouse"
   New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
@@ -300,7 +306,9 @@ if ($Architecture -eq "arm64") {
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
     "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
     "--no-build-isolation", "--wheel-dir", $wheelhouse, "chromadb==1.5.9"
-  ) -Description "Build native Windows ARM64 Chroma wheel"
+  ) -Description "Build native Windows ARM64 Chroma wheel" -Environment @{
+    PATH = "$(Join-Path $runtimeDir 'Scripts');$env:PATH"
+  }
   $chromaWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chromadb-1.5.9-*.whl")
   if ($chromaWheels.Count -ne 1 -or $chromaWheels[0].Name -notmatch '-win_arm64\.whl$') {
     throw "Expected exactly one native win_arm64 Chroma wheel, found: $($chromaWheels.Name -join ', ')"

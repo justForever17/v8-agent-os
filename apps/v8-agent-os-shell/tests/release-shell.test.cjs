@@ -522,6 +522,7 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   );
   assert.doesNotMatch(requiredModulesBlock, /pywinauto/);
   assert.match(requiredModulesBlock, /langgraphCheckpointSqlite/);
+  assert.match(requiredModulesBlock, /tiktokenNative/);
   assert.match(optionalModulesBlock, /pywinauto/);
   assert.match(optionalModulesBlock, /sqliteVec/);
   assert.match(runtimeProbe, /sqlite-vec does not publish a Windows ARM64 wheel/);
@@ -541,6 +542,10 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /--no-deps/);
   assert.match(windowsPythonRuntime, /Expected exactly one LangGraph SQLite checkpoint requirement/);
   assert.match(windowsPythonRuntime, /Copy-Item -LiteralPath \$requirementsSourceRoot/);
+  assert.match(windowsPythonRuntime, /setuptools-rust==1\.13\.0/);
+  assert.match(windowsPythonRuntime, /tiktoken==0\.13\.0/);
+  assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 tiktoken wheel/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHECKPOINT_SQLITE_OK/);
   assert.match(windowsPythonRuntime, /await saver\.aput/);

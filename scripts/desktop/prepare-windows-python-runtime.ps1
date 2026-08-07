@@ -240,6 +240,33 @@ Set-Content -LiteralPath $pthFile.FullName -Value $updatedLines -Encoding ascii
 Invoke-WebRequestWithRetry -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location") -Description "Install pip into portable Python"
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel") -Description "Upgrade portable Python packaging tools"
+
+if ($Architecture -eq "arm64") {
+  # tiktoken does not publish a win_arm64 wheel. Build the audited release with
+  # the native ARM64 Rust toolchain before resolving the runtime requirements.
+  $wheelhouse = Join-Path $workDir "wheelhouse"
+  New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+    "setuptools-rust==1.13.0"
+  ) -Description "Install Windows ARM64 tiktoken build frontend"
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "tiktoken==0.13.0"
+  ) -Description "Build native Windows ARM64 tiktoken wheel"
+  $tiktokenWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "tiktoken-0.13.0-*.whl")
+  if ($tiktokenWheels.Count -ne 1 -or $tiktokenWheels[0].Name -notmatch '-win_arm64\.whl$') {
+    throw "Expected exactly one native win_arm64 tiktoken wheel, found: $($tiktokenWheels.Name -join ', ')"
+  }
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-index",
+    "--find-links", $wheelhouse, "tiktoken==0.13.0"
+  ) -Description "Install native Windows ARM64 tiktoken wheel"
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-c", "import platform, tiktoken._tiktoken; assert platform.machine().lower() == 'arm64'; print('V8OS_ARM64_TIKTOKEN_OK')"
+  )
+}
+
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
 
 if ($Architecture -eq "arm64") {

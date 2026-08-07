@@ -9,6 +9,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($Architecture -notin @("amd64", "arm64")) {
+  throw "Unsupported portable Python architecture: $Architecture"
+}
+
 function Resolve-RepoRoot {
   $scriptPath = $PSCommandPath
   if (-not $scriptPath) {
@@ -149,6 +153,36 @@ if (Test-Path $runtimeDir) {
 }
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
+$installRequirementsFile = $requirementsFile
+if ($Architecture -eq "arm64") {
+  $requirementsSourceRoot = (Resolve-Path (Join-Path $EngineDir "requirements")).Path
+  $engineRequirementsFile = Join-Path $EngineDir "requirements.txt"
+  $requirementsSourcePrefix = $requirementsSourceRoot.TrimEnd("\") + "\"
+  $requirementsCompatRoot = Join-Path $workDir "requirements"
+  Copy-Item -LiteralPath $requirementsSourceRoot -Destination $requirementsCompatRoot -Recurse
+
+  if ($requirementsFile.Equals($engineRequirementsFile, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $installRequirementsFile = Join-Path $workDir "requirements.txt"
+    Copy-Item -LiteralPath $requirementsFile -Destination $installRequirementsFile
+  } elseif ($requirementsFile.StartsWith($requirementsSourcePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $requirementsRelativePath = [System.IO.Path]::GetRelativePath($requirementsSourceRoot, $requirementsFile)
+    $installRequirementsFile = Join-Path $requirementsCompatRoot $requirementsRelativePath
+  } else {
+    throw "Windows ARM64 compatibility requires an Engine-managed requirements file: $requirementsFile"
+  }
+
+  $compatBaseFile = Join-Path $requirementsCompatRoot "base.txt"
+  $checkpointRequirementPattern = '^\s*langgraph-checkpoint-sqlite>=3\.1\.0,<4\s*$'
+  $compatBaseLines = @(Get-Content -LiteralPath $compatBaseFile)
+  $checkpointRequirementMatches = @($compatBaseLines | Where-Object { $_ -match $checkpointRequirementPattern })
+  if ($checkpointRequirementMatches.Count -ne 1) {
+    throw "Expected exactly one LangGraph SQLite checkpoint requirement, found $($checkpointRequirementMatches.Count)"
+  }
+  $filteredBaseLines = @($compatBaseLines | Where-Object { $_ -notmatch $checkpointRequirementPattern })
+  Set-Content -LiteralPath $compatBaseFile -Value $filteredBaseLines -Encoding ascii
+  Write-Host "ARM64 install requirements: $installRequirementsFile"
+}
+
 Invoke-WebRequestWithRetry -Uri $zipUrl -OutFile $zipPath
 Expand-Archive -LiteralPath $zipPath -DestinationPath $runtimeDir -Force
 
@@ -160,6 +194,9 @@ if (-not (Test-Path $pythonExe)) {
 if (-not (Test-Path $pythonwExe)) {
   throw "Portable pythonw.exe was not found after extracting $zipUrl"
 }
+
+$expectedMachine = if ($Architecture -eq "arm64") { "arm64" } else { "amd64" }
+Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import platform; machine = platform.machine().lower(); print(machine); assert machine == '$expectedMachine', (machine, '$expectedMachine')")
 
 $pthFile = Get-ChildItem -LiteralPath $runtimeDir -Filter "python*._pth" | Select-Object -First 1
 if (-not $pthFile) {
@@ -203,7 +240,87 @@ Set-Content -LiteralPath $pthFile.FullName -Value $updatedLines -Encoding ascii
 Invoke-WebRequestWithRetry -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location") -Description "Install pip into portable Python"
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel") -Description "Upgrade portable Python packaging tools"
-Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $requirementsFile) -Description "Install desktop preview Engine requirements"
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
+
+if ($Architecture -eq "arm64") {
+  # sqlite-vec does not publish a win_arm64 wheel. V8OS does not import that
+  # extension; install the audited saver version and prove its SQLite path works.
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "langgraph-checkpoint-sqlite==3.1.1"
+  ) -Description "Install Windows ARM64 LangGraph checkpoint saver compatibility pin"
+
+  $pipCheckProbe = @"
+import re
+import subprocess
+import sys
+from packaging.utils import canonicalize_name
+
+result = subprocess.run(
+    [sys.executable, "-m", "pip", "check"],
+    capture_output=True,
+    text=True,
+)
+lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+missing_dependency = re.fullmatch(
+    r"^(\S+)\s+(\S+)\s+requires\s+(\S+),\s+which\s+is\s+not\s+installed\.?$",
+    lines[0],
+    re.IGNORECASE,
+) if len(lines) == 1 else None
+known_gap = bool(
+    result.returncode == 1
+    and missing_dependency
+    and canonicalize_name(missing_dependency.group(1)) == "langgraph-checkpoint-sqlite"
+    and missing_dependency.group(2) == "3.1.1"
+    and canonicalize_name(missing_dependency.group(3)) == "sqlite-vec"
+)
+if known_gap:
+    print("V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY")
+else:
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    raise SystemExit("Unexpected dependency defect in Windows ARM64 Python runtime")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $pipCheckProbe)
+
+  $checkpointProbe = @"
+import asyncio
+import importlib.util
+import tempfile
+from pathlib import Path
+
+from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+assert importlib.util.find_spec("sqlite_vec") is None
+config = {"configurable": {"thread_id": "v8os-arm64-probe", "checkpoint_ns": ""}}
+metadata = {"source": "input", "step": 0, "parents": {}}
+
+async def async_probe(database_path):
+    async with AsyncSqliteSaver.from_conn_string(str(database_path)) as saver:
+        stored_config = await saver.aput(config, empty_checkpoint(), metadata, {})
+        loaded = await saver.aget_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    async with AsyncSqliteSaver.from_conn_string(str(database_path)) as saver:
+        loaded = await saver.aget_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+
+with tempfile.TemporaryDirectory(prefix="v8os-arm64-checkpoint-") as tmp_dir:
+    root = Path(tmp_dir)
+    with SqliteSaver.from_conn_string(str(root / "sync.db")) as saver:
+        stored_config = saver.put(config, empty_checkpoint(), metadata, {})
+        loaded = saver.get_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    with SqliteSaver.from_conn_string(str(root / "sync.db")) as saver:
+        loaded = saver.get_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    asyncio.run(async_probe(root / "async.db"))
+
+print("V8OS_ARM64_CHECKPOINT_SQLITE_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $checkpointProbe)
+}
 
 New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
 if ($SkipPlaywrightBrowsers) {
@@ -217,11 +334,6 @@ if ($SkipPlaywrightBrowsers) {
 }
 
 Invoke-Checked -FilePath $pythonExe -Arguments @("-V")
-if ($Architecture -notin @("amd64", "arm64")) {
-  throw "Unsupported portable Python architecture: $Architecture"
-}
-$expectedMachine = if ($Architecture -eq "arm64") { "arm64" } else { "amd64" }
-Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import platform; machine = platform.machine().lower(); print(machine); assert machine == '$expectedMachine', (machine, '$expectedMachine')")
 Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import sys; print(sys.executable); assert 'hostedtoolcache' not in sys.executable.lower(); assert '.venv' not in sys.executable.lower()")
 $probeHome = Join-Path $workDir "engine-import-probe"
 New-Item -ItemType Directory -Force -Path $probeHome | Out-Null

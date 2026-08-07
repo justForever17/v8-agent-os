@@ -521,7 +521,30 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
     runtimeProbe.indexOf('const moduleResult'),
   );
   assert.doesNotMatch(requiredModulesBlock, /pywinauto/);
+  assert.match(requiredModulesBlock, /langgraphCheckpointSqlite/);
   assert.match(optionalModulesBlock, /pywinauto/);
+  assert.match(optionalModulesBlock, /sqliteVec/);
+  assert.match(runtimeProbe, /sqlite-vec does not publish a Windows ARM64 wheel/);
+
+  const baseRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'base.txt'),
+    'utf8',
+  );
+  assert.match(baseRequirements, /^langgraph-checkpoint-sqlite>=3\.1\.0,<4$/m);
+  assert.doesNotMatch(baseRequirements, /langgraph-checkpoint-sqlite[^\r\n]*platform_machine/);
+
+  const windowsPythonRuntime = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-python-runtime.ps1'),
+    'utf8',
+  );
+  assert.match(windowsPythonRuntime, /langgraph-checkpoint-sqlite==3\.1\.1/);
+  assert.match(windowsPythonRuntime, /--no-deps/);
+  assert.match(windowsPythonRuntime, /Expected exactly one LangGraph SQLite checkpoint requirement/);
+  assert.match(windowsPythonRuntime, /Copy-Item -LiteralPath \$requirementsSourceRoot/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_CHECKPOINT_SQLITE_OK/);
+  assert.match(windowsPythonRuntime, /await saver\.aput/);
+  assert.match(windowsPythonRuntime, /await saver\.aget_tuple/);
 
   const packageLayoutProbe = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),
@@ -563,6 +586,8 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
   assert.match(baseline, /Windows x64\/ARM64/);
   assert.match(baseline, /workflow artifact/);
+  assert.match(baseline, /Windows ARM64 兼容性技术债登记/);
+  assert.match(baseline, /关闭后重开读取/);
 });
 
 test('memory knowledge graph stays visible without advanced mode', () => {

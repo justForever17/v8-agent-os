@@ -286,6 +286,7 @@ if (exists(pythonExe)) {
   pushCheck(checks, "engine.importMain", engineImportResult.ok, engineImportResult);
 
   const requiredModules = {
+    langgraphCheckpointSqlite: "langgraph.checkpoint.sqlite",
     playwright: "playwright",
     ytDlp: "yt_dlp",
     psdTools: "psd_tools",
@@ -302,12 +303,19 @@ if (exists(pythonExe)) {
     requiredModules.pythonXlib = "Xlib";
   }
   const optionalModules = {
+    sqliteVec: "sqlite_vec",
     pywinauto: "pywinauto",
     patchright: "patchright",
     av: "av",
     soundcard: "soundcard",
     robotframework: "robot",
     rpaFramework: "RPA",
+  };
+  const optionalModuleReasons = {
+    sqliteVec:
+      process.platform === "win32" && process.arch === "arm64"
+        ? "sqlite-vec does not publish a Windows ARM64 wheel; the required checkpoint saver path is verified separately"
+        : "sqlite-vec is an optional checkpoint extension and is not used by the current V8OS checkpoint path",
   };
   const moduleResult = pythonModuleCheck(pythonExe, { ...requiredModules, ...optionalModules });
   if (moduleResult.ok) {
@@ -316,7 +324,9 @@ if (exists(pythonExe)) {
         pushCheck(checks, `pythonModule.${name}`, ok);
       } else {
         pushOptionalCheck(checks, degraded, `pythonModule.${name}`, ok, {
-          reason: `${name} is an optional heavy capability in the unsigned desktop preview package`,
+          reason:
+            optionalModuleReasons[name] ??
+            `${name} is an optional heavy capability in the unsigned desktop preview package`,
         });
       }
     }

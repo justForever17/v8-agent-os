@@ -130,6 +130,14 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
 10. Windows 可运行 CI 安装 smoke；macOS/Linux 的构建、包内布局与运行时依赖可在 CI 验证，但 GUI、TCC/辅助功能、X11/Wayland 与窗口管理器行为必须在同平台实体主机另行验收，不能被 CI 构建成功替代。
 
+### Windows ARM64 兼容性技术债登记
+
+适用范围仅限 Windows ARM64 unsigned desktop preview。`langgraph-checkpoint-sqlite` 3.1.1 声明依赖 `sqlite-vec>=0.1.6`，但 `sqlite-vec` 0.1.9 未在 PyPI 发布 `win_arm64` wheel 或 sdist，原生 Windows ARM64 Python 因此无法完成常规依赖解析。
+
+V8OS 当前只使用 `SqliteSaver` 与 `AsyncSqliteSaver` 的普通 SQLite checkpoint 表，不导入 `sqlite_vec`、`vec0` 或 SQLite extension loading；向量记忆由独立向量存储实现。受控兼容入口不修改共享 requirements 真相，只在 Windows ARM64 打包临时副本中精确过滤一次该依赖，随后固定安装已审计的 `langgraph-checkpoint-sqlite==3.1.1`，并使用原生 ARM64 Python 执行同步与异步 checkpoint 写入、读取和关闭后重开读取。`pip check` 只允许当前这一条已登记缺口，其他依赖缺失必须阻断安装包构建。运行时探针把 checkpoint saver 作为必需能力，把 `sqlite_vec` 明确记录为 degraded 可选能力，不能伪装成已随包提供。普通 Windows ARM64 开发或 CLI 安装仍应使用原始 requirements 并明确暴露上游解析失败，不能绕过此受控打包入口。
+
+移除条件：上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载和 checkpoint 回归，再移除临时 requirements 过滤、`--no-deps` 与 3.1.1 pin；连续两个桌面发布周期通过安装 smoke 后关闭此登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
+
 最小命令：
 
 ```powershell

@@ -321,6 +321,8 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(posixRuntimeScript, /--skip-playwright-browsers/);
   assert.match(posixRuntimeScript, /V8OS_ENGINE_IMPORT_OK/);
   assert.match(posixRuntimeScript, /process\.platform !== runtime\.platform/);
+  assert.match(posixRuntimeScript, /python\/install/);
+  assert.match(posixRuntimeScript, /path\.join\(extractDir, "python"\)/);
 
   const macHelperBuild = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'build-macos-ax-helper.mjs'),

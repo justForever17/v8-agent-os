@@ -120,8 +120,13 @@ async function main() {
     fs.mkdirSync(extractDir, { recursive: true });
     run("tar", ["-xzf", archivePath, "-C", extractDir]);
 
-    const installRoot = path.join(extractDir, "python", "install");
-    if (!fs.existsSync(installRoot)) fail(`python-build-standalone archive did not contain python/install: ${runtime.asset}`);
+    // `install_only` archives changed from python/install to python at the
+    // upstream 20260805 release.  Accept only these two documented layouts.
+    const installRoot = [
+      path.join(extractDir, "python", "install"),
+      path.join(extractDir, "python"),
+    ].find((candidate) => fs.existsSync(candidate));
+    if (!installRoot) fail(`python-build-standalone archive did not contain python/install or python: ${runtime.asset}`);
     const parent = path.dirname(runtimeDir);
     if (parent !== engineDir || path.basename(runtimeDir) !== ".python") fail(`Refusing unexpected portable runtime path: ${runtimeDir}`);
     fs.rmSync(runtimeDir, { recursive: true, force: true });

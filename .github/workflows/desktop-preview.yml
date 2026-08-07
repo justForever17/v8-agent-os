@@ -201,6 +201,27 @@ jobs:
             throw "Rust host mismatch: expected $expectedRustHost, got $rustHost"
           }
 
+      - name: Prepare embedded Engine Python runtime on Windows
+        if: matrix.os == 'windows'
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          scripts/desktop/prepare-windows-python-runtime.ps1 `
+            -PythonVersion 3.11.9 `
+            -Architecture "${{ matrix.pythonArch }}" `
+            -RequirementsPath apps/v8-agent-os-engine/requirements/desktop-preview.txt `
+            -SkipPlaywrightBrowsers
+
+      - name: Prepare embedded Engine Python runtime on macOS or Linux
+        if: matrix.os != 'windows'
+        shell: bash
+        timeout-minutes: 45
+        run: |
+          node scripts/desktop/prepare-posix-python-runtime.mjs \
+            --target "${{ matrix.id }}" \
+            --requirements-path apps/v8-agent-os-engine/requirements/desktop-preview.txt \
+            --skip-playwright-browsers
+
       - name: Verify desktop release manifest
         if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         shell: bash
@@ -243,27 +264,6 @@ jobs:
         working-directory: apps/v8-agent-os-shell
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
-
-      - name: Prepare embedded Engine Python runtime on Windows
-        if: matrix.os == 'windows'
-        shell: pwsh
-        timeout-minutes: 25
-        run: |
-          scripts/desktop/prepare-windows-python-runtime.ps1 `
-            -PythonVersion 3.11.9 `
-            -Architecture "${{ matrix.pythonArch }}" `
-            -RequirementsPath apps/v8-agent-os-engine/requirements/desktop-preview.txt `
-            -SkipPlaywrightBrowsers
-
-      - name: Prepare embedded Engine Python runtime on macOS or Linux
-        if: matrix.os != 'windows'
-        shell: bash
-        timeout-minutes: 45
-        run: |
-          node scripts/desktop/prepare-posix-python-runtime.mjs \
-            --target "${{ matrix.id }}" \
-            --requirements-path apps/v8-agent-os-engine/requirements/desktop-preview.txt \
-            --skip-playwright-browsers
 
       - name: Build native engineering sandbox host
         timeout-minutes: 10

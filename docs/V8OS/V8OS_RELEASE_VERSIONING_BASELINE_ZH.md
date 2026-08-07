@@ -136,7 +136,7 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 
 V8OS 当前只使用 `SqliteSaver` 与 `AsyncSqliteSaver` 的普通 SQLite checkpoint 表，不导入 `sqlite_vec`、`vec0` 或 SQLite extension loading；向量记忆由独立向量存储实现。受控兼容入口不修改共享 requirements 真相，只在 Windows ARM64 打包临时副本中精确过滤一次该依赖，随后固定安装已审计的 `langgraph-checkpoint-sqlite==3.1.1`，并使用原生 ARM64 Python 执行同步与异步 checkpoint 写入、读取和关闭后重开读取。`pip check` 只允许当前这一条已登记缺口，其他依赖缺失必须阻断安装包构建。运行时探针把 checkpoint saver 作为必需能力，把 `sqlite_vec` 明确记录为 degraded 可选能力，不能伪装成已随包提供。普通 Windows ARM64 开发或 CLI 安装仍应使用原始 requirements 并明确暴露上游解析失败，不能绕过此受控打包入口。
 
-`tiktoken` 0.13.0 同样未发布 `win_arm64` wheel，但在 PyPI 提供 sdist。Windows ARM64 打包入口使用固定的 `setuptools-rust==1.13.0` 与 runner 原生 Rust 工具链构建 `tiktoken==0.13.0`，必须验证 wheel 标签为 `win_arm64` 且原生扩展可导入，再进入完整 requirements 解析；禁止复用 x64 wheel 或把源码构建失败降级为缺失 tokenizer。
+`tiktoken` 0.13.0 同样未发布 `win_arm64` wheel，但在 PyPI 提供 sdist。Windows ARM64 打包入口使用固定的 `setuptools-rust==1.13.0`、runner 原生 Rust 工具链，以及经 SHA-256 固定校验的 Python 官方 `pythonarm64` 3.11.9 NuGet 开发包构建 `tiktoken==0.13.0`。必须验证 wheel 标签为 `win_arm64` 且原生扩展可导入，再进入完整 requirements 解析；构建所需的头文件和导入库必须在安装依赖后移除并重新验证原生扩展，禁止复用 x64 wheel、把开发 SDK 带入最终包，或把源码构建失败降级为缺失 tokenizer。
 
 移除条件：对应上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载和 checkpoint/tokenizer 回归，再分别移除临时 requirements 过滤、`--no-deps`、checkpoint pin 或 tiktoken 源码构建；连续两个桌面发布周期通过安装 smoke 后关闭相应登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
 

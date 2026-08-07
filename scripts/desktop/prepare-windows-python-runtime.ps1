@@ -12,6 +12,9 @@ $ErrorActionPreference = "Stop"
 if ($Architecture -notin @("amd64", "arm64")) {
   throw "Unsupported portable Python architecture: $Architecture"
 }
+if ($Architecture -eq "arm64" -and $PythonVersion -ne "3.11.9") {
+  throw "Windows ARM64 build support is pinned to Python 3.11.9, received: $PythonVersion"
+}
 
 function Resolve-RepoRoot {
   $scriptPath = $PSCommandPath
@@ -243,7 +246,29 @@ Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install"
 
 if ($Architecture -eq "arm64") {
   # tiktoken does not publish a win_arm64 wheel. Build the audited release with
-  # the native ARM64 Rust toolchain before resolving the runtime requirements.
+  # the native ARM64 Rust toolchain and the matching official Python import lib.
+  $pythonDevZipPath = Join-Path $workDir "pythonarm64-dev.zip"
+  $pythonDevRoot = Join-Path $workDir "pythonarm64-dev"
+  $pythonDevUrl = "https://api.nuget.org/v3-flatcontainer/pythonarm64/$PythonVersion/pythonarm64.$PythonVersion.nupkg"
+  $pythonDevSha256 = "2F5B3BEE38850FDDE1B44227A23B8130D329839558376D2EB11099CE2B2CC33C"
+  Invoke-WebRequestWithRetry -Uri $pythonDevUrl -OutFile $pythonDevZipPath
+  $downloadedPythonDevSha256 = (Get-FileHash -LiteralPath $pythonDevZipPath -Algorithm SHA256).Hash
+  if ($downloadedPythonDevSha256 -ne $pythonDevSha256) {
+    throw "Python ARM64 development package checksum mismatch: $downloadedPythonDevSha256"
+  }
+  Expand-Archive -LiteralPath $pythonDevZipPath -DestinationPath $pythonDevRoot -Force
+  $pythonDevTools = Join-Path $pythonDevRoot "tools"
+  $pythonDevInclude = Join-Path $pythonDevTools "include"
+  $pythonDevImportLib = Join-Path $pythonDevTools "libs\python311.lib"
+  if (-not (Test-Path (Join-Path $pythonDevInclude "Python.h")) -or -not (Test-Path $pythonDevImportLib)) {
+    throw "Python ARM64 development package is missing Python.h or python311.lib"
+  }
+  $runtimeInclude = Join-Path $runtimeDir "include"
+  $runtimeLibs = Join-Path $runtimeDir "libs"
+  Copy-Item -LiteralPath $pythonDevInclude -Destination $runtimeInclude -Recurse
+  New-Item -ItemType Directory -Force -Path $runtimeLibs | Out-Null
+  Copy-Item -LiteralPath $pythonDevImportLib -Destination (Join-Path $runtimeLibs "python311.lib")
+
   $wheelhouse = Join-Path $workDir "wheelhouse"
   New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
@@ -270,6 +295,15 @@ if ($Architecture -eq "arm64") {
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
 
 if ($Architecture -eq "arm64") {
+  Remove-Item -LiteralPath $runtimeInclude -Recurse -Force
+  Remove-Item -LiteralPath $runtimeLibs -Recurse -Force
+  if ((Test-Path $runtimeInclude) -or (Test-Path $runtimeLibs)) {
+    throw "Windows ARM64 build-only Python development files were not removed"
+  }
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-c", "import tiktoken._tiktoken; print('V8OS_ARM64_TIKTOKEN_RUNTIME_OK')"
+  )
+
   # sqlite-vec does not publish a win_arm64 wheel. V8OS does not import that
   # extension; install the audited saver version and prove its SQLite path works.
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(

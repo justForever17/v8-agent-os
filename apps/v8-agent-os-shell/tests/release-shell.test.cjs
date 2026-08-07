@@ -281,6 +281,11 @@ test('desktop workflow uses fan-in publication with narrowly scoped release perm
   assert.match(workflow, /Verify Windows runner and Node architecture/);
   assert.match(workflow, /Verify Windows Rust native target/);
   assert.match(workflow, /-Architecture "\$\{\{ matrix\.pythonArch \}\}"/);
+  assert.ok(
+    workflow.indexOf('Prepare embedded Engine Python runtime on Windows') <
+      workflow.indexOf('Install Admin dependencies'),
+    'platform Python runtime validation must run before expensive product dependency installs',
+  );
   const releaseJob = workflow.slice(workflow.indexOf('\n  release:'));
   assert.doesNotMatch(releaseJob, /desktop-release-assets\/RUNTIME_PROBE-\*\.json/);
   assert.doesNotMatch(releaseJob, /desktop-release-assets\/PACKAGE_LAYOUT-\*\.json/);
@@ -544,8 +549,15 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /Copy-Item -LiteralPath \$requirementsSourceRoot/);
   assert.match(windowsPythonRuntime, /setuptools-rust==1\.13\.0/);
   assert.match(windowsPythonRuntime, /tiktoken==0\.13\.0/);
+  assert.match(windowsPythonRuntime, /Windows ARM64 build support is pinned to Python 3\.11\.9/);
+  assert.match(windowsPythonRuntime, /pythonarm64\.\$PythonVersion\.nupkg/);
+  assert.match(windowsPythonRuntime, /2F5B3BEE38850FDDE1B44227A23B8130D329839558376D2EB11099CE2B2CC33C/);
+  assert.match(windowsPythonRuntime, /Python\.h/);
+  assert.match(windowsPythonRuntime, /python311\.lib/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 tiktoken wheel/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_RUNTIME_OK/);
+  assert.match(windowsPythonRuntime, /build-only Python development files were not removed/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHECKPOINT_SQLITE_OK/);
   assert.match(windowsPythonRuntime, /await saver\.aput/);

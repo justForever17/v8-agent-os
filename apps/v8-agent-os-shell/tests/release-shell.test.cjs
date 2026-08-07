@@ -571,6 +571,8 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /protoc-\$protocVersion-win64\.zip/);
   assert.match(windowsPythonRuntime, /5D3FF218D7D91EEA95F7569BCB5A98F3030F8996D44151279D9772EDCFF76082/);
   assert.match(windowsPythonRuntime, /PROTOC_INCLUDE/);
+  assert.match(windowsPythonRuntime, /VC\\Tools\\Llvm\\ARM64\\bin\\clang\.exe/);
+  assert.match(windowsPythonRuntime, /CFLAGS_aarch64_pc_windows_msvc = "-D_ARM64_=1"/);
   assert.match(windowsPythonRuntime, /chromadb==1\.5\.9/);
   assert.match(windowsPythonRuntime, /5C20E62A455C28BACAC927F26116A73FD8E1799E0D908BE8E8A4F02197A54731/);
   assert.match(windowsPythonRuntime, /Expected exactly one audited generator 0\.8\.8 entry/);

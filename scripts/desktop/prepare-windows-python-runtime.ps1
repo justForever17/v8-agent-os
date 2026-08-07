@@ -325,6 +325,13 @@ if ($Architecture -eq "arm64") {
   }
   Invoke-Checked -FilePath $protocExe -Arguments @("--version")
 
+  $arm64Clang = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\ARM64\bin\clang.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $arm64Clang) {
+    throw "ARM64 clang.exe was not found in the Visual Studio LLVM toolchain"
+  }
+  $arm64ClangDir = Split-Path -Parent $arm64Clang.FullName
+  Invoke-Checked -FilePath $arm64Clang.FullName -Arguments @("--version")
+
   $chromaSdistPath = Join-Path $workDir "chromadb-1.5.9.tar.gz"
   $chromaSdistUrl = "https://files.pythonhosted.org/packages/92/d1/5e33b26985f0c7046a0be1cee2158ada1748ee700d2545057fde1468d74d/chromadb-1.5.9.tar.gz"
   $chromaSdistSha256 = "5C20E62A455C28BACAC927F26116A73FD8E1799E0D908BE8E8A4F02197A54731"
@@ -386,10 +393,11 @@ if ($Architecture -eq "arm64") {
     "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
     "--no-build-isolation", "--wheel-dir", $wheelhouse, $chromaSourceRoot
   ) -Environment @{
-    PATH = "$(Join-Path $runtimeDir 'Scripts');$env:PATH"
+    PATH = "$(Join-Path $runtimeDir 'Scripts');$arm64ClangDir;$env:PATH"
     PROTOC = $protocExe
     PROTOC_INCLUDE = $protocInclude
     CARGO_NET_RETRY = "5"
+    CFLAGS_aarch64_pc_windows_msvc = "-D_ARM64_=1"
   }
   $chromaWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chromadb-1.5.9-*.whl")
   if ($chromaWheels.Count -ne 1 -or $chromaWheels[0].Name -notmatch '-win_arm64\.whl$') {

@@ -98,6 +98,39 @@ function pythonExecutable(runtimeDir) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 }
 
+function isPathWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function verifyPortablePythonLocation(python, runtimeDir) {
+  const result = spawnSync(
+    python,
+    [
+      "-c",
+      "import json, sys, sysconfig; print(json.dumps({'executable': sys.executable, 'prefix': sys.prefix, 'basePrefix': sys.base_prefix, 'purelib': sysconfig.get_path('purelib'), 'platlib': sysconfig.get_path('platlib')}))",
+    ],
+    { encoding: "utf8", timeout: 30000 },
+  );
+  if (result.error || result.status !== 0) {
+    fail(`Could not verify portable Python root: ${result.error?.message || result.stderr || "unknown error"}`);
+  }
+
+  let locations;
+  try {
+    locations = JSON.parse(String(result.stdout || "").trim());
+  } catch {
+    fail(`Portable Python root probe returned invalid JSON: ${String(result.stdout || "").trim()}`);
+  }
+  const realRuntimeDir = fs.realpathSync(runtimeDir);
+  for (const [name, value] of Object.entries(locations)) {
+    const resolved = typeof value === "string" && fs.existsSync(value) ? fs.realpathSync(value) : String(value || "");
+    if (!resolved || !isPathWithin(realRuntimeDir, resolved)) {
+      fail(`Portable Python ${name} resolved outside the packaged runtime: ${String(value || "")}`);
+    }
+  }
+}
+
 function installLinuxPyatspi(python, runtimeDir, workDir) {
   const sitePackagesResult = spawnSync(
     python,
@@ -108,8 +141,7 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
     fail(`Could not resolve portable Python site-packages: ${sitePackagesResult.error?.message || sitePackagesResult.stderr || "unknown error"}`);
   }
   const sitePackages = String(sitePackagesResult.stdout || "").trim();
-  const relativeSitePackages = path.relative(runtimeDir, sitePackages);
-  if (!sitePackages || relativeSitePackages.startsWith("..") || path.isAbsolute(relativeSitePackages)) {
+  if (!sitePackages || !isPathWithin(fs.realpathSync(runtimeDir), fs.realpathSync(sitePackages))) {
     fail(`Refusing unexpected portable Python site-packages path: ${sitePackages}`);
   }
 
@@ -171,13 +203,18 @@ async function main() {
     const parent = path.dirname(runtimeDir);
     if (parent !== engineDir || path.basename(runtimeDir) !== ".python") fail(`Refusing unexpected portable runtime path: ${runtimeDir}`);
     fs.rmSync(runtimeDir, { recursive: true, force: true });
-    fs.cpSync(installRoot, runtimeDir, { recursive: true });
+    // The upstream archive contains relative interpreter symlinks such as
+    // bin/python3 -> python3.11. Node's default copies resolve those links
+    // against the temporary extraction folder, which leaves the package
+    // pointing at a directory removed in finally. Preserve the link text.
+    fs.cpSync(installRoot, runtimeDir, { recursive: true, verbatimSymlinks: true });
 
     const python = pythonExecutable(runtimeDir);
     if (!python) fail(`Portable Python executable was not found under ${runtimeDir}`);
     const pythonAlias = path.join(runtimeDir, "bin", "python");
     if (!fs.existsSync(pythonAlias)) fs.symlinkSync("python3", pythonAlias);
     fs.chmodSync(python, 0o755);
+    verifyPortablePythonLocation(python, runtimeDir);
 
     run(python, ["-m", "ensurepip", "--upgrade"]);
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel"]);

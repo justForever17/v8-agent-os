@@ -323,6 +323,8 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(posixRuntimeScript, /process\.platform !== runtime\.platform/);
   assert.match(posixRuntimeScript, /python\/install/);
   assert.match(posixRuntimeScript, /path\.join\(extractDir, "python"\)/);
+  assert.match(posixRuntimeScript, /verbatimSymlinks:\s*true/);
+  assert.match(posixRuntimeScript, /Portable Python .*resolved outside the packaged runtime/);
 
   const macHelperBuild = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'build-macos-ax-helper.mjs'),

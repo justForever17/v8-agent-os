@@ -33,7 +33,7 @@ Phone 是唯一远程交互入口：
 - 保存 server profile。
 - 支持远程访问、SQLite 本地历史、墓碑同步和恢复。
 
-当前已有 GitHub Actions：`v8-os-phone-vYYYY.MM.DD.N` tag 可并行触发 Android APK、iOS 内部分发 IPA 与 checksum release；两个构建成功后才发布。旧 `phone-v*` 只作为历史 tag。
+当前已有 GitHub Actions：`v8-os-phone-vYYYY.MM.DD.N` tag 可触发 Android APK 与 checksum release；iOS 通过受控手动 workflow 构建，完成真实签名验收前不进入 tag 发布。旧 `phone-v*` 只作为历史 tag。
 
 ### CLI 源码树入口
 

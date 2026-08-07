@@ -212,19 +212,18 @@ test('desktop workflow uses free-tier guardrails and keeps release permissions s
   assert.match(workflow, /compression-level: 0/);
 });
 
-test('phone workflow honors dispatch inputs and fans tagged release in from both package artifacts', () => {
+test('phone workflow honors dispatch inputs while preserving the proven Android tag release path', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
   assert.match(workflow, /platform:\s*\n\s+description: Target platform[\s\S]*?- android[\s\S]*?- ios[\s\S]*?- all/);
   assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ github\.event\.inputs\.profile \|\| 'preview' \}\}/);
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
-  assert.match(workflow, /build-ios:[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.match(workflow, /build-ios:[\s\S]*?if: github\.event_name == 'workflow_dispatch' && \(github\.event\.inputs\.platform == 'ios' \|\| github\.event\.inputs\.platform == 'all'\)[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /release:\s*\n\s+name: Publish Phone release\s*\n\s+needs:\s*\n\s+- build-android\s*\n\s+- build-ios/);
-  assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result == 'success'/);
+  assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result == 'skipped'/);
   assert.match(workflow, /actions\/download-artifact@v4/);
   assert.match(workflow, /Prepare phone release assets/);
   assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
   assert.match(workflow, /apps\/v8-agent-os-phone\/V8OS-Phone-\*-android-preview\.apk/);
-  assert.match(workflow, /apps\/v8-agent-os-phone\/V8OS-Phone-\*-ios-preview\.ipa/);
 
   const releaseIndex = workflow.indexOf('\n  release:');
   assert.notEqual(releaseIndex, -1);
@@ -233,15 +232,15 @@ test('phone workflow honors dispatch inputs and fans tagged release in from both
   assert.doesNotMatch(buildJobs, /contents: write/);
 });
 
-test('phone release notes advertise both preview packages without claiming App Store distribution', () => {
+test('phone release notes retain the Android-only tag distribution contract', () => {
   const generator = path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs');
   const notes = execFileSync(process.execPath, [generator, '--product', 'phone', '--version', '2026.08.07.1'], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
   assert.match(notes, /V8OS-Phone-2026\.08\.07\.1-android-preview\.apk/);
-  assert.match(notes, /V8OS-Phone-2026\.08\.07\.1-ios-preview\.ipa/);
-  assert.match(notes, /不等同于 App Store 发布/);
+  assert.doesNotMatch(notes, /ios-preview\.ipa/);
+  assert.match(notes, /不随 Phone tag 发布/);
 });
 
 test('desktop preview uses a slim portable Python release profile', () => {

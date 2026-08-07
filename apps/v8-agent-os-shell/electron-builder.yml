@@ -118,7 +118,6 @@ deb:
     - libxtst6
     - xdg-utils
     - at-spi2-core
-    - libatk-adaptor-2.0-0
     - xdotool
     - wmctrl
     - xclip

@@ -204,7 +204,7 @@ jobs:
       - name: Prepare embedded Engine Python runtime on Windows
         if: matrix.os == 'windows'
         shell: pwsh
-        timeout-minutes: 25
+        timeout-minutes: 60
         run: |
           scripts/desktop/prepare-windows-python-runtime.ps1 `
             -PythonVersion 3.11.9 `

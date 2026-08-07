@@ -501,6 +501,11 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(workflow, /Normalize platform release assets and checksums/);
   assert.match(workflow, /Upload desktop platform artifacts/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
+  const windowsPythonStep = workflow.slice(
+    workflow.indexOf('Prepare embedded Engine Python runtime on Windows'),
+    workflow.indexOf('Prepare embedded Engine Python runtime on macOS or Linux'),
+  );
+  assert.match(windowsPythonStep, /timeout-minutes:\s*60/);
 
   const runtimeProbe = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'verify_desktop_release_runtime.mjs'),
@@ -563,7 +568,11 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /numpy==2\.4\.6/);
   assert.match(windowsPythonRuntime, /maturin==1\.14\.1/);
   assert.match(windowsPythonRuntime, /Join-Path \$runtimeDir 'Scripts'/);
+  assert.match(windowsPythonRuntime, /protoc-\$protocVersion-win64\.zip/);
+  assert.match(windowsPythonRuntime, /5D3FF218D7D91EEA95F7569BCB5A98F3030F8996D44151279D9772EDCFF76082/);
+  assert.match(windowsPythonRuntime, /PROTOC_INCLUDE/);
   assert.match(windowsPythonRuntime, /chromadb==1\.5\.9/);
+  assert.match(windowsPythonRuntime, /5C20E62A455C28BACAC927F26116A73FD8E1799E0D908BE8E8A4F02197A54731/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 Chroma wheel/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_NATIVE_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_WRITE_OK/);

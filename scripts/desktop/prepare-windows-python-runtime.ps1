@@ -303,11 +303,44 @@ if ($Architecture -eq "arm64") {
     "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
     "numpy==2.4.6", "maturin==1.14.1"
   ) -Description "Install Windows ARM64 Chroma build frontends"
-  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+
+  $protocVersion = "35.1"
+  $protocZipPath = Join-Path $workDir "protoc-$protocVersion-win64.zip"
+  $protocRoot = Join-Path $workDir "protoc-$protocVersion"
+  $protocUrl = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip"
+  $protocSha256 = "5D3FF218D7D91EEA95F7569BCB5A98F3030F8996D44151279D9772EDCFF76082"
+  Invoke-WebRequestWithRetry -Uri $protocUrl -OutFile $protocZipPath
+  $downloadedProtocSha256 = (Get-FileHash -LiteralPath $protocZipPath -Algorithm SHA256).Hash
+  if ($downloadedProtocSha256 -ne $protocSha256) {
+    throw "Protocol Buffers compiler checksum mismatch: $downloadedProtocSha256"
+  }
+  Expand-Archive -LiteralPath $protocZipPath -DestinationPath $protocRoot -Force
+  $protocExe = Join-Path $protocRoot "bin\protoc.exe"
+  $protocInclude = Join-Path $protocRoot "include"
+  if (
+    -not (Test-Path $protocExe) -or
+    -not (Test-Path (Join-Path $protocInclude "google\protobuf\descriptor.proto"))
+  ) {
+    throw "Protocol Buffers compiler package is missing protoc.exe or standard includes"
+  }
+  Invoke-Checked -FilePath $protocExe -Arguments @("--version")
+
+  $chromaSdistPath = Join-Path $workDir "chromadb-1.5.9.tar.gz"
+  $chromaSdistUrl = "https://files.pythonhosted.org/packages/92/d1/5e33b26985f0c7046a0be1cee2158ada1748ee700d2545057fde1468d74d/chromadb-1.5.9.tar.gz"
+  $chromaSdistSha256 = "5C20E62A455C28BACAC927F26116A73FD8E1799E0D908BE8E8A4F02197A54731"
+  Invoke-WebRequestWithRetry -Uri $chromaSdistUrl -OutFile $chromaSdistPath
+  $downloadedChromaSdistSha256 = (Get-FileHash -LiteralPath $chromaSdistPath -Algorithm SHA256).Hash
+  if ($downloadedChromaSdistSha256 -ne $chromaSdistSha256) {
+    throw "Chroma source distribution checksum mismatch: $downloadedChromaSdistSha256"
+  }
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
-    "--no-build-isolation", "--wheel-dir", $wheelhouse, "chromadb==1.5.9"
-  ) -Description "Build native Windows ARM64 Chroma wheel" -Environment @{
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, $chromaSdistPath
+  ) -Environment @{
     PATH = "$(Join-Path $runtimeDir 'Scripts');$env:PATH"
+    PROTOC = $protocExe
+    PROTOC_INCLUDE = $protocInclude
+    CARGO_NET_RETRY = "5"
   }
   $chromaWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chromadb-1.5.9-*.whl")
   if ($chromaWheels.Count -ne 1 -or $chromaWheels[0].Name -notmatch '-win_arm64\.whl$') {

@@ -1,0 +1,259 @@
+name: V8OS Release
+
+run-name: V8OS release ${{ github.ref_type == 'tag' && github.ref_name || inputs.mode }}
+
+on:
+  push:
+    tags:
+      - "v8-os-v*"
+      - "v8-os-desktop-v*"
+      - "v8-os-phone-v*"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate the release plan or build it without publishing
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v8os-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Resolve release plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release-plan.outputs.version }}
+      channel: ${{ steps.release-plan.outputs.channel }}
+      tag: ${{ steps.release-plan.outputs.tag }}
+      prerelease: ${{ steps.release-plan.outputs.prerelease }}
+      run_builds: ${{ steps.release-plan.outputs.run_builds }}
+      publish: ${{ steps.release-plan.outputs.publish }}
+      desktop_enabled: ${{ steps.release-plan.outputs.desktop_enabled }}
+      desktop_required: ${{ steps.release-plan.outputs.desktop_required }}
+      desktop_targets_json: ${{ steps.release-plan.outputs.desktop_targets_json }}
+      phone_enabled: ${{ steps.release-plan.outputs.phone_enabled }}
+      phone_required: ${{ steps.release-plan.outputs.phone_required }}
+      android_enabled: ${{ steps.release-plan.outputs.android_enabled }}
+      android_required: ${{ steps.release-plan.outputs.android_required }}
+      ios_enabled: ${{ steps.release-plan.outputs.ios_enabled }}
+      ios_required: ${{ steps.release-plan.outputs.ios_required }}
+      phone_platform: ${{ steps.release-plan.outputs.phone_platform }}
+      phone_profile: ${{ steps.release-plan.outputs.phone_profile }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - id: release-plan
+        name: Validate manifest and resolve products
+        shell: bash
+        env:
+          REQUESTED_MODE: ${{ inputs.mode || 'build' }}
+        run: |
+          set -euo pipefail
+          mode="$REQUESTED_MODE"
+          args=(
+            --manifest release-manifest.json
+            --mode "$mode"
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          node scripts/release/resolve-release-plan.mjs "${args[@]}"
+
+  desktop-build:
+    name: Build required Desktop targets
+    needs:
+      - plan
+    if: >-
+      needs.plan.outputs.run_builds == 'true' &&
+      needs.plan.outputs.desktop_enabled == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-preview.yml
+    with:
+      targets_json: ${{ needs.plan.outputs.desktop_targets_json }}
+      platform: all
+      release_version: ${{ needs.plan.outputs.version }}
+      release_channel: ${{ needs.plan.outputs.channel }}
+      release_tag: ${{ needs.plan.outputs.tag }}
+
+  phone-build:
+    name: Build required Phone targets
+    needs:
+      - plan
+    if: >-
+      needs.plan.outputs.run_builds == 'true' &&
+      needs.plan.outputs.phone_enabled == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/phone-build.yml
+    with:
+      profile: ${{ needs.plan.outputs.phone_profile }}
+      build_android: ${{ fromJSON(needs.plan.outputs.android_enabled) }}
+      build_ios: ${{ fromJSON(needs.plan.outputs.ios_enabled) }}
+
+  release-gate:
+    name: Verify required release products
+    needs:
+      - plan
+      - desktop-build
+      - phone-build
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      publish_ready: ${{ steps.release-gate.outputs.publish_ready }}
+
+    steps:
+      - id: release-gate
+        name: Enforce required product results
+        shell: bash
+        env:
+          RUN_BUILDS: ${{ needs.plan.outputs.run_builds }}
+          PUBLISH: ${{ needs.plan.outputs.publish }}
+          DESKTOP_ENABLED: ${{ needs.plan.outputs.desktop_enabled }}
+          DESKTOP_REQUIRED: ${{ needs.plan.outputs.desktop_required }}
+          DESKTOP_RESULT: ${{ needs.desktop-build.result }}
+          PHONE_ENABLED: ${{ needs.plan.outputs.phone_enabled }}
+          PHONE_REQUIRED: ${{ needs.plan.outputs.phone_required }}
+          PHONE_RESULT: ${{ needs.phone-build.result }}
+        run: |
+          set -euo pipefail
+          echo "publish_ready=false" >> "$GITHUB_OUTPUT"
+
+          verify_product() {
+            local product="$1"
+            local enabled="$2"
+            local required="$3"
+            local result="$4"
+            if [[ "$enabled" == "true" && "$required" == "true" && "$result" != "success" ]]; then
+              echo "Required product $product ended with $result" >&2
+              exit 1
+            fi
+            if [[ "$enabled" != "true" && "$result" != "skipped" ]]; then
+              echo "Disabled product $product unexpectedly ended with $result" >&2
+              exit 1
+            fi
+          }
+
+          if [[ "$RUN_BUILDS" != "true" ]]; then
+            [[ "$PUBLISH" == "false" ]]
+            [[ "$DESKTOP_RESULT" == "skipped" ]]
+            [[ "$PHONE_RESULT" == "skipped" ]]
+            exit 0
+          fi
+
+          verify_product desktop "$DESKTOP_ENABLED" "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
+          verify_product phone "$PHONE_ENABLED" "$PHONE_REQUIRED" "$PHONE_RESULT"
+
+          if [[ "$PUBLISH" == "true" ]]; then
+            echo "publish_ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish one V8OS release
+    needs:
+      - plan
+      - release-gate
+    if: needs.release-gate.outputs.publish_ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Desktop build artifacts
+        if: needs.plan.outputs.desktop_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v8os-desktop-*
+          path: release-input/desktop
+          merge-multiple: true
+
+      - name: Download Android build artifact
+        if: needs.plan.outputs.android_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: phone-android-package
+          path: release-input/phone/android
+
+      - name: Download iOS build artifact
+        if: needs.plan.outputs.ios_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: phone-ios-package
+          path: release-input/phone/ios
+
+      - name: Prepare unified public release assets
+        shell: bash
+        run: >-
+          node scripts/release/prepare-unified-release-assets.mjs
+          --manifest release-manifest.json
+          --tag "${{ needs.plan.outputs.tag }}"
+          --input-dir release-input
+          --output-dir release-assets
+
+      - name: Verify public release surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f release-assets/SHA256SUMS.txt
+          while IFS= read -r asset; do
+            case "$asset" in
+              V8-Agent-OS-*|V8OS-Phone-*|SHA256SUMS.txt) ;;
+              *) echo "Unexpected public release asset: $asset" >&2; exit 1 ;;
+            esac
+          done < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.plan.outputs.channel }}
+        run: |
+          set -euo pipefail
+          product=all
+          case "$RELEASE_TAG" in
+            v8-os-desktop-v*) product=desktop ;;
+            v8-os-phone-v*) product=phone ;;
+          esac
+          mkdir -p release-work
+          node scripts/release/generate-release-notes.mjs \
+            --product "$product" \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --channel "$RELEASE_CHANNEL" \
+            --out release-work/RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          generate_release_notes: false
+          body_path: release-work/RELEASE_NOTES.md
+          prerelease: ${{ needs.plan.outputs.prerelease }}
+          make_latest: ${{ needs.plan.outputs.prerelease == 'true' && 'false' || 'true' }}
+          fail_on_unmatched_files: true
+          files: release-assets/*

@@ -1,10 +1,14 @@
 # V8OS 发布版本管理基线
 
-更新时间：2026-07-08
+更新时间：2026-08-08
 
 ## 目标
 
 把 V8OS 的发布入口从临时 tag 和自动 changelog，收口为清晰的产品通道、统一版本号、结构化发布说明、校验文件和可复现打包流程。
+
+`release-manifest.json` schema 2 是发布身份和目标矩阵的单一结构化真相。顶层 `release.version`、`release.channel`、`release.tag` 必须彼此一致；Desktop、Phone 及其平台目标只声明是否启用、是否为发布必需项。各产品的 `package.json`、Phone 原生 build number 和安装包文件名是该真相的投影，不得反向形成第二套版本源。
+
+根 `VERSION` 仅保留为 schema 2 生成的兼容 semver 投影，供仍会探测该文件的外部工具过渡使用；它不参与 plan 或 tag 决策。`prepare-release --from-manifest` 会校验投影一致性，准备新版本时会同步重写；完成两个成功统一发布周期后评估删除，禁止手工双写维护。
 
 ## 版本通道
 
@@ -23,8 +27,9 @@
 当前状态：
 
 - 已有源码树 `v8os preview`。
-- 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview workflow；每个平台只负责构建和上传工件。
-- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 在所有构建 job 成功后由 fan-in release job 创建 GitHub Release，上传 Windows 安装包、macOS DMG、Linux AppImage/DEB 和 `SHA256SUMS.txt`。`RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json` 是 CI 验收证据，保留在对应 workflow artifact，而不占用普通下载资产列表。
+- 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview reusable workflow；每个平台只负责构建并上传本次 workflow run 的工件，不直接创建 GitHub Release。
+- schema 2 当前把 Desktop 及六个桌面目标全部标记为 `required`。统一发布只有在这些目标和 Android 都成功后才可进入最终 fan-in Release。
+- 最终 Release 上传 Windows 安装包、macOS DMG、Linux AppImage/DEB、Android APK 和统一的 `SHA256SUMS.txt`。`RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json` 是 CI 诊断证据，只保留在 GitHub Actions artifact，不进入普通用户的 Release 下载资产列表。
 - 尚未签名，没有自动更新，不宣传为 stable。
 
 ### `desktop-stable`
@@ -45,14 +50,15 @@
 
 当前状态：
 
-- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会构建 Android APK；只要 Android 成功，汇总 job 就发布 APK 和 `SHA256SUMS.txt`，iOS 未选择或因非交互签名不可用而失败不会阻断 Android 发布。
-- 旧 `phone-v*` tag 只作为历史发布入口，不再用于新版本。
+- schema 2 当前把 Android 标记为 `enabled: true`、`required: true`；它与 Desktop 一起进入统一发布门禁。
+- iOS 因尚未配置非交互签名凭据，明确标记为 `enabled: false`、`required: false`。统一发布中它必须是 disabled/skipped，不会以失败状态阻断 Desktop 和 Android。
+- Phone reusable workflow 只负责构建所选平台并上传工件；最终 Release 由根发布工作流统一创建。
 
 约束：
 
 - Phone 是唯一远程配对入口。
 - Android 支持 11 及以上。
-- iOS 支持 16.4 及以上；`workflow_dispatch` 可受控构建 IPA，但它不随 Phone tag 发布，直到 Apple 签名与注册设备真实验收完成。
+- iOS 支持目标为 16.4 及以上；在 Apple 签名凭据、注册设备和真实安装验收完成，并显式更新 manifest 前，不进入统一发布矩阵。
 
 ### `tui-experimental`
 
@@ -77,30 +83,59 @@
 
 ## Tag 规则
 
-新版本统一使用日期型版本号：
+新版本使用日期型版本号，并由一个统一 tag 触发同一版本的 Desktop 与 Phone 构建：
 
 ```text
-v8-os-phone-vYYYY.MM.DD.N
+v8-os-vYYYY.MM.DD.N
+```
+
+其中年份限定为 2000–2099，`N` 为同日严格递增的 1–99 且不带前导零。这个固定宽度约束保证 Android `versionCode` 的数值单调性；`prepare-release` 同时拒绝等于或低于当前 manifest 的版本，避免跨产品投影降级。
+
+旧的产品 tag 在过渡期仍可触发对应产品的兼容发布：
+
+```text
 v8-os-desktop-vYYYY.MM.DD.N
+v8-os-phone-vYYYY.MM.DD.N
 ```
 
-示例：
+兼容入口自首个成功的统一 Release 起保留两个成功统一发布周期，随后按专门的废弃变更移除。周期按 GitHub 上实际成功的统一 Release 计数，不在准备版本时静默递减；旧 `desktop-v*` / `phone-v*` 仅作历史记录，不重新启用。
+
+准备统一版本时，默认命令是 dry-run：
 
 ```powershell
-node scripts/release/prepare-release.mjs --product phone --version 2026.07.08.1
-node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.1
+node scripts/release/prepare-release.mjs --version 2026.08.08.1 --channel preview
 ```
 
-默认是 dry-run。真正准备本地提交和 annotated tag 时加 `--apply`：
+真正准备本地提交和 annotated tag 时加 `--apply`：
 
 ```powershell
-node scripts/release/prepare-release.mjs --product phone --version 2026.07.08.1 --apply
-node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.1 --apply
+node scripts/release/prepare-release.mjs --version 2026.08.08.1 --channel preview --apply
 ```
 
-`desktop` 当前默认仍准备 preview 通道，但 tag 已统一为 `v8-os-desktop-v...`。preview/stable 的差异由 release channel、发布说明和 workflow 门禁表达，不再拆成两套桌面 tag。
+脚本会同步更新 schema 2 manifest 和全部已启用产品的版本投影，只创建 `v8-os-v...` 统一 tag。当前治理入口只接受 `preview`；在签名、自动更新和 stable 实机安装门禁落地前，manifest、prepare 与 plan 都会拒绝 `stable`，防止 unsigned preview 被发布为正式 latest。
 
 脚本不会自动 push。推送 tag 前应先完成对应通道的验收。
+
+## 统一发布编排
+
+根工作流 `.github/workflows/release.yml` 是发布编排入口：
+
+1. `plan` 读取并校验 schema 2 manifest，解析统一或过渡期兼容 tag。
+2. Desktop 与 Phone reusable workflows 只构建并上传工件，不拥有 Release 写权限。
+3. `release-gate` 汇总所有必需产品结果；当前 Desktop 全目标和 Android 任一失败都会阻断发布，disabled iOS 必须保持 skipped。
+4. 唯一的 `publish` job 下载同一 workflow run 的工件、重算统一校验和、过滤诊断 JSON，再一次性创建 GitHub Release。
+
+手动 `workflow_dispatch` 的 `dry-run` 只解析 manifest 和矩阵，不构建、不发布；`build` 可验证完整构建但不创建 Release。只有受支持的 tag push 才允许 `publish`。
+
+`preview` channel 创建的 GitHub Release 必须设置 `prerelease: true` 且不能成为 latest；只有通过 stable 门禁的 stable channel 才能成为正式 Release。工作流、schema dry-run 或本地测试通过都不等于真实统一 Preview 已发布成功，仍需以 GitHub Actions 全部必需 job、Release 元数据和下载资产实测为准。
+
+## PR CI 与密钥边界
+
+Pull Request 只运行始终可见的最终 `CI Gate`：静态检查、单元/合同测试、manifest/matrix dry-run 和轻量客户端 smoke。PR 不运行 EAS、全平台 Electron 打包、真实 provider 或高成本 live 测试，也不得声明或读取发布密钥。
+
+Web 当前的 PR 门禁执行 TypeScript、i18n 与完整客户端合同测试，但暂不执行全量 ESLint。干净检出基线中的 Web ESLint 仍有两类存量失败：CommonJS 合同测试被 TypeScript 规则误扫，以及 Canvas 源码中的 Hooks 规则错误。该缺口登记为 P1 技术债，必须在下一迭代为 CommonJS 测试配置准确的 ESLint override，并逐项修复真实源码错误；禁止通过全局关闭规则掩盖。连续两次干净检出通过后恢复 Web lint 门禁。Admin 与 Phone lint 继续作为当前 PR 阻断项。
+
+EAS 与未来签名 job 必须显式绑定受保护的 GitHub `release` Environment，`EXPO_TOKEN` 和签名材料只能作为该 Environment 的 secret 注入这些 job；普通构建、plan、gate 和 PR job 不得获得这些 secret。仓库工作流已定义该权限边界，不代表 GitHub 外部配置中的仓库级 secret 已完成迁移；迁移状态必须在仓库 Settings 中单独核验，在确认前不得删除现有 secret 或宣称迁移完成。
 
 ## 发布说明要求
 
@@ -173,9 +208,10 @@ Phone 发版前必须确认：
 | 触发 | profile | 构建 | 发布行为 |
 | --- | --- | --- | --- |
 | `workflow_dispatch` / `android` | 用户所选 | Android APK；`production` 为 AAB | 仅上传临时 artifact |
-| `workflow_dispatch` / `ios` | 用户所选 | iOS IPA | 仅上传临时 artifact |
-| `workflow_dispatch` / `all` | 用户所选 | Android 与 iOS 并行 | 仅上传临时 artifact |
-| `v8-os-phone-vYYYY.MM.DD.N` tag | `preview` | Android APK；iOS job skipped | 汇总 job 在所有 job 终态确定后创建 APK Release |
+| `workflow_dispatch` / `ios` | 用户所选 | 仅在外部签名凭据已配置时尝试 iOS IPA | 仅上传临时 artifact，不改变 manifest 的 disabled 状态 |
+| `workflow_dispatch` / `all` | 用户所选 | 按显式选择尝试 Android 与 iOS | 仅上传临时 artifact，不创建 Release |
+| `v8-os-vYYYY.MM.DD.N` tag | manifest channel | Desktop 全目标与 Android；iOS disabled/skipped | 根 fan-in job 创建一个统一 Release |
+| 过渡期 `v8-os-phone-vYYYY.MM.DD.N` tag | manifest channel | 仅 Phone 中启用的平台 | 根 fan-in job 创建兼容 Phone Release；两个成功统一发布周期后废弃 |
 
 ## 不能宣称的内容
 

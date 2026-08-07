@@ -65,7 +65,7 @@ Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signe
 
 Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
 
-- Desktop Preview: Windows x64 installer, macOS Intel/Apple Silicon DMG, and Linux x64/arm64 AppImage or DEB package.
+- Desktop Preview: Windows x64/ARM64 installers, macOS Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages.
 - Android Phone Preview: APK package.
 
 The desktop build is currently an unsigned preview. Windows may show a security confirmation and macOS may require an explicit system confirmation before first launch. Code signing and auto-update are planned for later releases. Linux Wayland input restrictions and macOS accessibility permissions are surfaced explicitly rather than silently bypassed.
@@ -88,8 +88,8 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 
 | Product | Status | Notes |
 | --- | --- | --- |
-| Desktop | Preview | Windows x64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Signing, auto-update, and stable releases are still future work. |
-| Phone | Preview | Android APK first. iOS targets 16.4 and later, with controlled manual builds awaiting release acceptance. |
+| Desktop | Preview | Windows x64/ARM64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Signing, auto-update, and stable releases are still future work. |
+| Phone | Preview | Android APK is the required release target. iOS targets 16.4 and later but remains disabled until non-interactive signing is configured. |
 | TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
 | Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |
 

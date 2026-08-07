@@ -3,7 +3,15 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-const TAG_RE = /^v8-os-(phone|desktop)-v(\d{4}\.\d{2}\.\d{2}\.\d+)$/;
+import {
+  isValidReleaseVersion,
+  LEGACY_PRODUCT_TAG_RE as LEGACY_TAG_RE,
+  UNIFIED_TAG_RE,
+} from "./release-manifest.mjs";
+
+function isReleaseTag(tag) {
+  return UNIFIED_TAG_RE.test(tag) || LEGACY_TAG_RE.test(tag);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -28,39 +36,38 @@ function inferRelease(args) {
   // Do not let a surrounding, unrelated tag (for example a desktop tag while
   // CI checks the Phone notes fixture) silently change its product.
   const hasExplicitReleaseIdentity = Boolean(args.tag || args.product || args.version);
-  const tag = args.tag || (!hasExplicitReleaseIdentity && TAG_RE.test(environmentTag) ? environmentTag : "");
+  const tag = args.tag || (!hasExplicitReleaseIdentity && isReleaseTag(environmentTag) ? environmentTag : "");
   let product = args.product;
   let version = args.version;
 
   if (tag) {
-    const match = TAG_RE.exec(tag);
-    if (!match) {
+    const unifiedMatch = UNIFIED_TAG_RE.exec(tag);
+    const legacyMatch = LEGACY_TAG_RE.exec(tag);
+    if (!unifiedMatch && !legacyMatch) {
       throw new Error(`Invalid V8OS release tag: ${tag}`);
     }
-    const tagProduct = match[1];
-    const tagChannel = "";
+    const tagProduct = unifiedMatch ? "all" : legacyMatch[1];
     product = product || tagProduct;
-    version = version || match[2];
-    if (product !== tagProduct) {
+    version = version || (unifiedMatch ? unifiedMatch[1] : legacyMatch[2]);
+    if (unifiedMatch && !["all", "phone", "desktop"].includes(product)) {
+      throw new Error(`Unified tag cannot generate notes for product ${product}.`);
+    }
+    if (legacyMatch && product !== tagProduct) {
       throw new Error(`Tag product (${tagProduct}) does not match --product (${product}).`);
     }
-    if (tagChannel && args.channel && args.channel !== tagChannel) {
-      throw new Error(`Tag channel (${tagChannel}) does not match --channel (${args.channel}).`);
-    }
-    args.channel = args.channel || tagChannel;
   }
 
-  if (!product || !["phone", "desktop"].includes(product)) {
-    throw new Error("Missing or invalid --product. Use phone or desktop.");
+  if (!product || !["phone", "desktop", "all"].includes(product)) {
+    throw new Error("Missing or invalid --product. Use phone, desktop, or all.");
   }
-  if (!version || !/^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(version)) {
-    throw new Error("Missing or invalid --version. Expected YYYY.MM.DD.N.");
+  if (!isValidReleaseVersion(version)) {
+    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form with N >= 1.");
   }
 
   return {
     product,
     version,
-    tag: tag || `v8-os-${product}-v${version}`,
+    tag: tag || (product === "all" ? `v8-os-v${version}` : `v8-os-${product}-v${version}`),
     channel: args.channel || "preview",
   };
 }
@@ -88,7 +95,7 @@ function repoUrl() {
 }
 
 function previousTag(currentTag, product) {
-  const prefix = `v8-os-${product}-v`;
+  const prefix = product === "all" ? "v8-os-v" : `v8-os-${product}-v`;
   const tags = git(["tag", "--list", `${prefix}*`, "--sort=-creatordate"])
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -98,15 +105,40 @@ function previousTag(currentTag, product) {
 }
 
 function releaseTitle(product, version, channel) {
+  if (product === "all") {
+    return `V8 Agent OS ${channel === "stable" ? "Stable" : "Preview"} v${version}`;
+  }
   const name = product === "phone" ? "V8OS Phone" : "V8OS Desktop";
   const suffix = channel === "stable" ? "Stable" : "Preview";
   return `${name} ${suffix} v${version}`;
 }
 
 function assetSection(product, version, channel) {
-  if (product === "phone") {
+  if (product === "all") {
+    const desktopVersion = channel === "stable" ? version : `preview-${version}`;
+    const desktopLabel = channel === "stable" ? "桌面安装包" : "未签名桌面预览安装包";
+    const androidAsset = channel === "stable"
+      ? `V8OS-Phone-${version}-android.aab`
+      : `V8OS-Phone-${version}-android-preview.apk`;
     return [
-      "- `V8OS-Phone-" + version + "-android-preview.apk`：Android 11+ 预览安装包。",
+      "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe` 与 `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows x64/ARM64 " + desktopLabel + "。",
+      "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg` 与 `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS Intel/Apple Silicon " + desktopLabel + "。",
+      "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage`、`.deb` 及对应 arm64 版本：Linux " + desktopLabel + "。",
+      channel === "stable"
+        ? "- `" + androidAsset + "`：Android Phone production 应用包。"
+        : "- `" + androidAsset + "`：Android 11+ Phone 预览安装包。",
+      "- `SHA256SUMS.txt`：本次统一发布全部下载文件的 SHA256 校验信息。",
+      "- 每个平台的运行时探针与包布局证据保留在对应 GitHub Actions artifact 中。",
+    ].join("\n");
+  }
+  if (product === "phone") {
+    const androidAsset = channel === "stable"
+      ? `V8OS-Phone-${version}-android.aab`
+      : `V8OS-Phone-${version}-android-preview.apk`;
+    return [
+      channel === "stable"
+        ? "- `" + androidAsset + "`：Android production 应用包。"
+        : "- `" + androidAsset + "`：Android 11+ 预览安装包。",
       "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
     ].join("\n");
   }
@@ -137,11 +169,21 @@ function assetSection(product, version, channel) {
 }
 
 function knownLimits(product, channel) {
+  if (product === "all") {
+    return [
+      "- Desktop 与 Android Phone 共用本次统一版本；Phone 仍是需要与 V8OS 桌面/控制台配对的远程入口。",
+      "- iOS 因缺少非交互签名凭据被明确禁用，不会阻断 Desktop 与 Android 发布。",
+      channel === "stable"
+        ? "- stable 发布必须通过签名与 stable 门禁。"
+        : "- 本版本是未签名 preview；SmartScreen、macOS 打开确认、签名和自动更新限制仍然存在。",
+      "- macOS/Linux GUI 权限与桌面自动化仍需在对应实体主机验收。",
+    ].join("\n");
+  }
   if (product === "phone") {
     return [
       "- Phone 是远程交互端，需要通过 V8OS 桌面/控制台配对。",
       "- Android 支持目标为 11 及以上；iOS 支持目标为 16.4 及以上，当前只提供受控手动构建，不随 Phone tag 发布。",
-      "- 若你从旧 `phone-v*` release 升级，请优先使用新的 `v8-os-phone-v*` 版本线。",
+      "- 若你从旧 `phone-v*` release 升级，请优先使用统一的 `v8-os-v*` 版本线；`v8-os-phone-v*` 仅保留两个成功统一发布周期。",
     ].join("\n");
   }
   if (channel === "stable") {
@@ -171,13 +213,15 @@ ${assetSection(release.product, release.version, release.channel)}
 
 ## 本次版本
 
-- 发布对象：${release.product === "phone" ? "Phone 远程端" : "桌面版"}
+- 发布对象：${release.product === "all" ? "Desktop 与 Phone" : release.product === "phone" ? "Phone 远程端" : "桌面版"}
 - 发布通道：${release.channel}
 - 标签：\`${release.tag}\`
 
 ## 安装 / 更新
 
-${release.product === "phone"
+${release.product === "all"
+  ? "桌面端按目标平台下载安装；Android 下载 APK 后安装并配对到 V8OS 桌面/控制台。"
+  : release.product === "phone"
   ? "下载 APK 后安装到 Android 设备；打开 Phone 后扫码配对到你的 V8OS 桌面/控制台。"
   : release.channel === "stable"
     ? "下载安装包或免安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"

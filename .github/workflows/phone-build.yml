@@ -1,6 +1,23 @@
 name: Phone Build
 
 on:
+  workflow_call:
+    inputs:
+      profile:
+        description: EAS build profile
+        required: false
+        default: preview
+        type: string
+      build_android:
+        description: Build the Android package
+        required: false
+        default: true
+        type: boolean
+      build_ios:
+        description: Build the iOS package
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       profile:
@@ -21,30 +38,30 @@ on:
           - android
           - ios
           - all
-  push:
-    tags:
-      - "v8-os-phone-v*"
 
 permissions:
   contents: read
 
 concurrency:
-  group: phone-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v8-os-phone-v') }}
+  group: phone-build-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform || format('android-{0}-ios-{1}', inputs.build_android, inputs.build_ios) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
 
 jobs:
   build-android:
     name: Phone Android package
-    if: github.event_name == 'push' || github.event.inputs.platform == 'android' || github.event.inputs.platform == 'all'
+    if: >-
+      (github.event_name == 'workflow_call' && inputs.build_android) ||
+      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'android' || inputs.platform == 'all'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: release
     permissions:
       contents: read
     defaults:
       run:
         working-directory: apps/v8-agent-os-phone
     env:
-      EAS_BUILD_PROFILE: ${{ github.event.inputs.profile || 'preview' }}
+      EAS_BUILD_PROFILE: ${{ inputs.profile || 'preview' }}
 
     steps:
       - name: Checkout
@@ -56,15 +73,6 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
-
-      - name: Verify phone release manifest
-        if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
-        shell: bash
-        run: >-
-          node ../../scripts/release/verify-release-manifest.mjs
-          --product phone
-          --tag "$GITHUB_REF_NAME"
-          --manifest ../../release-manifest.json
 
       - name: Setup Expo and EAS
         uses: expo/expo-github-action@v8
@@ -109,16 +117,19 @@ jobs:
 
   build-ios:
     name: Phone iOS package
-    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.platform == 'ios' || github.event.inputs.platform == 'all')
+    if: >-
+      (github.event_name == 'workflow_call' && inputs.build_ios) ||
+      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'ios' || inputs.platform == 'all'))
     runs-on: macos-latest
     timeout-minutes: 60
+    environment: release
     permissions:
       contents: read
     defaults:
       run:
         working-directory: apps/v8-agent-os-phone
     env:
-      EAS_BUILD_PROFILE: ${{ github.event.inputs.profile || 'preview' }}
+      EAS_BUILD_PROFILE: ${{ inputs.profile || 'preview' }}
 
     steps:
       - name: Checkout
@@ -161,57 +172,40 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  release:
-    name: Publish Phone release
+  phone-build-contract:
+    name: Verify requested Phone packages completed
     needs:
       - build-android
       - build-ios
     if: >-
-      always() &&
-      startsWith(github.ref, 'refs/tags/v8-os-phone-v') &&
-      needs.build-android.result == 'success' &&
-      needs.build-ios.result != 'cancelled'
+      always() && github.event_name == 'workflow_call'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 3
     permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: apps/v8-agent-os-phone
+      contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download Android package
-        uses: actions/download-artifact@v4
-        with:
-          name: phone-android-package
-          path: apps/v8-agent-os-phone/release-assets/android
-
-      - name: Prepare phone release assets
+      - name: Enforce the requested target results
         shell: bash
+        env:
+          BUILD_ANDROID: ${{ inputs.build_android }}
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          BUILD_IOS: ${{ inputs.build_ios }}
+          IOS_RESULT: ${{ needs.build-ios.result }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v8-os-phone-v}"
-          APK_SOURCE="release-assets/android/app-release.apk"
-          test -f "$APK_SOURCE"
-
-          APK_NAME="V8OS-Phone-${VERSION}-android-preview.apk"
-          cp "$APK_SOURCE" "$APK_NAME"
-          sha256sum "$APK_NAME" > SHA256SUMS.txt
-          node ../../scripts/release/generate-release-notes.mjs \
-            --product phone \
-            --tag "$GITHUB_REF_NAME" \
-            --channel preview \
-            --out RELEASE_NOTES.md
-          cat SHA256SUMS.txt
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: false
-          body_path: apps/v8-agent-os-phone/RELEASE_NOTES.md
-          files: |
-            apps/v8-agent-os-phone/V8OS-Phone-*-android-preview.apk
-            apps/v8-agent-os-phone/SHA256SUMS.txt
+          verify_target() {
+            local target="$1"
+            local requested="$2"
+            local result="$3"
+            if [[ "$requested" == "true" && "$result" != "success" ]]; then
+              echo "Requested Phone target $target ended with $result" >&2
+              exit 1
+            fi
+            if [[ "$requested" != "true" && "$result" != "skipped" ]]; then
+              echo "Disabled Phone target $target unexpectedly ended with $result" >&2
+              exit 1
+            fi
+          }
+          verify_target android "$BUILD_ANDROID" "$ANDROID_RESULT"
+          verify_target ios "$BUILD_IOS" "$IOS_RESULT"

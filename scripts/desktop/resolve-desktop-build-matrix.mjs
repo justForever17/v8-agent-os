@@ -20,22 +20,44 @@ function argValue(name) {
   return index >= 0 ? String(process.argv[index + 1] || "") : "";
 }
 
-function resolveTargets({ eventName, ref, platform }) {
-  const isTag = /^refs\/tags\/v8-os-desktop-v/.test(ref);
-  const enabled = isTag || eventName === "workflow_dispatch";
-  const requested = isTag ? "all" : platform || "all";
-  const include = requested === "all"
-    ? TARGETS
-    : TARGETS.filter((target) => target.id === requested);
-  if (!include.length) throw new Error(`Unsupported desktop platform: ${requested}`);
+function parseRequestedTargetIds(targetsJson) {
+  if (!targetsJson) return [];
+  const parsed = JSON.parse(targetsJson);
+  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+    throw new Error("--targets-json must be a JSON array of desktop target ids");
+  }
+  if (new Set(parsed).size !== parsed.length) {
+    throw new Error("--targets-json contains duplicate desktop target ids");
+  }
+  return parsed;
+}
+
+function resolveTargets({ eventName, platform, targetsJson }) {
+  const enabled = eventName === "workflow_call" || eventName === "workflow_dispatch";
+  const requestedTargetIds = parseRequestedTargetIds(targetsJson);
+  const requested = platform || "all";
+  const targetIds = requestedTargetIds.length > 0
+    ? requestedTargetIds
+    : requested === "all"
+      ? TARGETS.map((target) => target.id)
+      : [requested];
+  const targetById = new Map(TARGETS.map((target) => [target.id, target]));
+  const unsupported = targetIds.filter((targetId) => !targetById.has(targetId));
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported desktop platform(s): ${unsupported.join(", ")}`);
+  }
+  const include = targetIds.map((targetId) => targetById.get(targetId));
+  if (enabled && include.length === 0) {
+    throw new Error("At least one desktop target is required when desktop packaging is enabled");
+  }
   return { enabled, matrix: { include } };
 }
 
 try {
   const result = resolveTargets({
     eventName: argValue("--event") || process.env.GITHUB_EVENT_NAME || "",
-    ref: argValue("--ref") || process.env.GITHUB_REF || "",
     platform: argValue("--platform") || "all",
+    targetsJson: argValue("--targets-json"),
   });
   const lines = [
     `enabled=${result.enabled}`,

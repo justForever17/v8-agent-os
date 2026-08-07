@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-governance:
+    name: Release governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify schema, plan, and release contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/release/*.test.mjs
+          node scripts/release/verify-release-manifest.mjs \
+            --manifest release-manifest.json \
+            --json
+          node scripts/release/resolve-release-plan.mjs \
+            --manifest release-manifest.json \
+            --mode dry-run
+          node scripts/release/prepare-release.mjs --from-manifest
+          node --test apps/v8-agent-os-shell/tests/release-shell.test.cjs
+
+  shared-packages:
+    name: Shared package (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: product-ui
+            directory: packages/product-ui
+            lockfile: packages/product-ui/package-lock.json
+          - package: session-realtime
+            directory: packages/session-realtime
+            lockfile: packages/session-realtime/package-lock.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Install dependencies without lifecycle side effects
+        run: npm --prefix "${{ matrix.directory }}" ci --include=dev --ignore-scripts --workspaces=false
+
+      - name: Build and test shared package
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.package }}" in
+            product-ui)
+              npm --prefix packages/product-ui run build
+              node --test packages/product-ui/tests/*.test.mjs
+              node scripts/desktop/verify-product-ui-package.mjs --verify-build
+              ;;
+            session-realtime)
+              npm --prefix packages/session-realtime test
+              ;;
+            *)
+              echo "Unsupported shared package: ${{ matrix.package }}" >&2
+              exit 1
+              ;;
+          esac
+
+  client-static:
+    name: Client static (${{ matrix.client }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client: admin
+            directory: apps/v8-agent-os-admin
+            lockfile: apps/v8-agent-os-admin/package-lock.json
+          - client: web
+            directory: apps/v8-agent-os-web
+            lockfile: apps/v8-agent-os-web/package-lock.json
+          - client: phone
+            directory: apps/v8-agent-os-phone
+            lockfile: apps/v8-agent-os-phone/package-lock.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Install dependencies without lifecycle side effects
+        run: npm --prefix "${{ matrix.directory }}" ci --include=dev --ignore-scripts --workspaces=false
+
+      - name: Run static checks, contracts, and light smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.client }}" in
+            admin)
+              npm --prefix apps/v8-agent-os-admin run lint
+              npm --prefix apps/v8-agent-os-admin exec -- tsc --noEmit --project apps/v8-agent-os-admin/tsconfig.json
+              node --test \
+                apps/v8-agent-os-admin/tests/*.test.cjs \
+                apps/v8-agent-os-admin/tests/*.test.mjs
+              ;;
+            web)
+              npm --prefix apps/v8-agent-os-web run typecheck
+              npm --prefix apps/v8-agent-os-web run validate:i18n
+              node --test \
+                apps/v8-agent-os-web/tests/*.test.cjs \
+                apps/v8-agent-os-web/tests/*.test.mjs
+              ;;
+            phone)
+              npm --prefix apps/v8-agent-os-phone run lint
+              node --test apps/v8-agent-os-phone/tests/*.test.cjs
+              npm --prefix apps/v8-agent-os-phone run export:android
+              ;;
+            *)
+              echo "Unsupported client: ${{ matrix.client }}" >&2
+              exit 1
+              ;;
+          esac
+
+  engine-static:
+    name: Engine static
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Engine sources
+        run: python -m compileall -q apps/v8-agent-os-engine
+
+  ci-gate:
+    name: CI Gate
+    needs:
+      - release-governance
+      - shared-packages
+      - client-static
+      - engine-static
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Require every CI lane to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const needs = JSON.parse(process.env.NEEDS_JSON || "{}");
+          const unsuccessful = Object.entries(needs)
+            .filter(([, job]) => job.result !== "success")
+            .map(([name, job]) => `${name}: ${job.result}`);
+
+          if (unsuccessful.length > 0) {
+            console.error(`Required CI lanes did not succeed:\n- ${unsuccessful.join("\n- ")}`);
+            process.exit(1);
+          }
+
+          console.log(`All ${Object.keys(needs).length} required CI lanes succeeded.`);
+          NODE

@@ -1,17 +1,63 @@
 {
-  "schema": 1,
+  "schema": 2,
+  "release": {
+    "version": "2026.08.07.3",
+    "channel": "preview",
+    "tag": "v8-os-v2026.08.07.3",
+    "updatedAt": "2026-08-07T05:47:50.429Z"
+  },
   "products": {
-    "phone": {
-      "version": "2026.08.07.3",
-      "channel": "preview",
-      "tag": "v8-os-phone-v2026.08.07.3",
-      "updatedAt": "2026-08-07T05:36:16.757Z"
-    },
     "desktop": {
-      "version": "2026.08.07.3",
-      "channel": "preview",
-      "tag": "v8-os-desktop-v2026.08.07.3",
-      "updatedAt": "2026-08-07T05:47:50.429Z"
+      "enabled": true,
+      "required": true,
+      "targets": {
+        "windows-x64": {
+          "enabled": true,
+          "required": true
+        },
+        "windows-arm64": {
+          "enabled": true,
+          "required": true
+        },
+        "macos-x64": {
+          "enabled": true,
+          "required": true
+        },
+        "macos-arm64": {
+          "enabled": true,
+          "required": true
+        },
+        "linux-x64": {
+          "enabled": true,
+          "required": true
+        },
+        "linux-arm64": {
+          "enabled": true,
+          "required": true
+        }
+      }
+    },
+    "phone": {
+      "enabled": true,
+      "required": true,
+      "targets": {
+        "android": {
+          "enabled": true,
+          "required": true
+        },
+        "ios": {
+          "enabled": false,
+          "required": false,
+          "reason": "Non-interactive iOS signing credentials are not configured."
+        }
+      }
+    }
+  },
+  "compatibility": {
+    "legacyProductTags": {
+      "status": "deprecated",
+      "supportedUnifiedReleaseCycles": 2,
+      "deriveVersionFrom": "release.version"
     }
   }
 }

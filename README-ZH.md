@@ -65,7 +65,7 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 
 请前往 [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases) 下载：
 
-- Windows Desktop Preview：桌面版预览安装包或压缩包。
+- Desktop Preview：Windows x64/ARM64 安装包、macOS Intel/Apple Silicon DMG，以及 Linux x64/arm64 AppImage 或 DEB。
 - Android Phone Preview：手机端 APK。
 
 桌面版当前仍是 unsigned preview。Windows 可能提示安全确认；正式签名和自动更新会在后续版本完善。
@@ -88,8 +88,8 @@ Phone 是唯一远程交互入口。它用于查看正在运行的会话、接�
 
 | 产品形态 | 状态 | 说明 |
 | --- | --- | --- |
-| 桌面版 | Preview | 已提供 Windows unsigned preview；签名、自动更新、稳定版仍在后续阶段。 |
-| Phone | Preview | Android APK 优先；iOS 目标为 16.4 及以上，后续完善发布流程。 |
+| 桌面版 | Preview | 已提供 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 unsigned preview；签名、自动更新、稳定版仍在后续阶段。 |
+| Phone | Preview | Android APK 是必需发布目标；iOS 目标为 16.4 及以上，但在非交互签名配置完成前保持禁用。 |
 | TUI 版 | 未实现 | 面向终端用户和服务器环境，计划剥离控制台页面依赖。 |
 | 轻量版 | 长期规划 | 面向低配设备和边缘运行场景，会裁剪重型依赖。 |
 

@@ -174,32 +174,31 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(stable, /win-x64\.zip/);
 });
 
-test('desktop release preparation verifies every packed workspace tarball', () => {
+test('schema 2 release validation verifies every enabled product tarball without writing', () => {
   const prepare = path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs');
-  const output = execFileSync(process.execPath, [
-    prepare,
-    '--product',
-    'desktop',
-    '--version',
-    '2099.01.01.1',
-    '--channel',
-    'preview',
-  ], {
+  const output = execFileSync(process.execPath, [prepare, '--from-manifest'], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
 
   assert.match(output, /Desktop local tarball integrity OK/);
+  assert.match(output, /Phone local tarball integrity OK/);
   assert.match(output, /@v8\/product-ui/);
   assert.match(output, /@v8\/session-realtime/);
+  assert.match(output, /Validation complete\. No files changed\./);
 });
 
-test('desktop workflow builds every native platform and uploads checksummed build artifacts', () => {
+test('desktop reusable workflow builds explicit native targets and only uploads build artifacts', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml');
   assert.equal(fs.existsSync(workflowPath), true);
   const workflow = fs.readFileSync(workflowPath, 'utf8');
+  assert.match(workflow, /workflow_call:/);
+  assert.match(workflow, /targets_json:/);
+  assert.doesNotMatch(workflow, /pull_request:/);
+  assert.doesNotMatch(workflow, /push:/);
+  assert.doesNotMatch(workflow, /softprops\/action-gh-release/);
+  assert.doesNotMatch(workflow, /contents: write/);
   assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
-  assert.match(workflow, /packages\/product-ui\/\*\*/);
   assert.match(workflow, /packages\/product-ui\/package-lock\.json/);
   assert.match(workflow, /NPM_CONFIG_FETCH_RETRIES: "5"/);
   assert.match(workflow, /NPM_CONFIG_FETCH_TIMEOUT: "300000"/);
@@ -220,9 +219,17 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   assert.match(workflow, /build-macos-ax-helper\.mjs/);
   assert.match(workflow, /verify-desktop-package-layout\.mjs/);
   assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
+  assert.match(workflow, /--release-version "\$\{\{ inputs\.release_version \}\}"/);
+  assert.match(workflow, /name: v8os-desktop-\$\{\{ matrix\.id \}\}/);
   assert.doesNotMatch(workflow, /dist\/release\/\*\.zip/);
   assert.doesNotMatch(workflow, /desktop-preview-artifacts\/\*\.zip/);
-  assert.match(workflow, /SHA256/);
+  const assetPreparer = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-desktop-release-assets.mjs'),
+    'utf8',
+  );
+  assert.match(assetPreparer, /SHA256SUMS-\$\{platform\}\.txt/);
+  assert.match(assetPreparer, /Desktop release output directory must be empty/);
+  assert.doesNotMatch(assetPreparer, /fs\.rmSync\(outputDir/);
 
   const resolver = path.join(repoRoot, 'scripts', 'desktop', 'resolve-desktop-build-matrix.mjs');
   const resolverSource = fs.readFileSync(resolver, 'utf8');
@@ -249,67 +256,65 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   assert.deepEqual(windowsArm.matrix.include.map((target) => target.id), ['windows-arm64']);
   assert.equal(windowsArm.matrix.include[0].runner, 'windows-11-arm');
   assert.equal(windowsArm.matrix.include[0].pythonArch, 'arm64');
-  const tag = JSON.parse(execFileSync(process.execPath, [
+  const explicit = JSON.parse(execFileSync(process.execPath, [
     resolver,
-    '--event', 'push',
-    '--ref', 'refs/tags/v8-os-desktop-v2099.01.01.1',
-    '--platform', 'windows-x64',
+    '--event', 'workflow_call',
+    '--targets-json', '["windows-x64","macos-arm64"]',
   ], { encoding: 'utf8' }));
-  assert.equal(tag.enabled, true);
-  assert.equal(tag.matrix.include.length, 6);
+  assert.equal(explicit.enabled, true);
+  assert.deepEqual(explicit.matrix.include.map((target) => target.id), ['windows-x64', 'macos-arm64']);
 });
 
-test('desktop workflow uses fan-in publication with narrowly scoped release permissions', () => {
-  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+test('root release workflow is the only fan-in publisher and enforces required products', () => {
+  const desktop = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+  const phone = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
 
-  assert.match(workflow, /concurrency:[\s\S]*?group: desktop-preview-/);
-  assert.match(workflow, /github\.event\.inputs\.platform \|\| 'all'/);
-  assert.match(workflow, /permissions:\s*\n\s+contents: read/);
-  assert.match(workflow, /desktop-contract:/);
-  assert.match(workflow, /Desktop release contract tests/);
-  assert.match(workflow, /node --test apps\/v8-agent-os-shell\/tests\/release-shell\.test\.cjs/);
-  assert.match(workflow, /node --test apps\/v8-agent-os-admin\/tests\/feature-pack-ui-contract\.test\.cjs/);
-  assert.match(workflow, /desktop-package:[\s\S]*strategy:\s*\n\s+fail-fast: false/);
-  assert.match(workflow, /release:\s*\n\s+name: Publish Desktop release[\s\S]*needs:\s*\n\s+- desktop-package/);
-  assert.match(workflow, /release:[\s\S]*permissions:\s*\n\s+contents: write/);
-  assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
-  assert.match(workflow, /Download all platform artifacts[\s\S]*actions\/download-artifact@v4/);
-  assert.match(workflow, /merge-desktop-release-assets\.mjs/);
-  assert.match(workflow, /Upload Windows desktop smoke diagnostics[\s\S]*continue-on-error: true/);
-  assert.match(workflow, /retention-days: 7/);
-  assert.match(workflow, /compression-level: 0/);
-  assert.match(workflow, /Verify Windows runner and Node architecture/);
-  assert.match(workflow, /Verify Windows Rust native target/);
-  assert.match(workflow, /-Architecture "\$\{\{ matrix\.pythonArch \}\}"/);
+  assert.match(workflow, /"v8-os-v\*"/);
+  assert.match(workflow, /"v8-os-desktop-v\*"/);
+  assert.match(workflow, /"v8-os-phone-v\*"/);
+  assert.match(workflow, /uses: \.\/\.github\/workflows\/desktop-preview\.yml/);
+  assert.match(workflow, /uses: \.\/\.github\/workflows\/phone-build\.yml/);
+  assert.match(workflow, /release-gate:[\s\S]*always\(\) && !cancelled\(\)/);
+  assert.match(workflow, /Required product \$product ended with \$result/);
+  assert.match(workflow, /prepare-unified-release-assets\.mjs/);
+  assert.match(workflow, /pattern: v8os-desktop-\*/);
+  assert.match(workflow, /name: phone-android-package/);
+  assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
+  assert.match(workflow, /fail_on_unmatched_files: true/);
+  assert.equal((workflow.match(/contents: write/g) || []).length, 1);
+  assert.equal((workflow.match(/softprops\/action-gh-release@v2/g) || []).length, 1);
+  assert.doesNotMatch(workflow, /environment: release/);
+  assert.doesNotMatch(desktop, /softprops\/action-gh-release|contents: write/);
+  assert.doesNotMatch(phone, /softprops\/action-gh-release|contents: write/);
+  assert.match(desktop, /Upload Windows desktop smoke diagnostics[\s\S]*continue-on-error: true/);
+  assert.match(desktop, /retention-days: 7/);
+  assert.match(desktop, /compression-level: 0/);
+  assert.match(desktop, /Verify Windows runner and Node architecture/);
+  assert.match(desktop, /Verify Windows Rust native target/);
+  assert.match(desktop, /-Architecture "\$\{\{ matrix\.pythonArch \}\}"/);
   assert.ok(
-    workflow.indexOf('Prepare embedded Engine Python runtime on Windows') <
-      workflow.indexOf('Install Admin dependencies'),
+    desktop.indexOf('Prepare embedded Engine Python runtime on Windows') <
+      desktop.indexOf('Install Admin dependencies'),
     'platform Python runtime validation must run before expensive product dependency installs',
   );
-  const releaseJob = workflow.slice(workflow.indexOf('\n  release:'));
-  assert.doesNotMatch(releaseJob, /desktop-release-assets\/RUNTIME_PROBE-\*\.json/);
-  assert.doesNotMatch(releaseJob, /desktop-release-assets\/PACKAGE_LAYOUT-\*\.json/);
+  assert.doesNotMatch(workflow, /RUNTIME_PROBE-\*\.json|PACKAGE_LAYOUT-\*\.json/);
 });
 
-test('phone workflow honors dispatch inputs while preserving the proven Android tag release path', () => {
+test('phone reusable workflow honors typed inputs and limits release secrets to EAS jobs', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
+  assert.match(workflow, /workflow_call:/);
+  assert.match(workflow, /build_android:[\s\S]*?type: boolean/);
+  assert.match(workflow, /build_ios:[\s\S]*?type: boolean/);
   assert.match(workflow, /platform:\s*\n\s+description: Target platform[\s\S]*?- android[\s\S]*?- ios[\s\S]*?- all/);
-  assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ github\.event\.inputs\.profile \|\| 'preview' \}\}/);
+  assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ inputs\.profile \|\| 'preview' \}\}/);
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
-  assert.match(workflow, /build-ios:[\s\S]*?if: github\.event_name == 'workflow_dispatch' && \(github\.event\.inputs\.platform == 'ios' \|\| github\.event\.inputs\.platform == 'all'\)[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
-  assert.match(workflow, /Verify phone release manifest[\s\S]*?verify-release-manifest\.mjs[\s\S]*?--product phone[\s\S]*?--tag "\$GITHUB_REF_NAME"[\s\S]*?--manifest \.\.\/\.\.\/release-manifest\.json/);
-  assert.match(workflow, /release:\s*\n\s+name: Publish Phone release\s*\n\s+needs:\s*\n\s+- build-android\s*\n\s+- build-ios/);
-  assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result != 'cancelled'/);
-  assert.match(workflow, /actions\/download-artifact@v4/);
-  assert.match(workflow, /Prepare phone release assets/);
-  assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
-  assert.match(workflow, /apps\/v8-agent-os-phone\/V8OS-Phone-\*-android-preview\.apk/);
-
-  const releaseIndex = workflow.indexOf('\n  release:');
-  assert.notEqual(releaseIndex, -1);
-  const buildJobs = workflow.slice(0, releaseIndex);
-  assert.doesNotMatch(buildJobs, /softprops\/action-gh-release/);
-  assert.doesNotMatch(buildJobs, /contents: write/);
+  assert.match(workflow, /build-ios:[\s\S]*?inputs\.build_ios[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.equal((workflow.match(/environment: release/g) || []).length, 2);
+  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
+  assert.doesNotMatch(workflow, /secrets: inherit|pull_request:|push:|contents: write|softprops\/action-gh-release/);
+  assert.match(workflow, /phone-build-contract:[\s\S]*Requested Phone target \$target ended with \$result/);
+  assert.match(workflow, /Disabled Phone target \$target unexpectedly ended with \$result/);
 });
 
 test('phone release notes retain the Android-only tag distribution contract', () => {
@@ -487,10 +492,13 @@ test('Engine release process forces UTF-8 output on Windows runners', () => {
   assert.match(components, /\.python", "bin", "python3"/);
 });
 
-test('desktop release uses current desktop tag namespace and keeps runtime probes in CI evidence', () => {
+test('unified release keeps desktop runtime probes in CI evidence', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
-  assert.match(workflow, /v8-os-desktop-v\*/);
-  assert.match(workflow, /startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
+  const releaseWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+  assert.match(releaseWorkflow, /"v8-os-v\*"/);
+  assert.match(releaseWorkflow, /"v8-os-desktop-v\*"/);
+  assert.match(releaseWorkflow, /"v8-os-phone-v\*"/);
+  assert.doesNotMatch(workflow, /v8-os-(?:desktop|phone)-v\*/);
   assert.match(workflow, /Verify desktop runtime payload/);
   assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
   assert.match(workflow, /Installed Windows desktop smoke/);
@@ -649,20 +657,27 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(portablePython, /V8OS_ENGINE_IMPORT_OK/);
 
   const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
-  assert.match(prepareRelease, /v8-os-\$\{product\}-v\$\{version\}/);
+  assert.match(prepareRelease, /toUnifiedTag\(version\)/);
+  assert.match(prepareRelease, /updates every enabled product/);
   assert.doesNotMatch(prepareRelease, /desktop-preview/);
 
   const releaseNotes = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs'), 'utf8');
-  assert.match(releaseNotes, /\^v8-os-\(phone\|desktop\)-v/);
+  assert.match(releaseNotes, /UNIFIED_TAG_RE/);
+  assert.match(releaseNotes, /LEGACY_PRODUCT_TAG_RE as LEGACY_TAG_RE/);
   assert.match(releaseNotes, /win-arm64-setup\.exe/);
   assert.match(releaseNotes, /GitHub Actions artifact/);
   assert.doesNotMatch(releaseNotes, /RUNTIME_PROBE-<platform>\.json/);
   assert.doesNotMatch(releaseNotes, /desktop-preview/);
 
+  const releaseManifest = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'release-manifest.mjs'), 'utf8');
+  assert.match(releaseManifest, /export const UNIFIED_TAG_RE = \/\^v8-os-v/);
+  assert.match(releaseManifest, /export const LEGACY_PRODUCT_TAG_RE = \/\^v8-os-\(phone\|desktop\)-v/);
+
   const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
+  assert.match(baseline, /v8-os-vYYYY\.MM\.DD\.N/);
   assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
   assert.match(baseline, /Windows x64\/ARM64/);
-  assert.match(baseline, /workflow artifact/);
+  assert.match(baseline, /Actions artifact/);
   assert.match(baseline, /Windows ARM64 兼容性技术债登记/);
   assert.match(baseline, /关闭后重开读取/);
 });

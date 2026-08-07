@@ -1,6 +1,33 @@
 name: Desktop Preview Build
 
 on:
+  workflow_call:
+    inputs:
+      targets_json:
+        description: JSON array of desktop target ids selected by the release planner
+        required: false
+        default: "[]"
+        type: string
+      platform:
+        description: Single desktop target used by compatibility callers
+        required: false
+        default: all
+        type: string
+      release_version:
+        description: Canonical release version used to name build artifacts
+        required: false
+        default: ""
+        type: string
+      release_channel:
+        description: Canonical release channel
+        required: false
+        default: preview
+        type: string
+      release_tag:
+        description: Canonical or compatibility release tag
+        required: false
+        default: ""
+        type: string
   workflow_dispatch:
     inputs:
       platform:
@@ -16,36 +43,6 @@ on:
           - linux-x64
           - linux-arm64
           - all
-  pull_request:
-    paths:
-      - ".github/workflows/desktop-preview.yml"
-      - "apps/v8-agent-os-admin/**"
-      - "apps/v8-agent-os-cli/**"
-      - "apps/v8-agent-os-engine/**"
-      - "apps/v8-agent-os-shell/**"
-      - "apps/v8-agent-os-web/**"
-      - "apps/v8-agent-os-desktop-pet/**"
-      - "packages/product-ui/**"
-      - "packages/session-realtime/**"
-      - "scripts/desktop/**"
-      - "scripts/release/**"
-  push:
-    branches:
-      - main
-    tags:
-      - "v8-os-desktop-v*"
-    paths:
-      - ".github/workflows/desktop-preview.yml"
-      - "apps/v8-agent-os-admin/**"
-      - "apps/v8-agent-os-cli/**"
-      - "apps/v8-agent-os-engine/**"
-      - "apps/v8-agent-os-shell/**"
-      - "apps/v8-agent-os-web/**"
-      - "apps/v8-agent-os-desktop-pet/**"
-      - "packages/product-ui/**"
-      - "packages/session-realtime/**"
-      - "scripts/desktop/**"
-      - "scripts/release/**"
 
 permissions:
   contents: read
@@ -64,40 +61,10 @@ env:
 concurrency:
   # Dispatches for different native targets are independent.  Keep same-target
   # reruns cancellable, but never let an arm64 request cancel x64 or Linux.
-  group: desktop-preview-${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.platform || 'all' }}
-  cancel-in-progress: true
+  group: desktop-preview-${{ github.workflow }}-${{ github.ref }}-${{ inputs.targets_json || inputs.platform || 'all' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
 
 jobs:
-  desktop-contract:
-    name: Desktop preview static contracts
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build and verify shared Product UI package
-        working-directory: packages/product-ui
-        run: npm ci --include=dev --workspaces=false
-
-      - name: Verify shared Product UI archive
-        run: node scripts/desktop/verify-product-ui-package.mjs --verify-build
-
-      - name: Desktop release contract tests
-        shell: bash
-        run: |
-          node --test apps/v8-agent-os-shell/tests/release-shell.test.cjs
-          node --test apps/v8-agent-os-admin/tests/feature-pack-ui-contract.test.cjs
-
   resolve-desktop-platforms:
     name: Resolve desktop build targets
     runs-on: ubuntu-latest
@@ -115,7 +82,15 @@ jobs:
       - id: targets
         name: Resolve requested platforms
         shell: bash
-        run: node scripts/desktop/resolve-desktop-build-matrix.mjs --event "${{ github.event_name }}" --ref "$GITHUB_REF" --platform "${{ github.event.inputs.platform || 'all' }}" --github-output "$GITHUB_OUTPUT"
+        env:
+          V8OS_DESKTOP_PLATFORM: ${{ inputs.platform || 'all' }}
+          V8OS_DESKTOP_TARGETS_JSON: ${{ inputs.targets_json || '[]' }}
+        run: >-
+          node scripts/desktop/resolve-desktop-build-matrix.mjs
+          --event "$GITHUB_EVENT_NAME"
+          --platform "$V8OS_DESKTOP_PLATFORM"
+          --targets-json "$V8OS_DESKTOP_TARGETS_JSON"
+          --github-output "$GITHUB_OUTPUT"
 
   desktop-package:
     name: ${{ matrix.label }}
@@ -223,12 +198,6 @@ jobs:
             --target "${{ matrix.id }}" \
             --requirements-path apps/v8-agent-os-engine/requirements/desktop-preview.txt \
             --skip-playwright-browsers
-
-      - name: Verify desktop release manifest
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
-        shell: bash
-        timeout-minutes: 3
-        run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$GITHUB_REF_NAME"
 
       - name: Build and verify shared Product UI package
         working-directory: packages/product-ui
@@ -386,7 +355,13 @@ jobs:
 
       - name: Normalize platform release assets and checksums
         timeout-minutes: 5
-        run: node scripts/desktop/prepare-desktop-release-assets.mjs --platform "${{ matrix.id }}" --output-dir apps/v8-agent-os-shell/desktop-release-assets
+        run: >-
+          node scripts/desktop/prepare-desktop-release-assets.mjs
+          --platform "${{ matrix.id }}"
+          --release-version "${{ inputs.release_version }}"
+          --release-channel "${{ inputs.release_channel || 'preview' }}"
+          --release-tag "${{ inputs.release_tag }}"
+          --output-dir apps/v8-agent-os-shell/desktop-release-assets
 
       - name: Upload desktop platform artifacts
         uses: actions/upload-artifact@v4
@@ -396,49 +371,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-
-  release:
-    name: Publish Desktop release
-    needs:
-      - desktop-package
-    if: >-
-      always() &&
-      startsWith(github.ref, 'refs/tags/v8-os-desktop-v') &&
-      needs.desktop-package.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: v8os-desktop-*
-          path: desktop-release-assets
-          merge-multiple: true
-
-      - name: Merge desktop checksums
-        shell: bash
-        run: node scripts/desktop/merge-desktop-release-assets.mjs --input-dir desktop-release-assets
-
-      - name: Generate desktop release notes
-        shell: bash
-        run: |
-          node scripts/release/generate-release-notes.mjs \
-            --product desktop \
-            --tag "$GITHUB_REF_NAME" \
-            --channel preview \
-            --out desktop-release-assets/RELEASE_NOTES.md
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: false
-          body_path: desktop-release-assets/RELEASE_NOTES.md
-          files: |
-            desktop-release-assets/V8-Agent-OS-*
-            desktop-release-assets/SHA256SUMS.txt

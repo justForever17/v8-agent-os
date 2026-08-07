@@ -5,8 +5,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  compareReleaseVersions,
+  loadReleaseManifest,
+  isValidReleaseVersion,
+  resolveReleasePlan,
+  toAndroidVersionCode,
+  toAppVersion,
+  toAppleBuildNumber,
+  toSemver,
+  toUnifiedTag,
+  validateReleaseProjections,
+  validateReleaseManifest,
+} from "./release-manifest.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const VERSION_RE = /^\d{4}\.\d{2}\.\d{2}\.\d+$/;
 
 function parseArgs(argv) {
   const args = {};
@@ -58,28 +71,15 @@ function sha512Integrity(pathname) {
   return `sha512-${digest}`;
 }
 
-function toTag(product, version, channel = "preview") {
+// Compatibility reference only. prepare-release never creates this deprecated tag.
+function legacyTagForCompatibility(product, version) {
   return `v8-os-${product}-v${version}`;
 }
 
-function toSemver(version) {
-  const [year, month, day, build] = version.split(".").map((value) => Number(value));
-  return `${year}.${month}.${day}-${build}`;
-}
-
-function toAppVersion(version) {
-  const [year, month, day] = version.split(".").map((value) => Number(value));
-  return `${year}.${month}.${day}`;
-}
-
-function toAndroidVersionCode(version) {
-  const [year, month, day, build] = version.split(".");
-  return Number(`${year.slice(2)}${month}${day}${build.padStart(2, "0")}`);
-}
-
-function toAppleBuildNumber(version) {
-  const [year, month, day, build] = version.split(".");
-  return `${year}${month}${day}${build.padStart(2, "0")}`;
+function updateVersionProjection(version) {
+  const versionPath = resolve(ROOT, "VERSION");
+  writeFileSync(versionPath, `${toSemver(version)}\n`, "utf8");
+  return versionPath;
 }
 
 function ensureCleanForApply(apply) {
@@ -211,18 +211,16 @@ function updateDesktopVersion(version) {
   return [packagePath, lockPath];
 }
 
-function updateManifest(product, version, channel) {
+function updateManifest(version, channel) {
   const manifestPath = resolve(ROOT, "release-manifest.json");
-  const manifest = existsSync(manifestPath)
-    ? readJson(manifestPath)
-    : { schema: 1, products: {} };
-  manifest.products = manifest.products || {};
-  manifest.products[product] = {
+  const manifest = loadReleaseManifest(manifestPath).manifest;
+  manifest.release = {
     version,
     channel,
-    tag: toTag(product, version, channel),
+    tag: toUnifiedTag(version),
     updatedAt: new Date().toISOString(),
   };
+  validateReleaseManifest(manifest);
   writeJson(manifestPath, manifest);
   return manifestPath;
 }
@@ -246,57 +244,130 @@ function writeNotes(product, version, channel, tag) {
   return outPath;
 }
 
-function printPlan({ product, version, channel, tag, apply, integrity }) {
+function printPlan({ version, channel, tag, apply, integrity, products, deprecatedProduct, fromManifest }) {
   const semver = toSemver(version);
   console.log(`V8OS release ${apply ? "apply" : "dry-run"}`);
-  console.log(`product: ${product}`);
+  console.log(`products: ${products.join(", ")}`);
   console.log(`version: ${version}`);
   console.log(`semver projection: ${semver}`);
   console.log(`channel: ${channel}`);
   console.log(`tag: ${tag}`);
-  console.log(integrity.message);
+  console.log(`source: ${fromManifest ? "schema 2 manifest (repeatable validation)" : "command line"}`);
+  for (const result of integrity) console.log(result.message);
+  if (deprecatedProduct) {
+    const legacyTag = legacyTagForCompatibility(deprecatedProduct, version);
+    console.warn(
+      `Deprecated --product ${deprecatedProduct} was ignored. ${legacyTag} remains a supported compatibility trigger during the two-cycle transition, but prepare-release creates only ${tag} and updates every enabled product.`,
+    );
+  }
   if (!apply) {
     console.log("");
-    console.log("No files changed. Add --apply to update version files, create a release commit, and create the local annotated tag.");
+    console.log(fromManifest
+      ? "Validation complete. No files changed."
+      : "No files changed. Add --apply to update version files, create a release commit, and create the local annotated tag.");
   }
+}
+
+export function resolvePreparationIdentity({ manifest, version, channel = "preview", product, allowCurrent = false }) {
+  if (product && !["phone", "desktop"].includes(product)) {
+    throw new Error("Invalid --product. The deprecated compatibility values are phone or desktop.");
+  }
+  if (!isValidReleaseVersion(version)) {
+    throw new Error("Missing or invalid --version. Expected a real UTC date in YYYY.MM.DD.N form with N >= 1.");
+  }
+  if (channel !== "preview") {
+    throw new Error("Only the preview channel is currently publishable; stable signing and installation gates are not implemented.");
+  }
+  const comparison = compareReleaseVersions(version, manifest.release.version);
+  if ((!allowCurrent && comparison <= 0) || (allowCurrent && comparison !== 0)) {
+    throw new Error(
+      allowCurrent
+        ? `--from-manifest must validate the current release ${manifest.release.version}`
+        : `Release version ${version} must be newer than current manifest version ${manifest.release.version}`,
+    );
+  }
+  const plan = resolveReleasePlan(manifest);
+  const products = [
+    ...(plan.desktop.enabled ? ["desktop"] : []),
+    ...(plan.phone.enabled ? ["phone"] : []),
+  ];
+  return {
+    version,
+    channel,
+    tag: toUnifiedTag(version),
+    products,
+    deprecatedProduct: product || null,
+  };
+}
+
+export function resolvePreparationRequest(args, currentManifest) {
+  const fromManifest = Boolean(args["from-manifest"]);
+  const apply = Boolean(args.apply);
+  if (fromManifest && apply) {
+    throw new Error("--from-manifest is a repeatable read-only validation and cannot be combined with --apply");
+  }
+  if (fromManifest && (args.version || args.channel)) {
+    throw new Error("--from-manifest reads release.version and release.channel; do not also pass --version or --channel");
+  }
+  return {
+    fromManifest,
+    apply,
+    checkTagAvailability: !fromManifest,
+    version: fromManifest ? currentManifest.release.version : args.version,
+    channel: fromManifest ? currentManifest.release.channel : (args.channel || "preview"),
+  };
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const product = args.product;
-  const version = args.version;
-  const channel = args.channel || "preview";
-  const apply = Boolean(args.apply);
-
-  if (!["phone", "desktop"].includes(product)) {
-    throw new Error("Missing or invalid --product. Use phone or desktop.");
-  }
-  if (!VERSION_RE.test(version || "")) {
-    throw new Error("Missing or invalid --version. Expected YYYY.MM.DD.N.");
-  }
-  if (!["preview", "stable"].includes(channel)) {
-    throw new Error("Invalid --channel. Use preview or stable.");
-  }
-
-  const tag = toTag(product, version, channel);
-  ensureTagAvailable(tag);
+  const currentManifest = loadReleaseManifest(resolve(ROOT, "release-manifest.json")).manifest;
+  const currentProjection = validateReleaseProjections(currentManifest, ROOT);
+  const request = resolvePreparationRequest(args, currentManifest);
+  const { fromManifest, apply, version, channel } = request;
+  const identity = resolvePreparationIdentity({
+    manifest: currentManifest,
+    version,
+    channel,
+    product: args.product,
+    allowCurrent: fromManifest,
+  });
+  const { tag, products, deprecatedProduct } = identity;
+  if (request.checkTagAvailability) ensureTagAvailable(tag);
   ensureCleanForApply(apply);
 
-  const integrity = product === "phone"
-    ? validatePhoneTgzIntegrity()
-    : validateDesktopTgzIntegrity();
-  if (!integrity.ok) {
-    throw new Error(integrity.message);
+  const integrity = products.map((product) => (
+    product === "phone" ? validatePhoneTgzIntegrity() : validateDesktopTgzIntegrity()
+  ));
+  if (fromManifest) {
+    integrity.unshift({
+      ok: true,
+      message: `Release version projections OK: ${currentProjection.semver}`,
+    });
+  }
+  const failedIntegrity = integrity.find((result) => !result.ok);
+  if (failedIntegrity) {
+    throw new Error(failedIntegrity.message);
   }
 
-  printPlan({ product, version, channel, tag, apply, integrity });
+  printPlan({
+    version,
+    channel,
+    tag,
+    apply,
+    integrity,
+    products,
+    deprecatedProduct,
+    fromManifest,
+  });
   if (!apply) return;
 
   const changed = [];
-  if (product === "phone") changed.push(...updatePhoneVersion(version));
-  if (product === "desktop") changed.push(...updateDesktopVersion(version));
-  changed.push(updateManifest(product, version, channel));
-  const notesPath = writeNotes(product, version, channel, tag);
+  if (products.includes("phone")) changed.push(...updatePhoneVersion(version));
+  if (products.includes("desktop")) changed.push(...updateDesktopVersion(version));
+  changed.push(updateVersionProjection(version));
+  changed.push(updateManifest(version, channel));
+  validateReleaseProjections(loadReleaseManifest(resolve(ROOT, "release-manifest.json")).manifest, ROOT);
+  const notesPath = writeNotes("all", version, channel, tag);
 
   run("git", ["add", ...changed.map((item) => relative(ROOT, item).replaceAll("\\", "/"))]);
   run("git", ["commit", "-m", `chore(release): prepare ${tag}`]);
@@ -308,9 +379,14 @@ function main() {
   console.log(`git push origin HEAD && git push origin ${tag}`);
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+const isMain =
+  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }

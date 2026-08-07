@@ -31,9 +31,11 @@ flowchart LR
 
 ### 2.1 下载 Windows 桌面预览版
 
-普通试用优先前往 [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases) 下载 `v8-os-desktop-v*` 的 Windows Preview 资产。
+普通试用优先前往 [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases)。首个 `v8-os-vYYYY.MM.DD.N` 统一 Preview 完成真实验收后，应从该 Release 下载对应架构的 Windows 资产；同一 Release 会列出 macOS、Linux 和 Android Phone 产物，以及覆盖全部公开下载文件的 `SHA256SUMS.txt`。在首个统一 Release 验收完成前，只能把已有分产品 Preview 当作过渡期下载，不能据 schema 或 workflow dry-run 宣称统一发布已经成功。
 
-当前桌面版仍是 unsigned preview：Windows 可能显示安全确认；签名、自动更新和 stable 通道尚未完成。Android Phone Preview 使用 `v8-os-phone-v*` 标签发布；iOS 仅提供受控手动构建，等待真实签名验收后再进入发布链。
+当前桌面版仍是 unsigned preview：Windows 可能显示安全确认；签名、自动更新和 stable 通道尚未完成。Android 是统一发布的必需产物；iOS 因尚未配置非交互签名凭据而明确 disabled/skipped，等待签名、注册设备和真实安装验收后再进入发布矩阵。
+
+`v8-os-desktop-v*` 与 `v8-os-phone-v*` 是过渡期兼容 tag，自首个成功统一 Release 起保留两个成功统一发布周期后废弃；旧 `desktop-v*` / `phone-v*` 仅作历史记录。下载时应优先选择统一 tag，并确认 Preview Release 显示为“预发布”，而不是 latest 正式版。
 
 ### 2.2 从源码启动完整桌面预览
 
@@ -189,7 +191,21 @@ Web 的右侧工作台提供 Creative Artifact Canvas。画布可以从当前会
 .\v8os.cmd preview --help
 ```
 
-## 7. 继续阅读
+## 7. 发布、CI 与密钥边界
+
+仓库根目录的 `release-manifest.json` schema 2 是发布版本、通道、统一 tag 和产品目标矩阵的单一结构化真相。当前必需项是 Desktop 的 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64，以及 Android；iOS 明确禁用且不是必需项。
+
+统一 tag 的格式是：
+
+```text
+v8-os-vYYYY.MM.DD.N
+```
+
+根发布工作流会调用 Desktop/Phone reusable workflows。构建 job 只上传 GitHub Actions artifact，唯一的 fan-in job 在全部必需项成功后创建一个 GitHub Release；运行时探针和包布局 JSON 仅作为 Actions 诊断 artifact 保存，不进入面向普通用户的 Release 资产列表。Preview Release 必须标记为 prerelease。
+
+Pull Request 只运行最终 `CI Gate` 所汇总的静态检查、单元/合同测试、manifest/matrix dry-run 和轻量 smoke，不运行 EAS、全平台 Electron 打包或真实 provider。EAS 与未来签名 job 必须绑定受保护的 GitHub `release` Environment，并且只有这些 job 可以读取 `EXPO_TOKEN` 或签名材料；PR、plan、普通构建与 gate 不声明这些 secret。工作流中的边界不等于仓库外部 secret 已完成迁移，实际状态仍需在 GitHub Settings 中核验。
+
+## 8. 继续阅读
 
 1. [CLI 命令参考](./V8_AGENT_OS_CLI_REFERENCE_ZH.md)
 2. [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)

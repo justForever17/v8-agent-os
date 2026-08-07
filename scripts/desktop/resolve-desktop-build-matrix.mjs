@@ -3,8 +3,8 @@ import fs from "node:fs";
 
 const TARGETS = [
   { id: "windows-x64", label: "Windows x64 unsigned preview installer", runner: "windows-latest", os: "windows", arch: "x64" },
-  { id: "macos-x64", label: "macOS Intel unsigned preview installer", runner: "macos-13", os: "macos", arch: "x64" },
-  { id: "macos-arm64", label: "macOS Apple Silicon unsigned preview installer", runner: "macos-14", os: "macos", arch: "arm64" },
+  { id: "macos-x64", label: "macOS Intel unsigned preview installer", runner: "macos-15", os: "macos", arch: "x64" },
+  { id: "macos-arm64", label: "macOS Apple Silicon unsigned preview installer", runner: "macos-15-arm64", os: "macos", arch: "arm64" },
   { id: "linux-x64", label: "Linux x64 unsigned preview packages", runner: "ubuntu-24.04", os: "linux", arch: "x64" },
   { id: "linux-arm64", label: "Linux arm64 unsigned preview packages", runner: "ubuntu-24.04-arm", os: "linux", arch: "arm64" },
 ];

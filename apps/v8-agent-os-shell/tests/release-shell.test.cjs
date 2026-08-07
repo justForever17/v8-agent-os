@@ -199,6 +199,8 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
   assert.match(workflow, /packages\/product-ui\/\*\*/);
   assert.match(workflow, /packages\/product-ui\/package-lock\.json/);
+  assert.match(workflow, /NPM_CONFIG_FETCH_RETRIES: "5"/);
+  assert.match(workflow, /NPM_CONFIG_FETCH_TIMEOUT: "300000"/);
   assert.match(workflow, /Build and verify shared Product UI package/);
   assert.match(workflow, /verify-product-ui-package\.mjs --verify-build/);
   assert.match(workflow, /Install shared realtime package dependencies/);

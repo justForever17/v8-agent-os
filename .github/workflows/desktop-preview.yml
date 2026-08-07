@@ -49,6 +49,17 @@ on:
 permissions:
   contents: read
 
+# GitHub-hosted macOS runners occasionally time out while a cold npm cache is
+# downloading a transitive package.  Keep package installation deterministic,
+# but make the transport retry budget explicit instead of treating that
+# transient registry failure as a product-build failure.
+env:
+  NPM_CONFIG_FETCH_RETRIES: "5"
+  NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "10000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "120000"
+  NPM_CONFIG_FETCH_TIMEOUT: "300000"
+
 concurrency:
   # Dispatches for different native targets are independent.  Keep same-target
   # reruns cancellable, but never let an arm64 request cancel x64 or Linux.

@@ -295,6 +295,11 @@ if (exists(pythonExe)) {
     pillow: "PIL",
   };
   if (process.platform === "win32") requiredModules.pywin32 = "win32api";
+  if (process.platform === "win32" && process.arch === "arm64") {
+    requiredModules.grpcNative = "grpc._cython.cygrpc";
+    requiredModules.httptoolsNative = "httptools.parser.parser";
+    requiredModules.yaml = "yaml";
+  }
   if (process.platform === "darwin") {
     requiredModules.pyobjcAppKit = "AppKit";
     requiredModules.pyobjcQuartz = "Quartz";

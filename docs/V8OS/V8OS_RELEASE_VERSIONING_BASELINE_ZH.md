@@ -144,7 +144,11 @@ Chroma 1.5.9 的 `Cargo.lock` 仍锁定 `generator` 0.8.8；该版本已声明 W
 
 构建后必须验证 wheel 标签和 `chromadb_rust_bindings` 原生导入，并由两个独立 Python 进程完成向量写入退出与重开查询；发布 runtime probe 把当前 Chroma Rust binding 作为必需能力，不得静默回退到旧版 HNSW 后端。
 
-移除条件：对应上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载、Chroma 跨进程持久化和 checkpoint/tokenizer 回归，再分别移除临时 requirements 过滤、`--no-deps`、checkpoint pin 或原生源码构建；升级到已带完整 recursion limit 修复并声明新版 Rust 基线的 Chroma 后，同步移除 Rust 1.92.0 pin。`chromadb` 的桌面发布版本固定仍应保留，直到发布清单能够统一锁定和审计 Python 依赖。连续两个桌面发布周期通过安装 smoke 后关闭相应登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
+Chroma 1.5.9 的传递依赖 `grpcio` 1.83.0 和 `httptools` 0.8.0 也没有官方 `win_arm64` wheel；PyYAML 6.0.3 只为 CPython 3.12 及以上发布 Windows ARM64 wheel，当前固定的 CPython 3.11.9 无可用 wheel。Windows ARM64 打包入口必须从经 SHA-256 校验的官方 sdist 在原生 runner 构建固定版本，离线安装到受控 wheelhouse，并用 constraints 与 `--only-binary` 阻止主 resolver 重新下载源码或替换版本。PyYAML 明确关闭可选 LibYAML 扩展并验证安全加载/写回；`grpcio` 和 `httptools` 必须验证 CPython 3.11 `win_arm64` wheel、原生扩展 PE Machine `0xAA64`、HTTP 请求解析及本机 gRPC unary 往返。`grpcio` 的 Windows ARM64 上游支持仍未正式完成，因此该路径只能称为 V8OS 自持兼容构建，不能宣传成上游官方支持。
+
+`grpcio` 会生成深层 C/C++ 对象路径。构建必须使用短源码目录、短 `TEMP/TMP`、`GRPC_PYTHON_BUILD_USE_SHORT_TEMP_DIR_NAME=1` 和 sdist 已携带的生成源码，禁止在常规 pip 临时目录中失败后盲目重试整轮编译。Windows ARM64 的 Python runtime 与 job 超时预算单独放宽；其他桌面目标保持原预算。后续应把已验证兼容 wheel 独立缓存或发布到受治理的内部 wheelhouse，安装包 job 只消费与源码哈希、Python ABI、runner image 和工具链绑定的工件，不能直接信任未验证的社区 wheel。
+
+移除条件：对应上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载、gRPC/HTTP 行为、Chroma 跨进程持久化和 checkpoint/tokenizer 回归，再分别移除临时 requirements 过滤、`--no-deps`、checkpoint pin 或原生源码构建；升级到已带完整 recursion limit 修复并声明新版 Rust 基线的 Chroma 后，同步移除 Rust 1.92.0 pin。`chromadb` 的桌面发布版本固定仍应保留，直到发布清单能够统一锁定和审计 Python 依赖。连续两个桌面发布周期通过安装 smoke 后关闭相应登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
 
 最小命令：
 

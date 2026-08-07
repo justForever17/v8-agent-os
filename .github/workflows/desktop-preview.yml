@@ -123,7 +123,7 @@ jobs:
       - resolve-desktop-platforms
     if: needs.resolve-desktop-platforms.outputs.enabled == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.id == 'windows-arm64' && 180 || 120 }}
     permissions:
       contents: read
     strategy:
@@ -206,7 +206,7 @@ jobs:
       - name: Prepare embedded Engine Python runtime on Windows
         if: matrix.os == 'windows'
         shell: pwsh
-        timeout-minutes: 60
+        timeout-minutes: ${{ matrix.id == 'windows-arm64' && 110 || 60 }}
         run: |
           scripts/desktop/prepare-windows-python-runtime.ps1 `
             -PythonVersion 3.11.9 `

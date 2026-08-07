@@ -502,11 +502,12 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(workflow, /Upload desktop platform artifacts/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
   assert.match(workflow, /toolchain: \$\{\{ matrix\.id == 'windows-arm64' && '1\.92\.0' \|\| 'stable' \}\}/);
+  assert.match(workflow, /timeout-minutes:\s*\$\{\{ matrix\.id == 'windows-arm64' && 180 \|\| 120 \}\}/);
   const windowsPythonStep = workflow.slice(
     workflow.indexOf('Prepare embedded Engine Python runtime on Windows'),
     workflow.indexOf('Prepare embedded Engine Python runtime on macOS or Linux'),
   );
-  assert.match(windowsPythonStep, /timeout-minutes:\s*60/);
+  assert.match(windowsPythonStep, /timeout-minutes:\s*\$\{\{ matrix\.id == 'windows-arm64' && 110 \|\| 60 \}\}/);
 
   const runtimeProbe = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'verify_desktop_release_runtime.mjs'),
@@ -535,6 +536,9 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(requiredModulesBlock, /langgraphCheckpointSqlite/);
   assert.match(requiredModulesBlock, /chromaRustNative/);
   assert.match(requiredModulesBlock, /tiktokenNative/);
+  assert.match(requiredModulesBlock, /grpcNative/);
+  assert.match(requiredModulesBlock, /httptoolsNative/);
+  assert.match(requiredModulesBlock, /yaml/);
   assert.match(optionalModulesBlock, /pywinauto/);
   assert.match(optionalModulesBlock, /sqliteVec/);
   assert.match(runtimeProbe, /sqlite-vec does not publish a Windows ARM64 wheel/);
@@ -583,6 +587,29 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_NATIVE_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_WRITE_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_REOPEN_OK/);
+  assert.match(windowsPythonRuntime, /setuptools==82\.0\.1/);
+  assert.match(windowsPythonRuntime, /wheel==0\.46\.3/);
+  assert.match(windowsPythonRuntime, /pyyaml-6\.0\.3\.tar\.gz/);
+  assert.match(windowsPythonRuntime, /D76623373421DF22FB4CF8817020CBB7EF15C725B9D5E45F17E189BFC384190F/);
+  assert.match(windowsPythonRuntime, /PYYAML_FORCE_LIBYAML = "0"/);
+  assert.match(windowsPythonRuntime, /pyyaml-6\.0\.3-py3-none-any\.whl/);
+  assert.match(windowsPythonRuntime, /httptools-0\.8\.0\.tar\.gz/);
+  assert.match(windowsPythonRuntime, /6B2A32F18D97E16E90827D7A819FFA8DBD8CC245FC4E1FA9D1095B54EF4BD999/);
+  assert.match(windowsPythonRuntime, /httptools-0\.8\.0-cp311-cp311-win_arm64\.whl/);
+  assert.match(windowsPythonRuntime, /grpcio-1\.83\.0\.tar\.gz/);
+  assert.match(windowsPythonRuntime, /7674587248FBBB2AC6E4EECF83A8A0F3D91A928F941DE571ACFD3A2F007FBC24/);
+  assert.match(windowsPythonRuntime, /GRPC_PYTHON_BUILD_WITH_CYTHON = "0"/);
+  assert.match(windowsPythonRuntime, /GRPC_PYTHON_BUILD_USE_SHORT_TEMP_DIR_NAME = "1"/);
+  assert.match(windowsPythonRuntime, /-WorkingDirectory \$grpcSourceRoot/);
+  assert.match(windowsPythonRuntime, /grpcio-1\.83\.0-cp311-cp311-win_arm64\.whl/);
+  assert.match(windowsPythonRuntime, /grpcio build directories were not removed/);
+  assert.match(windowsPythonRuntime, /--only-binary=grpcio,PyYAML,httptools/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_COMPATIBILITY_VERSIONS_OK/);
+  assert.match(windowsPythonRuntime, /machine == 0xAA64/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_COMPATIBILITY_PE_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_PYYAML_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_HTTPTOOLS_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_GRPC_LOOPBACK_OK/);
   assert.match(windowsPythonRuntime, /build-only Python development files were not removed/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHECKPOINT_SQLITE_OK/);

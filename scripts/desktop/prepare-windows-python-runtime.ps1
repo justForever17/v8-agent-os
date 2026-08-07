@@ -28,7 +28,8 @@ function Invoke-Checked {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
     [string[]]$Arguments = @(),
-    [hashtable]$Environment = @{}
+    [hashtable]$Environment = @{},
+    [string]$WorkingDirectory = ""
   )
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $FilePath
@@ -39,6 +40,9 @@ function Invoke-Checked {
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
   $psi.CreateNoWindow = $true
+  if ($WorkingDirectory) {
+    $psi.WorkingDirectory = (Resolve-Path -LiteralPath $WorkingDirectory).Path
+  }
   foreach ($entry in $Environment.GetEnumerator()) {
     $psi.Environment[$entry.Key] = [string]$entry.Value
   }
@@ -101,6 +105,7 @@ function Invoke-CheckedWithRetry {
     [Parameter(Mandatory = $true)][string]$FilePath,
     [string[]]$Arguments = @(),
     [hashtable]$Environment = @{},
+    [string]$WorkingDirectory = "",
     [string]$Description = "",
     [int]$Attempts = 2
   )
@@ -108,7 +113,7 @@ function Invoke-CheckedWithRetry {
     $Description = "$FilePath $($Arguments -join ' ')"
   }
   Invoke-WithRetry -Description $Description -Attempts $Attempts -Script {
-    Invoke-Checked -FilePath $FilePath -Arguments $Arguments -Environment $Environment
+    Invoke-Checked -FilePath $FilePath -Arguments $Arguments -Environment $Environment -WorkingDirectory $WorkingDirectory
   }
 }
 
@@ -242,7 +247,15 @@ Set-Content -LiteralPath $pthFile.FullName -Value $updatedLines -Encoding ascii
 
 Invoke-WebRequestWithRetry -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location") -Description "Install pip into portable Python"
-Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel") -Description "Upgrade portable Python packaging tools"
+$packagingToolRequirements = if ($Architecture -eq "arm64") {
+  @("pip", "setuptools==82.0.1", "wheel==0.46.3")
+} else {
+  @("pip", "setuptools", "wheel")
+}
+$packagingToolArguments = @(
+  "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade"
+) + $packagingToolRequirements
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments $packagingToolArguments -Description "Upgrade portable Python packaging tools"
 
 if ($Architecture -eq "arm64") {
   # tiktoken does not publish a win_arm64 wheel. Build the audited release with
@@ -410,11 +423,246 @@ if ($Architecture -eq "arm64") {
   Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-c", "import platform, chromadb_rust_bindings; assert platform.machine().lower() == 'arm64'; print('V8OS_ARM64_CHROMA_NATIVE_OK')"
   )
+
+  # Chroma's current dependency graph does not publish CPython 3.11 Windows
+  # ARM64 wheels for grpcio, PyYAML, or httptools. Build fixed official source
+  # distributions once, then force the resolver to consume only those wheels.
+  $pyyamlSdistPath = Join-Path $workDir "pyyaml-6.0.3.tar.gz"
+  $pyyamlSdistUrl = "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz"
+  $pyyamlSdistSha256 = "D76623373421DF22FB4CF8817020CBB7EF15C725B9D5E45F17E189BFC384190F"
+  Invoke-WebRequestWithRetry -Uri $pyyamlSdistUrl -OutFile $pyyamlSdistPath
+  $downloadedPyyamlSdistSha256 = (Get-FileHash -LiteralPath $pyyamlSdistPath -Algorithm SHA256).Hash
+  if ($downloadedPyyamlSdistSha256 -ne $pyyamlSdistSha256) {
+    throw "PyYAML source distribution checksum mismatch: $downloadedPyyamlSdistSha256"
+  }
+  Invoke-Checked -FilePath "tar.exe" -Arguments @("-xzf", $pyyamlSdistPath, "-C", $workDir)
+  $pyyamlSourceRoot = Join-Path $workDir "pyyaml-6.0.3"
+  if (-not (Test-Path (Join-Path $pyyamlSourceRoot "pyproject.toml"))) {
+    throw "PyYAML source distribution is missing pyproject.toml"
+  }
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "."
+  ) -Environment @{
+    PYYAML_FORCE_LIBYAML = "0"
+  } -WorkingDirectory $pyyamlSourceRoot
+  $pyyamlWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "pyyaml-6.0.3-*.whl")
+  if ($pyyamlWheels.Count -ne 1 -or $pyyamlWheels[0].Name -ne "pyyaml-6.0.3-py3-none-any.whl") {
+    throw "Expected exactly one pure Python PyYAML 6.0.3 wheel, found: $($pyyamlWheels.Name -join ', ')"
+  }
+
+  $httptoolsSdistPath = Join-Path $workDir "httptools-0.8.0.tar.gz"
+  $httptoolsSdistUrl = "https://files.pythonhosted.org/packages/43/e5/d471fcb0e14523fe1c3f4ba58ca52480e7bd70ad7109a3846bc75892f7fb/httptools-0.8.0.tar.gz"
+  $httptoolsSdistSha256 = "6B2A32F18D97E16E90827D7A819FFA8DBD8CC245FC4E1FA9D1095B54EF4BD999"
+  Invoke-WebRequestWithRetry -Uri $httptoolsSdistUrl -OutFile $httptoolsSdistPath
+  $downloadedHttptoolsSdistSha256 = (Get-FileHash -LiteralPath $httptoolsSdistPath -Algorithm SHA256).Hash
+  if ($downloadedHttptoolsSdistSha256 -ne $httptoolsSdistSha256) {
+    throw "httptools source distribution checksum mismatch: $downloadedHttptoolsSdistSha256"
+  }
+  Invoke-Checked -FilePath "tar.exe" -Arguments @("-xzf", $httptoolsSdistPath, "-C", $workDir)
+  $httptoolsSourceRoot = Join-Path $workDir "httptools-0.8.0"
+  if (-not (Test-Path (Join-Path $httptoolsSourceRoot "pyproject.toml"))) {
+    throw "httptools source distribution is missing pyproject.toml"
+  }
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "."
+  ) -WorkingDirectory $httptoolsSourceRoot
+  $httptoolsWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "httptools-0.8.0-*.whl")
+  if ($httptoolsWheels.Count -ne 1 -or $httptoolsWheels[0].Name -ne "httptools-0.8.0-cp311-cp311-win_arm64.whl") {
+    throw "Expected exactly one native win_arm64 httptools 0.8.0 wheel, found: $($httptoolsWheels.Name -join ', ')"
+  }
+
+  # grpcio generates deeply nested object paths. Build from a deliberately
+  # short source and TEMP root so MSVC stays below Windows path limits.
+  $grpcShortRoot = Join-Path $tmpRoot "v8g"
+  $grpcTempRoot = Join-Path $tmpRoot "v8t"
+  if (Test-Path $grpcShortRoot) {
+    Remove-Item -LiteralPath $grpcShortRoot -Recurse -Force
+  }
+  if (Test-Path $grpcTempRoot) {
+    Remove-Item -LiteralPath $grpcTempRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $grpcShortRoot, $grpcTempRoot | Out-Null
+  $grpcSdistPath = Join-Path $grpcShortRoot "grpcio-1.83.0.tar.gz"
+  $grpcSdistUrl = "https://files.pythonhosted.org/packages/0c/98/304898ac4e04e2d5e4e4c2eadc178b1f2a16d5f4bc2f91306c87d64680b9/grpcio-1.83.0.tar.gz"
+  $grpcSdistSha256 = "7674587248FBBB2AC6E4EECF83A8A0F3D91A928F941DE571ACFD3A2F007FBC24"
+  Invoke-WebRequestWithRetry -Uri $grpcSdistUrl -OutFile $grpcSdistPath
+  $downloadedGrpcSdistSha256 = (Get-FileHash -LiteralPath $grpcSdistPath -Algorithm SHA256).Hash
+  if ($downloadedGrpcSdistSha256 -ne $grpcSdistSha256) {
+    throw "grpcio source distribution checksum mismatch: $downloadedGrpcSdistSha256"
+  }
+  Invoke-Checked -FilePath "tar.exe" -Arguments @("-xzf", $grpcSdistPath, "-C", $grpcShortRoot)
+  $grpcSourceRoot = Join-Path $grpcShortRoot "grpcio-1.83.0"
+  if (-not (Test-Path (Join-Path $grpcSourceRoot "pyproject.toml"))) {
+    throw "grpcio source distribution is missing pyproject.toml"
+  }
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "."
+  ) -Environment @{
+    GRPC_PYTHON_BUILD_WITH_CYTHON = "0"
+    GRPC_PYTHON_BUILD_USE_SHORT_TEMP_DIR_NAME = "1"
+    TEMP = $grpcTempRoot
+    TMP = $grpcTempRoot
+  } -WorkingDirectory $grpcSourceRoot
+  $grpcWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "grpcio-1.83.0-*.whl")
+  if ($grpcWheels.Count -ne 1 -or $grpcWheels[0].Name -ne "grpcio-1.83.0-cp311-cp311-win_arm64.whl") {
+    throw "Expected exactly one native win_arm64 grpcio 1.83.0 wheel, found: $($grpcWheels.Name -join ', ')"
+  }
+  Remove-Item -LiteralPath $grpcShortRoot -Recurse -Force
+  Remove-Item -LiteralPath $grpcTempRoot -Recurse -Force
+  if ((Test-Path $grpcShortRoot) -or (Test-Path $grpcTempRoot)) {
+    throw "Windows ARM64 grpcio build directories were not removed"
+  }
+
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-deps", "--no-index",
+    "--find-links", $wheelhouse, "PyYAML==6.0.3", "httptools==0.8.0", "grpcio==1.83.0"
+  )
+
+  $arm64ConstraintsFile = Join-Path $workDir "arm64-constraints.txt"
+  Set-Content -LiteralPath $arm64ConstraintsFile -Encoding ascii -Value @(
+    "grpcio==1.83.0",
+    "PyYAML==6.0.3",
+    "httptools==0.8.0"
+  )
 }
 
-Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
+$requirementsInstallArguments = @(
+  "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary"
+)
+if ($Architecture -eq "arm64") {
+  $requirementsInstallArguments += @(
+    "--constraint", $arm64ConstraintsFile,
+    "--find-links", $wheelhouse,
+    "--only-binary=grpcio,PyYAML,httptools"
+  )
+}
+$requirementsInstallArguments += @("-r", $installRequirementsFile)
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments $requirementsInstallArguments -Description "Install desktop preview Engine requirements"
 
 if ($Architecture -eq "arm64") {
+  $arm64CompatibilityVersionProbe = @"
+from importlib.metadata import version
+
+expected = {
+    "grpcio": "1.83.0",
+    "PyYAML": "6.0.3",
+    "httptools": "0.8.0",
+}
+for distribution, expected_version in expected.items():
+    actual_version = version(distribution)
+    assert actual_version == expected_version, (distribution, actual_version, expected_version)
+print("V8OS_ARM64_COMPATIBILITY_VERSIONS_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $arm64CompatibilityVersionProbe)
+
+  $arm64PeProbe = @"
+import importlib
+import platform
+import struct
+from pathlib import Path
+
+assert platform.machine().lower() == "arm64"
+for module_name in (
+    "grpc._cython.cygrpc",
+    "httptools.parser.parser",
+    "httptools.parser.url_parser",
+):
+    module = importlib.import_module(module_name)
+    module_path = Path(module.__file__)
+    with module_path.open("rb") as handle:
+        handle.seek(0x3C)
+        pe_offset = struct.unpack("<I", handle.read(4))[0]
+        handle.seek(pe_offset)
+        assert handle.read(4) == b"PE\0\0", module_path
+        machine = struct.unpack("<H", handle.read(2))[0]
+    assert machine == 0xAA64, (module_path, hex(machine))
+print("V8OS_ARM64_COMPATIBILITY_PE_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $arm64PeProbe)
+
+  $pyyamlProbe = @"
+import yaml
+
+payload = {"runtime": "windows-arm64", "values": [1, 2, 3]}
+encoded = yaml.safe_dump(payload)
+assert yaml.safe_load(encoded) == payload
+assert yaml.__with_libyaml__ is False
+print("V8OS_ARM64_PYYAML_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $pyyamlProbe)
+
+  $httptoolsProbe = @"
+from httptools import HttpRequestParser
+
+class Protocol:
+    def __init__(self):
+        self.url = b""
+        self.complete = False
+
+    def on_message_begin(self):
+        pass
+
+    def on_url(self, url):
+        self.url += url
+
+    def on_header(self, name, value):
+        pass
+
+    def on_headers_complete(self):
+        pass
+
+    def on_body(self, body):
+        pass
+
+    def on_message_complete(self):
+        self.complete = True
+
+protocol = Protocol()
+parser = HttpRequestParser(protocol)
+parser.feed_data(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+assert protocol.url == b"/health"
+assert protocol.complete is True
+print("V8OS_ARM64_HTTPTOOLS_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $httptoolsProbe)
+
+  $grpcProbe = @"
+from concurrent import futures
+import grpc
+
+def ping(request, context):
+    return b"pong:" + request
+
+handler = grpc.unary_unary_rpc_method_handler(
+    ping,
+    request_deserializer=lambda value: value,
+    response_serializer=lambda value: value,
+)
+server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+server.add_generic_rpc_handlers((
+    grpc.method_handlers_generic_handler("v8os.Compatibility", {"Ping": handler}),
+))
+port = server.add_insecure_port("127.0.0.1:0")
+assert port > 0
+server.start()
+try:
+    with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+        grpc.channel_ready_future(channel).result(timeout=10)
+        call = channel.unary_unary(
+            "/v8os.Compatibility/Ping",
+            request_serializer=lambda value: value,
+            response_deserializer=lambda value: value,
+        )
+        assert call(b"ping", timeout=10) == b"pong:ping"
+finally:
+    server.stop(0).wait()
+print("V8OS_ARM64_GRPC_LOOPBACK_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $grpcProbe)
+
   Remove-Item -LiteralPath $runtimeInclude -Recurse -Force
   Remove-Item -LiteralPath $runtimeLibs -Recurse -Force
   if ((Test-Path $runtimeInclude) -or (Test-Path $runtimeLibs)) {

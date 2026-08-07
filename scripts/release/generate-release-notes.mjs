@@ -103,9 +103,8 @@ function assetSection(product, version, channel) {
   if (product === "phone") {
     return [
       "- `V8OS-Phone-" + version + "-android-preview.apk`：Android 11+ 预览安装包。",
+      "- `V8OS-Phone-" + version + "-ios-preview.ipa`：iOS 16.4+ 内部分发预览包；仅限已配置签名与注册设备的测试安装。",
       "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
-      "",
-      "iOS 包仍在后续发布链路中推进，本次以 Android APK 为主。",
     ].join("\n");
   }
 
@@ -133,7 +132,8 @@ function knownLimits(product, channel) {
   if (product === "phone") {
     return [
       "- Phone 是远程交互端，需要通过 V8OS 桌面/控制台配对。",
-      "- Android 支持目标为 11 及以上；iOS 发布仍在后续完善。",
+      "- Android 支持目标为 11 及以上；iOS 支持目标为 16.4 及以上。",
+      "- iOS IPA 不等同于 App Store 发布；它需要有效 Apple 签名、描述文件与已注册测试设备。",
       "- 若你从旧 `phone-v*` release 升级，请优先使用新的 `v8-os-phone-v*` 版本线。",
     ].join("\n");
   }
@@ -171,7 +171,7 @@ ${assetSection(release.product, release.version, release.channel)}
 ## 安装 / 更新
 
 ${release.product === "phone"
-  ? "下载 APK 后安装到 Android 设备；打开 Phone 后扫码配对到你的 V8OS 桌面/控制台。"
+  ? "Android 可下载 APK 后安装；iOS IPA 仅可通过已配置的内部分发签名与注册设备安装。打开 Phone 后扫码配对到你的 V8OS 桌面/控制台。"
   : release.channel === "stable"
     ? "下载安装包或免安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"
     : "下载安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"}

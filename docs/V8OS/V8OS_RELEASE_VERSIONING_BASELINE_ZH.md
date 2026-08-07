@@ -45,14 +45,14 @@
 
 当前状态：
 
-- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会构建 Android APK，创建 GitHub Release，上传 APK 和 `SHA256SUMS.txt`。
+- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会并行构建 Android APK 与 iOS 内部分发 IPA；只有两者成功后才由汇总 job 创建 GitHub Release，并上传两个安装包和 `SHA256SUMS.txt`。
 - 旧 `phone-v*` tag 只作为历史发布入口，不再用于新版本。
 
 约束：
 
 - Phone 是唯一远程配对入口。
 - Android 支持 11 及以上。
-- iOS 支持 16.4 及以上，正式发布仍属后续。
+- iOS 支持 16.4 及以上；当前 IPA 仅用于已配置 Apple 签名、描述文件与注册设备的内部分发，不等同于 App Store 正式发布。
 
 ### `tui-experimental`
 
@@ -144,8 +144,17 @@ Phone 发版前必须确认：
 
 - `npm ci` 不再因本地 tarball integrity 失败。
 - `npm run typecheck` 通过。
-- Android APK 能成功构建。
+- Android APK 与 iOS 内部分发 IPA 均能成功构建；任一失败不得创建 Release。
 - 配对、server profile、音频/附件、产物访问 smoke 通过。
+
+### Phone CI 触发矩阵
+
+| 触发 | profile | 构建 | 发布行为 |
+| --- | --- | --- | --- |
+| `workflow_dispatch` / `android` | 用户所选 | Android APK；`production` 为 AAB | 仅上传临时 artifact |
+| `workflow_dispatch` / `ios` | 用户所选 | iOS IPA | 仅上传临时 artifact |
+| `workflow_dispatch` / `all` | 用户所选 | Android 与 iOS 并行 | 仅上传临时 artifact |
+| `v8-os-phone-vYYYY.MM.DD.N` tag | `preview` | Android APK 与 iOS IPA 并行 | 两个 job 均成功后才创建 Release |
 
 ## 不能宣称的内容
 

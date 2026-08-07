@@ -1,4 +1,4 @@
-name: phone-build
+name: Phone Build
 
 on:
   workflow_dispatch:
@@ -26,14 +26,26 @@ on:
       - "v8-os-phone-v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: phone-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v8-os-phone-v') }}
 
 jobs:
-  build:
+  build-android:
+    name: Phone Android package
+    if: github.event_name == 'push' || github.event.inputs.platform == 'android' || github.event.inputs.platform == 'all'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: apps/v8-agent-os-phone
+    env:
+      EAS_BUILD_PROFILE: ${{ github.event.inputs.profile || 'preview' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,34 +69,138 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Export Android bundle snapshot
-        run: npx expo export --platform android --output-dir dist-android
+      - name: Resolve Android package format
+        shell: bash
+        run: |
+          if [ "$EAS_BUILD_PROFILE" = "production" ]; then
+            echo "ANDROID_OUTPUT=app-release.aab" >> "$GITHUB_ENV"
+          else
+            echo "ANDROID_OUTPUT=app-release.apk" >> "$GITHUB_ENV"
+          fi
 
-      - name: Build Android APK
+      - name: Build Android package
         run: >
           eas build
           --local
           --non-interactive
           --platform android
-          --profile preview
-          --output ./app-release.apk
+          --profile "$EAS_BUILD_PROFILE"
+          --output "./$ANDROID_OUTPUT"
 
-      - name: Upload APK artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/v8-os-phone-v') }}
+      - name: Upload Android package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: phone-release-apk
-          path: apps/v8-agent-os-phone/app-release.apk
+          name: phone-android-package
+          path: |
+            apps/v8-agent-os-phone/app-release.apk
+            apps/v8-agent-os-phone/app-release.aab
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  build-ios:
+    name: Phone iOS package
+    if: github.event_name == 'push' || github.event.inputs.platform == 'ios' || github.event.inputs.platform == 'all'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/v8-agent-os-phone
+    env:
+      EAS_BUILD_PROFILE: ${{ github.event.inputs.profile || 'preview' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build iOS package
+        run: >
+          eas build
+          --local
+          --non-interactive
+          --platform ios
+          --profile "$EAS_BUILD_PROFILE"
+          --output ./app-release.ipa
+
+      - name: Upload iOS package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-ios-package
+          path: apps/v8-agent-os-phone/app-release.ipa
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  release:
+    name: Publish Phone release
+    needs:
+      - build-android
+      - build-ios
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v8-os-phone-v') &&
+      needs.build-android.result == 'success' &&
+      needs.build-ios.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: apps/v8-agent-os-phone
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Android package
+        uses: actions/download-artifact@v4
+        with:
+          name: phone-android-package
+          path: apps/v8-agent-os-phone/release-assets/android
+
+      - name: Download iOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: phone-ios-package
+          path: apps/v8-agent-os-phone/release-assets/ios
 
       - name: Prepare phone release assets
-        if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v8-os-phone-v}"
+          APK_SOURCE="release-assets/android/app-release.apk"
+          IPA_SOURCE="release-assets/ios/app-release.ipa"
+          test -f "$APK_SOURCE"
+          test -f "$IPA_SOURCE"
+
           APK_NAME="V8OS-Phone-${VERSION}-android-preview.apk"
-          mv app-release.apk "$APK_NAME"
-          sha256sum "$APK_NAME" > SHA256SUMS.txt
+          IPA_NAME="V8OS-Phone-${VERSION}-ios-preview.ipa"
+          cp "$APK_SOURCE" "$APK_NAME"
+          cp "$IPA_SOURCE" "$IPA_NAME"
+          sha256sum "$APK_NAME" "$IPA_NAME" > SHA256SUMS.txt
           node ../../scripts/release/generate-release-notes.mjs \
             --product phone \
             --tag "$GITHUB_REF_NAME" \
@@ -93,11 +209,11 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
           body_path: apps/v8-agent-os-phone/RELEASE_NOTES.md
           files: |
             apps/v8-agent-os-phone/V8OS-Phone-*-android-preview.apk
+            apps/v8-agent-os-phone/V8OS-Phone-*-ios-preview.ipa
             apps/v8-agent-os-phone/SHA256SUMS.txt

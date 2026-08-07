@@ -33,7 +33,7 @@ flowchart LR
 
 普通试用优先前往 [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases) 下载 `v8-os-desktop-v*` 的 Windows Preview 资产。
 
-当前桌面版仍是 unsigned preview：Windows 可能显示安全确认；签名、自动更新和 stable 通道尚未完成。Android Phone Preview 使用 `v8-os-phone-v*` 标签发布。
+当前桌面版仍是 unsigned preview：Windows 可能显示安全确认；签名、自动更新和 stable 通道尚未完成。`v8-os-phone-v*` 标签会同时发布 Android APK 与面向已注册测试设备的 iOS 内部分发 IPA。
 
 ### 2.2 从源码启动完整桌面预览
 

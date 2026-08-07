@@ -66,7 +66,7 @@ Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signe
 Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
 
 - Windows Desktop Preview: installer or zip package.
-- Android Phone Preview: APK package.
+- Android Phone Preview: APK package; signed iOS internal-preview IPA is published for registered test devices.
 
 The desktop build is currently an unsigned preview. Windows may show a security confirmation. Code signing and auto-update are planned for later releases.
 
@@ -89,7 +89,7 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 | Product | Status | Notes |
 | --- | --- | --- |
 | Desktop | Preview | Windows unsigned preview builds are available. Signing, auto-update, and stable releases are still future work. |
-| Phone | Preview | Android APK first. iOS targets 16.4 and later, with the release pipeline still evolving. |
+| Phone | Preview | Android APK plus signed internal-preview IPA for registered iOS 16.4+ test devices. App Store distribution remains future work. |
 | TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
 | Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |
 

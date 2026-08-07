@@ -272,6 +272,7 @@ test('phone workflow honors dispatch inputs while preserving the proven Android 
   assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ github\.event\.inputs\.profile \|\| 'preview' \}\}/);
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /build-ios:[\s\S]*?if: github\.event_name == 'workflow_dispatch' && \(github\.event\.inputs\.platform == 'ios' \|\| github\.event\.inputs\.platform == 'all'\)[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.match(workflow, /Verify phone release manifest[\s\S]*?verify-release-manifest\.mjs --product phone --tag "\$GITHUB_REF_NAME"/);
   assert.match(workflow, /release:\s*\n\s+name: Publish Phone release\s*\n\s+needs:\s*\n\s+- build-android\s*\n\s+- build-ios/);
   assert.match(workflow, /release:[\s\S]*?needs\.build-android\.result == 'success'[\s\S]*?needs\.build-ios\.result != 'cancelled'/);
   assert.match(workflow, /actions\/download-artifact@v4/);

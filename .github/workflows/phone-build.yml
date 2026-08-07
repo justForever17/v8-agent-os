@@ -57,6 +57,11 @@ jobs:
           cache: npm
           cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
 
+      - name: Verify phone release manifest
+        if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
+        shell: bash
+        run: node ../../scripts/release/verify-release-manifest.mjs --product phone --tag "$GITHUB_REF_NAME"
+
       - name: Setup Expo and EAS
         uses: expo/expo-github-action@v8
         with:

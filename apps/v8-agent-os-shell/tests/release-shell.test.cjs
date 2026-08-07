@@ -573,6 +573,9 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /PROTOC_INCLUDE/);
   assert.match(windowsPythonRuntime, /chromadb==1\.5\.9/);
   assert.match(windowsPythonRuntime, /5C20E62A455C28BACAC927F26116A73FD8E1799E0D908BE8E8A4F02197A54731/);
+  assert.match(windowsPythonRuntime, /Expected exactly one audited generator 0\.8\.8 entry/);
+  assert.match(windowsPythonRuntime, /version = \"0\.8\.9\"/);
+  assert.match(windowsPythonRuntime, /b3b854b0e584ead1a33f18b2fcad7cf7be18b3875c78816b753639aa501513ae/);
   assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 Chroma wheel/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_NATIVE_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_WRITE_OK/);

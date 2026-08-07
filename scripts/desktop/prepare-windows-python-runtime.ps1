@@ -333,9 +333,58 @@ if ($Architecture -eq "arm64") {
   if ($downloadedChromaSdistSha256 -ne $chromaSdistSha256) {
     throw "Chroma source distribution checksum mismatch: $downloadedChromaSdistSha256"
   }
+  $chromaSourceRoot = Join-Path $workDir "chromadb-1.5.9"
+  Invoke-Checked -FilePath "tar.exe" -Arguments @("-xzf", $chromaSdistPath, "-C", $workDir)
+  $chromaCargoLock = Join-Path $chromaSourceRoot "Cargo.lock"
+  if (
+    -not (Test-Path (Join-Path $chromaSourceRoot "pyproject.toml")) -or
+    -not (Test-Path $chromaCargoLock)
+  ) {
+    throw "Chroma source distribution is missing pyproject.toml or Cargo.lock"
+  }
+
+  # Chroma 1.5.9 locks generator 0.8.8, whose published crate omits its
+  # Windows ARM64 implementation. Patch only that audited lock entry to the
+  # upstream 0.8.9 release, which added and tests Windows ARM64 support.
+  $generatorLockLines = @(
+    '[[package]]',
+    'name = "generator"',
+    'version = "0.8.8"',
+    'source = "registry+https://github.com/rust-lang/crates.io-index"',
+    'checksum = "52f04ae4152da20c76fe800fa48659201d5cf627c5149ca0b707b69d7eef6cf9"'
+  )
+  $generatorCompatLockLines = @(
+    '[[package]]',
+    'name = "generator"',
+    'version = "0.8.9"',
+    'source = "registry+https://github.com/rust-lang/crates.io-index"',
+    'checksum = "b3b854b0e584ead1a33f18b2fcad7cf7be18b3875c78816b753639aa501513ae"'
+  )
+  $chromaCargoLockText = [System.IO.File]::ReadAllText($chromaCargoLock)
+  $cargoLockNewLine = if ($chromaCargoLockText.Contains("`r`n")) { "`r`n" } else { "`n" }
+  $generatorLockBlock = $generatorLockLines -join $cargoLockNewLine
+  $generatorCompatLockBlock = $generatorCompatLockLines -join $cargoLockNewLine
+  $generatorLockIndex = $chromaCargoLockText.IndexOf($generatorLockBlock, [System.StringComparison]::Ordinal)
+  if (
+    $generatorLockIndex -lt 0 -or
+    $generatorLockIndex -ne $chromaCargoLockText.LastIndexOf($generatorLockBlock, [System.StringComparison]::Ordinal)
+  ) {
+    throw "Expected exactly one audited generator 0.8.8 entry in Chroma Cargo.lock"
+  }
+  $patchedChromaCargoLock = $chromaCargoLockText.Remove($generatorLockIndex, $generatorLockBlock.Length).Insert(
+    $generatorLockIndex,
+    $generatorCompatLockBlock
+  )
+  [System.IO.File]::WriteAllText(
+    $chromaCargoLock,
+    $patchedChromaCargoLock,
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  Write-Host "Pinned Chroma build dependency generator 0.8.9 for Windows ARM64"
+
   Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
-    "--no-build-isolation", "--wheel-dir", $wheelhouse, $chromaSdistPath
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, $chromaSourceRoot
   ) -Environment @{
     PATH = "$(Join-Path $runtimeDir 'Scripts');$env:PATH"
     PROTOC = $protocExe

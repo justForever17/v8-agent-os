@@ -24,7 +24,11 @@ function parseArgs(argv) {
 
 function inferRelease(args) {
   const environmentTag = String(process.env.GITHUB_REF_NAME || "").trim();
-  const tag = args.tag || (TAG_RE.test(environmentTag) ? environmentTag : "");
+  // An explicit product or version is a self-contained release-note request.
+  // Do not let a surrounding, unrelated tag (for example a desktop tag while
+  // CI checks the Phone notes fixture) silently change its product.
+  const hasExplicitReleaseIdentity = Boolean(args.tag || args.product || args.version);
+  const tag = args.tag || (!hasExplicitReleaseIdentity && TAG_RE.test(environmentTag) ? environmentTag : "");
   let product = args.product;
   let version = args.version;
 

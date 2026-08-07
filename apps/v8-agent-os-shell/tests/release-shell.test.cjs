@@ -292,6 +292,10 @@ test('phone release notes retain the Android-only tag distribution contract', ()
   const notes = execFileSync(process.execPath, [generator, '--product', 'phone', '--version', '2026.08.07.1'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      GITHUB_REF_NAME: 'v8-os-desktop-v2026.08.07.2',
+    },
   });
   assert.match(notes, /V8OS-Phone-2026\.08\.07\.1-android-preview\.apk/);
   assert.doesNotMatch(notes, /ios-preview\.ipa/);

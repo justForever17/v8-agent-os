@@ -243,6 +243,7 @@ test('desktop workflow uses fan-in publication with narrowly scoped release perm
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
 
   assert.match(workflow, /concurrency:\s*\n\s+group: desktop-preview-/);
+  assert.match(workflow, /github\.event\.inputs\.platform \|\| 'all'/);
   assert.match(workflow, /permissions:\s*\n\s+contents: read/);
   assert.match(workflow, /desktop-contract:/);
   assert.match(workflow, /Desktop release contract tests/);

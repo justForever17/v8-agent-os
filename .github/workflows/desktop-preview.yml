@@ -50,7 +50,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-preview-${{ github.workflow }}-${{ github.ref }}
+  # Dispatches for different native targets are independent.  Keep same-target
+  # reruns cancellable, but never let an arm64 request cancel x64 or Linux.
+  group: desktop-preview-${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.platform || 'all' }}
   cancel-in-progress: true
 
 jobs:

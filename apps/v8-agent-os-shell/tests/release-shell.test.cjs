@@ -493,6 +493,15 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.doesNotMatch(requiredModulesBlock, /pywinauto/);
   assert.match(optionalModulesBlock, /pywinauto/);
 
+  const packageLayoutProbe = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),
+    'utf8',
+  );
+  assert.match(packageLayoutProbe, /V8OS_PACKAGED_RUNTIME_OK/);
+  assert.match(packageLayoutProbe, /engine\.packagedRuntimeImport/);
+  assert.match(packageLayoutProbe, /gi\.require_version\('Atspi', '2\.0'\)/);
+  assert.match(packageLayoutProbe, /location\.is_relative_to\(runtime\)/);
+
   const installSmoke = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'run_desktop_install_smoke.mjs'),
     'utf8',

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,10 +40,45 @@ function packageResources(platform) {
   return unpacked ? path.join(unpacked, "resources", "v8os") : "";
 }
 
+function verifyPackagedPython(python, engineRoot, platform) {
+  const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-package-runtime-probe-"));
+  try {
+    const linuxAtspiProbe = platform.startsWith("linux")
+      ? "; import gi; gi.require_version('Atspi', '2.0'); import pyatspi; from gi.repository import Atspi"
+      : "";
+    const probe = [
+      "import pathlib, sys, sysconfig",
+      "runtime = pathlib.Path(sys.executable).resolve().parent.parent",
+      "locations = [pathlib.Path(sys.prefix).resolve(), pathlib.Path(sys.base_prefix).resolve(), pathlib.Path(sysconfig.get_path('purelib')).resolve(), pathlib.Path(sysconfig.get_path('platlib')).resolve()]",
+      "assert all(location.is_relative_to(runtime) for location in locations)",
+      "import main",
+      `print('V8OS_PACKAGED_RUNTIME_OK')${linuxAtspiProbe}`,
+    ].join("; ");
+    const result = spawnSync(python, ["-X", "utf8", "-c", probe], {
+      cwd: engineRoot,
+      env: {
+        ...process.env,
+        V8_AGENT_OS_HOME: probeHome,
+        V8_AGENT_OS_DISABLE_BYTECODE: "1",
+      },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    return {
+      name: "engine.packagedRuntimeImport",
+      ok: !result.error && result.status === 0 && String(result.stdout || "").includes("V8OS_PACKAGED_RUNTIME_OK"),
+      path: path.relative(repoRoot, python),
+    };
+  } finally {
+    fs.rmSync(probeHome, { recursive: true, force: true });
+  }
+}
+
 try {
   const platform = argValue("--platform");
   if (!/^(windows|macos|linux)-(x64|arm64)$/.test(platform)) throw new Error(`Unsupported --platform ${JSON.stringify(platform)}`);
   const resourceRoot = packageResources(platform);
+  const engineRoot = path.join(resourceRoot, "apps", "v8-agent-os-engine");
   const posix = platform !== "windows-x64";
   const python = posix
     ? [path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python3"), path.join(resourceRoot, "apps", "v8-agent-os-engine", ".python", "bin", "python")]
@@ -59,6 +96,8 @@ try {
   }
   const checks = required.map((filePath) => ({ path: filePath, ok: fs.existsSync(filePath) }));
   checks.push({ path: python.join(" | "), ok: python.some((filePath) => fs.existsSync(filePath)) });
+  const packagedPython = python.find((filePath) => fs.existsSync(filePath));
+  if (packagedPython) checks.push(verifyPackagedPython(packagedPython, engineRoot, platform));
   const failures = checks.filter((check) => !check.ok);
   const payload = {
     generatedAt: new Date().toISOString(),

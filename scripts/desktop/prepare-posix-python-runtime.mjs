@@ -11,9 +11,11 @@ const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
 const engineDir = path.join(repoRoot, "apps", "v8-agent-os-engine");
 const PYTHON_RELEASE = "20260805";
 const LINUX_PYATSPI_SOURCE = {
-  commit: "0633eea48b8eb423f051ec74647bcb3e4d217f17",
-  archive: "95fcc6f82ca5f63f698021a0119f73bb05f70d48ce146a13800b10be4fdf8cbb",
-  url: "https://gitlab.gnome.org/api/v4/projects/GNOME%2Fpyatspi2/repository/archive.tar.gz?sha=0633eea48b8eb423f051ec74647bcb3e4d217f17",
+  // GNOME pyatspi2 2.58.2.  The previously pinned pre-Python-3 source used
+  // `self.async`, which is a syntax error on Python 3.11.
+  commit: "f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2",
+  archive: "200600a819af2733ca43eaadda5bc794c1e0b516799991ca138bb6db184c81b6",
+  url: "https://gitlab.gnome.org/api/v4/projects/GNOME%2Fpyatspi2/repository/archive.tar.gz?sha=f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2",
 };
 const RUNTIMES = {
   "macos-x64": {
@@ -162,7 +164,7 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
         path.join(extractDir, sourceRoot.name, "COPYING"),
         path.join(noticesDir, "pyatspi2-COPYING"),
       );
-      run(python, ["-c", "import pyatspi; import gi; from gi.repository import Atspi; print('PYATSPI_IMPORT_OK')"]);
+      run(python, ["-c", "import gi; gi.require_version('Atspi', '2.0'); import pyatspi; from gi.repository import Atspi; print('PYATSPI_IMPORT_OK')"]);
     });
 }
 

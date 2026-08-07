@@ -372,8 +372,9 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(linuxRequirements, /PyGObject/);
   assert.doesNotMatch(linuxRequirements, /^pyatspi(?:[<=>\\[]|\\s|$)/im);
   assert.match(posixRuntimeScript, /PYATSPI_IMPORT_OK/);
-  assert.match(posixRuntimeScript, /0633eea48b8eb423f051ec74647bcb3e4d217f17/);
-  assert.match(posixRuntimeScript, /95fcc6f82ca5f63f698021a0119f73bb05f70d48ce146a13800b10be4fdf8cbb/);
+  assert.match(posixRuntimeScript, /f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2/);
+  assert.match(posixRuntimeScript, /200600a819af2733ca43eaadda5bc794c1e0b516799991ca138bb6db184c81b6/);
+  assert.match(posixRuntimeScript, /gi\.require_version\('Atspi', '2\.0'\)/);
 });
 
 test('Admin and Web release builds use Next standalone servers', () => {

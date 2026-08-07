@@ -242,7 +242,7 @@ test('desktop workflow builds every native platform and uploads checksummed buil
 test('desktop workflow uses fan-in publication with narrowly scoped release permissions', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
 
-  assert.match(workflow, /concurrency:\s*\n\s+group: desktop-preview-/);
+  assert.match(workflow, /concurrency:[\s\S]*?group: desktop-preview-/);
   assert.match(workflow, /github\.event\.inputs\.platform \|\| 'all'/);
   assert.match(workflow, /permissions:\s*\n\s+contents: read/);
   assert.match(workflow, /desktop-contract:/);

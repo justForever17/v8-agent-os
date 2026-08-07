@@ -60,7 +60,11 @@ jobs:
       - name: Verify phone release manifest
         if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
         shell: bash
-        run: node ../../scripts/release/verify-release-manifest.mjs --product phone --tag "$GITHUB_REF_NAME"
+        run: >-
+          node ../../scripts/release/verify-release-manifest.mjs
+          --product phone
+          --tag "$GITHUB_REF_NAME"
+          --manifest ../../release-manifest.json
 
       - name: Setup Expo and EAS
         uses: expo/expo-github-action@v8

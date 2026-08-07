@@ -222,8 +222,8 @@ test('desktop workflow builds every native platform and uploads checksummed buil
   const resolver = path.join(repoRoot, 'scripts', 'desktop', 'resolve-desktop-build-matrix.mjs');
   const resolverSource = fs.readFileSync(resolver, 'utf8');
   assert.match(resolverSource, /windows-latest/);
-  assert.match(resolverSource, /macos-15/);
-  assert.match(resolverSource, /macos-15-arm64/);
+  assert.match(resolverSource, /macos-15-intel/);
+  assert.match(resolverSource, /runner: "macos-15"/);
   assert.match(resolverSource, /ubuntu-24\.04-arm/);
   const selected = JSON.parse(execFileSync(process.execPath, [
     resolver,

@@ -105,12 +105,12 @@ func axBounds(_ element: AXUIElement) -> [Int]? {
 }
 
 func axActions(_ element: AXUIElement) -> [String] {
-    var value: CFTypeRef?
+    var value: CFArray?
     let result = AXUIElementCopyActionNames(element, &value)
-    guard result == .success, let actions = value as? [String] else {
+    guard result == .success, let actions = value else {
         return []
     }
-    return actions
+    return (actions as NSArray).compactMap { $0 as? String }
 }
 
 func windowList() -> [[String: Any]] {
@@ -219,7 +219,7 @@ func elementDictionary(_ element: AXUIElement, path: [String], index: Int, windo
     let bounds = axBounds(element) ?? []
     let name = !title.isEmpty ? title : (!value.isEmpty ? value : description)
     return [
-        "elementId": "\(windowHandle ?? 0):\(index):\(role):\(identifier):\(path.joined(separator: \"/\"))",
+        "elementId": "\(windowHandle ?? 0):\(index):\(role):\(identifier):\(path.joined(separator: "/"))",
         "backend": "macos_axui",
         "role": role.isEmpty ? "unknown" : role,
         "name": name,

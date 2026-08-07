@@ -336,6 +336,13 @@ test('desktop preview uses a slim portable Python release profile', () => {
   );
   assert.match(macDriver, /def _packaged_helper_binary_path/);
   assert.match(macDriver, /if packaged_binary\.is_file\(\):/);
+  const macHelperSource = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'runtimes', 'computer_use', 'drivers', 'mac_ax_helper.swift'),
+    'utf8',
+  );
+  assert.match(macHelperSource, /var value: CFArray\?/);
+  assert.match(macHelperSource, /AXUIElementCopyActionNames\(element, &value\)/);
+  assert.match(macHelperSource, /path\.joined\(separator: "\/"\)/);
 
   const releaseRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'desktop-preview.txt'),

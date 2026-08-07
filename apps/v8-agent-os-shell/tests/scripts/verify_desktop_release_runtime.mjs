@@ -287,7 +287,7 @@ if (exists(pythonExe)) {
 
   const requiredModules = {
     langgraphCheckpointSqlite: "langgraph.checkpoint.sqlite",
-    chromaHnswNative: "hnswlib",
+    chromaRustNative: "chromadb_rust_bindings",
     playwright: "playwright",
     tiktokenNative: "tiktoken._tiktoken",
     ytDlp: "yt_dlp",

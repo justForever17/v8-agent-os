@@ -8,7 +8,7 @@ scrapling
 playwright
 yt-dlp
 jieba
-chromadb
+chromadb==1.5.9
 langchain-text-splitters
 numpy
 Pillow

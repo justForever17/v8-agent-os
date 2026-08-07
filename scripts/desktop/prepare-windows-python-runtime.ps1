@@ -291,51 +291,27 @@ if ($Architecture -eq "arm64") {
     "-c", "import platform, tiktoken._tiktoken; assert platform.machine().lower() == 'arm64'; print('V8OS_ARM64_TIKTOKEN_OK')"
   )
 
-  # chroma-hnswlib also lacks a win_arm64 wheel. Its sdist imports numpy from
-  # setup.py, so build it without isolation after installing audited frontends.
+  # Chroma 1.5.9 does not publish a win_arm64 wheel. Build its current Rust
+  # backend from the official sdist instead of allowing pip to select 0.6.x.
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
     "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
-    "numpy==2.4.6", "pybind11==3.1.0"
-  ) -Description "Install Windows ARM64 Chroma HNSW build frontends"
+    "numpy==2.4.6", "maturin==1.14.1"
+  ) -Description "Install Windows ARM64 Chroma build frontends"
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
     "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
-    "--no-build-isolation", "--wheel-dir", $wheelhouse, "chroma-hnswlib==0.7.6"
-  ) -Description "Build native Windows ARM64 Chroma HNSW wheel"
-  $chromaHnswWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chroma_hnswlib-0.7.6-*.whl")
-  if ($chromaHnswWheels.Count -ne 1 -or $chromaHnswWheels[0].Name -notmatch '-win_arm64\.whl$') {
-    throw "Expected exactly one native win_arm64 Chroma HNSW wheel, found: $($chromaHnswWheels.Name -join ', ')"
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "chromadb==1.5.9"
+  ) -Description "Build native Windows ARM64 Chroma wheel"
+  $chromaWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chromadb-1.5.9-*.whl")
+  if ($chromaWheels.Count -ne 1 -or $chromaWheels[0].Name -notmatch '-win_arm64\.whl$') {
+    throw "Expected exactly one native win_arm64 Chroma wheel, found: $($chromaWheels.Name -join ', ')"
   }
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
     "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-deps", "--no-index",
-    "--find-links", $wheelhouse, "chroma-hnswlib==0.7.6"
-  ) -Description "Install native Windows ARM64 Chroma HNSW wheel"
-
-  $chromaHnswProbe = @"
-import tempfile
-from pathlib import Path
-
-import hnswlib
-import numpy as np
-
-vectors = np.asarray([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)
-item_ids = np.asarray([10, 20])
-index = hnswlib.Index(space="l2", dim=3)
-index.init_index(max_elements=2, ef_construction=100, M=16)
-index.add_items(vectors, item_ids)
-labels, _distances = index.knn_query(vectors, k=1)
-assert labels[:, 0].tolist() == item_ids.tolist()
-
-with tempfile.TemporaryDirectory(prefix="v8os-arm64-hnsw-") as tmp_dir:
-    index_path = Path(tmp_dir) / "index.bin"
-    index.save_index(str(index_path))
-    restored = hnswlib.Index(space="l2", dim=3)
-    restored.load_index(str(index_path), max_elements=2)
-    labels, _distances = restored.knn_query(vectors, k=1)
-    assert labels[:, 0].tolist() == item_ids.tolist()
-
-print("V8OS_ARM64_CHROMA_HNSW_OK")
-"@
-  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaHnswProbe)
+    "--find-links", $wheelhouse, "chromadb==1.5.9"
+  ) -Description "Install native Windows ARM64 Chroma wheel"
+  Invoke-Checked -FilePath $pythonExe -Arguments @(
+    "-c", "import platform, chromadb_rust_bindings; assert platform.machine().lower() == 'arm64'; print('V8OS_ARM64_CHROMA_NATIVE_OK')"
+  )
 }
 
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
@@ -349,7 +325,34 @@ if ($Architecture -eq "arm64") {
   Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-c", "import tiktoken._tiktoken; print('V8OS_ARM64_TIKTOKEN_RUNTIME_OK')"
   )
-  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaHnswProbe)
+
+  $chromaProbeRoot = Join-Path $workDir "chroma-persistence-probe"
+  New-Item -ItemType Directory -Force -Path $chromaProbeRoot | Out-Null
+  $chromaWriteProbe = @"
+import sys
+import chromadb
+
+client = chromadb.PersistentClient(path=sys.argv[1])
+collection = client.create_collection("arm64_probe")
+vectors = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+collection.add(ids=["a", "b"], embeddings=vectors)
+result = collection.query(query_embeddings=vectors, n_results=1)
+assert result["ids"] == [["a"], ["b"]], result
+print("V8OS_ARM64_CHROMA_WRITE_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaWriteProbe, $chromaProbeRoot)
+  $chromaReadProbe = @"
+import sys
+import chromadb
+
+vectors = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+collection = chromadb.PersistentClient(path=sys.argv[1]).get_collection("arm64_probe")
+result = collection.query(query_embeddings=vectors, n_results=1)
+assert result["ids"] == [["a"], ["b"]], result
+print("V8OS_ARM64_CHROMA_REOPEN_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaReadProbe, $chromaProbeRoot)
+  Remove-Item -LiteralPath $chromaProbeRoot -Recurse -Force
 
   # sqlite-vec does not publish a win_arm64 wheel. V8OS does not import that
   # extension; install the audited saver version and prove its SQLite path works.

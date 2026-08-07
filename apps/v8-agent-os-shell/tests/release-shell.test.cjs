@@ -527,7 +527,7 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   );
   assert.doesNotMatch(requiredModulesBlock, /pywinauto/);
   assert.match(requiredModulesBlock, /langgraphCheckpointSqlite/);
-  assert.match(requiredModulesBlock, /chromaHnswNative/);
+  assert.match(requiredModulesBlock, /chromaRustNative/);
   assert.match(requiredModulesBlock, /tiktokenNative/);
   assert.match(optionalModulesBlock, /pywinauto/);
   assert.match(optionalModulesBlock, /sqliteVec/);
@@ -560,17 +560,24 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_OK/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_TIKTOKEN_RUNTIME_OK/);
   assert.match(windowsPythonRuntime, /numpy==2\.4\.6/);
-  assert.match(windowsPythonRuntime, /pybind11==3\.1\.0/);
-  assert.match(windowsPythonRuntime, /chroma-hnswlib==0\.7\.6/);
-  assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 Chroma HNSW wheel/);
-  assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_HNSW_OK/);
-  assert.match(windowsPythonRuntime, /index\.save_index/);
-  assert.match(windowsPythonRuntime, /restored\.load_index/);
+  assert.match(windowsPythonRuntime, /maturin==1\.14\.1/);
+  assert.match(windowsPythonRuntime, /chromadb==1\.5\.9/);
+  assert.match(windowsPythonRuntime, /Expected exactly one native win_arm64 Chroma wheel/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_NATIVE_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_WRITE_OK/);
+  assert.match(windowsPythonRuntime, /V8OS_ARM64_CHROMA_REOPEN_OK/);
   assert.match(windowsPythonRuntime, /build-only Python development files were not removed/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_PIP_CHECK_EXPECTED_GAP_ONLY/);
   assert.match(windowsPythonRuntime, /V8OS_ARM64_CHECKPOINT_SQLITE_OK/);
   assert.match(windowsPythonRuntime, /await saver\.aput/);
   assert.match(windowsPythonRuntime, /await saver\.aget_tuple/);
+
+  const desktopRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'desktop-preview.txt'),
+    'utf8',
+  );
+  assert.match(desktopRequirements, /^chromadb==1\.5\.9$/m);
+  assert.doesNotMatch(desktopRequirements, /^chromadb$/m);
 
   const packageLayoutProbe = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),

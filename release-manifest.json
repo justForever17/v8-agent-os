@@ -2,10 +2,10 @@
   "schema": 1,
   "products": {
     "phone": {
-      "version": "2026.08.07.2",
+      "version": "2026.08.07.3",
       "channel": "preview",
-      "tag": "v8-os-phone-v2026.08.07.2",
-      "updatedAt": "2026-08-07T05:33:03.547Z"
+      "tag": "v8-os-phone-v2026.08.07.3",
+      "updatedAt": "2026-08-07T05:36:16.757Z"
     },
     "desktop": {
       "version": "2026.08.07.2",

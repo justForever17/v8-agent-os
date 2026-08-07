@@ -501,6 +501,7 @@ test('desktop release uses current desktop tag namespace and keeps runtime probe
   assert.match(workflow, /Normalize platform release assets and checksums/);
   assert.match(workflow, /Upload desktop platform artifacts/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
+  assert.match(workflow, /toolchain: \$\{\{ matrix\.id == 'windows-arm64' && '1\.92\.0' \|\| 'stable' \}\}/);
   const windowsPythonStep = workflow.slice(
     workflow.indexOf('Prepare embedded Engine Python runtime on Windows'),
     workflow.indexOf('Prepare embedded Engine Python runtime on macOS or Linux'),

@@ -190,6 +190,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.id == 'windows-arm64' && '1.92.0' || 'stable' }}
 
       - name: Verify Windows Rust native target
         if: matrix.os == 'windows'

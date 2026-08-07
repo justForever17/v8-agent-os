@@ -290,6 +290,52 @@ if ($Architecture -eq "arm64") {
   Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-c", "import platform, tiktoken._tiktoken; assert platform.machine().lower() == 'arm64'; print('V8OS_ARM64_TIKTOKEN_OK')"
   )
+
+  # chroma-hnswlib also lacks a win_arm64 wheel. Its sdist imports numpy from
+  # setup.py, so build it without isolation after installing audited frontends.
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+    "numpy==2.4.6", "pybind11==3.1.0"
+  ) -Description "Install Windows ARM64 Chroma HNSW build frontends"
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "wheel", "--disable-pip-version-check", "--no-input", "--no-deps",
+    "--no-build-isolation", "--wheel-dir", $wheelhouse, "chroma-hnswlib==0.7.6"
+  ) -Description "Build native Windows ARM64 Chroma HNSW wheel"
+  $chromaHnswWheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter "chroma_hnswlib-0.7.6-*.whl")
+  if ($chromaHnswWheels.Count -ne 1 -or $chromaHnswWheels[0].Name -notmatch '-win_arm64\.whl$') {
+    throw "Expected exactly one native win_arm64 Chroma HNSW wheel, found: $($chromaHnswWheels.Name -join ', ')"
+  }
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @(
+    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-deps", "--no-index",
+    "--find-links", $wheelhouse, "chroma-hnswlib==0.7.6"
+  ) -Description "Install native Windows ARM64 Chroma HNSW wheel"
+
+  $chromaHnswProbe = @"
+import tempfile
+from pathlib import Path
+
+import hnswlib
+import numpy as np
+
+vectors = np.asarray([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)
+item_ids = np.asarray([10, 20])
+index = hnswlib.Index(space="l2", dim=3)
+index.init_index(max_elements=2, ef_construction=100, M=16)
+index.add_items(vectors, item_ids)
+labels, _distances = index.knn_query(vectors, k=1)
+assert labels[:, 0].tolist() == item_ids.tolist()
+
+with tempfile.TemporaryDirectory(prefix="v8os-arm64-hnsw-") as tmp_dir:
+    index_path = Path(tmp_dir) / "index.bin"
+    index.save_index(str(index_path))
+    restored = hnswlib.Index(space="l2", dim=3)
+    restored.load_index(str(index_path), max_elements=2)
+    labels, _distances = restored.knn_query(vectors, k=1)
+    assert labels[:, 0].tolist() == item_ids.tolist()
+
+print("V8OS_ARM64_CHROMA_HNSW_OK")
+"@
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaHnswProbe)
 }
 
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $installRequirementsFile) -Description "Install desktop preview Engine requirements"
@@ -303,6 +349,7 @@ if ($Architecture -eq "arm64") {
   Invoke-Checked -FilePath $pythonExe -Arguments @(
     "-c", "import tiktoken._tiktoken; print('V8OS_ARM64_TIKTOKEN_RUNTIME_OK')"
   )
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", $chromaHnswProbe)
 
   # sqlite-vec does not publish a win_arm64 wheel. V8OS does not import that
   # extension; install the audited saver version and prove its SQLite path works.

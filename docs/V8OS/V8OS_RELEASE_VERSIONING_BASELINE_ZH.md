@@ -138,7 +138,9 @@ V8OS 当前只使用 `SqliteSaver` 与 `AsyncSqliteSaver` 的普通 SQLite check
 
 `tiktoken` 0.13.0 同样未发布 `win_arm64` wheel，但在 PyPI 提供 sdist。Windows ARM64 打包入口使用固定的 `setuptools-rust==1.13.0`、runner 原生 Rust 工具链，以及经 SHA-256 固定校验的 Python 官方 `pythonarm64` 3.11.9 NuGet 开发包构建 `tiktoken==0.13.0`。必须验证 wheel 标签为 `win_arm64` 且原生扩展可导入，再进入完整 requirements 解析；构建所需的头文件和导入库必须在安装依赖后移除并重新验证原生扩展，禁止复用 x64 wheel、把开发 SDK 带入最终包，或把源码构建失败降级为缺失 tokenizer。
 
-移除条件：对应上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载和 checkpoint/tokenizer 回归，再分别移除临时 requirements 过滤、`--no-deps`、checkpoint pin 或 tiktoken 源码构建；连续两个桌面发布周期通过安装 smoke 后关闭相应登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
+`chroma-hnswlib` 0.7.6 也未发布 `win_arm64` wheel，其 sdist 的 `setup.py` 在生成构建需求时直接导入 `numpy`，嵌入式 Python 的隔离构建无法稳定取得该模块。Windows ARM64 打包入口固定使用最后一个仍为 CPython 3.11 发布 `win_arm64` wheel 的 `numpy==2.4.6` 与纯 Python `pybind11==3.1.0`，在同一原生 MSVC 和 Python 3.11.9 开发包上以非隔离模式构建 `chroma-hnswlib==0.7.6`。构建后必须验证 wheel 标签、原生模块导入，并完成向量写入、最近邻查询、索引落盘和重开查询；`hnswlib` 在发布 runtime probe 中属于必需能力，不得降级为可选模块。
+
+移除条件：对应上游发布可验证的 `win_arm64` wheel 后，先在原生 Windows ARM64 runner 验证 wheel 架构、扩展加载、HNSW 索引持久化和 checkpoint/tokenizer 回归，再分别移除临时 requirements 过滤、`--no-deps`、checkpoint pin 或原生源码构建；连续两个桌面发布周期通过安装 smoke 后关闭相应登记。如果 V8OS 在此之前新增任何 `sqlite_vec` 或 `vec0` 调用，Windows ARM64 构建必须立即改为阻断。
 
 最小命令：
 

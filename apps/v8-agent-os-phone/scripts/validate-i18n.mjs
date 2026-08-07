@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const workspaceRoot = path.resolve("E:/Projects/v8chat/v8-agent-os/apps/v8-agent-os-phone");
+const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const localeDir = path.join(workspaceRoot, "src", "i18n", "locales");
 const sourceRoots = [
     path.join(workspaceRoot, "app"),

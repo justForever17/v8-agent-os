@@ -263,6 +263,13 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   ], { encoding: 'utf8' }));
   assert.equal(explicit.enabled, true);
   assert.deepEqual(explicit.matrix.include.map((target) => target.id), ['windows-x64', 'macos-arm64']);
+  const tagPushCaller = JSON.parse(execFileSync(process.execPath, [
+    resolver,
+    '--event', 'push',
+    '--targets-json', '["linux-x64"]',
+  ], { encoding: 'utf8' }));
+  assert.equal(tagPushCaller.enabled, true);
+  assert.deepEqual(tagPushCaller.matrix.include.map((target) => target.id), ['linux-x64']);
 });
 
 test('root release workflow is the only fan-in publisher and enforces required products', () => {
@@ -275,6 +282,7 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /"v8-os-phone-v\*"/);
   assert.match(workflow, /uses: \.\/\.github\/workflows\/desktop-preview\.yml/);
   assert.match(workflow, /uses: \.\/\.github\/workflows\/phone-build\.yml/);
+  assert.match(workflow, /enforce_requested_targets: true/);
   assert.match(workflow, /release-gate:[\s\S]*always\(\) && !cancelled\(\)/);
   assert.match(workflow, /Required product \$product ended with \$result/);
   assert.match(workflow, /prepare-unified-release-assets\.mjs/);
@@ -306,8 +314,13 @@ test('phone reusable workflow honors typed inputs and limits release secrets to 
   assert.match(workflow, /workflow_call:/);
   assert.match(workflow, /build_android:[\s\S]*?type: boolean/);
   assert.match(workflow, /build_ios:[\s\S]*?type: boolean/);
+  assert.match(workflow, /enforce_requested_targets:[\s\S]*?default: true[\s\S]*?type: boolean/);
   assert.match(workflow, /platform:\s*\n\s+description: Target platform[\s\S]*?- android[\s\S]*?- ios[\s\S]*?- all/);
   assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ inputs\.profile \|\| 'preview' \}\}/);
+  assert.match(workflow, /inputs\.enforce_requested_targets == true && inputs\.build_android == true/);
+  assert.match(workflow, /inputs\.enforce_requested_targets == true && inputs\.build_ios == true/);
+  assert.match(workflow, /always\(\) && inputs\.enforce_requested_targets == true/);
+  assert.doesNotMatch(workflow, /github\.event_name == 'workflow_call'/);
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /build-ios:[\s\S]*?inputs\.build_ios[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);

@@ -33,8 +33,10 @@ function parseRequestedTargetIds(targetsJson) {
 }
 
 function resolveTargets({ eventName, platform, targetsJson }) {
-  const enabled = eventName === "workflow_call" || eventName === "workflow_dispatch";
   const requestedTargetIds = parseRequestedTargetIds(targetsJson);
+  const enabled = eventName === "workflow_call"
+    || eventName === "workflow_dispatch"
+    || requestedTargetIds.length > 0;
   const requested = platform || "all";
   const targetIds = requestedTargetIds.length > 0
     ? requestedTargetIds

@@ -62,7 +62,7 @@ concurrency:
   # Dispatches for different native targets are independent.  Keep same-target
   # reruns cancellable, but never let an arm64 request cancel x64 or Linux.
   group: desktop-preview-${{ github.workflow }}-${{ github.ref }}-${{ inputs.targets_json || inputs.platform || 'all' }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+  cancel-in-progress: ${{ inputs.release_tag == '' }}
 
 jobs:
   resolve-desktop-platforms:

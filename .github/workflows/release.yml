@@ -105,6 +105,7 @@ jobs:
       profile: ${{ needs.plan.outputs.phone_profile }}
       build_android: ${{ fromJSON(needs.plan.outputs.android_enabled) }}
       build_ios: ${{ fromJSON(needs.plan.outputs.ios_enabled) }}
+      enforce_requested_targets: true
 
   release-gate:
     name: Verify required release products

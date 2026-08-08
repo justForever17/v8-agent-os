@@ -23,6 +23,10 @@ on:
         required: false
         default: true
         type: boolean
+    secrets:
+      EXPO_TOKEN:
+        description: Expo access token supplied by the release environment
+        required: false
   workflow_dispatch:
     inputs:
       profile:
@@ -78,6 +82,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
+
+      - name: Verify EAS release credential availability
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN is unavailable to the release environment job."
+            exit 1
+          fi
 
       - name: Setup Expo and EAS
         uses: expo/expo-github-action@v9
@@ -146,6 +160,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
+
+      - name: Verify EAS release credential availability
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN is unavailable to the release environment job."
+            exit 1
+          fi
 
       - name: Setup Expo and EAS
         uses: expo/expo-github-action@v9

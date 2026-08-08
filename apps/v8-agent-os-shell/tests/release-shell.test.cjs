@@ -315,6 +315,7 @@ test('phone reusable workflow honors typed inputs and limits release secrets to 
   assert.match(workflow, /build_android:[\s\S]*?type: boolean/);
   assert.match(workflow, /build_ios:[\s\S]*?type: boolean/);
   assert.match(workflow, /enforce_requested_targets:[\s\S]*?default: true[\s\S]*?type: boolean/);
+  assert.match(workflow, /workflow_call:[\s\S]*?secrets:[\s\S]*?EXPO_TOKEN:[\s\S]*?required: false/);
   assert.match(workflow, /platform:\s*\n\s+description: Target platform[\s\S]*?- android[\s\S]*?- ios[\s\S]*?- all/);
   assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ inputs\.profile \|\| 'preview' \}\}/);
   assert.match(workflow, /inputs\.enforce_requested_targets == true && inputs\.build_android == true/);
@@ -324,7 +325,9 @@ test('phone reusable workflow honors typed inputs and limits release secrets to 
   assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.match(workflow, /build-ios:[\s\S]*?inputs\.build_ios[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);
-  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
+  assert.equal((workflow.match(/Verify EAS release credential availability/g) || []).length, 2);
+  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 4);
+  assert.equal((workflow.match(/EXPO_TOKEN is unavailable to the release environment job/g) || []).length, 2);
   assert.doesNotMatch(workflow, /secrets: inherit|pull_request:|push:|contents: write|softprops\/action-gh-release/);
   assert.match(workflow, /phone-build-contract:[\s\S]*Requested Phone target \$target ended with \$result/);
   assert.match(workflow, /Disabled Phone target \$target unexpectedly ended with \$result/);

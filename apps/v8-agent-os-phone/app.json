@@ -2,7 +2,7 @@
   "expo": {
     "name": "V8 Agent OS",
     "slug": "v8-agent-os-phone",
-    "version": "2026.8.7",
+    "version": "2026.8.8",
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -18,11 +18,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.v8agentos.phone",
-      "buildNumber": "2026080703"
+      "buildNumber": "2026080801"
     },
     "android": {
       "package": "com.v8agentos.phone",
-      "versionCode": 26080703,
+      "versionCode": 26080801,
       "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",

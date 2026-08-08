@@ -281,8 +281,11 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /"v8-os-desktop-v\*"/);
   assert.match(workflow, /"v8-os-phone-v\*"/);
   assert.match(workflow, /uses: \.\/\.github\/workflows\/desktop-preview\.yml/);
-  assert.match(workflow, /uses: \.\/\.github\/workflows\/phone-build\.yml/);
-  assert.match(workflow, /enforce_requested_targets: true/);
+  assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/phone-build\.yml/);
+  assert.match(workflow, /phone-android-build:[\s\S]*?environment: release[\s\S]*?uses: \.\/\.github\/actions\/build-phone-package/);
+  assert.match(workflow, /phone-ios-build:[\s\S]*?environment: release[\s\S]*?uses: \.\/\.github\/actions\/build-phone-package/);
+  assert.match(workflow, /phone-build-contract:[\s\S]*?Requested Phone target \$target ended with \$result/);
+  assert.match(workflow, /PHONE_RESULT: \$\{\{ needs\.phone-build-contract\.result \}\}/);
   assert.match(workflow, /release-gate:[\s\S]*always\(\) && !cancelled\(\)/);
   assert.match(workflow, /Required product \$product ended with \$result/);
   assert.match(workflow, /prepare-unified-release-assets\.mjs/);
@@ -292,7 +295,9 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /fail_on_unmatched_files: true/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
   assert.equal((workflow.match(/softprops\/action-gh-release@v3/g) || []).length, 1);
-  assert.doesNotMatch(workflow, /environment: release/);
+  assert.equal((workflow.match(/environment: release/g) || []).length, 2);
+  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
+  assert.doesNotMatch(workflow, /secrets: inherit/);
   assert.doesNotMatch(desktop, /softprops\/action-gh-release|contents: write/);
   assert.doesNotMatch(phone, /softprops\/action-gh-release|contents: write/);
   assert.match(desktop, /Upload Windows desktop smoke diagnostics[\s\S]*continue-on-error: true/);
@@ -309,28 +314,38 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.doesNotMatch(workflow, /RUNTIME_PROBE-\*\.json|PACKAGE_LAYOUT-\*\.json/);
 });
 
-test('phone reusable workflow honors typed inputs and limits release secrets to EAS jobs', () => {
+test('phone manual workflow and root release share one governed package action', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
-  assert.match(workflow, /workflow_call:/);
-  assert.match(workflow, /build_android:[\s\S]*?type: boolean/);
-  assert.match(workflow, /build_ios:[\s\S]*?type: boolean/);
-  assert.match(workflow, /enforce_requested_targets:[\s\S]*?default: true[\s\S]*?type: boolean/);
-  assert.match(workflow, /workflow_call:[\s\S]*?secrets:[\s\S]*?EXPO_TOKEN:[\s\S]*?required: false/);
+  const phoneAction = fs.readFileSync(
+    path.join(repoRoot, '.github', 'actions', 'build-phone-package', 'action.yml'),
+    'utf8',
+  );
+  assert.doesNotMatch(workflow, /workflow_call:|enforce_requested_targets|build_android|build_ios/);
   assert.match(workflow, /platform:\s*\n\s+description: Target platform[\s\S]*?- android[\s\S]*?- ios[\s\S]*?- all/);
-  assert.match(workflow, /EAS_BUILD_PROFILE: \$\{\{ inputs\.profile \|\| 'preview' \}\}/);
-  assert.match(workflow, /inputs\.enforce_requested_targets == true && inputs\.build_android == true/);
-  assert.match(workflow, /inputs\.enforce_requested_targets == true && inputs\.build_ios == true/);
-  assert.match(workflow, /always\(\) && inputs\.enforce_requested_targets == true/);
-  assert.doesNotMatch(workflow, /github\.event_name == 'workflow_call'/);
-  assert.match(workflow, /build-android:[\s\S]*?--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
-  assert.match(workflow, /build-ios:[\s\S]*?inputs\.build_ios[\s\S]*?runs-on: macos-latest[\s\S]*?--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.match(workflow, /inputs\.platform == 'android' \|\| inputs\.platform == 'all'/);
+  assert.match(workflow, /inputs\.platform == 'ios' \|\| inputs\.platform == 'all'/);
+  assert.match(workflow, /build-android:[\s\S]*?uses: \.\/\.github\/actions\/build-phone-package[\s\S]*?platform: android/);
+  assert.match(workflow, /build-ios:[\s\S]*?runs-on: macos-latest[\s\S]*?uses: \.\/\.github\/actions\/build-phone-package[\s\S]*?platform: ios/);
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);
-  assert.equal((workflow.match(/Verify EAS release credential availability/g) || []).length, 2);
-  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 4);
-  assert.equal((workflow.match(/EXPO_TOKEN is unavailable to the release environment job/g) || []).length, 2);
+  assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
   assert.doesNotMatch(workflow, /secrets: inherit|pull_request:|push:|contents: write|softprops\/action-gh-release/);
-  assert.match(workflow, /phone-build-contract:[\s\S]*Requested Phone target \$target ended with \$result/);
-  assert.match(workflow, /Disabled Phone target \$target unexpectedly ended with \$result/);
+  assert.match(phoneAction, /using: composite/);
+  assert.match(phoneAction, /Validate Phone package request/);
+  assert.match(phoneAction, /android\|ios/);
+  assert.match(phoneAction, /development\|preview\|production/);
+  assert.match(phoneAction, /Verify EAS release credential availability/);
+  assert.match(phoneAction, /eas-version: 21\.7\.0/);
+  assert.match(phoneAction, /token: \$\{\{ inputs\.expo-token \}\}/);
+  assert.ok(
+    phoneAction.indexOf('name: Typecheck') < phoneAction.indexOf('name: Verify EAS release credential availability'),
+    'dependency install and typecheck must complete before the credential enters a third-party action',
+  );
+  assert.match(phoneAction, /--platform android[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.match(phoneAction, /--platform ios[\s\S]*?--profile "\$EAS_BUILD_PROFILE"/);
+  assert.match(phoneAction, /name: phone-android-package/);
+  assert.match(phoneAction, /name: phone-ios-package/);
+  assert.equal((phoneAction.match(/EXPO_TOKEN is unavailable to the release environment job/g) || []).length, 1);
+  assert.doesNotMatch(phoneAction, /secrets\./);
 });
 
 test('phone release notes retain the Android-only tag distribution contract', () => {

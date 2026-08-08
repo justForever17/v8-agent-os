@@ -1,32 +1,6 @@
 name: Phone Build
 
 on:
-  workflow_call:
-    inputs:
-      profile:
-        description: EAS build profile
-        required: false
-        default: preview
-        type: string
-      build_android:
-        description: Build the Android package
-        required: false
-        default: true
-        type: boolean
-      build_ios:
-        description: Build the iOS package
-        required: false
-        default: false
-        type: boolean
-      enforce_requested_targets:
-        description: Verify every target requested by a reusable caller
-        required: false
-        default: true
-        type: boolean
-    secrets:
-      EXPO_TOKEN:
-        description: Expo access token supplied by the release environment
-        required: false
   workflow_dispatch:
     inputs:
       profile:
@@ -52,189 +26,48 @@ permissions:
   contents: read
 
 concurrency:
-  group: phone-build-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform || format('android-{0}-ios-{1}', inputs.build_android, inputs.build_ios) }}
-  cancel-in-progress: ${{ inputs.enforce_requested_targets != true }}
+  group: phone-build-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform }}
+  cancel-in-progress: true
 
 jobs:
   build-android:
     name: Phone Android package
     if: >-
-      (inputs.enforce_requested_targets == true && inputs.build_android == true) ||
-      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'android' || inputs.platform == 'all'))
+      inputs.platform == 'android' || inputs.platform == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: release
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: apps/v8-agent-os-phone
-    env:
-      EAS_BUILD_PROFILE: ${{ inputs.profile || 'preview' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
-
-      - name: Verify EAS release credential availability
-        shell: bash
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "::error::EXPO_TOKEN is unavailable to the release environment job."
-            exit 1
-          fi
-
-      - name: Setup Expo and EAS
-        uses: expo/expo-github-action@v9
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Resolve Android package format
-        shell: bash
-        run: |
-          if [ "$EAS_BUILD_PROFILE" = "production" ]; then
-            echo "ANDROID_OUTPUT=app-release.aab" >> "$GITHUB_ENV"
-          else
-            echo "ANDROID_OUTPUT=app-release.apk" >> "$GITHUB_ENV"
-          fi
-
       - name: Build Android package
-        run: >
-          eas build
-          --local
-          --non-interactive
-          --platform android
-          --profile "$EAS_BUILD_PROFILE"
-          --output "./$ANDROID_OUTPUT"
-
-      - name: Upload Android package artifact
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/build-phone-package
         with:
-          name: phone-android-package
-          path: |
-            apps/v8-agent-os-phone/app-release.apk
-            apps/v8-agent-os-phone/app-release.aab
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+          platform: android
+          profile: ${{ inputs.profile || 'preview' }}
+          expo-token: ${{ secrets.EXPO_TOKEN }}
 
   build-ios:
     name: Phone iOS package
     if: >-
-      (inputs.enforce_requested_targets == true && inputs.build_ios == true) ||
-      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'ios' || inputs.platform == 'all'))
+      inputs.platform == 'ios' || inputs.platform == 'all'
     runs-on: macos-latest
     timeout-minutes: 60
     environment: release
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: apps/v8-agent-os-phone
-    env:
-      EAS_BUILD_PROFILE: ${{ inputs.profile || 'preview' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
-
-      - name: Verify EAS release credential availability
-        shell: bash
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "::error::EXPO_TOKEN is unavailable to the release environment job."
-            exit 1
-          fi
-
-      - name: Setup Expo and EAS
-        uses: expo/expo-github-action@v9
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
       - name: Build iOS package
-        run: >
-          eas build
-          --local
-          --non-interactive
-          --platform ios
-          --profile "$EAS_BUILD_PROFILE"
-          --output ./app-release.ipa
-
-      - name: Upload iOS package artifact
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/build-phone-package
         with:
-          name: phone-ios-package
-          path: apps/v8-agent-os-phone/app-release.ipa
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  phone-build-contract:
-    name: Verify requested Phone packages completed
-    needs:
-      - build-android
-      - build-ios
-    if: >-
-      always() && inputs.enforce_requested_targets == true
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-
-    steps:
-      - name: Enforce the requested target results
-        shell: bash
-        env:
-          BUILD_ANDROID: ${{ inputs.build_android }}
-          ANDROID_RESULT: ${{ needs.build-android.result }}
-          BUILD_IOS: ${{ inputs.build_ios }}
-          IOS_RESULT: ${{ needs.build-ios.result }}
-        run: |
-          set -euo pipefail
-          verify_target() {
-            local target="$1"
-            local requested="$2"
-            local result="$3"
-            if [[ "$requested" == "true" && "$result" != "success" ]]; then
-              echo "Requested Phone target $target ended with $result" >&2
-              exit 1
-            fi
-            if [[ "$requested" != "true" && "$result" != "skipped" ]]; then
-              echo "Disabled Phone target $target unexpectedly ended with $result" >&2
-              exit 1
-            fi
-          }
-          verify_target android "$BUILD_ANDROID" "$ANDROID_RESULT"
-          verify_target ios "$BUILD_IOS" "$IOS_RESULT"
+          platform: ios
+          profile: ${{ inputs.profile || 'preview' }}
+          expo-token: ${{ secrets.EXPO_TOKEN }}

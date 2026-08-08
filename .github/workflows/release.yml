@@ -91,28 +91,104 @@ jobs:
       release_channel: ${{ needs.plan.outputs.channel }}
       release_tag: ${{ needs.plan.outputs.tag }}
 
-  phone-build:
-    name: Build required Phone targets
+  phone-android-build:
+    name: Phone Android package
     needs:
       - plan
     if: >-
       needs.plan.outputs.run_builds == 'true' &&
-      needs.plan.outputs.phone_enabled == 'true'
+      needs.plan.outputs.phone_enabled == 'true' &&
+      needs.plan.outputs.android_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
     permissions:
       contents: read
-    uses: ./.github/workflows/phone-build.yml
-    with:
-      profile: ${{ needs.plan.outputs.phone_profile }}
-      build_android: ${{ fromJSON(needs.plan.outputs.android_enabled) }}
-      build_ios: ${{ fromJSON(needs.plan.outputs.ios_enabled) }}
-      enforce_requested_targets: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build Android package
+        uses: ./.github/actions/build-phone-package
+        with:
+          platform: android
+          profile: ${{ needs.plan.outputs.phone_profile }}
+          expo-token: ${{ secrets.EXPO_TOKEN }}
+
+  phone-ios-build:
+    name: Phone iOS package
+    needs:
+      - plan
+    if: >-
+      needs.plan.outputs.run_builds == 'true' &&
+      needs.plan.outputs.phone_enabled == 'true' &&
+      needs.plan.outputs.ios_enabled == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build iOS package
+        uses: ./.github/actions/build-phone-package
+        with:
+          platform: ios
+          profile: ${{ needs.plan.outputs.phone_profile }}
+          expo-token: ${{ secrets.EXPO_TOKEN }}
+
+  phone-build-contract:
+    name: Verify requested Phone packages completed
+    needs:
+      - plan
+      - phone-android-build
+      - phone-ios-build
+    if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.run_builds == 'true' &&
+      needs.plan.outputs.phone_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+
+    steps:
+      - name: Enforce the requested target results
+        shell: bash
+        env:
+          BUILD_ANDROID: ${{ needs.plan.outputs.android_enabled }}
+          ANDROID_RESULT: ${{ needs.phone-android-build.result }}
+          BUILD_IOS: ${{ needs.plan.outputs.ios_enabled }}
+          IOS_RESULT: ${{ needs.phone-ios-build.result }}
+        run: |
+          set -euo pipefail
+          verify_target() {
+            local target="$1"
+            local requested="$2"
+            local result="$3"
+            if [[ "$requested" == "true" && "$result" != "success" ]]; then
+              echo "Requested Phone target $target ended with $result" >&2
+              exit 1
+            fi
+            if [[ "$requested" != "true" && "$result" != "skipped" ]]; then
+              echo "Disabled Phone target $target unexpectedly ended with $result" >&2
+              exit 1
+            fi
+          }
+          verify_target android "$BUILD_ANDROID" "$ANDROID_RESULT"
+          verify_target ios "$BUILD_IOS" "$IOS_RESULT"
 
   release-gate:
     name: Verify required release products
     needs:
       - plan
       - desktop-build
-      - phone-build
+      - phone-build-contract
     if: ${{ always() && !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -133,7 +209,7 @@ jobs:
           DESKTOP_RESULT: ${{ needs.desktop-build.result }}
           PHONE_ENABLED: ${{ needs.plan.outputs.phone_enabled }}
           PHONE_REQUIRED: ${{ needs.plan.outputs.phone_required }}
-          PHONE_RESULT: ${{ needs.phone-build.result }}
+          PHONE_RESULT: ${{ needs.phone-build-contract.result }}
         run: |
           set -euo pipefail
           echo "publish_ready=false" >> "$GITHUB_OUTPUT"

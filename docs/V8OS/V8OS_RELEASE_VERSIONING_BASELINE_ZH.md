@@ -52,7 +52,7 @@
 
 - schema 2 当前把 Android 标记为 `enabled: true`、`required: true`；它与 Desktop 一起进入统一发布门禁。
 - iOS 因尚未配置非交互签名凭据，明确标记为 `enabled: false`、`required: false`。统一发布中它必须是 disabled/skipped，不会以失败状态阻断 Desktop 和 Android。
-- Phone reusable workflow 只负责构建所选平台并上传工件；最终 Release 由根发布工作流统一创建。
+- Phone 的独立手动入口与根发布工作流复用同一个本地 composite action；它们只构建所选平台并上传工件，最终 Release 仍由根发布工作流统一创建。统一与过渡期兼容 tag 都只进入根发布工作流，Phone workflow 不再暴露已经实证无法承载 Environment secret 的 `workflow_call` 接口。
 
 约束：
 
@@ -121,7 +121,7 @@ node scripts/release/prepare-release.mjs --version 2026.08.08.1 --channel previe
 根工作流 `.github/workflows/release.yml` 是发布编排入口：
 
 1. `plan` 读取并校验 schema 2 manifest，解析统一或过渡期兼容 tag。
-2. Desktop 与 Phone reusable workflows 只构建并上传工件，不拥有 Release 写权限。
+2. Desktop reusable workflow 只构建并上传桌面工件；Phone 的凭据承载 job 由根工作流直接绑定 `release` Environment，并与独立 Phone workflow 复用无权限的本地 composite action。两条构建路径都不拥有 Release 写权限。
 3. `release-gate` 汇总所有必需产品结果；当前 Desktop 全目标和 Android 任一失败都会阻断发布，disabled iOS 必须保持 skipped。
 4. 唯一的 `publish` job 下载同一 workflow run 的工件、重算统一校验和、过滤诊断 JSON，再一次性创建 GitHub Release。
 
@@ -135,7 +135,7 @@ Pull Request 只运行始终可见的最终 `CI Gate`：静态检查、单元/�
 
 Web 当前的 PR 门禁执行 TypeScript、i18n 与完整客户端合同测试，但暂不执行全量 ESLint。干净检出基线中的 Web ESLint 仍有两类存量失败：CommonJS 合同测试被 TypeScript 规则误扫，以及 Canvas 源码中的 Hooks 规则错误。该缺口登记为 P1 技术债，必须在下一迭代为 CommonJS 测试配置准确的 ESLint override，并逐项修复真实源码错误；禁止通过全局关闭规则掩盖。连续两次干净检出通过后恢复 Web lint 门禁。Admin 与 Phone lint 继续作为当前 PR 阻断项。
 
-EAS 与未来签名 job 必须显式绑定受保护的 GitHub `release` Environment，`EXPO_TOKEN` 和签名材料只能作为该 Environment 的 secret 注入这些 job；普通构建、plan、gate 和 PR job 不得获得这些 secret。仓库工作流已定义该权限边界，不代表 GitHub 外部配置中的仓库级 secret 已完成迁移；迁移状态必须在仓库 Settings 中单独核验，在确认前不得删除现有 secret 或宣称迁移完成。
+EAS 与未来签名 job 必须显式绑定受保护的 GitHub `release` Environment，`EXPO_TOKEN` 和签名材料只能作为该 Environment 的 secret 注入这些 job；普通构建、plan、gate 和 PR job 不得获得这些 secret。本仓 `.3` 统一 tag 的 root-to-called workflow 组合已经实证：called workflow 内声明的 Environment secret 为空，而相同 job 的直接 `workflow_dispatch` 可以正常读取。因此统一发布必须由根工作流中的普通 Android/iOS job 直接承载 Environment，构建步骤只通过不读取 `secrets` context 的本地 composite action 复用；凭据预检为空时立即失败，禁止恢复仓库级 secret 或使用 `secrets: inherit` 绕过。
 
 ## 发布说明要求
 

@@ -1,0 +1,129 @@
+name: Build V8OS Phone package
+description: Build and upload one governed V8OS Phone package
+
+inputs:
+  platform:
+    description: Phone platform to build
+    required: true
+  profile:
+    description: EAS build profile
+    required: false
+    default: preview
+  expo-token:
+    description: Expo access token supplied by the calling environment job
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Phone package request
+      shell: bash
+      env:
+        PHONE_PLATFORM: ${{ inputs.platform }}
+        EAS_BUILD_PROFILE: ${{ inputs.profile }}
+      run: |
+        case "$PHONE_PLATFORM" in
+          android|ios) ;;
+          *) echo "::error::Unsupported Phone platform: $PHONE_PLATFORM"; exit 1 ;;
+        esac
+        case "$EAS_BUILD_PROFILE" in
+          development|preview|production) ;;
+          *) echo "::error::Unsupported EAS build profile: $EAS_BUILD_PROFILE"; exit 1 ;;
+        esac
+
+    - name: Setup Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: apps/v8-agent-os-phone/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: apps/v8-agent-os-phone
+      run: npm ci
+
+    - name: Typecheck
+      shell: bash
+      working-directory: apps/v8-agent-os-phone
+      run: npm run typecheck
+
+    - name: Verify EAS release credential availability
+      shell: bash
+      env:
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+      run: |
+        if [ -z "$EXPO_TOKEN" ]; then
+          echo "::error::EXPO_TOKEN is unavailable to the release environment job."
+          exit 1
+        fi
+
+    - name: Setup Expo and EAS
+      uses: expo/expo-github-action@v9
+      with:
+        eas-version: 21.7.0
+        token: ${{ inputs.expo-token }}
+
+    - name: Resolve Android package format
+      if: inputs.platform == 'android'
+      shell: bash
+      env:
+        EAS_BUILD_PROFILE: ${{ inputs.profile }}
+      run: |
+        if [ "$EAS_BUILD_PROFILE" = "production" ]; then
+          echo "ANDROID_OUTPUT=app-release.aab" >> "$GITHUB_ENV"
+        else
+          echo "ANDROID_OUTPUT=app-release.apk" >> "$GITHUB_ENV"
+        fi
+
+    - name: Build Android package
+      if: inputs.platform == 'android'
+      shell: bash
+      working-directory: apps/v8-agent-os-phone
+      env:
+        EAS_BUILD_PROFILE: ${{ inputs.profile }}
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+      run: >-
+        eas build
+        --local
+        --non-interactive
+        --platform android
+        --profile "$EAS_BUILD_PROFILE"
+        --output "./$ANDROID_OUTPUT"
+
+    - name: Upload Android package artifact
+      if: inputs.platform == 'android'
+      uses: actions/upload-artifact@v7
+      with:
+        name: phone-android-package
+        path: |
+          apps/v8-agent-os-phone/app-release.apk
+          apps/v8-agent-os-phone/app-release.aab
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
+
+    - name: Build iOS package
+      if: inputs.platform == 'ios'
+      shell: bash
+      working-directory: apps/v8-agent-os-phone
+      env:
+        EAS_BUILD_PROFILE: ${{ inputs.profile }}
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+      run: >-
+        eas build
+        --local
+        --non-interactive
+        --platform ios
+        --profile "$EAS_BUILD_PROFILE"
+        --output ./app-release.ipa
+
+    - name: Upload iOS package artifact
+      if: inputs.platform == 'ios'
+      uses: actions/upload-artifact@v7
+      with:
+        name: phone-ios-package
+        path: apps/v8-agent-os-phone/app-release.ipa
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0

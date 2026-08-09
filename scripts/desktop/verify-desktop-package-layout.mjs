@@ -94,6 +94,9 @@ try {
   if (platform.startsWith("macos-")) {
     required.push(path.join(resourceRoot, "apps", "v8-agent-os-engine", "runtimes", "computer_use", "drivers", "bin", platform, "mac_ax_helper"));
   }
+  if (platform.startsWith("linux-")) {
+    required.push(path.join(engineRoot, ".python", "THIRD_PARTY_NOTICES", "pyatspi2-COPYING"));
+  }
   const checks = required.map((filePath) => ({ path: filePath, ok: fs.existsSync(filePath) }));
   checks.push({ path: python.join(" | "), ok: python.some((filePath) => fs.existsSync(filePath)) });
   const packagedPython = python.find((filePath) => fs.existsSync(filePath));

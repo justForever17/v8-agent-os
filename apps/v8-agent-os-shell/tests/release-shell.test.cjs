@@ -447,8 +447,18 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.doesNotMatch(linuxRequirements, /^pyatspi(?:[<=>\\[]|\\s|$)/im);
   assert.match(posixRuntimeScript, /PYATSPI_IMPORT_OK/);
   assert.match(posixRuntimeScript, /f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2/);
-  assert.match(posixRuntimeScript, /200600a819af2733ca43eaadda5bc794c1e0b516799991ca138bb6db184c81b6/);
+  assert.match(posixRuntimeScript, /https:\/\/download\.gnome\.org\/sources\/pyatspi\/2\.58\/pyatspi-2\.58\.2\.tar\.xz/);
+  assert.match(posixRuntimeScript, /24590e5b60fec8dfb59fcd27d2a90de7034060be318ca3f7770e0f984f1f94e2/);
+  assert.match(posixRuntimeScript, /"-xJf"/);
+  assert.match(posixRuntimeScript, /pyatspi source archive/);
+  assert.doesNotMatch(posixRuntimeScript, /gitlab\.gnome\.org\/api\/v4\/projects/);
   assert.match(posixRuntimeScript, /gi\.require_version\('Atspi', '2\.0'\)/);
+  assert.match(workflow, /xz-utils/);
+  const packageLayoutScript = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'verify-desktop-package-layout.mjs'),
+    'utf8',
+  );
+  assert.match(packageLayoutScript, /THIRD_PARTY_NOTICES", "pyatspi2-COPYING/);
 });
 
 test('Admin and Web release builds use Next standalone servers', () => {

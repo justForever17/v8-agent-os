@@ -165,6 +165,12 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
 10. Windows 可运行 CI 安装 smoke；macOS/Linux 的构建、包内布局与运行时依赖可在 CI 验证，但 GUI、TCC/辅助功能、X11/Wayland 与窗口管理器行为必须在同平台实体主机另行验收，不能被 CI 构建成功替代。
 
+### Linux pyatspi 兼容性技术债登记
+
+`pyatspi2` 未发布可由 portable Python 直接解析的 PyPI 包。Linux desktop preview 因此从 GNOME 官方固定版本归档复制纯 Python `pyatspi` 前端，并以 GNOME 发布的 SHA-256、预期包目录、许可证文件和导入探针共同阻断来源或布局漂移。归档下载失败不得降级为缺失 AT-SPI；许可证必须保留在 `.python/THIRD_PARTY_NOTICES/pyatspi2-COPYING`，Linux x64 与 ARM64 的包内布局和 runtime probe 都必须通过。
+
+该路径只适用于 Linux 打包，不改变共享 Python requirements。上游若提供可验证且适配 portable runtime 的发行包，先在两个 Linux 架构上完成安装、包内导入和桌面运行探针，再移除手工复制；连续两个成功桌面发布周期通过后关闭本登记。
+
 ### Windows ARM64 兼容性技术债登记
 
 适用范围仅限 Windows ARM64 unsigned desktop preview。`langgraph-checkpoint-sqlite` 3.1.1 声明依赖 `sqlite-vec>=0.1.6`，但 `sqlite-vec` 0.1.9 未在 PyPI 发布 `win_arm64` wheel 或 sdist，原生 Windows ARM64 Python 因此无法完成常规依赖解析。

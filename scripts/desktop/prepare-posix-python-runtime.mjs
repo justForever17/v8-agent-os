@@ -13,9 +13,11 @@ const PYTHON_RELEASE = "20260805";
 const LINUX_PYATSPI_SOURCE = {
   // GNOME pyatspi2 2.58.2.  The previously pinned pre-Python-3 source used
   // `self.async`, which is a syntax error on Python 3.11.
+  // Use GNOME's versioned source release instead of the GitLab archive API,
+  // which can reject unauthenticated GitHub-hosted runners with HTTP 406.
   commit: "f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2",
-  archive: "200600a819af2733ca43eaadda5bc794c1e0b516799991ca138bb6db184c81b6",
-  url: "https://gitlab.gnome.org/api/v4/projects/GNOME%2Fpyatspi2/repository/archive.tar.gz?sha=f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2",
+  archive: "24590e5b60fec8dfb59fcd27d2a90de7034060be318ca3f7770e0f984f1f94e2",
+  url: "https://download.gnome.org/sources/pyatspi/2.58/pyatspi-2.58.2.tar.xz",
 };
 const RUNTIMES = {
   "macos-x64": {
@@ -70,11 +72,11 @@ function run(command, args, options = {}) {
   if (result.status !== 0) fail(`${command} ${args.join(" ")} exited with ${result.status}`);
 }
 
-async function download(url, target, expectedSha256) {
+async function download(url, target, expectedSha256, artifactLabel = "archive") {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      if (attempt > 1) console.log(`Retrying Python runtime download (${attempt}/3)…`);
+      if (attempt > 1) console.log(`Retrying verified ${artifactLabel} download (${attempt}/3)…`);
       const response = await fetch(url, { redirect: "follow" });
       if (!response.ok) fail(`Download returned HTTP ${response.status}: ${url}`);
       const body = Buffer.from(await response.arrayBuffer());
@@ -89,7 +91,7 @@ async function download(url, target, expectedSha256) {
       if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 2500));
     }
   }
-  fail(`Could not download verified Python runtime: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  fail(`Could not download verified ${artifactLabel}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 function pythonExecutable(runtimeDir) {
@@ -147,12 +149,12 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
     fail(`Refusing unexpected portable Python site-packages path: ${sitePackages}`);
   }
 
-  const archivePath = path.join(workDir, "pyatspi2.tar.gz");
+  const archivePath = path.join(workDir, "pyatspi-2.58.2.tar.xz");
   const extractDir = path.join(workDir, "pyatspi2");
   fs.mkdirSync(extractDir, { recursive: true });
-  return download(LINUX_PYATSPI_SOURCE.url, archivePath, LINUX_PYATSPI_SOURCE.archive)
+  return download(LINUX_PYATSPI_SOURCE.url, archivePath, LINUX_PYATSPI_SOURCE.archive, "pyatspi source archive")
     .then(() => {
-      run("tar", ["-xzf", archivePath, "-C", extractDir]);
+      run("tar", ["-xJf", archivePath, "-C", extractDir]);
       const sourceRoot = fs.readdirSync(extractDir, { withFileTypes: true })
         .find((entry) => entry.isDirectory() && fs.existsSync(path.join(extractDir, entry.name, "pyatspi", "__init__.py")));
       if (!sourceRoot) fail(`Pinned pyatspi2 archive did not contain the expected Python package: ${LINUX_PYATSPI_SOURCE.commit}`);
@@ -191,7 +193,7 @@ async function main() {
 
   try {
     console.log(`Preparing verified portable Python for ${target}: ${runtime.asset}`);
-    await download(sourceUrl, archivePath, runtime.sha256);
+    await download(sourceUrl, archivePath, runtime.sha256, "Python runtime");
     fs.mkdirSync(extractDir, { recursive: true });
     run("tar", ["-xzf", archivePath, "-C", extractDir]);
 

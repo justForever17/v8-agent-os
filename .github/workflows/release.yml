@@ -248,7 +248,11 @@ jobs:
     needs:
       - plan
       - release-gate
-    if: needs.release-gate.outputs.publish_ready == 'true'
+    if: >-
+      ${{ !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.release-gate.result == 'success' &&
+      needs.release-gate.outputs.publish_ready == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

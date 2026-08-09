@@ -288,6 +288,10 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /PHONE_RESULT: \$\{\{ needs\.phone-build-contract\.result \}\}/);
   assert.match(workflow, /release-gate:[\s\S]*always\(\) && !cancelled\(\)/);
   assert.match(workflow, /Required product \$product ended with \$result/);
+  assert.match(
+    workflow,
+    /publish:[\s\S]*?if: >-[\s\S]*?!cancelled\(\)[\s\S]*?needs\.plan\.result == 'success'[\s\S]*?needs\.release-gate\.result == 'success'[\s\S]*?needs\.release-gate\.outputs\.publish_ready == 'true'/,
+  );
   assert.match(workflow, /prepare-unified-release-assets\.mjs/);
   assert.match(workflow, /pattern: v8os-desktop-\*/);
   assert.match(workflow, /name: phone-android-package/);

@@ -17,6 +17,7 @@ import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import {
   cleanupFailedRuntimeHandoff,
+  DESKTOP_PET_TERMINATION_TIMEOUT_MS,
   managedStopOptions,
   observeEarlyProcessExit,
   orderedManagedStopPids,
@@ -325,6 +326,11 @@ test("POSIX component restart force-stops only the verified Shell process group"
   assert.deepEqual(managedStopOptions("engine", "linux"), {
     tree: true,
     timeoutMs: undefined,
+    signal: "SIGTERM",
+  });
+  assert.deepEqual(managedStopOptions("desktop-pet", "linux"), {
+    tree: true,
+    timeoutMs: DESKTOP_PET_TERMINATION_TIMEOUT_MS,
     signal: "SIGTERM",
   });
 });

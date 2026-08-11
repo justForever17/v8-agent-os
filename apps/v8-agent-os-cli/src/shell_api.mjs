@@ -27,9 +27,8 @@ export function getShellProcessRecordIdentity() {
 
 export async function removeShellProcessRecord(expectedIdentity) {
   if (!expectedIdentity) return false;
-  // An external `stop --only shell` owns shell.lease while Electron performs
-  // its governed shutdown. Re-entering that lease here would deadlock the
-  // stopper and the Shell. The exact pid+launchId CAS still prevents a stale
-  // Shell from deleting a replacement process record.
+  // Shell record removal can race an external lifecycle action that already
+  // owns shell.lease. The exact pid+launchId CAS avoids re-entering that lease
+  // while still preventing a stale Shell from deleting a replacement record.
   return (await compareAndSwapProcessRecord("shell", expectedIdentity, null)).applied;
 }

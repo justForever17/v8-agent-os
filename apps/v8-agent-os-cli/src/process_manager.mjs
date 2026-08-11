@@ -19,6 +19,18 @@ export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
 export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
 const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
+export function managedStopOptions(componentId, platform = process.platform) {
+  return {
+    tree: componentId !== "shell",
+    timeoutMs: componentId === "shell" ? SHELL_TERMINATION_TIMEOUT_MS : undefined,
+    // CLI `stop --only shell` is a component restart primitive, not the user-facing
+    // V8OS quit flow. On POSIX, SIGTERM enters Electron's governed global shutdown
+    // and can wait for an interactive retry dialog. A verified Shell process group
+    // must therefore use the same force-stop semantics as Windows taskkill /F.
+    signal: componentId === "shell" && platform !== "win32" ? "SIGKILL" : "SIGTERM",
+  };
+}
+
 function componentHasPort(component) {
   return Number.isInteger(component?.port) && component.port > 0;
 }
@@ -957,11 +969,12 @@ async function killPid(pid, options = {}) {
     const stopped = await waitForPidExit(numeric, options.timeoutMs);
     return { ok: stopped, reason: stopped ? "killed" : "termination_timeout" };
   }
+  const signal = options.signal === "SIGKILL" ? "SIGKILL" : "SIGTERM";
   try {
-    process.kill(-numeric, "SIGTERM");
+    process.kill(-numeric, signal);
   } catch {
     try {
-      process.kill(numeric, "SIGTERM");
+      process.kill(numeric, signal);
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : "kill_failed" };
     }
@@ -1060,10 +1073,7 @@ async function stopComponent(id, options) {
       }
       killResults.push({
         pid,
-        ...await killPid(pid, {
-          tree: id !== "shell",
-          timeoutMs: id === "shell" ? SHELL_TERMINATION_TIMEOUT_MS : undefined,
-        }),
+        ...await killPid(pid, managedStopOptions(id)),
       });
     }
     const failed = killResults.find((item) => !item.ok);

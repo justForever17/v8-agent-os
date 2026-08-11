@@ -17,6 +17,7 @@ import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import {
   cleanupFailedRuntimeHandoff,
+  managedStopOptions,
   observeEarlyProcessExit,
   orderedManagedStopPids,
   packagedRuntimeDescriptorMatches,
@@ -303,6 +304,29 @@ test("Shell shutdown stops the verified Electron browser before its launcher", (
     recordPid: 3303,
     verifiedPids: [3303],
   }, { killPid: 4404 }), [3303, 4404]);
+});
+
+test("POSIX component restart force-stops only the verified Shell process group", () => {
+  assert.deepEqual(managedStopOptions("shell", "linux"), {
+    tree: false,
+    timeoutMs: SHELL_TERMINATION_TIMEOUT_MS,
+    signal: "SIGKILL",
+  });
+  assert.deepEqual(managedStopOptions("shell", "darwin"), {
+    tree: false,
+    timeoutMs: SHELL_TERMINATION_TIMEOUT_MS,
+    signal: "SIGKILL",
+  });
+  assert.deepEqual(managedStopOptions("shell", "win32"), {
+    tree: false,
+    timeoutMs: SHELL_TERMINATION_TIMEOUT_MS,
+    signal: "SIGTERM",
+  });
+  assert.deepEqual(managedStopOptions("engine", "linux"), {
+    tree: true,
+    timeoutMs: undefined,
+    signal: "SIGTERM",
+  });
 });
 
 test("managed startup observes an immediate child exit before recording success", async () => {
@@ -1136,7 +1160,7 @@ test("desktop pet survives Shell replacement through detached handoff and exact 
   assert.match(processManager, /resolveLiveManagedIdentity/);
   assert.match(processManager, /shell-control\.json/);
   assert.equal(SHELL_TERMINATION_TIMEOUT_MS, 20_000);
-  assert.match(processManager, /timeoutMs: id === "shell" \? SHELL_TERMINATION_TIMEOUT_MS : undefined/);
+  assert.match(processManager, /killPid\(pid, managedStopOptions\(id\)\)/);
   assert.match(processManager, /stopped_during_kill/);
   assert.match(processManager, /await runChildCommand\("taskkill", args, \{ timeoutMs: 5_000 \}\)/);
   assert.doesNotMatch(processManager, /spawnSync/);

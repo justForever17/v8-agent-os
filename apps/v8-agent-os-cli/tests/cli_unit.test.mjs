@@ -250,11 +250,46 @@ test("process record CAS identity requires both PID and launchId", () => {
   assert.equal(processRecordMatchesIdentity(null, null), true);
 });
 
-test("Shell exit uses scoped process-state deletion instead of rewriting a stale snapshot", () => {
+test("Shell exit uses exact process-state CAS instead of re-entering its component lease", () => {
   const source = fs.readFileSync(path.join(cliRoot, "src", "shell_api.mjs"), "utf8");
 
-  assert.match(source, /removeManagedComponentProcessRecord\("shell", expectedIdentity\)/);
+  assert.match(source, /compareAndSwapProcessRecord\("shell", expectedIdentity, null\)/);
+  assert.doesNotMatch(source, /removeManagedComponentProcessRecord/);
   assert.doesNotMatch(source, /readProcessState|writeProcessState/);
+});
+
+test("Shell self-removal completes while an external stopper owns shell.lease", async () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-shell-self-remove-"));
+  const statePath = path.join(stateRoot, "runtime", "cli", "processes.json");
+  const expectedIdentity = { pid: 48720, launchId: "shell-governed-exit" };
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, `${JSON.stringify({
+    version: 1,
+    repoRoot,
+    processes: { shell: expectedIdentity },
+  }, null, 2)}\n`, "utf8");
+  const processStateUrl = new URL("../src/process_state.mjs", import.meta.url).href;
+  const shellApiUrl = new URL("../src/shell_api.mjs", import.meta.url).href;
+  const script = [
+    `const stateApi = await import(${JSON.stringify(processStateUrl)});`,
+    `const shellApi = await import(${JSON.stringify(shellApiUrl)});`,
+    `const expected = ${JSON.stringify(expectedIdentity)};`,
+    `const startedAt = Date.now();`,
+    `const removed = await stateApi.withComponentProcessLease("shell", () => shellApi.removeShellProcessRecord(expected));`,
+    `process.stdout.write(JSON.stringify({ removed, elapsedMs: Date.now() - startedAt, state: stateApi.readProcessState() }));`,
+  ].join("\n");
+
+  try {
+    const payload = JSON.parse(await runIsolatedModuleScript(script, {
+      V8_AGENT_OS_HOME: stateRoot,
+      V8_REPO_ROOT: repoRoot,
+    }));
+    assert.equal(payload.removed, true);
+    assert.equal(payload.state.processes.shell, undefined);
+    assert.ok(payload.elapsedMs < 1_000, `Shell self-removal took ${payload.elapsedMs}ms`);
+  } finally {
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test("Shell shutdown stops the verified Electron browser before its launcher", () => {

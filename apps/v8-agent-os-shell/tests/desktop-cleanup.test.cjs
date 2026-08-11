@@ -58,7 +58,11 @@ test('Windows cleanup requires the installed CLI and NSIS uninstaller without de
     workflow.indexOf('Collect Windows desktop smoke diagnostics'),
   );
   assert.match(cleanup, /if \(-not \(Test-Path -LiteralPath \$installedCli -PathType Leaf\)\) \{ throw/);
-  assert.match(cleanup, /\$cliExitCode = \$LASTEXITCODE/);
+  assert.match(cleanup, /Start-Process -FilePath \$shellExe\.FullName/);
+  assert.match(cleanup, /-ArgumentList @\("`"\$installedCli`"", "stop", "--all"\)/);
+  assert.match(cleanup, /-Wait -PassThru -WindowStyle Hidden/);
+  assert.match(cleanup, /\$cliExitCode = \$cliProcess\.ExitCode/);
+  assert.doesNotMatch(cleanup, /\$cliExitCode = \$LASTEXITCODE/);
   assert.match(cleanup, /if \(\$cliExitCode -ne 0\) \{ throw/);
   assert.match(cleanup, /if \(\$uninstallers\.Count -ne 1\) \{ throw/);
   assert.match(cleanup, /Windows uninstaller did not remove the installation directory/);

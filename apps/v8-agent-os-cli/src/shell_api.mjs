@@ -1,11 +1,11 @@
 import { ALL_COMPONENTS } from "./components.mjs";
 import {
   getManagedComponentProcessRecordIdentity,
-  removeManagedComponentProcessRecord,
   startComponents,
   statusComponents,
   stopComponents,
 } from "./process_manager.mjs";
+import { compareAndSwapProcessRecord } from "./process_state.mjs";
 
 export async function shellStatus(componentIds = ALL_COMPONENTS) {
   return statusComponents(componentIds);
@@ -26,5 +26,10 @@ export function getShellProcessRecordIdentity() {
 }
 
 export async function removeShellProcessRecord(expectedIdentity) {
-  return removeManagedComponentProcessRecord("shell", expectedIdentity);
+  if (!expectedIdentity) return false;
+  // An external `stop --only shell` owns shell.lease while Electron performs
+  // its governed shutdown. Re-entering that lease here would deadlock the
+  // stopper and the Shell. The exact pid+launchId CAS still prevents a stale
+  // Shell from deleting a replacement process record.
+  return (await compareAndSwapProcessRecord("shell", expectedIdentity, null)).applied;
 }

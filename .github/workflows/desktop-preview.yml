@@ -574,8 +574,10 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = "1"
           $env:V8OS_SHELL_PACKAGED = "1"
           $env:V8_REPO_ROOT = $resourceRoot
-          & $shellExe.FullName $installedCli stop --all
-          $cliExitCode = $LASTEXITCODE
+          $cliProcess = Start-Process -FilePath $shellExe.FullName `
+            -ArgumentList @("`"$installedCli`"", "stop", "--all") `
+            -Wait -PassThru -WindowStyle Hidden
+          $cliExitCode = $cliProcess.ExitCode
           Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
           Remove-Item Env:V8OS_SHELL_PACKAGED -ErrorAction SilentlyContinue
           Remove-Item Env:V8_REPO_ROOT -ErrorAction SilentlyContinue

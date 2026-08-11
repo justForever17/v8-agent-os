@@ -390,6 +390,7 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /verify-desktop-package-layout\.mjs/);
   assert.match(workflow, /verify-desktop-package-layout\.mjs[\s\S]{0,180}--release-version "\$\{\{ inputs\.release_version \}\}"/);
   assert.match(workflow, /dpkg-deb -f "\$deb_path" Version/);
+  assert.match(workflow, /package\.json'\)\.version\.replace\(\/-\/g, '~'\)/);
   assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
   assert.match(workflow, /--release-version "\$\{\{ inputs\.release_version \}\}"/);
   assert.match(workflow, /name: v8os-desktop-\$\{\{ matrix\.id \}\}/);

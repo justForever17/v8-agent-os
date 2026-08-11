@@ -310,8 +310,8 @@ jobs:
             *) echo "Unsupported Linux package architecture: ${{ matrix.arch }}" >&2; exit 1 ;;
           esac
           test "$(dpkg-deb -f "$deb_path" Architecture)" = "$expected_deb_arch"
-          expected_package_version="$(node -p "require('./apps/v8-agent-os-shell/package.json').version")"
-          test "$(dpkg-deb -f "$deb_path" Version)" = "$expected_package_version"
+          expected_deb_version="$(node -p "require('./apps/v8-agent-os-shell/package.json').version.replace(/-/g, '~')")"
+          test "$(dpkg-deb -f "$deb_path" Version)" = "$expected_deb_version"
           sudo dpkg -i "$deb_path"
           test -x "/opt/V8 Agent OS/v8-agent-os-shell"
 

@@ -41,6 +41,7 @@ const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
 const productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
 const CORE_SERVICE_IDS = ['engine', 'admin', 'web'];
 const CORE_SERVICE_LABELS = { engine: 'Engine', admin: 'Admin', web: 'Web' };
+const MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown';
 const updateChecksEnabled = app.isPackaged && process.env.V8OS_DISABLE_UPDATE_CHECK !== '1';
 const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 20_000;
 
@@ -1455,8 +1456,16 @@ function registerShellProtocol() {
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
+} else if (process.argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)) {
+  // A governed shutdown request must never become a visible replacement Shell
+  // if the original instance exits between CLI identity verification and spawn.
+  app.whenReady().then(() => app.exit(0));
 } else {
   app.on('second-instance', (_event, argv) => {
+    if (argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)) {
+      void quitV8OS();
+      return;
+    }
     const deepLink = deepLinkFromArgv(argv);
     if (!handleShellDeepLink(deepLink)) showMainWindow();
   });

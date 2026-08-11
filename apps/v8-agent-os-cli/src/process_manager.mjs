@@ -18,19 +18,22 @@ import {
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
 export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
 export const DESKTOP_PET_TERMINATION_TIMEOUT_MS = 10_000;
+export const MANAGED_SHELL_SHUTDOWN_ARG = "--v8os-managed-shutdown";
+export const MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS = 30_000;
 const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
-export function managedStopOptions(componentId, platform = process.platform) {
+export function managedStopOptions(componentId, platform = process.platform, options = {}) {
+  const forceDesktopPet = componentId === "desktop-pet" && options.force === true;
   return {
     tree: componentId !== "shell",
     timeoutMs: componentId === "shell"
       ? SHELL_TERMINATION_TIMEOUT_MS
-      : componentId === "desktop-pet" ? DESKTOP_PET_TERMINATION_TIMEOUT_MS : undefined,
+      : componentId === "desktop-pet" && !forceDesktopPet ? DESKTOP_PET_TERMINATION_TIMEOUT_MS : undefined,
     // CLI `stop --only shell` is a component restart primitive, not the user-facing
     // V8OS quit flow. On POSIX, SIGTERM enters Electron's governed global shutdown
     // and can wait for an interactive retry dialog. A verified Shell process group
     // must therefore use the same force-stop semantics as Windows taskkill /F.
-    signal: componentId === "shell" && platform !== "win32" ? "SIGKILL" : "SIGTERM",
+    signal: platform !== "win32" && (componentId === "shell" || forceDesktopPet) ? "SIGKILL" : "SIGTERM",
   };
 }
 
@@ -1032,6 +1035,63 @@ export function orderedManagedStopPids(componentId, identity, verifiedPortOwner 
   ].filter(Boolean))];
 }
 
+const WHOLE_V8OS_SHUTDOWN_COMPONENTS = ["engine", "admin", "web", "desktop-pet", "shell"];
+
+export function requestsManagedShellShutdown(componentIds) {
+  const selected = new Set(Array.isArray(componentIds) ? componentIds : []);
+  return WHOLE_V8OS_SHUTDOWN_COMPONENTS.every((id) => selected.has(id));
+}
+
+export function managedShellShutdownEnvironment(environment = process.env, runtimeDescriptor = {}) {
+  const next = { ...environment };
+  for (const key of Object.keys(next)) {
+    if (["ELECTRON_RUN_AS_NODE", "V8OS_DESKTOP_RUNTIME_MODE"].includes(key.toUpperCase())) delete next[key];
+  }
+  next.V8OS_SHELL_PACKAGED = "1";
+  if (runtimeDescriptor.repoRoot) next.V8_REPO_ROOT = path.resolve(String(runtimeDescriptor.repoRoot));
+  return next;
+}
+
+export async function requestPackagedShellShutdown(componentIds, options = {}) {
+  if (!requestsManagedShellShutdown(componentIds)) return { attempted: false, stopped: false, reason: "partial_stop" };
+  const readRuntime = options.readRuntimeDescriptor || runtimeProcessDescriptor;
+  const describe = options.readProcessDescriptor || readProcessDescriptor;
+  const verify = options.verifyRuntimePid || verifiedRuntimeComponentPid;
+  const spawnImpl = options.spawnImpl || spawn;
+  const awaitSpawn = options.waitForSpawn || waitForSpawn;
+  const waitForExit = options.waitForPidExit || waitForPidExit;
+  const runtimeDescriptor = readRuntime("shell");
+  const shellPid = positivePid(runtimeDescriptor?.pid);
+  const executablePath = String(runtimeDescriptor?.executablePath || "").trim();
+  if (!runtimeDescriptor?.packaged || runtimeDescriptor?.runtimeKind !== "shell" || !shellPid || !executablePath) {
+    return { attempted: false, stopped: false, reason: "packaged_shell_unavailable" };
+  }
+  const processDescriptor = await describe(shellPid);
+  if (verify("shell", processDescriptor, runtimeDescriptor) !== shellPid) {
+    return { attempted: false, stopped: false, reason: "packaged_shell_identity_unverified" };
+  }
+  try {
+    const child = spawnImpl(executablePath, [MANAGED_SHELL_SHUTDOWN_ARG], {
+      cwd: path.dirname(executablePath),
+      env: managedShellShutdownEnvironment(options.environment || process.env, runtimeDescriptor),
+      detached: false,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    await awaitSpawn(child);
+    child.unref?.();
+  } catch {
+    return { attempted: true, stopped: false, reason: "shutdown_request_failed", pid: shellPid };
+  }
+  const stopped = await waitForExit(shellPid, options.timeoutMs || MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS);
+  return {
+    attempted: true,
+    stopped,
+    reason: stopped ? "governed_shutdown" : "governed_shutdown_timeout",
+    pid: shellPid,
+  };
+}
+
 async function stopComponent(id, options) {
   const component = COMPONENTS[id];
   return withComponentProcessLease(id, async () => {
@@ -1076,7 +1136,9 @@ async function stopComponent(id, options) {
       }
       killResults.push({
         pid,
-        ...await killPid(pid, managedStopOptions(id)),
+        ...await killPid(pid, managedStopOptions(id, process.platform, {
+          force: options.forceDesktopPet === true,
+        })),
       });
     }
     const failed = killResults.find((item) => !item.ok);
@@ -1101,5 +1163,12 @@ async function stopComponent(id, options) {
 }
 
 export async function stopComponents(componentIds = Object.keys(COMPONENTS), options = {}) {
-  return Promise.all(componentIds.filter((id) => COMPONENTS[id]).map((id) => stopComponent(id, options)));
+  const selected = componentIds.filter((id) => COMPONENTS[id]);
+  const governedShutdown = options.skipManagedShellShutdown === true
+    ? { attempted: false, stopped: false, reason: "disabled" }
+    : await requestPackagedShellShutdown(selected, options.managedShellShutdown || {});
+  const stopOptions = governedShutdown.attempted && !governedShutdown.stopped
+    ? { ...options, forceDesktopPet: true }
+    : options;
+  return Promise.all(selected.map((id) => stopComponent(id, stopOptions)));
 }

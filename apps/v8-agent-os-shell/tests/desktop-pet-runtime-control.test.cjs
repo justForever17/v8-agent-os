@@ -42,4 +42,7 @@ test('Admin and tray runtime controls share the graceful desktop pet shutdown pa
   assert.match(quitSource, /await showShutdownFailure\(failure\)/);
   assert.doesNotMatch(quitSource, /finally \{[\s\S]*app\.quit\(\)/);
   assert.match(mainSource, /app\.on\('before-quit',[\s\S]{0,180}if \(quitting\) return;[\s\S]{0,180}void quitV8OS\(\)/);
+  assert.match(mainSource, /MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown'/);
+  assert.match(mainSource, /else if \(process\.argv\.includes\(MANAGED_SHELL_SHUTDOWN_ARG\)\)[\s\S]{0,320}app\.exit\(0\)/);
+  assert.match(mainSource, /app\.on\('second-instance',[\s\S]{0,220}argv\.includes\(MANAGED_SHELL_SHUTDOWN_ARG\)[\s\S]{0,120}void quitV8OS\(\)/);
 });

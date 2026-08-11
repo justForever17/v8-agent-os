@@ -18,10 +18,15 @@ import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import {
   cleanupFailedRuntimeHandoff,
   DESKTOP_PET_TERMINATION_TIMEOUT_MS,
+  MANAGED_SHELL_SHUTDOWN_ARG,
+  MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS,
   managedStopOptions,
+  managedShellShutdownEnvironment,
   observeEarlyProcessExit,
   orderedManagedStopPids,
   packagedRuntimeDescriptorMatches,
+  requestPackagedShellShutdown,
+  requestsManagedShellShutdown,
   resolveManagedComponentIdentity,
   runWindowsProcessProbe,
   SHELL_TERMINATION_TIMEOUT_MS,
@@ -333,6 +338,61 @@ test("POSIX component restart force-stops only the verified Shell process group"
     tree: true,
     timeoutMs: DESKTOP_PET_TERMINATION_TIMEOUT_MS,
     signal: "SIGTERM",
+  });
+  assert.deepEqual(managedStopOptions("desktop-pet", "linux", { force: true }), {
+    tree: true,
+    timeoutMs: undefined,
+    signal: "SIGKILL",
+  });
+});
+
+test("packaged stop-all asks the verified Shell to run governed V8OS shutdown", async () => {
+  assert.equal(requestsManagedShellShutdown(ALL_COMPONENTS), true);
+  assert.equal(requestsManagedShellShutdown(["shell"]), false);
+  const runtimeDescriptor = {
+    packaged: true,
+    runtimeKind: "shell",
+    pid: 4201,
+    executablePath: path.join("C:\\Program Files", "V8 Agent OS", "V8 Agent OS.exe"),
+    repoRoot: path.join("C:\\Program Files", "V8 Agent OS", "resources", "v8os"),
+  };
+  let spawned = null;
+  const child = new EventEmitter();
+  child.unref = () => { child.unrefCalled = true; };
+  const result = await requestPackagedShellShutdown(ALL_COMPONENTS, {
+    readRuntimeDescriptor: () => runtimeDescriptor,
+    readProcessDescriptor: async () => ({ pid: 4201 }),
+    verifyRuntimePid: () => 4201,
+    spawnImpl(command, args, options) {
+      spawned = { command, args, options };
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
+    },
+    waitForPidExit: async (pid, timeoutMs) => pid === 4201 && timeoutMs === MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS,
+    environment: {
+      ELECTRON_RUN_AS_NODE: "1",
+      V8OS_DESKTOP_RUNTIME_MODE: "desktop-pet",
+      DISPLAY: ":99",
+    },
+  });
+  assert.deepEqual(result, {
+    attempted: true,
+    stopped: true,
+    reason: "governed_shutdown",
+    pid: 4201,
+  });
+  assert.equal(spawned.command, runtimeDescriptor.executablePath);
+  assert.deepEqual(spawned.args, [MANAGED_SHELL_SHUTDOWN_ARG]);
+  assert.equal(spawned.options.windowsHide, true);
+  assert.equal(spawned.options.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(spawned.options.env.V8OS_DESKTOP_RUNTIME_MODE, undefined);
+  assert.equal(spawned.options.env.DISPLAY, ":99");
+  assert.equal(spawned.options.env.V8OS_SHELL_PACKAGED, "1");
+  assert.equal(spawned.options.env.V8_REPO_ROOT, path.resolve(runtimeDescriptor.repoRoot));
+  assert.equal(child.unrefCalled, true);
+  assert.deepEqual(managedShellShutdownEnvironment({ electron_run_as_node: "1" }, runtimeDescriptor), {
+    V8OS_SHELL_PACKAGED: "1",
+    V8_REPO_ROOT: path.resolve(runtimeDescriptor.repoRoot),
   });
 });
 
@@ -1167,7 +1227,7 @@ test("desktop pet survives Shell replacement through detached handoff and exact 
   assert.match(processManager, /resolveLiveManagedIdentity/);
   assert.match(processManager, /shell-control\.json/);
   assert.equal(SHELL_TERMINATION_TIMEOUT_MS, 20_000);
-  assert.match(processManager, /killPid\(pid, managedStopOptions\(id\)\)/);
+  assert.match(processManager, /killPid\(pid, managedStopOptions\(id, process\.platform,/);
   assert.match(processManager, /stopped_during_kill/);
   assert.match(processManager, /await runChildCommand\("taskkill", args, \{ timeoutMs: 5_000 \}\)/);
   assert.doesNotMatch(processManager, /spawnSync/);

@@ -11,6 +11,8 @@ files:
   - scripts/**/*
   - package.json
 extraResources:
+  - from: ../../release-manifest.json
+    to: v8os/release-manifest.json
   - from: ../../apps/v8-agent-os-cli
     to: v8os/apps/v8-agent-os-cli
     filter:
@@ -59,11 +61,20 @@ extraResources:
     to: v8os/apps/v8-agent-os-desktop-pet
     filter:
       - "**/*"
+      - "!node_modules/**"
       - "!node_modules/.cache/**"
       - "!node_modules/**/.cache/**"
       - "!dist/**/*.map"
       - "!logs/**"
       - "!*.log"
+  - from: ../../apps/v8-agent-os-shell/scripts
+    to: v8os/apps/v8-agent-os-shell/scripts
+    filter:
+      - electron-launcher.mjs
+      - feature_pack_runtime_probe.py
+      - launch-desktop-pet.mjs
+      - launch-shell.mjs
+      - spawn-detached-electron.mjs
   - from: ../../packages
     to: v8os/packages
     filter:
@@ -125,3 +136,5 @@ deb:
     - wmctrl
     - xclip
     - xsel
+    - gnome-keyring
+    - libpam-gnome-keyring

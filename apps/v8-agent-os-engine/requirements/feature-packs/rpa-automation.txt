@@ -1,5 +1,7 @@
-robotframework
-robotframework-seleniumlibrary
-rpaframework
-rpaframework-recognition
-rpaframework-windows; sys_platform == "win32"
+# Governed subset: Browser.Selenium and Excel.Files on every supported desktop;
+# RPA.Windows is additionally available on Windows. Existing .robot files are
+# isolated-dry-run validated before execution; other RPA.* libraries are not bundled.
+robotframework==7.4.2
+robotframework-seleniumlibrary==6.9.0
+rpaframework==32.0.1
+rpaframework-windows==11.0.0; sys_platform == "win32"

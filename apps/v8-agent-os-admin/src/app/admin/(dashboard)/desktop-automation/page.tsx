@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Loader2, MonitorSmartphone } from "lucide-react";
+import { Loader2, MonitorSmartphone, RefreshCw } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -59,12 +59,17 @@ type RuntimeCapabilityEntry = {
     kind: string;
     displayName?: string;
     summary?: string;
+    availability?: string;
     policy?: {
         enabled?: boolean;
         autoRoute?: boolean;
         exposeDirectTools?: boolean;
     };
 };
+
+function runtimeCapabilityCanBeEnabled(capability: RuntimeCapabilityEntry | null) {
+    return capability?.availability === "installed" || capability?.availability === "disabled_by_policy";
+}
 
 type CapabilityFacet = {
     key: string;
@@ -113,6 +118,21 @@ type ComputerUseAvailability = {
     };
 };
 
+type RuntimeFeaturePackEntry = {
+    id?: string;
+    status?: string;
+    restartRequired?: boolean;
+};
+
+type FeaturePackGateState = "unknown" | "missing" | "restart_required" | "ready";
+
+function computerUseProbeReady(availability: ComputerUseAvailability | null) {
+    return availability?.available === true
+        && availability.environmentProbe?.state === "fresh"
+        && availability.environmentProbe?.stale !== true
+        && availability.environmentProbe?.refreshing !== true;
+}
+
 export default function DesktopAutomationPage() {
     const t = useT();
     const [initialState] = useState(() => {
@@ -120,45 +140,50 @@ export default function DesktopAutomationPage() {
         const models = peekAdminJsonCache<ModelOption[]>("/api/models");
         const capabilitySnapshot = peekAdminJsonCache<Record<string, unknown>>("/api/runtime-capabilities");
         const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
-        const featurePacks = peekAdminJsonCache<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs");
+        const featurePacks = peekAdminJsonCache<{ packs?: RuntimeFeaturePackEntry[] }>("/api/runtime-feature-packs");
         const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
         return {
             envelope,
             models: Array.isArray(models) ? models : [],
             runtimeCapability: runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null,
             availability: peekAdminJsonCache<ComputerUseAvailability>("/api/computer-use/availability") ?? null,
-            featurePackMissing: featurePacks !== undefined
-                ? packs.find((item) => item.id === "computer_use_desktop")?.status !== "installed"
-                : false,
+            featurePack: featurePacks !== undefined
+                ? packs.find((item) => item.id === "computer_use_desktop") || { status: "not_installed" }
+                : null,
         };
     });
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<ComputerUseData> | null>(initialState.envelope);
     const [models, setModels] = useState<ModelOption[]>(initialState.models);
     const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(initialState.runtimeCapability);
     const [availability, setAvailability] = useState<ComputerUseAvailability | null>(initialState.availability);
+    const [availabilityChecked, setAvailabilityChecked] = useState(false);
     const [availabilityRefreshKey, setAvailabilityRefreshKey] = useState(0);
     const [loading, setLoading] = useState(!initialState.envelope);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
-    const [featurePackMissing, setFeaturePackMissing] = useState(initialState.featurePackMissing);
+    const [featurePack, setFeaturePack] = useState<RuntimeFeaturePackEntry | null>(initialState.featurePack);
 
     const loadData = async (force = false) => {
         try {
             const [config, modelsResponse, capabilitySnapshot, featurePacks] = await Promise.all([
                 fetchConfigDomain<ComputerUseData>("computer-use", { force }),
                 fetchAdminJson<ModelOption[]>("/api/models", { force }),
-                fetchAdminJson<Record<string, unknown>>("/api/runtime-capabilities", { force }),
-                fetchAdminJson<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs", { force }),
+                fetchAdminJson<Record<string, unknown>>("/api/runtime-capabilities", { force }).catch(() => null),
+                fetchAdminJson<{ packs?: RuntimeFeaturePackEntry[] }>("/api/runtime-feature-packs", { force }).catch(() => null),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelsResponse) ? modelsResponse : []);
+            setAvailabilityChecked(false);
             setAvailabilityRefreshKey((current) => current + 1);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null);
-            const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
-            const computerPack = packs.find((item: { id?: string; status?: string }) => item.id === "computer_use_desktop");
-            setFeaturePackMissing(computerPack?.status !== "installed");
+            if (featurePacks) {
+                const packs = Array.isArray(featurePacks.packs) ? featurePacks.packs : [];
+                setFeaturePack(packs.find((item) => item.id === "computer_use_desktop") || { status: "not_installed" });
+            } else {
+                setFeaturePack(null);
+            }
         } finally {
             setLoading(false);
         }
@@ -183,11 +208,15 @@ export default function DesktopAutomationPage() {
             }).then((computerAvailability) => {
                 if (!active) return;
                 setAvailability(computerAvailability || null);
+                setAvailabilityChecked(true);
                 if (computerAvailability?.environmentProbe?.refreshing && attempt < 20) {
                     pollTimer = window.setTimeout(() => loadAvailability(attempt + 1), 2_000);
                 }
             }).catch(() => {
-                if (active) setAvailability(null);
+                if (active) {
+                    setAvailability(null);
+                    setAvailabilityChecked(true);
+                }
             });
         };
         const timer = window.setTimeout(loadAvailability, 1_000);
@@ -217,8 +246,18 @@ export default function DesktopAutomationPage() {
         [capabilityTruth]
     );
     const builtInPlaybooks = availability?.details?.builtInPlaybookSeeds || [];
+    const featurePackState = useMemo<FeaturePackGateState>(() => {
+        if (!featurePack) return "unknown";
+        if (featurePack.status !== "installed") return "missing";
+        if (featurePack.restartRequired !== false || !runtimeCapabilityCanBeEnabled(runtimeCapability)) {
+            return "restart_required";
+        }
+        if (!availabilityChecked || !computerUseProbeReady(availability)) return "unknown";
+        return "ready";
+    }, [availability, availabilityChecked, featurePack, runtimeCapability]);
     const availabilityNotice = useMemo(() => {
-        const state = availability?.environmentProbe?.state || (availability ? "fresh" : "refreshing");
+        const state = availability?.environmentProbe?.state
+            || (availability ? "fresh" : availabilityChecked ? "failed" : "refreshing");
         const stale = Boolean(availability?.environmentProbe?.stale);
         if (state === "failed") {
             return {
@@ -241,7 +280,13 @@ export default function DesktopAutomationPage() {
             };
         }
         return null;
-    }, [availability]);
+    }, [availability, availabilityChecked]);
+    const availabilityFailed = availabilityChecked
+        && (!availability || availability.environmentProbe?.state === "failed");
+    const retryAvailability = () => {
+        setAvailabilityChecked(false);
+        setAvailabilityRefreshKey((current) => current + 1);
+    };
     const statusLabel = (status?: string) => {
         const normalized = String(status || "unknown");
         return t(`app.admin.dashboard.desktop.automation.capabilityTruth.status.${normalized}`);
@@ -286,8 +331,12 @@ export default function DesktopAutomationPage() {
     };
 
     const setRuntimeEnabled = async (enabled: boolean) => {
-        if (enabled && featurePackMissing) {
-            window.dispatchEvent(new Event("v8os:open-feature-packs"));
+        if (enabled && featurePackState !== "ready") {
+            if (featurePackState === "missing") {
+                window.dispatchEvent(new Event("v8os:open-feature-packs"));
+            } else {
+                void loadData(true);
+            }
             return;
         }
         setRuntimeSaving(true);
@@ -338,17 +387,40 @@ export default function DesktopAutomationPage() {
             />
 
             {availabilityNotice ? (
-                <StatusNotice
-                    title={availabilityNotice.title}
-                    description={availabilityNotice.description}
-                    tone={availabilityNotice.tone}
-                />
+                <div className="space-y-2">
+                    <StatusNotice
+                        title={availabilityNotice.title}
+                        description={availabilityNotice.description}
+                        tone={availabilityNotice.tone}
+                    />
+                    {availabilityFailed ? (
+                        <Button type="button" variant="outline" size="sm" onClick={retryAvailability}>
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            {t("app.admin.dashboard.desktop.automation.availability.retry")}
+                        </Button>
+                    ) : null}
+                </div>
             ) : null}
 
-            {featurePackMissing ? (
+            {featurePackState === "missing" ? (
                 <StatusNotice
                     title={"app.admin.dashboard.desktop.automation.featurePackMissingTitle"}
                     description={"app.admin.dashboard.desktop.automation.featurePackMissingDescription"}
+                    tone="warning"
+                />
+            ) : null}
+
+            {featurePackState === "restart_required" ? (
+                <StatusNotice
+                    title={"components.layout.Topbar.featurePackRestartRequired"}
+                    tone="warning"
+                />
+            ) : null}
+
+            {featurePackState === "unknown" && !availabilityNotice ? (
+                <StatusNotice
+                    title={"app.admin.dashboard.desktop.automation.availability.failedTitle"}
+                    description={"app.admin.dashboard.desktop.automation.availability.failedUnknownDescription"}
                     tone="warning"
                 />
             ) : null}
@@ -372,11 +444,22 @@ export default function DesktopAutomationPage() {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-3">
-                        <Button type="button" onClick={() => void setRuntimeEnabled(true)} disabled={runtimeSaving || runtimeCapability?.policy?.enabled !== false}>
+                        <Button
+                            type="button"
+                            onClick={() => void setRuntimeEnabled(true)}
+                            disabled={runtimeSaving || (featurePackState === "ready"
+                                ? runtimeCapability?.policy?.enabled !== false
+                                : featurePackState !== "missing")}
+                        >
                             {runtimeSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             {t("app.admin.dashboard.desktop.automation.page.kf0adb2b0")}
                         </Button>
-                        <Button type="button" variant="outline" onClick={() => void setRuntimeEnabled(false)} disabled={runtimeSaving || runtimeCapability?.policy?.enabled === false}>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void setRuntimeEnabled(false)}
+                            disabled={runtimeSaving || runtimeCapability?.policy?.enabled === false}
+                        >
                             {runtimeSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                             {t("app.admin.dashboard.desktop.automation.page.k415e3223")}
                         </Button>

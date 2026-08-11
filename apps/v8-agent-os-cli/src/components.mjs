@@ -122,6 +122,7 @@ export const COMPONENTS = {
     id: "desktop-pet",
     label: "Desktop Pet",
     port: null,
+    detachedHandoff: true,
     cwd: REPO_ROOT,
     command() {
       const runtime = nodeRuntime({

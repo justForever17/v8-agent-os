@@ -77,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - id: targets
         name: Resolve requested platforms
@@ -107,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify target runner architecture
         if: runner.os != 'Windows'
@@ -131,11 +131,12 @@ jobs:
             build-essential pkg-config meson ninja-build xz-utils \
             "$GI_DEV" gobject-introspection libglib2.0-dev libcairo2-dev libffi-dev \
             gir1.2-atspi-2.0 at-spi2-core \
+            dbus-x11 gnome-keyring libpam-gnome-keyring libsecret-tools xvfb xauth \
             xdotool wmctrl xclip xsel \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
           cache: npm
@@ -164,7 +165,7 @@ jobs:
           node -e "if (process.arch !== '$expectedArchitecture') { throw new Error('Node architecture mismatch: expected $expectedArchitecture, got ' + process.arch) }"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           toolchain: ${{ matrix.id == 'windows-arm64' && '1.92.0' || 'stable' }}
 
@@ -294,20 +295,251 @@ jobs:
         timeout-minutes: 35
         run: npm --prefix apps/v8-agent-os-shell run dist:linux:preview -- --${{ matrix.arch }}
 
+      - name: Install Linux desktop preview package
+        if: matrix.os == 'linux'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          deb_path="$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.deb' -print -quit)"
+          test -n "$deb_path"
+          sudo dpkg -i "$deb_path"
+          test -x "/opt/V8 Agent OS/v8-agent-os-shell"
+
+      - name: Installed Linux desktop smoke
+        if: matrix.os == 'linux'
+        shell: bash
+        timeout-minutes: 8
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-smoke-${{ matrix.arch }}
+          V8OS_SHELL_EXE: /opt/V8 Agent OS/v8-agent-os-shell
+          V8OS_DISABLE_UPDATE_CHECK: '1'
+        run: |
+          set -euo pipefail
+          export XDG_DATA_HOME="$V8_AGENT_OS_HOME/xdg-data"
+          export XDG_CONFIG_HOME="$V8_AGENT_OS_HOME/xdg-config"
+          export XDG_RUNTIME_DIR="$V8_AGENT_OS_HOME/xdg-runtime"
+          mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export V8OS_SMOKE_KEYRING_PASSWORD="$(openssl rand -hex 32)"
+          export V8OS_CREDENTIAL_PROBE="$V8_AGENT_OS_HOME/credential-smoke.py"
+          cat >"$V8OS_CREDENTIAL_PROBE" <<'PY'
+          import secrets
+
+          from core.security.credentials import CredentialRefStore, LinuxSecretServiceCredentialBackend
+
+          store = CredentialRefStore(LinuxSecretServiceCredentialBackend())
+          reference = f"cred:v8-system:release-smoke-{secrets.token_hex(12)}"
+          value = secrets.token_urlsafe(32)
+          try:
+              assert store.put(value, reference=reference, namespace="system") == reference
+              assert store.resolve(reference) == value
+              assert store.delete(reference) is True
+              assert store.status(reference).configured is False
+          finally:
+              try:
+                  store.delete(reference)
+              except Exception:
+                  pass
+          print("V8OS_LINUX_SECRET_SERVICE_OK")
+          PY
+          dbus-run-session -- bash -euo pipefail -c '
+            keyring_env="$V8_AGENT_OS_HOME/keyring.env"
+            printf "%s" "$V8OS_SMOKE_KEYRING_PASSWORD" \
+              | gnome-keyring-daemon --unlock --components=secrets >"$keyring_env"
+            while IFS= read -r entry; do
+              case "$entry" in
+                GNOME_KEYRING_CONTROL=*|SSH_AUTH_SOCK=*) export "$entry" ;;
+              esac
+            done <"$keyring_env"
+            engine_root="/opt/V8 Agent OS/resources/v8os/apps/v8-agent-os-engine"
+            engine_python="$engine_root/.python/bin/python3"
+            test -x "$engine_python"
+            (cd "$engine_root" && PYTHONPATH="$engine_root" "$engine_python" "$V8OS_CREDENTIAL_PROBE")
+            xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
+              --shell-exe "$V8OS_SHELL_EXE" \
+              --timeout-ms 90000 \
+              --startup-budget-ms 90000
+          '
+
+      - name: Print Linux desktop smoke service logs
+        if: failure() && matrix.os == 'linux'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-smoke-${{ matrix.arch }}
+        run: |
+          log_dir="${V8_AGENT_OS_HOME:-$HOME/.v8-agent-os}/logs/cli"
+          if [[ -d "$log_dir" ]]; then
+            while IFS= read -r log_file; do
+              echo "--- $(basename "$log_file") (last 200 lines) ---"
+              tail -n 200 "$log_file"
+            done < <(find "$log_dir" -maxdepth 1 -type f -name '*.log' -print)
+          fi
+
+      - name: Cleanup Linux desktop smoke processes
+        if: always() && matrix.os == 'linux'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-smoke-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          shell_exe="/opt/V8 Agent OS/v8-agent-os-shell"
+          resource_root="/opt/V8 Agent OS/resources/v8os"
+          installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
+          if [[ -f "$installed_cli" ]]; then
+            ELECTRON_RUN_AS_NODE=1 \
+            V8OS_SHELL_PACKAGED=1 \
+            V8_REPO_ROOT="$resource_root" \
+              "$shell_exe" "$installed_cli" stop --all
+          fi
+          pkill -TERM -f '^/opt/V8 Agent OS/v8-agent-os-shell($| )' || true
+          node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \
+            --state-root "$V8_AGENT_OS_HOME"
+
+      - name: Read-only AppImage desktop smoke
+        if: matrix.os == 'linux'
+        shell: bash
+        timeout-minutes: 8
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-appimage-smoke-${{ matrix.arch }}
+          V8OS_DISABLE_UPDATE_CHECK: '1'
+        run: |
+          set -euo pipefail
+          export V8_CHECKPOINT_AES_KEY="$(openssl rand -hex 32)"
+          appimage="$(realpath "$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.AppImage' -print -quit)")"
+          work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
+          rm -rf "$work_root"
+          mkdir -p "$work_root"
+          (cd "$work_root" && "$appimage" --appimage-extract >/dev/null)
+          package_root="$work_root/squashfs-root"
+          app_run="$package_root/AppRun"
+          shell_exe="$package_root/v8-agent-os-shell"
+          resource_root="$package_root/resources/v8os"
+          test -x "$app_run"
+          test -x "$shell_exe"
+          chmod -R a-w "$package_root"
+          dbus-run-session -- xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
+            --shell-exe "$app_run" \
+            --resource-root "$resource_root" \
+              --timeout-ms 90000 \
+              --startup-budget-ms 90000
+
+      - name: Cleanup read-only AppImage desktop smoke
+        if: always() && matrix.os == 'linux'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-appimage-smoke-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
+          package_root="$work_root/squashfs-root"
+          app_run="$package_root/AppRun"
+          shell_exe="$package_root/v8-agent-os-shell"
+          resource_root="$package_root/resources/v8os"
+          installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
+          if [[ -x "$app_run" && -f "$installed_cli" ]]; then
+            ELECTRON_RUN_AS_NODE=1 \
+            V8OS_SHELL_PACKAGED=1 \
+            V8_REPO_ROOT="$resource_root" \
+              "$app_run" "$installed_cli" stop --all
+          fi
+          pkill -TERM -f "^$shell_exe($| )" || true
+          node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \
+            --state-root "$V8_AGENT_OS_HOME"
+          if [[ -d "$package_root" ]]; then chmod -R u+w "$package_root"; fi
+          rm -rf "$work_root"
+
+      - name: Collect Linux desktop smoke diagnostics
+        if: failure() && matrix.os == 'linux'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-smoke-${{ matrix.arch }}
+        run: |
+          diag="desktop-smoke-diagnostics-${{ matrix.id }}"
+          mkdir -p "$diag"
+          for state_root in \
+            "${V8_AGENT_OS_HOME:-$HOME/.v8-agent-os}" \
+            "$RUNNER_TEMP/v8os-appimage-smoke-${{ matrix.arch }}"; do
+            surface="$(basename "$state_root")"
+            [[ ! -d "$state_root/reports/desktop_release" ]] \
+              || cp -R "$state_root/reports/desktop_release" "$diag/reports-$surface"
+            [[ ! -d "$state_root/logs" ]] || cp -R "$state_root/logs" "$diag/logs-$surface"
+          done
+        continue-on-error: true
+
+      - name: Upload Linux desktop smoke diagnostics
+        if: failure() && matrix.os == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
+          path: desktop-smoke-diagnostics-${{ matrix.id }}/**
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+        continue-on-error: true
+
       - name: Installed Windows desktop smoke
         if: matrix.os == 'windows'
         shell: pwsh
         timeout-minutes: 8
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
+          V8OS_WINDOWS_INSTALL_DIR: ${{ runner.temp }}/v8os-windows-install-${{ matrix.arch }}
+          V8OS_DISABLE_UPDATE_CHECK: '1'
         run: |
-          $shellExe = Get-ChildItem "apps/v8-agent-os-shell/dist/release" -Recurse -File -Filter "V8 Agent OS.exe" | Select-Object -First 1
-          if (-not $shellExe) { throw "No unpacked Shell executable found in apps/v8-agent-os-shell/dist/release" }
+          $installers = @(Get-ChildItem "apps/v8-agent-os-shell/dist/release" -File -Filter "*-win-${{ matrix.arch }}.exe")
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows ${{ matrix.arch }} installer, found $($installers.Count)" }
+          $installer = $installers[0]
+          New-Item -ItemType Directory -Force -Path $env:V8OS_WINDOWS_INSTALL_DIR | Out-Null
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$env:V8OS_WINDOWS_INSTALL_DIR") -Wait -PassThru -WindowStyle Hidden
+          if ($install.ExitCode -ne 0) { throw "Windows installer exited with code $($install.ExitCode)" }
+          $shellExe = Get-Item (Join-Path $env:V8OS_WINDOWS_INSTALL_DIR "V8 Agent OS.exe") -ErrorAction Stop
+          $resourceRoot = Join-Path $shellExe.Directory.FullName "resources\v8os"
+          $engineRoot = Join-Path $resourceRoot "apps\v8-agent-os-engine"
+          $enginePython = Join-Path $engineRoot ".python\python.exe"
+          if (-not (Test-Path -LiteralPath $enginePython -PathType Leaf)) { throw "Installed Engine Python is missing: $enginePython" }
+          New-Item -ItemType Directory -Force -Path $env:V8_AGENT_OS_HOME | Out-Null
+          $credentialProbe = Join-Path $env:V8_AGENT_OS_HOME "credential-smoke.py"
+          @'
+          import secrets
+
+          from core.security.credentials import CredentialRefStore, WindowsCredentialBackend
+
+          store = CredentialRefStore(WindowsCredentialBackend())
+          reference = f"cred:v8-system:release-smoke-{secrets.token_hex(12)}"
+          value = secrets.token_urlsafe(32)
+          try:
+              assert store.put(value, reference=reference, namespace="system") == reference
+              assert store.resolve(reference) == value
+              assert store.delete(reference) is True
+              assert store.status(reference).configured is False
+          finally:
+              try:
+                  store.delete(reference)
+              except Exception:
+                  pass
+          print("V8OS_WINDOWS_CREDENTIAL_MANAGER_OK")
+          '@ | Set-Content -LiteralPath $credentialProbe -Encoding utf8
+          $previousPythonPath = $env:PYTHONPATH
+          try {
+            $env:PYTHONPATH = $engineRoot
+            Push-Location $engineRoot
+            & $enginePython -X utf8 $credentialProbe
+            if ($LASTEXITCODE -ne 0) { throw "Windows Credential Manager probe failed with code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+            $env:PYTHONPATH = $previousPythonPath
+            Remove-Item -LiteralPath $credentialProbe -Force -ErrorAction SilentlyContinue
+          }
           node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs --shell-exe "$($shellExe.FullName)"
 
       - name: Print Windows desktop smoke service logs
         if: failure() && matrix.os == 'windows'
         shell: pwsh
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
         run: |
-          $logDir = Join-Path $env:USERPROFILE ".v8-agent-os\logs\cli"
+          $logDir = Join-Path $env:V8_AGENT_OS_HOME "logs\cli"
           if (Test-Path $logDir) {
             Get-ChildItem $logDir -File -Filter "*.log" | ForEach-Object {
               Write-Host "--- $($_.Name) (last 200 lines) ---"
@@ -318,18 +550,47 @@ jobs:
       - name: Cleanup Windows desktop smoke processes
         if: always() && matrix.os == 'windows'
         shell: pwsh
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
+          V8OS_WINDOWS_INSTALL_DIR: ${{ runner.temp }}/v8os-windows-install-${{ matrix.arch }}
         run: |
-          node apps/v8-agent-os-cli/bin/v8os.mjs stop --all
+          $shellExe = Get-Item (Join-Path $env:V8OS_WINDOWS_INSTALL_DIR "V8 Agent OS.exe") -ErrorAction SilentlyContinue
+          if (-not $shellExe) { throw "Installed Windows Shell is missing: $env:V8OS_WINDOWS_INSTALL_DIR" }
+          $resourceRoot = Join-Path $shellExe.Directory.FullName "resources\v8os"
+          $installedCli = Join-Path $resourceRoot "apps\v8-agent-os-cli\bin\v8os.mjs"
+          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) { throw "Installed V8OS CLI is missing: $installedCli" }
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          $env:V8OS_SHELL_PACKAGED = "1"
+          $env:V8_REPO_ROOT = $resourceRoot
+          & $shellExe.FullName $installedCli stop --all
+          $cliExitCode = $LASTEXITCODE
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          Remove-Item Env:V8OS_SHELL_PACKAGED -ErrorAction SilentlyContinue
+          Remove-Item Env:V8_REPO_ROOT -ErrorAction SilentlyContinue
+          if ($cliExitCode -ne 0) { throw "Installed V8OS CLI stop --all exited with code $cliExitCode" }
           Get-Process "V8 Agent OS" -ErrorAction SilentlyContinue | Stop-Process -Force
-        continue-on-error: true
+          $uninstallers = @(Get-ChildItem $env:V8OS_WINDOWS_INSTALL_DIR -File -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue)
+          if ($uninstallers.Count -ne 1) { throw "Expected exactly one NSIS uninstaller, found $($uninstallers.Count)" }
+          $uninstall = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+          if ($uninstall.ExitCode -ne 0) { throw "Windows uninstaller exited with code $($uninstall.ExitCode)" }
+          $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(20)
+          while ((Test-Path -LiteralPath $env:V8OS_WINDOWS_INSTALL_DIR) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
+            Start-Sleep -Milliseconds 250
+          }
+          if (Test-Path -LiteralPath $env:V8OS_WINDOWS_INSTALL_DIR) {
+            throw "Windows uninstaller did not remove the installation directory: $env:V8OS_WINDOWS_INSTALL_DIR"
+          }
+          node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs --state-root "$env:V8_AGENT_OS_HOME"
 
       - name: Collect Windows desktop smoke diagnostics
         if: failure() && matrix.os == 'windows'
         shell: pwsh
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
         run: |
           $diag = "desktop-smoke-diagnostics"
           New-Item -ItemType Directory -Force -Path $diag | Out-Null
-          $v8Home = Join-Path $env:USERPROFILE ".v8-agent-os"
+          $v8Home = $env:V8_AGENT_OS_HOME
           if (Test-Path (Join-Path $v8Home "reports\desktop_release")) {
             Copy-Item (Join-Path $v8Home "reports\desktop_release") (Join-Path $diag "reports") -Recurse -Force
           }
@@ -338,11 +599,116 @@ jobs:
           }
         continue-on-error: true
 
+      - name: Packaged macOS desktop smoke
+        if: matrix.os == 'macos'
+        shell: bash
+        timeout-minutes: 8
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-macos-smoke-${{ matrix.arch }}
+          V8OS_DISABLE_UPDATE_CHECK: '1'
+        run: |
+          set -euo pipefail
+          export V8_CHECKPOINT_AES_KEY="$(openssl rand -hex 32)"
+          dmg_path="$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.dmg' -print -quit)"
+          mount_point="$RUNNER_TEMP/v8os-dmg-${{ matrix.arch }}"
+          test -n "$dmg_path"
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg_path" -mountpoint "$mount_point" -nobrowse -readonly
+          shell_exe="$mount_point/V8 Agent OS.app/Contents/MacOS/V8 Agent OS"
+          resource_root="$mount_point/V8 Agent OS.app/Contents/Resources/v8os"
+          engine_root="$resource_root/apps/v8-agent-os-engine"
+          engine_python="$engine_root/.python/bin/python3"
+          mkdir -p "$V8_AGENT_OS_HOME"
+          credential_probe="$V8_AGENT_OS_HOME/credential-smoke.py"
+          test -x "$shell_exe"
+          test -x "$engine_python"
+          cat >"$credential_probe" <<'PY'
+          import secrets
+
+          from core.security.credentials import CredentialRefStore, MacOSKeychainCredentialBackend
+
+          store = CredentialRefStore(MacOSKeychainCredentialBackend())
+          reference = f"cred:v8-system:release-smoke-{secrets.token_hex(12)}"
+          value = secrets.token_urlsafe(32)
+          try:
+              assert store.put(value, reference=reference, namespace="system") == reference
+              assert store.resolve(reference) == value
+              assert store.delete(reference) is True
+              assert store.status(reference).configured is False
+          finally:
+              try:
+                  store.delete(reference)
+              except Exception:
+                  pass
+          print("V8OS_MACOS_KEYCHAIN_OK")
+          PY
+          (cd "$engine_root" && PYTHONPATH="$engine_root" "$engine_python" "$credential_probe")
+          node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
+            --shell-exe "$shell_exe" \
+              --timeout-ms 90000 \
+              --startup-budget-ms 90000
+
+      - name: Cleanup macOS desktop smoke processes
+        if: always() && matrix.os == 'macos'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-macos-smoke-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mount_point="$RUNNER_TEMP/v8os-dmg-${{ matrix.arch }}"
+          shell_exe="$mount_point/V8 Agent OS.app/Contents/MacOS/V8 Agent OS"
+          resource_root="$mount_point/V8 Agent OS.app/Contents/Resources/v8os"
+          installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
+          if [[ -x "$shell_exe" && -f "$installed_cli" ]]; then
+            ELECTRON_RUN_AS_NODE=1 \
+            V8OS_SHELL_PACKAGED=1 \
+            V8_REPO_ROOT="$resource_root" \
+              "$shell_exe" "$installed_cli" stop --all
+          fi
+          pkill -TERM -x 'V8 Agent OS' || true
+          node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \
+            --state-root "$V8_AGENT_OS_HOME"
+          hdiutil detach "$mount_point" || hdiutil detach "$mount_point" -force
+
+      - name: Print macOS desktop smoke service logs
+        if: failure() && matrix.os == 'macos'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-macos-smoke-${{ matrix.arch }}
+        run: |
+          log_dir="$V8_AGENT_OS_HOME/logs/cli"
+          [[ ! -d "$log_dir" ]] || find "$log_dir" -maxdepth 1 -type f -name '*.log' -print -exec tail -n 200 {} \;
+        continue-on-error: true
+
+      - name: Collect macOS desktop smoke diagnostics
+        if: failure() && matrix.os == 'macos'
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-macos-smoke-${{ matrix.arch }}
+        run: |
+          diag="desktop-smoke-diagnostics-${{ matrix.id }}"
+          mkdir -p "$diag"
+          [[ ! -d "$V8_AGENT_OS_HOME/reports/desktop_release" ]] \
+            || cp -R "$V8_AGENT_OS_HOME/reports/desktop_release" "$diag/reports"
+          [[ ! -d "$V8_AGENT_OS_HOME/logs" ]] || cp -R "$V8_AGENT_OS_HOME/logs" "$diag/logs"
+        continue-on-error: true
+
+      - name: Upload macOS desktop smoke diagnostics
+        if: failure() && matrix.os == 'macos'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
+          path: desktop-smoke-diagnostics-${{ matrix.id }}/**
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+        continue-on-error: true
+
       - name: Upload Windows desktop smoke diagnostics
         if: failure() && matrix.os == 'windows'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: v8os-desktop-smoke-diagnostics
+          name: v8os-desktop-smoke-diagnostics-${{ matrix.id }}
           path: desktop-smoke-diagnostics/**
           if-no-files-found: ignore
           retention-days: 7
@@ -364,7 +730,7 @@ jobs:
           --output-dir apps/v8-agent-os-shell/desktop-release-assets
 
       - name: Upload desktop platform artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: v8os-desktop-${{ matrix.id }}
           path: apps/v8-agent-os-shell/desktop-release-assets/**

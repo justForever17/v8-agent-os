@@ -34,9 +34,11 @@ from .models import (
 router = APIRouter()
 
 _AVAILABILITY_CACHE_TTL_SECONDS = 5.0
+_AVAILABILITY_TIMEOUT_SECONDS = 5.0
 _availability_cache: dict[str, Any] | None = None
 _availability_cache_at = 0.0
 _availability_lock = asyncio.Lock()
+_availability_task: asyncio.Task[dict[str, Any]] | None = None
 
 
 def _rpa_runtime():
@@ -57,7 +59,7 @@ def _capture_verification_required_error():
 
 @router.get("/rpa/availability")
 async def get_rpa_availability():
-    global _availability_cache, _availability_cache_at
+    global _availability_cache, _availability_cache_at, _availability_task
 
     try:
         now = monotonic()
@@ -68,12 +70,32 @@ async def get_rpa_availability():
             now = monotonic()
             if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
                 return deepcopy(_availability_cache)
-            payload = await asyncio.to_thread(_build_rpa_availability)
-            _availability_cache = dict(payload or {})
-            _availability_cache_at = monotonic()
-            return deepcopy(_availability_cache)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            if _availability_task is None:
+                _availability_task = asyncio.create_task(asyncio.to_thread(_build_rpa_availability))
+            task = _availability_task
+
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=_AVAILABILITY_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as error:
+            raise HTTPException(status_code=504, detail="rpa_availability_timeout") from error
+        except Exception as error:
+            async with _availability_lock:
+                if _availability_task is task:
+                    _availability_task = None
+            raise HTTPException(status_code=503, detail="rpa_availability_unavailable") from error
+
+        async with _availability_lock:
+            if _availability_task is task:
+                _availability_cache = dict(payload or {})
+                _availability_cache_at = monotonic()
+                _availability_task = None
+            cached = dict(_availability_cache or payload or {})
+        return deepcopy(cached)
+    except HTTPException:
+        raise
 
 
 @router.get("/rpa/drafts")

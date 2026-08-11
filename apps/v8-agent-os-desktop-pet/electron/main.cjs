@@ -79,6 +79,12 @@ function writeDesktopPetProcessDescriptor(transport) {
     pid: process.pid,
     managedByShell: MANAGED_BY_SHELL,
     startedAt: DESKTOP_PET_STARTED_AT,
+    ...(app.isPackaged ? {
+      packaged: true,
+      runtimeKind: 'desktop-pet',
+      executablePath: path.resolve(process.execPath),
+      repoRoot: path.resolve(String(process.env.V8_REPO_ROOT || '')),
+    } : {}),
   };
   if (transport?.mode === 'production') {
     descriptor.serverPid = transport.serverPid;
@@ -182,14 +188,21 @@ function startBundledServer() {
 
   const serverPath = path.join(__dirname, '..', 'dist', 'server.cjs');
   const instanceId = crypto.randomUUID();
+  const serverRuntimeIsElectron = process.env.V8_DESKTOP_NODE_IS_ELECTRON === '1';
+  const serverEnv = {
+    ...process.env,
+    NODE_ENV: 'production',
+    V8_DESKTOP_PORT: String(REQUESTED_LOCAL_SERVER_PORT),
+    V8_DESKTOP_SERVER_INSTANCE_ID: instanceId,
+  };
+  if (serverRuntimeIsElectron) {
+    serverEnv.ELECTRON_RUN_AS_NODE = '1';
+  } else {
+    delete serverEnv.ELECTRON_RUN_AS_NODE;
+  }
   const child = spawn(process.env.V8_DESKTOP_NODE || 'node', [serverPath], {
     cwd: path.join(__dirname, '..'),
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      V8_DESKTOP_PORT: String(REQUESTED_LOCAL_SERVER_PORT),
-      V8_DESKTOP_SERVER_INSTANCE_ID: instanceId,
-    },
+    env: serverEnv,
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   });
@@ -836,6 +849,11 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', showOrFocusWindow);
+  app.on('before-quit', (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    safeShutdown({ source: 'application_quit' });
+  });
   app.whenReady().then(() => {
     app.setAppUserModelId('V8OS.CyberCoreDesktop');
     if (!DEVELOPMENT_TRANSPORT) {

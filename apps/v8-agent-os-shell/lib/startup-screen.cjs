@@ -9,6 +9,8 @@ function escapeHtml(value) {
 
 function buildStartupHtml(options = {}) {
   const markUrl = escapeHtml(options.markUrl || "");
+  const detail = escapeHtml(options.detail || "");
+  const actionLabel = escapeHtml(options.actionLabel || "");
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -41,7 +43,7 @@ function buildStartupHtml(options = {}) {
     .brand-stage {
       display: grid;
       justify-items: center;
-      gap: 32px;
+      gap: 24px;
       padding: 48px;
       -webkit-app-region: drag;
     }
@@ -85,6 +87,32 @@ function buildStartupHtml(options = {}) {
       user-select: none;
       will-change: background-position;
     }
+    .startup-detail {
+      max-width: min(76vw, 680px);
+      margin: -8px 0 0;
+      color: #5f6b7a;
+      font-size: 14px;
+      font-weight: 520;
+      line-height: 1.6;
+      text-align: center;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+    .startup-action {
+      min-height: 38px;
+      padding: 0 18px;
+      border: 1px solid rgba(100, 116, 139, 0.34);
+      border-radius: 6px;
+      color: #263244;
+      background: rgba(255, 255, 255, 0.82);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+    .startup-action:hover { background: #ffffff; }
+    .startup-action:focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; }
     @keyframes text-shine {
       from { background-position: -140% 0, 0 0; }
       to { background-position: 140% 0, 0 0; }
@@ -100,6 +128,13 @@ function buildStartupHtml(options = {}) {
         color: #f8fafc;
       }
       .product-mark { filter: drop-shadow(0 28px 64px rgba(255, 255, 255, 0.12)); }
+      .startup-detail { color: #aeb8c8; }
+      .startup-action {
+        border-color: rgba(148, 163, 184, 0.35);
+        color: #e5eaf2;
+        background: rgba(30, 41, 59, 0.82);
+      }
+      .startup-action:hover { background: #253147; }
     }
     @media (prefers-reduced-motion: reduce) {
       .brand-text {
@@ -114,6 +149,8 @@ function buildStartupHtml(options = {}) {
   <main class="brand-stage" aria-label="V8 Agent OS 正在启动">
     ${markUrl ? `<img class="product-mark" alt="" src="${markUrl}" />` : ""}
     <div class="brand-text">V8 Agent OS</div>
+    ${detail ? `<p class="startup-detail" role="status">${detail}</p>` : ""}
+    ${actionLabel ? `<button class="startup-action" type="button" onclick="window.v8osShell?.retryStartup()">${actionLabel}</button>` : ""}
   </main>
 </body>
 </html>`;

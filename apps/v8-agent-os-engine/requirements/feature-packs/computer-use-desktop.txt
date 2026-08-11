@@ -1,5 +1,5 @@
-mss
-pywinauto; sys_platform == "win32"
+mss==10.2.0
+pywinauto==0.6.9; sys_platform == "win32"
 pycaw==20251023; sys_platform == "win32"
-av
-aiortc
+av==17.1.0
+aiortc==1.15.0

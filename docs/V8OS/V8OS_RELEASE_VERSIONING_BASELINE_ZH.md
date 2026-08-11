@@ -1,6 +1,6 @@
 # V8OS 发布版本管理基线
 
-更新时间：2026-08-08
+更新时间：2026-08-10
 
 ## 目标
 
@@ -30,7 +30,7 @@
 - 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview reusable workflow；每个平台只负责构建并上传本次 workflow run 的工件，不直接创建 GitHub Release。
 - schema 2 当前把 Desktop 及六个桌面目标全部标记为 `required`。统一发布只有在这些目标和 Android 都成功后才可进入最终 fan-in Release。
 - 最终 Release 上传 Windows 安装包、macOS DMG、Linux AppImage/DEB、Android APK 和统一的 `SHA256SUMS.txt`。`RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json` 是 CI 诊断证据，只保留在 GitHub Actions artifact，不进入普通用户的 Release 下载资产列表。
-- 尚未签名，没有自动更新，不宣传为 stable。
+- 尚未签名，不宣传为 stable。客户端可自动探测统一 Preview Release，并由用户手动进入受控下载页；没有自动下载或静默安装。
 
 ### `desktop-stable`
 
@@ -98,7 +98,7 @@ v8-os-desktop-vYYYY.MM.DD.N
 v8-os-phone-vYYYY.MM.DD.N
 ```
 
-兼容入口自首个成功的统一 Release 起保留两个成功统一发布周期，随后按专门的废弃变更移除。周期按 GitHub 上实际成功的统一 Release 计数，不在准备版本时静默递减；旧 `desktop-v*` / `phone-v*` 仅作历史记录，不重新启用。
+兼容入口自首个成功的统一 Release 起保留两个成功统一发布周期，随后按专门的废弃变更移除。周期按 GitHub 上实际成功的统一 Release 计数，不在准备版本时静默递减；旧 `desktop-v*` / `phone-v*` 仅作历史记录，不重新启用。截至 `v8-os-v2026.08.09.3` 只完成第 1 个成功周期，且该版本已在 Ubuntu 24.04 实机暴露安装后启动故障；修复版完成统一发布和 Ubuntu 实机安装启动验收前，不得提前移除旧产品 tag 兼容入口。
 
 准备统一版本时，默认命令是 dry-run：
 
@@ -112,7 +112,7 @@ node scripts/release/prepare-release.mjs --version 2026.08.08.1 --channel previe
 node scripts/release/prepare-release.mjs --version 2026.08.08.1 --channel preview --apply
 ```
 
-脚本会同步更新 schema 2 manifest 和全部已启用产品的版本投影，只创建 `v8-os-v...` 统一 tag。当前治理入口只接受 `preview`；在签名、自动更新和 stable 实机安装门禁落地前，manifest、prepare 与 plan 都会拒绝 `stable`，防止 unsigned preview 被发布为正式 latest。
+脚本会同步更新 schema 2 manifest 和全部已启用产品的版本投影，只创建 `v8-os-v...` 统一 tag。当前治理入口只接受 `preview`；在签名、受控下载/安装和 stable 实机安装门禁落地前，manifest、prepare 与 plan 都会拒绝 `stable`，防止 unsigned preview 被发布为正式 latest。
 
 脚本不会自动 push。推送 tag 前应先完成对应通道的验收。
 
@@ -163,7 +163,13 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 7. 产物资源在 Shell/Web 与 Phone 可访问。
 8. `SHA256SUMS.txt` 与发布资产同批生成。
 9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
-10. Windows 可运行 CI 安装 smoke；macOS/Linux 的构建、包内布局与运行时依赖可在 CI 验证，但 GUI、TCC/辅助功能、X11/Wayland 与窗口管理器行为必须在同平台实体主机另行验收，不能被 CI 构建成功替代。
+10. Windows 必须由 NSIS 静默安装到一次性目录后启动安装树应用，验证 Shell、Engine/Admin/Web、桌宠和清理；该证据仍不替代用户真机的安装器交互与系统安全提示。Linux x64/arm64 必须把 DEB 安装到 root-owned `/opt/V8 Agent OS`，再以普通 runner 用户在独立 D-Bus、Secret Service 与 Xvfb 会话中启动；同一构建还必须解包 AppImage、把整个包树改成只读并完成相同服务与桌宠 smoke。macOS 必须以只读方式挂载 DMG，在挂载树内完成 Keychain round-trip 与打包应用 smoke。四种格式的 Engine/Admin/Web 必须在 90 秒内全部就绪，Shell 和桌宠进程必须持续存活并建立受鉴权控制连接。TCC/辅助功能、真实 X11/Wayland、托盘、窗口管理器及安装器交互必须在同平台实体主机另行验收，不能被 CI smoke 替代。
+
+### Linux DEB 非 root 启动门禁与跨平台凭据合同
+
+Admin/Web 的 Next standalone 静态资源必须在 production build 完成后预置；安装包运行时只验证 `server.js`、`.next/static` 与 `public` 完整性，不得删除、创建或复制 `/opt`、AppImage 挂载目录或 macOS app bundle 内的文件。Shell 和桌宠所需 launcher 必须作为显式 package resources 进入布局门禁。任一核心服务在 spawn 后立即退出时，CLI 不得写入“已启动”记录；Shell 应尽快显示失败服务、阶段和 `~/.v8-agent-os/logs/cli/<file>` 日志引用，并允许用户重试，不能继续显示与正常启动相同的空白品牌页直到超时。
+
+凭据存储按宿主平台固定选择：Windows Credential Manager、Linux Freedesktop Secret Service、macOS Keychain。禁止自动选择明文/文件型 keyring，也禁止在安全存储不可用时把密钥回退到 `config.json`。Linux DEB 声明 `gnome-keyring` 与登录解锁集成依赖；AppImage 使用者必须自行提供可用的 Secret Service 实现和用户 D-Bus 会话。Linux/macOS 原生调用由短命 helper 承载并受 6 秒硬超时约束，密钥只经匿名 stdin/stdout 传输；写入或删除超时必须标记为结果不确定，携带原 reference 供后续对账，不能偷偷生成另一条引用。CI 使用一次性凭据执行 put/read/delete，不把测试密码、keyring 数据或环境输出带入 artifact。安全存储缺失属于可诊断的启动失败，不得伪装成模型或 checkpoint 故障。
 
 ### Linux pyatspi 兼容性技术债登记
 
@@ -224,7 +230,7 @@ Phone 发版前必须确认：
 在对应 workflow 和验收完成前，不得宣称：
 
 - 桌面版已进入 stable。
-- 已有自动更新。
+- 已有受签名保护的自动下载或静默安装。
 - 已支持系统服务安装。
 - TUI 已可替代 Admin。
 - 极简二进制已能在 ESP32 级设备运行完整 V8OS。

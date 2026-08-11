@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
+import os
 import re
 import sys
+import time
+import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,62 +21,247 @@ from runtimes.rpa.keyword_contract import bridge_keyword_issues, is_supported_br
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
 
 
+_ROBOT_CHILD_LAUNCHER = (
+    "import runpy,sys; "
+    "target,engine_root=sys.argv[1:3]; "
+    "sys.path.insert(0,target); "
+    "sys.path.insert(1,engine_root); "
+    "sys.argv=['robot',*sys.argv[3:]]; "
+    "runpy.run_module('robot',run_name='__main__')"
+)
+_RPA_AVAILABILITY_CHILD_LAUNCHER = r"""
+import importlib
+import json
+import pathlib
+import site
+import sys
+
+target = pathlib.Path(sys.argv[1]).resolve()
+site.addsitedir(str(target))
+if str(target) in sys.path:
+    sys.path.remove(str(target))
+sys.path.insert(0, str(target))
+
+def probe(name):
+    try:
+        module = importlib.import_module(name)
+        spec = getattr(module, "__spec__", None)
+        candidates = []
+        for value in (getattr(module, "__file__", None), getattr(spec, "origin", None)):
+            if value and value not in {"built-in", "frozen"}:
+                candidates.append(pathlib.Path(str(value)).resolve())
+        candidates.extend(
+            pathlib.Path(str(value)).resolve()
+            for value in list(getattr(spec, "submodule_search_locations", None) or [])
+        )
+        in_target = any(candidate == target or target in candidate.parents for candidate in candidates)
+        return {
+            "detected": True,
+            "importable": in_target,
+            "origin": str(candidates[0]) if candidates else None,
+            "error": None if in_target else "module_origin_outside_feature_pack",
+        }
+    except Exception as error:
+        return {
+            "detected": False,
+            "importable": False,
+            "origin": None,
+            "error": type(error).__name__,
+        }
+
+names = ["robot", "RPA", "RPA.Windows", "RPA.Browser.Selenium", "RPA.Excel.Files"]
+print("V8OS_RPA_AVAILABILITY=" + json.dumps({name: probe(name) for name in names}))
+"""
+_RPA_TARGET_UNRESOLVED = object()
+_RPA_AVAILABILITY_PROBE_TIMEOUT_SECONDS = 8
+_RPA_AVAILABILITY_FAILURE_RETRY_SECONDS = 5
+_ROBOT_CHILD_ENV_ALLOWLIST = frozenset({
+    "APPDATA",
+    "COMSPEC",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LANGUAGE",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROGRAMDATA",
+    "SESSIONNAME",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "USERNAME",
+    "USERPROFILE",
+    "V8_AGENT_OS_HOME",
+    "WAYLAND_DISPLAY",
+    "WINDIR",
+    "XAUTHORITY",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+})
+
+
 class RobotFrameworkAdapter:
     def __init__(self, *, script_store: RPAScriptStore = rpa_script_store) -> None:
         self.script_store = script_store
         self.app_profiles = ComputerUseAppProfiles()
+        self._rpa_target_cache: object | Path | None = _RPA_TARGET_UNRESOLVED
+        self._availability_cache: Dict[str, Any] | None = None
+        self._availability_cache_expires_at: float | None = None
+
+    @staticmethod
+    def _engine_root() -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def _rpa_target_dir(self) -> Path | None:
+        """Resolve only the receipt-governed RPA target for this Engine boot."""
+
+        if self._rpa_target_cache is not _RPA_TARGET_UNRESOLVED:
+            return self._rpa_target_cache if isinstance(self._rpa_target_cache, Path) else None
+
+        try:
+            from core.runtime.feature_packs import build_feature_pack_statuses
+            from core.storage import storage
+
+            status = next(
+                item
+                for item in build_feature_pack_statuses(storage.get_runtime_registry_config())
+                if item.get("id") == "rpa_automation"
+            )
+        except Exception:
+            self._rpa_target_cache = None
+            return None
+        if status.get("status") != "installed" or status.get("restartRequired"):
+            self._rpa_target_cache = None
+            return None
+        target_value = str(status.get("targetDir") or "").strip()
+        if not target_value:
+            self._rpa_target_cache = None
+            return None
+        target = Path(target_value).expanduser().resolve(strict=False)
+        self._rpa_target_cache = target if target.is_dir() else None
+        return self._rpa_target_cache
+
+    def _require_rpa_target_dir(self) -> Path:
+        target = self._rpa_target_dir()
+        if target is None:
+            raise RuntimeError("RPA 能力包尚未安装完成或仍需重启 Engine。")
+        return target
+
+    def _robot_child_environment(self, target: Path) -> Dict[str, str]:
+        environment: Dict[str, str] = {}
+        for key, value in os.environ.items():
+            normalized = str(key or "")
+            upper = normalized.upper()
+            if upper not in _ROBOT_CHILD_ENV_ALLOWLIST and not upper.startswith("LC_"):
+                continue
+            environment[normalized] = str(value)
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["V8_AGENT_OS_RPA_TARGET"] = str(target)
+        return environment
 
     def is_available(self) -> bool:
-        return bool(self._probe_module("robot").get("importable"))
+        return bool(self.availability().get("robotFramework"))
 
     def rpa_framework_available(self) -> bool:
-        return bool(self._probe_module("RPA").get("importable"))
+        return bool(self.availability().get("rpaFramework"))
 
-    def _probe_module(self, module_name: str) -> Dict[str, Any]:
-        spec = None
+    def _probe_availability_in_child(self, target: Path) -> Dict[str, Dict[str, Any]]:
         try:
-            spec = importlib.util.find_spec(module_name)
-        except ModuleNotFoundError as exc:
-            return {
-                "detected": False,
-                "importable": False,
-                "origin": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        if spec is None:
-            return {
-                "detected": False,
-                "importable": False,
-                "origin": None,
-                "error": None,
-            }
-        origin = getattr(spec, "origin", None)
-        try:
-            module = importlib.import_module(module_name)
-            origin = getattr(module, "__file__", origin)
-            return {
-                "detected": True,
-                "importable": True,
-                "origin": origin,
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "detected": True,
-                "importable": False,
-                "origin": origin,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            completed = run_windowless(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    _RPA_AVAILABILITY_CHILD_LAUNCHER,
+                    str(target),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_RPA_AVAILABILITY_PROBE_TIMEOUT_SECONDS,
+                cwd=str(self._engine_root()),
+                env=self._robot_child_environment(target),
+            )
+        except Exception as error:
+            raise RuntimeError(f"rpa_availability_probe_failed:{type(error).__name__}") from error
+        if completed.returncode != 0:
+            raise RuntimeError("rpa_availability_probe_failed:nonzero_exit")
+        marker = "V8OS_RPA_AVAILABILITY="
+        payload_line = next(
+            (line[len(marker):] for line in reversed((completed.stdout or "").splitlines()) if line.startswith(marker)),
+            None,
+        )
+        if payload_line is None:
+            raise RuntimeError("rpa_availability_probe_failed:missing_payload")
+        payload = json.loads(payload_line)
+        if not isinstance(payload, dict):
+            raise RuntimeError("rpa_availability_probe_failed:invalid_payload")
+        return {str(name): dict(detail or {}) for name, detail in payload.items()}
 
     def availability(self) -> Dict[str, Any]:
-        robot_detail = self._probe_module("robot")
-        rpa_detail = self._probe_module("RPA")
+        if self._availability_cache is not None:
+            if self._availability_cache_expires_at is None or time.monotonic() < self._availability_cache_expires_at:
+                return deepcopy(self._availability_cache)
+            self._availability_cache = None
+            self._availability_cache_expires_at = None
+        target = self._rpa_target_dir()
+        if target is None:
+            unavailable = {
+                "detected": False,
+                "importable": False,
+                "origin": None,
+                "error": "rpa_feature_pack_not_ready",
+            }
+            library_names = (
+                "RPA.Windows",
+                "RPA.Browser.Selenium",
+                "RPA.Excel.Files",
+            )
+            payload = {
+                "robotFramework": False,
+                "robotFrameworkDetail": unavailable,
+                "rpaFramework": False,
+                "rpaFrameworkDetail": unavailable,
+                "libraries": {name: False for name in library_names},
+                "libraryDetails": {name: unavailable for name in library_names},
+            }
+            self._availability_cache = payload
+            self._availability_cache_expires_at = None
+            return deepcopy(payload)
+        probe_failed = False
+        try:
+            details = self._probe_availability_in_child(target)
+        except Exception as error:
+            probe_failed = True
+            unavailable = {
+                "detected": False,
+                "importable": False,
+                "origin": None,
+                "error": str(error),
+            }
+            details = {
+                name: unavailable
+                for name in ("robot", "RPA", "RPA.Windows", "RPA.Browser.Selenium", "RPA.Excel.Files")
+            }
+        robot_detail = details.get("robot") or {}
+        rpa_detail = details.get("RPA") or {}
         library_details = {
-            "RPA.Windows": self._probe_module("RPA.Windows"),
-            "RPA.Browser.Selenium": self._probe_module("RPA.Browser.Selenium"),
-            "RPA.Excel.Files": self._probe_module("RPA.Excel.Files"),
+            name: details.get(name) or {}
+            for name in ("RPA.Windows", "RPA.Browser.Selenium", "RPA.Excel.Files")
         }
-        return {
+        payload = {
             "robotFramework": bool(robot_detail.get("importable")),
             "robotFrameworkDetail": robot_detail,
             "rpaFramework": bool(rpa_detail.get("importable")),
@@ -85,6 +272,13 @@ class RobotFrameworkAdapter:
             },
             "libraryDetails": library_details,
         }
+        self._availability_cache = payload
+        self._availability_cache_expires_at = (
+            time.monotonic() + _RPA_AVAILABILITY_FAILURE_RETRY_SECONDS
+            if probe_failed
+            else None
+        )
+        return deepcopy(payload)
 
     def _safe_name(self, value: str, fallback: str = "rpa_workflow") -> str:
         normalized = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(value or "").strip())
@@ -1048,12 +1242,14 @@ class RobotFrameworkAdapter:
             output_dir=dry_run_output_dir,
             dry_run=True,
         )
+        target = self._require_rpa_target_dir()
         completed = run_windowless(
             command,
             capture_output=True,
             text=True,
             timeout=120,
             cwd=str(Path(__file__).resolve().parents[2]),
+            env=self._robot_child_environment(target),
         )
         error = None
         if completed.returncode != 0:
@@ -1129,10 +1325,14 @@ class RobotFrameworkAdapter:
         dry_run: bool = False,
     ) -> List[str]:
         target_output_dir = Path(output_dir) if output_dir is not None else Path(robot_file).with_suffix("")
+        target = self._require_rpa_target_dir()
         command: List[str] = [
             sys.executable,
-            "-m",
-            "robot",
+            "-I",
+            "-c",
+            _ROBOT_CHILD_LAUNCHER,
+            str(target),
+            str(self._engine_root()),
             "--consolecolors",
             "off",
             "--outputdir",
@@ -1178,6 +1378,17 @@ class RobotFrameworkAdapter:
         robot_path = Path(robot_file)
         if not robot_path.exists():
             raise ValueError(f"未找到 robot 文件: {robot_path}")
+        with tempfile.TemporaryDirectory(prefix="v8os-rpa-existing-dryrun-") as temporary:
+            validation = self.validate_robot_file(
+                robot_file=robot_path,
+                variables=variables,
+                output_dir=Path(temporary),
+            )
+        if not validation.get("passed"):
+            raise ValueError(
+                "RPA 流程依赖校验失败。受管能力包支持 Browser.Selenium、Excel.Files"
+                "，Windows 另支持 RPA.Windows；请移除或另行治理未包含的 RPA 库。"
+            )
         command = self.build_command(robot_file=robot_path, variables=variables, output_dir=output_dir)
         return {
             "available": self.availability(),
@@ -1194,12 +1405,14 @@ class RobotFrameworkAdapter:
     ) -> Dict[str, Any]:
         if not self.is_available():
             raise RuntimeError("当前环境未安装 Robot Framework，无法执行 .robot 流程。")
+        target = self._require_rpa_target_dir()
         completed = run_windowless(
             command,
             capture_output=True,
             text=True,
             timeout=max(1, int(timeout_ms / 1000)),
-            cwd=cwd,
+            cwd=cwd or str(self._engine_root()),
+            env=self._robot_child_environment(target),
         )
         return {
             "returncode": int(completed.returncode),

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { verifyServiceAuth } from "@/lib/service-auth";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { projectPublicRpaAvailability } from "@/lib/server/rpa-public-surface.mjs";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -39,10 +40,19 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
             const payload = await req.json().catch(() => ({}));
             init.body = JSON.stringify(payload);
         }
+        const isAvailability = method === "GET" && segments?.length === 1 && segments[0] === "availability";
+        if (isAvailability) init.signal = AbortSignal.timeout(7_000);
         const res = await fetch(target, init);
         const data = await res.json().catch(() => ({}));
-        return NextResponse.json(data, { status: res.status });
+        const publicData = isAvailability
+            ? projectPublicRpaAvailability(data)
+            : data;
+        return NextResponse.json(publicData, { status: res.status });
     } catch (error) {
+        if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+            console.warn("[Admin RPA Proxy] availability timed out");
+            return NextResponse.json({ error: "rpa_availability_timeout" }, { status: 504 });
+        }
         console.error("[Admin RPA Proxy] failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }

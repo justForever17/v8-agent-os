@@ -3980,6 +3980,7 @@ export default function ChatClient() {
                                 ) : (
                                     <div className="flex justify-center">
                                         <Button
+                                            data-v8os-start-task="true"
                                             type="button"
                                             size="lg"
                                             className="rounded-2xl px-6"

@@ -10,6 +10,7 @@ import "./globals.css";
 import "@v8/product-ui/styles.css";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
+import { SurfaceReadinessMarker } from "@/components/SurfaceReadinessMarker";
 import { AppContextMenu } from "@/components/ui/AppContextMenu";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { warmDesktopLiveBridge } from "@/lib/server/desktop-live-bridge";
@@ -65,6 +66,7 @@ export default async function RootLayout({
             storageKey={PRODUCT_THEME_STORAGE_KEY}
             disableTransitionOnChange
           >
+            <SurfaceReadinessMarker />
             <AppContextMenu />
             <div className="min-h-screen flex flex-col">
               <main className="flex-1">{children}</main>

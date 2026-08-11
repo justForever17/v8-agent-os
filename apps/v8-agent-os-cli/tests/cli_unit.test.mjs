@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -15,11 +16,18 @@ import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import {
+  cleanupFailedRuntimeHandoff,
+  observeEarlyProcessExit,
   orderedManagedStopPids,
+  packagedRuntimeDescriptorMatches,
   resolveManagedComponentIdentity,
+  runWindowsProcessProbe,
+  spawnManagedChild,
+  waitForRuntimeComponentHandoff,
   verifiedComponentPortOwner,
   verifiedManagedComponentPid,
   verifiedRuntimeComponentPid,
+  WINDOWS_PROCESS_PROBE_TIMEOUT_MS,
 } from "../src/process_manager.mjs";
 import { processRecordMatchesIdentity } from "../src/process_state.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
@@ -35,7 +43,7 @@ import {
   waitForShellControlDescriptor,
 } from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
-import { main as runCli } from "../src/cli.mjs";
+import { commandResultsHaveFailures, main as runCli } from "../src/cli.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
@@ -138,6 +146,66 @@ test("port owner probe is safe for invalid or unopened ports", () => {
   assert.deepEqual(getPortOwners(0), []);
 });
 
+test("CLI lifecycle result contracts distinguish idempotent success from actionable failure", () => {
+  assert.equal(commandResultsHaveFailures("start", [
+    { status: "started" },
+    { status: "already_running" },
+  ]), false);
+  assert.equal(commandResultsHaveFailures("start", [{ status: "startup_exit" }]), true);
+  assert.equal(commandResultsHaveFailures("start", [{ status: "identity_unavailable" }]), true);
+  assert.equal(commandResultsHaveFailures("stop", [
+    { status: "stopped" },
+    { status: "not_managed" },
+    { status: "stale_state_removed" },
+  ]), false);
+  assert.equal(commandResultsHaveFailures("stop", [{ status: "stop_failed" }]), true);
+  assert.equal(commandResultsHaveFailures("stop", [{ status: "stop_conflict" }]), true);
+});
+
+test("CLI prints structured start failures before exiting nonzero", (t) => {
+  const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-start-failure-repo-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-start-failure-state-"));
+  t.after(() => {
+    fs.rmSync(fakeRepo, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  });
+  const cliUrl = new URL("../src/cli.mjs", import.meta.url).href;
+  const child = spawnSync(process.execPath, [
+    "--input-type=module",
+    "-e",
+    `const { main } = await import(${JSON.stringify(cliUrl)}); await main(["start", "--only", "shell", "--mode", "start", "--json"]);`,
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      V8_REPO_ROOT: fakeRepo,
+      V8_SHELL_DIR: path.join(fakeRepo, "apps", "v8-agent-os-shell"),
+      V8_AGENT_OS_HOME: stateRoot,
+    },
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  assert.equal(child.status, 1, child.stderr);
+  assert.equal(JSON.parse(child.stdout)[0].status, "startup_exit");
+});
+
+test("Windows process ownership probes pass the governed cold-start timeout to the runner", async () => {
+  assert.ok(WINDOWS_PROCESS_PROBE_TIMEOUT_MS >= 10_000);
+  const calls = [];
+  const result = await runWindowsProcessProbe("Get-CimInstance Win32_Process", async (...args) => {
+    calls.push(args);
+    return { status: 0, stdout: '{"items":[]}', stderr: "" };
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "powershell.exe");
+  assert.deepEqual(calls[0][1].slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
+  assert.equal(calls[0][1][3], "Get-CimInstance Win32_Process");
+  assert.equal(calls[0][2].timeoutMs, WINDOWS_PROCESS_PROBE_TIMEOUT_MS);
+});
+
 test("managed process identity rejects reused PIDs for every preview component", () => {
   const components = ["engine", "admin", "web", "shell", "desktop-pet"];
   for (const [index, id] of components.entries()) {
@@ -199,6 +267,147 @@ test("Shell shutdown stops the verified Electron browser before its launcher", (
     recordPid: 3303,
     verifiedPids: [3303],
   }, { killPid: 4404 }), [3303, 4404]);
+});
+
+test("managed startup observes an immediate child exit before recording success", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  setImmediate(() => {
+    child.exitCode = 1;
+    child.emit("exit", 1, null);
+  });
+
+  assert.deepEqual(await observeEarlyProcessExit(child, 100), {
+    exited: true,
+    exitCode: 1,
+    signal: null,
+  });
+
+  const running = new EventEmitter();
+  running.exitCode = null;
+  running.signalCode = null;
+  assert.deepEqual(await observeEarlyProcessExit(running, 5), {
+    exited: false,
+    exitCode: null,
+    signal: null,
+  });
+});
+
+test("managed spawn failures retain structured stage and log references", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-spawn-failure-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const logs = {
+    out: path.join(root, "engine.out.log"),
+    err: path.join(root, "engine.err.log"),
+  };
+
+  const result = await spawnManagedChild("engine", {
+    command: path.join(root, "missing-engine-runtime"),
+    args: [],
+    cwd: root,
+    env: {},
+  }, logs);
+
+  assert.equal(result.child, null);
+  assert.equal(result.failure?.id, "engine");
+  assert.equal(result.failure?.status, "spawn_failed");
+  assert.equal(result.failure?.stage, "spawn");
+  assert.equal(result.failure?.errorCode, "ENOENT");
+  assert.equal(result.failure?.logOut, logs.out);
+  assert.equal(result.failure?.logErr, logs.err);
+  assert.equal(fs.existsSync(logs.out), true);
+  assert.equal(fs.existsSync(logs.err), true);
+});
+
+test("desktop pet declares its intentional detached launcher handoff", () => {
+  assert.equal(COMPONENTS["desktop-pet"].detachedHandoff, true);
+  assert.equal(COMPONENTS.shell.detachedHandoff, undefined);
+});
+
+test("desktop pet startup waits for a verified runtime handoff instead of recording the launcher", async () => {
+  const pid = 43123;
+  const child = new EventEmitter();
+  child.exitCode = 0;
+  child.signalCode = null;
+  let reads = 0;
+  const mainEntry = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs");
+  const receiptContract = { componentId: "desktop-pet", nonce: "delayed-unit", filePath: "ignored" };
+  let receiptReads = 0;
+  const result = await waitForRuntimeComponentHandoff("desktop-pet", child, {
+    timeoutMs: 50,
+    pollMs: 1,
+    readRuntimeDescriptor: () => (++reads < 2 ? null : { pid, managedByShell: true, descriptorId: "pet-unit" }),
+    readProcessDescriptor: async () => ({
+      pid,
+      executablePath: process.execPath,
+      commandLine: `${process.execPath} ${mainEntry}`,
+    }),
+    pidIsAlive: () => true,
+    receiptContract,
+    readReceipt: () => (++receiptReads < 3 ? null : { pid }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.pid, pid);
+  assert.ok(receiptReads >= 3, "descriptor may arrive before the nonce receipt");
+
+  const failed = await waitForRuntimeComponentHandoff("desktop-pet", {
+    exitCode: 1,
+    signalCode: null,
+  }, {
+    timeoutMs: 20,
+    pollMs: 1,
+    readRuntimeDescriptor: () => null,
+  });
+  assert.deepEqual(failed, {
+    ok: false,
+    reason: "launcher_exited",
+    exitCode: 1,
+    signal: null,
+  });
+});
+
+test("desktop pet launcher writes a nonce-bound runtime handoff receipt", () => {
+  const launcherSource = fs.readFileSync(path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "electron-launcher.mjs"), "utf8");
+  const managerSource = fs.readFileSync(path.join(cliRoot, "src", "process_manager.mjs"), "utf8");
+  assert.match(launcherSource, /V8OS_RUNTIME_HANDOFF_PATH/);
+  assert.match(launcherSource, /V8OS_RUNTIME_HANDOFF_NONCE/);
+  assert.match(launcherSource, /desktop-pet-\$\{nonce\}\.json/);
+  assert.match(managerSource, /runtime_handoff_receipt_mismatch/);
+  assert.match(managerSource, /cleanupFailedRuntimeHandoff/);
+});
+
+test("failed desktop pet handoff terminates verified runtime and launcher PIDs", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-pet-handoff-cleanup-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const contract = { componentId: "desktop-pet", nonce: "unit-nonce", filePath: path.join(root, "receipt.json") };
+  fs.writeFileSync(contract.filePath, "{}", "utf8");
+  const killed = [];
+  const removed = [];
+
+  await cleanupFailedRuntimeHandoff("desktop-pet", {
+    pid: 44002,
+    exitCode: null,
+    signalCode: null,
+  }, contract, {
+    readReceipt: () => null,
+    candidatePid: 44001,
+    pidIsAlive: () => true,
+    readProcessDescriptor: async (pid) => ({ pid }),
+    verifyRuntimePid: (_componentId, descriptor) => descriptor.pid,
+    killPid: async (pid, options) => {
+      killed.push({ pid, options });
+      return { ok: true };
+    },
+    removeRuntimeDescriptor: (componentId, pid) => removed.push({ componentId, pid }),
+  });
+
+  assert.deepEqual(killed, [
+    { pid: 44001, options: { tree: true } },
+    { pid: 44002, options: { tree: true } },
+  ]);
+  assert.deepEqual(removed, [{ componentId: "desktop-pet", pid: 44001 }]);
+  assert.equal(fs.existsSync(contract.filePath), false);
 });
 
 test("independent CLI hosts serialize scoped process-state mutations", async () => {
@@ -357,7 +566,7 @@ test("a process-state commit failure terminates the spawned component without re
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-orphan-rollback-state-"));
   const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-orphan-rollback-repo-"));
   const markerPath = path.join(stateRoot, "spawned-pid.txt");
-  const launcherPath = path.join(fakeRepo, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs");
+  const launcherPath = path.join(fakeRepo, "apps", "v8-agent-os-shell", "scripts", "launch-shell.mjs");
   const blockerQueue = path.join(stateRoot, "runtime", "cli", "leases", "state-write.lease.queue");
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
   fs.mkdirSync(blockerQueue, { recursive: true });
@@ -377,12 +586,12 @@ test("a process-state commit failure terminates the spawned component without re
     `const fs = await import("node:fs");`,
     `const { startComponents } = await import(${JSON.stringify(processManagerUrl)});`,
     `let errorMessage = "";`,
-    `try { await startComponents(["desktop-pet"], { mode: "start" }); } catch (error) { errorMessage = error?.message || String(error); }`,
+    `try { await startComponents(["shell"], { mode: "start" }); } catch (error) { errorMessage = error?.message || String(error); }`,
     `const pid = Number(fs.readFileSync(process.env.V8_TEST_CHILD_PID_PATH, "utf8"));`,
     `await new Promise((resolve) => setTimeout(resolve, 100));`,
     `let alive = true; try { process.kill(pid, 0); } catch { alive = false; }`,
     `const statePath = process.env.V8_AGENT_OS_HOME + "/runtime/cli/processes.json";`,
-    `const recorded = fs.existsSync(statePath) ? Boolean(JSON.parse(fs.readFileSync(statePath, "utf8")).processes?.["desktop-pet"]) : false;`,
+    `const recorded = fs.existsSync(statePath) ? Boolean(JSON.parse(fs.readFileSync(statePath, "utf8")).processes?.shell) : false;`,
     `process.stdout.write(JSON.stringify({ errorMessage, pid, alive, recorded }));`,
   ].join("\n");
 
@@ -746,6 +955,65 @@ test("Shell and desktop pet runtime descriptors require their Electron entry ide
     executablePath: electron,
     commandLine: `${electron} C:\\other-app\\main.cjs`,
   }), null);
+});
+
+test("packaged Shell and desktop pet descriptors bind the runtime to the governed resource root", () => {
+  const packageRoot = path.join(os.tmpdir(), "v8os-packaged-identity");
+  const executable = process.platform === "darwin"
+    ? path.join(packageRoot, "V8 Agent OS.app", "Contents", "MacOS", "V8 Agent OS")
+    : path.join(packageRoot, process.platform === "win32" ? "V8 Agent OS.exe" : "v8-agent-os-shell");
+  const packagedRepoRoot = process.platform === "darwin"
+    ? path.join(packageRoot, "V8 Agent OS.app", "Contents", "Resources", "v8os")
+    : path.join(packageRoot, "resources", "v8os");
+  const candidate = { pid: 45001, executablePath: executable, commandLine: executable };
+  const shellDescriptor = {
+    pid: 45001,
+    packaged: true,
+    runtimeKind: "shell",
+    executablePath: executable,
+    repoRoot: packagedRepoRoot,
+  };
+
+  assert.equal(packagedRuntimeDescriptorMatches("shell", candidate, shellDescriptor, {
+    repoRoot: packagedRepoRoot,
+  }), true);
+  assert.equal(packagedRuntimeDescriptorMatches("desktop-pet", candidate, shellDescriptor, {
+    repoRoot: packagedRepoRoot,
+  }), false, "the packaged runtime kind cannot be reused across components");
+  assert.equal(packagedRuntimeDescriptorMatches("shell", {
+    ...candidate,
+    executablePath: path.join(packageRoot, "unrelated.exe"),
+  }, shellDescriptor, { repoRoot: packagedRepoRoot }), false);
+  assert.equal(packagedRuntimeDescriptorMatches("shell", {
+    ...candidate,
+    pid: 45002,
+  }, shellDescriptor, { repoRoot: packagedRepoRoot }), false, "a reused PID must not inherit a stale Shell descriptor");
+  const desktopPetMain = path.join(packagedRepoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs");
+  const petCandidate = {
+    ...candidate,
+    pid: 45002,
+    commandLine: `${executable} ${desktopPetMain}`,
+  };
+  const petDescriptor = {
+    ...shellDescriptor,
+    pid: 45002,
+    runtimeKind: "desktop-pet",
+  };
+  assert.equal(packagedRuntimeDescriptorMatches("desktop-pet", petCandidate, petDescriptor, {
+    repoRoot: packagedRepoRoot,
+  }), true);
+  assert.equal(packagedRuntimeDescriptorMatches("shell", petCandidate, {
+    ...shellDescriptor,
+    pid: 45002,
+  }, { repoRoot: packagedRepoRoot }), false, "a packaged desktop pet must not satisfy Shell identity");
+  assert.equal(packagedRuntimeDescriptorMatches("desktop-pet", candidate, {
+    ...shellDescriptor,
+    runtimeKind: "desktop-pet",
+  }, { repoRoot: packagedRepoRoot }), false, "the Shell browser must not satisfy desktop pet identity");
+  assert.equal(packagedRuntimeDescriptorMatches("shell", candidate, {
+    ...shellDescriptor,
+    repoRoot: path.join(packageRoot, "other", "v8os"),
+  }, { repoRoot: packagedRepoRoot }), false);
 });
 
 test("json backup writes timestamped backup without changing source", () => {

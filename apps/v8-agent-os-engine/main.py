@@ -40,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.runtime.startup_profile import (
     build_installation_snapshot,
     disabled_reason_summary,
+    get_runtime_registry_state,
     resolve_install_profile,
     resolve_startup_profile,
     resolve_install_platform,
@@ -183,44 +184,48 @@ def _desktop_live_enabled() -> bool:
         return True
 
 
-def _service_flags(profile: str = STARTUP_PROFILE) -> dict[str, bool]:
+def _service_flags(profile: str = STARTUP_PROFILE, *, _state: dict[str, object] | None = None) -> dict[str, bool]:
     return {
-        "audio": service_enabled("audio", profile=profile),
-        "mcp": service_enabled("mcp", profile=profile),
-        "skills": service_enabled("skills", profile=profile),
-        "extensions": service_enabled("extensions", profile=profile),
-        "cron": service_enabled("cron", profile=profile),
+        "audio": service_enabled("audio", profile=profile, _state=_state),
+        "mcp": service_enabled("mcp", profile=profile, _state=_state),
+        "skills": service_enabled("skills", profile=profile, _state=_state),
+        "extensions": service_enabled("extensions", profile=profile, _state=_state),
+        "cron": service_enabled("cron", profile=profile, _state=_state),
         "network_supervisor": service_enabled(
             "network_supervisor",
             profile=profile,
             runtime_kind="network_supervisor",
             config_enabled=_network_supervisor_enabled(),
+            _state=_state,
         ),
         "desktop_live": service_enabled(
             "desktop_live",
             profile=profile,
             config_enabled=_desktop_live_enabled(),
+            _state=_state,
         ),
     }
 
 
-def _service_states(profile: str = STARTUP_PROFILE) -> dict[str, dict[str, object]]:
+def _service_states(profile: str = STARTUP_PROFILE, *, _state: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
     return {
-        "audio": service_state("audio", profile=profile),
-        "mcp": service_state("mcp", profile=profile),
-        "skills": service_state("skills", profile=profile),
-        "extensions": service_state("extensions", profile=profile),
-        "cron": service_state("cron", profile=profile),
+        "audio": service_state("audio", profile=profile, _state=_state),
+        "mcp": service_state("mcp", profile=profile, _state=_state),
+        "skills": service_state("skills", profile=profile, _state=_state),
+        "extensions": service_state("extensions", profile=profile, _state=_state),
+        "cron": service_state("cron", profile=profile, _state=_state),
         "network_supervisor": service_state(
             "network_supervisor",
             profile=profile,
             runtime_kind="network_supervisor",
             config_enabled=_network_supervisor_enabled(),
+            _state=_state,
         ),
         "desktop_live": service_state(
             "desktop_live",
             profile=profile,
             config_enabled=_desktop_live_enabled(),
+            _state=_state,
         ),
     }
 
@@ -933,8 +938,9 @@ async def readiness_check(response: Response):
 
 @app.get("/health")
 async def health_check():
-    service_flags = _service_flags()
-    service_states = _service_states()
+    runtime_state = get_runtime_registry_state()
+    service_flags = _service_flags(_state=runtime_state)
+    service_states = _service_states(_state=runtime_state)
     extensions_runtime_service = _get_extensions_runtime_service()
     skills_status = extensions_runtime_service.get_skill_startup_status()
     mcp_status = extensions_runtime_service.get_mcp_startup_status() if service_flags["mcp"] else {"startupState": "disabled"}
@@ -948,13 +954,13 @@ async def health_check():
     return {
         "status": "ok",
         "service": "v8-agent-os-engine",
-        **build_installation_snapshot(),
+        **build_installation_snapshot(_state=runtime_state),
         "startupProfile": STARTUP_PROFILE,
-        "startupBundle": startup_bundle_summary(STARTUP_PROFILE),
-        "runtimeClusters": runtime_cluster_summary(STARTUP_PROFILE),
-        "runtimeSubmodes": runtime_submode_summary(STARTUP_PROFILE),
-        "startupDiagnostics": startup_bundle_diagnostics(STARTUP_PROFILE),
-        "disabledReasons": disabled_reason_summary(STARTUP_PROFILE),
+        "startupBundle": startup_bundle_summary(STARTUP_PROFILE, _state=runtime_state),
+        "runtimeClusters": runtime_cluster_summary(STARTUP_PROFILE, _state=runtime_state),
+        "runtimeSubmodes": runtime_submode_summary(STARTUP_PROFILE, _state=runtime_state),
+        "startupDiagnostics": startup_bundle_diagnostics(STARTUP_PROFILE, _state=runtime_state),
+        "disabledReasons": disabled_reason_summary(STARTUP_PROFILE, _state=runtime_state),
         "serviceStates": service_states,
         "mcp_tools": len(extensions_runtime_service.get_mcp_tools()) if service_flags["mcp"] else 0,
         "mcp": extensions_runtime_service.get_mcp_health_summary() if service_flags["mcp"] else {"status": "disabled"},

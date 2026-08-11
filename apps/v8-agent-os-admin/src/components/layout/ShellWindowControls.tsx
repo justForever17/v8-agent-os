@@ -14,6 +14,15 @@ export type ShellDesktopPetState = {
 
 type ShellPickerResult = { ok: boolean; path?: string; cancelled?: boolean; error?: string };
 
+export type ShellUpdateStatus = {
+    state: "idle" | "disabled" | "checking" | "current" | "available" | "error";
+    currentVersion?: string | null;
+    version?: string | null;
+    tag?: string | null;
+    releaseUrl?: string | null;
+    errorCode?: string | null;
+};
+
 type ShellWindowApi = {
     isShell: true;
     minimize: () => void;
@@ -23,6 +32,9 @@ type ShellWindowApi = {
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;
+    getUpdateStatus?: () => Promise<ShellUpdateStatus>;
+    checkForUpdates?: () => Promise<ShellUpdateStatus>;
+    openUpdateRelease?: () => Promise<boolean>;
     selectGodotExecutable: () => Promise<ShellPickerResult>;
     selectGodotProjectDirectory: () => Promise<ShellPickerResult>;
     getDesktopPetState: () => Promise<ShellDesktopPetState>;

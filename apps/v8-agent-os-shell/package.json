@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/justForever17/v8-agent-os.git"
   },
-  "main": "electron/main.cjs",
+  "main": "electron/bootstrap.cjs",
   "type": "commonjs",
   "scripts": {
     "electron:start": "node scripts/launch-shell.mjs",

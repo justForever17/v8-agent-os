@@ -7,12 +7,13 @@ import {
     ProductTopbar,
     TopbarGlowActionButton,
 } from "@v8/product-ui";
-import { Bell, Loader2, Monitor, RefreshCw, Search, Wrench } from "lucide-react";
+import { ArrowUpRight, Bell, CircleCheck, Loader2, Monitor, RefreshCw, Search, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
@@ -24,7 +25,7 @@ import { fetchAdminJson, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
-import { ShellWindowControls } from "./ShellWindowControls";
+import { ShellWindowControls, type ShellUpdateStatus } from "./ShellWindowControls";
 
 type InboxItem = {
     id: string;
@@ -45,9 +46,10 @@ type RuntimeFeaturePack = {
     runtimeFamilies: string[];
     status: "installed" | "not_installed" | "installing" | "failed";
     installed: boolean;
+    installable: boolean;
     restartRequired: boolean;
-    logRef: string | null;
-    lastError: string | null;
+    logName: string | null;
+    hasError: boolean;
     executionProvider?: string | null;
     gpuAdapters?: string[];
 };
@@ -67,6 +69,31 @@ type RuntimeFeaturePackState = {
     };
 };
 
+type V8OSUpdateState = {
+    status: "available" | "current" | "incompatible" | "unavailable";
+    currentVersion: string | null;
+    latestVersion: string | null;
+    releaseUrl: string | null;
+    checkedAt: string;
+    action: "open_release_page";
+};
+
+function projectShellUpdateState(state: ShellUpdateStatus): V8OSUpdateState {
+    const status = state.state === "available"
+        ? "available"
+        : state.state === "current"
+            ? "current"
+            : "unavailable";
+    return {
+        status,
+        currentVersion: state.currentVersion || (state.state === "current" ? state.version || null : null),
+        latestVersion: state.version || state.currentVersion || null,
+        releaseUrl: state.releaseUrl || null,
+        checkedAt: new Date().toISOString(),
+        action: "open_release_page",
+    };
+}
+
 type InboxPayload = {
     items?: InboxItem[];
     refreshing?: boolean;
@@ -75,6 +102,8 @@ type InboxPayload = {
 };
 
 const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
+const V8OS_UPDATE_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONTROLLED_RELEASE_URL_RE = /^https:\/\/github\.com\/justForever17\/v8-agent-os\/releases\/tag\/v8-os-v20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])\.(?:[1-9]|[1-9]\d)$/;
 
 const subscribeToShellSurface = () => () => {};
 const readShellSurface = () => Boolean(window.v8osShell?.isShell);
@@ -111,6 +140,9 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [installState, setInstallState] = useState<RuntimeFeaturePackState | null>(null);
     const [installLoading, setInstallLoading] = useState(false);
     const [installSubmittingPackId, setInstallSubmittingPackId] = useState<string | null>(null);
+    const [v8osUpdateState, setV8osUpdateState] = useState<V8OSUpdateState | null>(null);
+    const [v8osUpdateLoading, setV8osUpdateLoading] = useState(false);
+    const [v8osUpdateError, setV8osUpdateError] = useState(false);
     const isShell = useSyncExternalStore(subscribeToShellSurface, readShellSurface, readServerShellSurface);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
@@ -118,6 +150,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const inboxLoadingRef = useRef(false);
     const pendingInboxForceRef = useRef(false);
+    const v8osUpdateLoadingRef = useRef(false);
 
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
@@ -170,6 +203,45 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
             }
         }
     }, [t, toast]);
+
+    const loadV8OSUpdateState = useCallback(async (force = false) => {
+        if (v8osUpdateLoadingRef.current) return;
+        v8osUpdateLoadingRef.current = true;
+        setV8osUpdateLoading(true);
+        setV8osUpdateError(false);
+        try {
+            const shell = window.v8osShell;
+            if (shell?.isShell) {
+                if (!shell.getUpdateStatus) {
+                    throw new Error("shell_update_bridge_unavailable");
+                }
+                let shellState = await shell.getUpdateStatus();
+                if ((force || shellState.state === "idle" || shellState.state === "checking") && shell.checkForUpdates) {
+                    shellState = await shell.checkForUpdates();
+                }
+                const projected = projectShellUpdateState(shellState);
+                setV8osUpdateState(projected);
+                setV8osUpdateError(projected.status === "unavailable");
+                return;
+            }
+            const url = force ? "/api/v8os-update?refresh=1" : "/api/v8os-update";
+            const payload = await fetchAdminJson<V8OSUpdateState>(url, {
+                force,
+                ttlMs: V8OS_UPDATE_CACHE_TTL_MS,
+            });
+            if (force) {
+                primeAdminJsonCache("/api/v8os-update", payload, V8OS_UPDATE_CACHE_TTL_MS);
+            }
+            setV8osUpdateState(payload);
+            setV8osUpdateError(payload.status === "unavailable");
+        } catch (error) {
+            console.error("Failed to check V8OS release state:", error);
+            setV8osUpdateError(true);
+        } finally {
+            v8osUpdateLoadingRef.current = false;
+            setV8osUpdateLoading(false);
+        }
+    }, []);
 
     const closePanels = useCallback(() => {
         setActivePanel(null);
@@ -355,17 +427,19 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         setActivePanel(opening ? "install" : null);
         if (opening) {
             void loadInstallState(false, installState !== null);
+            void loadV8OSUpdateState(false);
         }
-    }, [activePanel, installState, loadInstallState]);
+    }, [activePanel, installState, loadInstallState, loadV8OSUpdateState]);
 
     useEffect(() => {
         const openFeaturePacks = () => {
             setActivePanel("install");
             void loadInstallState(true, installState !== null);
+            void loadV8OSUpdateState(false);
         };
         window.addEventListener("v8os:open-feature-packs", openFeaturePacks);
         return () => window.removeEventListener("v8os:open-feature-packs", openFeaturePacks);
-    }, [installState, loadInstallState]);
+    }, [installState, loadInstallState, loadV8OSUpdateState]);
 
     useEffect(() => {
         const healthRefreshing = Boolean(installState?.refreshing);
@@ -373,7 +447,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         if (!healthRefreshing && !packInstalling) return;
         const timeoutId = window.setTimeout(() => {
             void loadInstallState(true, true, healthRefreshing || packInstalling);
-        }, installState?.retryAfterMs || 1_500);
+        }, healthRefreshing ? installState?.retryAfterMs || 1_500 : 5_000);
         return () => window.clearTimeout(timeoutId);
     }, [installState, loadInstallState]);
 
@@ -398,7 +472,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
             console.error("Failed to start feature pack install:", error);
             toast({
                 title: t("components.layout.Topbar.featurePackInstallFailedTitle"),
-                description: error instanceof Error ? error.message : t("components.layout.Topbar.featurePackInstallFailedDescription"),
+                description: t("components.layout.Topbar.featurePackInstallFailedDescription"),
                 variant: "destructive",
             });
         } finally {
@@ -410,6 +484,35 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const featurePackButtonTitle = installState?.summary?.missing
         ? t("components.layout.Topbar.featurePacksMissingCount", { count: String(installState.summary.missing) })
         : featurePackLabel;
+    const controlledUpdateUrl = v8osUpdateState?.releaseUrl && CONTROLLED_RELEASE_URL_RE.test(v8osUpdateState.releaseUrl)
+        ? v8osUpdateState.releaseUrl
+        : null;
+    const shellCanOpenUpdate = isShell
+        && typeof window !== "undefined"
+        && Boolean(window.v8osShell?.openUpdateRelease);
+    const updateAvailable = v8osUpdateState?.status === "available"
+        && (shellCanOpenUpdate || Boolean(controlledUpdateUrl));
+    const updateStatusKey = v8osUpdateLoading && !v8osUpdateState
+        ? "checking"
+        : v8osUpdateError
+            ? "unavailable"
+            : v8osUpdateState?.status || "checking";
+    const openV8OSUpdate = useCallback(async () => {
+        const shell = window.v8osShell;
+        if (shell?.isShell && shell.openUpdateRelease) {
+            const opened = await shell.openUpdateRelease().catch(() => false);
+            if (!opened) {
+                setV8osUpdateError(true);
+            } else {
+                closePanels();
+            }
+            return;
+        }
+        if (controlledUpdateUrl) {
+            window.open(controlledUpdateUrl, "_blank", "noopener,noreferrer");
+            closePanels();
+        }
+    }, [closePanels, controlledUpdateUrl]);
 
     return (
         <TopbarComponent
@@ -460,34 +563,105 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                             <Monitor />
                         </TopbarGlowActionButton>
                         {activePanel === "install" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-border bg-card/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
-                                {installLoading && !installState ? (
-                                    <div className="flex h-28 items-center justify-center">
-                                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                                    </div>
-                                ) : (
-                                    <div className="space-y-4 text-sm text-muted-foreground dark:text-slate-300">
-                                        <div className="space-y-1">
-                                            <div className="text-sm font-semibold text-foreground dark:text-slate-100">{featurePackLabel}</div>
-                                            <div className="text-xs text-muted-foreground dark:text-muted-foreground">
-                                                {t("components.layout.Topbar.featurePacksDescription")}
+                            <Card className="absolute right-0 top-full z-50 mt-2 h-[calc(100dvh-5.5rem)] max-h-[42rem] w-[24rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-3xl border-border bg-card/95 p-0 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                                <ScrollArea
+                                    className="h-full min-w-0 max-w-full overflow-x-hidden"
+                                    scrollbarClassName="w-2 bg-muted/70 py-1 dark:bg-white/[0.04]"
+                                    thumbClassName="bg-muted-foreground/45 transition-colors hover:bg-muted-foreground/70 dark:bg-slate-500/60 dark:hover:bg-slate-400/80"
+                                >
+                                    <div className="w-full min-w-0 max-w-full space-y-4 overflow-x-hidden p-4 pr-5 text-sm text-muted-foreground dark:text-slate-300">
+                                            <div className="space-y-1">
+                                                <div className="text-sm font-semibold text-foreground dark:text-slate-100">{featurePackLabel}</div>
+                                                <div className="text-xs text-muted-foreground dark:text-muted-foreground">
+                                                    {t("components.layout.Topbar.featurePacksDescription")}
+                                                </div>
                                             </div>
-                                        </div>
-                                        <div className="space-y-2">
-                                            {(installState?.packs || []).map((pack) => {
+                                            <section className="-mx-4 border-y border-border/70 bg-muted/50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.025]" aria-labelledby="v8os-update-title">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div id="v8os-update-title" className="text-sm font-semibold text-foreground dark:text-slate-100">
+                                                            {t("components.layout.Topbar.v8osUpdateTitle")}
+                                                        </div>
+                                                        <div className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
+                                                            {t("components.layout.Topbar.v8osUpdateDescription")}
+                                                        </div>
+                                                    </div>
+                                                    {v8osUpdateState?.status === "current" && !v8osUpdateError ? (
+                                                        <CircleCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
+                                                    ) : null}
+                                                </div>
+                                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                                    <div className="min-w-0">
+                                                        <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                                                            {t("components.layout.Topbar.v8osUpdateCurrentVersion")}
+                                                        </div>
+                                                        <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground dark:text-slate-200" title={v8osUpdateState?.currentVersion || undefined}>
+                                                            {v8osUpdateState?.currentVersion || "--"}
+                                                        </div>
+                                                    </div>
+                                                    <div className="min-w-0 border-l border-border/70 pl-3 dark:border-white/10">
+                                                        <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                                                            {t("components.layout.Topbar.v8osUpdateLatestVersion")}
+                                                        </div>
+                                                        <div className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground dark:text-slate-200" title={v8osUpdateState?.latestVersion || undefined}>
+                                                            {v8osUpdateState?.latestVersion || "--"}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-2 text-[11px] leading-5 text-muted-foreground" role="status" aria-live="polite">
+                                                    {t(`components.layout.Topbar.v8osUpdateStatus.${updateStatusKey}`)}
+                                                </div>
+                                                <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="h-8 rounded-xl px-2.5"
+                                                        onClick={() => void loadV8OSUpdateState(true)}
+                                                        disabled={v8osUpdateLoading}
+                                                    >
+                                                        <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", v8osUpdateLoading && "animate-spin")} />
+                                                        {t("components.layout.Topbar.v8osUpdateCheck")}
+                                                    </Button>
+                                                    {updateAvailable ? (
+                                                        <Button type="button" size="sm" className="h-8 rounded-xl px-2.5" onClick={() => void openV8OSUpdate()}>
+                                                            {t("components.layout.Topbar.v8osUpdateAction")}
+                                                            <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                                                        </Button>
+                                                    ) : (
+                                                        <Button type="button" size="sm" className="h-8 rounded-xl px-2.5" disabled>
+                                                            {t("components.layout.Topbar.v8osUpdateAction")}
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                                <div className="mt-2 text-[10px] leading-4 text-muted-foreground">
+                                                    {t("components.layout.Topbar.v8osUpdatePreviewNotice")}
+                                                </div>
+                                            </section>
+                                            <div className="space-y-2">
+                                                {installLoading && !installState ? (
+                                                    <div className="flex h-28 items-center justify-center">
+                                                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                                    </div>
+                                                ) : (installState?.packs || []).map((pack) => {
                                                 const isInstalled = pack.status === "installed";
                                                 const isInstalling = pack.status === "installing" || installSubmittingPackId === pack.id;
-                                                const canInstall = !isInstalled && !isInstalling;
+                                                const anotherPackInstalling = Boolean(
+                                                    installSubmittingPackId
+                                                    || installState?.packs.some((candidate) => candidate.status === "installing"),
+                                                );
+                                                const showInstall = pack.installable && !isInstalled;
+                                                const canInstall = showInstall && !isInstalling && !anotherPackInstalling;
                                                 const packI18nKey = `components.layout.Topbar.featurePack.${pack.id}`;
                                                 const productName = t(`${packI18nKey}.name`);
                                                 const description = t(`${packI18nKey}.description`);
                                                 const hover = t(`${packI18nKey}.hover`);
                                                 return (
-                                                    <div key={pack.id} className="rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={hover}>
+                                                    <div key={pack.id} className="w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={hover}>
                                                         <div className="flex items-start justify-between gap-3">
                                                             <div className="min-w-0">
                                                                 <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{productName}</div>
-                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{description}</div>
+                                                                <div className="mt-1 break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere] dark:text-muted-foreground">{description}</div>
                                                                 {pack.runtimeFamilies.length ? (
                                                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                                                         {pack.runtimeFamilies.map((family) => (
@@ -511,13 +685,13 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                                 {t(`components.layout.Topbar.featurePackStatus.${pack.status}`)}
                                                             </span>
                                                         </div>
-                                                        {pack.lastError ? (
-                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200" title={pack.lastError}>
+                                                        {pack.hasError ? (
+                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">
                                                                 {t("components.layout.Topbar.featurePackInstallFailedDetail")}
                                                             </div>
                                                         ) : null}
                                                         {pack.executionProvider ? (
-                                                            <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                                                            <div className="mt-2 break-words text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
                                                                 {t("components.layout.Topbar.featurePackExecutionProvider", { provider: pack.executionProvider })}
                                                                 {pack.gpuAdapters?.length ? (
                                                                     <span title={pack.gpuAdapters.join(", ")}>
@@ -526,32 +700,32 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                                 ) : null}
                                                             </div>
                                                         ) : null}
-                                                        {pack.logRef ? (
-                                                            <div className="mt-2 truncate text-[11px] text-muted-foreground" title={pack.logRef}>
-                                                                {t("components.layout.Topbar.featurePackLogRef")}: {pack.logRef}
+                                                        {pack.logName ? (
+                                                            <div className="mt-2 truncate text-[11px] text-muted-foreground">
+                                                                {t("components.layout.Topbar.featurePackLogRef")}: {pack.logName}
                                                             </div>
                                                         ) : null}
-                                                        <div className="mt-3 flex items-center justify-between gap-3">
-                                                            <div className="text-[11px] text-muted-foreground">
+                                                        <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3">
+                                                            <div className="min-w-0 flex-1 break-words text-[11px] text-muted-foreground">
                                                                 {pack.restartRequired ? t("components.layout.Topbar.featurePackRestartRequired") : t("components.layout.Topbar.featurePackNoRestart")}
                                                             </div>
-                                                            {canInstall ? (
-                                                                <Button size="sm" className="rounded-xl" onClick={() => void handleInstallFeaturePack(pack.id)}>
-                                                                    {t("components.layout.Topbar.featurePackInstall")}
-                                                                </Button>
-                                                            ) : isInstalling ? (
-                                                                <span className="inline-flex items-center text-xs text-sky-600 dark:text-sky-200">
+                                                            {isInstalling ? (
+                                                                <span className="inline-flex shrink-0 items-center text-xs text-sky-600 dark:text-sky-200">
                                                                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                                                                     {t("components.layout.Topbar.featurePackInstalling")}
                                                                 </span>
+                                                            ) : showInstall ? (
+                                                                <Button size="sm" className="shrink-0 rounded-xl" disabled={!canInstall} onClick={() => void handleInstallFeaturePack(pack.id)}>
+                                                                    {t("components.layout.Topbar.featurePackInstall")}
+                                                                </Button>
                                                             ) : null}
                                                         </div>
                                                     </div>
                                                 );
-                                            })}
-                                        </div>
+                                                })}
+                                            </div>
                                     </div>
-                                )}
+                                </ScrollArea>
                             </Card>
                         ) : null}
                     </div>

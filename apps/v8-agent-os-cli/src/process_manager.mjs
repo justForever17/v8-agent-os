@@ -15,6 +15,9 @@ import {
   withComponentProcessLease,
 } from "./process_state.mjs";
 
+export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
+const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
+
 function componentHasPort(component) {
   return Number.isInteger(component?.port) && component.port > 0;
 }
@@ -76,11 +79,189 @@ function runChildCommand(command, args, options = {}) {
   });
 }
 
+export function runWindowsProcessProbe(script, runner = runChildCommand) {
+  return runner("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    timeoutMs: WINDOWS_PROCESS_PROBE_TIMEOUT_MS,
+  });
+}
+
 function waitForSpawn(child) {
   return new Promise((resolve, reject) => {
     child.once("spawn", resolve);
     child.once("error", reject);
   });
+}
+
+function spawnErrorCode(error) {
+  const code = String(error?.code || "").trim();
+  return /^[A-Z0-9_]+$/.test(code) ? code : "SPAWN_ERROR";
+}
+
+export async function spawnManagedChild(id, commandSpec, logs, spawnImpl = spawn) {
+  const out = fs.openSync(logs.out, "a");
+  const err = fs.openSync(logs.err, "a");
+  try {
+    const child = spawnImpl(commandSpec.command, commandSpec.args, {
+      cwd: commandSpec.cwd,
+      env: { ...process.env, ...commandSpec.env },
+      detached: true,
+      stdio: ["ignore", out, err],
+      windowsHide: true,
+    });
+    await waitForSpawn(child);
+    return { child, failure: null };
+  } catch (error) {
+    const errorCode = spawnErrorCode(error);
+    return {
+      child: null,
+      failure: {
+        id,
+        status: "spawn_failed",
+        stage: "spawn",
+        reason: errorCode.toLowerCase(),
+        errorCode,
+        exitCode: null,
+        signal: null,
+        logOut: logs.out,
+        logErr: logs.err,
+      },
+    };
+  } finally {
+    fs.closeSync(out);
+    fs.closeSync(err);
+  }
+}
+
+export function observeEarlyProcessExit(child, timeoutMs = 350) {
+  const existingExitCode = child?.exitCode;
+  const existingSignal = child?.signalCode;
+  if (existingExitCode !== null && existingExitCode !== undefined) {
+    return Promise.resolve({ exited: true, exitCode: existingExitCode, signal: existingSignal || null });
+  }
+  if (existingSignal) {
+    return Promise.resolve({ exited: true, exitCode: null, signal: existingSignal });
+  }
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = (result) => {
+      if (timer) clearTimeout(timer);
+      child?.off?.("exit", onExit);
+      child?.off?.("error", onError);
+      resolve(result);
+    };
+    const onExit = (exitCode, signal) => finish({ exited: true, exitCode, signal: signal || null });
+    const onError = (error) => finish({ exited: true, exitCode: null, signal: null, error });
+    child?.once?.("exit", onExit);
+    child?.once?.("error", onError);
+    timer = setTimeout(() => finish({ exited: false, exitCode: null, signal: null }), Math.max(0, timeoutMs));
+  });
+}
+
+export async function waitForRuntimeComponentHandoff(componentId, child, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : 20_000;
+  const pollMs = Number.isFinite(options.pollMs) ? Math.max(1, options.pollMs) : 50;
+  const readRuntime = options.readRuntimeDescriptor || runtimeProcessDescriptor;
+  const readDescriptor = options.readProcessDescriptor || readProcessDescriptor;
+  const pidAlive = options.pidIsAlive || isPidAlive;
+  const receiptContract = options.receiptContract || null;
+  const readReceipt = options.readReceipt || readRuntimeHandoffReceipt;
+  const sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+  const deadline = Date.now() + timeoutMs;
+  let lastReason = "runtime_descriptor_missing";
+  let candidatePid = null;
+  while (Date.now() < deadline) {
+    const runtimeDescriptor = readRuntime(componentId);
+    const runtimePid = positivePid(runtimeDescriptor?.pid);
+    if (runtimePid) {
+      const descriptorContractValid = componentId !== "desktop-pet"
+        || (runtimeDescriptor?.managedByShell === true
+          && typeof runtimeDescriptor?.descriptorId === "string"
+          && runtimeDescriptor.descriptorId.length > 0);
+      const processDescriptor = await readDescriptor(runtimePid);
+      if (descriptorContractValid
+        && pidAlive(runtimePid)
+        && verifiedRuntimeComponentPid(componentId, processDescriptor, runtimeDescriptor) === runtimePid) {
+        candidatePid = runtimePid;
+        const receipt = receiptContract ? readReceipt(receiptContract) : null;
+        if (!receiptContract || receipt?.pid === runtimePid) {
+          return { ok: true, pid: runtimePid, runtimeDescriptor, processDescriptor };
+        }
+        lastReason = receipt ? "runtime_handoff_receipt_mismatch" : "runtime_handoff_receipt_missing";
+      } else {
+        lastReason = !descriptorContractValid
+          ? "runtime_descriptor_invalid"
+          : processDescriptor ? "runtime_identity_mismatch" : "runtime_identity_unavailable";
+      }
+    }
+    if (child?.signalCode) {
+      return { ok: false, reason: "launcher_signalled", exitCode: null, signal: child.signalCode };
+    }
+    if (child?.exitCode !== null && child?.exitCode !== undefined && child.exitCode !== 0) {
+      return { ok: false, reason: "launcher_exited", exitCode: child.exitCode, signal: null };
+    }
+    await sleep(pollMs);
+  }
+  return {
+    ok: false,
+    reason: lastReason === "runtime_descriptor_missing" ? "runtime_handoff_timeout" : lastReason,
+    exitCode: Number.isInteger(child?.exitCode) ? child.exitCode : null,
+    signal: child?.signalCode || null,
+    candidatePid,
+  };
+}
+
+function createRuntimeHandoffReceipt(componentId) {
+  if (componentId !== "desktop-pet") return null;
+  const nonce = crypto.randomUUID();
+  ensureDir(RUNTIME_HANDOFF_DIR);
+  const filePath = path.join(RUNTIME_HANDOFF_DIR, `${componentId}-${nonce}.json`);
+  fs.rmSync(filePath, { force: true });
+  return { componentId, nonce, filePath };
+}
+
+function readRuntimeHandoffReceipt(contract) {
+  if (!contract?.filePath || !fs.existsSync(contract.filePath)) return null;
+  try {
+    if (fs.statSync(contract.filePath).size > 1_024) return null;
+    const payload = JSON.parse(fs.readFileSync(contract.filePath, "utf8"));
+    const pid = positivePid(payload?.pid);
+    if (payload?.version !== 1
+      || payload?.componentId !== contract.componentId
+      || payload?.nonce !== contract.nonce
+      || !pid) return null;
+    return { ...payload, pid };
+  } catch {
+    return null;
+  }
+}
+
+export async function cleanupFailedRuntimeHandoff(componentId, child, contract, options = {}) {
+  const readReceipt = options.readReceipt || readRuntimeHandoffReceipt;
+  const pidAlive = options.pidIsAlive || isPidAlive;
+  const describe = options.readProcessDescriptor || readProcessDescriptor;
+  const verify = options.verifyRuntimePid || verifiedRuntimeComponentPid;
+  const terminate = options.killPid || killPid;
+  const removeDescriptor = options.removeRuntimeDescriptor || removeRuntimeDescriptor;
+  const runtimeDescriptor = options.runtimeDescriptor || runtimeProcessDescriptor(componentId);
+  try {
+    const receipt = readReceipt(contract);
+    const runtimePids = [...new Set([receipt?.pid, positivePid(options.candidatePid)].filter(Boolean))];
+    for (const runtimePid of runtimePids) {
+      if (pidAlive(runtimePid)) {
+        const descriptor = await describe(runtimePid);
+        if (verify(componentId, descriptor, runtimeDescriptor) === runtimePid) {
+          await terminate(runtimePid, { tree: true });
+          removeDescriptor(componentId, runtimePid);
+        }
+      }
+    }
+    const launcherPid = positivePid(child?.pid);
+    if (launcherPid && child?.exitCode === null && !child?.signalCode && pidAlive(launcherPid)) {
+      await terminate(launcherPid, { tree: true });
+    }
+  } finally {
+    if (contract?.filePath) fs.rmSync(contract.filePath, { force: true });
+  }
 }
 
 async function waitForPidExit(pid, timeoutMs = 2_500) {
@@ -166,8 +347,56 @@ function processCandidateMatchesNextApp(componentId, candidate) {
   return runtimeMatches && (standaloneSignature || launcherSignature);
 }
 
-function processCandidateMatchesShell(candidate) {
+function packagedRepoRootForExecutable(executablePath, platform = process.platform) {
+  if (!path.isAbsolute(String(executablePath || ""))) return null;
+  const executableDir = path.dirname(path.resolve(String(executablePath)));
+  return platform === "darwin"
+    ? path.resolve(executableDir, "..", "Resources", "v8os")
+    : path.resolve(executableDir, "resources", "v8os");
+}
+
+export function packagedRuntimeDescriptorMatches(componentId, candidate, runtimeDescriptor, options = {}) {
+  const governedRepoRoot = path.resolve(options.repoRoot || REPO_ROOT);
+  const platform = options.platform || process.platform;
+  if (!candidate || !runtimeDescriptor || !["shell", "desktop-pet"].includes(componentId)) return false;
+  if (runtimeDescriptor.packaged !== true || runtimeDescriptor.runtimeKind !== componentId) return false;
+  if (!positivePid(candidate.pid) || positivePid(runtimeDescriptor.pid) !== positivePid(candidate.pid)) return false;
+  if (!path.isAbsolute(String(candidate.executablePath || ""))
+    || !path.isAbsolute(String(runtimeDescriptor.executablePath || ""))
+    || !path.isAbsolute(String(runtimeDescriptor.repoRoot || ""))) return false;
+  const candidateExecutable = normalizeResolvedProcessPath(candidate.executablePath);
+  const declaredExecutable = normalizeResolvedProcessPath(runtimeDescriptor.executablePath);
+  const declaredRepoRoot = normalizeResolvedProcessPath(runtimeDescriptor.repoRoot);
+  const derivedRepoRoot = normalizeResolvedProcessPath(
+    packagedRepoRootForExecutable(runtimeDescriptor.executablePath, platform),
+  );
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const desktopPetMain = normalizeProcessText(path.join(
+    governedRepoRoot,
+    "apps",
+    "v8-agent-os-desktop-pet",
+    "electron",
+    "main.cjs",
+  ));
+  const packagedNodeEntries = [
+    desktopPetMain,
+    normalizeProcessText(path.join(governedRepoRoot, "apps", "v8-agent-os-desktop-pet", "dist", "server.cjs")),
+    normalizeProcessText(path.join(governedRepoRoot, "apps", "v8-agent-os-cli", "src", "cli.mjs")),
+    normalizeProcessText(path.join(governedRepoRoot, "scripts", "run-next-with-managed-auth.mjs")),
+  ];
+  const roleMatches = componentId === "desktop-pet"
+    ? commandLine.includes(desktopPetMain)
+    : !packagedNodeEntries.some((entry) => commandLine.includes(entry))
+      && !/(?:^|\s)--type=(?:renderer|gpu-process|utility)(?:\s|$)/i.test(commandLine);
+  return candidateExecutable === declaredExecutable
+    && declaredRepoRoot === normalizeResolvedProcessPath(governedRepoRoot)
+    && derivedRepoRoot === declaredRepoRoot
+    && roleMatches;
+}
+
+function processCandidateMatchesShell(candidate, runtimeDescriptor = null) {
   if (!candidate || typeof candidate !== "object") return false;
+  if (packagedRuntimeDescriptorMatches("shell", candidate, runtimeDescriptor)) return true;
   const commandLine = normalizeProcessText(candidate.commandLine);
   const executable = normalizeProcessText(candidate.executablePath);
   const commandSpec = COMPONENTS.shell.command({ mode: "start" });
@@ -180,8 +409,9 @@ function processCandidateMatchesShell(candidate) {
   return launcherSignature || electronSignature;
 }
 
-function processCandidateMatchesDesktopPet(candidate) {
+function processCandidateMatchesDesktopPet(candidate, runtimeDescriptor = null) {
   if (!candidate || typeof candidate !== "object") return false;
+  if (packagedRuntimeDescriptorMatches("desktop-pet", candidate, runtimeDescriptor)) return true;
   const commandLine = normalizeProcessText(candidate.commandLine);
   const executable = normalizeProcessText(candidate.executablePath);
   const commandSpec = COMPONENTS["desktop-pet"].command({ mode: "start" });
@@ -205,11 +435,11 @@ function processCandidateMatchesCybercore(candidate) {
     && /(?:^|\s)npm\s+run\s+(?:start|dev)(?:\s|$)/i.test(commandLine);
 }
 
-function processCandidateMatchesComponent(componentId, candidate) {
+function processCandidateMatchesComponent(componentId, candidate, runtimeDescriptor = null) {
   if (componentId === "engine") return processCandidateMatchesEngine(candidate, COMPONENTS.engine.command({ mode: "start" }));
   if (componentId === "admin" || componentId === "web") return processCandidateMatchesNextApp(componentId, candidate);
-  if (componentId === "shell") return processCandidateMatchesShell(candidate);
-  if (componentId === "desktop-pet") return processCandidateMatchesDesktopPet(candidate);
+  if (componentId === "shell") return processCandidateMatchesShell(candidate, runtimeDescriptor);
+  if (componentId === "desktop-pet") return processCandidateMatchesDesktopPet(candidate, runtimeDescriptor);
   if (componentId === "cybercore") return processCandidateMatchesCybercore(candidate);
   return false;
 }
@@ -256,10 +486,10 @@ export function verifiedManagedComponentPid(componentId, record, descriptor) {
   return pid;
 }
 
-export function verifiedRuntimeComponentPid(componentId, descriptor) {
+export function verifiedRuntimeComponentPid(componentId, descriptor, runtimeDescriptor = null) {
   if (!["shell", "desktop-pet"].includes(componentId)) return null;
   const pid = positivePid(descriptor?.pid);
-  return pid && processCandidateMatchesComponent(componentId, descriptor) ? pid : null;
+  return pid && processCandidateMatchesComponent(componentId, descriptor, runtimeDescriptor) ? pid : null;
 }
 
 function processDescriptorAt(processDescriptors, pid) {
@@ -276,7 +506,11 @@ export function resolveManagedComponentIdentity(componentId, options = {}) {
   const recordPid = positivePid(record?.pid);
   const runtimePid = positivePid(runtimeDescriptor?.pid);
   const verifiedRecordPid = verifiedManagedComponentPid(componentId, record, processDescriptorAt(processDescriptors, recordPid));
-  const verifiedRuntimePid = verifiedRuntimeComponentPid(componentId, processDescriptorAt(processDescriptors, runtimePid));
+  const verifiedRuntimePid = verifiedRuntimeComponentPid(
+    componentId,
+    processDescriptorAt(processDescriptors, runtimePid),
+    runtimeDescriptor,
+  );
   const verifiedPids = [...new Set([verifiedRecordPid, verifiedRuntimePid].filter(Boolean))];
   const processStartTokens = Object.fromEntries(verifiedPids.map((pid) => [
     String(pid),
@@ -345,7 +579,7 @@ async function readWindowsListeningProcessDescriptor(port) {
     "$parentStarted = if ($parent -and $parent.CreationDate) { $parent.CreationDate.ToUniversalTime().ToString('o') } else { '' }",
     "[pscustomobject]@{ pid = [int]$process.ProcessId; parentPid = [int]$process.ParentProcessId; executablePath = [string]$process.ExecutablePath; commandLine = [string]$process.CommandLine; processStartToken = $started; parentExecutablePath = [string]$parent.ExecutablePath; parentCommandLine = [string]$parent.CommandLine; parentProcessStartToken = $parentStarted } | ConvertTo-Json -Compress",
   ].join("; ");
-  const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+  const result = await runWindowsProcessProbe(script);
   if (result.status !== 0 || !String(result.stdout || "").trim()) return null;
   try {
     return JSON.parse(String(result.stdout).trim());
@@ -365,7 +599,7 @@ async function readProcessDescriptor(pid) {
       "$started = if ($item.CreationDate) { $item.CreationDate.ToUniversalTime().ToString('o') } else { '' }",
       "[pscustomobject]@{ pid = [int]$item.ProcessId; executablePath = [string]$item.ExecutablePath; commandLine = [string]$item.CommandLine; processStartToken = $started } | ConvertTo-Json -Compress",
     ].join("; ");
-    const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+    const result = await runWindowsProcessProbe(script);
     if (result.status !== 0 || !String(result.stdout || "").trim()) return null;
     try {
       return JSON.parse(String(result.stdout).trim());
@@ -431,7 +665,7 @@ async function readProcessDescriptors(pids) {
     `$items = @(Get-CimInstance Win32_Process -Filter \"${filter}\" -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; executablePath = [string]$_.ExecutablePath; commandLine = [string]$_.CommandLine; processStartToken = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }) } })`,
     "[pscustomobject]@{ items = $items } | ConvertTo-Json -Compress -Depth 3",
   ].join("; ");
-  const result = await runChildCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+  const result = await runWindowsProcessProbe(script);
   if (result.status !== 0 || !String(result.stdout || "").trim()) return new Map();
   try {
     const payload = JSON.parse(String(result.stdout).trim());
@@ -599,22 +833,67 @@ async function startComponent(id, options) {
     if (!fs.existsSync(commandSpec.cwd)) {
       return { id, status: "missing_cwd", cwd: commandSpec.cwd };
     }
+    const handoffReceipt = component.detachedHandoff ? createRuntimeHandoffReceipt(id) : null;
+    if (handoffReceipt) {
+      commandSpec.env = {
+        ...commandSpec.env,
+        V8OS_RUNTIME_HANDOFF_PATH: handoffReceipt.filePath,
+        V8OS_RUNTIME_HANDOFF_NONCE: handoffReceipt.nonce,
+      };
+    }
     const logs = logPathsFor(id);
-    const out = fs.openSync(logs.out, "a");
-    const err = fs.openSync(logs.err, "a");
-    let child;
-    try {
-      child = spawn(commandSpec.command, commandSpec.args, {
-        cwd: commandSpec.cwd,
-        env: { ...process.env, ...commandSpec.env },
-        detached: true,
-        stdio: ["ignore", out, err],
-        windowsHide: true,
+    const { child, failure } = await spawnManagedChild(id, commandSpec, logs);
+    if (failure) {
+      if (handoffReceipt?.filePath) fs.rmSync(handoffReceipt.filePath, { force: true });
+      return failure;
+    }
+    if (component.detachedHandoff) {
+      const handoff = await waitForRuntimeComponentHandoff(id, child, {
+        receiptContract: handoffReceipt,
       });
-      await waitForSpawn(child);
-    } finally {
-      fs.closeSync(out);
-      fs.closeSync(err);
+      child.unref();
+      if (!handoff.ok) {
+        await cleanupFailedRuntimeHandoff(id, child, handoffReceipt, {
+          candidatePid: handoff.candidatePid,
+        });
+        return {
+          id,
+          status: "startup_exit",
+          stage: "runtime_handoff",
+          reason: handoff.reason,
+          exitCode: handoff.exitCode ?? null,
+          signal: handoff.signal || null,
+          port: null,
+          logOut: logs.out,
+          logErr: logs.err,
+        };
+      }
+      fs.rmSync(handoffReceipt.filePath, { force: true });
+      return {
+        id,
+        status: "started",
+        pid: handoff.pid,
+        port: null,
+        logOut: logs.out,
+        logErr: logs.err,
+      };
+    }
+    const earlyExit = await observeEarlyProcessExit(child);
+    if (earlyExit.exited) {
+      child.unref();
+      return {
+        id,
+        status: "startup_exit",
+        stage: "post_spawn",
+        reason: earlyExit.error
+          ? "process_error_after_spawn"
+          : earlyExit.signal ? "process_signalled_after_spawn" : "process_exited_after_spawn",
+        exitCode: earlyExit.exitCode ?? null,
+        signal: earlyExit.signal || null,
+        port: componentHasPort(component) ? component.port : null,
+        logOut: logs.out,
+        logErr: logs.err,
+      };
     }
     child.unref();
     const spawnedDescriptor = await readProcessDescriptor(child.pid);
@@ -705,7 +984,7 @@ async function revalidateStopTarget(componentId, pid, context) {
   const currentRuntimeDescriptor = runtimeProcessDescriptor(componentId);
   if (positivePid(context.runtimeDescriptor?.pid) === pid
     && positivePid(currentRuntimeDescriptor?.pid) === pid
-    && verifiedRuntimeComponentPid(componentId, descriptor) === pid) {
+    && verifiedRuntimeComponentPid(componentId, descriptor, currentRuntimeDescriptor) === pid) {
     return { ok: true, processStartToken: descriptor?.processStartToken || null };
   }
   if (context.verifiedPortOwner?.killPid === pid) {

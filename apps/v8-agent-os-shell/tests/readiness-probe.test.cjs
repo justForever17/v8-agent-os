@@ -4,11 +4,28 @@ const test = require('node:test');
 const {
   classifyProductSurface,
   fetchTextWithTimeout,
+  initialProductSurfaceUrl,
   isWebSurfaceReady,
   productSurfaceDomScript,
   validateReadinessResponse,
   verifyProductSurfaceDom,
+  waitForProductSurfaceDom,
 } = require('../lib/readiness-probe.cjs');
+
+test('initial Shell surface uses local Web after setup and reserves Admin login for bootstrap', () => {
+  const options = {
+    defaultChatUrl: 'http://127.0.0.1:9527/chat',
+    adminBaseUrl: 'http://127.0.0.1:9528',
+  };
+  assert.equal(initialProductSurfaceUrl({ ...options, initialized: true }), options.defaultChatUrl);
+  assert.equal(initialProductSurfaceUrl({ ...options, initialized: false }), 'http://127.0.0.1:9528/login');
+  assert.equal(initialProductSurfaceUrl({
+    ...options,
+    initialized: true,
+    pendingSurfaceUrl: 'http://127.0.0.1:9528/admin/models',
+  }), 'http://127.0.0.1:9528/admin/models');
+  assert.throws(() => initialProductSurfaceUrl(options), /initialized must be a boolean/);
+});
 
 test('Engine readiness requires the canonical JSON identity and ready=true', () => {
   const urlContract = {
@@ -152,10 +169,49 @@ test('product surface DOM readiness requires a nonblank interactive product docu
   }, 'web'), true);
   assert.match(observed[0], /V8 Agent OS - AI Assistant/);
   assert.match(observed[0], /querySelector/);
+  assert.match(observed[0], /data-v8os-hydration/);
+  assert.match(observed[0], /getComputedStyle/);
+  assert.match(observed[0], /textarea\[data-v8os-chat-composer=/);
+  assert.match(observed[0], /button\[data-v8os-start-task=/);
+  assert.doesNotMatch(observed[0], /, button:not\(\[disabled\]\)/);
+  assert.match(observed[0], /elementFromPoint/);
+  assert.match(observed[0], /document\.activeElement === requiredInput/);
+  assert.match(observed[0], /pointerEvents !== 'none'/);
   assert.equal(await verifyProductSurfaceDom(async () => false, 'admin-login'), false);
   assert.equal(await verifyProductSurfaceDom(async () => { throw new Error('renderer unavailable'); }, 'admin'), false);
   assert.equal(await verifyProductSurfaceDom(async () => true, 'startup'), false);
   assert.equal(productSurfaceDomScript('startup'), '');
+});
+
+test('product surface DOM readiness waits for client hydration without relaxing the contract', async () => {
+  let elapsedMs = 0;
+  let attempts = 0;
+  const ready = await waitForProductSurfaceDom(async () => {
+    attempts += 1;
+    return attempts >= 3;
+  }, 'web', {
+    timeoutMs: 500,
+    intervalMs: 100,
+    now: () => elapsedMs,
+    sleep: async (delayMs) => { elapsedMs += delayMs; },
+  });
+  assert.equal(ready, true);
+  assert.equal(attempts, 3);
+  assert.equal(elapsedMs, 200);
+
+  elapsedMs = 0;
+  attempts = 0;
+  assert.equal(await waitForProductSurfaceDom(async () => {
+    attempts += 1;
+    return false;
+  }, 'admin', {
+    timeoutMs: 250,
+    intervalMs: 100,
+    now: () => elapsedMs,
+    sleep: async (delayMs) => { elapsedMs += delayMs; },
+  }), false);
+  assert.equal(attempts, 4);
+  assert.equal(elapsedMs, 250);
 });
 
 test('Shell classifies only loaded same-origin product surfaces as ready', () => {

@@ -9,8 +9,28 @@ test('tray menu starts desktop pet when it is not running', () => {
   assert.ok(ids.includes('open-admin'));
   assert.equal(model.find((item) => item.id === 'desktop-pet-status')?.label, '桌宠：已关闭');
   assert.ok(ids.includes('start-desktop-pet'));
+  assert.ok(ids.includes('check-update'));
   assert.ok(ids.includes('quit-v8os'));
   assert.equal(ids.includes('stop-desktop-pet'), false);
+});
+
+test('tray menu projects update checks without exposing raw release data', () => {
+  const checking = buildTrayMenuModel({ updateStatus: { state: 'checking' } });
+  assert.equal(checking.find((item) => item.id === 'update-status')?.enabled, false);
+  assert.match(checking.find((item) => item.id === 'update-status')?.label, /Checking for updates/);
+
+  const available = buildTrayMenuModel({
+    updateStatus: { state: 'available', version: '2026.08.10.1', releaseUrl: 'ignored' },
+  });
+  assert.equal(
+    available.find((item) => item.id === 'open-update-release')?.label,
+    '新版本 2026.08.10.1 / Update available',
+  );
+  assert.doesNotMatch(JSON.stringify(available), /releaseUrl|github\.com/);
+
+  const failed = buildTrayMenuModel({ updateStatus: { state: 'error', errorCode: 'network_unavailable' } });
+  assert.ok(failed.some((item) => item.id === 'check-update'));
+  assert.doesNotMatch(JSON.stringify(failed), /network_unavailable/);
 });
 
 test('tray menu stops desktop pet when it is running', () => {

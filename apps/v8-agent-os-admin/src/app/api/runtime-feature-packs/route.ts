@@ -14,6 +14,59 @@ async function resolveUserEmail(req: NextRequest) {
     return userEmail;
 }
 
+function compactLogName(value: unknown) {
+    const normalized = String(value || "").trim();
+    return normalized ? normalized.split(/[\\/]/).filter(Boolean).pop() || null : null;
+}
+
+function publicFeaturePackState(state: Awaited<ReturnType<typeof getRuntimeFeaturePackState>>) {
+    return {
+        engineAvailable: state.engineAvailable,
+        refreshing: state.refreshing,
+        retryAfterMs: state.retryAfterMs,
+        updatedAt: state.updatedAt,
+        summary: state.summary,
+        packs: state.packs.map((pack) => ({
+            id: pack.id,
+            productName: pack.productName,
+            shortName: pack.shortName,
+            description: pack.description,
+            hover: pack.hover,
+            recommendedOrder: pack.recommendedOrder,
+            runtimeFamilies: pack.runtimeFamilies,
+            status: pack.status,
+            installed: pack.installed,
+            installable: pack.installable,
+            restartRequired: pack.restartRequired,
+            updatedAt: pack.updatedAt,
+            version: pack.version || null,
+            executionProvider: pack.executionProvider || null,
+            gpuAdapters: pack.gpuAdapters || [],
+            logName: compactLogName(pack.logRef),
+            hasError: Boolean(pack.lastError),
+        })),
+    };
+}
+
+function publicFeaturePackInstallResult(result: Awaited<ReturnType<typeof triggerFeaturePackInstall>>) {
+    const raw = result as Record<string, unknown>;
+    const sourceStrategy = Array.isArray(raw.sourceStrategy)
+        ? raw.sourceStrategy.map((item) => {
+            const source = item && typeof item === "object" ? item as Record<string, unknown> : {};
+            return { id: String(source.id || ""), label: String(source.label || "") };
+        })
+        : [];
+    return {
+        status: String(raw.status || ""),
+        packId: String(raw.packId || ""),
+        restartRequired: Boolean(raw.restartRequired),
+        message: raw.message ? String(raw.message) : null,
+        logName: compactLogName(raw.logRef),
+        sourceStrategy,
+        assetManifest: raw.assetManifest || null,
+    };
+}
+
 export async function GET(req: NextRequest) {
     const userEmail = await resolveUserEmail(req);
     if (!userEmail) {
@@ -21,9 +74,10 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        return NextResponse.json(await getRuntimeFeaturePackState({
+        const state = await getRuntimeFeaturePackState({
             forceHealthRefresh: req.nextUrl.searchParams.get("refresh") === "1",
-        }));
+        });
+        return NextResponse.json(publicFeaturePackState(state));
     } catch (error) {
         console.error("[Admin Runtime Feature Packs] Failed to read state:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -43,12 +97,24 @@ export async function POST(req: NextRequest) {
             Boolean(payload?.dryRun),
             String(payload?.locale || req.cookies.get(LOCALE_COOKIE_NAME)?.value || "en"),
         );
-        return NextResponse.json(result);
+        return NextResponse.json(publicFeaturePackInstallResult(result));
     } catch (error) {
         console.error("[Admin Runtime Feature Packs] Failed to start install:", error);
+        const unavailableErrors = new Set([
+            "feature_pack_not_available",
+            "feature_pack_lock_unavailable",
+            "feature_pack_python_runtime_unavailable",
+            "feature_pack_install_busy",
+        ]);
+        const rawCode = error instanceof Error ? error.message : "";
+        const code = rawCode === "feature_pack_install_busy"
+            ? rawCode
+            : unavailableErrors.has(rawCode)
+                ? "feature_pack_not_available"
+                : "feature_pack_install_failed";
         return NextResponse.json(
-            { error: error instanceof Error ? error.message : "Failed to start feature pack install" },
-            { status: 500 },
+            { error: code },
+            { status: code === "feature_pack_not_available" || code === "feature_pack_install_busy" ? 409 : 500 },
         );
     }
 }

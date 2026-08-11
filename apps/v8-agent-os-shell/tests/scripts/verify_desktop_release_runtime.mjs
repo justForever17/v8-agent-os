@@ -294,7 +294,10 @@ if (exists(pythonExe)) {
     psdTools: "psd_tools",
     pillow: "PIL",
   };
-  if (process.platform === "win32") requiredModules.pywin32 = "win32api";
+  if (process.platform === "win32") {
+    requiredModules.pywin32 = "win32api";
+    requiredModules.windowsCredentialManager = "win32cred";
+  }
   if (process.platform === "win32" && process.arch === "arm64") {
     requiredModules.grpcNative = "grpc._cython.cygrpc";
     requiredModules.httptoolsNative = "httptools.parser.parser";
@@ -303,11 +306,15 @@ if (exists(pythonExe)) {
   if (process.platform === "darwin") {
     requiredModules.pyobjcAppKit = "AppKit";
     requiredModules.pyobjcQuartz = "Quartz";
+    requiredModules.keyring = "keyring";
+    requiredModules.macOSKeychainApi = "keyring.backends.macOS.api";
   }
   if (process.platform === "linux") {
     requiredModules.pyGObject = "gi";
     requiredModules.pyatspi = "pyatspi";
     requiredModules.pythonXlib = "Xlib";
+    requiredModules.keyring = "keyring";
+    requiredModules.secretStorage = "secretstorage";
   }
   const optionalModules = {
     sqliteVec: "sqlite_vec",

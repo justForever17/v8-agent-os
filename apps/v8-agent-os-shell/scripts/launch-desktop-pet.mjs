@@ -9,6 +9,8 @@ if (!fs.existsSync(serverBundle)) {
 
 await launchDetachedElectron(path.join(paths.desktopPetDir, "electron", "main.cjs"), {
   V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
+  V8_REPO_ROOT: paths.repoRoot,
+  V8_DESKTOP_PET_DIR: paths.desktopPetDir,
   V8_ADMIN_BASE_URL: process.env.V8_ADMIN_BASE_URL || "http://127.0.0.1:9528",
   V8_WEB_BASE_URL: process.env.V8_WEB_BASE_URL || "http://127.0.0.1:9527",
 });

@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - id: release-plan
         name: Validate manifest and resolve products
@@ -107,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Build Android package
         uses: ./.github/actions/build-phone-package
@@ -132,7 +132,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Build iOS package
         uses: ./.github/actions/build-phone-package
@@ -260,13 +260,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Download Desktop build artifacts
         if: needs.plan.outputs.desktop_enabled == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: v8os-desktop-*
           path: release-input/desktop
@@ -274,14 +274,14 @@ jobs:
 
       - name: Download Android build artifact
         if: needs.plan.outputs.android_enabled == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: phone-android-package
           path: release-input/phone/android
 
       - name: Download iOS build artifact
         if: needs.plan.outputs.ios_enabled == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: phone-ios-package
           path: release-input/phone/ios
@@ -329,7 +329,7 @@ jobs:
             --out release-work/RELEASE_NOTES.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ needs.plan.outputs.tag }}
           generate_release_notes: false

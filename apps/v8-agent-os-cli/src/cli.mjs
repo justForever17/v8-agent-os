@@ -45,6 +45,23 @@ function optionValue(args, name, fallback = "") {
   return index >= 0 ? String(args[index + 1] || fallback) : fallback;
 }
 
+const SUCCESS_STATUSES = {
+  start: new Set(["started", "already_running"]),
+  stop: new Set(["stopped", "not_managed", "stale_state_removed"]),
+};
+
+export function commandResultsHaveFailures(operation, results) {
+  const accepted = SUCCESS_STATUSES[operation];
+  if (!accepted || !Array.isArray(results)) return true;
+  return results.some((item) => !accepted.has(String(item?.status || "")));
+}
+
+function commitCommandResult(operation, results) {
+  const failed = commandResultsHaveFailures(operation, results);
+  if (failed) process.exitCode = 1;
+  return { results, failed };
+}
+
 function help() {
   console.log(`V8OS CLI
 
@@ -76,6 +93,7 @@ async function commandStart(args) {
   const results = await startComponents(selected, { mode });
   if (hasFlag(args, "--json")) printJson(results);
   else renderStartResults(results);
+  return commitCommandResult("start", results);
 }
 
 async function runPreview(args) {
@@ -105,6 +123,7 @@ async function commandStop(args) {
   const results = await stopComponents(selected);
   if (hasFlag(args, "--json")) printJson(results);
   else results.forEach((item) => console.log(`${item.id}: ${item.status}${item.reason ? ` (${item.reason})` : ""}`));
+  return commitCommandResult("stop", results);
 }
 
 async function commandStatus(args) {
@@ -236,7 +255,8 @@ export async function main(argv) {
   if (command === "preview") return runPreview(args);
   if (command === "stop") return commandStop(args);
   if (command === "restart") {
-    await commandStop(args);
+    const stopped = await commandStop(args);
+    if (stopped.failed) return stopped;
     return commandStart(args);
   }
   if (command === "status") return commandStatus(args);

@@ -21,12 +21,25 @@ test('Admin and tray runtime controls share the graceful desktop pet shutdown pa
   const gracefulSource = mainSource.slice(gracefulStart, gracefulEnd);
   assert.ok(gracefulSource.indexOf('if (!result.acked)') < gracefulSource.indexOf("shellStop(['desktop-pet'])"));
 
+  const shutdownStart = mainSource.indexOf('async function runManagedV8OSShutdown');
+  const shutdownEnd = mainSource.indexOf('function shutdownServiceLabel', shutdownStart);
+  const shutdownSource = mainSource.slice(shutdownStart, shutdownEnd);
+  assert.ok(shutdownSource.indexOf('await stopDesktopPetGracefully()') < shutdownSource.indexOf('shellStop(coreIds, stopOptions)'));
+  assert.match(shutdownSource, /stopVerifiedPortOwners: coreIds/);
+  assert.match(shutdownSource, /waitForServicesStopped\(shellStatus, 10, coreIds\)/);
+  const finalGuardIndex = shutdownSource.indexOf('if (finalBlockers.length > 0)');
+  const removeRecordIndex = shutdownSource.lastIndexOf('await removeShellProcessRecord');
+  const stopControlIndex = shutdownSource.lastIndexOf('await stopControl');
+  const quitApplicationIndex = shutdownSource.lastIndexOf('quitApplication()');
+  assert.ok(finalGuardIndex < removeRecordIndex);
+  assert.ok(removeRecordIndex < stopControlIndex);
+  assert.ok(stopControlIndex < quitApplicationIndex);
+
   const quitStart = mainSource.indexOf('async function quitV8OS');
   const quitEnd = mainSource.indexOf('function updateTrayMenu', quitStart);
   const quitSource = mainSource.slice(quitStart, quitEnd);
-  assert.ok(quitSource.indexOf('await stopDesktopPetGracefully()') < quitSource.indexOf("shellStop(coreIds, stopOptions)"));
-  assert.match(quitSource, /Desktop pet shutdown phase failed; core shutdown will continue/);
-  assert.match(quitSource, /stopVerifiedPortOwners: coreIds/);
-  assert.match(quitSource, /await waitForCoreServicesStopped\(shellStatus\)/);
-  assert.match(quitSource, /finally \{[\s\S]*app\.quit\(\)/);
+  assert.match(quitSource, /quitting = false/);
+  assert.match(quitSource, /await showShutdownFailure\(failure\)/);
+  assert.doesNotMatch(quitSource, /finally \{[\s\S]*app\.quit\(\)/);
+  assert.match(mainSource, /app\.on\('before-quit',[\s\S]{0,180}if \(quitting\) return;[\s\S]{0,180}void quitV8OS\(\)/);
 });

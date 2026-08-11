@@ -3,10 +3,19 @@ const test = require('node:test');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 
 test('startup screen uses minimal centered product mark and shimmer brand', () => {
-  const html = buildStartupHtml({ markUrl: 'file:///tmp/product-mark.png', detail: '正在等待服务就绪' });
+  const html = buildStartupHtml({
+    markUrl: 'file:///tmp/product-mark.png',
+    detail: '正在等待服务就绪 / Waiting for services <ready>',
+    actionLabel: '重试 / Retry',
+  });
   assert.match(html, /V8 Agent OS/);
   assert.match(html, /class="product-mark"/);
   assert.match(html, /class="brand-text"/);
+  assert.match(html, /class="startup-detail"/);
+  assert.match(html, /正在等待服务就绪 \/ Waiting for services &lt;ready&gt;/);
+  assert.match(html, /class="startup-action"/);
+  assert.match(html, /重试 \/ Retry/);
+  assert.match(html, /window\.v8osShell\?\.retryStartup\(\)/);
   assert.match(html, /white-space: nowrap/);
   assert.match(html, /font-size: clamp\(14px, 2\.5vw, 32px\)/);
   assert.match(html, /linear-gradient\([\s\S]*102deg[\s\S]*linear-gradient\(180deg/);

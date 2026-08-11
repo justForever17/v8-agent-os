@@ -12,7 +12,8 @@ const PET_TO_SHELL_TYPES = new Set(['pet-status', 'open-settings', 'open-session
 const SHELL_TO_PET_TYPES = new Set(['active-session', 'shutdown']);
 
 function runtimeRootPath() {
-  return path.join(os.homedir(), '.v8-agent-os', 'runtime');
+  const stateRoot = String(process.env.V8_AGENT_OS_HOME || '').trim();
+  return path.join(stateRoot ? path.resolve(stateRoot) : path.join(os.homedir(), '.v8-agent-os'), 'runtime');
 }
 
 function shellControlDescriptorPath(runtimeRoot = runtimeRootPath()) {
@@ -180,6 +181,12 @@ function createShellControlServer(options = {}) {
         surfaceReady: false,
         surfaceKind: null,
         surfaceReadyAt: null,
+        ...(options.packaged === true ? {
+          packaged: true,
+          runtimeKind: 'shell',
+          executablePath: path.resolve(String(options.executablePath || process.execPath)),
+          repoRoot: path.resolve(String(options.repoRoot || process.env.V8_REPO_ROOT || '')),
+        } : {}),
       };
       server = net.createServer(handleConnection);
       await new Promise((resolve, reject) => {

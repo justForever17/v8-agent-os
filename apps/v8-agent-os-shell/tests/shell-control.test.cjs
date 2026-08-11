@@ -8,10 +8,14 @@ const test = require('node:test');
 const {
   MAX_MESSAGE_BYTES,
   createShellControlServer,
+  runtimeRootPath,
   validatePetMessage,
   validateShellMessage,
 } = require('../lib/shell-control.cjs');
-const { createShellControlClient } = require('../../v8-agent-os-desktop-pet/lib/shell-control-client.cjs');
+const {
+  createShellControlClient,
+  defaultDescriptorPath: desktopPetDescriptorPath,
+} = require('../../v8-agent-os-desktop-pet/lib/shell-control-client.cjs');
 
 function deferred() {
   let resolve;
@@ -19,14 +23,33 @@ function deferred() {
   return { promise, resolve };
 }
 
+test('default control descriptor follows the governed V8 state root', () => {
+  const previous = process.env.V8_AGENT_OS_HOME;
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v8os-shell-state-root-'));
+  try {
+    process.env.V8_AGENT_OS_HOME = stateRoot;
+    assert.equal(runtimeRootPath(), path.join(stateRoot, 'runtime'));
+    assert.equal(desktopPetDescriptorPath(), path.join(stateRoot, 'runtime', 'shell-control.json'));
+  } finally {
+    if (previous === undefined) delete process.env.V8_AGENT_OS_HOME;
+    else process.env.V8_AGENT_OS_HOME = previous;
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
 test('local control channel authenticates the desktop pet and exchanges allowlisted messages', async (t) => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'v8os-shell-control-'));
   const authenticated = deferred();
   const clientConnected = deferred();
   const petMessage = deferred();
   const shellMessage = deferred();
+  const packagedExecutable = path.join(runtimeRoot, process.platform === 'win32' ? 'V8 Agent OS.exe' : 'v8-agent-os-shell');
+  const packagedRepoRoot = path.join(runtimeRoot, 'resources', 'v8os');
   const server = createShellControlServer({
     runtimeRoot,
+    packaged: true,
+    executablePath: packagedExecutable,
+    repoRoot: packagedRepoRoot,
     onAuthenticated: authenticated.resolve,
     onMessage: petMessage.resolve,
   });
@@ -49,6 +72,10 @@ test('local control channel authenticates the desktop pet and exchanges allowlis
   assert.equal(descriptor.surfaceReady, false);
   assert.equal(descriptor.surfaceKind, null);
   assert.equal(descriptor.surfaceReadyAt, null);
+  assert.equal(descriptor.packaged, true);
+  assert.equal(descriptor.runtimeKind, 'shell');
+  assert.equal(descriptor.executablePath, path.resolve(packagedExecutable));
+  assert.equal(descriptor.repoRoot, path.resolve(packagedRepoRoot));
 
   client.start();
   await authenticated.promise;

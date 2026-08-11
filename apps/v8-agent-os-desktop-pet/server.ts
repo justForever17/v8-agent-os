@@ -4,7 +4,6 @@ import fs from "fs";
 import { createServer } from "http";
 import os from "os";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { WebSocket, WebSocketServer } from "ws";
 
 const app = express();
@@ -349,6 +348,7 @@ async function startServer() {
   });
   if (process.env.NODE_ENV !== "production") {
     console.log("Setting up Vite middleware for full-stack integration...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: { server: httpServer } },
       appType: "spa",

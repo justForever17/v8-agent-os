@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from core.runtime.startup_profile import (
     build_installation_snapshot,
     disabled_reason_summary,
+    get_runtime_registry_state,
     resolve_startup_profile,
     runtime_cluster_summary,
     runtime_submode_summary,
@@ -38,6 +39,7 @@ from . import plugin_manager_routes as plugin_manager_routes_module
 from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import runtime_episode_routes as runtime_episode_routes_module
+from . import runtime_feature_pack_routes as runtime_feature_pack_routes_module
 from . import session_workflow_routes as session_workflow_routes_module
 from . import spec_routes as spec_routes_module
 from . import storage_retention_routes as storage_retention_routes_module
@@ -79,33 +81,37 @@ def _desktop_live_enabled() -> bool:
         return True
 
 
-def _service_states(profile: str = _STARTUP_PROFILE) -> dict[str, dict[str, object]]:
+def _service_states(profile: str = _STARTUP_PROFILE, *, _state: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
     return {
-        "extensions": service_state("extensions", profile=profile),
-        "knowledge": service_state("knowledge", profile=profile),
+        "extensions": service_state("extensions", profile=profile, _state=_state),
+        "knowledge": service_state("knowledge", profile=profile, _state=_state),
         "network_supervisor": service_state(
             "network_supervisor",
             profile=profile,
             runtime_kind="network_supervisor",
             config_enabled=_network_supervisor_enabled(),
+            _state=_state,
         ),
         "computer_use": service_state(
             "computer_use",
             profile=profile,
             runtime_kind="computer_use",
+            _state=_state,
         ),
         "desktop_live": service_state(
             "desktop_live",
             profile=profile,
             config_enabled=_desktop_live_enabled(),
+            _state=_state,
         ),
         "rpa": service_state(
             "rpa",
             profile=profile,
             runtime_kind="rpa",
+            _state=_state,
         ),
-        "ops": service_state("ops", profile=profile),
-        "mcp": service_state("mcp", profile=profile),
+        "ops": service_state("ops", profile=profile, _state=_state),
+        "mcp": service_state("mcp", profile=profile, _state=_state),
     }
 
 
@@ -124,6 +130,7 @@ router.include_router(plugin_manager_routes_module.router)
 router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(runtime_episode_routes_module.router)
+router.include_router(runtime_feature_pack_routes_module.router)
 router.include_router(platform_routes_module.router)
 router.include_router(spec_routes_module.router)
 router.include_router(storage_retention_routes_module.router)
@@ -153,11 +160,12 @@ def _get_agent_profile(agent_id: str) -> dict[str, str]:
 
 @router.get("/health")
 async def health():
-    service_states = _service_states()
+    runtime_state = get_runtime_registry_state()
+    service_states = _service_states(_state=runtime_state)
     extensions_runtime_service = _get_extensions_runtime_service()
     skills_status = extensions_runtime_service.get_skill_startup_status()
-    mcp_enabled = service_enabled("mcp", profile=_STARTUP_PROFILE)
-    extensions_enabled = service_enabled("extensions", profile=_STARTUP_PROFILE)
+    mcp_enabled = service_enabled("mcp", profile=_STARTUP_PROFILE, _state=runtime_state)
+    extensions_enabled = service_enabled("extensions", profile=_STARTUP_PROFILE, _state=runtime_state)
     mcp_status = extensions_runtime_service.get_mcp_startup_status() if mcp_enabled else {"startupState": "disabled"}
     extensions_status = (
         extensions_runtime_service.get_startup_status()
@@ -167,18 +175,18 @@ async def health():
     inspect_memory_backend = _get_memory_backend_health()
     return {
         "status": "ok",
-        **build_installation_snapshot(),
+        **build_installation_snapshot(_state=runtime_state),
         "mcp_tools": len(extensions_runtime_service.get_mcp_tools()) if mcp_enabled else 0,
         "mcp": extensions_runtime_service.get_mcp_health_summary() if mcp_enabled else {"status": "disabled"},
         "skillsStartupState": skills_status.get("startupState"),
         "extensionsStartupState": extensions_status.get("startupState"),
         "mcpStartupState": mcp_status.get("startupState"),
         "startupProfile": _STARTUP_PROFILE,
-        "startupBundle": startup_bundle_summary(_STARTUP_PROFILE),
-        "runtimeClusters": runtime_cluster_summary(_STARTUP_PROFILE),
-        "runtimeSubmodes": runtime_submode_summary(_STARTUP_PROFILE),
-        "startupDiagnostics": startup_bundle_diagnostics(_STARTUP_PROFILE),
-        "disabledReasons": disabled_reason_summary(_STARTUP_PROFILE),
+        "startupBundle": startup_bundle_summary(_STARTUP_PROFILE, _state=runtime_state),
+        "runtimeClusters": runtime_cluster_summary(_STARTUP_PROFILE, _state=runtime_state),
+        "runtimeSubmodes": runtime_submode_summary(_STARTUP_PROFILE, _state=runtime_state),
+        "startupDiagnostics": startup_bundle_diagnostics(_STARTUP_PROFILE, _state=runtime_state),
+        "disabledReasons": disabled_reason_summary(_STARTUP_PROFILE, _state=runtime_state),
         "serviceStates": service_states,
         "skillsRuntime": skills_status,
         "extensionsRuntime": extensions_status,

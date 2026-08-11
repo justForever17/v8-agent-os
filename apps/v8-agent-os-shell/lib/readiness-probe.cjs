@@ -75,6 +75,15 @@ function isWebSurfaceReady(options = {}) {
   return classifyProductSurface(options) === 'web';
 }
 
+function initialProductSurfaceUrl(options = {}) {
+  if (typeof options.initialized !== 'boolean') {
+    throw new TypeError('initialized must be a boolean');
+  }
+  if (options.pendingSurfaceUrl) return String(options.pendingSurfaceUrl);
+  if (options.initialized) return String(options.defaultChatUrl || '');
+  return `${String(options.adminBaseUrl || '').replace(/\/$/, '')}/login`;
+}
+
 function classifyProductSurface(options = {}) {
   if (!options.coreServicesReady) return null;
   try {
@@ -100,11 +109,46 @@ function productSurfaceDomScript(surfaceKind) {
     : surfaceKind === 'admin' || surfaceKind === 'admin-login'
       ? 'V8 Agent OS'
       : '';
+  const requiredInputSelector = surfaceKind === 'web'
+    ? 'textarea[data-v8os-chat-composer="true"]:not([disabled]), button[data-v8os-start-task="true"]:not([disabled])'
+    : surfaceKind === 'admin-login'
+      ? '#login:not([disabled])'
+      : '';
   if (!expectedTitle) return '';
   return `(() => {
     const bodyText = String(document.body?.innerText || '').trim();
     const interactive = document.querySelector('button, input, textarea, a[href], [role="button"]');
-    return document.title === ${JSON.stringify(expectedTitle)} && bodyText.length > 0 && Boolean(interactive);
+    const requiredInput = ${JSON.stringify(requiredInputSelector)}
+      ? document.querySelector(${JSON.stringify(requiredInputSelector)})
+      : interactive;
+    const marker = document.querySelector('[data-v8os-style-probe="true"]');
+    const hydrated = marker?.getAttribute('data-v8os-hydration') === 'ready';
+    const stylesReady = Boolean(marker) && getComputedStyle(marker).display === 'none';
+    const inputStyle = requiredInput ? getComputedStyle(requiredInput) : null;
+    const inputRect = requiredInput?.getBoundingClientRect();
+    const hitTarget = inputRect && inputRect.width > 0 && inputRect.height > 0
+      ? document.elementFromPoint(inputRect.left + inputRect.width / 2, inputRect.top + inputRect.height / 2)
+      : null;
+    const inputHitTestReady = Boolean(requiredInput)
+      && Boolean(hitTarget)
+      && (hitTarget === requiredInput || requiredInput.contains(hitTarget));
+    const previousActiveElement = document.activeElement;
+    requiredInput?.focus({ preventScroll: true });
+    const inputFocusReady = document.activeElement === requiredInput;
+    if (previousActiveElement instanceof HTMLElement && previousActiveElement !== requiredInput) {
+      previousActiveElement.focus({ preventScroll: true });
+    } else if (requiredInput instanceof HTMLElement) {
+      requiredInput.blur();
+    }
+    return document.title === ${JSON.stringify(expectedTitle)}
+      && bodyText.length > 0
+      && Boolean(interactive)
+      && Boolean(requiredInput)
+      && inputStyle?.pointerEvents !== 'none'
+      && inputHitTestReady
+      && inputFocusReady
+      && hydrated
+      && stylesReady;
   })()`;
 }
 
@@ -116,6 +160,24 @@ async function verifyProductSurfaceDom(executeJavaScript, surfaceKind) {
   } catch {
     return false;
   }
+}
+
+async function waitForProductSurfaceDom(executeJavaScript, surfaceKind, options = {}) {
+  const timeoutMs = Math.max(0, Number(options.timeoutMs ?? 5000));
+  const intervalMs = Math.max(10, Number(options.intervalMs ?? 100));
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const sleep = typeof options.sleep === 'function'
+    ? options.sleep
+    : (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+  const startedAt = now();
+
+  while (!options.isCancelled?.()) {
+    if (await verifyProductSurfaceDom(executeJavaScript, surfaceKind)) return true;
+    const elapsedMs = now() - startedAt;
+    if (elapsedMs >= timeoutMs) return false;
+    await sleep(Math.min(intervalMs, timeoutMs - elapsedMs));
+  }
+  return false;
 }
 
 async function fetchTextWithTimeout(fetchImpl, url, timeoutMs = 1500, options = {}) {
@@ -136,8 +198,10 @@ async function fetchTextWithTimeout(fetchImpl, url, timeoutMs = 1500, options = 
 module.exports = {
   classifyProductSurface,
   fetchTextWithTimeout,
+  initialProductSurfaceUrl,
   isWebSurfaceReady,
   productSurfaceDomScript,
   validateReadinessResponse,
   verifyProductSurfaceDom,
+  waitForProductSurfaceDom,
 };

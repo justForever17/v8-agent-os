@@ -7,7 +7,7 @@
     "dev": "tsx server.ts",
     "electron:dev": "npm run desktop:dev",
     "desktop:dev": "npm run build && node scripts/ensure-electron.cjs && electron electron/main.cjs",
-    "build": "npm exec -- vite build && npm exec -- esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "npm exec -- vite build && npm exec -- esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

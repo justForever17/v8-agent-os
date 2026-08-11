@@ -1523,6 +1523,7 @@ export function InputArea({
                             {input.endsWith("\n") ? <br /> : null}
                         </div>
                         <Textarea
+                            data-v8os-chat-composer="true"
                             ref={textareaRef}
                             value={input}
                             onChange={handleComposerInputChange}

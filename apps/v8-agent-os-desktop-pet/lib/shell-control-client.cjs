@@ -10,7 +10,8 @@ const SHELL_TO_PET_TYPES = new Set(['active-session', 'shutdown']);
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
 
 function defaultDescriptorPath() {
-  return path.join(os.homedir(), '.v8-agent-os', 'runtime', 'shell-control.json');
+  const stateRoot = String(process.env.V8_AGENT_OS_HOME || '').trim();
+  return path.join(stateRoot ? path.resolve(stateRoot) : path.join(os.homedir(), '.v8-agent-os'), 'runtime', 'shell-control.json');
 }
 
 function readDescriptor(filePath) {

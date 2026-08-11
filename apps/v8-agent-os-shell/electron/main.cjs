@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, net, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, nativeImage, ipcMain, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('node:url');
@@ -9,11 +9,23 @@ const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
 const {
+  classifyWindowOpen,
+  isTrustedIpcSource,
+  isTrustedProductUrl,
+  trustedProductOrigins,
+} = require('../lib/surface-security.cjs');
+const {
   classifyProductSurface,
   fetchTextWithTimeout,
+  initialProductSurfaceUrl,
   validateReadinessResponse,
-  verifyProductSurfaceDom,
+  waitForProductSurfaceDom,
 } = require('../lib/readiness-probe.cjs');
+const {
+  checkForDesktopUpdate,
+  loadReleaseIdentity,
+  releaseUrlForTag,
+} = require('../lib/update-check.cjs');
 
 const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
   ? path.join(process.resourcesPath, 'v8os')
@@ -25,6 +37,12 @@ const webBaseUrl = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 const adminBaseUrl = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
 const engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
 const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'shell_api.mjs')).href;
+const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
+const productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
+const CORE_SERVICE_IDS = ['engine', 'admin', 'web'];
+const CORE_SERVICE_LABELS = { engine: 'Engine', admin: 'Admin', web: 'Web' };
+const updateChecksEnabled = app.isPackaged && process.env.V8OS_DISABLE_UPDATE_CHECK !== '1';
+const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 20_000;
 
 let mainWindow = null;
 let tray = null;
@@ -38,6 +56,8 @@ let shellControl = null;
 let shellProcessRecordIdentity = null;
 let cliApiPromise = null;
 let coreServicesStartPromise = null;
+let initialSurfaceLoadPromise = null;
+let lastStartupFailure = null;
 let coreServicesReady = false;
 let statusRefreshPromise = null;
 let pendingSurfaceUrl = null;
@@ -45,6 +65,12 @@ let lastPublishedControlStatus = '';
 let surfaceRecoveryTimer = null;
 let surfaceStabilityTimer = null;
 let surfaceRecoveryTimes = [];
+let updateStatus = { state: updateChecksEnabled ? 'idle' : 'disabled' };
+let updateCheckPromise = null;
+let manualUpdateDialogRequested = false;
+let automaticUpdateCheckScheduled = false;
+let automaticUpdateCheckTimer = null;
+let notifiedUpdateTag = null;
 const SURFACE_RECOVERY_WINDOW_MS = 60_000;
 const MAX_SURFACE_RECOVERY_ATTEMPTS = 2;
 const desktopPetShutdown = createDesktopPetShutdownCoordinator();
@@ -127,7 +153,10 @@ function loadInMainWindow(url) {
     createMainWindow();
   }
   showMainWindow();
-  if (!coreServicesReady) return Promise.resolve(false);
+  if (!coreServicesReady) {
+    void loadInitialSurface();
+    return Promise.resolve(false);
+  }
   pendingSurfaceUrl = null;
   return loadUrlSafely(
     () => mainWindow.loadURL(url),
@@ -144,9 +173,8 @@ async function openDesktopPetSettings() {
 }
 
 async function openWeb() {
-  const loggedIn = await isAdminLoggedIn();
   const chatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
-  return loadInMainWindow(loggedIn ? chatUrl : `${adminBaseUrl}/login`);
+  return loadInMainWindow(chatUrl);
 }
 
 async function openWebSession(sessionId) {
@@ -172,13 +200,66 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function humanLogRefs(...records) {
+  const names = records
+    .flatMap((record) => [record?.logErr, record?.logOut])
+    .filter(Boolean)
+    .map((filePath) => path.posix.basename(String(filePath).replaceAll('\\', '/')))
+    .filter((name) => /^(engine|admin|web)\.(out|err)\.log$/.test(name));
+  return [...new Set(names)].map((name) => `~/.v8-agent-os/logs/cli/${name}`);
+}
+
+function coreServiceStartupError(failures, fallbackStage = 'start_request') {
+  const normalized = failures.map((failure) => {
+    const id = String(failure?.id || 'unknown');
+    const stage = String(failure?.stage || fallbackStage);
+    const logs = humanLogRefs(failure);
+    const stageLabel = stage === 'post_spawn'
+      ? '启动进程 / process startup'
+      : stage === 'spawn'
+        ? '创建进程 / process creation'
+      : stage === 'readiness_process_check'
+        ? '进程存活检查 / process liveness check'
+        : stage === 'readiness'
+          ? '就绪检查 / readiness check'
+          : '启动请求 / start request';
+    const processStillRunning = failure?.pidAlive === true || failure?.portOpen === true;
+    const statusLabel = failure?.status === 'startup_exit'
+      ? '启动后立即退出 / exited immediately after launch'
+      : failure?.status === 'spawn_failed'
+        ? '无法创建进程 / process could not be created'
+      : failure?.status === 'readiness_timeout'
+        ? processStillRunning
+          ? '进程仍在运行，但服务未能及时就绪 / process is running, but the service did not become ready in time'
+          : '服务未能及时就绪 / service did not become ready in time'
+        : '未能启动 / failed to start';
+    return {
+      id,
+      stage,
+      status: String(failure?.status || 'startup_failed'),
+      processStillRunning,
+      logs,
+      message: `${CORE_SERVICE_LABELS[id] || id}: ${statusLabel}; 阶段 / Stage: ${stageLabel}${logs.length ? `; 日志 / Logs: ${logs.join(', ')}` : ''}`,
+    };
+  });
+  const error = new Error(normalized.map((item) => item.message).join('\n'));
+  error.userFacingMessage = `核心服务未能完成启动 / Core services could not finish starting.\n${error.message}`;
+  error.serviceIds = normalized.map((item) => item.id);
+  error.restartServiceIds = normalized
+    .filter((item) => item.status === 'readiness_timeout' && item.processStillRunning)
+    .map((item) => item.id);
+  error.startupStage = normalized[0]?.stage || fallbackStage;
+  error.logRefs = [...new Set(normalized.flatMap((item) => item.logs))];
+  return error;
+}
+
 async function waitForUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 90000;
   const intervalMs = options.intervalMs ?? 700;
   const startedAt = Date.now();
   let lastError = null;
   let lastReportedReason = null;
-  while (Date.now() - startedAt < timeoutMs) {
+  while (!options.isCancelled?.() && Date.now() - startedAt < timeoutMs) {
     try {
       const expectedOrigin = options.expectedOrigin || new URL(url).origin;
       const { response, body, responseUrl } = await fetchTextWithTimeout(
@@ -221,61 +302,148 @@ async function waitForUrl(url, options = {}) {
     }
     await sleep(intervalMs);
   }
-  throw new Error(`等待服务就绪超时：${url}${lastError ? ` (${lastError.message})` : ''}`);
+  if (options.isCancelled?.()) return false;
+  const timeoutError = new Error(`readiness_timeout${lastError ? `:${lastError.message}` : ''}`);
+  timeoutError.serviceId = options.kind || 'unknown';
+  timeoutError.startupStage = 'readiness';
+  throw timeoutError;
 }
 
-async function waitForServices() {
-  await Promise.all([
-    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: 120000, kind: 'engine' })
-      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
-    waitForUrl(`${adminBaseUrl}/login`, { timeoutMs: 120000, kind: 'admin', expectedOrigin: new URL(adminBaseUrl).origin })
-      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'admin' })),
-    waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000, kind: 'web' })
-      .then(() => reportSurfaceStage('readiness_probe_ready', { service: 'web' })),
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function monitorCoreServiceLiveness(startResults, isComplete) {
+  const startedById = new Map(
+    startResults
+      .filter((item) => CORE_SERVICE_IDS.includes(item.id) && Number.isInteger(item.pid) && item.pid > 0)
+      .map((item) => [item.id, item]),
+  );
+  await sleep(500);
+  while (!isComplete()) {
+    const exitedIds = [...startedById]
+      .filter(([, started]) => !isProcessAlive(started.pid))
+      .map(([id]) => id);
+    if (exitedIds.length === 0) {
+      await sleep(800);
+      continue;
+    }
+    try {
+      const { shellStatus } = await cliApi();
+      const statuses = await shellStatus(exitedIds);
+      const failures = statuses
+        .filter((status) => !status.pidAlive && !status.portOpen)
+        .map((status) => {
+          const started = startResults.find((item) => item.id === status.id) || {};
+          return {
+            ...started,
+            ...status,
+            status: 'startup_exit',
+            stage: 'readiness_process_check',
+            logErr: status.logErr || started.logErr,
+            logOut: status.logOut || started.logOut,
+          };
+        });
+      if (failures.length > 0) throw coreServiceStartupError(failures, 'readiness_process_check');
+    } catch (error) {
+      if (error?.userFacingMessage) throw error;
+      reportSurfaceStage('service_liveness_check_unavailable');
+    }
+    await sleep(800);
+  }
+}
+
+async function waitForServices(startResults) {
+  let complete = false;
+  const readiness = Promise.all([
+    waitForUrl(`${engineBaseUrl}/readyz`, { timeoutMs: 120000, kind: 'engine', isCancelled: () => complete })
+      .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'engine' })),
+    waitForUrl(`${adminBaseUrl}/login`, {
+      timeoutMs: 120000,
+      kind: 'admin',
+      expectedOrigin: new URL(adminBaseUrl).origin,
+      isCancelled: () => complete,
+    })
+      .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'admin' })),
+    waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000, kind: 'web', isCancelled: () => complete })
+      .then((ready) => ready && reportSurfaceStage('readiness_probe_ready', { service: 'web' })),
   ]);
+  try {
+    await Promise.race([
+      readiness,
+      monitorCoreServiceLiveness(startResults, () => complete),
+    ]);
+  } catch (error) {
+    if (error?.userFacingMessage) throw error;
+    let statuses = [];
+    try {
+      const { shellStatus } = await cliApi();
+      statuses = await shellStatus(CORE_SERVICE_IDS);
+    } catch {}
+    const serviceId = error?.serviceId || 'unknown';
+    const started = startResults.find((item) => item.id === serviceId) || { id: serviceId };
+    const status = statuses.find((item) => item.id === serviceId) || {};
+    throw coreServiceStartupError([{
+      ...started,
+      ...status,
+      id: serviceId,
+      status: status.pidAlive === false && !status.portOpen ? 'startup_exit' : 'readiness_timeout',
+      stage: 'readiness',
+      logErr: status.logErr || started.logErr,
+      logOut: status.logOut || started.logOut,
+    }], 'readiness');
+  } finally {
+    complete = true;
+  }
 }
 
 async function ensureCoreServicesStarted() {
   if (!coreServicesStartPromise) {
     coreServicesStartPromise = cliApi()
       .then(async ({ shellStart }) => {
-        const results = await shellStart(['engine', 'admin', 'web'], { mode: 'start' });
+        const results = await shellStart(CORE_SERVICE_IDS, { mode: 'start' });
         const failures = results.filter((item) => !['started', 'already_running'].includes(item.status));
         if (failures.length > 0) {
-          throw new Error(`核心服务启动失败：${failures.map((item) => `${item.id}:${item.status}`).join(', ')}`);
+          throw coreServiceStartupError(failures);
         }
         return results;
-      })
-      .catch((error) => {
-        coreServicesStartPromise = null;
-        throw error;
       });
   }
-  return coreServicesStartPromise;
+  const currentAttempt = coreServicesStartPromise;
+  try {
+    return await currentAttempt;
+  } finally {
+    if (coreServicesStartPromise === currentAttempt) coreServicesStartPromise = null;
+  }
 }
 
-async function isAdminLoggedIn() {
+async function isInstanceInitialized() {
   try {
-    const cookies = await session.defaultSession.cookies.get({ url: adminBaseUrl });
-    const cookieHeader = cookies
-      .map((cookie) => `${cookie.name}=${cookie.value}`)
-      .join('; ');
     const { response, body } = await fetchTextWithTimeout(
       net.fetch.bind(net),
-      `${adminBaseUrl}/api/auth/session`,
+      `${adminBaseUrl}/api/client/instance`,
       2000,
       {
         cache: 'no-store',
-        headers: cookieHeader ? { Cookie: cookieHeader } : undefined,
+        credentials: 'omit',
       },
     );
-    if (!response.ok) {
-      return false;
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = JSON.parse(body || '{}');
-    return payload?.user?.role === 'ADMIN' || Boolean(payload?.user?.email);
-  } catch {
-    return false;
+    if (payload?.kind !== 'v8_instance_manifest' || typeof payload?.initialized !== 'boolean') {
+      throw new Error('instance manifest contract mismatch');
+    }
+    return payload.initialized;
+  } catch (error) {
+    const failure = new Error('无法确认本机初始化状态 / Unable to confirm local initialization state.');
+    failure.cause = error;
+    throw failure;
   }
 }
 
@@ -331,15 +499,22 @@ function productMarkUrl() {
   }
 }
 
-function startupDataUrl(detail) {
+function startupDataUrl(detail, options = {}) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(buildStartupHtml({
     markUrl: productMarkUrl(),
     detail,
+    actionLabel: options.actionLabel || '',
   }))}`;
 }
 
 function errorDataUrl(error) {
-  return startupDataUrl(`启动未完成：${error?.message || error || '未知错误'}。请从托盘查看服务状态或运行 v8os doctor。`);
+  const safeReason = typeof error?.userFacingMessage === 'string'
+    ? error.userFacingMessage
+    : '界面或核心服务未能完成启动 / The product surface or a core service could not finish starting.';
+  return startupDataUrl(
+    `启动未完成 / Startup incomplete\n${safeReason}\n请重试，或从托盘查看服务状态并运行 v8os doctor。 / Retry, or inspect service status from the tray and run v8os doctor.`,
+    { actionLabel: '重试 / Retry' },
+  );
 }
 
 function reportSurfaceStage(stage, details = {}) {
@@ -347,12 +522,36 @@ function reportSurfaceStage(stage, details = {}) {
 }
 
 function isLocalProductSurface(url) {
-  try {
-    const origin = new URL(String(url || '')).origin;
-    return origin === new URL(webBaseUrl).origin || origin === new URL(adminBaseUrl).origin;
-  } catch {
-    return false;
-  }
+  return isTrustedProductUrl(url, productOrigins);
+}
+
+function isTrustedShellIpc(event, options = {}) {
+  const frame = event?.senderFrame;
+  const mainFrame = event?.sender?.mainFrame;
+  return isTrustedIpcSource({
+    senderMatches: Boolean(mainWindow && !mainWindow.isDestroyed() && event?.sender === mainWindow.webContents),
+    isMainFrame: Boolean(frame
+      && mainFrame
+      && frame.processId === mainFrame.processId
+      && frame.routingId === mainFrame.routingId),
+    frameUrl: frame?.url || '',
+    origins: productOrigins,
+    allowStartup: options.allowStartup === true,
+  });
+}
+
+function onTrustedShellIpc(channel, listener, options = {}) {
+  ipcMain.on(channel, (event, ...args) => {
+    if (!isTrustedShellIpc(event, options)) return;
+    listener(event, ...args);
+  });
+}
+
+function handleTrustedShellIpc(channel, listener, options = {}) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedShellIpc(event, options)) throw new Error('untrusted_ipc_sender');
+    return listener(event, ...args);
+  });
 }
 
 function scheduleSurfaceRecovery(reason, targetUrl = '') {
@@ -372,26 +571,37 @@ function scheduleSurfaceRecovery(reason, targetUrl = '') {
   }
   if (isLocalProductSurface(targetUrl)) pendingSurfaceUrl = targetUrl;
   console.error(`[v8os-shell] recovering local surface: ${reason}`);
-  void mainWindow.loadURL(startupDataUrl('界面进程正在恢复，正在重新连接 Engine / Admin / Web...')).catch(() => undefined);
+  void mainWindow.loadURL(startupDataUrl('界面进程正在恢复 / Restoring the product surface...')).catch(() => undefined);
   surfaceRecoveryTimer = setTimeout(() => {
     surfaceRecoveryTimer = null;
     if (!quitting && mainWindow && !mainWindow.isDestroyed()) void loadInitialSurface();
   }, 700);
 }
 
-async function loadInitialSurface() {
+async function performInitialSurfaceLoad() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  coreServicesReady = false;
   shellControl?.setSurfaceStatus({ surfaceReady: false });
   reportSurfaceStage('starting_core_services');
   try {
-    await ensureCoreServicesStarted();
+    const startResults = await ensureCoreServicesStarted();
     reportSurfaceStage('waiting_for_readiness');
-    await waitForServices();
+    await loadUrlSafely(
+      () => mainWindow.loadURL(startupDataUrl('核心服务已启动，正在等待界面就绪 / Core services started; waiting for the product surfaces...')),
+      (error) => console.error('[v8os-shell] failed to update startup stage', error),
+    );
+    await waitForServices(startResults);
+    lastStartupFailure = null;
     reportSurfaceStage('core_services_ready');
-    const loggedIn = await isAdminLoggedIn();
     coreServicesReady = true;
     const defaultChatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
-    const targetUrl = pendingSurfaceUrl || (loggedIn ? defaultChatUrl : `${adminBaseUrl}/login`);
+    const initialized = await isInstanceInitialized();
+    const targetUrl = initialProductSurfaceUrl({
+      initialized,
+      pendingSurfaceUrl,
+      defaultChatUrl,
+      adminBaseUrl,
+    });
     const expectedSurfaceKind = classifyProductSurface({
       coreServicesReady: true,
       loadedUrl: targetUrl,
@@ -414,6 +624,13 @@ async function loadInitialSurface() {
       reportSurfaceStage('product_navigation_completed', { expectedSurfaceKind });
     }
   } catch (error) {
+    coreServicesReady = false;
+    coreServicesStartPromise = null;
+    lastStartupFailure = error?.userFacingMessage ? error : null;
+    try {
+      const { shellStatus } = await cliApi();
+      await shellStatus(CORE_SERVICE_IDS);
+    } catch {}
     reportSurfaceStage('startup_failed', { reason: error?.message || String(error) });
     shellControl?.setSurfaceStatus({ surfaceReady: false });
     await loadUrlSafely(
@@ -423,8 +640,55 @@ async function loadInitialSurface() {
   }
 }
 
+async function restartRetryableCoreServices(failure) {
+  const serviceIds = [...new Set(
+    (Array.isArray(failure?.restartServiceIds) ? failure.restartServiceIds : [])
+      .filter((id) => CORE_SERVICE_IDS.includes(id)),
+  )];
+  if (serviceIds.length === 0) return;
+  const { shellStatus, shellStop } = await cliApi();
+  await shellStop(serviceIds, { stopVerifiedPortOwners: serviceIds });
+  const remaining = await waitForManagedServicesStopped(shellStatus, 25, serviceIds);
+  if (remaining.some((item) => item.pidAlive || item.portOpen)) {
+    throw coreServiceStartupError(remaining.map((item) => ({
+      ...item,
+      status: 'retry_stop_failed',
+      stage: 'retry_stop',
+    })), 'retry_stop');
+  }
+}
+
+async function retryInitialSurface() {
+  if (initialSurfaceLoadPromise) return initialSurfaceLoadPromise;
+  const failure = lastStartupFailure;
+  try {
+    await restartRetryableCoreServices(failure);
+    lastStartupFailure = null;
+    return await loadInitialSurface();
+  } catch (error) {
+    lastStartupFailure = error?.userFacingMessage ? error : failure;
+    await loadUrlSafely(
+      () => mainWindow?.loadURL(errorDataUrl(error)),
+      (fallbackError) => console.error('[v8os-shell] failed to show retry error surface', fallbackError),
+    );
+    return false;
+  }
+}
+
+function loadInitialSurface() {
+  if (!initialSurfaceLoadPromise) {
+    initialSurfaceLoadPromise = performInitialSurfaceLoad().finally(() => {
+      initialSurfaceLoadPromise = null;
+    });
+  }
+  return initialSurfaceLoadPromise;
+}
+
 async function startShellControl() {
   shellControl = createShellControlServer({
+    packaged: app.isPackaged,
+    executablePath: process.execPath,
+    repoRoot,
     onAuthenticated() {
       if (desktopPetState !== 'stopping') setDesktopPetState('waiting_v8os');
       publishShellControlStatus();
@@ -513,6 +777,162 @@ function refreshStatus() {
   return statusRefreshPromise;
 }
 
+function setUpdateStatus(nextStatus) {
+  updateStatus = nextStatus;
+  updateTrayMenu();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('v8os-shell:update-status', publicUpdateStatus());
+  }
+}
+
+function publicUpdateStatus() {
+  let currentVersion = null;
+  try {
+    currentVersion = loadReleaseIdentity(
+      releaseManifestPath,
+      app.getVersion(),
+      process.platform,
+      process.arch,
+    ).version;
+  } catch {}
+  const state = ['idle', 'checking', 'current', 'available', 'error', 'disabled'].includes(updateStatus?.state)
+    ? updateStatus.state
+    : 'error';
+  return {
+    state,
+    currentVersion,
+    version: typeof updateStatus?.version === 'string' ? updateStatus.version : null,
+    tag: typeof updateStatus?.tag === 'string' ? updateStatus.tag : null,
+    releaseUrl: typeof updateStatus?.releaseUrl === 'string' ? updateStatus.releaseUrl : null,
+    publishedAt: typeof updateStatus?.publishedAt === 'string' ? updateStatus.publishedAt : null,
+    errorCode: typeof updateStatus?.errorCode === 'string' ? updateStatus.errorCode : null,
+  };
+}
+
+async function openUpdateRelease(result = updateStatus) {
+  if (result?.state !== 'available') return false;
+  let controlledUrl;
+  try {
+    controlledUrl = releaseUrlForTag(result.tag);
+  } catch {
+    return false;
+  }
+  if (controlledUrl !== result.releaseUrl) return false;
+  try {
+    await shell.openExternal(controlledUrl);
+    return true;
+  } catch {
+    console.warn('[v8os-shell] controlled release page could not be opened');
+    return false;
+  }
+}
+
+function notifyUpdateAvailable(result) {
+  try {
+    if (notifiedUpdateTag === result.tag || !Notification.isSupported()) return;
+    notifiedUpdateTag = result.tag;
+    const notification = new Notification({
+      title: 'V8 Agent OS',
+      body: `发现新版本 ${result.version} / Update available`,
+      silent: true,
+    });
+    notification.on('click', () => { void openUpdateRelease(result); });
+    notification.show();
+  } catch {
+    console.warn('[v8os-shell] update notification unavailable');
+  }
+}
+
+async function showUpdateCheckResult(result) {
+  const options = result.state === 'available'
+    ? {
+        type: 'info',
+        title: 'V8OS 更新 / Update',
+        message: `发现新版本 ${result.version} / Update available`,
+        detail: '下载与安装仍由你确认。当前 Preview 不会静默下载或安装。\nDownload and installation require your confirmation.',
+        buttons: ['打开下载页 / Open download page', '稍后 / Later'],
+        defaultId: 0,
+        cancelId: 1,
+      }
+    : result.state === 'current'
+      ? {
+          type: 'info',
+          title: 'V8OS 更新 / Update',
+          message: '当前已是最新版 / V8OS is up to date',
+          buttons: ['确定 / OK'],
+        }
+      : {
+          type: 'warning',
+          title: 'V8OS 更新 / Update',
+          message: '暂时无法检查更新 / Unable to check for updates',
+          detail: '请稍后重试。该问题不会影响 V8OS 的本地运行。\nTry again later. Local V8OS operation is unaffected.',
+          buttons: ['确定 / OK'],
+        };
+  try {
+    showMainWindow();
+    const response = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (result.state === 'available' && response.response === 0) await openUpdateRelease(result);
+  } catch {
+    console.warn('[v8os-shell] update result dialog unavailable');
+  }
+}
+
+async function performDesktopUpdateCheck() {
+  setUpdateStatus({ state: 'checking' });
+  try {
+    const identity = loadReleaseIdentity(releaseManifestPath, app.getVersion(), process.platform, process.arch);
+    const result = await checkForDesktopUpdate({
+      fetchImpl: net.fetch.bind(net),
+      identity,
+    });
+    setUpdateStatus(result);
+    return result;
+  } catch (error) {
+    const result = {
+      state: 'error',
+      errorCode: typeof error?.code === 'string' ? error.code : 'update_check_failed',
+    };
+    console.warn('[v8os-shell] update check unavailable', { reason: result.errorCode });
+    setUpdateStatus(result);
+    return result;
+  }
+}
+
+function requestDesktopUpdateCheck(options = {}) {
+  if (!updateChecksEnabled) return Promise.resolve({ state: 'disabled' });
+  if (options.manual) manualUpdateDialogRequested = true;
+  if (!updateCheckPromise) {
+    const automaticRequest = !options.manual && !options.surface;
+    updateCheckPromise = performDesktopUpdateCheck()
+      .then(async (result) => {
+        const showManualDialog = manualUpdateDialogRequested;
+        manualUpdateDialogRequested = false;
+        if (showManualDialog) {
+          await showUpdateCheckResult(result);
+        } else if (automaticRequest && result.state === 'available') {
+          notifyUpdateAvailable(result);
+        }
+        return result;
+      })
+      .finally(() => {
+        updateCheckPromise = null;
+      });
+  }
+  return updateCheckPromise;
+}
+
+function scheduleAutomaticUpdateCheck() {
+  if (!updateChecksEnabled || automaticUpdateCheckScheduled) return;
+  automaticUpdateCheckScheduled = true;
+  automaticUpdateCheckTimer = setTimeout(() => {
+    automaticUpdateCheckTimer = null;
+    void requestDesktopUpdateCheck();
+  }, AUTOMATIC_UPDATE_CHECK_DELAY_MS);
+  automaticUpdateCheckTimer.unref?.();
+}
+
 async function showServiceStatus() {
   let message = '无法读取服务状态。';
   let ok = false;
@@ -590,61 +1010,181 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForCoreServicesStopped(shellStatus, attempts = 15) {
+async function waitForManagedServicesStopped(shellStatus, attempts = 15, serviceIds = CORE_SERVICE_IDS) {
   let statuses = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    statuses = await shellStatus(['engine', 'admin', 'web']);
+    statuses = await shellStatus(serviceIds);
     if (statuses.every((item) => !item.pidAlive && !item.portOpen)) return statuses;
     await wait(100);
   }
   return statuses;
 }
 
+async function runManagedV8OSShutdown({
+  coreIds,
+  desktopPetId,
+  shouldStopDesktopPet,
+  stopDesktopPetGracefully,
+  shellStop,
+  shellStatus,
+  waitForServicesStopped,
+  removeShellProcessRecord,
+  shellProcessRecordIdentity,
+  stopControl,
+  quitApplication,
+  onDesktopPetShutdownError = () => undefined,
+  onCoreRetry = () => undefined,
+}) {
+  const blockersFor = (statuses, serviceIds) => serviceIds.flatMap((id) => {
+    const status = Array.isArray(statuses) ? statuses.find((item) => item?.id === id) : null;
+    if (!status) return [{ id, state: 'status_missing', pidAlive: null, portOpen: null }];
+    return status.pidAlive === false && status.portOpen === false ? [] : [status];
+  });
+  const stopOptions = { stopVerifiedPortOwners: coreIds };
+
+  let desktopPetShutdownError = null;
+  if (shouldStopDesktopPet) {
+    try {
+      await stopDesktopPetGracefully();
+    } catch (error) {
+      desktopPetShutdownError = error;
+      onDesktopPetShutdownError(error);
+    }
+  }
+
+  const firstStop = await shellStop(coreIds, stopOptions);
+  let coreStatuses = await waitForServicesStopped(shellStatus, 15, coreIds);
+  let coreBlockers = blockersFor(coreStatuses, coreIds);
+  if (coreBlockers.length > 0) {
+    const retryStop = await shellStop(coreIds, stopOptions);
+    coreStatuses = await waitForServicesStopped(shellStatus, 10, coreIds);
+    coreBlockers = blockersFor(coreStatuses, coreIds);
+    onCoreRetry({ firstStop, retryStop, remaining: coreBlockers });
+  }
+  if (coreBlockers.length > 0) {
+    return { ok: false, reason: 'core_services_still_running', remaining: coreBlockers };
+  }
+
+  let desktopPetStatuses = await waitForServicesStopped(shellStatus, 15, [desktopPetId]);
+  let desktopPetBlockers = blockersFor(desktopPetStatuses, [desktopPetId]);
+  if (desktopPetShutdownError || desktopPetBlockers.length > 0) {
+    await shellStop([desktopPetId]);
+    desktopPetStatuses = await waitForServicesStopped(shellStatus, 10, [desktopPetId]);
+    desktopPetBlockers = blockersFor(desktopPetStatuses, [desktopPetId]);
+  }
+  if (desktopPetBlockers.length > 0) {
+    return { ok: false, reason: 'desktop_pet_still_running', remaining: desktopPetBlockers };
+  }
+
+  const allServiceIds = [...coreIds, desktopPetId];
+  const finalStatuses = await waitForServicesStopped(shellStatus, 3, allServiceIds);
+  const finalBlockers = blockersFor(finalStatuses, allServiceIds);
+  if (finalBlockers.length > 0) {
+    return { ok: false, reason: 'services_still_running', remaining: finalBlockers };
+  }
+
+  await removeShellProcessRecord(shellProcessRecordIdentity);
+  await stopControl();
+  quitApplication();
+  return { ok: true, reason: 'stopped' };
+}
+
+function shutdownServiceLabel(id) {
+  if (id === 'desktop-pet') return '桌宠 / Desktop Pet';
+  return CORE_SERVICE_LABELS[id] || id;
+}
+
+async function showShutdownFailure(result) {
+  const serviceLabels = [...new Set(
+    (Array.isArray(result?.remaining) ? result.remaining : [])
+      .map((item) => shutdownServiceLabel(item?.id))
+      .filter(Boolean),
+  )];
+  const detail = [
+    'V8OS 已保留 Shell 控制通道和进程所有权，未执行不完整退出。',
+    'V8OS kept the Shell control channel and process ownership; no partial exit was performed.',
+    serviceLabels.length > 0
+      ? `仍在运行或状态不可确认 / Still running or unverified: ${serviceLabels.join(', ')}`
+      : '服务状态暂时无法确认，请稍后重试。 / Service status is temporarily unavailable. Try again shortly.',
+  ].join('\n');
+  showMainWindow();
+  const options = {
+    type: 'warning',
+    title: '无法完全退出 V8OS / Unable to fully quit V8OS',
+    message: '部分本地服务尚未确认停止 / Some local services have not been confirmed stopped',
+    detail,
+    buttons: ['重试退出 / Retry quit', '保留运行 / Keep running'],
+    defaultId: 0,
+    cancelId: 1,
+  };
+  const response = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  return response.response === 0;
+}
+
 async function quitV8OS() {
   if (quitting) return;
   quitting = true;
-  try {
-    if (desktopPetProcessRunning || shellControl?.hasAuthenticatedClient()) {
-      await stopDesktopPetGracefully();
-    }
-  } catch (error) {
-    console.error('[V8OS Shell] Desktop pet shutdown phase failed; core shutdown will continue', {
-      reason: error?.message || 'unknown_error',
-    });
-  }
+  let failure = null;
   try {
     const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
-    const coreIds = ['engine', 'admin', 'web'];
-    const stopOptions = { stopVerifiedPortOwners: coreIds };
-    const firstStop = await shellStop(coreIds, stopOptions);
-    let remaining = await waitForCoreServicesStopped(shellStatus);
-    if (remaining.some((item) => item.pidAlive || item.portOpen)) {
-      const retryStop = await shellStop(coreIds, stopOptions);
-      remaining = await waitForCoreServicesStopped(shellStatus, 10);
-      console.warn('[V8OS Shell] Core shutdown required reconciliation', { firstStop, retryStop, remaining });
-    }
-    if (remaining.some((item) => item.pidAlive || item.portOpen)) {
-      console.error('[V8OS Shell] Core services remain after shutdown', { remaining });
-    }
-    await removeShellProcessRecord(shellProcessRecordIdentity);
-  } catch (error) {
-    console.error('[V8OS Shell] Core shutdown phase failed', { reason: error?.message || 'unknown_error' });
-  } finally {
-    await shellControl?.stop().catch((error) => {
-      console.warn('[V8OS Shell] Control channel shutdown failed', { reason: error?.message || 'unknown_error' });
+    const result = await runManagedV8OSShutdown({
+      coreIds: CORE_SERVICE_IDS,
+      desktopPetId: 'desktop-pet',
+      shouldStopDesktopPet: desktopPetProcessRunning || Boolean(shellControl?.hasAuthenticatedClient()),
+      stopDesktopPetGracefully,
+      shellStop,
+      shellStatus,
+      waitForServicesStopped: waitForManagedServicesStopped,
+      removeShellProcessRecord,
+      shellProcessRecordIdentity,
+      stopControl: async () => {
+        await shellControl?.stop();
+      },
+      quitApplication: () => app.quit(),
+      onDesktopPetShutdownError: (error) => {
+        console.error('[V8OS Shell] Desktop pet graceful shutdown failed; verifying CLI fallback', {
+          reason: error?.message || 'unknown_error',
+        });
+      },
+      onCoreRetry: ({ firstStop, retryStop, remaining }) => {
+        console.warn('[V8OS Shell] Core shutdown required reconciliation', { firstStop, retryStop, remaining });
+      },
     });
-    app.quit();
+    if (!result.ok) {
+      failure = result;
+      console.error('[V8OS Shell] Managed services remain after shutdown', {
+        reason: result.reason,
+        remaining: result.remaining,
+      });
+    }
+  } catch (error) {
+    failure = { ok: false, reason: 'shutdown_probe_failed', remaining: [] };
+    console.error('[V8OS Shell] Core shutdown phase failed', { reason: error?.message || 'unknown_error' });
   }
+  if (!failure) return;
+
+  quitting = false;
+  let retry = false;
+  try {
+    retry = await showShutdownFailure(failure);
+  } catch (error) {
+    console.warn('[V8OS Shell] Shutdown failure dialog unavailable', { reason: error?.message || 'unknown_error' });
+  }
+  if (retry) setImmediate(() => { void quitV8OS(); });
 }
 
 function updateTrayMenu() {
   if (!tray) return;
-  const model = buildTrayMenuModel({ desktopPetState, desktopPetProcessRunning });
+  const model = buildTrayMenuModel({ desktopPetState, desktopPetProcessRunning, updateStatus });
   const template = model.map((item) => {
     if (item.type === 'separator') return { type: 'separator' };
     if (item.id === 'open-web') return { label: item.label, click: openWeb };
     if (item.id === 'open-admin') return { label: item.label, click: openAdmin };
     if (item.id === 'start-desktop-pet' || item.id === 'stop-desktop-pet') return { label: item.label, enabled: item.enabled !== false, click: () => { void toggleDesktopPet(); } };
+    if (item.id === 'check-update') return { label: item.label, click: () => { void requestDesktopUpdateCheck({ manual: true }); } };
+    if (item.id === 'open-update-release') return { label: item.label, click: () => { void openUpdateRelease(); } };
     if (item.id === 'service-status') return { label: item.label, click: () => { void showServiceStatus(); } };
     if (item.id === 'quit-v8os') return { label: item.label, click: () => { void quitV8OS(); } };
     return { label: item.label, enabled: false };
@@ -673,11 +1213,11 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    showMainWindow();
   });
   mainWindow.on('close', (event) => {
     if (quitting) return;
@@ -687,6 +1227,27 @@ function createMainWindow() {
   mainWindow.on('maximize', emitWindowState);
   mainWindow.on('unmaximize', emitWindowState);
   mainWindow.on('restore', emitWindowState);
+  mainWindow.webContents.on('will-navigate', (event, targetUrl, _isInPlace, isMainFrame) => {
+    const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
+    const destination = event.url || targetUrl;
+    if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
+  });
+  mainWindow.webContents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
+    const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
+    const destination = event.url || targetUrl;
+    if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const route = classifyWindowOpen(url, productOrigins);
+    if (route === 'product') {
+      void loadInMainWindow(url);
+    } else if (route === 'external') {
+      void shell.openExternal(url).catch(() => {
+        console.warn('[v8os-shell] external page could not be opened');
+      });
+    }
+    return { action: 'deny' };
+  });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (details?.reason === 'clean-exit') return;
     shellControl?.setSurfaceStatus({ surfaceReady: false });
@@ -711,9 +1272,16 @@ function createMainWindow() {
       reportSurfaceStage('surface_loaded', { surfaceKind: null, domReady: false });
       return;
     }
-    void verifyProductSurfaceDom(
+    void waitForProductSurfaceDom(
       (script) => contents.executeJavaScript(script, true),
       surfaceKind,
+      {
+        timeoutMs: 5000,
+        intervalMs: 100,
+        isCancelled: () => contents.isDestroyed()
+          || mainWindow?.webContents !== contents
+          || contents.getURL() !== loadedUrl,
+      },
     ).then((domReady) => {
       if (contents.isDestroyed() || mainWindow?.webContents !== contents) return;
       const currentUrl = contents.getURL() || '';
@@ -736,6 +1304,7 @@ function createMainWindow() {
         scheduleSurfaceRecovery('product DOM marker missing', currentUrl);
         return;
       }
+      scheduleAutomaticUpdateCheck();
       if (surfaceStabilityTimer) clearTimeout(surfaceStabilityTimer);
       surfaceStabilityTimer = setTimeout(() => {
         surfaceRecoveryTimes = [];
@@ -744,18 +1313,18 @@ function createMainWindow() {
     });
   });
   void loadUrlSafely(
-    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web...')),
+    () => mainWindow.loadURL(startupDataUrl('正在启动 Engine / Admin / Web... / Starting Engine, Admin, and Web...')),
     (error) => console.error('[v8os-shell] failed to show startup surface', error),
   ).finally(() => {
     void loadInitialSurface();
   });
 }
 
-ipcMain.on('v8os-shell:minimize', () => {
+onTrustedShellIpc('v8os-shell:minimize', () => {
   mainWindow?.minimize();
-});
+}, { allowStartup: true });
 
-ipcMain.on('v8os-shell:toggle-maximize', () => {
+onTrustedShellIpc('v8os-shell:toggle-maximize', () => {
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) {
     mainWindow.unmaximize();
@@ -763,27 +1332,31 @@ ipcMain.on('v8os-shell:toggle-maximize', () => {
     mainWindow.maximize();
   }
   emitWindowState();
-});
+}, { allowStartup: true });
 
-ipcMain.handle('v8os-shell:get-window-state', () => currentWindowState());
+handleTrustedShellIpc('v8os-shell:get-window-state', () => currentWindowState(), { allowStartup: true });
 
-ipcMain.on('v8os-shell:close', () => {
+onTrustedShellIpc('v8os-shell:close', () => {
   mainWindow?.hide();
-});
+}, { allowStartup: true });
 
-ipcMain.on('v8os-shell:open-web', () => {
+onTrustedShellIpc('v8os-shell:open-web', () => {
   void openWeb();
 });
 
-ipcMain.on('v8os-shell:open-admin', () => {
+onTrustedShellIpc('v8os-shell:retry-startup', () => {
+  void retryInitialSurface();
+}, { allowStartup: true });
+
+onTrustedShellIpc('v8os-shell:open-admin', () => {
   void openAdmin();
 });
 
-ipcMain.on('v8os-shell:active-session', (_event, sessionId) => {
+onTrustedShellIpc('v8os-shell:active-session', (_event, sessionId) => {
   reportActiveSession(sessionId);
 });
 
-ipcMain.handle('v8os-shell:open-workspace-folder', async (_event, workspacePath) => {
+handleTrustedShellIpc('v8os-shell:open-workspace-folder', async (_event, workspacePath) => {
   const requestedPath = String(workspacePath || '').trim();
   if (!requestedPath || requestedPath.length > 4096 || !path.isAbsolute(requestedPath)) {
     return { ok: false, error: 'invalid_workspace_path' };
@@ -800,7 +1373,7 @@ ipcMain.handle('v8os-shell:open-workspace-folder', async (_event, workspacePath)
   return error ? { ok: false, error } : { ok: true };
 });
 
-ipcMain.handle('v8os-shell:reveal-workspace-file', async (_event, workspaceRelativePath, workspacePath) => {
+handleTrustedShellIpc('v8os-shell:reveal-workspace-file', async (_event, workspaceRelativePath, workspacePath) => {
   const requestedRelativePath = String(workspaceRelativePath || '').trim();
   const requestedRoot = String(workspacePath || '').trim();
   if (
@@ -830,7 +1403,7 @@ ipcMain.handle('v8os-shell:reveal-workspace-file', async (_event, workspaceRelat
   return { ok: true };
 });
 
-ipcMain.handle('v8os-shell:select-godot-executable', async () => {
+handleTrustedShellIpc('v8os-shell:select-godot-executable', async () => {
   if (!mainWindow) return { ok: false, error: 'shell_window_unavailable' };
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Select Godot executable',
@@ -843,7 +1416,7 @@ ipcMain.handle('v8os-shell:select-godot-executable', async () => {
   return { ok: true, path: path.resolve(result.filePaths[0]) };
 });
 
-ipcMain.handle('v8os-shell:select-godot-project-directory', async () => {
+handleTrustedShellIpc('v8os-shell:select-godot-project-directory', async () => {
   if (!mainWindow) return { ok: false, error: 'shell_window_unavailable' };
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Select Godot project',
@@ -853,15 +1426,24 @@ ipcMain.handle('v8os-shell:select-godot-project-directory', async () => {
   return { ok: true, path: path.resolve(result.filePaths[0]) };
 });
 
-ipcMain.handle('v8os-shell:get-desktop-pet-state', async () => {
+handleTrustedShellIpc('v8os-shell:get-desktop-pet-state', async () => {
   await refreshStatus();
   return currentDesktopPetStatus();
 });
 
-ipcMain.handle('v8os-shell:set-desktop-pet-enabled', async (_event, enabled) => {
+handleTrustedShellIpc('v8os-shell:set-desktop-pet-enabled', async (_event, enabled) => {
   await refreshStatus();
   return setDesktopPetEnabled(Boolean(enabled));
 });
+
+handleTrustedShellIpc('v8os-shell:get-update-status', async () => publicUpdateStatus());
+
+handleTrustedShellIpc('v8os-shell:check-for-updates', async () => {
+  await requestDesktopUpdateCheck({ surface: true });
+  return publicUpdateStatus();
+});
+
+handleTrustedShellIpc('v8os-shell:open-update-release', async () => openUpdateRelease());
 
 function registerShellProtocol() {
   if (process.defaultApp && process.argv.length >= 2) {
@@ -877,6 +1459,11 @@ if (!hasSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const deepLink = deepLinkFromArgv(argv);
     if (!handleShellDeepLink(deepLink)) showMainWindow();
+  });
+  app.on('before-quit', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    void quitV8OS();
   });
 
   app.whenReady().then(async () => {
@@ -913,6 +1500,7 @@ app.on('open-url', (event, url) => {
 });
 
 app.on('will-quit', () => {
+  if (automaticUpdateCheckTimer) clearTimeout(automaticUpdateCheckTimer);
   desktopPetShutdown.cancelAll();
   void shellControl?.stop();
 });

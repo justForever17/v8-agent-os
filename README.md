@@ -68,7 +68,7 @@ Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
 - Desktop Preview: Windows x64/ARM64 installers, macOS Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages.
 - Android Phone Preview: APK package.
 
-The desktop build is currently an unsigned preview. Windows may show a security confirmation and macOS may require an explicit system confirmation before first launch. Code signing and auto-update are planned for later releases. Linux Wayland input restrictions and macOS accessibility permissions are surfaced explicitly rather than silently bypassed.
+The desktop build is currently an unsigned preview. After startup, the client checks the unified Preview Release automatically, and the tray also provides a manual check. Downloads and installation always require user confirmation; no update is installed silently. Windows may show a security confirmation and macOS may require an explicit system confirmation before first launch. Code signing and signed automatic installation remain future work. Linux stores secrets through the desktop Secret Service; the DEB declares GNOME Keyring while AppImage users must provide a compatible Secret Service on the host. Linux Wayland input restrictions and macOS accessibility permissions are surfaced explicitly rather than silently bypassed.
 
 ### Run From Source
 
@@ -88,7 +88,7 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 
 | Product | Status | Notes |
 | --- | --- | --- |
-| Desktop | Preview | Windows x64/ARM64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Signing, auto-update, and stable releases are still future work. |
+| Desktop | Preview | Windows x64/ARM64, macOS Intel/Apple Silicon, and Linux x64/arm64 unsigned preview builds are available. Automatic update detection and a manual tray check are included; signing, automatic installation, and stable releases are still future work. |
 | Phone | Preview | Android APK is the required release target. iOS targets 16.4 and later but remains disabled until non-interactive signing is configured. |
 | TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
 | Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |

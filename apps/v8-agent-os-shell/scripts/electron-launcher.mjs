@@ -22,22 +22,90 @@ export function ensureElectron() {
   }
 }
 
-export function electronCliPath() {
-  const candidate = path.join(desktopPetDir, "node_modules", "electron", "cli.js");
+export function electronExecutablePath() {
+  const electronRoot = path.join(desktopPetDir, "node_modules", "electron", "dist");
+  const candidate = process.platform === "win32"
+    ? path.join(electronRoot, "electron.exe")
+    : process.platform === "darwin"
+      ? path.join(electronRoot, "Electron.app", "Contents", "MacOS", "Electron")
+      : path.join(electronRoot, "electron");
   if (!fs.existsSync(candidate)) {
-    throw new Error("Electron CLI is missing. Run npm install in apps/v8-agent-os-desktop-pet.");
+    throw new Error("Electron executable is missing. Run npm install in apps/v8-agent-os-desktop-pet.");
   }
   return candidate;
 }
 
-export function launchElectron(target, extraEnv = {}) {
-  ensureElectron();
+export function isPackagedShellRuntime(env = process.env) {
+  return env.V8OS_SHELL_PACKAGED === "1";
+}
+
+export function desktopRuntimeSpawnSpec(target, extraEnv = {}) {
   const env = { ...process.env, ...extraEnv };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(process.execPath, [electronCliPath(), target], {
-    cwd: repoRoot,
-    stdio: "inherit",
+  env.V8_REPO_ROOT = paths.repoRoot;
+  env.V8_DESKTOP_PET_DIR = paths.desktopPetDir;
+  env.V8OS_DESKTOP_RUNTIME_MODE = "desktop-pet";
+
+  if (isPackagedShellRuntime(env)) {
+    const shellExecutable = String(env.V8OS_SHELL_EXECUTABLE || process.execPath).trim();
+    if (!shellExecutable || !fs.existsSync(shellExecutable)) {
+      throw new Error("Packaged V8OS Shell executable is unavailable for the desktop pet runtime.");
+    }
+    env.V8_DESKTOP_NODE = shellExecutable;
+    env.V8_DESKTOP_NODE_IS_ELECTRON = "1";
+    return {
+      command: shellExecutable,
+      args: [target],
+      cwd: paths.repoRoot,
+      env,
+    };
+  }
+
+  ensureElectron();
+  const electronExecutable = electronExecutablePath();
+  env.V8_DESKTOP_NODE = electronExecutable;
+  env.V8_DESKTOP_NODE_IS_ELECTRON = "1";
+  return {
+    command: electronExecutable,
+    args: [target],
+    cwd: paths.repoRoot,
     env,
+  };
+}
+
+export function shellRuntimeSpawnSpec(target, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.V8OS_DESKTOP_RUNTIME_MODE;
+
+  if (isPackagedShellRuntime(env)) {
+    const shellExecutable = String(env.V8OS_SHELL_EXECUTABLE || process.execPath).trim();
+    if (!shellExecutable || !fs.existsSync(shellExecutable)) {
+      throw new Error("Packaged V8OS Shell executable is unavailable.");
+    }
+    return {
+      command: shellExecutable,
+      args: [],
+      cwd: paths.repoRoot,
+      env,
+    };
+  }
+
+  ensureElectron();
+  return {
+    command: electronExecutablePath(),
+    args: [target],
+    cwd: paths.repoRoot,
+    env,
+  };
+}
+
+export function launchElectron(target, extraEnv = {}) {
+  const spec = shellRuntimeSpawnSpec(target, extraEnv);
+  const child = spawn(spec.command, spec.args, {
+    cwd: spec.cwd,
+    stdio: "inherit",
+    env: spec.env,
     windowsHide: true,
   });
   const stop = () => {
@@ -54,7 +122,7 @@ export function launchElectron(target, extraEnv = {}) {
 }
 
 export async function launchDetachedElectron(target, extraEnv = {}) {
-  ensureElectron();
+  if (!isPackagedShellRuntime()) ensureElectron();
   const handoffPath = path.join(os.tmpdir(), `v8os-desktop-pet-${process.pid}-${Date.now()}.json`);
   const interposer = path.join(shellDir, "scripts", "spawn-detached-electron.mjs");
   const env = { ...process.env, ...extraEnv };
@@ -75,7 +143,30 @@ export async function launchDetachedElectron(target, extraEnv = {}) {
   if (!Number.isInteger(handoff?.pid) || handoff.pid <= 0) {
     throw new Error("Detached Electron launcher returned an invalid desktop pet PID.");
   }
+  writeManagedRuntimeHandoff(handoff.pid);
   return handoff.pid;
+}
+
+function writeManagedRuntimeHandoff(pid) {
+  const receiptPath = String(process.env.V8OS_RUNTIME_HANDOFF_PATH || "").trim();
+  const nonce = String(process.env.V8OS_RUNTIME_HANDOFF_NONCE || "").trim();
+  if (!receiptPath && !nonce) return;
+  if (!receiptPath || !/^[0-9a-f-]{36}$/i.test(nonce)) {
+    throw new Error("Managed desktop pet handoff contract is incomplete.");
+  }
+  const stateRoot = path.resolve(process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os"));
+  const handoffRoot = path.join(stateRoot, "runtime", "cli", "handoffs");
+  const expectedPath = path.join(handoffRoot, `desktop-pet-${nonce}.json`);
+  if (path.resolve(receiptPath) !== expectedPath) {
+    throw new Error("Managed desktop pet handoff path is outside the governed runtime directory.");
+  }
+  fs.mkdirSync(handoffRoot, { recursive: true });
+  const temporaryPath = `${expectedPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({ version: 1, componentId: "desktop-pet", nonce, pid })}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  fs.renameSync(temporaryPath, expectedPath);
 }
 
 export const paths = {

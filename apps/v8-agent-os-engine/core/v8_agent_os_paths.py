@@ -2,9 +2,16 @@ from __future__ import annotations
 
 """V8 Agent OS canonical runtime path helpers."""
 
+import os
 from pathlib import Path
 
-V8_AGENT_OS_HOME = Path.home() / ".v8-agent-os"
+
+def _resolve_v8_agent_os_home() -> Path:
+    configured = str(os.environ.get("V8_AGENT_OS_HOME") or "").strip()
+    return Path(configured).expanduser().resolve(strict=False) if configured else Path.home() / ".v8-agent-os"
+
+
+V8_AGENT_OS_HOME = _resolve_v8_agent_os_home()
 V8_AGENT_OS_CORE_PATH = V8_AGENT_OS_HOME / "core"
 OAUTH_CORE_PATH = V8_AGENT_OS_CORE_PATH / "oauth"
 OAUTH_PROVIDERS_PATH = OAUTH_CORE_PATH / "providers"

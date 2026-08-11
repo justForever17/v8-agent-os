@@ -61,12 +61,31 @@ type RuntimeCapabilityEntry = {
     kind: string;
     displayName?: string;
     summary?: string;
+    availability?: string;
     policy?: {
         enabled?: boolean;
         autoRoute?: boolean;
         exposeDirectTools?: boolean;
     };
 };
+
+type RuntimeFeaturePackEntry = {
+    id?: string;
+    status?: string;
+    restartRequired?: boolean;
+};
+
+type RpaAvailability = {
+    robotFramework?: boolean;
+    rpaFramework?: boolean;
+    libraries?: Record<string, boolean>;
+};
+
+function runtimeCapabilityCanBeEnabled(capability: RuntimeCapabilityEntry | null) {
+    return capability?.availability === "installed" || capability?.availability === "disabled_by_policy";
+}
+
+type FeaturePackGateState = "unknown" | "missing" | "restart_required" | "ready";
 
 export default function RpaRuntimePage() {
     const t = useT();
@@ -75,15 +94,16 @@ export default function RpaRuntimePage() {
         const models = peekAdminJsonCache<ModelOption[]>("/api/models");
         const capabilitySnapshot = peekAdminJsonCache<Record<string, unknown>>("/api/runtime-capabilities");
         const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
-        const featurePacks = peekAdminJsonCache<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs");
+        const featurePacks = peekAdminJsonCache<{ packs?: RuntimeFeaturePackEntry[] }>("/api/runtime-feature-packs");
         const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
+        const featurePackState: FeaturePackGateState = featurePacks !== undefined
+            ? packs.find((item) => item.id === "rpa_automation")?.status === "installed" ? "restart_required" : "missing"
+            : "unknown";
         return {
             envelope,
             models: Array.isArray(models) ? models : [],
             runtimeCapability: runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "rpa") || null,
-            featurePackMissing: featurePacks !== undefined
-                ? packs.find((item) => item.id === "rpa_automation")?.status !== "installed"
-                : false,
+            featurePackState,
         };
     });
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<RpaData> | null>(initialState.envelope);
@@ -93,7 +113,7 @@ export default function RpaRuntimePage() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
-    const [featurePackMissing, setFeaturePackMissing] = useState(initialState.featurePackMissing);
+    const [featurePackState, setFeaturePackState] = useState<FeaturePackGateState>(initialState.featurePackState);
 
     const loadData = async (force = false) => {
         try {
@@ -101,15 +121,36 @@ export default function RpaRuntimePage() {
                 fetchConfigDomain<RpaData>("rpa", { force }),
                 fetchAdminJson<ModelOption[]>("/api/models", { force }),
                 fetchAdminJson<Record<string, unknown>>("/api/runtime-capabilities", { force }),
-                fetchAdminJson<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs", { force }),
+                fetchAdminJson<{ packs?: RuntimeFeaturePackEntry[] }>("/api/runtime-feature-packs", { force })
+                    .catch(() => null),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "rpa") || null);
-            const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
-            const rpaPack = packs.find((item: { id?: string; status?: string }) => item.id === "rpa_automation");
-            setFeaturePackMissing(rpaPack?.status !== "installed");
+            if (featurePacks) {
+                const packs = Array.isArray(featurePacks.packs) ? featurePacks.packs : [];
+                const rpaPack = packs.find((item) => item.id === "rpa_automation");
+                const rpaCapability = runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "rpa") || null;
+                if (rpaPack?.status !== "installed") {
+                    setFeaturePackState("missing");
+                } else if (rpaPack.restartRequired !== false || !runtimeCapabilityCanBeEnabled(rpaCapability)) {
+                    setFeaturePackState("restart_required");
+                } else {
+                    const availability = await fetchAdminJson<RpaAvailability>("/api/rpa/availability", { force: true })
+                        .catch(() => null);
+                    setFeaturePackState(
+                        availability?.robotFramework === true
+                            && availability?.rpaFramework === true
+                            && availability?.libraries?.["RPA.Browser.Selenium"] === true
+                            && availability?.libraries?.["RPA.Excel.Files"] === true
+                            ? "ready"
+                            : "restart_required"
+                    );
+                }
+            } else {
+                setFeaturePackState("unknown");
+            }
         } finally {
             setLoading(false);
         }
@@ -138,8 +179,12 @@ export default function RpaRuntimePage() {
     };
 
     const setRuntimeEnabled = async (enabled: boolean) => {
-        if (enabled && featurePackMissing) {
-            window.dispatchEvent(new Event("v8os:open-feature-packs"));
+        if (enabled && featurePackState !== "ready") {
+            if (featurePackState === "missing") {
+                window.dispatchEvent(new Event("v8os:open-feature-packs"));
+            } else {
+                void loadData(true);
+            }
             return;
         }
         setRuntimeSaving(true);
@@ -220,7 +265,7 @@ export default function RpaRuntimePage() {
 
             <StatusNotice title={"app.admin.dashboard.rpa.page.ka1059631"} tone="info" />
 
-            {featurePackMissing ? (
+            {featurePackState === "missing" ? (
                 <StatusNotice
                     title={"app.admin.dashboard.rpa.featurePackMissingTitle"}
                     description={"app.admin.dashboard.rpa.featurePackMissingDescription"}
@@ -265,7 +310,34 @@ export default function RpaRuntimePage() {
                 description={"app.admin.dashboard.rpa.page.k6bc68ae7"}
                 defaultOpen={false}
             >
-                <RPAWorkbench />
+                {featurePackState !== "ready" ? (
+                    <div className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-500/35 dark:bg-amber-500/10">
+                        <span className="text-sm text-amber-800 dark:text-amber-200">
+                            {t(featurePackState === "missing"
+                                ? "app.admin.dashboard.rpa.featurePackMissingDescription"
+                                : featurePackState === "restart_required"
+                                ? "components.layout.Topbar.featurePackRestartRequired"
+                                : "app.admin.dashboard.rpa.featurePackUnknownDescription")}
+                        </span>
+                        <Button
+                            type="button"
+                            className="shrink-0"
+                            onClick={() => {
+                                if (featurePackState === "missing") {
+                                    window.dispatchEvent(new Event("v8os:open-feature-packs"));
+                                } else {
+                                    void loadData(true);
+                                }
+                            }}
+                        >
+                            {t(featurePackState === "missing"
+                                ? "components.layout.Topbar.featurePackInstall"
+                                : "app.admin.dashboard.rpa.featurePackRetry")}
+                        </Button>
+                    </div>
+                ) : (
+                    <RPAWorkbench />
+                )}
             </AdvancedSection>
         </AdminPageShell>
     );

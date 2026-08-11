@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const test = require('node:test');
 
 const shellRoot = path.resolve(__dirname, '..');
@@ -16,11 +17,51 @@ test('shell main uses embedded CLI API instead of source-tree v8os wrappers', ()
   assert.match(mainSource, /shell_api\.mjs/);
 });
 
+test('packaged shell checks only governed unified releases without installing updates', () => {
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  const updateSource = fs.readFileSync(path.join(shellRoot, 'lib', 'update-check.cjs'), 'utf8');
+  const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
+  assert.match(config, /from: \.\.\/\.\.\/release-manifest\.json\s+to: v8os\/release-manifest\.json/);
+  assert.match(mainSource, /app\.isPackaged && process\.env\.V8OS_DISABLE_UPDATE_CHECK !== '1'/);
+  assert.match(mainSource, /scheduleAutomaticUpdateCheck\(\)/);
+  assert.match(mainSource, /if \(!surfaceReady\) \{[\s\S]*?return;[\s\S]*?\}\s+scheduleAutomaticUpdateCheck\(\)/);
+  assert.doesNotMatch(mainSource, /product_navigation_completed[^\n]*\n\s*scheduleAutomaticUpdateCheck\(\)/);
+  assert.match(mainSource, /AUTOMATIC_UPDATE_CHECK_DELAY_MS = 20_000/);
+  assert.match(mainSource, /requestDesktopUpdateCheck\(\{ manual: true \}\)/);
+  assert.match(mainSource, /async function showUpdateCheckResult[\s\S]*showMainWindow\(\);[\s\S]*mainWindow\.isVisible\(\)/);
+  assert.match(mainSource, /shell\.openExternal\(controlledUrl\)/);
+  assert.doesNotMatch(mainSource, /quitAndInstall|checkForUpdatesAndNotify|electron-updater/);
+  assert.match(updateSource, /repos\/justForever17\/v8-agent-os\/releases\?per_page=20/);
+  assert.doesNotMatch(updateSource, /releases\/latest|Authorization/);
+  assert.match(updateSource, /credentials: 'omit'/);
+  assert.match(updateSource, /redirect: 'error'/);
+  assert.match(updateSource, /DEFAULT_UPDATE_TIMEOUT_MS = 7000/);
+  assert.match(updateSource, /UNIFIED_TAG_RE/);
+  assert.match(updateSource, /SHA256SUMS\.txt/);
+  const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
+  assert.match(preloadSource, /getUpdateStatus/);
+  assert.match(preloadSource, /checkForUpdates/);
+  assert.match(preloadSource, /openUpdateRelease/);
+  assert.match(preloadSource, /v8os-shell:update-status/);
+  assert.match(mainSource, /currentVersion/);
+  assert.match(mainSource, /v8os-shell:get-update-status/);
+  assert.match(mainSource, /v8os-shell:check-for-updates/);
+  assert.match(mainSource, /v8os-shell:open-update-release/);
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+  const disabledUpdateChecks = workflow.match(/V8OS_DISABLE_UPDATE_CHECK:\s*['"]?1['"]?/g) || [];
+  assert.equal(disabledUpdateChecks.length, 4);
+  assert.match(workflow, /Installed Linux desktop smoke/);
+  assert.match(workflow, /Read-only AppImage desktop smoke/);
+  assert.match(workflow, /Installed Windows desktop smoke/);
+  assert.match(workflow, /Packaged macOS desktop smoke/);
+});
+
 test('packaged shell starts core services before waiting for them', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /ensureCoreServicesStarted/);
-  assert.match(mainSource, /shellStart\(\['engine', 'admin', 'web'\], \{ mode: 'start' \}\)/);
-  assert.match(mainSource, /await ensureCoreServicesStarted\(\);[\s\S]*await waitForServices\(\);/);
+  assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'admin', 'web'\]/);
+  assert.match(mainSource, /shellStart\(CORE_SERVICE_IDS, \{ mode: 'start' \}\)/);
+  assert.match(mainSource, /const startResults = await ensureCoreServicesStarted\(\);[\s\S]*await waitForServices\(startResults\);/);
   assert.match(mainSource, /Promise\.all\(\[/);
   assert.match(mainSource, /\$\{engineBaseUrl\}\/readyz/);
   assert.doesNotMatch(mainSource, /\$\{engineBaseUrl\}\/health/);
@@ -31,7 +72,39 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /kind: 'admin'/);
   assert.match(mainSource, /kind: 'web'/);
   assert.match(mainSource, /!\['started', 'already_running'\]\.includes\(item\.status\)/);
-  assert.match(mainSource, /核心服务启动失败/);
+  assert.match(mainSource, /monitorCoreServiceLiveness/);
+  assert.match(mainSource, /process\.kill\(pid, 0\)/);
+  assert.match(mainSource, /const statuses = await shellStatus\(exitedIds\)/);
+  assert.doesNotMatch(mainSource, /while \(!isComplete\(\)\) \{[\s\S]{0,220}shellStatus\(CORE_SERVICE_IDS\)/);
+  assert.match(mainSource, /isCancelled: \(\) => complete/);
+  assert.match(mainSource, /if \(options\.isCancelled\?\.\(\)\) return false/);
+  assert.match(mainSource, /coreServicesStartPromise === currentAttempt/);
+  assert.match(mainSource, /coreServiceStartupError/);
+  assert.match(mainSource, /logErr/);
+  assert.match(mainSource, /typeof error\?\.userFacingMessage === 'string'/);
+  assert.match(mainSource, /restartRetryableCoreServices/);
+  assert.match(mainSource, /v8os-shell:retry-startup/);
+  assert.match(mainSource, /replaceAll\('\\\\', '\/'\)/);
+  assert.doesNotMatch(mainSource, /isAdminLoggedIn/);
+  assert.match(mainSource, /api\/client\/instance/);
+  assert.match(mainSource, /payload\?\.kind !== 'v8_instance_manifest'/);
+  assert.match(mainSource, /typeof payload\?\.initialized !== 'boolean'/);
+  assert.match(mainSource, /initialProductSurfaceUrl\(\{/);
+  assert.match(mainSource, /async function openWeb\(\)[\s\S]*?return loadInMainWindow\(chatUrl\)/);
+  assert.match(mainSource, /mainWindow\.once\('ready-to-show',[\s\S]*?showMainWindow\(\)/);
+  const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
+  assert.match(preloadSource, /retryStartup/);
+  const installSmokeSource = fs.readFileSync(path.join(shellRoot, 'tests', 'scripts', 'run_desktop_install_smoke.mjs'), 'utf8');
+  assert.match(installSmokeSource, /api\/client\/instance/);
+  assert.match(installSmokeSource, /rawInitialInstanceManifest\.payload\?\.initialized === false/);
+  assert.match(installSmokeSource, /initialShellSurface\.surfaceKind === "admin-login"/);
+  assert.match(installSmokeSource, /\/api\/auth\/bootstrap/);
+  assert.match(installSmokeSource, /stop", "--only", "shell"/);
+  assert.match(installSmokeSource, /shellSurface\.surfaceKind === "web"/);
+  assert.match(installSmokeSource, /initial_bootstrap_surface_mismatch/);
+  assert.match(installSmokeSource, /trusted_web_surface_mismatch/);
+  assert.match(installSmokeSource, /typeof value\.checked !== "boolean"/);
+  assert.match(installSmokeSource, /permittedBooleans\.some\(\(key\) => typeof value\[key\] !== "boolean"\)/);
 });
 
 test('shell recovers a failed local surface without an unbounded reload loop', () => {
@@ -107,10 +180,56 @@ test('desktop traffic lights follow Windows action order and reflect maximize st
   assert.match(mainSource, /mainWindow\.on\('maximize', emitWindowState\)/);
 });
 
-test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electron apps', () => {
+test('packaged desktop pet reuses the Shell Electron runtime without packaged pet node_modules', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
+  const bootstrapSource = fs.readFileSync(path.join(shellRoot, 'electron', 'bootstrap.cjs'), 'utf8');
   const launcherSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
+  const detachedSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'spawn-detached-electron.mjs'), 'utf8');
+  const petMainSource = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs'),
+    'utf8',
+  );
+
+  assert.equal(pkg.main, 'electron/bootstrap.cjs');
+  assert.match(bootstrapSource, /V8OS_DESKTOP_RUNTIME_MODE/);
+  assert.match(bootstrapSource, /app\.setName\('V8 Agent OS Desktop Pet'\)/);
+  assert.match(bootstrapSource, /app\.setPath\('userData', desktopPetUserData\)/);
+  assert.match(bootstrapSource, /app\.setPath\('sessionData'/);
+  assert.match(bootstrapSource, /require\(desktopPetMain\)/);
   assert.match(launcherSource, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(launcherSource, /V8OS_SHELL_EXECUTABLE/);
+  assert.match(launcherSource, /V8OS_DESKTOP_RUNTIME_MODE = "desktop-pet"/);
+  assert.match(launcherSource, /V8_DESKTOP_NODE_IS_ELECTRON = "1"/);
+  assert.doesNotMatch(detachedSource, /electronCliPath/);
+  assert.match(detachedSource, /desktopRuntimeSpawnSpec\(target\)/);
+  assert.match(petMainSource, /serverRuntimeIsElectron/);
+  assert.match(petMainSource, /serverEnv\.ELECTRON_RUN_AS_NODE = '1'/);
   assert.match(launcherSource, /windowsHide:\s*true/);
+
+  const launcher = await import(`${pathToFileURL(path.join(shellRoot, 'scripts', 'electron-launcher.mjs')).href}?test=${Date.now()}`);
+  const target = path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs');
+  const spec = launcher.desktopRuntimeSpawnSpec(target, {
+    ELECTRON_RUN_AS_NODE: '1',
+    V8OS_SHELL_PACKAGED: '1',
+    V8OS_SHELL_EXECUTABLE: process.execPath,
+  });
+  assert.equal(spec.command, process.execPath);
+  assert.deepEqual(spec.args, [target]);
+  assert.equal(spec.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(spec.env.V8OS_DESKTOP_RUNTIME_MODE, 'desktop-pet');
+  assert.equal(spec.env.V8_DESKTOP_NODE, process.execPath);
+  assert.equal(spec.env.V8_DESKTOP_NODE_IS_ELECTRON, '1');
+
+  const shellSpec = launcher.shellRuntimeSpawnSpec(shellRoot, {
+    ELECTRON_RUN_AS_NODE: '1',
+    V8OS_DESKTOP_RUNTIME_MODE: 'desktop-pet',
+    V8OS_SHELL_PACKAGED: '1',
+    V8OS_SHELL_EXECUTABLE: process.execPath,
+  });
+  assert.equal(shellSpec.command, process.execPath);
+  assert.deepEqual(shellSpec.args, []);
+  assert.equal(shellSpec.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(shellSpec.env.V8OS_DESKTOP_RUNTIME_MODE, undefined);
 });
 
 test('desktop release scripts build native installers for every supported desktop target', () => {
@@ -145,8 +264,20 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /extraResources:/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-engine/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-web/);
+  assert.match(config, /to: v8os\/apps\/v8-agent-os-shell\/scripts/);
+  assert.match(config, /electron-launcher\.mjs/);
+  assert.match(config, /feature_pack_runtime_probe\.py/);
+  assert.match(config, /launch-desktop-pet\.mjs/);
+  assert.match(config, /launch-shell\.mjs/);
+  assert.match(config, /spawn-detached-electron\.mjs/);
+  assert.match(
+    config,
+    /from: \.\.\/\.\.\/apps\/v8-agent-os-shell\/scripts[\s\S]*?feature_pack_runtime_probe\.py/,
+  );
+  assert.doesNotMatch(config, /from: \.\.\/\.\.\/apps\/v8-agent-os-shell\/tests\/scripts/);
   assert.match(config, /!\.next\/dev\/\*\*/);
   assert.match(config, /!native\/\*\*\/target\/\*\*/);
+  assert.match(config, /to: v8os\/apps\/v8-agent-os-shell\/scripts/);
 });
 
 test('desktop release notes advertise the multi-platform unsigned preview assets', () => {
@@ -215,7 +346,10 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:linux:preview/);
   assert.match(workflow, /prepare-posix-python-runtime\.mjs/);
   assert.match(workflow, /resolve-desktop-build-matrix\.mjs/);
-  assert.match(workflow, /resolve-desktop-platforms:[\s\S]*?uses: actions\/checkout@v7/);
+  assert.match(
+    workflow,
+    /resolve-desktop-platforms:[\s\S]*?uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/,
+  );
   assert.match(workflow, /build-macos-ax-helper\.mjs/);
   assert.match(workflow, /verify-desktop-package-layout\.mjs/);
   assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
@@ -298,7 +432,10 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
   assert.match(workflow, /fail_on_unmatched_files: true/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
-  assert.equal((workflow.match(/softprops\/action-gh-release@v3/g) || []).length, 1);
+  assert.equal(
+    (workflow.match(/softprops\/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228/g) || []).length,
+    1,
+  );
   assert.equal((workflow.match(/environment: release/g) || []).length, 2);
   assert.equal((workflow.match(/secrets\.EXPO_TOKEN/g) || []).length, 2);
   assert.doesNotMatch(workflow, /secrets: inherit/);
@@ -316,6 +453,40 @@ test('root release workflow is the only fan-in publisher and enforces required p
     'platform Python runtime validation must run before expensive product dependency installs',
   );
   assert.doesNotMatch(workflow, /RUNTIME_PROBE-\*\.json|PACKAGE_LAYOUT-\*\.json/);
+});
+
+test('every external GitHub Action is pinned to an immutable commit', () => {
+  const githubRoot = path.join(repoRoot, '.github');
+  const pending = [githubRoot];
+  const actionFiles = [];
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (/\.ya?ml$/i.test(entry.name)) {
+        actionFiles.push(entryPath);
+      }
+    }
+  }
+
+  const unpinned = [];
+  for (const actionFile of actionFiles) {
+    const source = fs.readFileSync(actionFile, 'utf8');
+    for (const match of source.matchAll(/^\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gm)) {
+      const reference = match[1];
+      if (reference.startsWith('./') || reference.startsWith('docker://')) continue;
+      const separator = reference.lastIndexOf('@');
+      const revision = separator >= 0 ? reference.slice(separator + 1) : '';
+      if (!/^[0-9a-f]{40}$/i.test(revision)) {
+        unpinned.push(`${path.relative(repoRoot, actionFile)}: ${reference}`);
+      }
+    }
+  }
+
+  assert.deepEqual(unpinned, []);
 });
 
 test('phone manual workflow and root release share one governed package action', () => {
@@ -463,6 +634,23 @@ test('desktop preview uses a slim portable Python release profile', () => {
     'utf8',
   );
   assert.match(packageLayoutScript, /THIRD_PARTY_NOTICES", "pyatspi2-COPYING/);
+  assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-desktop-pet\.mjs/);
+  assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-shell\.mjs/);
+  assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "spawn-detached-electron\.mjs/);
+  assert.match(packageLayoutScript, /verifyShellBootstrap\(appAsar\)/);
+  assert.match(packageLayoutScript, /verifyDesktopPetServerBundle\(desktopPetServerBundle\)/);
+});
+
+test('desktop pet production server bundles runtime dependencies and keeps Vite development-only', () => {
+  const petRoot = path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet');
+  const pkg = JSON.parse(fs.readFileSync(path.join(petRoot, 'package.json'), 'utf8'));
+  const serverSource = fs.readFileSync(path.join(petRoot, 'server.ts'), 'utf8');
+
+  assert.match(pkg.scripts.build, /--bundle/);
+  assert.match(pkg.scripts.build, /--external:vite/);
+  assert.doesNotMatch(pkg.scripts.build, /--packages=external/);
+  assert.doesNotMatch(serverSource, /^import .* from ["']vite["'];?$/m);
+  assert.match(serverSource, /process\.env\.NODE_ENV !== "production"[\s\S]{0,180}await import\("vite"\)/);
 });
 
 test('Admin and Web release builds use Next standalone servers', () => {
@@ -480,6 +668,9 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /\.next["'], "static"/);
   assert.match(runner, /path\.join\(appDir, "public"\)/);
   assert.match(runner, /fs\.cpSync\(source, target, \{ recursive: true \}\)/);
+  assert.match(runner, /assertStandaloneAssetsReady/);
+  assert.match(runner, /stageStandaloneAssets\(appDir, builtStandaloneServer\)/);
+  assert.doesNotMatch(runner, /stageStandaloneAssets\(appDir, standaloneServer\)/);
   assert.match(runner, /windowsHide:\s*true/);
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
@@ -548,8 +739,76 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
   assert.match(workflow, /Installed Windows desktop smoke/);
   assert.match(workflow, /Print Windows desktop smoke service logs/);
-  assert.match(workflow, /\.v8-agent-os\\logs\\cli/);
+  assert.match(workflow, /Join-Path \$env:V8_AGENT_OS_HOME "logs\\cli"/);
   assert.match(workflow, /Upload Windows desktop smoke diagnostics/);
+  assert.match(workflow, /Start-Process -FilePath \$installer\.FullName -ArgumentList @\("\/S", "\/D=\$env:V8OS_WINDOWS_INSTALL_DIR"\)/);
+  const installedWindowsSmoke = workflow.slice(
+    workflow.indexOf('Installed Windows desktop smoke'),
+    workflow.indexOf('Print Windows desktop smoke service logs'),
+  );
+  assert.match(installedWindowsSmoke, /resources\\v8os/);
+  assert.match(installedWindowsSmoke, /\.python\\python\.exe/);
+  assert.match(installedWindowsSmoke, /WindowsCredentialBackend/);
+  assert.match(installedWindowsSmoke, /secrets\.token_hex\(12\)/);
+  assert.match(installedWindowsSmoke, /store\.put\(value, reference=reference, namespace="system"\)/);
+  assert.match(installedWindowsSmoke, /store\.resolve\(reference\) == value/);
+  assert.match(installedWindowsSmoke, /store\.delete\(reference\) is True/);
+  assert.match(installedWindowsSmoke, /store\.status\(reference\)\.configured is False/);
+  assert.match(installedWindowsSmoke, /V8OS_WINDOWS_CREDENTIAL_MANAGER_OK/);
+  assert.match(workflow, /Read-only AppImage desktop smoke/);
+  assert.match(workflow, /chmod -R a-w "\$package_root"/);
+  const appImageSmoke = workflow.slice(
+    workflow.indexOf('Read-only AppImage desktop smoke'),
+    workflow.indexOf('Collect Linux desktop smoke diagnostics'),
+  );
+  assert.match(appImageSmoke, /app_run="\$package_root\/AppRun"/);
+  assert.match(appImageSmoke, /"\$app_run" "\$installed_cli" stop --all/);
+  assert.match(appImageSmoke, /--shell-exe "\$app_run"/);
+  assert.match(appImageSmoke, /--resource-root "\$resource_root"/);
+  assert.doesNotMatch(appImageSmoke, /--shell-exe "\$shell_exe"/);
+  assert.doesNotMatch(appImageSmoke, /--shell-exe "\$appimage"/);
+  assert.match(workflow, /Packaged macOS desktop smoke/);
+  assert.match(workflow, /hdiutil attach "\$dmg_path" -mountpoint "\$mount_point" -nobrowse -readonly/);
+  assert.match(workflow, /Install Linux desktop preview package/);
+  assert.match(workflow, /sudo dpkg -i "\$deb_path"/);
+  assert.match(workflow, /\/opt\/V8 Agent OS\/v8-agent-os-shell/);
+  assert.match(workflow, /Installed Linux desktop smoke/);
+  assert.match(workflow, /dbus-run-session/);
+  assert.match(workflow, /gnome-keyring-daemon --unlock --components=secrets/);
+  assert.match(workflow, /V8OS_LINUX_SECRET_SERVICE_OK/);
+  assert.match(workflow, /LinuxSecretServiceCredentialBackend/);
+  assert.match(workflow, /xvfb-run -a node/);
+  assert.match(workflow, /--startup-budget-ms 90000/);
+  assert.match(workflow, /Print Linux desktop smoke service logs/);
+  assert.match(workflow, /Upload Linux desktop smoke diagnostics/);
+  assert.match(workflow, /resource_root="\/opt\/V8 Agent OS\/resources\/v8os"/);
+  assert.match(workflow, /installed_cli="\$resource_root\/apps\/v8-agent-os-cli\/bin\/v8os\.mjs"/);
+  const linuxDebCleanup = workflow.slice(
+    workflow.indexOf('Cleanup Linux desktop smoke processes'),
+    workflow.indexOf('Read-only AppImage desktop smoke'),
+  );
+  assert.match(linuxDebCleanup, /ELECTRON_RUN_AS_NODE=1/);
+  assert.match(linuxDebCleanup, /V8OS_SHELL_PACKAGED=1/);
+  assert.match(linuxDebCleanup, /V8_REPO_ROOT="\$resource_root"/);
+  assert.match(linuxDebCleanup, /"\$shell_exe" "\$installed_cli" stop --all/);
+  assert.doesNotMatch(linuxDebCleanup, /node "\$installed_cli" stop --all/);
+  assert.equal(
+    (workflow.match(/verify_desktop_cleanup\.mjs/g) || []).length,
+    4,
+    'DEB, AppImage, Windows, and macOS smoke paths must share the strict cleanup verifier',
+  );
+  const cleanupVerifier = fs.readFileSync(
+    path.join(
+      repoRoot,
+      'apps',
+      'v8-agent-os-shell',
+      'tests',
+      'scripts',
+      'verify_desktop_cleanup.mjs',
+    ),
+    'utf8',
+  );
+  assert.match(cleanupVerifier, /V8OS_PACKAGED_DESKTOP_CLEANUP_OK/);
   assert.match(workflow, /desktop-smoke-diagnostics/);
   assert.match(workflow, /Normalize platform release assets and checksums/);
   assert.match(workflow, /Upload desktop platform artifacts/);
@@ -592,6 +851,9 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(requiredModulesBlock, /grpcNative/);
   assert.match(requiredModulesBlock, /httptoolsNative/);
   assert.match(requiredModulesBlock, /yaml/);
+  assert.match(requiredModulesBlock, /windowsCredentialManager/);
+  assert.match(requiredModulesBlock, /macOSKeychainApi/);
+  assert.match(requiredModulesBlock, /secretStorage/);
   assert.match(optionalModulesBlock, /pywinauto/);
   assert.match(optionalModulesBlock, /sqliteVec/);
   assert.match(runtimeProbe, /sqlite-vec does not publish a Windows ARM64 wheel/);
@@ -684,15 +946,100 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(packageLayoutProbe, /engine\.packagedRuntimeImport/);
   assert.match(packageLayoutProbe, /gi\.require_version\('Atspi', '2\.0'\)/);
   assert.match(packageLayoutProbe, /location\.is_relative_to\(runtime\)/);
+  assert.match(packageLayoutProbe, /nextStandaloneRequired/);
+  assert.match(packageLayoutProbe, /server\.js/);
+  assert.match(packageLayoutProbe, /standaloneAppRoot, "public"/);
+  assert.match(packageLayoutProbe, /release-manifest\.json/);
+  assert.match(packageLayoutProbe, /feature_pack_runtime_probe\.py/);
+  assert.match(packageLayoutProbe, /rpa-automation-cp311-/);
+  assert.match(packageLayoutProbe, /creative-media-image-analysis-cp311-/);
+  assert.match(packageLayoutProbe, /platform !== "macos-x64"/);
+  assert.match(packageLayoutProbe, /argValue\("--resource-root"\)/);
+  assert.match(packageLayoutProbe, /argValue\("--output"\)/);
+  assert.match(packageLayoutProbe, /spawnSync\(python, \["-I", "-X", "utf8"/);
+  assert.match(packageLayoutProbe, /PYTHONNOUSERSITE/);
+
+  const featurePackProbe = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'scripts', 'feature_pack_runtime_probe.py'),
+    'utf8',
+  );
+  assert.match(featurePackProbe, /RPA\.Excel\.Files/);
+  assert.match(featurePackProbe, /Create Workbook/);
+  assert.match(featurePackProbe, /_probe_onnx_runtime/);
+  assert.match(featurePackProbe, /moduleOriginsVerified/);
+  assert.match(featurePackProbe, /modelShaVerified/);
+  assert.doesNotMatch(featurePackProbe, /\b(?:pip|urlopen|requests|httpx)\b/);
 
   const installSmoke = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'run_desktop_install_smoke.mjs'),
     'utf8',
   );
   assert.match(installSmoke, /featurePackApi/);
-  assert.match(installSmoke, /featurePackState/);
+  assert.match(installSmoke, /featurePackEngineStatus/);
+  assert.match(installSmoke, /featurePackRuntime/);
+  assert.match(installSmoke, /feature_pack_runtime_probe\.py/);
+  assert.match(
+    installSmoke,
+    /resourceRoot,[\s\S]*?"apps",[\s\S]*?"v8-agent-os-engine"[\s\S]*?"\.python"/,
+  );
+  assert.match(
+    installSmoke,
+    /"v8-agent-os-shell",[\s\S]*?"scripts",[\s\S]*?"feature_pack_runtime_probe\.py"/,
+  );
+  assert.match(installSmoke, /v1\/runtime-feature-packs\/status/);
+  assert.doesNotMatch(installSmoke, /127\.0\.0\.1:9530\/health/);
+  assert.match(installSmoke, /timeoutMs: 3_000/);
+  assert.match(installSmoke, /--feature-pack-smoke/);
+  assert.match(installSmoke, /--feature-pack-probe-timeout-ms/);
+  assert.match(installSmoke, /Math\.min\(120_000/);
+  assert.match(installSmoke, /\["-I", "-B", probePath\]/);
+  assert.match(installSmoke, /PYTHONPATH/);
+  assert.match(installSmoke, /PYTHONHOME/);
+  assert.match(installSmoke, /windowsHide: true/);
+  assert.match(installSmoke, /taskkill/);
+  assert.match(installSmoke, /maxOutputBytes/);
+  assert.match(installSmoke, /rpa\.available && rpa\.isolated && rpa\.dryRunPassed/);
+  assert.match(
+    installSmoke,
+    /image\.assetResolved && image\.cpuSessionLoaded && image\.isolated[\s\S]*?image\.moduleOriginsVerified && image\.modelShaVerified/,
+  );
+  assert.match(installSmoke, /!rpa\.failClosed && rpa\.available/);
+  assert.match(installSmoke, /!image\.failClosed[\s\S]*?image\.assetResolved/);
+  assert.match(installSmoke, /seenIds/);
+  assert.match(installSmoke, /hasFeaturePackPayloadSchema/);
+  assert.match(installSmoke, /Array\.isArray\(payload\?\.packs\)/);
+  assert.match(installSmoke, /requiredAdminPackIds/);
+  assert.match(installSmoke, /"rpa_automation", "creative_media_image_analysis"/);
+  assert.match(installSmoke, /typeof pack\.installable !== "boolean"/);
+  assert.match(installSmoke, /featurePackApiMatchesEngine/);
+  assert.match(installSmoke, /adminPack\.status !== enginePack\.status/);
+  assert.match(installSmoke, /adminPack\.installed !== enginePack\.installed/);
+  assert.match(installSmoke, /adminPack\.restartRequired !== enginePack\.restartRequired/);
+  assert.match(installSmoke, /feature_pack_truth_mismatch/);
+  assert.match(installSmoke, /"total", "installed", "missing", "installing", "failed"/);
+  assert.match(installSmoke, /feature_pack_schema_invalid/);
+  assert.match(installSmoke, /rawFeaturePackApi\.ok\s*&& hasFeaturePackPayloadSchema\(rawFeaturePackApi\.payload\)/);
+  assert.match(installSmoke, /argValue\("--resource-root"\)/);
+  assert.match(installSmoke, /Packaged resource root is not a directory/);
   assert.match(installSmoke, /failureStage/);
-  assert.doesNotMatch(installSmoke, /stdout|stderr/);
+  assert.match(installSmoke, /V8_AGENT_OS_HOME/);
+  assert.match(installSmoke, /Promise\.all/);
+  assert.match(installSmoke, /startupDurationMs/);
+  assert.match(installSmoke, /startupBudgetMs/);
+  assert.match(installSmoke, /validateReadinessResponse/);
+  assert.match(installSmoke, /shell-control\.json/);
+  assert.match(installSmoke, /surfaceReady/);
+  assert.match(installSmoke, /isPidAlive/);
+  assert.match(installSmoke, /desktop-pet\.json/);
+  assert.match(installSmoke, /\/api\/pet\/health/);
+  assert.match(installSmoke, /controlConnected/);
+  assert.match(installSmoke, /desktopPetProcessRunning/);
+  assert.match(installSmoke, /Object\.values\(checks\)\.every\(\(item\) => item\.ok\)/);
+  const publicSmokePayload = installSmoke.slice(
+    installSmoke.indexOf('const payload = {'),
+    installSmoke.indexOf('const output = reportPath()'),
+  );
+  assert.doesNotMatch(publicSmokePayload, /stdout|stderr|desktopPetLaunch|stateRoot|shellExe|resourceRoot|logRef|lastError/);
 
   const portablePython = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-python-runtime.ps1'),
@@ -725,6 +1072,9 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(baseline, /Actions artifact/);
   assert.match(baseline, /Windows ARM64 兼容性技术债登记/);
   assert.match(baseline, /关闭后重开读取/);
+  assert.match(baseline, /Linux DEB 非 root 启动门禁/);
+  assert.match(baseline, /Secret Service/);
+  assert.match(baseline, /90 秒/);
 });
 
 test('memory knowledge graph stays visible without advanced mode', () => {

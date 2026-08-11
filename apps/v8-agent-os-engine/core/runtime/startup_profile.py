@@ -347,8 +347,12 @@ def resolve_install_platform() -> str:
     return str(get_runtime_registry_state()["installPlatform"])
 
 
-def installed_runtime_families(profile: str | None = None) -> list[str]:
-    state = get_runtime_registry_state()
+def installed_runtime_families(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> list[str]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
     normalized_profile = normalize_install_profile(profile or state["installProfile"])
     families = _normalize_runtime_families(state["installedRuntimeFamilies"])
     if normalized_profile != state["installProfile"]:
@@ -356,11 +360,16 @@ def installed_runtime_families(profile: str | None = None) -> list[str]:
     return families
 
 
-def runtime_family_installed(kind: str | None, *, profile: str | None = None) -> bool:
+def runtime_family_installed(
+    kind: str | None,
+    *,
+    profile: str | None = None,
+    _state: dict[str, Any] | None = None,
+) -> bool:
     normalized_kind = str(kind or "").strip()
     if not normalized_kind:
         return True
-    return normalized_kind in installed_runtime_families(profile)
+    return normalized_kind in installed_runtime_families(profile, _state=_state)
 
 
 def service_enabled(
@@ -369,11 +378,12 @@ def service_enabled(
     profile: str | None = None,
     runtime_kind: str | None = None,
     config_enabled: bool = True,
+    _state: dict[str, Any] | None = None,
 ) -> bool:
     if not config_enabled:
         return False
     family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
-    if family and not runtime_family_installed(family, profile=profile):
+    if family and not runtime_family_installed(family, profile=profile, _state=_state):
         return False
     if runtime_kind is not None and not runtime_policy_enabled(runtime_kind):
         return False
@@ -399,12 +409,14 @@ def service_state(
     profile: str | None = None,
     runtime_kind: str | None = None,
     config_enabled: bool = True,
+    _state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
     family = _FEATURE_RUNTIME_FAMILY.get(str(feature or "").strip())
     policy_enabled = True if runtime_kind is None else runtime_policy_enabled(runtime_kind)
 
-    if family and not runtime_family_installed(family, profile=normalized_profile):
+    if family and not runtime_family_installed(family, profile=normalized_profile, _state=state):
         reason = "not_installed"
     elif not config_enabled:
         reason = "disabled_by_config"
@@ -419,7 +431,7 @@ def service_state(
         "reason": reason,
         "reasonLabel": _DISABLED_REASON_LABELS.get(reason, reason),
         "installProfile": normalized_profile,
-        "installPlatform": resolve_install_platform(),
+        "installPlatform": str(state["installPlatform"]),
         "runtimeFamily": family,
         "runtimeKind": str(runtime_kind or "").strip() or None,
         "configEnabled": bool(config_enabled),
@@ -427,66 +439,90 @@ def service_state(
     }
 
 
-def startup_bundle_summary(profile: str | None = None) -> dict[str, bool]:
-    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+def startup_bundle_summary(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> dict[str, bool]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
     return {
-        "audio": service_enabled("audio", profile=normalized_profile),
-        "skills": service_enabled("skills", profile=normalized_profile),
-        "mcp": service_enabled("mcp", profile=normalized_profile),
-        "extensions": service_enabled("extensions", profile=normalized_profile),
-        "cron": service_enabled("cron", profile=normalized_profile),
-        "knowledge": service_enabled("knowledge", profile=normalized_profile),
-        "ops": service_enabled("ops", profile=normalized_profile),
-        "engineering": service_enabled("engineering", profile=normalized_profile),
-        "pluginManager": runtime_family_installed("plugin_manager", profile=normalized_profile),
-        "networkSupervisor": service_enabled("network_supervisor", profile=normalized_profile),
-        "computerUse": service_enabled("computer_use", profile=normalized_profile),
-        "desktopLive": service_enabled("desktop_live", profile=normalized_profile),
-        "rpa": service_enabled("rpa", profile=normalized_profile),
+        "audio": service_enabled("audio", profile=normalized_profile, _state=state),
+        "skills": service_enabled("skills", profile=normalized_profile, _state=state),
+        "mcp": service_enabled("mcp", profile=normalized_profile, _state=state),
+        "extensions": service_enabled("extensions", profile=normalized_profile, _state=state),
+        "cron": service_enabled("cron", profile=normalized_profile, _state=state),
+        "knowledge": service_enabled("knowledge", profile=normalized_profile, _state=state),
+        "ops": service_enabled("ops", profile=normalized_profile, _state=state),
+        "engineering": service_enabled("engineering", profile=normalized_profile, _state=state),
+        "pluginManager": runtime_family_installed("plugin_manager", profile=normalized_profile, _state=state),
+        "networkSupervisor": service_enabled("network_supervisor", profile=normalized_profile, _state=state),
+        "computerUse": service_enabled("computer_use", profile=normalized_profile, _state=state),
+        "desktopLive": service_enabled("desktop_live", profile=normalized_profile, _state=state),
+        "rpa": service_enabled("rpa", profile=normalized_profile, _state=state),
     }
 
 
-def startup_bundle_diagnostics(profile: str | None = None) -> dict[str, dict[str, Any]]:
-    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+def startup_bundle_diagnostics(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
     return {
-        "audio": service_state("audio", profile=normalized_profile),
-        "skills": service_state("skills", profile=normalized_profile),
-        "mcp": service_state("mcp", profile=normalized_profile),
-        "extensions": service_state("extensions", profile=normalized_profile),
-        "cron": service_state("cron", profile=normalized_profile),
-        "knowledge": service_state("knowledge", profile=normalized_profile),
-        "ops": service_state("ops", profile=normalized_profile),
-        "engineering": service_state("engineering", profile=normalized_profile),
-        "plugin_manager": service_state("plugin_manager", profile=normalized_profile),
-        "network_supervisor": service_state("network_supervisor", profile=normalized_profile),
-        "computer_use": service_state("computer_use", profile=normalized_profile),
-        "desktop_live": service_state("desktop_live", profile=normalized_profile),
-        "rpa": service_state("rpa", profile=normalized_profile),
+        "audio": service_state("audio", profile=normalized_profile, _state=state),
+        "skills": service_state("skills", profile=normalized_profile, _state=state),
+        "mcp": service_state("mcp", profile=normalized_profile, _state=state),
+        "extensions": service_state("extensions", profile=normalized_profile, _state=state),
+        "cron": service_state("cron", profile=normalized_profile, _state=state),
+        "knowledge": service_state("knowledge", profile=normalized_profile, _state=state),
+        "ops": service_state("ops", profile=normalized_profile, _state=state),
+        "engineering": service_state("engineering", profile=normalized_profile, _state=state),
+        "plugin_manager": service_state("plugin_manager", profile=normalized_profile, _state=state),
+        "network_supervisor": service_state("network_supervisor", profile=normalized_profile, _state=state),
+        "computer_use": service_state("computer_use", profile=normalized_profile, _state=state),
+        "desktop_live": service_state("desktop_live", profile=normalized_profile, _state=state),
+        "rpa": service_state("rpa", profile=normalized_profile, _state=state),
     }
 
 
-def runtime_cluster_summary(profile: str | None = None) -> dict[str, bool]:
-    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+def runtime_cluster_summary(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> dict[str, bool]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
     return {
-        cluster_name: runtime_family_installed(family, profile=normalized_profile)
+        cluster_name: runtime_family_installed(family, profile=normalized_profile, _state=state)
         for cluster_name, family in _RUNTIME_CLUSTER_COMPAT_ORDER
     }
 
 
-def runtime_submode_summary(profile: str | None = None) -> dict[str, str]:
-    normalized_profile = normalize_install_profile(profile or resolve_install_profile())
+def runtime_submode_summary(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
+    normalized_profile = normalize_install_profile(profile or state["installProfile"])
     return {
-        cluster_name: "installed" if runtime_family_installed(family, profile=normalized_profile) else "off"
+        cluster_name: "installed" if runtime_family_installed(family, profile=normalized_profile, _state=state) else "off"
         for cluster_name, family in _RUNTIME_CLUSTER_COMPAT_ORDER
     }
 
 
-def disabled_reason_summary(profile: str | None = None) -> dict[str, dict[str, Any]]:
-    return startup_bundle_diagnostics(profile)
+def disabled_reason_summary(
+    profile: str | None = None,
+    *,
+    _state: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    return startup_bundle_diagnostics(profile, _state=_state)
 
 
-def build_installation_snapshot() -> dict[str, Any]:
-    state = get_runtime_registry_state()
+def build_installation_snapshot(*, _state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = _state if isinstance(_state, dict) else get_runtime_registry_state()
     return {
         "installProfile": state["installProfile"],
         "installPlatform": state["installPlatform"],

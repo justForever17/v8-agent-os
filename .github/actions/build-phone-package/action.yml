@@ -32,7 +32,7 @@ runs:
         esac
 
     - name: Setup Node
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
       with:
         node-version: 22
         cache: npm
@@ -59,7 +59,7 @@ runs:
         fi
 
     - name: Setup Expo and EAS
-      uses: expo/expo-github-action@v9
+      uses: expo/expo-github-action@eab7a230208c952974db8c3245cfd78402c7b385 # v9
       with:
         eas-version: 21.7.0
         token: ${{ inputs.expo-token }}
@@ -93,7 +93,7 @@ runs:
 
     - name: Upload Android package artifact
       if: inputs.platform == 'android'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: phone-android-package
         path: |
@@ -120,7 +120,7 @@ runs:
 
     - name: Upload iOS package artifact
       if: inputs.platform == 'ios'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
       with:
         name: phone-ios-package
         path: apps/v8-agent-os-phone/app-release.ipa

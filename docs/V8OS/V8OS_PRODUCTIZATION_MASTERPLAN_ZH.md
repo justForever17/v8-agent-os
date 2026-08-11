@@ -1,6 +1,6 @@
 # V8OS 分层产品化开发总纲
 
-更新时间：2026-08-08
+更新时间：2026-08-10
 
 ## 目标
 
@@ -23,8 +23,9 @@ V8OS 的开发重心从继续堆 runtime 功能，转为把现有能力分层产
 - `release-manifest.json` schema 2 统一维护版本、通道、tag 与产品目标矩阵；Desktop 六个目标和 Android 当前为 required，iOS 因缺少非交互签名凭据明确 disabled/skipped。
 - 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 unsigned preview 的 reusable 构建链；根工作流负责单一 fan-in GitHub Release，真实 GUI 主机验收仍按平台单独执行。
 - 构建 job 只上传安装包与诊断工件；运行时探针和包布局 JSON 只保留在 Actions artifact，最终公开 Release 只展示安装包和统一校验和。
+- Linux 发布门禁会把 DEB 安装到 root-owned `/opt`，再以普通用户在隔离的 D-Bus、Secret Service 与 Xvfb 会话中启动 Engine/Admin/Web；真实 Wayland/X11、托盘和窗口交互仍由 Ubuntu 实机验收。
 - 仍不是 stable 正式安装包。
-- 没有自动更新和代码签名。
+- 已有统一 Preview Release 的启动后自动探测与手动检查入口；没有自动下载、静默安装和代码签名。
 - 小改 topbar、登录态、生产构建、Shell IPC、桌宠 managed mode 都可能破坏预览壳，必须跑预览验收。
 
 ### Phone 远程端
@@ -55,6 +56,8 @@ CLI 已具备 `start/stop/status/doctor/config/repair/preview/chat/sessions/inbo
 
 - `v8os preview` 必须稳定进入生产构建的 Admin/Web。
 - Shell 启动页、登录态切换、标题栏、托盘、桌宠受控启动要有 smoke。
+- Next standalone 资源只能在构建期预置，安装目录运行期只读；核心服务早退必须显示失败服务和日志入口，并允许重试。
+- Windows/Linux/macOS 凭据分别落入 Credential Manager、Secret Service 与 Keychain，不允许明文文件 fallback。
 - 退出 V8OS 能清理 CLI 管理的 Engine/Admin/Web/Shell/桌宠进程。
 - 预览壳不应出现 Turbopack/HMR 或 `npm run dev` 体验。
 
@@ -93,7 +96,7 @@ CLI 已具备 `start/stop/status/doctor/config/repair/preview/chat/sessions/inbo
 
 后续基础建设：
 
-- 自动更新。
+- 受签名保护的下载、校验与用户确认安装；Linux DEB 等需要系统包管理器授权的格式不得宣传为静默更新。
 - 代码签名。
 - 崩溃日志和 doctor 报告。
 - stable 安装包与跨平台 release workflow。

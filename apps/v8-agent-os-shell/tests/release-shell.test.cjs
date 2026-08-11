@@ -267,8 +267,10 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
 test('desktop release scripts build native installers for every supported desktop target', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts['dist:win'], 'npm run dist:win:preview');
+  assert.match(pkg.scripts['dist:win:preview'], /^cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder /);
   assert.match(pkg.scripts['dist:win:preview'], /--win nsis --publish never/);
   assert.doesNotMatch(pkg.scripts['dist:win:preview'], /\bzip\b/);
+  assert.match(pkg.scripts['dist:win:stable'], /^cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder /);
   assert.match(pkg.scripts['dist:win:stable'], /--win nsis zip --publish never/);
   assert.match(pkg.scripts['dist:mac:preview'], /--mac dmg --publish never/);
   assert.match(pkg.scripts['dist:linux:preview'], /--linux AppImage deb --publish never/);

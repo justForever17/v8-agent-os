@@ -17,13 +17,14 @@
   "scripts": {
     "electron:start": "node scripts/launch-shell.mjs",
     "dist:win": "npm run dist:win:preview",
-    "dist:win:preview": "electron-builder --config electron-builder.yml --win nsis --publish never",
-    "dist:win:stable": "electron-builder --config electron-builder.yml --win nsis zip --publish never",
+    "dist:win:preview": "cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder --config electron-builder.yml --win nsis --publish never",
+    "dist:win:stable": "cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder --config electron-builder.yml --win nsis zip --publish never",
     "dist:mac:preview": "electron-builder --config electron-builder.yml --mac dmg --publish never",
     "dist:linux:preview": "electron-builder --config electron-builder.yml --linux AppImage deb --publish never",
     "test": "node --test tests/*.test.cjs"
   },
   "devDependencies": {
+    "cross-env": "7.0.3",
     "electron": "^39.8.10",
     "electron-builder": "^26.0.12"
   }

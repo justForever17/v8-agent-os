@@ -419,14 +419,12 @@ jobs:
           mkdir -p "$work_root"
           (cd "$work_root" && "$appimage" --appimage-extract >/dev/null)
           package_root="$work_root/squashfs-root"
-          app_run="$package_root/AppRun"
           shell_exe="$package_root/v8-agent-os-shell"
           resource_root="$package_root/resources/v8os"
-          test -x "$app_run"
           test -x "$shell_exe"
           chmod -R a-w "$package_root"
           dbus-run-session -- xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
-            --shell-exe "$app_run" \
+            --shell-exe "$shell_exe" \
             --resource-root "$resource_root" \
               --timeout-ms 90000 \
               --startup-budget-ms 90000
@@ -440,15 +438,14 @@ jobs:
           set -euo pipefail
           work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
           package_root="$work_root/squashfs-root"
-          app_run="$package_root/AppRun"
           shell_exe="$package_root/v8-agent-os-shell"
           resource_root="$package_root/resources/v8os"
           installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
-          if [[ -x "$app_run" && -f "$installed_cli" ]]; then
+          if [[ -x "$shell_exe" && -f "$installed_cli" ]]; then
             ELECTRON_RUN_AS_NODE=1 \
             V8OS_SHELL_PACKAGED=1 \
             V8_REPO_ROOT="$resource_root" \
-              "$app_run" "$installed_cli" stop --all
+              "$shell_exe" "$installed_cli" stop --all
           fi
           pkill -TERM -f "^$shell_exe($| )" || true
           node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \

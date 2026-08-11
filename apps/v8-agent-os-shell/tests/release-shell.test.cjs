@@ -763,11 +763,11 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
     workflow.indexOf('Read-only AppImage desktop smoke'),
     workflow.indexOf('Collect Linux desktop smoke diagnostics'),
   );
-  assert.match(appImageSmoke, /app_run="\$package_root\/AppRun"/);
-  assert.match(appImageSmoke, /"\$app_run" "\$installed_cli" stop --all/);
-  assert.match(appImageSmoke, /--shell-exe "\$app_run"/);
+  assert.doesNotMatch(appImageSmoke, /app_run="\$package_root\/AppRun"/);
+  assert.match(appImageSmoke, /"\$shell_exe" "\$installed_cli" stop --all/);
+  assert.match(appImageSmoke, /--shell-exe "\$shell_exe"/);
   assert.match(appImageSmoke, /--resource-root "\$resource_root"/);
-  assert.doesNotMatch(appImageSmoke, /--shell-exe "\$shell_exe"/);
+  assert.match(appImageSmoke, /shell_exe="\$package_root\/v8-agent-os-shell"/);
   assert.doesNotMatch(appImageSmoke, /--shell-exe "\$appimage"/);
   assert.match(workflow, /Packaged macOS desktop smoke/);
   assert.match(workflow, /hdiutil attach "\$dmg_path" -mountpoint "\$mount_point" -nobrowse -readonly/);

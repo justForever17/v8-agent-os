@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { projectPublicRpaAvailability } from "../src/lib/server/rpa-public-surface.mjs";
+
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 test("RPA availability exposes capability booleans without local paths or raw import errors", () => {
     const projected = projectPublicRpaAvailability({
@@ -55,7 +58,7 @@ test("malformed RPA availability fails closed", () => {
 
 test("RPA availability proxy has a bounded, fail-closed deadline", () => {
     const routeSource = fs.readFileSync(
-        path.resolve("src", "app", "api", "rpa", "[[...segments]]", "route.ts"),
+        path.resolve(TEST_DIR, "..", "src", "app", "api", "rpa", "[[...segments]]", "route.ts"),
         "utf8",
     );
     assert.match(routeSource, /AbortSignal\.timeout\(7_000\)/);

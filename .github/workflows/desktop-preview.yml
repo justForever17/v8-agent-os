@@ -310,6 +310,8 @@ jobs:
             *) echo "Unsupported Linux package architecture: ${{ matrix.arch }}" >&2; exit 1 ;;
           esac
           test "$(dpkg-deb -f "$deb_path" Architecture)" = "$expected_deb_arch"
+          expected_package_version="$(node -p "require('./apps/v8-agent-os-shell/package.json').version")"
+          test "$(dpkg-deb -f "$deb_path" Version)" = "$expected_package_version"
           sudo dpkg -i "$deb_path"
           test -x "/opt/V8 Agent OS/v8-agent-os-shell"
 
@@ -365,6 +367,7 @@ jobs:
             (cd "$engine_root" && PYTHONPATH="$engine_root" "$engine_python" "$V8OS_CREDENTIAL_PROBE")
             xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
               --shell-exe "$V8OS_SHELL_EXE" \
+              --occupy-default-web-port true \
               --timeout-ms 90000 \
               --startup-budget-ms 90000
           '
@@ -438,6 +441,7 @@ jobs:
             --resource-root "$resource_root" \
             --appimage-root "$package_root" \
             --shell-no-sandbox "$shell_no_sandbox" \
+            --occupy-default-web-port true \
             --timeout-ms 90000 \
             --startup-budget-ms 90000
 
@@ -746,7 +750,10 @@ jobs:
 
       - name: Verify packaged desktop resource layout
         timeout-minutes: 5
-        run: node scripts/desktop/verify-desktop-package-layout.mjs --platform "${{ matrix.id }}"
+        run: >-
+          node scripts/desktop/verify-desktop-package-layout.mjs
+          --platform "${{ matrix.id }}"
+          --release-version "${{ inputs.release_version }}"
 
       - name: Normalize platform release assets and checksums
         timeout-minutes: 5

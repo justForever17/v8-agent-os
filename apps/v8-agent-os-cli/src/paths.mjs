@@ -14,6 +14,7 @@ export const RUNTIME_DIR = path.join(STATE_ROOT, "runtime", "cli");
 export const REPORTS_DIR = path.join(STATE_ROOT, "reports", "cli_base");
 export const LOG_DIR = path.join(STATE_ROOT, "logs", "cli");
 export const PROCESS_STATE_PATH = path.join(RUNTIME_DIR, "processes.json");
+export const RUNTIME_PORTS_PATH = path.join(RUNTIME_DIR, "ports.json");
 export const CONFIG_PATH = path.join(STATE_ROOT, "config.json");
 export const MCP_CONFIG_PATH = path.join(STATE_ROOT, "mcp.json");
 

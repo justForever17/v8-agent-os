@@ -20,10 +20,11 @@ import { runDoctor } from "./doctor.mjs";
 import { commandInbox } from "./inbox_commands.mjs";
 import { commandPreview } from "./preview_commands.mjs";
 import { runRepair } from "./repair.mjs";
-import { DEFAULT_PORTS, LOG_DIR, REPO_ROOT } from "./paths.mjs";
+import { LOG_DIR, REPO_ROOT } from "./paths.mjs";
 import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
 import { commandSessions } from "./session_commands.mjs";
 import { commandWorkspace } from "./workspace_commands.mjs";
+import { readRuntimePorts } from "./runtime_ports.mjs";
 import {
   printJson,
   renderConfigDomains,
@@ -233,7 +234,8 @@ function commandLogs() {
 
 function commandOpen(args) {
   const target = args[0] || "admin";
-  const url = target === "web" ? `http://127.0.0.1:${DEFAULT_PORTS.web}/chat` : `http://127.0.0.1:${DEFAULT_PORTS.admin}/admin`;
+  const ports = readRuntimePorts();
+  const url = target === "web" ? `http://127.0.0.1:${ports.web}/chat` : `http://127.0.0.1:${ports.admin}/admin`;
   const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
   const commandArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   spawn(command, commandArgs, { detached: true, stdio: "ignore", windowsHide: true }).unref();

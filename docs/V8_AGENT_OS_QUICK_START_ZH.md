@@ -84,7 +84,9 @@ Remove-Item Env:V8_AGENT_OS_BOOTSTRAP_INSTALL_ONLY
 | --- | --- |
 | Engine | `http://127.0.0.1:9530` |
 | Admin | `http://127.0.0.1:9528` |
-| Web | `http://127.0.0.1:9527` |
+| Web | 默认 `http://127.0.0.1:9527`；冲突时从 `19527-19546` 选择受控回退端口 |
+
+CLI、Shell、Admin 与桌宠会从同一运行时端口 profile 读取 Web 地址。不要把 `9527` 写死到外部脚本；使用 `v8os open web` 或 `v8os status --json` 获取当前入口。Engine `9530` 与 Admin `9528` 仍是固定治理端口，冲突时会明确失败而不是静默漂移。
 
 仓库根目录的裸 `bootstrap.ps1` / `bootstrap.sh` 默认是 Engine + Admin 的依赖安装与服务启动脚本，不等于完整桌面 Shell。Windows 如需同时启动 Web，显式使用 `--services engine+admin+web`；Linux/macOS 当前 bootstrap 只支持 Engine 或 Engine + Admin。
 

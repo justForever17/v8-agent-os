@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -29,6 +30,76 @@ function booleanArg(name, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function occupyLoopbackPort(port) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer((socket) => socket.destroy());
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.removeListener("error", reject);
+      resolve(server);
+    });
+  });
+}
+
+function closeServer(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
+function loopbackPortOpen(port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const finish = (open) => {
+      socket.destroy();
+      resolve(open);
+    };
+    socket.setTimeout(300, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function waitForManagedCleanup(ports, pids, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  let openPorts = [];
+  let livePids = [];
+  do {
+    openPorts = [];
+    for (const port of ports) {
+      if (await loopbackPortOpen(port)) openPorts.push(port);
+    }
+    livePids = pids.filter((pid) => isPidAlive(pid));
+    if (!openPorts.length && !livePids.length) break;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  return {
+    ok: openPorts.length === 0 && livePids.length === 0,
+    openPorts,
+    livePids,
+  };
+}
+
+async function waitForRuntimePorts(profilePath, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+      const ports = profile?.ports;
+      if (
+        profile?.version === 1
+        && profile?.policy === "web-fallback-v1"
+        && ports?.engine === 9530
+        && ports?.admin === 9528
+        && Number.isInteger(ports?.web)
+        && ports.web > 0
+        && ports.web <= 65_535
+      ) return profile;
+    } catch {}
+    await sleep(100);
+  }
+  return null;
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5_000) {
@@ -671,6 +742,7 @@ const shellNoSandbox = booleanArg("--shell-no-sandbox", false);
 const serviceTimeoutMs = positiveIntegerArg("--timeout-ms", 90_000);
 const startupBudgetMs = positiveIntegerArg("--startup-budget-ms", 90_000);
 const featurePackSmokeEnabled = booleanArg("--feature-pack-smoke", true);
+const occupyDefaultWebPort = booleanArg("--occupy-default-web-port", false);
 const featurePackProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--feature-pack-probe-timeout-ms", 30_000));
 const stateRoot = path.resolve(
   process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os"),
@@ -684,6 +756,7 @@ const startedAt = new Date().toISOString();
 const startedAtMs = Date.now();
 const shellControlPath = path.join(stateRoot, "runtime", "shell-control.json");
 const desktopPetDescriptorPath = path.join(stateRoot, "runtime", "desktop-pet.json");
+const runtimePortsPath = path.join(stateRoot, "runtime", "cli", "ports.json");
 const resourceRoot = explicitResourceRoot
   ? path.resolve(explicitResourceRoot)
   : packagedResourceRoot(shellExe);
@@ -708,12 +781,15 @@ if (appImageRoot) {
 }
 const runtimeEnvironment = appImageRuntimeEnvironment(appImageRoot, shellNoSandbox);
 const shellArgs = shellNoSandbox ? ["--no-sandbox"] : [];
+const defaultWebPortBlocker = occupyDefaultWebPort ? await occupyLoopbackPort(9527) : null;
 let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
+const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, Math.min(serviceTimeoutMs, 15_000));
+const runtimePorts = runtimePortProfile?.ports || { engine: 9530, admin: 9528, web: 9527 };
 
 const [engine, admin, web, initialShellSurface] = await Promise.all([
-  waitForReadiness("engine", "http://127.0.0.1:9530/readyz", serviceTimeoutMs),
-  waitForReadiness("admin", "http://127.0.0.1:9528/login", serviceTimeoutMs),
-  waitForReadiness("web", "http://127.0.0.1:9527/chat", serviceTimeoutMs),
+  waitForReadiness("engine", `http://127.0.0.1:${runtimePorts.engine}/readyz`, serviceTimeoutMs),
+  waitForReadiness("admin", `http://127.0.0.1:${runtimePorts.admin}/login`, serviceTimeoutMs),
+  waitForReadiness("web", `http://127.0.0.1:${runtimePorts.web}/chat`, serviceTimeoutMs),
   waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs),
 ]);
 const rawInitialInstanceManifest = admin.ok
@@ -841,6 +917,39 @@ const featurePackRuntime = !featurePackSmokeEnabled
   : featurePackEngineStatus.ok
     ? await runFeaturePackRuntimeProbe(resourceRoot, rawFeaturePackEngineStatus.payload, featurePackProbeTimeoutMs)
     : { ok: false, error: "feature_pack_engine_status_unavailable" };
+const shellProcessBeforeCleanup = isPidAlive(child.pid || 0);
+const managedPids = [child.pid, desktopPet.pid, desktopPet.serverPid]
+  .map(Number)
+  .filter((pid) => Number.isInteger(pid) && pid > 0);
+const stopAll = await runPackagedCli(
+  shellExe,
+  resourceRoot,
+  ["stop", "--all", "--json"],
+  runtimeEnvironment,
+  45_000,
+);
+const cleanupProof = await waitForManagedCleanup(
+  [runtimePorts.engine, runtimePorts.admin, runtimePorts.web],
+  managedPids,
+  25_000,
+);
+const defaultWebPortStillOccupied = occupyDefaultWebPort
+  ? await loopbackPortOpen(9527)
+  : true;
+const packagedCleanup = {
+  ok: Boolean(stopAll.ok && cleanupProof.ok && defaultWebPortStillOccupied),
+  cliStopped: Boolean(stopAll.ok),
+  managedPortsClosed: cleanupProof.openPorts.length === 0,
+  managedProcessesExited: cleanupProof.livePids.length === 0,
+  externalDefaultPortPreserved: defaultWebPortStillOccupied,
+  error: !stopAll.ok
+    ? "packaged_stop_all_failed"
+    : !cleanupProof.ok
+      ? "managed_runtime_cleanup_incomplete"
+      : !defaultWebPortStillOccupied
+        ? "external_default_port_was_not_preserved"
+        : "",
+};
 const checks = {
   ...serviceChecks,
   bootstrapSurface,
@@ -848,10 +957,23 @@ const checks = {
   shellRestart,
   instanceManifest,
   shellProcess: {
-    ok: isPidAlive(child.pid || 0),
+    ok: shellProcessBeforeCleanup,
     pid: child.pid || null,
   },
   shellSurface,
+  adaptiveWebPort: {
+    ok: Boolean(runtimePortProfile
+      && (!occupyDefaultWebPort
+        || (runtimePorts.web !== 9527 && defaultWebPortBlocker?.listening === true))),
+    defaultPortOccupied: occupyDefaultWebPort,
+    selectedPort: runtimePorts.web,
+    fallbackSelected: runtimePorts.web !== 9527,
+    error: runtimePortProfile
+      ? occupyDefaultWebPort && runtimePorts.web === 9527
+        ? "occupied_default_web_port_not_avoided"
+        : ""
+      : "runtime_port_profile_missing",
+  },
   desktopPet,
   startupBudget: {
     ok: Object.values(serviceChecks).every((item) => item.ok)
@@ -863,6 +985,7 @@ const checks = {
   featurePackEngineStatus,
   featurePackRuntime,
   featurePackApi,
+  packagedCleanup,
 };
 
 const payload = {
@@ -873,9 +996,7 @@ const payload = {
   serviceTimeoutMs,
   shellPid: child.pid || null,
   ports: {
-    engine: 9530,
-    admin: 9528,
-    web: 9527,
+    ...runtimePorts,
   },
   checks,
   failureStage: firstFailureStage(checks),
@@ -887,4 +1008,5 @@ const output = reportPath();
 fs.writeFileSync(output, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 console.log(output);
 console.log(JSON.stringify(payload, null, 2));
+await closeServer(defaultWebPortBlocker);
 process.exit(payload.passed ? 0 : 1);

@@ -51,6 +51,7 @@ from core.runtime.startup_profile import (
     startup_bundle_diagnostics,
     startup_bundle_summary,
 )
+from core.runtime_ports import governed_web_origins
 
 STARTUP_PROFILE = resolve_startup_profile()
 INSTALL_PROFILE = resolve_install_profile()
@@ -80,7 +81,7 @@ def _build_cors_allow_origins() -> list[str]:
     ]
     allowlist: list[str] = []
     seen: set[str] = set()
-    for candidate in [*defaults, *get_allowed_origins()]:
+    for candidate in [*defaults, *governed_web_origins(), *get_allowed_origins()]:
         normalized = str(candidate or "").strip().rstrip("/")
         if not normalized or normalized in seen:
             continue

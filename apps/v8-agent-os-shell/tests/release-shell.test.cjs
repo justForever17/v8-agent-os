@@ -60,7 +60,9 @@ test('packaged shell starts core services before waiting for them', () => {
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(mainSource, /ensureCoreServicesStarted/);
   assert.match(mainSource, /const CORE_SERVICE_IDS = \['engine', 'admin', 'web'\]/);
-  assert.match(mainSource, /shellStart\(CORE_SERVICE_IDS, \{ mode: 'start' \}\)/);
+  assert.match(mainSource, /shellStartWithRuntimePorts\(CORE_SERVICE_IDS, \{ mode: 'start' \}\)/);
+  assert.match(mainSource, /const \{ profile, results \} = await shellStartWithRuntimePorts/);
+  assert.match(mainSource, /applyRuntimePortProfile\(profile\)/);
   assert.match(mainSource, /const startResults = await ensureCoreServicesStarted\(\);[\s\S]*await waitForServices\(startResults\);/);
   assert.match(mainSource, /Promise\.all\(\[/);
   assert.match(mainSource, /\$\{engineBaseUrl\}\/readyz/);
@@ -386,6 +388,8 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   );
   assert.match(workflow, /build-macos-ax-helper\.mjs/);
   assert.match(workflow, /verify-desktop-package-layout\.mjs/);
+  assert.match(workflow, /verify-desktop-package-layout\.mjs[\s\S]{0,180}--release-version "\$\{\{ inputs\.release_version \}\}"/);
+  assert.match(workflow, /dpkg-deb -f "\$deb_path" Version/);
   assert.match(workflow, /prepare-desktop-release-assets\.mjs/);
   assert.match(workflow, /--release-version "\$\{\{ inputs\.release_version \}\}"/);
   assert.match(workflow, /name: v8os-desktop-\$\{\{ matrix\.id \}\}/);
@@ -671,7 +675,9 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-desktop-pet\.mjs/);
   assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "launch-shell\.mjs/);
   assert.match(packageLayoutScript, /v8-agent-os-shell", "scripts", "spawn-detached-electron\.mjs/);
-  assert.match(packageLayoutScript, /verifyShellBootstrap\(appAsar\)/);
+  assert.match(packageLayoutScript, /verifyShellBootstrap\(appAsar, expectedPackageVersion\)/);
+  assert.match(packageLayoutScript, /packagedManifest\.version === expectedVersion/);
+  assert.match(packageLayoutScript, /toSemver\(expectedReleaseVersion\)/);
   assert.match(packageLayoutScript, /verifyDesktopPetServerBundle\(desktopPetServerBundle\)/);
 });
 
@@ -1080,6 +1086,12 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(installSmoke, /startupBudgetMs/);
   assert.match(installSmoke, /validateReadinessResponse/);
   assert.match(installSmoke, /shell-control\.json/);
+  assert.match(installSmoke, /--occupy-default-web-port/);
+  assert.match(installSmoke, /web-fallback-v1/);
+  assert.match(installSmoke, /runtimePortProfile/);
+  assert.match(installSmoke, /\["stop", "--all", "--json"\]/);
+  assert.match(installSmoke, /externalDefaultPortPreserved/);
+  assert.match(installSmoke, /waitForManagedCleanup/);
   assert.match(installSmoke, /surfaceReady/);
   assert.match(installSmoke, /isPidAlive/);
   assert.match(installSmoke, /desktop-pet\.json/);

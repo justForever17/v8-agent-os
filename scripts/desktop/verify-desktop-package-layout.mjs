@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isValidReleaseVersion, toSemver } from "../release/release-manifest.mjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..", "..");
 const shellRoot = path.join(repoRoot, "apps", "v8-agent-os-shell");
@@ -149,7 +151,7 @@ function verifyDesktopPetServerBundle(serverBundle) {
   };
 }
 
-function verifyShellBootstrap(appAsar) {
+function verifyShellBootstrap(appAsar, expectedVersion) {
   if (!fs.existsSync(appAsar)) {
     return { name: "shell.bootstrap", ok: false, path: path.relative(repoRoot, appAsar) };
   }
@@ -162,9 +164,13 @@ function verifyShellBootstrap(appAsar) {
     const expectedMain = "electron/bootstrap.cjs";
     return {
       name: "shell.bootstrap",
-      ok: packagedManifest.main === expectedMain && packagedFiles.has(expectedMain),
+      ok: packagedManifest.main === expectedMain
+        && packagedFiles.has(expectedMain)
+        && packagedManifest.version === expectedVersion,
       path: path.relative(repoRoot, appAsar),
       main: packagedManifest.main || null,
+      version: packagedManifest.version || null,
+      expectedVersion,
     };
   } catch (error) {
     return {
@@ -198,10 +204,23 @@ try {
   const featurePackPlatform = platform.split("-")[0];
   const featurePackArchitecture = platform.split("-")[1];
   const appAsar = path.join(path.dirname(resourceRoot), "app.asar");
+  const releaseManifestPath = path.join(resourceRoot, "release-manifest.json");
+  const packagedReleaseManifest = JSON.parse(fs.readFileSync(releaseManifestPath, "utf8"));
+  const expectedReleaseVersion = argValue("--release-version")
+    || String(packagedReleaseManifest?.release?.version || "");
+  if (!isValidReleaseVersion(expectedReleaseVersion)) {
+    throw new Error(`Invalid packaged --release-version ${JSON.stringify(expectedReleaseVersion)}`);
+  }
+  if (packagedReleaseManifest?.release?.version !== expectedReleaseVersion) {
+    throw new Error(
+      `Packaged release manifest is ${packagedReleaseManifest?.release?.version || "missing"}; expected ${expectedReleaseVersion}`,
+    );
+  }
+  const expectedPackageVersion = toSemver(expectedReleaseVersion);
   const required = [
     resourceRoot,
     appAsar,
-    path.join(resourceRoot, "release-manifest.json"),
+    releaseManifestPath,
     path.join(resourceRoot, "apps", "v8-agent-os-cli", "src", "shell_api.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-engine", "main.py"),
     ...nextStandaloneRequired(resourceRoot, "admin"),
@@ -235,7 +254,7 @@ try {
   const checks = required.map((filePath) => ({ path: filePath, ok: fs.existsSync(filePath) }));
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "admin"));
   checks.push(...verifyNextStandaloneAssets(resourceRoot, "web"));
-  checks.push(verifyShellBootstrap(appAsar));
+  checks.push(verifyShellBootstrap(appAsar, expectedPackageVersion));
   checks.push(verifyDesktopPetServerBundle(desktopPetServerBundle));
   checks.push({ name: "desktopPet.rendererAssets", path: desktopPetAssets, ok: directoryHasFiles(desktopPetAssets) });
   checks.push({ path: python.join(" | "), ok: python.some((filePath) => fs.existsSync(filePath)) });
@@ -245,6 +264,8 @@ try {
   const payload = {
     generatedAt: new Date().toISOString(),
     platform,
+    releaseVersion: expectedReleaseVersion,
+    packageVersion: expectedPackageVersion,
     resourceRoot,
     passed: failures.length === 0,
     failures,

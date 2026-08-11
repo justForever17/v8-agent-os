@@ -33,12 +33,12 @@ const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
 process.env.V8_REPO_ROOT = repoRoot;
 const desktopPetDir = process.env.V8_DESKTOP_PET_DIR || path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet');
 process.env.V8_DESKTOP_PET_DIR = desktopPetDir;
-const webBaseUrl = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
-const adminBaseUrl = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
-const engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
+let webBaseUrl = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
+let adminBaseUrl = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
+let engineBaseUrl = process.env.V8_ENGINE_BASE_URL || 'http://127.0.0.1:9530';
 const cliApiUrl = pathToFileURL(path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'shell_api.mjs')).href;
 const releaseManifestPath = path.join(repoRoot, 'release-manifest.json');
-const productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
+let productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
 const CORE_SERVICE_IDS = ['engine', 'admin', 'web'];
 const CORE_SERVICE_LABELS = { engine: 'Engine', admin: 'Admin', web: 'Web' };
 const MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown';
@@ -120,6 +120,30 @@ function cliApi() {
     cliApiPromise = import(cliApiUrl);
   }
   return cliApiPromise;
+}
+
+function applyRuntimePortProfile(profile) {
+  const ports = profile?.ports;
+  if (!Number.isInteger(ports?.engine) || !Number.isInteger(ports?.admin) || !Number.isInteger(ports?.web)) {
+    throw new Error('Invalid V8OS runtime port profile.');
+  }
+  const previousWebBaseUrl = webBaseUrl;
+  engineBaseUrl = `http://127.0.0.1:${ports.engine}`;
+  adminBaseUrl = `http://127.0.0.1:${ports.admin}`;
+  webBaseUrl = `http://127.0.0.1:${ports.web}`;
+  process.env.V8_ENGINE_BASE_URL = engineBaseUrl;
+  process.env.V8_ADMIN_BASE_URL = adminBaseUrl;
+  process.env.V8_WEB_BASE_URL = webBaseUrl;
+  productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
+  if (pendingSurfaceUrl) {
+    try {
+      const pending = new URL(pendingSurfaceUrl);
+      if (pending.origin === new URL(previousWebBaseUrl).origin) {
+        pendingSurfaceUrl = new URL(`${pending.pathname}${pending.search}${pending.hash}`, webBaseUrl).toString();
+      }
+    } catch {}
+  }
+  return { ...ports };
 }
 
 function shellIcon() {
@@ -407,8 +431,9 @@ async function waitForServices(startResults) {
 async function ensureCoreServicesStarted() {
   if (!coreServicesStartPromise) {
     coreServicesStartPromise = cliApi()
-      .then(async ({ shellStart }) => {
-        const results = await shellStart(CORE_SERVICE_IDS, { mode: 'start' });
+      .then(async ({ shellStartWithRuntimePorts }) => {
+        const { profile, results } = await shellStartWithRuntimePorts(CORE_SERVICE_IDS, { mode: 'start' });
+        applyRuntimePortProfile(profile);
         const failures = results.filter((item) => !['started', 'already_running'].includes(item.status));
         if (failures.length > 0) {
           throw coreServiceStartupError(failures);

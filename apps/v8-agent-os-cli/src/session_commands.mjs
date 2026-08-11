@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { DEFAULT_PORTS } from "./paths.mjs";
+import { readRuntimePorts } from "./runtime_ports.mjs";
 import { adminJson, requireOk } from "./client_api.mjs";
 import { sendChatMessage } from "./chat_commands.mjs";
 
@@ -129,7 +129,7 @@ export async function showSessionTurns(args) {
 export function openSession(args) {
   const sessionId = String(args[0] || "").trim();
   if (!sessionId) throw new Error("sessions open requires <sessionId>");
-  const url = `http://127.0.0.1:${DEFAULT_PORTS.web}/chat?id=${encodeURIComponent(sessionId)}`;
+  const url = `http://127.0.0.1:${readRuntimePorts().web}/chat?id=${encodeURIComponent(sessionId)}`;
   openUrl(url);
   console.log(url);
   return url;

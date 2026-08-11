@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from core.process_launch import run_windowless
+from core.runtime_ports import governed_web_port
 from core.runtime.startup_profile import build_installation_snapshot, startup_bundle_diagnostics
 from core.storage import storage
 from core.storage_retention import storage_retention_service
@@ -213,7 +214,7 @@ class SystemDoctorService:
         return checks
 
     def _check_ports(self) -> list[dict[str, Any]]:
-        port_labels = {9530: "Engine", 9528: "Admin", 9527: "Web"}
+        port_labels = {9530: "Engine", 9528: "Admin", governed_web_port(): "Web"}
         checks: list[dict[str, Any]] = []
         for port, label in port_labels.items():
             result = _connect_port(port)

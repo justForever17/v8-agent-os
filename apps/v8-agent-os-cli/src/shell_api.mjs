@@ -2,6 +2,7 @@ import { ALL_COMPONENTS } from "./components.mjs";
 import {
   getManagedComponentProcessRecordIdentity,
   startComponents,
+  startComponentsWithRuntimePorts,
   statusComponents,
   stopComponents,
 } from "./process_manager.mjs";
@@ -13,6 +14,12 @@ export async function shellStatus(componentIds = ALL_COMPONENTS) {
 
 export async function shellStart(componentIds, options = {}) {
   return startComponents(componentIds, {
+    mode: options.mode || "start",
+  });
+}
+
+export async function shellStartWithRuntimePorts(componentIds, options = {}) {
+  return startComponentsWithRuntimePorts(componentIds, {
     mode: options.mode || "start",
   });
 }

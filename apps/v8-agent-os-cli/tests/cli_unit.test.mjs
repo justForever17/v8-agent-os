@@ -8,13 +8,21 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ALL_COMPONENTS, COMPONENTS, DEFAULT_START_COMPONENTS, parseComponentSelection } from "../src/components.mjs";
+import {
+  ALL_COMPONENTS,
+  COMPONENTS,
+  DEFAULT_START_COMPONENTS,
+  componentRuntimePorts,
+  configureComponentRuntimePorts,
+  parseComponentSelection,
+} from "../src/components.mjs";
 import { buildChatSubmitPayload, extractMessageText, normalizeSafetyApprovalMode } from "../src/chat_commands.mjs";
 import { requireOk } from "../src/client_api.mjs";
 import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
 import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
+import { DEFAULT_PORTS } from "../src/paths.mjs";
 import {
   cleanupFailedRuntimeHandoff,
   DESKTOP_PET_TERMINATION_TIMEOUT_MS,
@@ -1164,6 +1172,61 @@ test("admin and web commands use managed auth launcher", () => {
   assert.ok(web.args.includes("web"));
   assert.ok(admin.args.includes("9528"));
   assert.ok(web.args.includes("9527"));
+});
+
+test("component commands project the selected Web fallback into every local surface", () => {
+  try {
+    const runtimePorts = { engine: 9530, admin: 9528, web: 19527 };
+    configureComponentRuntimePorts(DEFAULT_PORTS);
+    const web = COMPONENTS.web.command({ mode: "start", runtimePorts });
+    const admin = COMPONENTS.admin.command({ mode: "start", runtimePorts });
+    const engine = COMPONENTS.engine.command({ mode: "start", runtimePorts });
+    const shell = COMPONENTS.shell.command({ mode: "start", runtimePorts });
+    const pet = COMPONENTS["desktop-pet"].command({ mode: "start", runtimePorts });
+    assert.equal(COMPONENTS.web.port, DEFAULT_PORTS.web);
+    assert.ok(web.args.includes("19527"));
+    assert.equal(web.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
+    assert.equal(admin.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
+    assert.equal(engine.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
+    assert.equal(shell.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
+    assert.equal(pet.env.V8_WEB_BASE_URL, "http://127.0.0.1:19527");
+    assert.deepEqual(componentRuntimePorts(), DEFAULT_PORTS);
+  } finally {
+    configureComponentRuntimePorts(DEFAULT_PORTS);
+  }
+});
+
+test("component start holds the governed port lease only through Web process record insertion", () => {
+  const processManager = fs.readFileSync(
+    path.join(cliRoot, "src", "process_manager.mjs"),
+    "utf8",
+  );
+  const runtimePorts = fs.readFileSync(
+    path.join(cliRoot, "src", "runtime_ports.mjs"),
+    "utf8",
+  );
+  const processState = fs.readFileSync(
+    path.join(cliRoot, "src", "process_state.mjs"),
+    "utf8",
+  );
+  const startBlock = processManager.slice(
+    processManager.indexOf("export async function startComponentsWithRuntimePorts"),
+    processManager.indexOf("async function killPid"),
+  );
+  const outsideLeaseIndex = startBlock.indexOf("\n  configureComponentRuntimePorts(profile.ports);");
+  assert.ok(outsideLeaseIndex > 0);
+  const leaseBlock = startBlock.slice(0, outsideLeaseIndex);
+  const outsideLeaseBlock = startBlock.slice(outsideLeaseIndex);
+  assert.match(leaseBlock, /const profile = await withRuntimePortsLease\(async \(\) => \{/);
+  assert.match(leaseBlock, /resolveCurrentManagedIdentity\("web", state\)/);
+  assert.match(leaseBlock, /verifiedManagedWebPort/);
+  assert.match(leaseBlock, /webResult = await startComponent\("web"/);
+  assert.doesNotMatch(leaseBlock, /Promise\.all/);
+  assert.match(outsideLeaseBlock, /const results = await Promise\.all/);
+  assert.match(outsideLeaseBlock, /startComponent\(id, \{ \.\.\.options, runtimePorts: profile\.ports \}\)/);
+  assert.match(startBlock, /return \{ profile, results \}/);
+  assert.doesNotMatch(runtimePorts, /readProcessState|isPidAlive/);
+  assert.match(processState, /withRuntimePortsLease[\s\S]{0,180}timeoutMs: 30_000/);
 });
 
 test("preview shell and desktop pet are no-port managed components", () => {

@@ -9,7 +9,22 @@ function argument(name, fallback = "") {
 
 const stateRoot = path.resolve(argument("--state-root", process.env.V8_AGENT_OS_HOME || ""));
 const timeoutMs = Number(argument("--timeout-ms", "8000"));
-const ports = argument("--ports", "9530,9528,9527")
+function governedPorts() {
+  const explicit = argument("--ports");
+  if (explicit) return explicit;
+  try {
+    const profile = JSON.parse(fs.readFileSync(path.join(stateRoot, "runtime", "cli", "ports.json"), "utf8"));
+    if (
+      profile?.version === 1
+      && profile?.policy === "web-fallback-v1"
+      && profile?.ports?.engine === 9530
+      && profile?.ports?.admin === 9528
+      && Number.isInteger(profile?.ports?.web)
+    ) return [profile.ports.engine, profile.ports.admin, profile.ports.web].join(",");
+  } catch {}
+  return "9530,9528,9527";
+}
+const ports = governedPorts()
   .split(",")
   .map((value) => Number(value.trim()))
   .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535);

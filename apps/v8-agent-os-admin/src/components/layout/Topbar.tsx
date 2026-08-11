@@ -101,7 +101,7 @@ type InboxPayload = {
     updatedAt?: number | null;
 };
 
-const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
+const WEB_CHAT_SURFACE_URL = "/api/client/web-surface";
 const V8OS_UPDATE_CACHE_TTL_MS = 5 * 60 * 1000;
 const CONTROLLED_RELEASE_URL_RE = /^https:\/\/github\.com\/justForever17\/v8-agent-os\/releases\/tag\/v8-os-v20\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])\.(?:[1-9]|[1-9]\d)$/;
 

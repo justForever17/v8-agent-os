@@ -3,9 +3,10 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureDir } from "./json_file.mjs";
-import { COMPONENTS, logPathsFor } from "./components.mjs";
+import { COMPONENTS, componentRuntimePorts, configureComponentRuntimePorts, logPathsFor } from "./components.mjs";
 import { LOG_DIR, REPO_ROOT, STATE_ROOT } from "./paths.mjs";
 import { isPortOpen } from "./ports.mjs";
+import { readRuntimePorts, resolveRuntimePorts } from "./runtime_ports.mjs";
 import {
   compareAndSwapProcessRecord,
   isPidAlive,
@@ -13,6 +14,7 @@ import {
   processRecordMatchesIdentity,
   readProcessState,
   withComponentProcessLease,
+  withRuntimePortsLease,
 } from "./process_state.mjs";
 
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
@@ -350,11 +352,11 @@ function processCandidateMatchesEngine(candidate, commandSpec) {
   return engineSignature && ownedRuntime;
 }
 
-function processCandidateMatchesNextApp(componentId, candidate) {
+function processCandidateMatchesNextApp(componentId, candidate, expectedPort = COMPONENTS[componentId]?.port) {
   if (!candidate || typeof candidate !== "object" || !["admin", "web"].includes(componentId)) return false;
   const commandLine = normalizeProcessText(candidate.commandLine);
   const appDir = normalizeProcessText(path.join(REPO_ROOT, "apps", `v8-agent-os-${componentId}`));
-  const port = COMPONENTS[componentId]?.port;
+  const port = Number(expectedPort);
   const runtimeMatches = processCandidateMatchesJavaScriptRuntime(
     candidate,
     COMPONENTS[componentId].command({ mode: "start" }).command,
@@ -454,9 +456,11 @@ function processCandidateMatchesCybercore(candidate) {
     && /(?:^|\s)npm\s+run\s+(?:start|dev)(?:\s|$)/i.test(commandLine);
 }
 
-function processCandidateMatchesComponent(componentId, candidate, runtimeDescriptor = null) {
+function processCandidateMatchesComponent(componentId, candidate, runtimeDescriptor = null, expectedPort = null) {
   if (componentId === "engine") return processCandidateMatchesEngine(candidate, COMPONENTS.engine.command({ mode: "start" }));
-  if (componentId === "admin" || componentId === "web") return processCandidateMatchesNextApp(componentId, candidate);
+  if (componentId === "admin" || componentId === "web") {
+    return processCandidateMatchesNextApp(componentId, candidate, expectedPort || COMPONENTS[componentId]?.port);
+  }
   if (componentId === "shell") return processCandidateMatchesShell(candidate, runtimeDescriptor);
   if (componentId === "desktop-pet") return processCandidateMatchesDesktopPet(candidate, runtimeDescriptor);
   if (componentId === "cybercore") return processCandidateMatchesCybercore(candidate);
@@ -484,14 +488,14 @@ function recordMatchesComponent(componentId, record) {
     executablePath: record.command,
     commandLine: recordCommandLine(record),
     cwd: record.cwd,
-  });
+  }, null, record.port);
 }
 
 export function verifiedManagedComponentPid(componentId, record, descriptor) {
   const pid = positivePid(record?.pid);
   if (!pid || positivePid(descriptor?.pid) !== pid) return null;
   if (!recordMatchesComponent(componentId, record)) return null;
-  const descriptorMatchesComponent = processCandidateMatchesComponent(componentId, descriptor);
+  const descriptorMatchesComponent = processCandidateMatchesComponent(componentId, descriptor, null, record.port);
   if (!descriptorMatchesComponent) return null;
   const executableMatches = processExecutableMatchesCommand(descriptor, record.command);
   const verifiedPosixNpmInterpreter = componentId === "cybercore"
@@ -790,6 +794,7 @@ export async function removeManagedComponentProcessRecord(componentId, expectedI
 }
 
 export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
+  configureComponentRuntimePorts(readRuntimePorts());
   const state = readProcessState();
   const snapshot = await managedIdentitySnapshot(componentIds, state);
   const statuses = [];
@@ -830,6 +835,11 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
 
 async function startComponent(id, options) {
   const component = COMPONENTS[id];
+  const ports = options.runtimePorts || componentRuntimePorts();
+  const componentPort = ["engine", "admin", "web"].includes(id)
+    ? Number(ports[id])
+    : component.port;
+  const hasPort = Number.isInteger(componentPort) && componentPort > 0;
   return withComponentProcessLease(id, async () => {
     const state = readProcessState();
     const { record, runtimeDescriptor, identity } = await resolveCurrentManagedIdentity(id, state);
@@ -845,10 +855,10 @@ async function startComponent(id, options) {
       if (!removed.applied) return { id, status: "lifecycle_conflict", reason: "record_replaced_before_start" };
     }
     if (runtimeDescriptor) removeRuntimeDescriptor(id, runtimeDescriptor.pid);
-    if (componentHasPort(component) && await isPortOpen(component.port)) {
-      return { id, status: "port_in_use", port: component.port };
+    if (hasPort && await isPortOpen(componentPort)) {
+      return { id, status: "port_in_use", port: componentPort };
     }
-    const commandSpec = component.command(options);
+    const commandSpec = component.command({ ...options, runtimePorts: ports });
     if (!fs.existsSync(commandSpec.cwd)) {
       return { id, status: "missing_cwd", cwd: commandSpec.cwd };
     }
@@ -909,7 +919,7 @@ async function startComponent(id, options) {
           : earlyExit.signal ? "process_signalled_after_spawn" : "process_exited_after_spawn",
         exitCode: earlyExit.exitCode ?? null,
         signal: earlyExit.signal || null,
-        port: componentHasPort(component) ? component.port : null,
+        port: hasPort ? componentPort : null,
         logOut: logs.out,
         logErr: logs.err,
       };
@@ -923,7 +933,7 @@ async function startComponent(id, options) {
       command: commandSpec.command,
       args: commandSpec.args,
       cwd: commandSpec.cwd,
-      port: componentHasPort(component) ? component.port : null,
+      port: hasPort ? componentPort : null,
       startedAt: new Date().toISOString(),
       logOut: logs.out,
       logErr: logs.err,
@@ -945,16 +955,44 @@ async function startComponent(id, options) {
       status: "started",
       pid: child.pid,
       launchId: recordToWrite.launchId,
-      port: componentHasPort(component) ? component.port : null,
+      port: hasPort ? componentPort : null,
       logOut: logs.out,
       logErr: logs.err,
     };
   });
 }
 
-export async function startComponents(componentIds, options = {}) {
+export async function startComponentsWithRuntimePorts(componentIds, options = {}) {
   ensureDir(LOG_DIR);
-  return Promise.all(componentIds.filter((id) => COMPONENTS[id]).map((id) => startComponent(id, options)));
+  const selected = componentIds.filter((id) => COMPONENTS[id]);
+  let webResult = null;
+  const profile = await withRuntimePortsLease(async () => {
+    const state = readProcessState();
+    const currentWeb = state.processes.web
+      ? await resolveCurrentManagedIdentity("web", state)
+      : null;
+    const verifiedManagedWebPort = currentWeb?.identity?.effectivePid
+      ? Number(currentWeb.record?.port)
+      : null;
+    const profile = await resolveRuntimePorts({
+      verifiedManagedWebPort,
+      withLease: (callback) => callback(),
+    });
+    configureComponentRuntimePorts(profile.ports);
+    if (selected.includes("web")) {
+      webResult = await startComponent("web", { ...options, runtimePorts: profile.ports });
+    }
+    return profile;
+  });
+  configureComponentRuntimePorts(profile.ports);
+  const results = await Promise.all(selected.map((id) => id === "web"
+    ? webResult
+    : startComponent(id, { ...options, runtimePorts: profile.ports })));
+  return { profile, results };
+}
+
+export async function startComponents(componentIds, options = {}) {
+  return (await startComponentsWithRuntimePorts(componentIds, options)).results;
 }
 
 async function killPid(pid, options = {}) {
@@ -1163,6 +1201,7 @@ async function stopComponent(id, options) {
 }
 
 export async function stopComponents(componentIds = Object.keys(COMPONENTS), options = {}) {
+  configureComponentRuntimePorts(readRuntimePorts());
   const selected = componentIds.filter((id) => COMPONENTS[id]);
   const governedShutdown = options.skipManagedShellShutdown === true
     ? { attempted: false, stopped: false, reason: "disabled" }

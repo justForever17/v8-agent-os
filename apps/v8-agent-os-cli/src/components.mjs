@@ -3,6 +3,26 @@ import path from "node:path";
 import process from "node:process";
 import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
 
+let runtimePorts = { ...DEFAULT_PORTS };
+
+function normalizedRuntimePorts(ports = {}) {
+  return {
+    ...DEFAULT_PORTS,
+    engine: Number(ports.engine) || DEFAULT_PORTS.engine,
+    admin: Number(ports.admin) || DEFAULT_PORTS.admin,
+    web: Number(ports.web) || DEFAULT_PORTS.web,
+  };
+}
+
+export function configureComponentRuntimePorts(ports = {}) {
+  runtimePorts = normalizedRuntimePorts(ports);
+  return { ...runtimePorts };
+}
+
+export function componentRuntimePorts() {
+  return { ...runtimePorts };
+}
+
 function enginePlaywrightEnv() {
   const browsersPath = path.join(ENGINE_DIR, ".playwright-browsers");
   return fs.existsSync(browsersPath) ? { PLAYWRIGHT_BROWSERS_PATH: browsersPath } : {};
@@ -41,17 +61,19 @@ export const COMPONENTS = {
   engine: {
     id: "engine",
     label: "Engine",
-    port: DEFAULT_PORTS.engine,
+    get port() { return runtimePorts.engine; },
     cwd: ENGINE_DIR,
-    healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.engine}/health`,
-    command() {
+    get healthUrl() { return `http://127.0.0.1:${runtimePorts.engine}/health`; },
+    command(options = {}) {
+      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       return {
         command: enginePython(),
         args: ["main.py"],
         cwd: ENGINE_DIR,
         env: {
           ENGINE_HOST: "127.0.0.1",
-          ENGINE_PORT: String(DEFAULT_PORTS.engine),
+          ENGINE_PORT: String(ports.engine),
+          V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
           PYTHONIOENCODING: "utf-8",
           PYTHONUTF8: "1",
           ...enginePlaywrightEnv(),
@@ -62,34 +84,46 @@ export const COMPONENTS = {
   admin: {
     id: "admin",
     label: "Admin",
-    port: DEFAULT_PORTS.admin,
+    get port() { return runtimePorts.admin; },
     cwd: REPO_ROOT,
-    healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.admin}/admin`,
+    get healthUrl() { return `http://127.0.0.1:${runtimePorts.admin}/admin`; },
     command(options = {}) {
       const mode = options.mode || "dev";
+      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       const runtime = nodeRuntime();
       return {
         command: runtime.command,
-        args: ["scripts/run-next-with-managed-auth.mjs", "--app", "admin", "--mode", mode, "--port", String(DEFAULT_PORTS.admin)],
+        args: ["scripts/run-next-with-managed-auth.mjs", "--app", "admin", "--mode", mode, "--port", String(ports.admin)],
         cwd: REPO_ROOT,
-        env: runtime.env,
+        env: {
+          ...runtime.env,
+          V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
+          V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+          V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
+        },
       };
     },
   },
   web: {
     id: "web",
     label: "Web",
-    port: DEFAULT_PORTS.web,
+    get port() { return runtimePorts.web; },
     cwd: REPO_ROOT,
-    healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.web}/chat`,
+    get healthUrl() { return `http://127.0.0.1:${runtimePorts.web}/chat`; },
     command(options = {}) {
       const mode = options.mode || "dev";
+      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       const runtime = nodeRuntime();
       return {
         command: runtime.command,
-        args: ["scripts/run-next-with-managed-auth.mjs", "--app", "web", "--mode", mode, "--port", String(DEFAULT_PORTS.web)],
+        args: ["scripts/run-next-with-managed-auth.mjs", "--app", "web", "--mode", mode, "--port", String(ports.web)],
         cwd: REPO_ROOT,
-        env: runtime.env,
+        env: {
+          ...runtime.env,
+          V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
+          V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+          V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
+        },
       };
     },
   },
@@ -124,11 +158,13 @@ export const COMPONENTS = {
     port: null,
     detachedHandoff: true,
     cwd: REPO_ROOT,
-    command() {
+    command(options = {}) {
+      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       const runtime = nodeRuntime({
         V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
-        V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
-        V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+        V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+        V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
+        V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
         V8_REPO_ROOT: REPO_ROOT,
         V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
       });
@@ -145,11 +181,12 @@ export const COMPONENTS = {
     label: "V8OS Shell",
     port: null,
     cwd: SHELL_DIR,
-    command() {
+    command(options = {}) {
+      const ports = normalizedRuntimePorts(options.runtimePorts || runtimePorts);
       const runtime = nodeRuntime({
-        V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
-        V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
-        V8_ENGINE_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.engine}`,
+        V8_ADMIN_BASE_URL: `http://127.0.0.1:${ports.admin}`,
+        V8_WEB_BASE_URL: `http://127.0.0.1:${ports.web}`,
+        V8_ENGINE_BASE_URL: `http://127.0.0.1:${ports.engine}`,
         V8_REPO_ROOT: REPO_ROOT,
         V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
       });

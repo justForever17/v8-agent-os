@@ -7,6 +7,7 @@ import { ensureDir, readJsonFile } from "./json_file.mjs";
 
 const PROCESS_LEASE_DIR = path.join(path.dirname(PROCESS_STATE_PATH), "leases");
 const STATE_WRITE_LEASE_PATH = path.join(PROCESS_LEASE_DIR, "state-write.lease");
+const RUNTIME_PORTS_LEASE_PATH = path.join(PROCESS_LEASE_DIR, "runtime-ports.lease");
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -151,6 +152,10 @@ async function withFileLease(filePath, callback, options = {}) {
 
 export async function withComponentProcessLease(componentId, callback, options = {}) {
   return withFileLease(leasePathForComponent(componentId), callback, options);
+}
+
+export async function withRuntimePortsLease(callback, options = {}) {
+  return withFileLease(RUNTIME_PORTS_LEASE_PATH, callback, { timeoutMs: 30_000, ...options });
 }
 
 export function readProcessState() {

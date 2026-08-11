@@ -229,6 +229,10 @@ test("Topbar prefers the Shell update authority and keeps browser fallback read-
   const topbar = fs.readFileSync(path.join(adminRoot, "src/components/layout/Topbar.tsx"), "utf8");
   const shellApi = fs.readFileSync(path.join(adminRoot, "src/components/layout/ShellWindowControls.tsx"), "utf8");
   const route = fs.readFileSync(path.join(adminRoot, "src/app/api/v8os-update/route.ts"), "utf8");
+  const webSurfaceRoute = fs.readFileSync(
+    path.join(adminRoot, "src/app/api/client/web-surface/route.ts"),
+    "utf8",
+  );
 
   assert.match(shellApi, /getUpdateStatus\?: \(\) => Promise<ShellUpdateStatus>/);
   assert.match(shellApi, /checkForUpdates\?: \(\) => Promise<ShellUpdateStatus>/);
@@ -244,4 +248,10 @@ test("Topbar prefers the Shell update authority and keeps browser fallback read-
   assert.match(route, /resolveUserEmail/);
   assert.match(route, /Cache-Control/);
   assert.doesNotMatch(route, /export async function (?:POST|PUT|PATCH|DELETE)/);
+  assert.match(topbar, /href: WEB_CHAT_SURFACE_URL/);
+  assert.match(topbar, /WEB_CHAT_SURFACE_URL = "\/api\/client\/web-surface"/);
+  assert.match(webSurfaceRoute, /process\.env\.V8_WEB_BASE_URL/);
+  assert.match(webSurfaceRoute, /LOOPBACK_HOSTS/);
+  assert.match(webSurfaceRoute, /NextResponse\.redirect\(resolveGovernedWebSurfaceUrl\(\), 307\)/);
+  assert.doesNotMatch(topbar, /http:\/\/localhost:9527\/chat/);
 });

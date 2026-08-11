@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover
     psutil = None  # type: ignore
 
 from core.audit_logger import audit_logger
+from core.runtime_ports import governed_web_port
 from core.storage import storage
 
 
@@ -91,13 +92,13 @@ def normalize_active_defense_config(raw: dict[str, Any] | None) -> dict[str, Any
             if str(item or "").strip()
         }
     )
-    merged["knownListeningPorts"] = sorted(
-        {
+    known_listening_ports = {
             str(item or "").strip().lower()
             for item in list(data.get("knownListeningPorts") or merged["knownListeningPorts"])
             if str(item or "").strip()
-        }
-    )
+    }
+    known_listening_ports.add(f"tcp:{governed_web_port()}")
+    merged["knownListeningPorts"] = sorted(known_listening_ports)
     return merged
 
 

@@ -20,7 +20,7 @@
 | 层级 | 目标 | 通过标准 | 不能替代 |
 | --- | --- | --- | --- |
 | 单元/合同 | 资源预置、进程早退、凭据 helper、update parser、Admin i18n/状态 | 全部 deterministic 测试通过；秘密不进 argv/env/error | 安装包真实启动 |
-| 本机生产预览 | `v8os preview --rebuild` | Admin/Web production build、9530/9528/9527、Shell 与桌宠受控链通过；无终端弹窗 | 系统安装目录与跨 OS 行为 |
+| 本机生产预览 | `v8os preview --rebuild` | Admin/Web production build、9530/9528 与 Web 默认 9527/受控回退端口、Shell 与桌宠受控链通过；无终端弹窗 | 系统安装目录与跨 OS 行为 |
 | GitHub hosted runner | 六个 Desktop 目标 | 每个目标 runtime/layout 通过；四种包格式按下表执行 smoke；失败上传脱敏诊断 | 物理桌面、TCC、Wayland/窗口管理器 |
 | 物理主机 | Ubuntu/Windows/macOS 用户安装 | 安装、首次启动、窗口/托盘、错误面、退出清理和更新入口可见 | 其他架构/发行版 |
 
@@ -29,7 +29,7 @@
 | 平台与格式 | 安装/挂载约束 | 必测行为 | 状态 |
 | --- | --- | --- | --- |
 | Windows x64/ARM64 NSIS | 静默安装到一次性目录 | Shell→三服务→桌宠；Credential Manager；卸载与端口清理 | 本地 x64 unpacked 包启动已有证据；NSIS 安装/卸载与 ARM64 需新 CI |
-| Linux x64/ARM64 DEB | `dpkg -i` 到 root-owned `/opt/V8 Agent OS`，普通用户运行 | Secret Service put/read/delete；Xvfb；三服务、桌宠、清理 | 需新 CI；Ubuntu 24.04 物理机最终验收 |
+| Linux x64/ARM64 DEB | `dpkg -i` 到 root-owned `/opt/V8 Agent OS`，普通用户运行 | Secret Service put/read/delete；预占 9527 后选择受控回退端口；Xvfb；三服务、桌宠、外部端口保留与清理 | 需新 CI；Ubuntu 24.04 物理机最终验收 |
 | Linux x64/ARM64 AppImage | 解包后整个包树 `a-w` | 不写包树；三服务、桌宠、清理 | 需新 CI |
 | macOS x64/ARM64 DMG | `hdiutil` 只读挂载 | Keychain put/read/delete；挂载树启动；三服务、桌宠、detach | 需新 CI；TCC/通知需物理机 |
 

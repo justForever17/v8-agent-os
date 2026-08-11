@@ -133,6 +133,11 @@ class SafetyActiveDefenseTests(unittest.TestCase):
             followup = monitor.sample(force=True)
         self.assertEqual(followup["summary"]["activeIncidents"], 0)
 
+    def test_governed_web_fallback_is_always_part_of_the_runtime_baseline(self):
+        with patch.dict("os.environ", {"V8_WEB_BASE_URL": "http://127.0.0.1:19527"}):
+            config = normalize_active_defense_config({"knownListeningPorts": ["tcp:9530"]})
+        self.assertIn("tcp:19527", config["knownListeningPorts"])
+
 
 if __name__ == "__main__":
     unittest.main()

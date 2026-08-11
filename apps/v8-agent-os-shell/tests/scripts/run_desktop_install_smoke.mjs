@@ -91,7 +91,7 @@ function packagedResourceRoot(shellExecutable) {
     : path.join(executableDir, "resources", "v8os");
 }
 
-function appImageRuntimeEnvironment(appImageRoot) {
+function appImageRuntimeEnvironment(appImageRoot, noSandbox) {
   if (!appImageRoot) return {};
   const appDir = path.resolve(appImageRoot);
   const joinEnvironmentPaths = (...entries) => entries
@@ -113,6 +113,7 @@ function appImageRuntimeEnvironment(appImageRoot) {
       path.join(appDir, "usr", "share", "glib-2.0", "schemas"),
       process.env.GSETTINGS_SCHEMA_DIR,
     ),
+    V8OS_ELECTRON_NO_SANDBOX: noSandbox ? "1" : "0",
   };
 }
 
@@ -705,7 +706,7 @@ if (appImageRoot) {
     process.exit(2);
   }
 }
-const runtimeEnvironment = appImageRuntimeEnvironment(appImageRoot);
+const runtimeEnvironment = appImageRuntimeEnvironment(appImageRoot, shellNoSandbox);
 const shellArgs = shellNoSandbox ? ["--no-sandbox"] : [];
 let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
 

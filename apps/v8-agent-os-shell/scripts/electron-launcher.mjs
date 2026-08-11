@@ -39,6 +39,10 @@ export function isPackagedShellRuntime(env = process.env) {
   return env.V8OS_SHELL_PACKAGED === "1";
 }
 
+function inheritedElectronArgs(env) {
+  return env.V8OS_ELECTRON_NO_SANDBOX === "1" ? ["--no-sandbox"] : [];
+}
+
 export function desktopRuntimeSpawnSpec(target, extraEnv = {}) {
   const env = { ...process.env, ...extraEnv };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -55,7 +59,7 @@ export function desktopRuntimeSpawnSpec(target, extraEnv = {}) {
     env.V8_DESKTOP_NODE_IS_ELECTRON = "1";
     return {
       command: shellExecutable,
-      args: [target],
+      args: [...inheritedElectronArgs(env), target],
       cwd: paths.repoRoot,
       env,
     };
@@ -85,7 +89,7 @@ export function shellRuntimeSpawnSpec(target, extraEnv = {}) {
     }
     return {
       command: shellExecutable,
-      args: [],
+      args: inheritedElectronArgs(env),
       cwd: paths.repoRoot,
       env,
     };

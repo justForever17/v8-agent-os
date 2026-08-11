@@ -105,8 +105,9 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /trusted_web_surface_mismatch/);
   assert.match(installSmokeSource, /typeof value\.checked !== "boolean"/);
   assert.match(installSmokeSource, /permittedBooleans\.some\(\(key\) => typeof value\[key\] !== "boolean"\)/);
-  assert.match(installSmokeSource, /function appImageRuntimeEnvironment\(appImageRoot\)/);
+  assert.match(installSmokeSource, /function appImageRuntimeEnvironment\(appImageRoot, noSandbox\)/);
   assert.match(installSmokeSource, /APPIMAGE: path\.join\(appDir, "AppRun"\)/);
+  assert.match(installSmokeSource, /V8OS_ELECTRON_NO_SANDBOX: noSandbox \? "1" : "0"/);
   assert.match(installSmokeSource, /const shellArgs = shellNoSandbox \? \["--no-sandbox"\] : \[\]/);
   const packagedShellSpawnSource = installSmokeSource.slice(
     installSmokeSource.indexOf('function spawnPackagedShell'),
@@ -208,6 +209,7 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
 
   assert.equal(pkg.main, 'electron/bootstrap.cjs');
   assert.match(bootstrapSource, /V8OS_DESKTOP_RUNTIME_MODE/);
+  assert.match(bootstrapSource, /app\.commandLine\.hasSwitch\('no-sandbox'\)/);
   assert.match(bootstrapSource, /app\.setName\('V8 Agent OS Desktop Pet'\)/);
   assert.match(bootstrapSource, /app\.setPath\('userData', desktopPetUserData\)/);
   assert.match(bootstrapSource, /app\.setPath\('sessionData'/);
@@ -236,6 +238,13 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
   assert.equal(spec.env.V8_DESKTOP_NODE, process.execPath);
   assert.equal(spec.env.V8_DESKTOP_NODE_IS_ELECTRON, '1');
 
+  const noSandboxPetSpec = launcher.desktopRuntimeSpawnSpec(target, {
+    V8OS_SHELL_PACKAGED: '1',
+    V8OS_SHELL_EXECUTABLE: process.execPath,
+    V8OS_ELECTRON_NO_SANDBOX: '1',
+  });
+  assert.deepEqual(noSandboxPetSpec.args, ['--no-sandbox', target]);
+
   const shellSpec = launcher.shellRuntimeSpawnSpec(shellRoot, {
     ELECTRON_RUN_AS_NODE: '1',
     V8OS_DESKTOP_RUNTIME_MODE: 'desktop-pet',
@@ -246,6 +255,13 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
   assert.deepEqual(shellSpec.args, []);
   assert.equal(shellSpec.env.ELECTRON_RUN_AS_NODE, undefined);
   assert.equal(shellSpec.env.V8OS_DESKTOP_RUNTIME_MODE, undefined);
+
+  const noSandboxShellSpec = launcher.shellRuntimeSpawnSpec(shellRoot, {
+    V8OS_SHELL_PACKAGED: '1',
+    V8OS_SHELL_EXECUTABLE: process.execPath,
+    V8OS_ELECTRON_NO_SANDBOX: '1',
+  });
+  assert.deepEqual(noSandboxShellSpec.args, ['--no-sandbox']);
 });
 
 test('desktop release scripts build native installers for every supported desktop target', () => {
@@ -786,6 +802,10 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(appImageSmoke, /--appimage-root "\$package_root"/);
   assert.match(appImageSmoke, /--shell-no-sandbox "\$shell_no_sandbox"/);
   assert.match(appImageSmoke, /if ! unshare -Ur true 2>\/dev\/null/);
+  assert.match(appImageSmoke, /x64\) appimage_arch="x86_64"/);
+  assert.match(appImageSmoke, /arm64\) appimage_arch="arm64"/);
+  assert.match(appImageSmoke, /mapfile -t appimage_paths/);
+  assert.match(appImageSmoke, /test "\$\{#appimage_paths\[@\]\}" -eq 1/);
   assert.match(appImageSmoke, /shell_exe="\$package_root\/v8-agent-os-shell"/);
   assert.match(appImageSmoke, /APPDIR="\$package_root"/);
   assert.match(appImageSmoke, /APPIMAGE="\$package_root\/AppRun"/);

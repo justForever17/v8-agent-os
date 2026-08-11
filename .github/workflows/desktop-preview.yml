@@ -413,7 +413,14 @@ jobs:
         run: |
           set -euo pipefail
           export V8_CHECKPOINT_AES_KEY="$(openssl rand -hex 32)"
-          appimage="$(realpath "$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.AppImage' -print -quit)")"
+          case "${{ matrix.arch }}" in
+            x64) appimage_arch="x86_64" ;;
+            arm64) appimage_arch="arm64" ;;
+            *) echo "Unsupported AppImage architecture: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+          mapfile -t appimage_paths < <(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name "*-linux-${appimage_arch}.AppImage" -print)
+          test "${#appimage_paths[@]}" -eq 1
+          appimage="$(realpath "${appimage_paths[0]}")"
           work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
           rm -rf "$work_root"
           mkdir -p "$work_root"

@@ -10,6 +10,7 @@ const repoRoot = process.env.V8_REPO_ROOT || (app.isPackaged
 process.env.V8_REPO_ROOT = repoRoot;
 process.env.V8OS_SHELL_PACKAGED = app.isPackaged ? '1' : '0';
 process.env.V8OS_SHELL_EXECUTABLE = process.execPath;
+process.env.V8OS_ELECTRON_NO_SANDBOX = app.commandLine.hasSwitch('no-sandbox') ? '1' : '0';
 
 if (runtimeMode && runtimeMode !== DESKTOP_PET_RUNTIME_MODE) {
   throw new Error(`Unsupported V8OS desktop runtime mode: ${runtimeMode}`);

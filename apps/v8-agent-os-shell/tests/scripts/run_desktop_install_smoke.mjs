@@ -91,11 +91,42 @@ function packagedResourceRoot(shellExecutable) {
     : path.join(executableDir, "resources", "v8os");
 }
 
-function spawnPackagedShell(shellExecutable, governedStateRoot) {
-  const child = spawn(shellExecutable, [], {
+function appImageRuntimeEnvironment(appImageRoot) {
+  if (!appImageRoot) return {};
+  const appDir = path.resolve(appImageRoot);
+  const joinEnvironmentPaths = (...entries) => entries
+    .filter((entry) => typeof entry === "string" && entry.length > 0)
+    .join(path.delimiter);
+  return {
+    APPDIR: appDir,
+    APPIMAGE: path.join(appDir, "AppRun"),
+    PATH: joinEnvironmentPaths(appDir, path.join(appDir, "usr", "sbin"), process.env.PATH),
+    XDG_DATA_DIRS: joinEnvironmentPaths(
+      path.join(appDir, "usr", "share"),
+      process.env.XDG_DATA_DIRS,
+      "/usr/share/gnome",
+      "/usr/local/share",
+      "/usr/share",
+    ),
+    LD_LIBRARY_PATH: joinEnvironmentPaths(path.join(appDir, "usr", "lib"), process.env.LD_LIBRARY_PATH),
+    GSETTINGS_SCHEMA_DIR: joinEnvironmentPaths(
+      path.join(appDir, "usr", "share", "glib-2.0", "schemas"),
+      process.env.GSETTINGS_SCHEMA_DIR,
+    ),
+  };
+}
+
+function spawnPackagedShell(
+  shellExecutable,
+  governedStateRoot,
+  runtimeEnvironment = {},
+  shellArgs = [],
+) {
+  const child = spawn(shellExecutable, shellArgs, {
     detached: true,
     env: {
       ...process.env,
+      ...runtimeEnvironment,
       V8_AGENT_OS_HOME: governedStateRoot,
     },
     stdio: "ignore",
@@ -135,7 +166,13 @@ async function bootstrapSmokeOwner() {
   };
 }
 
-async function runPackagedCli(shellExecutable, resourceRoot, args, timeoutMs = 20_000) {
+async function runPackagedCli(
+  shellExecutable,
+  resourceRoot,
+  args,
+  runtimeEnvironment = {},
+  timeoutMs = 20_000,
+) {
   const cliPath = path.join(resourceRoot, "apps", "v8-agent-os-cli", "bin", "v8os.mjs");
   if (!fs.existsSync(cliPath)) {
     return { ok: false, error: "packaged_cli_missing" };
@@ -144,6 +181,7 @@ async function runPackagedCli(shellExecutable, resourceRoot, args, timeoutMs = 2
     cwd: resourceRoot,
     env: {
       ...process.env,
+      ...runtimeEnvironment,
       ELECTRON_RUN_AS_NODE: "1",
       V8OS_SHELL_PACKAGED: "1",
       V8_REPO_ROOT: resourceRoot,
@@ -627,6 +665,8 @@ function reportPath() {
 
 const shellExe = argValue("--shell-exe") || process.env.V8OS_SHELL_EXE || "";
 const explicitResourceRoot = argValue("--resource-root");
+const explicitAppImageRoot = argValue("--appimage-root");
+const shellNoSandbox = booleanArg("--shell-no-sandbox", false);
 const serviceTimeoutMs = positiveIntegerArg("--timeout-ms", 90_000);
 const startupBudgetMs = positiveIntegerArg("--startup-budget-ms", 90_000);
 const featurePackSmokeEnabled = booleanArg("--feature-pack-smoke", true);
@@ -650,7 +690,24 @@ if (!fs.existsSync(resourceRoot) || !fs.statSync(resourceRoot).isDirectory()) {
   console.error(`Packaged resource root is not a directory: ${resourceRoot}`);
   process.exit(2);
 }
-let child = spawnPackagedShell(shellExe, stateRoot);
+const appImageRoot = explicitAppImageRoot ? path.resolve(explicitAppImageRoot) : "";
+if (appImageRoot) {
+  const relativeShellPath = path.relative(appImageRoot, path.resolve(shellExe));
+  if (
+    process.platform !== "linux"
+    || !fs.existsSync(appImageRoot)
+    || !fs.statSync(appImageRoot).isDirectory()
+    || !fs.existsSync(path.join(appImageRoot, "AppRun"))
+    || relativeShellPath.startsWith("..")
+    || path.isAbsolute(relativeShellPath)
+  ) {
+    console.error("Invalid --appimage-root for the packaged Shell executable.");
+    process.exit(2);
+  }
+}
+const runtimeEnvironment = appImageRuntimeEnvironment(appImageRoot);
+const shellArgs = shellNoSandbox ? ["--no-sandbox"] : [];
+let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
 
 const [engine, admin, web, initialShellSurface] = await Promise.all([
   waitForReadiness("engine", "http://127.0.0.1:9530/readyz", serviceTimeoutMs),
@@ -689,6 +746,7 @@ if (bootstrapSurface.ok) {
       shellExe,
       resourceRoot,
       ["stop", "--only", "shell", "--json"],
+      runtimeEnvironment,
       45_000,
     );
     const exited = stopped.ok && await waitForPidExit(initialShellPid);
@@ -699,7 +757,7 @@ if (bootstrapSurface.ok) {
       error: !stopped.ok ? "initial_shell_stop_failed" : exited ? "" : "initial_shell_exit_timeout",
     };
     if (shellRestart.ok) {
-      child = spawnPackagedShell(shellExe, stateRoot);
+      child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
       shellSurface = await waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs);
       rawInstanceManifest = await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 });
     }
@@ -728,7 +786,12 @@ const startupDurationMs = Date.now() - startedAtMs;
 const serviceChecks = { engine, admin, web };
 const desktopPetStartedAtMs = Date.now();
 const desktopPetLaunch = Object.values(serviceChecks).every((item) => item.ok) && shellSurface.ok
-  ? await runPackagedCli(shellExe, resourceRoot, ["start", "--only", "desktop-pet", "--mode", "start", "--json"])
+  ? await runPackagedCli(
+    shellExe,
+    resourceRoot,
+    ["start", "--only", "desktop-pet", "--mode", "start", "--json"],
+    runtimeEnvironment,
+  )
   : { ok: false, error: "core_surface_not_ready" };
 const desktopPet = desktopPetLaunch.ok
   ? await waitForDesktopPet(desktopPetDescriptorPath, shellControlPath, Math.min(serviceTimeoutMs, 30_000))

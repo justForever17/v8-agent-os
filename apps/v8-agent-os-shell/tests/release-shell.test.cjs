@@ -105,6 +105,22 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /trusted_web_surface_mismatch/);
   assert.match(installSmokeSource, /typeof value\.checked !== "boolean"/);
   assert.match(installSmokeSource, /permittedBooleans\.some\(\(key\) => typeof value\[key\] !== "boolean"\)/);
+  assert.match(installSmokeSource, /function appImageRuntimeEnvironment\(appImageRoot\)/);
+  assert.match(installSmokeSource, /APPIMAGE: path\.join\(appDir, "AppRun"\)/);
+  assert.match(installSmokeSource, /const shellArgs = shellNoSandbox \? \["--no-sandbox"\] : \[\]/);
+  const packagedShellSpawnSource = installSmokeSource.slice(
+    installSmokeSource.indexOf('function spawnPackagedShell'),
+    installSmokeSource.indexOf('async function waitForPidExit'),
+  );
+  const packagedCliSource = installSmokeSource.slice(
+    installSmokeSource.indexOf('async function runPackagedCli'),
+    installSmokeSource.indexOf('async function waitForDesktopPet'),
+  );
+  assert.match(packagedShellSpawnSource, /spawn\(shellExecutable, shellArgs/);
+  assert.match(packagedShellSpawnSource, /\.\.\.runtimeEnvironment/);
+  assert.match(packagedCliSource, /spawn\(shellExecutable, \[cliPath, \.\.\.args\]/);
+  assert.match(packagedCliSource, /\.\.\.runtimeEnvironment/);
+  assert.doesNotMatch(packagedCliSource, /--no-sandbox/);
 });
 
 test('shell recovers a failed local surface without an unbounded reload loop', () => {
@@ -767,7 +783,15 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(appImageSmoke, /"\$shell_exe" "\$installed_cli" stop --all/);
   assert.match(appImageSmoke, /--shell-exe "\$shell_exe"/);
   assert.match(appImageSmoke, /--resource-root "\$resource_root"/);
+  assert.match(appImageSmoke, /--appimage-root "\$package_root"/);
+  assert.match(appImageSmoke, /--shell-no-sandbox "\$shell_no_sandbox"/);
+  assert.match(appImageSmoke, /if ! unshare -Ur true 2>\/dev\/null/);
   assert.match(appImageSmoke, /shell_exe="\$package_root\/v8-agent-os-shell"/);
+  assert.match(appImageSmoke, /APPDIR="\$package_root"/);
+  assert.match(appImageSmoke, /APPIMAGE="\$package_root\/AppRun"/);
+  assert.match(appImageSmoke, /LD_LIBRARY_PATH="\$package_root\/usr\/lib/);
+  assert.match(appImageSmoke, /GSETTINGS_SCHEMA_DIR="\$package_root\/usr\/share\/glib-2\.0\/schemas/);
+  assert.doesNotMatch(appImageSmoke, /export LD_LIBRARY_PATH/);
   assert.doesNotMatch(appImageSmoke, /--shell-exe "\$appimage"/);
   assert.match(workflow, /Packaged macOS desktop smoke/);
   assert.match(workflow, /hdiutil attach "\$dmg_path" -mountpoint "\$mount_point" -nobrowse -readonly/);

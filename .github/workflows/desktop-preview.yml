@@ -422,12 +422,17 @@ jobs:
           shell_exe="$package_root/v8-agent-os-shell"
           resource_root="$package_root/resources/v8os"
           test -x "$shell_exe"
+          test -x "$package_root/AppRun"
+          shell_no_sandbox=false
+          if ! unshare -Ur true 2>/dev/null; then shell_no_sandbox=true; fi
           chmod -R a-w "$package_root"
           dbus-run-session -- xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
             --shell-exe "$shell_exe" \
             --resource-root "$resource_root" \
-              --timeout-ms 90000 \
-              --startup-budget-ms 90000
+            --appimage-root "$package_root" \
+            --shell-no-sandbox "$shell_no_sandbox" \
+            --timeout-ms 90000 \
+            --startup-budget-ms 90000
 
       - name: Cleanup read-only AppImage desktop smoke
         if: always() && matrix.os == 'linux'
@@ -442,6 +447,12 @@ jobs:
           resource_root="$package_root/resources/v8os"
           installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
           if [[ -x "$shell_exe" && -f "$installed_cli" ]]; then
+            APPDIR="$package_root" \
+            APPIMAGE="$package_root/AppRun" \
+            PATH="$package_root:$package_root/usr/sbin${PATH:+:$PATH}" \
+            XDG_DATA_DIRS="$package_root/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}:/usr/share/gnome:/usr/local/share:/usr/share" \
+            LD_LIBRARY_PATH="$package_root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            GSETTINGS_SCHEMA_DIR="$package_root/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:$GSETTINGS_SCHEMA_DIR}" \
             ELECTRON_RUN_AS_NODE=1 \
             V8OS_SHELL_PACKAGED=1 \
             V8_REPO_ROOT="$resource_root" \

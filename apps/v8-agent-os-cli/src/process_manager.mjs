@@ -17,7 +17,7 @@ import {
 
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
 export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
-export const DESKTOP_PET_TERMINATION_TIMEOUT_MS = 5_000;
+export const DESKTOP_PET_TERMINATION_TIMEOUT_MS = 10_000;
 const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
 export function managedStopOptions(componentId, platform = process.platform) {

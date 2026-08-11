@@ -308,6 +308,7 @@ test("Shell shutdown stops the verified Electron browser before its launcher", (
 });
 
 test("POSIX component restart force-stops only the verified Shell process group", () => {
+  assert.equal(DESKTOP_PET_TERMINATION_TIMEOUT_MS, 10_000);
   assert.deepEqual(managedStopOptions("shell", "linux"), {
     tree: false,
     timeoutMs: SHELL_TERMINATION_TIMEOUT_MS,

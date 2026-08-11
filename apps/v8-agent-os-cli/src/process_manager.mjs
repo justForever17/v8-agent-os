@@ -16,6 +16,7 @@ import {
 } from "./process_state.mjs";
 
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
+export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
 const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
 function componentHasPort(component) {
@@ -953,7 +954,7 @@ async function killPid(pid, options = {}) {
     if (result.status !== 0) {
       return { ok: false, reason: (result.stderr || result.stdout || "taskkill_failed").trim() };
     }
-    const stopped = await waitForPidExit(numeric);
+    const stopped = await waitForPidExit(numeric, options.timeoutMs);
     return { ok: stopped, reason: stopped ? "killed" : "termination_timeout" };
   }
   try {
@@ -965,7 +966,7 @@ async function killPid(pid, options = {}) {
       return { ok: false, reason: error instanceof Error ? error.message : "kill_failed" };
     }
   }
-  const stopped = await waitForPidExit(numeric);
+  const stopped = await waitForPidExit(numeric, options.timeoutMs);
   return { ok: stopped, reason: stopped ? "killed" : "termination_timeout" };
 }
 
@@ -1057,7 +1058,13 @@ async function stopComponent(id, options) {
         killResults.push({ pid, ok: false, reason: "identity_changed_before_kill" });
         break;
       }
-      killResults.push({ pid, ...await killPid(pid, { tree: id !== "shell" }) });
+      killResults.push({
+        pid,
+        ...await killPid(pid, {
+          tree: id !== "shell",
+          timeoutMs: id === "shell" ? SHELL_TERMINATION_TIMEOUT_MS : undefined,
+        }),
+      });
     }
     const failed = killResults.find((item) => !item.ok);
     if (!failed) {

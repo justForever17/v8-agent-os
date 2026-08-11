@@ -22,6 +22,7 @@ import {
   packagedRuntimeDescriptorMatches,
   resolveManagedComponentIdentity,
   runWindowsProcessProbe,
+  SHELL_TERMINATION_TIMEOUT_MS,
   spawnManagedChild,
   waitForRuntimeComponentHandoff,
   verifiedComponentPortOwner,
@@ -1099,7 +1100,8 @@ test("desktop pet survives Shell replacement through detached handoff and exact 
   assert.match(processManager, /desktop-pet\.json/);
   assert.match(processManager, /resolveLiveManagedIdentity/);
   assert.match(processManager, /shell-control\.json/);
-  assert.match(processManager, /killPid\(pid, \{ tree: id !== "shell" \}\)/);
+  assert.equal(SHELL_TERMINATION_TIMEOUT_MS, 20_000);
+  assert.match(processManager, /timeoutMs: id === "shell" \? SHELL_TERMINATION_TIMEOUT_MS : undefined/);
   assert.match(processManager, /stopped_during_kill/);
   assert.match(processManager, /await runChildCommand\("taskkill", args, \{ timeoutMs: 5_000 \}\)/);
   assert.doesNotMatch(processManager, /spawnSync/);

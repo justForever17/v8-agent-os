@@ -741,11 +741,13 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(workflow, /Print Windows desktop smoke service logs/);
   assert.match(workflow, /Join-Path \$env:V8_AGENT_OS_HOME "logs\\cli"/);
   assert.match(workflow, /Upload Windows desktop smoke diagnostics/);
-  assert.match(workflow, /Start-Process -FilePath \$installer\.FullName -ArgumentList @\("\/S", "\/D=\$env:V8OS_WINDOWS_INSTALL_DIR"\)/);
   const installedWindowsSmoke = workflow.slice(
     workflow.indexOf('Installed Windows desktop smoke'),
     workflow.indexOf('Print Windows desktop smoke service logs'),
   );
+  assert.match(installedWindowsSmoke, /\$env:V8OS_WINDOWS_INSTALL_DIR = \[IO\.Path\]::GetFullPath\(\$env:V8OS_WINDOWS_INSTALL_DIR\)/);
+  assert.match(installedWindowsSmoke, /\.Contains\("\/"\)/);
+  assert.match(installedWindowsSmoke, /Start-Process -FilePath \$installer\.FullName -ArgumentList @\("\/S", "\/D=\$env:V8OS_WINDOWS_INSTALL_DIR"\)/);
   assert.match(installedWindowsSmoke, /resources\\v8os/);
   assert.match(installedWindowsSmoke, /\.python\\python\.exe/);
   assert.match(installedWindowsSmoke, /WindowsCredentialBackend/);
@@ -770,6 +772,10 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(workflow, /Packaged macOS desktop smoke/);
   assert.match(workflow, /hdiutil attach "\$dmg_path" -mountpoint "\$mount_point" -nobrowse -readonly/);
   assert.match(workflow, /Install Linux desktop preview package/);
+  assert.match(workflow, /mapfile -t deb_paths/);
+  assert.match(workflow, /test "\$\{#deb_paths\[@\]\}" -eq 1/);
+  assert.match(workflow, /x64\) expected_deb_arch="amd64"/);
+  assert.match(workflow, /dpkg-deb -f "\$deb_path" Architecture/);
   assert.match(workflow, /sudo dpkg -i "\$deb_path"/);
   assert.match(workflow, /\/opt\/V8 Agent OS\/v8-agent-os-shell/);
   assert.match(workflow, /Installed Linux desktop smoke/);

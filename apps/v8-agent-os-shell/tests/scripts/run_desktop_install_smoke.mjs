@@ -685,7 +685,12 @@ if (bootstrapSurface.ok) {
   ownerBootstrap = await bootstrapSmokeOwner();
   if (ownerBootstrap.ok) {
     const initialShellPid = child.pid || 0;
-    const stopped = await runPackagedCli(shellExe, resourceRoot, ["stop", "--only", "shell", "--json"]);
+    const stopped = await runPackagedCli(
+      shellExe,
+      resourceRoot,
+      ["stop", "--only", "shell", "--json"],
+      45_000,
+    );
     const exited = stopped.ok && await waitForPidExit(initialShellPid);
     shellRestart = {
       ok: Boolean(stopped.ok && exited),

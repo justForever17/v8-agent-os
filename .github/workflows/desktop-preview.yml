@@ -301,8 +301,15 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          deb_path="$(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*-${{ matrix.arch }}.deb' -print -quit)"
-          test -n "$deb_path"
+          mapfile -t deb_paths < <(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name '*.deb' -print)
+          test "${#deb_paths[@]}" -eq 1
+          deb_path="${deb_paths[0]}"
+          case "${{ matrix.arch }}" in
+            x64) expected_deb_arch="amd64" ;;
+            arm64) expected_deb_arch="arm64" ;;
+            *) echo "Unsupported Linux package architecture: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
+          test "$(dpkg-deb -f "$deb_path" Architecture)" = "$expected_deb_arch"
           sudo dpkg -i "$deb_path"
           test -x "/opt/V8 Agent OS/v8-agent-os-shell"
 
@@ -490,6 +497,9 @@ jobs:
           $installers = @(Get-ChildItem "apps/v8-agent-os-shell/dist/release" -File -Filter "*-win-${{ matrix.arch }}.exe")
           if ($installers.Count -ne 1) { throw "Expected exactly one Windows ${{ matrix.arch }} installer, found $($installers.Count)" }
           $installer = $installers[0]
+          $env:V8_AGENT_OS_HOME = [IO.Path]::GetFullPath($env:V8_AGENT_OS_HOME)
+          $env:V8OS_WINDOWS_INSTALL_DIR = [IO.Path]::GetFullPath($env:V8OS_WINDOWS_INSTALL_DIR)
+          if ($env:V8OS_WINDOWS_INSTALL_DIR.Contains("/")) { throw "Windows install directory was not normalized" }
           New-Item -ItemType Directory -Force -Path $env:V8OS_WINDOWS_INSTALL_DIR | Out-Null
           $install = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$env:V8OS_WINDOWS_INSTALL_DIR") -Wait -PassThru -WindowStyle Hidden
           if ($install.ExitCode -ne 0) { throw "Windows installer exited with code $($install.ExitCode)" }
@@ -554,6 +564,8 @@ jobs:
           V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
           V8OS_WINDOWS_INSTALL_DIR: ${{ runner.temp }}/v8os-windows-install-${{ matrix.arch }}
         run: |
+          $env:V8_AGENT_OS_HOME = [IO.Path]::GetFullPath($env:V8_AGENT_OS_HOME)
+          $env:V8OS_WINDOWS_INSTALL_DIR = [IO.Path]::GetFullPath($env:V8OS_WINDOWS_INSTALL_DIR)
           $shellExe = Get-Item (Join-Path $env:V8OS_WINDOWS_INSTALL_DIR "V8 Agent OS.exe") -ErrorAction SilentlyContinue
           if (-not $shellExe) { throw "Installed Windows Shell is missing: $env:V8OS_WINDOWS_INSTALL_DIR" }
           $resourceRoot = Join-Path $shellExe.Directory.FullName "resources\v8os"

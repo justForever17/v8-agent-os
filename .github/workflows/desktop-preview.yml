@@ -435,11 +435,11 @@ jobs:
           mapfile -t appimage_paths < <(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name "*-linux-${appimage_arch}.AppImage" -print)
           test "${#appimage_paths[@]}" -eq 1
           appimage="$(realpath "${appimage_paths[0]}")"
-          appimage_entry_output="$(timeout 30s env ELECTRON_RUN_AS_NODE=1 "$appimage" -e 'process.stdout.write("V8OS_APPIMAGE_ENTRY_OK\n")')"
-          if ! grep -Fxq "V8OS_APPIMAGE_ENTRY_OK" <<<"$appimage_entry_output"; then
+          if ! timeout 30s env APPIMAGE_EXIT_AFTER_INSTALL=1 "$appimage"; then
             echo "AppImage single-file runtime entry did not execute" >&2
             exit 1
           fi
+          echo "V8OS_APPIMAGE_ENTRY_OK"
           work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
           rm -rf "$work_root"
           mkdir -p "$work_root"

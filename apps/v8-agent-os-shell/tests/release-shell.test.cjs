@@ -299,6 +299,7 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(installerInclude, /!ifdef APP_ARM64/);
   assert.match(installerInclude, /!ifndef APP_64/);
   assert.match(installerInclude, /\$\{IfNot\} \$\{IsNativeARM64\}/);
+  assert.match(installerInclude, /RMDir "\$INSTDIR"/);
   assert.match(installerInclude, /SetErrorLevel 1633/);
   assert.match(config, /at-spi2-core/);
   assert.match(config, /xdotool/);

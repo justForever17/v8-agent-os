@@ -7,6 +7,9 @@
         ${IfNot} ${Silent}
           MessageBox MB_OK|MB_ICONSTOP|MB_TOPMOST "This installer requires Windows on ARM64.$\r$\nPlease download the Windows x64 installer for this computer."
         ${EndIf}
+        ; NSIS may create an empty target before customInit runs. Remove only
+        ; that empty directory; RMDir never deletes a previous installation.
+        RMDir "$INSTDIR"
         SetErrorLevel 1633
         Quit
       ${EndIf}

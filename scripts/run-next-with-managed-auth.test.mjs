@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertStandaloneAssetsReady,
   findStandaloneServer,
+  runtimeHostnameForApp,
   stageStandaloneAssets,
 } from "./run-next-with-managed-auth.mjs";
 
@@ -71,4 +72,10 @@ test("start validation fails before launch when the standalone server is missing
     () => assertStandaloneAssetsReady("unused", ""),
     /Standalone server is missing\. Rebuild the production bundle before starting it/,
   );
+});
+
+test("Admin binds an IPv4-compatible default while Web remains loopback-only", () => {
+  assert.equal(runtimeHostnameForApp("admin", {}), "0.0.0.0");
+  assert.equal(runtimeHostnameForApp("admin", { V8_ADMIN_HOSTNAME: "::" }), "::");
+  assert.equal(runtimeHostnameForApp("web", {}), "127.0.0.1");
 });

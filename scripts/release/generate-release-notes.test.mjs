@@ -22,6 +22,7 @@ test("unified preview notes expose Desktop and Android without claiming iOS", ()
 
   assert.match(notes, /^# V8 Agent OS Preview v2026\.08\.07\.3/m);
   assert.match(notes, /win-arm64-setup\.exe/);
+  assert.match(notes, /ARM64 包仅适用于原生 Windows on ARM，Intel\/AMD 电脑请选择 x64 包/);
   assert.match(notes, /android-preview\.apk/);
   assert.match(notes, /iOS 因缺少非交互签名凭据被明确禁用/);
   assert.match(notes, /标签：`v8-os-v2026\.08\.07\.3`/);

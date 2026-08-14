@@ -121,7 +121,7 @@ function assetSection(product, version, channel) {
       ? `V8OS-Phone-${version}-android.aab`
       : `V8OS-Phone-${version}-android-preview.apk`;
     return [
-      "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe` 与 `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows x64/ARM64 " + desktopLabel + "。",
+      "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe` 与 `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows x64/ARM64 " + desktopLabel + "；ARM64 包仅适用于原生 Windows on ARM，Intel/AMD 电脑请选择 x64 包。",
       "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg` 与 `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS Intel/Apple Silicon " + desktopLabel + "。",
       "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage`、`.deb` 及对应 arm64 版本：Linux " + desktopLabel + "。",
       channel === "stable"
@@ -150,7 +150,7 @@ function assetSection(product, version, channel) {
     : "当前桌面包未签名。Windows 可能显示 SmartScreen 确认，macOS 可能要求在系统设置中确认打开；代码签名、信誉和自动更新属于后续阶段。";
   const assets = [
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：Windows x64 " + desktopLabel + "。",
-    "- `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows ARM64 " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows ARM64 " + desktopLabel + "，仅适用于原生 Windows on ARM；Intel/AMD 电脑请选择 x64 包。",
     "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg`：macOS Intel " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS Apple Silicon " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-x64.deb`：Linux x64 " + desktopLabel + "。",

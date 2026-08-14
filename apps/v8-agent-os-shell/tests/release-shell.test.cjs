@@ -76,7 +76,8 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /!\['started', 'already_running'\]\.includes\(item\.status\)/);
   assert.match(mainSource, /monitorCoreServiceLiveness/);
   assert.match(mainSource, /process\.kill\(pid, 0\)/);
-  assert.match(mainSource, /const statuses = await shellStatus\(exitedIds\)/);
+  assert.match(mainSource, /await waitForServiceHandoff\(exitedIds/);
+  assert.match(mainSource, /\.filter\(\(status\) => !hasServiceEvidence\(status\)\)/);
   assert.doesNotMatch(mainSource, /while \(!isComplete\(\)\) \{[\s\S]{0,220}shellStatus\(CORE_SERVICE_IDS\)/);
   assert.match(mainSource, /isCancelled: \(\) => complete/);
   assert.match(mainSource, /if \(options\.isCancelled\?\.\(\)\) return false/);
@@ -283,6 +284,7 @@ test('desktop release scripts build native installers for every supported deskto
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
   assert.match(config, /target:\s*\n\s*- target: nsis/);
   assert.match(config, /win:[\s\S]*?arch:\s*\n\s*- x64\s*\n\s*- arm64/);
+  assert.match(config, /nsis:[\s\S]*?include: assets\/windows-installer\.nsh/);
   assert.doesNotMatch(config, /- target: zip/);
   assert.match(config, /icon: assets\/icon\.ico/);
   assert.match(config, /mac:\s*\n\s+icon: assets\/icon\.icns/);
@@ -292,6 +294,12 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /syncDesktopName: true/);
   assert.match(config, /target: AppImage/);
   assert.match(config, /target: deb/);
+
+  const installerInclude = fs.readFileSync(path.join(shellRoot, 'assets', 'windows-installer.nsh'), 'utf8');
+  assert.match(installerInclude, /!ifdef APP_ARM64/);
+  assert.match(installerInclude, /!ifndef APP_64/);
+  assert.match(installerInclude, /\$\{IfNot\} \$\{IsNativeARM64\}/);
+  assert.match(installerInclude, /SetErrorLevel 1633/);
   assert.match(config, /at-spi2-core/);
   assert.match(config, /xdotool/);
   assert.match(config, /wmctrl/);
@@ -716,8 +724,8 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
   assert.match(runner, /V8_ADMIN_HOSTNAME/);
-  assert.match(runner, /\|\| "::"/);
-  assert.match(runner, /: "127\.0\.0\.1"/);
+  assert.match(runner, /\|\| "0\.0\.0\.0"/);
+  assert.match(runner, /return "127\.0\.0\.1"/);
   assert.match(runner, /HOSTNAME:\s*runtimeHostname/);
   assert.match(runner, /PORT:\s*port/);
   assert.match(runner, /buildHome/);
@@ -733,6 +741,15 @@ test('Phone pairing exposes Admin on LAN without advertising wildcard bind hosts
   assert.match(runtimeConfig, /"0\.0\.0\.0"/);
   assert.match(runtimeConfig, /"\[::\]"/);
   assert.match(runtimeConfig, /!NON_ROUTABLE_CLIENT_HOSTS\.has\(parsed\.hostname \|\| ""\)/);
+});
+
+test('macOS preview declares only the media permissions used by the desktop surface', () => {
+  const builder = fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'electron-builder.yml'), 'utf8');
+  assert.match(builder, /extendInfo:/);
+  assert.match(builder, /NSMicrophoneUsageDescription:/);
+  assert.match(builder, /NSCameraUsageDescription:/);
+  assert.match(builder, /NSScreenCaptureUsageDescription:/);
+  assert.doesNotMatch(builder, /NSAppleEventsUsageDescription:/);
 });
 
 test('desktop pet consumes packaged realtime contract instead of rebuilding workspace package', () => {

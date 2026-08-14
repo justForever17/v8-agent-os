@@ -88,6 +88,16 @@ export function assertStandaloneAssetsReady(appDir, serverPath) {
   }
 }
 
+export function runtimeHostnameForApp(app, environment = process.env) {
+  if (app === "admin") {
+    // Admin is the authenticated Phone BFF as well as the local console.  An
+    // IPv4 wildcard is portable on hosts where an IPv6 `::` listener does not
+    // accept IPv4 connections (for example Ubuntu with bindv6only=1).
+    return String(environment?.V8_ADMIN_HOSTNAME || "").trim() || "0.0.0.0";
+  }
+  return "127.0.0.1";
+}
+
 function main(args = process.argv.slice(2)) {
   const app = argumentValue(args, "--app");
   const mode = argumentValue(args, "--mode");
@@ -97,10 +107,7 @@ function main(args = process.argv.slice(2)) {
   }
   // Phone is the only remote client and reaches Engine exclusively through the
   // authenticated Admin BFF. Web remains a local-only desktop surface.
-  // Binding Admin to the IPv6 unspecified address keeps the Phone gateway dual-stack.
-  const runtimeHostname = app === "admin"
-    ? (String(process.env.V8_ADMIN_HOSTNAME || "").trim() || "::")
-    : "127.0.0.1";
+  const runtimeHostname = runtimeHostnameForApp(app);
   const appDir = path.join(repoRoot, "apps", `v8-agent-os-${app}`);
   const buildHome = path.join(repoRoot, ".next-v8os-home");
   const buildAppData = path.join(buildHome, "AppData", "Roaming");

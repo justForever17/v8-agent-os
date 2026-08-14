@@ -94,6 +94,7 @@ win:
         - x64
         - arm64
 nsis:
+  include: assets/windows-installer.nsh
   oneClick: false
   perMachine: false
   allowElevation: false
@@ -104,6 +105,10 @@ nsis:
 mac:
   icon: assets/icon.icns
   category: public.app-category.developer-tools
+  extendInfo:
+    NSMicrophoneUsageDescription: V8 Agent OS uses the microphone only when you start voice capture.
+    NSCameraUsageDescription: V8 Agent OS uses the camera only when you start a camera capture.
+    NSScreenCaptureUsageDescription: V8 Agent OS uses screen capture only when you start desktop visual capture.
   target:
     - target: dmg
       arch:

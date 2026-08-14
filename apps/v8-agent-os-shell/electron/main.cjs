@@ -6,6 +6,7 @@ const { createDesktopPetShutdownCoordinator } = require('../lib/desktop-pet-shut
 const { createShellControlServer, isValidSessionId } = require('../lib/shell-control.cjs');
 const { parseShellDeepLink } = require('../lib/shell-route.cjs');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
+const { hasServiceEvidence, waitForServiceHandoff } = require('../lib/service-liveness.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
 const {
@@ -361,9 +362,14 @@ async function monitorCoreServiceLiveness(startResults, isComplete) {
     }
     try {
       const { shellStatus } = await cliApi();
-      const statuses = await shellStatus(exitedIds);
-      const failures = statuses
-        .filter((status) => !status.pidAlive && !status.portOpen)
+      const handoff = await waitForServiceHandoff(exitedIds, {
+        statusProvider: shellStatus,
+      });
+      const statuses = handoff.statuses;
+      const statusById = new Map(statuses.map((status) => [String(status?.id || ''), status]));
+      const failures = exitedIds
+        .map((id) => statusById.get(id) || { id, pidAlive: false, portOpen: false, state: 'stopped' })
+        .filter((status) => !hasServiceEvidence(status))
         .map((status) => {
           const started = startResults.find((item) => item.id === status.id) || {};
           return {

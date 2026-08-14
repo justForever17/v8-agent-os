@@ -8,6 +8,7 @@ from api import platform_routes
 from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
 from core.model_control_plane import DEFAULT_ROLE_MAP, DEFAULT_ROUTING_POLICIES, MODULE_DEFINITIONS, ROLE_DEFINITIONS, model_control_plane
+from core.model_eligibility import evaluate_model_eligibility, model_kind
 from core.model_provider_catalog import ModelProviderCatalog, model_provider_catalog
 from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
 from core.model_thinking_control import (
@@ -480,6 +481,63 @@ def test_minimax_providers_use_official_models_endpoint_and_reasoning_contract()
     assert normalized["thinkingControl"]["supportsNoThink"] is True
     assert normalized["thinkingControl"]["requestStyle"] == "openai_thinking_disabled"
     assert normalized["thinkingControl"]["disabled"] is False
+
+
+def test_connectable_text_and_vision_catalog_has_complete_output_limit_provenance():
+    audited = []
+    for provider in model_provider_catalog.list_providers():
+        for raw_model in provider.get("models") or []:
+            if not isinstance(raw_model, dict) or not str(raw_model.get("id") or "").strip():
+                continue
+            normalized = model_provider_catalog.normalize_model(provider, str(raw_model["id"]))
+            if (
+                dict(normalized.get("availability") or {}).get("catalogConnectable")
+                and model_kind(normalized) == "text_generation"
+            ):
+                audited.append((str(provider.get("id") or ""), normalized))
+
+    assert len(audited) == 86
+    assert [
+        f"{provider_id}::{model['modelId']}"
+        for provider_id, model in audited
+        if not model.get("maxTokens")
+    ] == []
+    assert all(
+        str(dict((model.get("factProvenance") or {}).get("maxTokens") or {}).get("source") or "")
+        and str(dict((model.get("factProvenance") or {}).get("maxTokens") or {}).get("confidence") or "")
+        for _provider_id, model in audited
+    )
+
+    minimax_m3 = next(
+        model
+        for provider_id, model in audited
+        if provider_id == "minimax-cn" and model["modelId"] == "MiniMax-M3"
+    )
+    assert minimax_m3["maxTokens"] == 4096
+    assert minimax_m3["factProvenance"]["maxTokens"]["source"] == "v8_conservative_2026_default"
+    assert minimax_m3["factProvenance"]["maxTokens"]["confidence"] == "estimated"
+    assert evaluate_model_eligibility(minimax_m3)["status"] == "ready"
+
+    glm_41v = next(
+        model
+        for provider_id, model in audited
+        if provider_id == "zhipu" and model["modelId"] == "glm-4.1v-thinking-flashx"
+    )
+    assert glm_41v["maxTokens"] == 32768
+    assert glm_41v["factProvenance"]["maxTokens"] == {
+        "source": "official_docs",
+        "confidence": "authoritative",
+        "sourceRefs": ["https://docs.bigmodel.cn/cn/guide/start/concept-param"],
+    }
+
+    minimax_m27 = next(
+        model
+        for provider_id, model in audited
+        if provider_id == "minimax-cn" and model["modelId"] == "MiniMax-M2.7"
+    )
+    assert minimax_m27["maxTokens"] == 131072
+    assert evaluate_model_eligibility(minimax_m27)["status"] == "unavailable"
+    assert evaluate_model_eligibility(minimax_m27)["requiredFacts"] == []
 
 
 def test_supported_no_think_models_expose_thinking_control():
@@ -1342,12 +1400,20 @@ def test_model_hub_transaction_keeps_raw_key_out_of_config_plan(monkeypatch):
             "type": "TEXT",
             "contextWindow": 32_000,
             "maxTokens": 4_096,
+            "factProvenance": {
+                "maxTokens": {
+                    "source": "v8_conservative_2026_default",
+                    "confidence": "estimated",
+                }
+            },
             "capabilities": {"chat": True},
         },
     }
 
     def _prepare_model(**kwargs):
         captured["providerConfig"] = kwargs["provider_config"]
+        captured["modelConfig"] = kwargs["model_config"]
+        captured["catalogFactProvenance"] = kwargs["catalog_fact_provenance"]
         return {
             "ok": True,
             "state": "awaiting_secret",
@@ -1398,6 +1464,11 @@ def test_model_hub_transaction_keeps_raw_key_out_of_config_plan(monkeypatch):
     assert "apiKey" not in captured["providerConfig"]
     assert "credentialRef" not in captured["providerConfig"]
     assert "sk-sensitive" not in json.dumps(captured["providerConfig"])
+    assert "factProvenance" not in captured["modelConfig"]
+    assert captured["catalogFactProvenance"]["maxTokens"] == {
+        "source": "v8_conservative_2026_default",
+        "confidence": "estimated",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1587,6 +1658,103 @@ def test_failed_custom_connect_does_not_persist_catalog_provider(monkeypatch):
 
     assert exc_info.value.status_code == 409
     assert calls == {"save": 0, "delete": 0}
+
+
+def test_custom_probe_is_read_only_and_only_successful_connect_persists_provider(monkeypatch):
+    calls = {"saved": [], "delete": 0}
+
+    class _AllowDecision:
+        @staticmethod
+        def is_block():
+            return False
+
+        @staticmethod
+        def is_review():
+            return False
+
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: None)
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "probe_provider_entry",
+        lambda _provider, credential="", base_url="": {
+            "ok": True,
+            "models": [{"id": "custom-model"}],
+            "resolvedModelsUrl": f"{base_url}/models",
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes.safety_guardian,
+        "assess_http_request",
+        lambda *_args, **_kwargs: _AllowDecision(),
+    )
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: {"providers": {}})
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "save_custom_provider",
+        lambda provider: calls["saved"].append(dict(provider)) or dict(provider),
+    )
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "delete_custom_provider",
+        lambda _provider_id: calls.__setitem__("delete", calls["delete"] + 1),
+    )
+    request = {
+        "providerId": "__custom__",
+        "customProviderName": "Custom Demo",
+        "baseUrl": "https://custom.example/v1",
+        "apiKey": "sk-test",
+    }
+
+    probe = asyncio.run(platform_routes.probe_model_provider(request))
+
+    assert probe["ok"] is True
+    assert probe["providerId"] == "__custom__"
+    assert "provider" not in probe
+    assert "customProviderSaved" not in probe
+    assert calls == {"saved": [], "delete": 0}
+
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            platform_routes.ConfigBrokerError(
+                "verification failed",
+                code="model_connection_validation_failed",
+                status_code=409,
+            )
+        ),
+    )
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(
+            platform_routes.connect_model_provider(
+                {**request, "modelId": "custom-model"}
+            )
+        )
+
+    assert failed.value.status_code == 409
+    assert calls == {"saved": [], "delete": 0}
+
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **_kwargs: {
+            "ok": True,
+            "transactionId": "cfg_txn_custom",
+            "ownerId": "owner",
+            "config": {"providers": {}},
+        },
+    )
+    connected = asyncio.run(
+        platform_routes.connect_model_provider(
+            {**request, "modelId": "custom-model"}
+        )
+    )
+
+    assert connected["ok"] is True
+    assert connected["providerId"] != "__custom__"
+    assert len(calls["saved"]) == 1
+    assert calls["saved"][0]["id"] == connected["providerId"]
+    assert calls["delete"] == 0
 
 
 def test_custom_provider_overlay_roundtrip(tmp_path):

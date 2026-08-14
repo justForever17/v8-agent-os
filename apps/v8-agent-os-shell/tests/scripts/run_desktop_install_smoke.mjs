@@ -846,13 +846,13 @@ const instanceManifestValid = rawInstanceManifest.ok
 shellSurface.ok = Boolean(
   shellSurface.ok
   && instanceManifestValid
-  && shellSurface.surfaceKind === "web",
+  && shellSurface.surfaceKind === "admin-login",
 );
-shellSurface.expectedSurfaceKind = "web";
+shellSurface.expectedSurfaceKind = "admin-login";
 shellSurface.error = shellSurface.ok
   ? ""
   : instanceManifestValid
-    ? "trusted_web_surface_mismatch"
+    ? "admin_auth_lock_surface_mismatch"
     : "initialized_instance_manifest_invalid";
 const instanceManifest = {
   ok: Boolean(instanceManifestValid),

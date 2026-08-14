@@ -13,6 +13,7 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core.model_catalog_connection import build_catalog_model_connection_plan  # noqa: E402
+from core.model_eligibility import evaluate_model_eligibility, model_kind  # noqa: E402
 from core.model_provider_catalog import model_provider_catalog  # noqa: E402
 
 
@@ -70,6 +71,7 @@ def run_matrix(*, max_duration_ms: float, max_load_ms: float) -> dict[str, objec
     providers = model_provider_catalog.list_providers()
     loaded = time.perf_counter()
     connectable = 0
+    eligibility_blocked: list[dict[str, object]] = []
     expected_blocked: list[dict[str, str]] = []
     unexpected: list[dict[str, str]] = []
 
@@ -117,6 +119,29 @@ def run_matrix(*, max_duration_ms: float, max_load_ms: float) -> dict[str, objec
                     )
                 else:
                     connectable += 1
+                    if model_kind(model) == "text_generation":
+                        eligibility = evaluate_model_eligibility(model)
+                        if eligibility.get("blocking"):
+                            eligibility_blocked.append(
+                                {
+                                    "providerId": provider_id,
+                                    "modelId": model_id,
+                                    "status": eligibility.get("status"),
+                                    "requiredFacts": list(eligibility.get("requiredFacts") or []),
+                                    "reasonCodes": [
+                                        str(item.get("code") or "")
+                                        for item in list(eligibility.get("reasons") or [])
+                                    ],
+                                }
+                            )
+                            if "maxTokens" in list(eligibility.get("requiredFacts") or []):
+                                unexpected.append(
+                                    {
+                                        "providerId": provider_id,
+                                        "modelId": model_id,
+                                        "reason": "connectable text/vision model is missing maxTokens",
+                                    }
+                                )
 
     finished = time.perf_counter()
     load_ms = (loaded - started) * 1000
@@ -132,6 +157,8 @@ def run_matrix(*, max_duration_ms: float, max_load_ms: float) -> dict[str, objec
         "ok": not failures,
         "providerCount": len(providers),
         "connectableModelCount": connectable,
+        "connectionReadyModelCount": connectable - len(eligibility_blocked),
+        "eligibilityBlockedCount": len(eligibility_blocked),
         "expectedBlockedCount": len(expected_blocked),
         "unexpectedBlockedCount": len(unexpected),
         "loadMs": round(load_ms, 1),
@@ -141,6 +168,7 @@ def run_matrix(*, max_duration_ms: float, max_load_ms: float) -> dict[str, objec
             "maxDurationMs": max_duration_ms,
         },
         "expectedBlocked": expected_blocked,
+        "eligibilityBlocked": eligibility_blocked,
         "unexpectedBlocked": unexpected,
         "failures": failures,
     }

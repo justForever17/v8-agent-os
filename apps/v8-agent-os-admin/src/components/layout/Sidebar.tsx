@@ -3,13 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Loader2, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { signOut } from "next-auth/react";
 
 import { ADMIN_NAV_GROUPS } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
+import { useToast } from "@/components/ui/use-toast";
 
 function badgeClasses(tone: "beta" | "dev") {
     if (tone === "dev") {
@@ -21,6 +22,8 @@ function badgeClasses(tone: "beta" | "dev") {
 export function Sidebar() {
     const pathname = usePathname() || "/admin";
     const t = useT();
+    const { toast } = useToast();
+    const [signingOut, setSigningOut] = useState(false);
 
     const [isCollapsed, setIsCollapsed] = useState(() => {
         if (typeof window === "undefined") {
@@ -35,6 +38,42 @@ export function Sidebar() {
             localStorage.setItem("v8-admin-sidebar-collapsed", String(next));
             return next;
         });
+    };
+
+    const handleSignOut = async () => {
+        if (signingOut) return;
+        setSigningOut(true);
+        let shellLocked = false;
+        try {
+            const localLoginUrl = new URL("/login", window.location.origin).toString();
+            let canonicalLoginUrl = localLoginUrl;
+            if (window.v8osShell?.isShell && window.v8osShell.lockAdminSession) {
+                const lock = await window.v8osShell.lockAdminSession();
+                if (!lock?.locked || !lock.loginUrl) throw new Error("shell_admin_lock_failed");
+                shellLocked = true;
+                canonicalLoginUrl = lock.loginUrl;
+            }
+            await signOut({ redirect: false, redirectTo: "/login" });
+            const sessionResponse = await fetch("/api/auth/session", {
+                cache: "no-store",
+                credentials: "same-origin",
+            });
+            if (!sessionResponse.ok) throw new Error("admin_session_probe_failed");
+            const remainingSession = await sessionResponse.json().catch(() => null);
+            if (remainingSession?.user) throw new Error("admin_session_not_cleared");
+            window.location.replace(canonicalLoginUrl);
+        } catch (error) {
+            if (shellLocked) {
+                console.error("[v8os-admin] sign-out failed; reloading to reconcile the Admin session", error);
+                window.location.reload();
+                return;
+            }
+            setSigningOut(false);
+            toast({
+                title: t("components.layout.Sidebar.signOutFailed"),
+                variant: "destructive",
+            });
+        }
     };
 
     return (
@@ -135,9 +174,10 @@ export function Sidebar() {
                         <Button
                             variant="outline"
                             className="h-11 flex-1 justify-start rounded-2xl border-border bg-card text-muted-foreground transition-all duration-300 hover:text-rose-600 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1] dark:hover:text-rose-300"
-                            onClick={() => signOut()}
+                            onClick={() => void handleSignOut()}
+                            disabled={signingOut}
                         >
-                            <LogOut className="mr-2 h-4 w-4" />
+                            {signingOut ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogOut className="mr-2 h-4 w-4" />}
                             {t("components.layout.Sidebar.k2ed944b1")}
                         </Button>
                     </div>

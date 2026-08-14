@@ -25,7 +25,7 @@ import { fetchAdminJson, primeAdminJsonCache } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
-import { ShellWindowControls, type ShellUpdateStatus } from "./ShellWindowControls";
+import { ShellWindowControls, type ShellAdminSessionLock, type ShellUpdateStatus } from "./ShellWindowControls";
 
 type InboxItem = {
     id: string;
@@ -143,6 +143,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [v8osUpdateState, setV8osUpdateState] = useState<V8OSUpdateState | null>(null);
     const [v8osUpdateLoading, setV8osUpdateLoading] = useState(false);
     const [v8osUpdateError, setV8osUpdateError] = useState(false);
+    const [adminSessionLock, setAdminSessionLock] = useState<ShellAdminSessionLock | null>(null);
     const isShell = useSyncExternalStore(subscribeToShellSurface, readShellSurface, readServerShellSurface);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
@@ -152,6 +153,22 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const pendingInboxForceRef = useRef(false);
     const v8osUpdateLoadingRef = useRef(false);
 
+    useEffect(() => {
+        const shell = window.v8osShell;
+        if (!isShell || !shell?.getAdminSessionLock || !shell.onAdminSessionLockChange) return;
+        let mounted = true;
+        void shell.getAdminSessionLock().then((state) => {
+            if (mounted) setAdminSessionLock(state);
+        });
+        const unsubscribe = shell.onAdminSessionLockChange((state) => {
+            if (mounted) setAdminSessionLock(state);
+        });
+        return () => {
+            mounted = false;
+            unsubscribe();
+        };
+    }, [isShell]);
+
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
     const chatSurfaceItem = isShell
@@ -159,6 +176,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
             id: "chat",
             label: t("components.layout.Topbar.surface.chat"),
             onSelect: () => window.v8osShell?.openWeb(),
+            disabled: adminSessionLock?.locked === true,
             title: t("components.layout.Topbar.surface.openChat"),
         }
         : {

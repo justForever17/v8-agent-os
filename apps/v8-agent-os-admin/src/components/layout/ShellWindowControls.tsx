@@ -23,12 +23,20 @@ export type ShellUpdateStatus = {
     errorCode?: string | null;
 };
 
+export type ShellAdminSessionLock = {
+    locked: boolean;
+    loginUrl: string;
+};
+
 type ShellWindowApi = {
     isShell: true;
     minimize: () => void;
     toggleMaximize: () => void;
     getWindowState: () => Promise<{ isMaximized?: boolean }>;
     onWindowStateChange: (callback: (state: { isMaximized?: boolean }) => void) => () => void;
+    getAdminSessionLock: () => Promise<ShellAdminSessionLock>;
+    lockAdminSession: () => Promise<ShellAdminSessionLock>;
+    onAdminSessionLockChange: (callback: (state: ShellAdminSessionLock) => void) => () => void;
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;

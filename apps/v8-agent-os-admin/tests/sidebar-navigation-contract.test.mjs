@@ -37,3 +37,20 @@ test("admin sidebar group labels are localized in Chinese", () => {
     assert.equal(locale["lib.admin.navigation.k7e688826"], "能力");
     assert.equal(locale["lib.admin.navigation.k3ff43c59"], "平台");
 });
+
+test("admin sign-out clears the session without accepting a cross-origin callback", () => {
+    const sidebar = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Sidebar.tsx"), "utf8");
+    const topbar = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
+    const lockIndex = sidebar.indexOf("window.v8osShell.lockAdminSession()");
+    const signOutIndex = sidebar.indexOf('signOut({ redirect: false, redirectTo: "/login" })');
+
+    assert.match(sidebar, /signOut\(\{ redirect: false, redirectTo: "\/login" \}\)/);
+    assert.match(sidebar, /window\.v8osShell\.lockAdminSession\(\)/);
+    assert.ok(lockIndex >= 0 && lockIndex < signOutIndex, "Shell must lock before the session-clear request starts");
+    assert.match(sidebar, /fetch\("\/api\/auth\/session", \{/);
+    assert.match(sidebar, /if \(remainingSession\?\.user\) throw new Error\("admin_session_not_cleared"\)/);
+    assert.match(sidebar, /if \(shellLocked\) \{[\s\S]*window\.location\.reload\(\)/);
+    assert.match(sidebar, /window\.location\.replace\(canonicalLoginUrl\)/);
+    assert.doesNotMatch(sidebar, /onClick=\{\(\) => signOut\(\)\}/);
+    assert.match(topbar, /disabled: adminSessionLock\?\.locked === true/);
+});

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertStandaloneAssetsReady,
   findStandaloneServer,
+  managedAuthEnvironment,
   runtimeHostnameForApp,
   stageStandaloneAssets,
 } from "./run-next-with-managed-auth.mjs";
@@ -78,4 +79,16 @@ test("Admin binds an IPv4-compatible default while Web remains loopback-only", (
   assert.equal(runtimeHostnameForApp("admin", {}), "0.0.0.0");
   assert.equal(runtimeHostnameForApp("admin", { V8_ADMIN_HOSTNAME: "::" }), "::");
   assert.equal(runtimeHostnameForApp("web", {}), "127.0.0.1");
+});
+
+test("managed auth overrides inherited localhost origins with the canonical loopback origin", () => {
+  const environment = managedAuthEnvironment("19528", {
+    AUTH_URL: "http://localhost:9528",
+    NEXTAUTH_URL: "http://localhost:9528",
+    V8_TEST_MARKER: "preserved",
+  });
+
+  assert.equal(environment.AUTH_URL, "http://127.0.0.1:19528");
+  assert.equal(environment.NEXTAUTH_URL, "http://127.0.0.1:19528");
+  assert.equal(environment.V8_TEST_MARKER, "preserved");
 });

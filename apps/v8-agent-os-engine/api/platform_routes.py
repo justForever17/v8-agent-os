@@ -156,6 +156,7 @@ def _execute_model_hub_connection(
         if key not in {"api_key", "apiKey", "credentialRef", "credentialSource"}
     }
     model_patch = dict(plan.get("modelPatch") or {})
+    catalog_fact_provenance = dict(model_patch.pop("factProvenance", {}) or {})
     auth_type = str((provider_patch.get("authContract") or {}).get("type") or "api_key").strip().lower()
     scope_token = uuid.uuid4().hex
     owner_id = "local-admin-model-hub"
@@ -194,6 +195,7 @@ def _execute_model_hub_connection(
             run_id=run_id,
             provider_config=provider_patch,
             model_config=model_patch,
+            catalog_fact_provenance=catalog_fact_provenance,
         )
 
     if not prepared.get("ok"):
@@ -1944,13 +1946,9 @@ async def probe_model_provider(data: dict = Body(...)):
                 base_url=str(probe_target.get("baseUrl") or ""),
             )
         )
-        if is_custom_probe and result.get("ok"):
-            saved_provider = model_provider_catalog.save_custom_provider(provider or {})
-            result["provider"] = saved_provider
-            result["providerId"] = saved_provider.get("id")
-            result["customProviderSaved"] = True
-        else:
-            result["providerId"] = provider_id
+        # A probe is diagnostic only. The custom provider catalog is committed
+        # after the model connection transaction succeeds.
+        result["providerId"] = "__custom__" if is_custom_probe else provider_id
         result["credentialSource"] = credential_source or "none"
         result["usedStoredCredential"] = credential_source.startswith("stored_provider")
         return result

@@ -42,10 +42,27 @@ function isTrustedIpcSource({ senderMatches, isMainFrame, frameUrl, origins, all
   return allowStartup && isStartupSurfaceUrl(frameUrl);
 }
 
+function isTrustedAdminAuthIpcSource(options = {}) {
+  if (!isTrustedIpcSource(options)) return false;
+  try {
+    const frameUrl = new URL(String(options.frameUrl || ''));
+    const adminOrigin = normalizedOrigin(options.adminBaseUrl);
+    const isPublicVerifyPage = frameUrl.pathname === '/admin/verify'
+      || frameUrl.pathname.startsWith('/admin/verify/');
+    return Boolean(adminOrigin)
+      && frameUrl.origin === adminOrigin
+      && !isPublicVerifyPage
+      && (frameUrl.pathname === '/admin' || frameUrl.pathname.startsWith('/admin/'));
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   classifyWindowOpen,
   isSafeExternalUrl,
   isStartupSurfaceUrl,
+  isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
   isTrustedProductUrl,
   normalizedOrigin,

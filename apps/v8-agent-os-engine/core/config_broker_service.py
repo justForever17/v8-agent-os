@@ -796,6 +796,16 @@ class ConfigBrokerService:
     def _target_snapshot(target_kind: str, target_id: str, config: dict[str, Any]) -> dict[str, Any]:
         if target_kind == "model_snapshot_restore":
             return _model_snapshot_authority_projection(config)
+        if target_kind in _MODEL_CONTROL_PLANE_TARGET_KINDS:
+            # Prepare, mutate and rollback must compare the same durable model
+            # authority. Normalization is significant here: channel defaults
+            # and auth contracts are canonical persisted facts, while managed
+            # credentials and runtime display fields are not.
+            config = _model_snapshot_authority_projection(
+                model_control_plane._storage_safe_config(
+                    model_control_plane.normalize_config(config)
+                )
+            )
         if target_kind == "model_provider":
             providers = dict(config.get("providers") or {})
             return {
@@ -1854,6 +1864,7 @@ class ConfigBrokerService:
         run_id: str,
         provider_config: dict[str, Any] | None = None,
         model_config: dict[str, Any] | None = None,
+        catalog_fact_provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         provider_key = str(provider_id or "").strip()
         model_key = str(model_id or "").strip().strip("/")
@@ -1950,6 +1961,34 @@ class ConfigBrokerService:
         fact_provenance = {
             **deepcopy(dict(existing_model.get("factProvenance") or {})),
         }
+        trusted_catalog_provenance: dict[str, dict[str, Any]] = {}
+        for fact_key in ("contextWindow", "maxTokens"):
+            raw_record = dict((catalog_fact_provenance or {}).get(fact_key) or {})
+            if not raw_record:
+                continue
+            confidence = str(raw_record.get("confidence") or "").strip().lower()
+            if confidence not in {"authoritative", "reviewed", "estimated", "unverified"}:
+                raise ConfigBrokerError(
+                    "目录模型事实来源标记无效。",
+                    code="catalog_fact_provenance_invalid",
+                )
+            source = str(raw_record.get("source") or "").strip()
+            if not source:
+                raise ConfigBrokerError(
+                    "目录模型事实缺少来源。",
+                    code="catalog_fact_provenance_invalid",
+                )
+            source_refs = _safe_refs(raw_record.get("sourceRefs") or [])
+            trusted_catalog_provenance[fact_key] = {
+                "source": source[:120],
+                "confidence": confidence,
+                **({"sourceRefs": source_refs} if source_refs else {}),
+                **(
+                    {"notes": str(raw_record.get("notes") or "").strip()[:500]}
+                    if str(raw_record.get("notes") or "").strip()
+                    else {}
+                ),
+            }
         for fact_key, fact_value, explicitly_supplied in (
             (
                 "contextWindow",
@@ -1966,11 +2005,14 @@ class ConfigBrokerService:
                 continue
             if fact_value == existing_model.get(fact_key) and fact_key in fact_provenance:
                 continue
-            fact_provenance[fact_key] = {
-                "source": "agent_proposed",
-                "confidence": "unverified",
-                **({"sourceRefs": refs} if refs else {}),
-            }
+            fact_provenance[fact_key] = deepcopy(
+                trusted_catalog_provenance.get(fact_key)
+                or {
+                    "source": "agent_proposed",
+                    "confidence": "unverified",
+                    **({"sourceRefs": refs} if refs else {}),
+                }
+            )
         model_patch = {
             **model_extra,
             "type": effective_model_type,
@@ -4004,14 +4046,14 @@ class ConfigBrokerService:
                     target_mutated = True
                     _capture_working_target(saved_model_config)
                     projected = self._target_snapshot("model_provider", provider_id, saved_model_config)
-                    if operation == "remove" and projected.get("exists"):
+                    projected_matches_plan = (
+                        bool(validation.get("targetPlannedDigest"))
+                        and _digest(projected) == str(validation.get("targetPlannedDigest"))
+                    )
+                    if operation == "remove" and (projected.get("exists") or not projected_matches_plan):
                         raise ConfigBrokerError("Provider 删除投影不一致。", code="provider_projection_mismatch")
                     if operation == "upsert":
-                        projected_provider = dict((projected.get("value") or {}).get("provider") or {})
-                        if not projected.get("exists") or any(
-                            projected_provider.get(key) != value
-                            for key, value in provider_patch.items()
-                        ):
+                        if not projected.get("exists") or not projected_matches_plan:
                             raise ConfigBrokerError("Provider 写入投影不一致。", code="provider_projection_mismatch")
                         self._update_transaction(transaction_id, state="verifying", validation_json=_json(validation))
                         provider_probe = self._verify_committed_provider_static(provider_id, saved_model_config)

@@ -1106,6 +1106,7 @@
       },
       "probeStrategy": "openai_models",
       "sourceUrl": "https://docs.bigmodel.cn/api-reference",
+      "modelFactsSourceUrl": "https://docs.bigmodel.cn/cn/guide/start/model-overview",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -1115,6 +1116,7 @@
       "models": [
         {
           "id": "glm-5.1",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1133,6 +1135,7 @@
         },
         {
           "id": "glm-5",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1151,6 +1154,7 @@
         },
         {
           "id": "glm-5-turbo",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1169,6 +1173,7 @@
         },
         {
           "id": "glm-4.7",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1187,6 +1192,7 @@
         },
         {
           "id": "glm-4.7-flashx",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1205,6 +1211,7 @@
         },
         {
           "id": "glm-4.7-flash",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1223,6 +1230,7 @@
         },
         {
           "id": "glm-4.6",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1241,6 +1249,7 @@
         },
         {
           "id": "glm-4.5-air",
+          "maxOutputTokens": 98304,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1259,6 +1268,7 @@
         },
         {
           "id": "glm-4.5-airx",
+          "maxOutputTokens": 98304,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1277,6 +1287,7 @@
         },
         {
           "id": "glm-4-long",
+          "maxOutputTokens": 4096,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1295,6 +1306,7 @@
         },
         {
           "id": "glm-4-flashx-250414",
+          "maxOutputTokens": 16384,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1313,6 +1325,7 @@
         },
         {
           "id": "glm-4-flash-250414",
+          "maxOutputTokens": 32768,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1331,6 +1344,7 @@
         },
         {
           "id": "glm-5v-turbo",
+          "maxOutputTokens": 131072,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1351,6 +1365,7 @@
         },
         {
           "id": "glm-4.6v",
+          "maxOutputTokens": 32768,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1391,6 +1406,7 @@
         },
         {
           "id": "autoglm-phone",
+          "maxOutputTokens": 2048,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1411,6 +1427,10 @@
         },
         {
           "id": "glm-4.1v-thinking-flashx",
+          "maxOutputTokens": 32768,
+          "sourceRefs": [
+            "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+          ],
           "capabilities": [
             "chat",
             "reasoning",
@@ -1431,6 +1451,7 @@
         },
         {
           "id": "glm-4.6v-flash",
+          "maxOutputTokens": 32768,
           "capabilities": [
             "chat",
             "reasoning",
@@ -1451,6 +1472,10 @@
         },
         {
           "id": "glm-4.1v-thinking-flash",
+          "maxOutputTokens": 32768,
+          "sourceRefs": [
+            "https://docs.bigmodel.cn/cn/guide/start/concept-param"
+          ],
           "capabilities": [
             "chat",
             "reasoning",
@@ -1471,6 +1496,7 @@
         },
         {
           "id": "glm-4v-flash",
+          "maxOutputTokens": 1024,
           "capabilities": [
             "chat",
             "reasoning",
@@ -2212,6 +2238,7 @@
       },
       "probeStrategy": "openai_models",
       "sourceUrl": "https://platform.minimax.io/docs/api-reference/models/openai/list-models",
+      "modelFactsSourceUrl": "https://platform.minimax.io/docs/guides/models-intro",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -2257,6 +2284,7 @@
         },
         {
           "id": "MiniMax-M2.7",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2268,6 +2296,7 @@
         },
         {
           "id": "MiniMax-M2.7-highspeed",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2323,6 +2352,7 @@
         },
         {
           "id": "MiniMax-M2",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2335,6 +2365,10 @@
         {
           "id": "M2-her",
           "contextWindow": 64000,
+          "maxOutputTokens": 2048,
+          "sourceRefs": [
+            "https://platform.minimax.io/docs/guides/text-chat"
+          ],
           "capabilities": [
             "chat",
             "streaming"
@@ -2405,6 +2439,7 @@
       },
       "probeStrategy": "openai_models",
       "sourceUrl": "https://platform.minimaxi.com/docs/api-reference/models/openai/list-models",
+      "modelFactsSourceUrl": "https://platform.minimax.io/docs/guides/models-intro",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -2450,6 +2485,7 @@
         },
         {
           "id": "MiniMax-M2.7",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2461,6 +2497,7 @@
         },
         {
           "id": "MiniMax-M2.7-highspeed",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2516,6 +2553,7 @@
         },
         {
           "id": "MiniMax-M2",
+          "maxOutputTokens": 131072,
           "contextWindow": 204800,
           "capabilities": [
             "chat",
@@ -2528,6 +2566,10 @@
         {
           "id": "M2-her",
           "contextWindow": 64000,
+          "maxOutputTokens": 2048,
+          "sourceRefs": [
+            "https://platform.minimax.io/docs/guides/text-chat"
+          ],
           "capabilities": [
             "chat",
             "streaming"

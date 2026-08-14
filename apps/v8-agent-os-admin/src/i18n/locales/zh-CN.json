@@ -2926,6 +2926,7 @@
   "components.layout.admin.topbar.search.kdce17454": "高级日志",
   "components.layout.admin.topbar.search.kf4928997": "运行时",
   "components.layout.Sidebar.k2ed944b1": "退出登录",
+  "components.layout.Sidebar.signOutFailed": "退出登录失败，请重试",
   "components.layout.Sidebar.k8021804f": "查看状态与调整设置",
   "components.layout.Topbar.k0769c431": "当前平台",
   "components.layout.Topbar.k105fef86": "当前没有新的系统摘要。",

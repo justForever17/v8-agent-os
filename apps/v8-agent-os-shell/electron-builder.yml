@@ -4,6 +4,8 @@ artifactName: V8-Agent-OS-${version}-${os}-${arch}.${ext}
 asar: true
 directories:
   output: dist/release
+toolsets:
+  appimage: "1.0.3"
 files:
   - assets/**/*
   - electron/**/*
@@ -97,7 +99,8 @@ nsis:
   include: assets/windows-installer.nsh
   oneClick: false
   perMachine: false
-  allowElevation: false
+  allowElevation: true
+  selectPerMachineByDefault: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true

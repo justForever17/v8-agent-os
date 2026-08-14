@@ -197,6 +197,29 @@ def test_catalog_reconnect_preserves_existing_provider_and_model_disable_gates()
     assert plan["modelPatch"]["isEnabled"] is False
 
 
+def test_catalog_connection_preserves_server_audited_fact_provenance() -> None:
+    provenance = {
+        "contextWindow": {
+            "source": "official_docs",
+            "confidence": "authoritative",
+            "sourceRefs": ["https://docs.example.test/model"],
+        },
+        "maxTokens": {
+            "source": "v8_conservative_2026_default",
+            "confidence": "estimated",
+            "notes": "Not an official model limit.",
+        },
+    }
+
+    plan = build_catalog_model_connection_plan(
+        provider=_provider(),
+        model=_model(factProvenance=provenance),
+        model_id="reasoning-model",
+    )
+
+    assert plan["modelPatch"]["factProvenance"] == provenance
+
+
 def test_channel_auth_contract_is_bound_to_the_model_endpoint() -> None:
     provider = _provider(
         channels=[

@@ -313,7 +313,18 @@ jobs:
           expected_deb_version="$(node -p "require('./apps/v8-agent-os-shell/package.json').version.replace(/-/g, '~')")"
           test "$(dpkg-deb -f "$deb_path" Version)" = "$expected_deb_version"
           sudo dpkg -i "$deb_path"
-          test -x "/opt/V8 Agent OS/v8-agent-os-shell"
+          install_root="/opt/V8 Agent OS"
+          test -x "$install_root/v8-agent-os-shell"
+          unexpected_owner="$(find "$install_root" -xdev \( ! -user root -o ! -group root \) -print -quit)"
+          if [[ -n "$unexpected_owner" ]]; then
+            echo "DEB install tree contains an entry not owned by root:root: $unexpected_owner" >&2
+            exit 1
+          fi
+          writable_entry="$(find "$install_root" -xdev ! -type l -perm /022 -print -quit)"
+          if [[ -n "$writable_entry" ]]; then
+            echo "DEB install tree contains a group/world-writable entry: $writable_entry" >&2
+            exit 1
+          fi
 
       - name: Installed Linux desktop smoke
         if: matrix.os == 'linux'
@@ -424,6 +435,11 @@ jobs:
           mapfile -t appimage_paths < <(find apps/v8-agent-os-shell/dist/release -maxdepth 1 -type f -name "*-linux-${appimage_arch}.AppImage" -print)
           test "${#appimage_paths[@]}" -eq 1
           appimage="$(realpath "${appimage_paths[0]}")"
+          appimage_entry_output="$(timeout 30s env ELECTRON_RUN_AS_NODE=1 "$appimage" -e 'process.stdout.write("V8OS_APPIMAGE_ENTRY_OK\n")')"
+          if ! grep -Fxq "V8OS_APPIMAGE_ENTRY_OK" <<<"$appimage_entry_output"; then
+            echo "AppImage single-file runtime entry did not execute" >&2
+            exit 1
+          fi
           work_root="$RUNNER_TEMP/v8os-appimage-${{ matrix.arch }}"
           rm -rf "$work_root"
           mkdir -p "$work_root"
@@ -523,6 +539,8 @@ jobs:
           $install = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$env:V8OS_WINDOWS_INSTALL_DIR") -Wait -PassThru -WindowStyle Hidden
           if ($install.ExitCode -ne 0) { throw "Windows installer exited with code $($install.ExitCode)" }
           $shellExe = Get-Item (Join-Path $env:V8OS_WINDOWS_INSTALL_DIR "V8 Agent OS.exe") -ErrorAction Stop
+          $elevateHelper = Join-Path $shellExe.Directory.FullName "resources\elevate.exe"
+          if (-not (Test-Path -LiteralPath $elevateHelper -PathType Leaf)) { throw "Installed NSIS elevation helper is missing" }
           $resourceRoot = Join-Path $shellExe.Directory.FullName "resources\v8os"
           $engineRoot = Join-Path $resourceRoot "apps\v8-agent-os-engine"
           $enginePython = Join-Path $engineRoot ".python\python.exe"

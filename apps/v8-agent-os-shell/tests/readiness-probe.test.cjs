@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const {
   classifyProductSurface,
@@ -7,6 +8,8 @@ const {
   initialProductSurfaceUrl,
   isWebSurfaceReady,
   productSurfaceDomScript,
+  resolveAdminSurfaceAuthentication,
+  validateAdminSessionResponse,
   validateReadinessResponse,
   verifyProductSurfaceDom,
   waitForProductSurfaceDom,
@@ -17,14 +20,78 @@ test('initial Shell surface uses local Web after setup and reserves Admin login 
     defaultChatUrl: 'http://127.0.0.1:9527/chat',
     adminBaseUrl: 'http://127.0.0.1:9528',
   };
-  assert.equal(initialProductSurfaceUrl({ ...options, initialized: true }), options.defaultChatUrl);
-  assert.equal(initialProductSurfaceUrl({ ...options, initialized: false }), 'http://127.0.0.1:9528/login');
+  assert.equal(initialProductSurfaceUrl({ ...options, initialized: true, adminAuthenticated: true }), options.defaultChatUrl);
+  assert.equal(initialProductSurfaceUrl({ ...options, initialized: false, adminAuthenticated: false }), 'http://127.0.0.1:9528/login');
+  assert.equal(initialProductSurfaceUrl({ ...options, initialized: true, adminAuthenticated: false }), 'http://127.0.0.1:9528/login');
   assert.equal(initialProductSurfaceUrl({
     ...options,
     initialized: true,
+    adminAuthenticated: true,
     pendingSurfaceUrl: 'http://127.0.0.1:9528/admin/models',
   }), 'http://127.0.0.1:9528/admin/models');
+  assert.equal(initialProductSurfaceUrl({
+    ...options,
+    initialized: true,
+    adminAuthenticated: false,
+    pendingSurfaceUrl: 'http://127.0.0.1:9527/chat',
+  }), 'http://127.0.0.1:9528/login');
   assert.throws(() => initialProductSurfaceUrl(options), /initialized must be a boolean/);
+  assert.throws(() => initialProductSurfaceUrl({ ...options, initialized: true }), /adminAuthenticated must be a boolean/);
+});
+
+test('Admin session probe accepts only an authenticated administrator', () => {
+  assert.equal(validateAdminSessionResponse({
+    ok: true,
+    status: 200,
+    body: JSON.stringify({ user: { role: 'ADMIN' } }),
+  }), true);
+  assert.equal(validateAdminSessionResponse({ ok: true, status: 200, body: '{}' }), false);
+  assert.equal(validateAdminSessionResponse({ ok: true, status: 200, body: '{invalid' }), false);
+  assert.equal(validateAdminSessionResponse({ ok: false, status: 500, body: '{}' }), false);
+});
+
+test('Admin surfaces unlock only for a current authenticated administrator document', async () => {
+  const base = {
+    coreServicesReady: true,
+    webBaseUrl: 'http://127.0.0.1:9527',
+    adminBaseUrl: 'http://127.0.0.1:9528',
+  };
+  for (const loadedUrl of [
+    'http://127.0.0.1:9528/admin/verify',
+    'http://127.0.0.1:9528/admin/404',
+  ]) {
+    const surfaceKind = classifyProductSurface({ ...base, loadedUrl });
+    assert.equal(surfaceKind, 'admin');
+    assert.equal(await resolveAdminSurfaceAuthentication({
+      surfaceKind,
+      probeAuthenticated: async () => false,
+      isCurrent: () => true,
+    }), 'unauthenticated');
+  }
+
+  const modelsSurfaceKind = classifyProductSurface({
+    ...base,
+    loadedUrl: 'http://127.0.0.1:9528/admin/models',
+  });
+  assert.equal(await resolveAdminSurfaceAuthentication({
+    surfaceKind: modelsSurfaceKind,
+    probeAuthenticated: async () => true,
+    isCurrent: () => true,
+  }), 'authenticated');
+});
+
+test('a stale Admin session probe result cannot unlock a newer document', async () => {
+  let finishProbe;
+  let current = true;
+  const resolution = resolveAdminSurfaceAuthentication({
+    surfaceKind: 'admin',
+    probeAuthenticated: () => new Promise((resolve) => { finishProbe = resolve; }),
+    isCurrent: () => current,
+  });
+
+  current = false;
+  finishProbe(true);
+  assert.equal(await resolution, 'stale');
 });
 
 test('Engine readiness requires the canonical JSON identity and ready=true', () => {
@@ -175,12 +242,43 @@ test('product surface DOM readiness requires a nonblank interactive product docu
   assert.match(observed[0], /button\[data-v8os-start-task=/);
   assert.doesNotMatch(observed[0], /, button:not\(\[disabled\]\)/);
   assert.match(observed[0], /elementFromPoint/);
-  assert.match(observed[0], /document\.activeElement === requiredInput/);
   assert.match(observed[0], /pointerEvents !== 'none'/);
+  assert.doesNotMatch(observed[0], /\.focus\(|\.blur\(/);
   assert.equal(await verifyProductSurfaceDom(async () => false, 'admin-login'), false);
   assert.equal(await verifyProductSurfaceDom(async () => { throw new Error('renderer unavailable'); }, 'admin'), false);
   assert.equal(await verifyProductSurfaceDom(async () => true, 'startup'), false);
   assert.equal(productSurfaceDomScript('startup'), '');
+});
+
+test('Admin login readiness probe never steals or clears the active input focus', () => {
+  let focusCalls = 0;
+  let blurCalls = 0;
+  const input = {
+    focus() { focusCalls += 1; },
+    blur() { blurCalls += 1; },
+    contains(target) { return target === this; },
+    getBoundingClientRect() { return { left: 10, top: 10, width: 200, height: 40 }; },
+  };
+  const marker = { getAttribute: () => 'ready' };
+  const document = {
+    title: 'V8 Agent OS',
+    body: { innerText: 'Admin sign in' },
+    activeElement: input,
+    querySelector(selector) {
+      if (selector === '[data-v8os-style-probe="true"]') return marker;
+      return input;
+    },
+    elementFromPoint: () => input,
+  };
+  const ready = vm.runInNewContext(productSurfaceDomScript('admin-login'), {
+    document,
+    getComputedStyle(target) {
+      return target === marker ? { display: 'none' } : { pointerEvents: 'auto' };
+    },
+  });
+  assert.equal(ready, true);
+  assert.equal(focusCalls, 0);
+  assert.equal(blurCalls, 0);
 });
 
 test('product surface DOM readiness waits for client hydration without relaxing the contract', async () => {

@@ -2924,6 +2924,7 @@
   "components.layout.admin.topbar.search.kdce17454": "Logs",
   "components.layout.admin.topbar.search.kf4928997": "Runtime",
   "components.layout.Sidebar.k2ed944b1": "Sign out",
+  "components.layout.Sidebar.signOutFailed": "Sign-out failed. Please try again.",
   "components.layout.Sidebar.k8021804f": "Observe and configure",
   "components.layout.Topbar.k0769c431": "Platform",
   "components.layout.Topbar.k105fef86": "No new system summaries right now.",

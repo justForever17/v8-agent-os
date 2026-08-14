@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   classifyWindowOpen,
+  isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
   isTrustedProductUrl,
   trustedProductOrigins,
@@ -37,4 +38,20 @@ test('IPC requires the main window top frame and grants startup pages only expli
   const startup = { ...trusted, frameUrl: 'data:text/html;charset=utf-8,%3Chtml%3E' };
   assert.equal(isTrustedIpcSource(startup), false);
   assert.equal(isTrustedIpcSource({ ...startup, allowStartup: true }), true);
+});
+
+test('Admin sign-out lock IPC is accepted only from the canonical Admin dashboard', () => {
+  const source = {
+    senderMatches: true,
+    isMainFrame: true,
+    frameUrl: 'http://127.0.0.1:9528/admin/models',
+    origins,
+    adminBaseUrl: 'http://127.0.0.1:9528',
+  };
+  assert.equal(isTrustedAdminAuthIpcSource(source), true);
+  assert.equal(isTrustedAdminAuthIpcSource({ ...source, frameUrl: 'http://127.0.0.1:9527/chat' }), false);
+  assert.equal(isTrustedAdminAuthIpcSource({ ...source, frameUrl: 'http://127.0.0.1:9528/login' }), false);
+  assert.equal(isTrustedAdminAuthIpcSource({ ...source, frameUrl: 'http://127.0.0.1:9528/admin/verify' }), false);
+  assert.equal(isTrustedAdminAuthIpcSource({ ...source, frameUrl: 'http://localhost:9528/admin' }), false);
+  assert.equal(isTrustedAdminAuthIpcSource({ ...source, isMainFrame: false }), false);
 });

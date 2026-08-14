@@ -110,6 +110,15 @@ _PLUGIN_ONLY_MEDIA_MODEL_IDS = {
 
 _MANAGED_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MANAGED_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+\-\[\]]{0,255}$")
+_CONSERVATIVE_2026_MAX_OUTPUT_TOKENS = 4096
+_CONSERVATIVE_2026_MAX_OUTPUT_PROVENANCE = {
+    "source": "v8_conservative_2026_default",
+    "confidence": "estimated",
+    "notes": (
+        "The vendor maximum was not published in the audited catalog sources; "
+        "4096 is a conservative V8 runtime default, not an official model limit."
+    ),
+}
 _MANAGED_SENSITIVE_KEYS = {
     "secret",
     "secrets",
@@ -2465,6 +2474,52 @@ class ModelProviderCatalog:
             "policy": "online metadata and explicit provider override win; registry is preferred over legacy inline catalog",
         }
 
+    @staticmethod
+    def _fact_source_refs(values: Any) -> List[str]:
+        refs: List[str] = []
+        items = values if isinstance(values, (list, tuple, set)) else [values] if values else []
+        for value in items:
+            ref = str(value.get("url") or "").strip() if isinstance(value, dict) else str(value or "").strip()
+            if ref and ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _catalog_fact_provenance(
+        self,
+        *,
+        fact_key: str,
+        source_kind: str,
+        provider: Dict[str, Any],
+        model: Dict[str, Any],
+        registry_entry: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        explicit = dict((model.get("factProvenance") or {}).get(fact_key) or {})
+        if explicit:
+            return deepcopy(explicit)
+        if source_kind == "online_provider_metadata":
+            return {"source": source_kind, "confidence": "authoritative"}
+        if source_kind == "model_capability_registry":
+            source_refs = self._fact_source_refs((registry_entry or {}).get("sourceRefs") or [])
+            raw_confidence = str((registry_entry or {}).get("confidence") or "").strip().lower()
+        else:
+            source_refs = self._fact_source_refs(model.get("sourceRefs") or [])
+            if not source_refs:
+                source_url = str(provider.get("modelFactsSourceUrl") or provider.get("sourceUrl") or "").strip()
+                source_refs = [source_url] if source_url else []
+            raw_confidence = str(model.get("confidence") or provider.get("confidence") or "").strip().lower()
+        confidence = (
+            "authoritative"
+            if raw_confidence in {"official", "authoritative"}
+            else "reviewed"
+            if raw_confidence in {"provider_docs", "reviewed"}
+            else "unverified"
+        )
+        return {
+            "source": "official_docs" if confidence == "authoritative" else source_kind,
+            "confidence": confidence,
+            **({"sourceRefs": source_refs} if source_refs else {}),
+        }
+
     def normalize_model(self, provider: Dict[str, Any], model_id: str, *, online_metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         online_metadata = dict(online_metadata or {})
         provider_id = str(provider.get("id") or "").strip()
@@ -2497,22 +2552,53 @@ class ModelProviderCatalog:
         provider_max_tokens = model.get("maxOutputTokens") or model.get("maxTokens")
         registry_context_window = (registry_entry or {}).get("contextWindowTokens")
         registry_max_tokens = (registry_entry or {}).get("maxOutputTokens")
-        context_window = (
+        online_context_window = (
             online_metadata.get("inputTokenLimit")
             or online_metadata.get("input_token_limit")
             or online_metadata.get("context_length")
-            or (provider_context_window if explicit_provider_override else None)
-            or registry_context_window
-            or provider_context_window
         )
-        max_tokens = (
+        online_max_tokens = (
             online_metadata.get("outputTokenLimit")
             or online_metadata.get("output_token_limit")
             or online_metadata.get("max_output_tokens")
-            or (provider_max_tokens if explicit_provider_override else None)
-            or registry_max_tokens
-            or provider_max_tokens
         )
+        if online_context_window:
+            context_window = online_context_window
+            context_source = "online_provider_metadata"
+        elif explicit_provider_override and provider_context_window:
+            context_window = provider_context_window
+            context_source = "provider_catalog"
+        elif registry_context_window:
+            context_window = registry_context_window
+            context_source = "model_capability_registry"
+        else:
+            context_window = provider_context_window
+            context_source = "provider_catalog"
+        if online_max_tokens:
+            max_tokens = online_max_tokens
+            max_tokens_source = "online_provider_metadata"
+        elif explicit_provider_override and provider_max_tokens:
+            max_tokens = provider_max_tokens
+            max_tokens_source = "provider_catalog"
+        elif registry_max_tokens:
+            max_tokens = registry_max_tokens
+            max_tokens_source = "model_capability_registry"
+        else:
+            max_tokens = provider_max_tokens
+            max_tokens_source = "provider_catalog"
+        requires_text_output_limit = (
+            provider_kind == "chat"
+            and not bool(provider.get("isCustom"))
+            and bool(
+                capability_map.get("chat")
+                or capability_map.get("text")
+                or capability_map.get("vision")
+                or capability_map.get("multimodal")
+            )
+        )
+        used_conservative_max_tokens = not max_tokens and requires_text_output_limit
+        if used_conservative_max_tokens:
+            max_tokens = _CONSERVATIVE_2026_MAX_OUTPUT_TOKENS
         capability_source = self._capability_source(model, online_metadata, family_caps)
         if registry_entry and not explicit_provider_override and capability_source in {"heuristic", "manual"}:
             capability_source = "model_capability_registry"
@@ -2593,6 +2679,27 @@ class ModelProviderCatalog:
             )
         else:
             availability.pop("catalogConnectReason", None)
+        fact_provenance: Dict[str, Any] = {}
+        if context_window:
+            fact_provenance["contextWindow"] = self._catalog_fact_provenance(
+                fact_key="contextWindow",
+                source_kind=context_source,
+                provider=provider,
+                model=model,
+                registry_entry=registry_entry,
+            )
+        if max_tokens:
+            fact_provenance["maxTokens"] = (
+                deepcopy(_CONSERVATIVE_2026_MAX_OUTPUT_PROVENANCE)
+                if used_conservative_max_tokens
+                else self._catalog_fact_provenance(
+                    fact_key="maxTokens",
+                    source_kind=max_tokens_source,
+                    provider=provider,
+                    model=model,
+                    registry_entry=registry_entry,
+                )
+            )
         return {
             "id": model_id,
             "modelId": model_id,
@@ -2603,6 +2710,7 @@ class ModelProviderCatalog:
             or prompt_cache_profile_id_for_provider(str(provider.get("id") or "")),
             "contextWindow": context_window,
             "maxTokens": max_tokens,
+            "factProvenance": fact_provenance,
             "capabilities": capability_map,
             "reasoningSurface": reasoning_surface,
             "thinkingControl": thinking_control,

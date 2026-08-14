@@ -5,10 +5,17 @@ contextBridge.exposeInMainWorld("v8osShell", {
   minimize: () => ipcRenderer.send("v8os-shell:minimize"),
   toggleMaximize: () => ipcRenderer.send("v8os-shell:toggle-maximize"),
   getWindowState: () => ipcRenderer.invoke("v8os-shell:get-window-state"),
+  getAdminSessionLock: () => ipcRenderer.invoke("v8os-shell:get-admin-session-lock"),
+  lockAdminSession: () => ipcRenderer.invoke("v8os-shell:lock-admin-session"),
   onWindowStateChange: (callback) => {
     const listener = (_event, state) => callback?.(state);
     ipcRenderer.on("v8os-shell:window-state", listener);
     return () => ipcRenderer.off("v8os-shell:window-state", listener);
+  },
+  onAdminSessionLockChange: (callback) => {
+    const listener = (_event, state) => callback?.(state);
+    ipcRenderer.on("v8os-shell:admin-session-lock", listener);
+    return () => ipcRenderer.off("v8os-shell:admin-session-lock", listener);
   },
   close: () => ipcRenderer.send("v8os-shell:close"),
   openWeb: () => ipcRenderer.send("v8os-shell:open-web"),

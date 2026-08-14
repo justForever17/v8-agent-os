@@ -79,9 +79,37 @@ function initialProductSurfaceUrl(options = {}) {
   if (typeof options.initialized !== 'boolean') {
     throw new TypeError('initialized must be a boolean');
   }
+  if (typeof options.adminAuthenticated !== 'boolean') {
+    throw new TypeError('adminAuthenticated must be a boolean');
+  }
+  if (!options.initialized || !options.adminAuthenticated) {
+    return `${String(options.adminBaseUrl || '').replace(/\/$/, '')}/login`;
+  }
   if (options.pendingSurfaceUrl) return String(options.pendingSurfaceUrl);
-  if (options.initialized) return String(options.defaultChatUrl || '');
-  return `${String(options.adminBaseUrl || '').replace(/\/$/, '')}/login`;
+  return String(options.defaultChatUrl || '');
+}
+
+function validateAdminSessionResponse(response) {
+  if (!response?.ok || response.status < 200 || response.status >= 300) return false;
+  try {
+    const payload = JSON.parse(String(response.body || '{}'));
+    return payload?.user?.role === 'ADMIN';
+  } catch {
+    return false;
+  }
+}
+
+async function resolveAdminSurfaceAuthentication(options = {}) {
+  if (options.surfaceKind !== 'admin') return 'ignored';
+  let authenticated = false;
+  try {
+    authenticated = typeof options.probeAuthenticated === 'function'
+      && await options.probeAuthenticated() === true;
+  } catch {
+    authenticated = false;
+  }
+  if (typeof options.isCurrent !== 'function' || options.isCurrent() !== true) return 'stale';
+  return authenticated ? 'authenticated' : 'unauthenticated';
 }
 
 function classifyProductSurface(options = {}) {
@@ -132,21 +160,12 @@ function productSurfaceDomScript(surfaceKind) {
     const inputHitTestReady = Boolean(requiredInput)
       && Boolean(hitTarget)
       && (hitTarget === requiredInput || requiredInput.contains(hitTarget));
-    const previousActiveElement = document.activeElement;
-    requiredInput?.focus({ preventScroll: true });
-    const inputFocusReady = document.activeElement === requiredInput;
-    if (previousActiveElement instanceof HTMLElement && previousActiveElement !== requiredInput) {
-      previousActiveElement.focus({ preventScroll: true });
-    } else if (requiredInput instanceof HTMLElement) {
-      requiredInput.blur();
-    }
     return document.title === ${JSON.stringify(expectedTitle)}
       && bodyText.length > 0
       && Boolean(interactive)
       && Boolean(requiredInput)
       && inputStyle?.pointerEvents !== 'none'
       && inputHitTestReady
-      && inputFocusReady
       && hydrated
       && stylesReady;
   })()`;
@@ -201,6 +220,8 @@ module.exports = {
   initialProductSurfaceUrl,
   isWebSurfaceReady,
   productSurfaceDomScript,
+  resolveAdminSurfaceAuthentication,
+  validateAdminSessionResponse,
   validateReadinessResponse,
   verifyProductSurfaceDom,
   waitForProductSurfaceDom,

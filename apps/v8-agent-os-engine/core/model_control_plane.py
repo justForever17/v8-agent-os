@@ -667,6 +667,9 @@ class ModelControlPlane:
                 if not raw_key.startswith("oauth:"):
                     provider_meta.pop("api_key", None)
                     provider_meta.pop("apiKey", None)
+            # This is derived while resolving the managed credential and must
+            # never participate in persisted config revisions or broker CAS.
+            provider_meta.pop("credentialStatus", None)
             provider_data["provider"] = provider_meta
         return persisted
 

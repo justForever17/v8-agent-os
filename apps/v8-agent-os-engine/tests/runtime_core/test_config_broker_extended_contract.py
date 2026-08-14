@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from core.database import DatabaseManager
+from core.model_control_plane import ModelControlPlane
 from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
 
 
@@ -52,6 +53,26 @@ def _install_model_config(
     monkeypatch.setattr(module.model_control_plane, "mutate_config", mutate)
     monkeypatch.setattr(module.model_control_plane, "get_role_definitions", lambda _config: deepcopy(definitions))
     return snapshot
+
+
+def _install_real_model_control_plane(module, monkeypatch, initial: dict[str, Any]):
+    persisted: dict[str, Any] = {}
+    credential_store = CredentialRefStore(MemoryCredentialBackend())
+    control_plane = ModelControlPlane(credential_store=credential_store)
+
+    def read_config() -> dict[str, Any]:
+        return _copy(persisted)
+
+    def save_config(value: dict[str, Any]) -> None:
+        persisted.clear()
+        persisted.update(_copy(value))
+
+    monkeypatch.setattr(module.storage, "get_models_config", read_config)
+    monkeypatch.setattr(module.storage, "save_models_config", save_config)
+    monkeypatch.setattr(module, "model_control_plane", control_plane)
+    monkeypatch.setattr(module, "credential_ref_store", credential_store)
+    control_plane.save_config(initial)
+    return control_plane, persisted, credential_store
 
 
 class _CatalogStub:
@@ -1134,6 +1155,210 @@ def test_model_commit_does_not_treat_a_materialized_managed_credential_as_a_stal
     assert committed["state"] == "committed"
 
 
+def test_real_control_plane_provider_binding_and_delete_share_one_durable_revision(
+    tmp_path, monkeypatch
+) -> None:
+    import core.config_broker_service as module
+
+    monkeypatch.setattr(module, "db", DatabaseManager(tmp_path / "state.db"))
+    initial = _model_config(enabled=True)
+    initial["providers"]["provider"]["provider"].update(
+        {
+            "authContract": {
+                "type": "api_key",
+                "header": "Authorization",
+                "scheme": "Bearer",
+            },
+            "channels": [
+                {
+                    "id": "chat-completions",
+                    "label": "OpenAI Chat Completions",
+                    "baseUrl": "https://api.provider.test/v1",
+                    "apiStandard": "openai",
+                    "wireProtocols": ["openai.chat_completions"],
+                }
+            ],
+            "defaultChannelId": "chat-completions",
+        }
+    )
+    control_plane, persisted, credential_store = _install_real_model_control_plane(
+        module,
+        monkeypatch,
+        initial,
+    )
+    credential_ref = credential_store.put("secret-value", namespace="model")
+    seeded = control_plane.get_storage_safe_config()
+    seeded_provider = seeded["providers"]["provider"]["provider"]
+    seeded_provider.update(
+        {
+            "credentialRef": credential_ref,
+            "credentialSource": "os_credential_store",
+            "authContract": {
+                "type": "api_key",
+                "header": "Authorization",
+                "scheme": "Bearer",
+            },
+        }
+    )
+    control_plane.save_config(seeded)
+    service = module.ConfigBrokerService()
+
+    materialized = control_plane.get_config()["providers"]["provider"]["provider"]
+    assert materialized["api_key"] == "secret-value"
+    assert materialized["credentialStatus"] == "configured"
+
+    provider_change = service.prepare_model_provider_change(
+        provider_id="provider",
+        operation="upsert",
+        provider_config={
+            "name": "Provider",
+            "icon": "",
+            "base_url": "https://api.provider.test/v1",
+            "api_standard": "openai",
+            "authContract": {
+                "type": "api_key",
+                "header": "Authorization",
+                "scheme": "Bearer",
+            },
+            "channels": [
+                {
+                    "id": "chat-completions",
+                    "label": "OpenAI Chat Completions",
+                    "baseUrl": "https://api.provider.test/v1/",
+                    "apiStandard": "openai",
+                    "wireProtocols": ["openai.chat_completions"],
+                }
+            ],
+            "defaultChannelId": "chat-completions",
+        },
+        request_secret=False,
+        oauth_credential="",
+        owner_id="owner",
+        session_id="session",
+        run_id="run-provider",
+    )
+    provider_commit = service.commit(
+        provider_change["transactionId"],
+        owner_id="owner",
+        user_confirmed_target=True,
+    )
+
+    assert provider_commit["state"] == "committed", provider_commit.get("error")
+    stored_provider = persisted["providers"]["provider"]["provider"]
+    assert stored_provider["icon"] is None
+    assert stored_provider["channels"][0]["baseUrl"] == "https://api.provider.test/v1/"
+    assert stored_provider["defaultChannelId"] == "chat-completions"
+    assert "credentialStatus" not in stored_provider
+    assert "api_key" not in stored_provider
+
+    stale_provider_change = service.prepare_model_provider_change(
+        provider_id="provider",
+        operation="upsert",
+        provider_config={"description": "planned description"},
+        request_secret=False,
+        oauth_credential="",
+        owner_id="owner",
+        session_id="session",
+        run_id="run-stale-provider",
+    )
+
+    def apply_concurrent_durable_change(current: dict[str, Any]) -> dict[str, Any]:
+        current["providers"]["provider"]["provider"]["description"] = "concurrent description"
+        return current
+
+    control_plane.mutate_config(apply_concurrent_durable_change)
+    stale_provider_commit = service.commit(
+        stale_provider_change["transactionId"],
+        owner_id="owner",
+        user_confirmed_target=True,
+    )
+
+    assert stale_provider_commit["state"] == "conflict"
+    assert stale_provider_commit["error"]["code"] == "config_transaction_stale"
+    assert persisted["providers"]["provider"]["provider"]["description"] == "concurrent description"
+
+    monkeypatch.setattr(
+        module.ConfigBrokerService,
+        "_verify_committed_model",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "ok",
+            "summary": "ok",
+            "verifier": "test",
+        },
+    )
+    model_change = service.prepare_model(
+        provider_id="provider",
+        model_id="catalog-model",
+        provider_name="",
+        base_url="",
+        api_standard="",
+        model_type="MULTIMODAL",
+        context_window=1_000_000,
+        max_tokens=4_096,
+        capabilities={"chat": True, "vision": True, "multimodal": True},
+        evidence_refs=["https://docs.provider.test/catalog-model"],
+        credential_required=True,
+        owner_id="owner",
+        session_id="session",
+        run_id="run-model",
+        catalog_fact_provenance={
+            "contextWindow": {
+                "source": "official_docs",
+                "confidence": "authoritative",
+                "sourceRefs": ["https://docs.provider.test/catalog-model"],
+            },
+            "maxTokens": {
+                "source": "v8_conservative_2026_default",
+                "confidence": "estimated",
+                "notes": "Not an official model limit.",
+            },
+        },
+    )
+    model_commit = service.commit(model_change["transactionId"], owner_id="owner")
+
+    assert model_change["state"] == "ready_to_commit"
+    assert model_commit["state"] == "committed", model_commit.get("error")
+    stored_model = persisted["providers"]["provider"]["models"]["catalog-model"]
+    assert stored_model["contextWindow"] == 1_000_000
+    assert stored_model["maxTokens"] == 4_096
+    assert stored_model["factProvenance"]["maxTokens"]["confidence"] == "estimated"
+    assert "credentialStatus" not in persisted["providers"]["provider"]["provider"]
+    assert "api_key" not in persisted["providers"]["provider"]["provider"]
+
+    binding = service.prepare_model_binding(
+        provider_id="provider",
+        model_id="target",
+        model_config={"maxTokens": 9_216},
+        source_provider_id="provider",
+        source_model_id="target",
+        source="manual",
+        replace_provider_models=False,
+        owner_id="owner",
+        session_id="session",
+        run_id="run-binding",
+    )
+    binding_commit = service.commit(binding["transactionId"], owner_id="owner")
+
+    assert binding_commit["state"] == "committed"
+    assert persisted["providers"]["provider"]["models"]["target"]["maxTokens"] == 9_216
+
+    removal = service.prepare_model_provider_change(
+        provider_id="provider",
+        operation="remove",
+        provider_config=None,
+        request_secret=False,
+        oauth_credential="",
+        owner_id="owner",
+        session_id="session",
+        run_id="run-remove",
+    )
+    removal_commit = service.commit(removal["transactionId"], owner_id="owner")
+
+    assert removal_commit["state"] == "committed"
+    assert "provider" not in persisted["providers"]
+
+
 def test_role_commit_does_not_treat_a_materialized_managed_credential_as_a_changed_model(
     tmp_path, monkeypatch
 ) -> None:
@@ -1223,6 +1448,28 @@ def test_model_prepare_rejects_forged_provenance_and_secret_evidence(tmp_path, m
     assert prepared["state"] == "ready_to_commit"
     transaction = service.get_transaction(prepared["transactionId"], owner_id="owner", include_private=True)
     assert transaction["proposed"]["model"]["factProvenance"]["contextWindow"]["confidence"] == "unverified"
+
+    catalog_prepared = service.prepare_model(
+        **kwargs,
+        evidence_refs=["https://docs.provider.test/model"],
+        catalog_fact_provenance={
+            "contextWindow": {
+                "source": "official_docs",
+                "confidence": "authoritative",
+                "sourceRefs": ["https://docs.provider.test/model"],
+            },
+            "maxTokens": {
+                "source": "v8_conservative_2026_default",
+                "confidence": "estimated",
+                "notes": "Not an official model limit.",
+            },
+        },
+    )
+    catalog_transaction = service.get_transaction(
+        catalog_prepared["transactionId"], owner_id="owner", include_private=True
+    )
+    assert catalog_transaction["proposed"]["model"]["factProvenance"]["contextWindow"]["confidence"] == "authoritative"
+    assert catalog_transaction["proposed"]["model"]["factProvenance"]["maxTokens"]["source"] == "v8_conservative_2026_default"
 
 
 def test_role_unbind_restores_plain_role_without_touching_other_roles(tmp_path, monkeypatch) -> None:

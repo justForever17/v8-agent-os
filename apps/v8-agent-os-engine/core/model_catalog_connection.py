@@ -315,6 +315,7 @@ def build_catalog_model_connection_plan(
         "type": normalized_model_type or "TEXT",
         "contextWindow": managed_context_window,
         "maxTokens": managed_max_tokens,
+        "factProvenance": _mapping(model_row.get("factProvenance")),
         "capabilities": _mapping(model_row.get("capabilities")),
         "capabilityClass": capability_class
         or ("media_generation" if is_media_provider else "vision_multimodal" if _mapping(model_row.get("capabilities")).get("vision") else "chat_general"),

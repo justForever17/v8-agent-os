@@ -11,6 +11,7 @@ const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 const { loadUrlSafely } = require('../lib/navigation-load.cjs');
 const {
   classifyWindowOpen,
+  isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
   isTrustedProductUrl,
   trustedProductOrigins,
@@ -19,6 +20,8 @@ const {
   classifyProductSurface,
   fetchTextWithTimeout,
   initialProductSurfaceUrl,
+  resolveAdminSurfaceAuthentication,
+  validateAdminSessionResponse,
   validateReadinessResponse,
   waitForProductSurfaceDom,
 } = require('../lib/readiness-probe.cjs');
@@ -61,12 +64,14 @@ let coreServicesStartPromise = null;
 let initialSurfaceLoadPromise = null;
 let lastStartupFailure = null;
 let coreServicesReady = false;
+let adminSessionLocked = true;
 let statusRefreshPromise = null;
 let pendingSurfaceUrl = null;
 let lastPublishedControlStatus = '';
 let surfaceRecoveryTimer = null;
 let surfaceStabilityTimer = null;
 let surfaceRecoveryTimes = [];
+let surfaceNavigationSequence = 0;
 let updateStatus = { state: updateChecksEnabled ? 'idle' : 'disabled' };
 let updateCheckPromise = null;
 let manualUpdateDialogRequested = false;
@@ -172,8 +177,41 @@ function emitWindowState() {
   mainWindow.webContents.send('v8os-shell:window-state', currentWindowState());
 }
 
+function adminLoginUrl() {
+  return `${adminBaseUrl.replace(/\/$/, '')}/login`;
+}
+
+function currentAdminSessionLock() {
+  return { locked: adminSessionLocked, loginUrl: adminLoginUrl() };
+}
+
+function setAdminSessionLocked(locked, reason) {
+  const next = Boolean(locked);
+  if (adminSessionLocked === next) return currentAdminSessionLock();
+  adminSessionLocked = next;
+  reportSurfaceStage('admin_session_lock_changed', { locked: next, reason });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('v8os-shell:admin-session-lock', currentAdminSessionLock());
+  }
+  updateTrayMenu();
+  return currentAdminSessionLock();
+}
+
+function isWebSurfaceUrl(url) {
+  try {
+    return new URL(String(url || '')).origin === new URL(webBaseUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+function guardedSurfaceUrl(url) {
+  return adminSessionLocked && isWebSurfaceUrl(url) ? adminLoginUrl() : url;
+}
+
 function loadInMainWindow(url) {
-  pendingSurfaceUrl = url;
+  const targetUrl = guardedSurfaceUrl(url);
+  pendingSurfaceUrl = targetUrl;
   shellControl?.setSurfaceStatus({ surfaceReady: false });
   if (!mainWindow) {
     createMainWindow();
@@ -185,13 +223,13 @@ function loadInMainWindow(url) {
   }
   pendingSurfaceUrl = null;
   return loadUrlSafely(
-    () => mainWindow.loadURL(url),
-    (error) => scheduleSurfaceRecovery(`navigation: ${error?.message || 'load failed'}`, url),
+    () => mainWindow.loadURL(targetUrl),
+    (error) => scheduleSurfaceRecovery(`navigation: ${error?.message || 'load failed'}`, targetUrl),
   );
 }
 
 async function openAdmin() {
-  return loadInMainWindow(`${adminBaseUrl}/admin`);
+  return loadInMainWindow(adminSessionLocked ? adminLoginUrl() : `${adminBaseUrl}/admin`);
 }
 
 async function openDesktopPetSettings() {
@@ -479,6 +517,30 @@ async function isInstanceInitialized() {
   }
 }
 
+async function isAdminSessionAuthenticated() {
+  try {
+    const { response, body } = await fetchTextWithTimeout(
+      net.fetch.bind(net),
+      `${adminBaseUrl}/api/auth/session`,
+      2000,
+      {
+        cache: 'no-store',
+        credentials: 'include',
+      },
+    );
+    return validateAdminSessionResponse({
+      ok: response.ok,
+      status: response.status,
+      body,
+    });
+  } catch (error) {
+    console.warn('[v8os-shell] unable to verify Admin session; keeping desktop locked', {
+      reason: error?.message || 'unknown_error',
+    });
+    return false;
+  }
+}
+
 function shellAssetPath(name) {
   const candidate = path.resolve(__dirname, '..', 'assets', name);
   return fs.existsSync(candidate) ? candidate : '';
@@ -572,6 +634,21 @@ function isTrustedShellIpc(event, options = {}) {
   });
 }
 
+function isTrustedAdminAuthIpc(event) {
+  const frame = event?.senderFrame;
+  const mainFrame = event?.sender?.mainFrame;
+  return isTrustedAdminAuthIpcSource({
+    senderMatches: Boolean(mainWindow && !mainWindow.isDestroyed() && event?.sender === mainWindow.webContents),
+    isMainFrame: Boolean(frame
+      && mainFrame
+      && frame.processId === mainFrame.processId
+      && frame.routingId === mainFrame.routingId),
+    frameUrl: frame?.url || '',
+    origins: productOrigins,
+    adminBaseUrl,
+  });
+}
+
 function onTrustedShellIpc(channel, listener, options = {}) {
   ipcMain.on(channel, (event, ...args) => {
     if (!isTrustedShellIpc(event, options)) return;
@@ -582,6 +659,13 @@ function onTrustedShellIpc(channel, listener, options = {}) {
 function handleTrustedShellIpc(channel, listener, options = {}) {
   ipcMain.handle(channel, async (event, ...args) => {
     if (!isTrustedShellIpc(event, options)) throw new Error('untrusted_ipc_sender');
+    return listener(event, ...args);
+  });
+}
+
+function handleTrustedAdminAuthIpc(channel, listener) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedAdminAuthIpc(event)) throw new Error('untrusted_admin_auth_ipc_sender');
     return listener(event, ...args);
   });
 }
@@ -628,8 +712,11 @@ async function performInitialSurfaceLoad() {
     coreServicesReady = true;
     const defaultChatUrl = activeSessionId ? `${webBaseUrl}/chat?id=${encodeURIComponent(activeSessionId)}` : `${webBaseUrl}/chat`;
     const initialized = await isInstanceInitialized();
+    const adminAuthenticated = initialized ? await isAdminSessionAuthenticated() : false;
+    setAdminSessionLocked(!adminAuthenticated, initialized ? 'startup_auth_probe' : 'owner_not_initialized');
     const targetUrl = initialProductSurfaceUrl({
       initialized,
+      adminAuthenticated,
       pendingSurfaceUrl,
       defaultChatUrl,
       adminBaseUrl,
@@ -1212,7 +1299,7 @@ function updateTrayMenu() {
   const model = buildTrayMenuModel({ desktopPetState, desktopPetProcessRunning, updateStatus });
   const template = model.map((item) => {
     if (item.type === 'separator') return { type: 'separator' };
-    if (item.id === 'open-web') return { label: item.label, click: openWeb };
+    if (item.id === 'open-web') return { label: item.label, enabled: !adminSessionLocked, click: openWeb };
     if (item.id === 'open-admin') return { label: item.label, click: openAdmin };
     if (item.id === 'start-desktop-pet' || item.id === 'stop-desktop-pet') return { label: item.label, enabled: item.enabled !== false, click: () => { void toggleDesktopPet(); } };
     if (item.id === 'check-update') return { label: item.label, click: () => { void requestDesktopUpdateCheck({ manual: true }); } };
@@ -1259,14 +1346,27 @@ function createMainWindow() {
   mainWindow.on('maximize', emitWindowState);
   mainWindow.on('unmaximize', emitWindowState);
   mainWindow.on('restore', emitWindowState);
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame !== false && !isInPlace) surfaceNavigationSequence += 1;
+  });
   mainWindow.webContents.on('will-navigate', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
+    if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
+      event.preventDefault();
+      setImmediate(() => { void loadInMainWindow(adminLoginUrl()); });
+      return;
+    }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
   });
   mainWindow.webContents.on('will-redirect', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
+    if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
+      event.preventDefault();
+      setImmediate(() => { void loadInMainWindow(adminLoginUrl()); });
+      return;
+    }
     if (mainFrameNavigation !== false && !isLocalProductSurface(destination)) event.preventDefault();
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -1293,12 +1393,39 @@ function createMainWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     const contents = mainWindow?.webContents;
     const loadedUrl = contents?.getURL() || '';
+    const loadedNavigationSequence = surfaceNavigationSequence;
     const surfaceKind = classifyProductSurface({
       coreServicesReady,
       loadedUrl,
       webBaseUrl,
       adminBaseUrl,
     });
+    if (surfaceKind === 'admin-login') {
+      setAdminSessionLocked(true, 'admin_login_loaded');
+    } else if (surfaceKind === 'admin') {
+      setAdminSessionLocked(true, 'admin_surface_auth_probe');
+      void resolveAdminSurfaceAuthentication({
+        surfaceKind,
+        probeAuthenticated: isAdminSessionAuthenticated,
+        isCurrent: () => !contents?.isDestroyed()
+          && mainWindow?.webContents === contents
+          && surfaceNavigationSequence === loadedNavigationSequence
+          && contents.getURL() === loadedUrl,
+      }).then((authentication) => {
+        if (authentication === 'stale') return;
+        if (authentication === 'authenticated') {
+          setAdminSessionLocked(false, 'authenticated_admin_session');
+          return;
+        }
+        setAdminSessionLocked(true, 'unauthenticated_admin_surface');
+        shellControl?.setSurfaceStatus({ surfaceReady: false });
+        void loadInMainWindow(adminLoginUrl());
+      });
+    } else if (surfaceKind === 'web' && adminSessionLocked) {
+      shellControl?.setSurfaceStatus({ surfaceReady: false });
+      void loadInMainWindow(adminLoginUrl());
+      return;
+    }
     if (!surfaceKind || !contents) {
       shellControl?.setSurfaceStatus({ surfaceReady: false });
       reportSurfaceStage('surface_loaded', { surfaceKind: null, domReady: false });
@@ -1312,10 +1439,14 @@ function createMainWindow() {
         intervalMs: 100,
         isCancelled: () => contents.isDestroyed()
           || mainWindow?.webContents !== contents
+          || surfaceNavigationSequence !== loadedNavigationSequence
           || contents.getURL() !== loadedUrl,
       },
     ).then((domReady) => {
-      if (contents.isDestroyed() || mainWindow?.webContents !== contents) return;
+      if (contents.isDestroyed()
+        || mainWindow?.webContents !== contents
+        || surfaceNavigationSequence !== loadedNavigationSequence
+        || contents.getURL() !== loadedUrl) return;
       const currentUrl = contents.getURL() || '';
       const currentSurfaceKind = classifyProductSurface({
         coreServicesReady,
@@ -1367,6 +1498,12 @@ onTrustedShellIpc('v8os-shell:toggle-maximize', () => {
 }, { allowStartup: true });
 
 handleTrustedShellIpc('v8os-shell:get-window-state', () => currentWindowState(), { allowStartup: true });
+
+handleTrustedShellIpc('v8os-shell:get-admin-session-lock', () => currentAdminSessionLock());
+
+handleTrustedAdminAuthIpc('v8os-shell:lock-admin-session', () => (
+  setAdminSessionLocked(true, 'admin_signout')
+));
 
 onTrustedShellIpc('v8os-shell:close', () => {
   mainWindow?.hide();

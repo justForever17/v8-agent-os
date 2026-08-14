@@ -103,9 +103,9 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /initialShellSurface\.surfaceKind === "admin-login"/);
   assert.match(installSmokeSource, /\/api\/auth\/bootstrap/);
   assert.match(installSmokeSource, /stop", "--only", "shell"/);
-  assert.match(installSmokeSource, /shellSurface\.surfaceKind === "web"/);
+  assert.match(installSmokeSource, /shellSurface\.surfaceKind === "admin-login"/);
   assert.match(installSmokeSource, /initial_bootstrap_surface_mismatch/);
-  assert.match(installSmokeSource, /trusted_web_surface_mismatch/);
+  assert.match(installSmokeSource, /admin_auth_lock_surface_mismatch/);
   assert.match(installSmokeSource, /typeof value\.checked !== "boolean"/);
   assert.match(installSmokeSource, /permittedBooleans\.some\(\(key\) => typeof value\[key\] !== "boolean"\)/);
   assert.match(installSmokeSource, /function appImageRuntimeEnvironment\(appImageRoot, noSandbox\)/);
@@ -136,6 +136,26 @@ test('shell recovers a failed local surface without an unbounded reload loop', (
   assert.match(mainSource, /surfaceStabilityTimer = setTimeout/);
   assert.match(mainSource, /void loadInitialSurface\(\)/);
   assert.match(mainSource, /界面连续恢复失败/);
+});
+
+test('shell keeps every desktop surface on Admin login after sign-out', () => {
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
+
+  assert.match(mainSource, /credentials: 'include'/);
+  assert.match(mainSource, /validateAdminSessionResponse/);
+  assert.match(mainSource, /setAdminSessionLocked\(!adminAuthenticated/);
+  assert.match(mainSource, /function guardedSurfaceUrl\(url\)/);
+  assert.match(mainSource, /adminSessionLocked && isWebSurfaceUrl\(url\) \? adminLoginUrl\(\) : url/);
+  assert.match(mainSource, /handleTrustedAdminAuthIpc\('v8os-shell:lock-admin-session'/);
+  assert.match(mainSource, /surfaceKind === 'admin-login'/);
+  assert.match(mainSource, /surfaceKind === 'admin'/);
+  assert.match(mainSource, /resolveAdminSurfaceAuthentication/);
+  assert.match(mainSource, /probeAuthenticated: isAdminSessionAuthenticated/);
+  assert.match(mainSource, /surfaceNavigationSequence === loadedNavigationSequence/);
+  assert.doesNotMatch(mainSource, /setAdminSessionLocked\(false, 'authenticated_admin_loaded'\)/);
+  assert.match(preloadSource, /lockAdminSession/);
+  assert.match(preloadSource, /onAdminSessionLockChange/);
 });
 
 test('shell uses dedicated taskbar and tray icon assets', () => {
@@ -285,6 +305,8 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /target:\s*\n\s*- target: nsis/);
   assert.match(config, /win:[\s\S]*?arch:\s*\n\s*- x64\s*\n\s*- arm64/);
   assert.match(config, /nsis:[\s\S]*?include: assets\/windows-installer\.nsh/);
+  assert.match(config, /nsis:[\s\S]*?oneClick: false[\s\S]*?perMachine: false[\s\S]*?allowElevation: true[\s\S]*?selectPerMachineByDefault: false/);
+  assert.match(config, /toolsets:\s*\n\s+appimage: "1\.0\.3"/);
   assert.doesNotMatch(config, /- target: zip/);
   assert.match(config, /icon: assets\/icon\.ico/);
   assert.match(config, /mac:\s*\n\s+icon: assets\/icon\.icns/);
@@ -807,6 +829,8 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(installedWindowsSmoke, /\$env:V8OS_WINDOWS_INSTALL_DIR = \[IO\.Path\]::GetFullPath\(\$env:V8OS_WINDOWS_INSTALL_DIR\)/);
   assert.match(installedWindowsSmoke, /\.Contains\("\/"\)/);
   assert.match(installedWindowsSmoke, /Start-Process -FilePath \$installer\.FullName -ArgumentList @\("\/S", "\/D=\$env:V8OS_WINDOWS_INSTALL_DIR"\)/);
+  assert.match(installedWindowsSmoke, /resources\\elevate\.exe/);
+  assert.match(installedWindowsSmoke, /Installed NSIS elevation helper is missing/);
   assert.match(installedWindowsSmoke, /resources\\v8os/);
   assert.match(installedWindowsSmoke, /\.python\\python\.exe/);
   assert.match(installedWindowsSmoke, /WindowsCredentialBackend/);
@@ -833,6 +857,9 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(appImageSmoke, /arm64\) appimage_arch="arm64"/);
   assert.match(appImageSmoke, /mapfile -t appimage_paths/);
   assert.match(appImageSmoke, /test "\$\{#appimage_paths\[@\]\}" -eq 1/);
+  assert.match(appImageSmoke, /ELECTRON_RUN_AS_NODE=1 "\$appimage" -e/);
+  assert.match(appImageSmoke, /V8OS_APPIMAGE_ENTRY_OK/);
+  assert.match(appImageSmoke, /AppImage single-file runtime entry did not execute/);
   assert.match(appImageSmoke, /shell_exe="\$package_root\/v8-agent-os-shell"/);
   assert.match(appImageSmoke, /APPDIR="\$package_root"/);
   assert.match(appImageSmoke, /APPIMAGE="\$package_root\/AppRun"/);
@@ -848,6 +875,10 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(workflow, /x64\) expected_deb_arch="amd64"/);
   assert.match(workflow, /dpkg-deb -f "\$deb_path" Architecture/);
   assert.match(workflow, /sudo dpkg -i "\$deb_path"/);
+  assert.match(workflow, /find "\$install_root" -xdev \\\( ! -user root -o ! -group root \\\)/);
+  assert.match(workflow, /DEB install tree contains an entry not owned by root:root/);
+  assert.match(workflow, /find "\$install_root" -xdev ! -type l -perm \/022/);
+  assert.match(workflow, /DEB install tree contains a group\/world-writable entry/);
   assert.match(workflow, /\/opt\/V8 Agent OS\/v8-agent-os-shell/);
   assert.match(workflow, /Installed Linux desktop smoke/);
   assert.match(workflow, /dbus-run-session/);

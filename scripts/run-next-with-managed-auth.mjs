@@ -98,6 +98,15 @@ export function runtimeHostnameForApp(app, environment = process.env) {
   return "127.0.0.1";
 }
 
+export function managedAuthEnvironment(port, environment = process.env) {
+  const canonicalAuthUrl = `http://127.0.0.1:${String(port).trim()}`;
+  return {
+    ...environment,
+    AUTH_URL: canonicalAuthUrl,
+    NEXTAUTH_URL: canonicalAuthUrl,
+  };
+}
+
 function main(args = process.argv.slice(2)) {
   const app = argumentValue(args, "--app");
   const mode = argumentValue(args, "--mode");
@@ -146,11 +155,10 @@ function main(args = process.argv.slice(2)) {
   const child = spawn(process.execPath, childArgs, {
     cwd: childCwd,
     env: {
-      ...process.env,
+      ...managedAuthEnvironment(port),
       AUTH_SECRET: managed.secret,
       NEXTAUTH_SECRET: managed.secret,
       AUTH_TRUST_HOST: "true",
-      NEXTAUTH_URL: `http://127.0.0.1:${port}`,
       HOSTNAME: runtimeHostname,
       PORT: port,
       V8_AGENT_OS_HOME: mode === "build" ? buildHome : process.env.V8_AGENT_OS_HOME,

@@ -294,6 +294,7 @@ export function CreativeArtifactCanvas({
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const graphRevisionRef = useRef(0);
     const graphSubmittingRef = useRef(false);
+    const graphCancellingRunRef = useRef("");
     const clipboardRef = useRef<CanvasClipboard | null>(null);
     const lastSavedGraphRef = useRef("");
     const graphPersistedRef = useRef(false);
@@ -310,7 +311,9 @@ export function CreativeArtifactCanvas({
     const [graphRevision, setGraphRevision] = useState(0);
     const [graphRuntime, setGraphRuntime] = useState<CanvasGraphRuntime>(EMPTY_GRAPH_RUNTIME);
     const [graphHistory, setGraphHistory] = useState<CanvasGraphHistory>(EMPTY_GRAPH_HISTORY);
-    const sessionRunning = upstreamSessionRunning || ["queued", "running"].includes(graphRuntime.status);
+    const graphRunActive = ["queued", "running", "cancelling"].includes(graphRuntime.status);
+    const graphRunCancellable = ["queued", "running"].includes(graphRuntime.status);
+    const sessionRunning = upstreamSessionRunning || graphRunActive;
     const [graphSaving, setGraphSaving] = useState(false);
     const [historyApplying, setHistoryApplying] = useState(false);
     const [actionDefinitions, setActionDefinitions] = useState<CanvasActionDefinition[]>([]);
@@ -818,7 +821,7 @@ export function CreativeArtifactCanvas({
     }, [displayResourceForNode]);
 
     useEffect(() => {
-        if (!sessionRunning && !["queued", "running"].includes(graphRuntime.status)) return;
+        if (!upstreamSessionRunning && !graphRunActive) return;
         const refresh = async () => {
             try {
                 const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, { cache: "no-store" });
@@ -834,7 +837,7 @@ export function CreativeArtifactCanvas({
         void refresh();
         const interval = window.setInterval(() => void refresh(), 2200);
         return () => window.clearInterval(interval);
-    }, [graphRuntime.status, loadCatalog, sessionId, sessionRunning]);
+    }, [graphRunActive, loadCatalog, sessionId, upstreamSessionRunning]);
 
     useEffect(() => {
         if (!sessionRunning) return;
@@ -2447,6 +2450,48 @@ export function CreativeArtifactCanvas({
         });
     }, [graphRuntime, sessionId, submitting, t]);
 
+    const cancelGraphRun = useCallback(async () => {
+        const graphRunId = String(graphRuntime.graphRunId || "").trim();
+        if (!graphRunId || !graphRunCancellable || graphCancellingRunRef.current === graphRunId) return;
+        graphCancellingRunRef.current = graphRunId;
+        setError("");
+        setGraphRuntime((current) => (
+            current.graphRunId === graphRunId && ["queued", "running"].includes(current.status)
+                ? { ...current, status: "cancelling" }
+                : current
+        ));
+        try {
+            const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/runs/${encodeURIComponent(graphRunId)}/cancel`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reason: "user_cancelled" }),
+                cache: "no-store",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (sessionIdRef.current !== sessionId) return;
+            const projected = recordOf(payload);
+            const projectedError = recordOf(projected.error);
+            setGraphRuntime((current) => current.graphRunId === graphRunId ? ({
+                ...EMPTY_GRAPH_RUNTIME,
+                ...current,
+                ...projected,
+                error: String(projectedError.message || ""),
+                errorDetail: Object.keys(projectedError).length ? {
+                    code: String(projectedError.code || ""),
+                    message: String(projectedError.message || ""),
+                } : undefined,
+                outputs: current.outputs,
+            }) as CanvasGraphRuntime : current);
+        } catch (reason) {
+            if (sessionIdRef.current === sessionId) {
+                setError(reason instanceof Error ? reason.message : String(reason));
+            }
+        } finally {
+            if (graphCancellingRunRef.current === graphRunId) graphCancellingRunRef.current = "";
+        }
+    }, [graphRunCancellable, graphRuntime.graphRunId, sessionId]);
+
     const requestGraphRun = useCallback((targetNodeIds: string[]) => {
         const targets = Array.from(new Set(targetNodeIds.filter(Boolean)));
         const actionIds = getExecutionActionIds(snapshot, targets);
@@ -2999,9 +3044,9 @@ export function CreativeArtifactCanvas({
                                                 <span className="grid h-8 w-8 place-items-center rounded-lg bg-violet-500/12 text-violet-600"><Workflow className="h-4 w-4" /></span>
                                                 <div className="min-w-0 flex-1">
                                                     <div className="truncate text-[11px] font-semibold text-foreground">{nodeTitle}</div>
-                                                    <div className={cn("text-[9px]", actionState === "failed" ? "text-red-500" : actionState === "running" ? "text-violet-600" : "text-muted-foreground")}>{t(`web.workbench.canvas.graph.state.${actionState}` as Parameters<typeof t>[0])}</div>
+                                                    <div className={cn("text-[9px]", actionState === "failed" ? "text-red-500" : actionState === "cancelling" ? "text-amber-600" : actionState === "running" ? "text-violet-600" : "text-muted-foreground")}>{t(`web.workbench.canvas.graph.state.${actionState}` as Parameters<typeof t>[0])}</div>
                                                 </div>
-                                                {actionState === "running" ? <Loader2 className="h-4 w-4 animate-spin text-violet-500" /> : null}
+                                                {["running", "cancelling"].includes(actionState) ? <Loader2 className={cn("h-4 w-4 animate-spin", actionState === "cancelling" ? "text-amber-500" : "text-violet-500")} /> : null}
                                             </div>
                                             <div data-canvas-wheel-isolation className="custom-scrollbar mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
                                                 {actionDefinition?.requiresPrompt ? (
@@ -3175,7 +3220,7 @@ export function CreativeArtifactCanvas({
                 <button type="button" onClick={() => zoomAtCenter(0.15)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.graph.zoomIn")}><ZoomIn className="h-4 w-4" /></button>
                 <span className="mx-0.5 h-5 w-px bg-border" />
                 <button type="button" disabled={!runnablePreviewTargetIds.length} onClick={() => { setPreflightTargets(runnablePreviewTargetIds); setPreflightOpen((current) => !current); setTemplateOpen(false); setComposer(null); setContextMenu(null); setTrayOpen(false); }} className={cn("relative rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30", preflightOpen && "bg-muted text-foreground")} aria-label={t("web.workbench.canvas.graph.preflight")} title={t("web.workbench.canvas.graph.preflight")}><Check className="h-4 w-4" />{preflightIssues.length ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-red-500" /> : null}</button>
-                <button type="button" disabled={sessionRunning || submitting || graphSaving || !runnablePreviewTargetIds.length} onClick={() => requestGraphRun(runnablePreviewTargetIds)} className="flex h-8 items-center gap-1.5 rounded-xl bg-violet-600 px-3 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-35"><Play className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.runAll")}</button>
+                {graphRunActive ? <button type="button" disabled={!graphRunCancellable} onClick={() => void cancelGraphRun()} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-amber-600 px-3 text-[10px] font-semibold text-white hover:bg-amber-700 disabled:opacity-60" aria-label={t(graphRunCancellable ? "web.workbench.canvas.graph.cancel" : "web.workbench.canvas.graph.cancelling")} title={t(graphRunCancellable ? "web.workbench.canvas.graph.cancel" : "web.workbench.canvas.graph.cancelling")}>{graphRunCancellable ? <Square className="h-3.5 w-3.5 fill-current" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t(graphRunCancellable ? "web.workbench.canvas.graph.cancel" : "web.workbench.canvas.graph.cancelling")}</button> : <button type="button" disabled={sessionRunning || submitting || graphSaving || !runnablePreviewTargetIds.length} onClick={() => requestGraphRun(runnablePreviewTargetIds)} className="flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-violet-600 px-3 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-35"><Play className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.runAll")}</button>}
                 <button type="button" disabled={sessionRunning} onClick={() => { setTemplateOpen((current) => !current); setPreflightOpen(false); setComposer(null); setContextMenu(null); setTrayOpen(false); }} className={cn("rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35", templateOpen && "bg-muted text-foreground")} aria-label={t("web.workbench.canvas.graph.templates")}><Workflow className="h-4 w-4" /></button>
                 <span className="px-1 text-[8px] tabular-nums text-muted-foreground">{sessionRunning ? t("web.workbench.canvas.graph.progress", actionRunSummary) : graphSaving ? t("web.workbench.canvas.graph.saving") : `r${graphRevision}`}</span>
             </div>
@@ -3223,11 +3268,11 @@ export function CreativeArtifactCanvas({
             ) : null}
 
             {sessionRunning ? (
-                <div className="absolute left-1/2 top-3 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-300/70 bg-amber-50/92 px-3 py-2 text-[11px] font-medium text-amber-900 shadow-lg backdrop-blur dark:border-amber-500/25 dark:bg-amber-950/80 dark:text-amber-100">
+                <div className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-300/70 bg-amber-50/92 px-3 py-2 text-[11px] font-medium text-amber-900 shadow-lg backdrop-blur dark:border-amber-500/25 dark:bg-amber-950/80 dark:text-amber-100">
                     <Lock className="h-3.5 w-3.5" />{t("web.workbench.canvas.graph.locked")}
                 </div>
             ) : connectionSourceId || connectionIssue ? (
-                <div className={cn("absolute left-1/2 top-3 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-medium shadow-lg backdrop-blur", connectionIssue ? "border-red-300/70 bg-red-50/92 text-red-900 dark:border-red-500/25 dark:bg-red-950/80 dark:text-red-100" : "border-emerald-300/70 bg-emerald-50/92 text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-950/80 dark:text-emerald-100")}>
+                <div className={cn("absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-medium shadow-lg backdrop-blur", connectionIssue ? "border-red-300/70 bg-red-50/92 text-red-900 dark:border-red-500/25 dark:bg-red-950/80 dark:text-red-100" : "border-emerald-300/70 bg-emerald-50/92 text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-950/80 dark:text-emerald-100")}>
                     <Link2 className="h-3.5 w-3.5" />{connectionIssue ? connectionIssueLabel(connectionIssue) : t("web.workbench.canvas.graph.connecting")}<button type="button" onClick={() => { setConnectionSourceId(null); setConnectionDraft(null); setConnectionIssue(null); }} className="ml-1 rounded-full p-0.5 hover:bg-black/10"><X className="h-3 w-3" /></button>
                 </div>
             ) : null}

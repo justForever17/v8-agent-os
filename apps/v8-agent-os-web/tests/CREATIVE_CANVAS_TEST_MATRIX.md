@@ -61,14 +61,14 @@ Real-live 时限：
 |---|---|---|---|---|
 | BIND-01 | INTEGRATION | W1/S-A 刷新、重启 Web | Session 仍绑定 W1，不重新发现工作区 | PASS |
 | BIND-02 | INTEGRATION | 同一 W1 下建立 S-A、S-B | source/artifact/node/edge/tab/localStorage 集合互斥 | PASS |
-| BIND-03 | INTEGRATION | W1/S-A 与 W2/S-C | S-C 无法搜索、预览、下载 W1/S-A 资源 | NOT-RUN |
+| BIND-03 | INTEGRATION | W1/S-A 与 W2/S-C | S-C 无法搜索、预览、下载 W1/S-A 资源 | FAIL（CODE-FACT：generic artifact list/detail/content 缺少 Session/Workspace authority；Canvas 专用 preview 路径已受约束） |
 | BIND-04 | INTEGRATION | S-A 运行中切换 S-B | S-B 不继承锁、占位卡、进度或错误 | PARTIAL |
 | BIND-05 | INTEGRATION | S-A 异步响应前切到 S-B | 迟到 source/artifact/event 被 Session gate 丢弃 | PASS |
 | SRC-01 | INTEGRATION | Web/Canvas 上传图片、视频、音频、3D | 每项只新增一个当前 Session source | PARTIAL |
 | SRC-02 | INTEGRATION | 上传后离开并重进 S-A | 媒体内容仍可读，不退化为永久占位 | PASS（图片） |
 | SRC-03 | INTEGRATION | S-B 猜测 S-A source ID/URL | 服务端内容路由 fail closed | NOT-RUN |
 | ART-01 | REAL-LIVE | S-A 生成文件产物 | session/run/workspace/tool lineage 精确 | PASS |
-| ART-02 | INTEGRATION | S-B 猜测 S-A artifact detail/content | detail 与 content 两层均拒绝 | NOT-RUN |
+| ART-02 | INTEGRATION | S-B 猜测 S-A artifact detail/content | detail 与 content 两层均拒绝 | FAIL（Engine generic detail/content 仅按 artifactId 读取；客户端事后过滤不能替代服务端 authority） |
 | ART-03 | INTEGRATION | 普通聊天 Artifact 无 Canvas lineage | 可进素材抽屉，但不能填任意占位卡 | NOT-RUN |
 | ART-04 | INTEGRATION | Canvas 产物回填 | 仅显式 `canvasOperationId` 更新原占位卡 | PASS |
 | MAT-01 | STATIC | Creative Media 素材纪律 | 角色、用途、manifest、lineage、owner 与 artifact proof 均有明确合同 | PASS |
@@ -150,7 +150,7 @@ Real-live 时限：
 | GRAPH-10 | UNIT | 同工作区另一 Session 实例化模板 | 图可恢复但未绑定输入不可执行；显式绑定素材后才可运行 | PASS |
 | GRAPH-11 | UNIT | 不同物理工作区读取/删除模板 | workspace_key authority 拒绝；同工作区删除后双方均不可见 | PASS |
 | GRAPH-12 | MIGRATION | 从已发布 v2 Session 本地画布迁移 | 首次写入 Engine/v3 后删除 v2 key，旧图不能在清缓存后复活 | PASS（合同；桌面待复跑） |
-| GRAPH-13 | UNIT / API | 运行中取消 Graph | 停止本地轮询；尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PASS（Engine 107） |
+| GRAPH-13 | UNIT / API / BROWSER-MOCK | 运行中取消 Graph | Web 一次性请求取消并在 `cancelling` 期间保持锁与轮询；Engine 尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PARTIAL（Web 12、Engine Graph 23、production Preview 浏览器状态机通过；真实 CreativeMediaRuntime/Provider cancel/cleanup 未闭环） |
 | GRAPH-14 | STARTUP | Engine 在 queued/running/cancelling 时重启 | 启动对账写为 `interrupted`，保留成功节点与产物版本，活动节点标记可恢复 | PASS（Engine 107） |
 | GRAPH-15 | CONTRACT | 失败分支重试 | Web 复用原 `graphRunId/canvasOperationId` 走正常消息链；只重跑非成功节点；成功付费祖先的同 Run 产物缺失时拒绝 | PASS（Web 12；Engine 107） |
 

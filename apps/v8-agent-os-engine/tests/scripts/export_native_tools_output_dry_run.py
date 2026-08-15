@@ -113,9 +113,11 @@ STATEFUL_UNOBSERVED_REASONS: dict[str, str] = {
 
 BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "runtime_broker": {"mode": "list", "need": None},
+    "agent_broker": {"mode": "list"},
     "session_context_broker": {"sourceSessionId": "calibration-missing-session", "mode": "summary"},
     "session_message_broker": {"mode": "status", "messageId": "calibration-missing-message"},
     "mcp_server_config": {"mode": "mcp_list"},
+    "config_broker": {"mode": "inventory", "limit": 5, "offset": 0},
     "plugin_broker": {"mode": "list"},
     "spec_broker": {"mode": "brief", "workspace_path": ""},
     "rpa_list_robot_scripts": {"limit": 5},

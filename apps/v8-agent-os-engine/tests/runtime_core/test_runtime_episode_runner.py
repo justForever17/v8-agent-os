@@ -4080,6 +4080,87 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
     assert payload["results"][0]["compactTranscript"] == "patch proposal ready"
 
 
+def test_local_direct_delegation_stops_when_episode_claim_cas_loses(monkeypatch, tmp_path):
+    from langgraph.types import Command, Send
+    import graph.parallel_support as parallel_support
+    manager = DatabaseManager(tmp_path / "direct-claim-race.db")
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+
+    direct_episode = build_runtime_episode(
+        need={
+            "episodeId": "delegation-local-claim-race",
+            "kind": "delegation",
+            "source": "test",
+            "reason": "claim race",
+        },
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(direct_episode, enqueue=True, priority=999)
+    parent_episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent"},
+        kind="delegation",
+        state="active",
+        continuation_target="runtime_episode_runner",
+    )
+    command = Command(
+        goto=[
+            Send(
+                "parallel_delegate_task",
+                {
+                    "parallel_branch": {
+                        "agentId": "engineering_worker",
+                        "agentName": "Engineering Worker",
+                        "delegationId": direct_episode["episodeId"],
+                        "invocationId": "invoke-local-claim-race",
+                        "taskBriefId": "brief-local-claim-race",
+                        "reason": "Do not execute twice",
+                    },
+                    "messages": [],
+                    "todos": [],
+                },
+            )
+        ],
+        update={},
+    )
+    executed = 0
+
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
+        nonlocal executed
+        executed += 1
+        return [], [], {"status": "ok"}, []
+
+    original_complete = manager.complete_runtime_episode
+
+    def _lose_start_claim(episode_id, *, state, **kwargs):
+        if episode_id == direct_episode["episodeId"] and state == "active":
+            return None
+        return original_complete(episode_id, state=state, **kwargs)
+
+    monkeypatch.setattr(manager, "complete_runtime_episode", _lose_start_claim)
+    monkeypatch.setattr(
+        RuntimeEpisodeRunner,
+        "_build_agent_nodes_map",
+        lambda self: {"engineering_worker": {"node_func": object()}},
+    )
+    monkeypatch.setattr(
+        parallel_support,
+        "_run_parallel_agent_branch",
+        _fake_run_parallel_agent_branch,
+    )
+
+    results, child_episode_ids = asyncio.run(
+        RuntimeEpisodeRunner()._execute_local_delegation_sends(command, parent_episode)
+    )
+
+    assert executed == 0
+    assert child_episode_ids == []
+    assert results[0]["status"] == "waiting"
+    assert results[0]["error"] == "direct_episode_claim_race"
+    assert manager.get_runtime_episode(direct_episode["episodeId"])["state"] == "queued"
+
+
 def test_delegation_episode_degrades_when_local_worker_fails(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "local subagent task"},

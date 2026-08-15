@@ -1102,7 +1102,7 @@ class RuntimeEpisodeRunner:
                         **self._claim_fence_kwargs(episode_id),
                     ),
                     action="persisting dependency wait state",
-                ) or {**episode, "state": "waiting_dependency"}
+                )
                 self._emit(
                     "runtime.episode.waiting",
                     episode=waiting,
@@ -1181,7 +1181,7 @@ class RuntimeEpisodeRunner:
                         **self._claim_fence_kwargs(episode_id),
                     ),
                     action="persisting input wait state",
-                ) or {**episode, "state": "waiting_input"}
+                )
                 self._emit(
                     "runtime.episode.waiting_input",
                     episode=waiting,
@@ -1204,7 +1204,7 @@ class RuntimeEpisodeRunner:
                         **self._claim_fence_kwargs(episode_id),
                     ),
                     action="persisting runtime wait state",
-                ) or {**episode, "state": waiting_state}
+                )
                 self._emit(
                     "runtime.episode.waiting",
                     episode=waiting,
@@ -1227,7 +1227,7 @@ class RuntimeEpisodeRunner:
                         **self._claim_fence_kwargs(episode_id),
                     ),
                     action="scheduling a runtime retry",
-                ) or {**episode, "state": "queued"}
+                )
                 self._emit(
                     "runtime.episode.retry_scheduled",
                     episode=retry_episode,
@@ -1265,15 +1265,15 @@ class RuntimeEpisodeRunner:
                 event_type = "runtime.episode.cancelled"
             self._emit(
                 event_type,
-                episode=completed or {**episode, "state": final_state},
+                episode=completed,
                 handoff=persisted_handoff,
                 recovery=recovery,
                 session_id=session_id,
                 run_id=run_id,
             )
-            self._resume_cross_episode_dependents(completed or {**episode, "state": final_state})
-            self._maybe_schedule_chat_handoff_resume(completed or {**episode, "state": final_state})
-            self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
+            self._resume_cross_episode_dependents(completed)
+            self._maybe_schedule_chat_handoff_resume(completed)
+            self._maybe_resume_parent_episode(completed, session_id=session_id, run_id=run_id)
         except (RuntimeEpisodeCancelled, RuntimeEpisodeLeaseLost) as exc:
             if isinstance(exc, RuntimeEpisodeLeaseLost):
                 logger.warning("Discarded stale runtime episode result for %s: %s", episode_id or "<unknown>", exc)
@@ -1293,7 +1293,7 @@ class RuntimeEpisodeRunner:
             )
             self._emit(
                 "runtime.episode.failed",
-                episode=failed or {**episode, "state": "failed"},
+                episode=failed,
                 error={
                     "code": "episode_deadline_exceeded",
                     "message": str(exc),
@@ -1303,9 +1303,9 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
-            self._resume_cross_episode_dependents(failed or {**episode, "state": "failed"})
-            self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
-            self._maybe_resume_parent_episode(failed or episode, session_id=session_id, run_id=run_id)
+            self._resume_cross_episode_dependents(failed)
+            self._maybe_schedule_chat_handoff_resume(failed)
+            self._maybe_resume_parent_episode(failed, session_id=session_id, run_id=run_id)
         except Exception as exc:
             error_message = f"{type(exc).__name__}: {exc}"
             if self._can_retry(episode):
@@ -1318,7 +1318,7 @@ class RuntimeEpisodeRunner:
                         **self._claim_fence_kwargs(episode_id),
                     ),
                     action="scheduling an executor-error retry",
-                ) or {**episode, "state": "queued"}
+                )
                 self._emit(
                     "runtime.episode.retry_scheduled",
                     episode=retry_episode,
@@ -1341,14 +1341,14 @@ class RuntimeEpisodeRunner:
             )
             self._emit(
                 "runtime.episode.failed",
-                episode=failed or {**episode, "state": "failed"},
+                episode=failed,
                 error={"code": "episode_executor_error", "message": error_message, "recoverable": True},
                 session_id=session_id,
                 run_id=run_id,
             )
-            self._resume_cross_episode_dependents(failed or {**episode, "state": "failed"})
-            self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
-            self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
+            self._resume_cross_episode_dependents(failed)
+            self._maybe_schedule_chat_handoff_resume(failed)
+            self._maybe_resume_parent_episode(failed, session_id=session_id, run_id=run_id)
         finally:
             _RUNTIME_EPISODE_CLAIM_CONTEXT.reset(claim_context_token)
 
@@ -1386,9 +1386,9 @@ class RuntimeEpisodeRunner:
         return {"worker_id": claim[1], "lease_generation": claim[2]}
 
     def _require_claim_write(self, episode_id: str, value: Any, *, action: str) -> Any:
-        if value is None and self._claim_fence_kwargs(episode_id):
+        if value is None:
             raise RuntimeEpisodeLeaseLost(
-                f"Runtime episode {episode_id or '<unknown>'} lost its lease before {action}."
+                f"Runtime episode {episode_id or '<unknown>'} lost its durable transition before {action}."
             )
         return value
 
@@ -1501,7 +1501,7 @@ class RuntimeEpisodeRunner:
         )
         if not accepted and claim_fence:
             raise RuntimeEpisodeLeaseLost(
-                f"Runtime episode {episode_id or '<unknown>'} heartbeat was rejected for a stale lease generation."
+                f"Runtime episode {episode_id or '<unknown>'} heartbeat was rejected for a stale or missing lease."
             )
 
     async def _await_with_heartbeat(self, episode_id: str, awaitable: Any, *, progress: str, interval_seconds: float = 20.0) -> Any:
@@ -1755,7 +1755,7 @@ class RuntimeEpisodeRunner:
                 **self._claim_fence_kwargs(parent_id),
             ),
             action="persisting child-dispatch wait state",
-        ) or {**episode, "state": "waiting_child", "metadata": metadata}
+        )
         return waiting
 
     def _maybe_resume_parent_episode(
@@ -1838,7 +1838,23 @@ class RuntimeEpisodeRunner:
                     resume_token["budgetBoundaryChildCount"] = len(failed_children)
                 if optional_or_degraded_only or degraded_handoff_only:
                     resume_token["degradedChildCount"] = len(failed_children)
-                resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
+                resumed = db.resume_runtime_episode(
+                    parent_id,
+                    resume_token=resume_token,
+                    expected_state=str(parent.get("state") or "waiting_child"),
+                )
+                if resumed is None:
+                    latest = db.get_runtime_episode(parent_id) or parent
+                    self._emit(
+                        "runtime.episode.transition_rejected",
+                        episode=latest,
+                        session_id=session_id,
+                        run_id=run_id,
+                        transition="resume",
+                        expectedState=str(parent.get("state") or "waiting_child"),
+                        reason="stale_episode_cas",
+                    )
+                    return
                 self._emit(
                     "runtime.episode.resumed",
                     episode=resumed,
@@ -1862,11 +1878,40 @@ class RuntimeEpisodeRunner:
                 error_code="child_episode_failed",
                 error_message=f"{len(failed_children)} child episode(s) failed.",
                 metadata={"resumeToken": resume_token, "childHandoffs": child_handoffs, "recoverable": True},
-            ) or parent
+                expected_state=str(parent.get("state") or "waiting_child"),
+            )
+            if updated is None:
+                latest = db.get_runtime_episode(parent_id) or parent
+                self._emit(
+                    "runtime.episode.transition_rejected",
+                    episode=latest,
+                    session_id=session_id,
+                    run_id=run_id,
+                    transition="complete",
+                    expectedState=str(parent.get("state") or "waiting_child"),
+                    reason="stale_episode_cas",
+                )
+                return
             self._emit("runtime.episode.failed", episode=updated, session_id=session_id, run_id=run_id, resumeToken=resume_token)
             self._maybe_resume_parent_episode(updated, session_id=session_id, run_id=run_id)
             return
-        resumed = db.resume_runtime_episode(parent_id, resume_token=resume_token) or parent
+        resumed = db.resume_runtime_episode(
+            parent_id,
+            resume_token=resume_token,
+            expected_state=str(parent.get("state") or "waiting"),
+        )
+        if resumed is None:
+            latest = db.get_runtime_episode(parent_id) or parent
+            self._emit(
+                "runtime.episode.transition_rejected",
+                episode=latest,
+                session_id=session_id,
+                run_id=run_id,
+                transition="resume",
+                expectedState=str(parent.get("state") or "waiting"),
+                reason="stale_episode_cas",
+            )
+            return
         self._emit(
             "runtime.episode.resumed",
             episode=resumed,
@@ -7099,14 +7144,44 @@ class RuntimeEpisodeRunner:
                 return stored
             return None
 
+        def _direct_delegation_fence(episode_record: dict[str, Any]) -> dict[str, Any]:
+            worker_id = str(episode_record.get("worker_id") or episode_record.get("workerId") or "").strip()
+            try:
+                generation = int(episode_record.get("leaseGeneration") or episode_record.get("lease_generation") or 0)
+            except (TypeError, ValueError):
+                generation = 0
+            if worker_id and generation > 0:
+                return {"worker_id": worker_id, "lease_generation": generation}
+            return {}
+
         def _start_direct_delegation_episode(branch: dict[str, Any]) -> dict[str, Any] | None:
             direct_episode = _direct_delegation_episode(branch)
             if not direct_episode:
                 return None
+            direct_state = str(direct_episode.get("state") or "").strip().lower()
+            direct_worker = str(
+                direct_episode.get("worker_id") or direct_episode.get("workerId") or ""
+            ).strip()
+            if direct_state not in {"detected", "routed", "queued", "retry", "waiting"} or direct_worker:
+                return {
+                    **direct_episode,
+                    "_directDispatchBlocked": True,
+                    "_directDispatchReason": "direct_episode_already_claimed",
+                }
             started = db.complete_runtime_episode(
                 str(direct_episode.get("episodeId") or direct_episode.get("id") or ""),
                 state="active",
-            ) or {**direct_episode, "state": "active"}
+                expected_state=str(direct_episode.get("state") or ""),
+            )
+            if started is None:
+                latest = db.get_runtime_episode(
+                    str(direct_episode.get("episodeId") or direct_episode.get("id") or "")
+                ) or direct_episode
+                return {
+                    **latest,
+                    "_directDispatchBlocked": True,
+                    "_directDispatchReason": "direct_episode_claim_race",
+                }
             self._emit(
                 "runtime.episode.started",
                 episode=started,
@@ -7124,8 +7199,20 @@ class RuntimeEpisodeRunner:
             direct_episode = _direct_delegation_episode(branch)
             if not direct_episode:
                 return
+            if str(summary.get("dispatchStatus") or "").strip() == "direct_episode_claim_lost":
+                return
             delegation_id = str(direct_episode.get("episodeId") or direct_episode.get("id") or "").strip()
             if not delegation_id:
+                return
+            if str(direct_episode.get("worker_id") or direct_episode.get("workerId") or "").strip():
+                summary.update(
+                    {
+                        "status": "waiting",
+                        "error": "direct_episode_claim_lost",
+                        "dispatchStatus": "direct_episode_claim_lost",
+                        "summary": "委派 episode 已由其他 worker 接管，本分支停止重复终结。",
+                    }
+                )
                 return
             children = [str(value).strip() for value in list(child_ids or []) if str(value).strip()]
             raw_status = str(summary.get("status") or "").strip().lower()
@@ -7199,7 +7286,27 @@ class RuntimeEpisodeRunner:
                 handoff=handoff,
                 session_id=session_id,
                 run_id=run_id,
+                expected_state=str(direct_episode.get("state") or "active"),
             )
+            if persisted_handoff is None:
+                summary.update(
+                    {
+                        "status": "waiting",
+                        "error": "direct_episode_claim_lost",
+                        "dispatchStatus": "direct_episode_claim_lost",
+                        "summary": "委派 episode 已由其他 worker 接管，本分支停止重复执行。",
+                    }
+                )
+                latest = db.get_runtime_episode(delegation_id) or direct_episode
+                self._emit(
+                    "runtime.episode.transition_rejected",
+                    episode=latest,
+                    session_id=session_id,
+                    run_id=run_id,
+                    transition="handoff",
+                    reason="stale_episode_fence",
+                )
+                return
             self._emit(
                 "handoff.ref.created",
                 episode=direct_episode,
@@ -7207,6 +7314,31 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            current_direct_episode = db.get_runtime_episode(delegation_id)
+            if current_direct_episode is None:
+                summary.update(
+                    {
+                        "status": "waiting",
+                        "error": "direct_episode_claim_lost",
+                        "dispatchStatus": "direct_episode_claim_lost",
+                        "summary": "委派 episode 已不存在，停止伪造终态并等待上层恢复。",
+                    }
+                )
+                return
+            if str(
+                current_direct_episode.get("worker_id")
+                or current_direct_episode.get("workerId")
+                or ""
+            ).strip():
+                summary.update(
+                    {
+                        "status": "waiting",
+                        "error": "direct_episode_claim_lost",
+                        "dispatchStatus": "direct_episode_claim_lost",
+                        "summary": "委派 episode 已由其他 worker 接管，本分支停止伪造终态。",
+                    }
+                )
+                return
             updated = db.complete_runtime_episode(
                 delegation_id,
                 state=final_state,
@@ -7238,7 +7370,29 @@ class RuntimeEpisodeRunner:
                         else {}
                     ),
                 },
-            ) or {**direct_episode, "state": final_state}
+                expected_state=str(current_direct_episode.get("state") or ""),
+            )
+            if updated is None:
+                summary.update(
+                    {
+                        "status": "waiting",
+                        "error": "direct_episode_claim_lost",
+                        "dispatchStatus": "direct_episode_claim_lost",
+                        "summary": "委派 episode 租约已变化，停止伪造终态并等待当前 worker。",
+                    }
+                )
+                latest = db.get_runtime_episode(delegation_id) or current_direct_episode
+                self._emit(
+                    "runtime.episode.transition_rejected",
+                    episode=latest,
+                    handoff=persisted_handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                    transition="complete",
+                    expectedState=str(current_direct_episode.get("state") or ""),
+                    reason="stale_episode_cas",
+                )
+                return
             self._emit(
                 event_topic,
                 episode=updated,
@@ -7307,6 +7461,27 @@ class RuntimeEpisodeRunner:
             branch = dict(arg.get("parallel_branch") or {})
             agent_id = str(branch.get("agentId") or "").strip()
             direct_episode = _start_direct_delegation_episode(branch) if manage_direct_episode else None
+            if direct_episode and direct_episode.get("_directDispatchBlocked"):
+                dispatch_reason = str(
+                    direct_episode.get("_directDispatchReason") or "direct_episode_claim_race"
+                ).strip()
+                summary = {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": task_id or branch.get("taskBriefId"),
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "status": "waiting",
+                    "error": dispatch_reason,
+                    "dispatchStatus": dispatch_reason,
+                    "summary": "委派 episode 已由其他 worker 接管，本分支不重复执行。",
+                    "completedAt": None,
+                }
+                results.append(summary)
+                if task_id:
+                    completed_by_task_id[task_id] = summary
+                return
             progress_fingerprints: set[str] = set()
 
             def _progress(progress_payload: dict[str, Any]) -> None:
@@ -7343,7 +7518,13 @@ class RuntimeEpisodeRunner:
                 direct_episode_id = str(progress_episode.get("episodeId") or "").strip()
                 if direct_episode_id and direct_episode is not None:
                     try:
-                        db.heartbeat_runtime_episode(direct_episode_id, progress=str(compact.get("summary") or ""))
+                        direct_fence = _direct_delegation_fence(progress_episode)
+                        if direct_fence:
+                            db.heartbeat_runtime_episode(
+                                direct_episode_id,
+                                progress=str(compact.get("summary") or ""),
+                                **direct_fence,
+                            )
                     except Exception:
                         pass
                 self._emit(
@@ -7804,8 +7985,18 @@ class RuntimeEpisodeRunner:
             requested_depth = 0
         if requested_depth:
             worker_brief["delegationDepth"] = min(2, max(1, requested_depth))
-        if not worker_brief.get("runtimeAccess"):
+        runtime_access_explicit = any(
+            key in source
+            for source in (raw_task_brief, child_branch)
+            if isinstance(source, dict)
+            for key in ("runtimeAccess", "runtime_access")
+        )
+        if not worker_brief.get("runtimeAccess") and not (
+            requested_depth >= 2 and runtime_access_explicit
+        ):
             worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or ["delegation.recursive"]
+        elif requested_depth >= 2 and runtime_access_explicit and "runtimeAccess" not in worker_brief:
+            worker_brief["runtimeAccess"] = []
         worker_brief.setdefault("parentDelegationId", request.get("sourceDelegationId"))
         worker_brief.setdefault("parentInvocationId", request.get("sourceInvocationId"))
         if child_branch.get("writeSet") and not worker_brief.get("writeSet"):

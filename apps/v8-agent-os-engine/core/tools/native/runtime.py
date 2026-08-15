@@ -3690,7 +3690,46 @@ def runtime_broker(
                 ),
                 "previousHandoff": previous_handoff,
             },
-        ) or {**dict(episode or {}), "state": "queued"}
+            expected_state=str((episode or {}).get("state") or "waiting_input"),
+        )
+        if resumed is None:
+            latest = db.get_runtime_episode(requested_episode_id) or dict(episode or {})
+            _emit_runtime_episode_event(
+                "runtime.episode.transition_rejected",
+                {
+                    "episode": latest,
+                    "transition": "resume",
+                    "expectedState": str((episode or {}).get("state") or "waiting_input"),
+                    "reason": "stale_episode_cas",
+                },
+            )
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="Runtime episode changed before the continuation could be durably resumed.",
+                                error="runtime_episode_resume_conflict",
+                                detail_level=detail_level,
+                                episode=latest,
+                                next_action="Use the latest runtime episode state; do not submit the continuation twice.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "runtime_dispatch_status": {
+                        "mode": "runtime_broker_resume",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "runtime_episode_resume_conflict",
+                        "episodeId": requested_episode_id,
+                    },
+                },
+            )
         updated_context = upsert_runtime_episode(route_context, resumed)
         _emit_runtime_episode_event(
             "runtime.episode.resumed",

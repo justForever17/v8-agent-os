@@ -747,32 +747,174 @@ def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, A
     return normalized
 
 
-def _terminalize_grandchild_task_brief(task_brief: dict[str, Any]) -> dict[str, Any]:
-    """Make the depth-two boundary explicit in both authority and model-visible policy."""
+def _scope_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    raw = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _task_scope_value(task_brief: dict[str, Any] | None, *keys: str) -> Any:
+    task = task_brief if isinstance(task_brief, dict) else {}
+    candidates = [task]
+    context = task.get("context")
+    if isinstance(context, dict):
+        candidates.append(context)
+    for candidate in candidates:
+        for key in keys:
+            if key in candidate and candidate.get(key) is not None:
+                return candidate.get(key)
+    return None
+
+
+def _intersect_grandchild_plugin_references(
+    child_references: Any,
+    parent_references: Any,
+) -> list[dict[str, Any]]:
+    """Project plugin references through the direct parent's already granted scope."""
+
+    parent_by_id: dict[str, dict[str, Any]] = {}
+    for parent_ref in list(parent_references or []):
+        if not isinstance(parent_ref, dict):
+            continue
+        plugin_id = str(parent_ref.get("pluginId") or parent_ref.get("plugin_id") or "").strip()
+        if plugin_id:
+            parent_by_id[plugin_id] = parent_ref
+
+    projected: list[dict[str, Any]] = []
+    for child_ref in list(child_references or []):
+        if not isinstance(child_ref, dict):
+            continue
+        plugin_id = str(child_ref.get("pluginId") or child_ref.get("plugin_id") or "").strip()
+        parent_ref = parent_by_id.get(plugin_id)
+        if not plugin_id or parent_ref is None:
+            continue
+        parent_components = _scope_text_values(
+            parent_ref.get("componentIds")
+            or parent_ref.get("component_ids")
+            or parent_ref.get("components")
+        )
+        child_components = _scope_text_values(
+            child_ref.get("componentIds")
+            or child_ref.get("component_ids")
+            or child_ref.get("components")
+        )
+        if not parent_components:
+            # A terminal grant needs an explicit parent component scope.  An
+            # omitted parent scope cannot be treated as implicit all-components
+            # authority.
+            continue
+        # Grandchild component authority must be a proper subset of the direct
+        # parent's grant.  Intersect first, then reject equality so an agent
+        # cannot simply relay its complete parent scope one level deeper.
+        components = [item for item in child_components if item in parent_components]
+        if not components or set(components) == set(parent_components):
+            continue
+        projected_ref = dict(child_ref)
+        projected_ref["pluginId"] = plugin_id
+        if components:
+            projected_ref["componentIds"] = components
+        else:
+            projected_ref.pop("componentIds", None)
+        projected_ref.pop("plugin_id", None)
+        projected_ref.pop("component_ids", None)
+        projected.append(projected_ref)
+    return projected
+
+
+def _terminalize_grandchild_task_brief(
+    task_brief: dict[str, Any],
+    *,
+    parent_task_brief: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make the depth-two boundary explicit and project every delegated scope."""
 
     terminal = dict(task_brief or {})
     terminal["allowChildDelegation"] = False
     terminal["requireChildDelegation"] = False
     terminal["childDelegationPolicyExplicit"] = True
     terminal["childDelegationBudget"] = {}
-    terminal["runtimeAccess"] = [
+    child_runtime_access = [
         str(item).strip()
         for item in list(terminal.get("runtimeAccess") or terminal.get("runtime_access") or [])
         if str(item).strip() and str(item).strip() != "delegation.recursive"
     ]
-    terminal["allowedTools"] = [
-        str(item).strip()
-        for item in list(terminal.get("allowedTools") or terminal.get("allowed_tools") or [])
-        if str(item).strip() and str(item).strip() != "delegation_broker"
+    parent_runtime_access = _scope_text_values(
+        _task_scope_value(parent_task_brief, "runtimeAccess", "runtime_access", "requiredRuntimeAccess", "required_runtime_access")
+    )
+    if parent_runtime_access:
+        parent_runtime_access_set = set(parent_runtime_access)
+        child_runtime_access = [item for item in child_runtime_access if item in parent_runtime_access_set]
+    else:
+        # Missing parent authority is a fail-closed terminal boundary.
+        child_runtime_access = []
+    terminal["runtimeAccess"] = child_runtime_access
+
+    child_plugin_references = terminal.get("pluginReferences") or terminal.get("plugin_references") or []
+    parent_plugin_references = _task_scope_value(parent_task_brief, "pluginReferences", "plugin_references") or []
+    terminal["pluginReferences"] = _intersect_grandchild_plugin_references(
+        child_plugin_references,
+        parent_plugin_references,
+    )
+    terminal.pop("plugin_references", None)
+
+    parent_tool_policy = _task_scope_value(parent_task_brief, "toolPolicy", "tool_policy")
+    parent_tool_policy = dict(parent_tool_policy) if isinstance(parent_tool_policy, dict) else {}
+    parent_allowed_tools = _scope_text_values(
+        _task_scope_value(parent_task_brief, "allowedTools", "allowed_tools")
+        or parent_tool_policy.get("allowedTools")
+        or parent_tool_policy.get("allowed_tools")
+    )
+    parent_forbidden_tools = _scope_text_values(
+        _task_scope_value(parent_task_brief, "forbiddenTools", "forbidden_tools")
+        or parent_tool_policy.get("forbiddenTools")
+        or parent_tool_policy.get("forbidden_tools")
+    )
+    tool_policy = (
+        dict(terminal.get("toolPolicy") or terminal.get("tool_policy") or {})
+        if isinstance(terminal.get("toolPolicy") or terminal.get("tool_policy"), dict)
+        else {}
+    )
+    child_allowed_tools = _scope_text_values(
+        terminal.get("allowedTools")
+        or terminal.get("allowed_tools")
+        or tool_policy.get("allowedTools")
+        or tool_policy.get("allowed_tools")
+    )
+    child_forbidden_tools = _scope_text_values(
+        terminal.get("forbiddenTools")
+        or terminal.get("forbidden_tools")
+        or tool_policy.get("forbiddenTools")
+        or tool_policy.get("forbidden_tools")
+    )
+    forbidden_tools = _scope_text_values(
+        [*parent_forbidden_tools, *child_forbidden_tools, "delegation_broker"]
+    )
+    allowed_tools = [
+        item
+        for item in child_allowed_tools
+        if item in set(parent_allowed_tools) and item not in set(forbidden_tools)
     ]
-    tool_policy = dict(terminal.get("toolPolicy") or {}) if isinstance(terminal.get("toolPolicy"), dict) else {}
-    if tool_policy:
-        tool_policy["allowedTools"] = [
-            str(item).strip()
-            for item in list(tool_policy.get("allowedTools") or tool_policy.get("allowed_tools") or [])
-            if str(item).strip() and str(item).strip() != "delegation_broker"
-        ]
-        terminal["toolPolicy"] = tool_policy
+    parent_mode = str(parent_tool_policy.get("mode") or "default").strip().lower()
+    child_mode = str(tool_policy.get("mode") or "default").strip().lower()
+    if parent_mode == "none" or child_mode == "none":
+        allowed_tools = []
+    terminal["allowedTools"] = allowed_tools
+    terminal["forbiddenTools"] = forbidden_tools
+    terminal.pop("allowed_tools", None)
+    terminal.pop("forbidden_tools", None)
+    tool_policy["mode"] = "allowlist" if allowed_tools else "none"
+    tool_policy["allowedTools"] = allowed_tools
+    tool_policy["forbiddenTools"] = forbidden_tools
+    tool_policy.pop("allowed_tools", None)
+    tool_policy.pop("forbidden_tools", None)
+    terminal["toolPolicy"] = tool_policy
+    terminal.pop("tool_policy", None)
     delegation_policy = (
         dict(terminal.get("delegationPolicy") or {})
         if isinstance(terminal.get("delegationPolicy"), dict)
@@ -1966,7 +2108,10 @@ def delegation_broker(
                         branch_task_brief,
                         shell_dialect=default_shell_dialect(),
                     )
-                    branch_task_brief = _terminalize_grandchild_task_brief(branch_task_brief)
+                    branch_task_brief = _terminalize_grandchild_task_brief(
+                        branch_task_brief,
+                        parent_task_brief=parent_task_brief,
+                    )
                 active_collaborators = _active_collaborator_summaries(
                     normalized_tasks,
                     registry_agents,

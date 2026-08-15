@@ -413,6 +413,53 @@ def derive_grandchild_engineering_task(
     child = deepcopy(dict(child_task_brief or {}))
     parent_capsule = effective_engineering_capsule(parent_task_brief)
     if not parent_capsule:
+        child_capsule = effective_engineering_capsule(child)
+        child_capsule_mode = str(
+            child_capsule.get("executionMode")
+            or child_capsule.get("execution_mode")
+            or ""
+        ).strip().lower()
+        raw_child_capsule = child.get("engineeringTaskCapsule") or child.get("engineering_task_capsule")
+        raw_child_capsule = raw_child_capsule if isinstance(raw_child_capsule, dict) else {}
+        child_write_intent = bool(
+            _values(child.get("writeSet") or child.get("write_set"))
+            or child.get("writeRequired")
+            or child.get("write_required")
+            or child_capsule.get("writeRequired")
+            or child_capsule.get("write_required")
+            or raw_child_capsule.get("writeRequired")
+            or raw_child_capsule.get("write_required")
+            or child_capsule_mode == "write"
+            or str(
+                raw_child_capsule.get("executionMode")
+                or raw_child_capsule.get("execution_mode")
+                or ""
+            ).strip().lower()
+            == "write"
+        )
+        if child_write_intent:
+            child_context = _task_context(child)
+            for stale_key in (
+                "engineeringExecutionContract",
+                "engineering_execution_contract",
+                "engineeringTaskCapsule",
+                "engineering_task_capsule",
+            ):
+                child_context.pop(stale_key, None)
+            child.pop("engineeringTaskCapsule", None)
+            child.pop("engineering_task_capsule", None)
+            child.pop("write_set", None)
+            child.pop("write_required", None)
+            child["readOnly"] = True
+            child["writeRequired"] = False
+            child["writeSet"] = []
+            child["expectedArtifacts"] = []
+            child_context["artifactWriteDiscipline"] = (
+                "This grandchild has no inherited Engineering write authority. "
+                "Return read-only evidence to the parent."
+            )
+            child["context"] = child_context
+            return ensure_engineering_task_capsule(child, shell_dialect=shell_dialect)
         return child
     child_context = _task_context(child)
     for stale_key in (
@@ -456,8 +503,14 @@ def derive_grandchild_engineering_task(
 
     child_keys = {_path_key(item) for item in requested_child_write_set if _path_key(item)}
     parent_keys = {_path_key(item) for item in parent_write_set if _path_key(item)}
+    parent_write_authorized = bool(
+        str(parent_capsule.get("executionMode") or "").strip().lower() == "write"
+        and parent_capsule.get("writeRequired")
+        and str(parent_capsule.get("contractStatus") or "valid").strip().lower() == "valid"
+    )
     explicit_subset = bool(
-        child_keys
+        parent_write_authorized
+        and child_keys
         and parent_keys
         and all(_covered_by_parent(item) for item in requested_child_write_set)
         and (

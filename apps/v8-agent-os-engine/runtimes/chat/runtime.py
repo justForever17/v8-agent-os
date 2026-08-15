@@ -9653,7 +9653,6 @@ class ChatRuntime:
             elif episode_state in {"failed", "cancelled", "degraded"}:
                 item["status"] = episode_state
             if acceptance and delegation_depth <= 1 and episode_state in TERMINAL_EPISODE_STATES:
-                item["supervisorAcceptance"] = dict(acceptance)
                 acceptance_handoff = {
                     "handoffId": f"handoff:{delegation_id}:supervisor_acceptance:{chat_run.active_run_id}",
                     "kind": "subagent_acceptance",
@@ -9664,7 +9663,7 @@ class ChatRuntime:
                     "delegationId": delegation_id,
                     "supervisorAcceptance": dict(acceptance),
                 }
-                db.add_runtime_episode_handoff(
+                acceptance_handoff_persisted = db.add_runtime_episode_handoff(
                     episode_id=delegation_id,
                     handoff=acceptance_handoff,
                     session_id=chat_run.session_id,
@@ -9672,11 +9671,21 @@ class ChatRuntime:
                 )
                 episode_metadata = dict((episode or {}).get("metadata") or {})
                 episode_metadata["supervisorAcceptance"] = dict(acceptance)
-                db.complete_runtime_episode(
+                acceptance_episode = db.complete_runtime_episode(
                     delegation_id,
                     state=episode_state,
                     metadata=episode_metadata,
+                    expected_state=episode_state,
                 )
+                if acceptance_handoff_persisted is None or acceptance_episode is None:
+                    item.pop("supervisorAcceptance", None)
+                    item["supervisorAcceptanceError"] = "runtime_episode_acceptance_cas_rejected"
+                    logging.getLogger("v8chat.chat_runtime").warning(
+                        "Supervisor acceptance CAS was rejected for delegation episode %s",
+                        delegation_id,
+                    )
+                else:
+                    item["supervisorAcceptance"] = dict(acceptance)
             item_identity = delegation_id or str(item.get("taskBriefId") or item.get("invocationId") or "").strip()
             if not item_identity or item_identity not in expanded_ids:
                 if item_identity:

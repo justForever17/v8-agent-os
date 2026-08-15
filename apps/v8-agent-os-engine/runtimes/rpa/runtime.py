@@ -4765,6 +4765,18 @@ class RPARuntime:
                 metadata={"subject": subject, "mode": mode},
             )
             if not command_receipt.execute:
+                if command_receipt.requires_reconciliation:
+                    run_handle.emit(
+                        "rpa.execution.reconciliation_required",
+                        {
+                            "mode": mode,
+                            "subject": subject,
+                            "receipt": command_receipt.as_dict(),
+                        },
+                    )
+                    raise RuntimeError(
+                        "RPA 外部命令结果未知；必须核对外部状态后再完成或重试。"
+                    )
                 execution = {
                     "returncode": 0,
                     "stdout": "",
@@ -4795,12 +4807,16 @@ class RPARuntime:
                         timeout_ms=timeout_ms,
                         cwd=cwd or workspace_path,
                     )
-                side_effect_idempotency_service.complete(
+                receipt_completed = side_effect_idempotency_service.complete(
                     run_handle=run_handle,
                     receipt=command_receipt,
                     node="rpa_runtime",
                     result={"returncode": execution.get("returncode"), "subject": subject, "mode": mode},
                 )
+                if not receipt_completed:
+                    raise RuntimeError(
+                        "RPA 副作用 receipt 终结被拒绝；外部结果需要人工核对。"
+                    )
             run_handle.emit(
                 "rpa.execution.finished",
                 {

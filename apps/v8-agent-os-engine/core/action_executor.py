@@ -561,6 +561,17 @@ class ActionExecutor:
                     kwargs=kwargs,
                 )
                 if not execution_receipt.execute:
+                    if execution_receipt.requires_reconciliation:
+                        status = "review_required"
+                        error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
+                        run_handle.fail(error_message, node="automation_runtime")
+                        return {
+                            "status": status,
+                            "run_id": run_handle.run_id,
+                            "session_id": run_handle.session_id,
+                            "error": "side_effect_reconciliation_required",
+                            "receipt": execution_receipt.as_dict(),
+                        }
                     status = "skipped_duplicate"
                     cls._activate_automation_stage(
                         run_id=run_handle.run_id,
@@ -628,12 +639,16 @@ class ActionExecutor:
                 status = "failed"
                 raise ValueError(error_message)
             if execution_receipt is not None:
-                side_effect_idempotency_service.complete(
+                receipt_completed = side_effect_idempotency_service.complete(
                     run_handle=run_handle,
                     receipt=execution_receipt,
                     node="automation_runtime",
                     result={"status": "success", "actionType": action_type, "target": target},
                 )
+                if not receipt_completed:
+                    raise RuntimeError(
+                        "side_effect_receipt_completion_rejected: external outcome requires reconciliation"
+                    )
             automation_runtime.observe_post_action(
                 task_name=task_name,
                 action_type=action_type,
@@ -1209,6 +1224,11 @@ class ActionExecutor:
                     kwargs=kwargs,
                 )
                 if not execution_receipt.execute:
+                    if execution_receipt.requires_reconciliation:
+                        status = "review_required"
+                        error_message = "外部副作用结果未知，必须核对目标系统状态后再决定完成或重试。"
+                        run_handle.fail(error_message, node="automation_runtime")
+                        return
                     status = "skipped_duplicate"
                     ActionExecutor._activate_automation_stage(
                         run_id=run_handle.run_id,
@@ -1241,12 +1261,16 @@ class ActionExecutor:
             )
             automation_runtime.refresh_job_context(session_id=run_handle.session_id)
             if execution_receipt is not None:
-                side_effect_idempotency_service.complete(
+                receipt_completed = side_effect_idempotency_service.complete(
                     run_handle=run_handle,
                     receipt=execution_receipt,
                     node="automation_runtime",
                     result={"status": "success", "actionType": "agent", "target": target_graph_module_name},
                 )
+                if not receipt_completed:
+                    raise RuntimeError(
+                        "side_effect_receipt_completion_rejected: external outcome requires reconciliation"
+                    )
             controlled = ActionExecutor._consume_automation_control(
                 run_handle=run_handle,
                 action_type="agent",

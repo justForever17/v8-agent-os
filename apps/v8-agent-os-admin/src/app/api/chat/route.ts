@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateImageWithDoubao } from "@/lib/volcengine";
 import crypto from 'crypto';
 import { createEngineChatGatewayStream } from "@/lib/realtime/engine-chat-gateway";
+import { validateSupervisorRuntimeMode } from "@/lib/realtime/engine-chat-request";
+import {
+    serializeSupervisorRuntimeModeValidationError,
+    SupervisorRuntimeModeValidationError,
+} from "@/lib/realtime/supervisor-runtime-mode";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 
 export const runtime = "nodejs";
@@ -15,6 +20,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const payload = await req.json();
+        const supervisorRuntimeMode = validateSupervisorRuntimeMode(payload);
         const { messages, data, agentId, tool_outputs } = payload;
         const projectId = payload.project_id ?? payload.projectId ?? data?.projectId;
         const workspaceId = payload.workspace_id ?? payload.workspaceId ?? data?.workspaceId;
@@ -31,7 +37,8 @@ export async function POST(req: NextRequest) {
         
         // 1. Volcengine Exception (Keep Native Logic for Images if really needed, but ideally engine handles it)
         // Leaving this here for backward compatibility if the frontend still hardcodes provider = volcengine for images
-        if (provider === 'volcengine' && currentContent && fileUrls.length > 0) {
+        const legacyImageShortcutAllowed = supervisorRuntimeMode === undefined || supervisorRuntimeMode === "auto";
+        if (legacyImageShortcutAllowed && provider === 'volcengine' && currentContent && fileUrls.length > 0) {
             const response = await generateImageWithDoubao(currentContent, fileUrls);
             const aiContent = response.choices?.[0]?.message?.content || "Failed";
             return new NextResponse(
@@ -55,6 +62,9 @@ export async function POST(req: NextRequest) {
             workspace_path: workspacePath,
             scope_hint: scopeHint,
             scope_mode: scopeMode,
+            ...(supervisorRuntimeMode === undefined
+                ? {}
+                : { data: { supervisorRuntimeMode } }),
             config: {
                 provider,         // Let python fallback to default if None
                 model_name: modelName, 
@@ -83,6 +93,9 @@ export async function POST(req: NextRequest) {
         });
 
     } catch (e: unknown) {
+        if (e instanceof SupervisorRuntimeModeValidationError) {
+            return NextResponse.json(serializeSupervisorRuntimeModeValidationError(e), { status: 400 });
+        }
         console.error('[ChatAPI] Fatal Error:', e);
         return NextResponse.json({ error: String(e) }, { status: 500 });
     }

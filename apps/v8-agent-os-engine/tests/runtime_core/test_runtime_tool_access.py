@@ -13,6 +13,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 import core.tools.native.delegation as native_delegation
 import core.tools.native.runtime as native_runtime
+from core.database import db
 from core.actor_identity import (
     DIRECT_SUBAGENT_ACTOR,
     GRANDCHILD_ACTOR,
@@ -51,6 +52,7 @@ from graph.agent_factories import (
     _format_collaboration_identity_contract,
     _format_delegated_task_contract,
     _preserve_direct_worker_extension_candidates,
+    _resolve_delegated_runtime_access,
     _select_contextual_subagent_native_tools,
 )
 
@@ -66,6 +68,18 @@ def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
 
 def _tool(name: str):
     return SimpleNamespace(name=name)
+
+
+def _ensure_runtime_binding(session_id: str, run_id: str) -> None:
+    """Create the durable parents required by the episode foreign keys."""
+    db.create_or_update_session(session_id, "Runtime broker test", user_id="test-user")
+    db.create_run_record(
+        run_id,
+        session_id,
+        user_id="test-user",
+        run_type="test",
+        status="running",
+    )
 
 
 def test_child_delegation_normalization_preserves_unset_vs_explicit_false():
@@ -1848,6 +1862,7 @@ def test_runtime_broker_route_requires_task_brief_before_enqueue_for_engineering
 
 
 def test_runtime_broker_route_binds_session_run_root_and_workspace_with_explicit_brief():
+    _ensure_runtime_binding("session-route-binding", "run-route-binding")
     with bind_runtime_context(
         session_id="session-route-binding",
         run_id="run-route-binding",
@@ -1939,6 +1954,7 @@ def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
     approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
+    _ensure_runtime_binding("session-spec-distribution", "run-spec-distribution")
     with bind_runtime_context(
         session_id="session-spec-distribution",
         run_id="run-spec-distribution",
@@ -2092,6 +2108,7 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
     approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
+    _ensure_runtime_binding("session-spec-tid", "run-spec-tid")
     with bind_runtime_context(
         session_id="session-spec-tid",
         run_id="run-spec-tid",
@@ -2138,6 +2155,7 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
     assert by_id["TASK-012"]["allowChildDelegation"] is False
     assert by_id["TASK-013"]["allowChildDelegation"] is True
 
+    _ensure_runtime_binding("session-spec-tid-repair", "run-spec-tid-repair")
     with bind_runtime_context(
         session_id="session-spec-tid-repair",
         run_id="run-spec-tid-repair",
@@ -2237,6 +2255,7 @@ def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_p
     assert pipeline["valid"] is True
     assert pipeline["missingFields"] == []
 
+    _ensure_runtime_binding("session-spec-bold", "run-spec-bold")
     with bind_runtime_context(
         session_id="session-spec-bold",
         run_id="run-spec-bold",
@@ -2341,6 +2360,7 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
     approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
+    _ensure_runtime_binding("session-live-style-spec", "run-live-style-spec")
     with bind_runtime_context(
         session_id="session-live-style-spec",
         run_id="run-live-style-spec",
@@ -2452,6 +2472,7 @@ def test_runtime_broker_preserves_spec_research_fanout_without_route_compression
     )
     spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
 
+    _ensure_runtime_binding("session-spec-research-fanout", "run-spec-research-fanout")
     with bind_runtime_context(
         session_id="session-spec-research-fanout",
         run_id="run-spec-research-fanout",
@@ -3396,6 +3417,31 @@ def test_subagent_runtime_binding_auto_grants_research_core():
     assert "research_broker" in names
     assert "creative_media_create_job" not in names
     assert "delegation_broker" in names
+
+
+def test_terminal_grandchild_does_not_reexpand_registered_runtime_bindings():
+    agent = {
+        "id": "web-research-architect",
+        "capabilitySnapshot": {
+            "runtimeBindings": [{"runtimeKind": "research", "source": "system_default"}],
+        },
+    }
+
+    assert _resolve_delegated_runtime_access(
+        agent,
+        [],
+        delegation_depth=1,
+    ) == ["research.core"]
+    assert _resolve_delegated_runtime_access(
+        agent,
+        [],
+        delegation_depth=2,
+    ) == []
+    assert _resolve_delegated_runtime_access(
+        agent,
+        ["engineering.core"],
+        delegation_depth=2,
+    ) == ["engineering.core"]
 
 
 def test_subagent_runtime_binding_merges_explicit_task_grant_without_duplicates():

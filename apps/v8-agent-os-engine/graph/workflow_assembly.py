@@ -1273,22 +1273,30 @@ def build_runtime_episode_wait_node():
                         await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
                         continue
                     failed_episodes: list[dict] = []
+                    claim_race_detected = False
                     for episode in active:
                         episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
                         if not episode_id:
                             continue
-                        try:
-                            failed = db.complete_runtime_episode(
-                                episode_id,
-                                state="failed",
-                                error_code="episode_runner_unavailable",
-                                error_message="Runtime episode stayed queued and was not claimed by EpisodeRunner within the queue grace window.",
-                                metadata={"recoverable": True, "source": "runtime_episode_wait"},
-                            )
-                            failed_episodes.append(dict(failed or episode))
-                            emit_runtime_episode_event("runtime.episode.failed", {"episode": failed or episode})
-                        except Exception:
-                            failed_episodes.append(dict(episode))
+                        failed = db.complete_runtime_episode(
+                            episode_id,
+                            state="failed",
+                            error_code="episode_runner_unavailable",
+                            error_message="Runtime episode stayed queued and was not claimed by EpisodeRunner within the queue grace window.",
+                            metadata={"recoverable": True, "source": "runtime_episode_wait"},
+                            expected_state=str(episode.get("state") or "queued"),
+                        )
+                        if failed is None:
+                            # A worker may claim the queue between the read
+                            # above and this CAS. Re-read instead of reporting
+                            # a false terminal failure.
+                            claim_race_detected = True
+                            break
+                        failed_episodes.append(dict(failed))
+                        emit_runtime_episode_event("runtime.episode.failed", {"episode": failed})
+                    if claim_race_detected:
+                        await asyncio.sleep(max(0.1, RUNTIME_EPISODE_POLL_SECONDS))
+                        continue
                     return Command(
                         goto="supervisor",
                         update={

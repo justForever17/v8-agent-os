@@ -5000,6 +5000,12 @@ class PluginManagerService:
             parent_components = set(_loads(parent.get("component_ids_json"), []))
             if not set(selected).issubset(parent_components):
                 raise PluginManagerError("子代理授权不得扩大组件范围", code="grant_scope_escalation", status_code=403)
+            if normalized_delegation_depth == 2 and set(selected) == parent_components:
+                raise PluginManagerError(
+                    "孙 Agent 授权必须是父授权的严格组件子集",
+                    code="grant_scope_not_strict_subset",
+                    status_code=403,
+                )
         selected = sorted(set(selected))
         normalized_delegation_id = str(delegation_id or "").strip() or None
         normalized_delegation_depth = int(delegation_depth or 0) if grantee_type == "subagent" else None
@@ -5424,6 +5430,12 @@ class PluginManagerService:
                 raise PluginManagerError(
                     f"子代理请求扩大插件 {plugin_id} 的组件范围。",
                     code="grant_scope_escalation",
+                    status_code=403,
+                )
+            if normalized_depth == 2 and set(selected) == parent_components:
+                raise PluginManagerError(
+                    f"孙 Agent 请求继承插件 {plugin_id} 的完整组件范围；孙 Agent 授权必须是严格组件子集。",
+                    code="grant_scope_not_strict_subset",
                     status_code=403,
                 )
             delegated.append(self.create_grant(

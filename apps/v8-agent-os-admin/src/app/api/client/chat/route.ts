@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateImageWithDoubao } from "@/lib/volcengine";
 import { createEngineChatGatewayStream } from "@/lib/realtime/engine-chat-gateway";
 import { buildEngineChatRequestPayload } from "@/lib/realtime/engine-chat-request";
+import {
+    serializeSupervisorRuntimeModeValidationError,
+    SupervisorRuntimeModeValidationError,
+} from "@/lib/realtime/supervisor-runtime-mode";
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 
 export const runtime = "nodejs";
@@ -23,8 +27,10 @@ export async function POST(req: NextRequest) {
             provider,
             pythonPayload,
         } = buildEngineChatRequestPayload(payload, userEmail);
+        const supervisorRuntimeMode = pythonPayload.data?.supervisorRuntimeMode;
+        const legacyImageShortcutAllowed = supervisorRuntimeMode === undefined || supervisorRuntimeMode === "auto";
 
-        if (provider === "volcengine" && currentContent && fileUrls.length > 0) {
+        if (legacyImageShortcutAllowed && provider === "volcengine" && currentContent && fileUrls.length > 0) {
             const response = await generateImageWithDoubao(currentContent, fileUrls);
             const aiContent = response.choices?.[0]?.message?.content || "Failed";
             return new NextResponse(
@@ -56,6 +62,9 @@ export async function POST(req: NextRequest) {
             },
         });
     } catch (error: unknown) {
+        if (error instanceof SupervisorRuntimeModeValidationError) {
+            return NextResponse.json(serializeSupervisorRuntimeModeValidationError(error), { status: 400 });
+        }
         console.error("[ClientChatAPI] Fatal Error:", error);
         return NextResponse.json({ error: String(error) }, { status: 500 });
     }

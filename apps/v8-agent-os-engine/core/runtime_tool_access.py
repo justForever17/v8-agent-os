@@ -11,6 +11,24 @@ from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAMES
 RUNTIME_BROKER_TOOL_NAME = "runtime_broker"
 
 RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
+    "engineering.core": {
+        "runtimeKind": "engineering",
+        "label": "Engineering core",
+        "summary": "工程文件读取、受胶囊约束的文件修改和验证命令。",
+        "toolNames": [
+            "read_native_file",
+            "write_native_file",
+            "replace_native_file",
+            "edit_native_file",
+            "delete_native_file",
+            "grep_search",
+            "run_system_command",
+            "command_session_broker",
+            "read_background_output",
+            "send_background_input",
+            "terminate_background_command",
+        ],
+    },
     "computer_use.control": {
         "runtimeKind": "computer_use",
         "label": "ComputerUse control",
@@ -126,9 +144,10 @@ SUBAGENT_PLUGIN_TOOL_NAMES = {"plugin_broker"}
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_", "creative_media_")
 FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
 SUBAGENT_RUNTIME_BINDING_KINDS = {"research", "engineering", "creative_media"}
+BUILTIN_RUNTIME_ACTOR_KINDS = {"computer_use", "rpa", "memory", "safety"}
 SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS: dict[str, list[str]] = {
     "research": ["research.core"],
-    "engineering": [],
+    "engineering": ["engineering.core"],
     "creative_media": ["creative_media.core"],
 }
 
@@ -155,6 +174,11 @@ def all_runtime_group_tool_names() -> set[str]:
 def is_runtime_managed_tool_name(tool_name: str) -> bool:
     normalized = str(tool_name or "").strip()
     if not normalized:
+        return False
+    # Baseline tools remain available on the normal collaboration surface;
+    # engineering.core grants the additional runtime-managed mutation tools
+    # without turning read/validation primitives into gated tools.
+    if normalized in BASELINE_SYSTEM_TOOL_NAMES:
         return False
     if normalized in all_runtime_group_tool_names():
         return True
@@ -266,6 +290,8 @@ def normalize_subagent_runtime_kind(value: Any) -> str:
         normalized = "engineering"
     if normalized in {"web_research", "research_runtime"}:
         normalized = "research"
+    if normalized in BUILTIN_RUNTIME_ACTOR_KINDS:
+        return ""
     return normalized if normalized in SUBAGENT_RUNTIME_BINDING_KINDS else ""
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -34,6 +35,13 @@ class SideEffectReceipt:
     idempotency_key: str
     reason: str | None = None
     prior_topic: str | None = None
+    owner_id: str | None = None
+    attempt_count: int = 0
+    state: str | None = None
+
+    @property
+    def requires_reconciliation(self) -> bool:
+        return self.reason == "unknown_outcome_reconciliation_required" or self.state == "indeterminate"
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -45,16 +53,25 @@ class SideEffectReceipt:
             "idempotencyKey": self.idempotency_key,
             "reason": self.reason,
             "priorTopic": self.prior_topic,
+            "ownerId": self.owner_id,
+            "attemptCount": self.attempt_count,
+            "state": self.state,
+            "reconciliationRequired": self.requires_reconciliation,
         }
 
 
 class SideEffectIdempotencyService:
-    _RELEVANT_TOPICS = {
-        "side_effect.started",
-        "side_effect.completed",
-        "side_effect.failed",
-        "side_effect.skipped_duplicate",
-    }
+    @staticmethod
+    def _legacy_completed_receipt_exists(session_id: str, *, idempotency_key: str) -> bool:
+        for event in reversed(db.get_runtime_events(session_id)):
+            topic = str(event.get("topic") or "")
+            if topic not in {"side_effect.started", "side_effect.completed", "side_effect.failed"}:
+                continue
+            payload = event.get("payload") or {}
+            if str(payload.get("idempotencyKey") or payload.get("idempotency_key") or "") != idempotency_key:
+                continue
+            return topic == "side_effect.completed"
+        return False
 
     def build_idempotency_key(
         self,
@@ -85,6 +102,8 @@ class SideEffectIdempotencyService:
         payload: Dict[str, Any] | None = None,
         node: str,
         metadata: Dict[str, Any] | None = None,
+        lease_seconds: int = 300,
+        replay_safe: bool = False,
     ) -> SideEffectReceipt:
         idempotency_key, payload_fingerprint = self.build_idempotency_key(
             session_id=run_handle.session_id,
@@ -93,8 +112,31 @@ class SideEffectIdempotencyService:
             target_identity=target_identity,
             payload=payload or {},
         )
-        latest = self._latest_receipt_event(run_handle.session_id, idempotency_key=idempotency_key)
-        if latest is not None and str(latest.get("topic") or "") != "side_effect.failed":
+        owner_id = f"{str(node or 'side_effect').strip() or 'side_effect'}:{uuid.uuid4().hex}"
+        legacy_completed = (
+            db.get_side_effect_receipt(idempotency_key) is None
+            and self._legacy_completed_receipt_exists(
+                run_handle.session_id,
+                idempotency_key=idempotency_key,
+            )
+        )
+        claim = db.claim_side_effect_receipt(
+            session_id=run_handle.session_id,
+            run_id=run_handle.run_id,
+            idempotency_key=idempotency_key,
+            effect_kind=effect_kind,
+            step_key=step_key,
+            target_identity=target_identity,
+            payload_fingerprint=payload_fingerprint,
+            owner_id=owner_id,
+            metadata=metadata or {},
+            lease_seconds=lease_seconds,
+            retry_failed=True,
+            replay_safe=bool(replay_safe),
+            legacy_completed=legacy_completed,
+        )
+        prior_topic = str(claim.get("prior_topic") or "").strip() or None
+        if not bool(claim.get("execute")):
             receipt = SideEffectReceipt(
                 execute=False,
                 effect_kind=effect_kind,
@@ -102,11 +144,18 @@ class SideEffectIdempotencyService:
                 target_identity=target_identity,
                 payload_fingerprint=payload_fingerprint,
                 idempotency_key=idempotency_key,
-                reason="existing_receipt_detected",
-                prior_topic=str(latest.get("topic") or ""),
+                reason=str(claim.get("reason") or "existing_receipt_detected"),
+                prior_topic=prior_topic,
+                owner_id=owner_id,
+                attempt_count=int(claim.get("attempt_count") or 0),
+                state=str(claim.get("state") or "").strip() or None,
             )
             run_handle.emit(
-                "side_effect.skipped_duplicate",
+                (
+                    "side_effect.reconciliation_required"
+                    if receipt.requires_reconciliation
+                    else "side_effect.skipped_duplicate"
+                ),
                 {
                     **receipt.as_dict(),
                     "metadata": _jsonable(metadata or {}),
@@ -120,6 +169,11 @@ class SideEffectIdempotencyService:
             target_identity=target_identity,
             payload_fingerprint=payload_fingerprint,
             idempotency_key=idempotency_key,
+            reason=str(claim.get("reason") or "claimed"),
+            prior_topic=prior_topic,
+            owner_id=owner_id,
+            attempt_count=int(claim.get("attempt_count") or 1),
+            state=str(claim.get("state") or "claimed").strip() or "claimed",
         )
         run_handle.emit(
             "side_effect.started",
@@ -137,9 +191,20 @@ class SideEffectIdempotencyService:
         receipt: SideEffectReceipt,
         node: str,
         result: Dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         if not receipt.execute:
-            return
+            return True
+        accepted = db.complete_side_effect_receipt(
+            idempotency_key=receipt.idempotency_key,
+            owner_id=str(receipt.owner_id or ""),
+            result=result or {},
+        )
+        if not accepted:
+            run_handle.emit(
+                "side_effect.receipt_rejected",
+                {**receipt.as_dict(), "attemptedState": "completed", "node": node},
+            )
+            return False
         run_handle.emit(
             "side_effect.completed",
             {
@@ -148,6 +213,7 @@ class SideEffectIdempotencyService:
                 "node": node,
             },
         )
+        return True
 
     def fail(
         self,
@@ -156,9 +222,20 @@ class SideEffectIdempotencyService:
         receipt: SideEffectReceipt,
         node: str,
         error: str,
-    ) -> None:
+    ) -> bool:
         if not receipt.execute:
-            return
+            return True
+        accepted = db.fail_side_effect_receipt(
+            idempotency_key=receipt.idempotency_key,
+            owner_id=str(receipt.owner_id or ""),
+            error=str(error or ""),
+        )
+        if not accepted:
+            run_handle.emit(
+                "side_effect.receipt_rejected",
+                {**receipt.as_dict(), "attemptedState": "failed", "node": node},
+            )
+            return False
         run_handle.emit(
             "side_effect.failed",
             {
@@ -167,17 +244,33 @@ class SideEffectIdempotencyService:
                 "node": node,
             },
         )
+        return True
 
-    def _latest_receipt_event(self, session_id: str, *, idempotency_key: str) -> Dict[str, Any] | None:
-        events = db.get_runtime_events(session_id)
-        for event in reversed(events):
-            if str(event.get("topic") or "") not in self._RELEVANT_TOPICS:
-                continue
-            payload = event.get("payload") or {}
-            if str(payload.get("idempotencyKey") or payload.get("idempotency_key") or "") != idempotency_key:
-                continue
-            return event
-        return None
-
+    def reconcile(
+        self,
+        *,
+        run_handle,
+        receipt: SideEffectReceipt,
+        node: str,
+        outcome: str,
+        evidence: Dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> bool:
+        accepted = db.reconcile_side_effect_receipt(
+            idempotency_key=receipt.idempotency_key,
+            outcome=outcome,
+            evidence=evidence or {},
+            error=error,
+        )
+        run_handle.emit(
+            "side_effect.reconciled" if accepted else "side_effect.receipt_rejected",
+            {
+                **receipt.as_dict(),
+                "attemptedState": str(outcome or "").strip().lower(),
+                "node": node,
+                "evidence": _jsonable(evidence or {}),
+            },
+        )
+        return accepted
 
 side_effect_idempotency_service = SideEffectIdempotencyService()

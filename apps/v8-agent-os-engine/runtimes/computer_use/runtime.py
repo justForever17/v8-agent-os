@@ -10114,6 +10114,7 @@ class ComputerUseRuntime:
             last_error: Exception | None = None
             result: ComputerUseActionResult | None = None
             action_side_effect_receipt = None
+            side_effect_completion_rejected = False
             before_observation = None
             before_observed: ComputerUseObservation | None = None
             for attempt_index in range(1, max_attempts + 1):
@@ -10364,6 +10365,28 @@ class ComputerUseRuntime:
                             metadata={"actionType": action_type, "requestedAction": requested_action},
                         )
                         if not action_side_effect_receipt.execute:
+                            if action_side_effect_receipt.requires_reconciliation:
+                                result = ComputerUseActionResult(
+                                    action_id=f"{action_type}_{uuid.uuid4().hex[:8]}",
+                                    action_type=action_type,
+                                    status="blocked",
+                                    message="高风险动作结果未知，必须核对目标界面状态后再决定完成或重试。",
+                                    target={
+                                        "windowTitle": normalized_payload.get("window_title"),
+                                        "windowHandle": normalized_payload.get("window_handle"),
+                                        "appId": app_id_for_action,
+                                        "selectorKey": normalized_payload.get("selector_key"),
+                                    },
+                                    metadata={"sideEffectReceipt": action_side_effect_receipt.as_dict()},
+                                    verification=ComputerUseVerification(
+                                        passed=False,
+                                        status="side_effect_reconciliation_required",
+                                        reason="高风险动作可能已发生，禁止盲目重放。",
+                                        details={"receipt": action_side_effect_receipt.as_dict()},
+                                        level="review_required",
+                                    ),
+                                )
+                                break
                             result = ComputerUseActionResult(
                                 action_id=f"{action_type}_{uuid.uuid4().hex[:8]}",
                                 action_type=action_type,
@@ -10400,7 +10423,7 @@ class ComputerUseRuntime:
                     )
                     result = runner(run_handle, normalized_payload)
                     if high_risk_action and action_side_effect_receipt is not None:
-                        side_effect_idempotency_service.complete(
+                        side_effect_completion_rejected = not side_effect_idempotency_service.complete(
                             run_handle=run_handle,
                             receipt=action_side_effect_receipt,
                             node="computer_use_runtime",
@@ -10760,6 +10783,20 @@ class ComputerUseRuntime:
                                     },
                                         level="review_required",
                                     )
+                    if side_effect_completion_rejected:
+                        result.status = "blocked"
+                        result.message = "高风险动作已执行但 receipt 终结被拒绝，外部结果需要核对。"
+                        result.metadata["sideEffectReceipt"] = action_side_effect_receipt.as_dict()
+                        verification = ComputerUseVerification(
+                            passed=False,
+                            status="side_effect_reconciliation_required",
+                            reason="外部动作与 durable receipt 的归属已分叉，禁止自动重试。",
+                            details={
+                                "receipt": action_side_effect_receipt.as_dict(),
+                                "structuredVerification": verification.as_dict(),
+                            },
+                            level="review_required",
+                        )
                     result.verification = verification
                     update_request = self._build_update_request(
                         action_type=action_type,
@@ -10819,7 +10856,12 @@ class ComputerUseRuntime:
                                 "request": update_request,
                             },
                         )
-                    if verification.passed or update_request is not None or attempt_index >= max_attempts:
+                    if (
+                        side_effect_completion_rejected
+                        or verification.passed
+                        or update_request is not None
+                        or attempt_index >= max_attempts
+                    ):
                         break
                     retry_points = []
                     try:

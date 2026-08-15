@@ -463,7 +463,7 @@ def _default_runtime_bindings_for_snapshot(snapshot: Dict[str, Any]) -> List[Dic
         return [
             {
                 "runtimeKind": "engineering",
-                "grantGroups": [],
+                "grantGroups": ["engineering.core"],
                 "label": "Engineering",
                 "source": "system_default",
             }
@@ -711,11 +711,11 @@ def default_subagent_configs() -> List[AgentConfig]:
             icon="search-check",
             capability_snapshot={
                 "agentClass": "researcher",
-                "specialistFamily": "writing",
+                "specialistFamily": "research",
                 "domainTags": ["research", "synthesis", "source_quality", "strategy"],
                 "artifactCapabilities": ["research_brief", "source_matrix", "option_analysis"],
                 "operationCapabilities": ["research", "compare", "summarize", "triangulate"],
-                "runtimeAffinities": ["chat", "extensions"],
+                "runtimeAffinities": ["research", "chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
                 "executionSuitability": "low",
                 "externalWorkerSuitability": "medium",

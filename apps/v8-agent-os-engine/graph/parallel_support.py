@@ -29,6 +29,7 @@ from core.engineering_capsule import (
 )
 from core.workspace_capability import build_workspace_binding
 from core.runtime_episodes import (
+    RuntimeEpisodeDurabilityError,
     append_handoff_ref,
     build_handoff_ref,
     build_runtime_episode,
@@ -3229,7 +3230,13 @@ def build_parallel_delegate_task_node(
             episode_id = str(branch.get("delegationId") or branch.get("invocationId") or "").strip()
             summary = str(progress.get("summary") or "子代理正在处理任务。").strip()[:360]
             if episode_id:
-                heartbeat_runtime_episode(episode_id, progress=summary)
+                try:
+                    heartbeat_runtime_episode(episode_id, progress=summary)
+                except RuntimeEpisodeDurabilityError:
+                    # Progress is telemetry. A stale lease must not be
+                    # turned into a false durable heartbeat or abort the
+                    # worker branch that is still producing its result.
+                    pass
             runtime_context = _runtime_context_from_parallel_state(state, branch=branch)
             with bind_runtime_context(**runtime_context):
                 emit_runtime_episode_event(

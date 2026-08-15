@@ -6,7 +6,7 @@ from typing import Any, Iterable, Mapping
 
 from erc.runtime_context import get_runtime_context
 from core.time_truth import utc_now_iso
-from core.database import db
+from core.database import RuntimeEpisodeIdempotencyConflict, db
 
 
 ACTIVE_EPISODE_STATES = {
@@ -33,6 +33,10 @@ TYPED_HANDOFF_KINDS = {
     "delegation": "subagent_result_bundle",
     "verification": "verification_report",
 }
+
+
+class RuntimeEpisodeDurabilityError(RuntimeError):
+    """Canonical episode state could not be durably persisted or fenced."""
 
 
 def runtime_episode_parent_id(episode: Mapping[str, Any]) -> str:
@@ -452,6 +456,10 @@ def build_runtime_episode(
     ):
         if source_key in payload and payload.get(source_key) is not None:
             episode[target_key] = payload.get(source_key)
+    if not str(episode.get("idempotencyKey") or "").strip():
+        # The episode id is the stable ingress identity used by retries. An
+        # explicit caller key still wins when one is supplied.
+        episode["idempotencyKey"] = f"episode:{episode_id}"
     if extra:
         episode.update({k: v for k, v in dict(extra).items() if v is not None})
     return episode
@@ -507,24 +515,47 @@ def persist_runtime_episode(
                     session_id=session_binding,
                     run_id=run_binding,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeEpisodeDurabilityError(
+                    f"runtime episode {episode.get('episodeId') or episode.get('needId') or '<unknown>'} "
+                    "binding backfill was not durable"
+                ) from exc
         return persisted
-    except Exception:
-        return dict(episode)
+    except (RuntimeEpisodeDurabilityError, RuntimeEpisodeIdempotencyConflict):
+        raise
+    except Exception as exc:
+        raise RuntimeEpisodeDurabilityError(
+            f"runtime episode {episode.get('episodeId') or episode.get('needId') or '<unknown>'} "
+            "could not be durably persisted"
+        ) from exc
 
 
-def heartbeat_runtime_episode(episode_id: str, *, progress: str = "") -> None:
+def heartbeat_runtime_episode(
+    episode_id: str,
+    *,
+    progress: str = "",
+    worker_id: str | None = None,
+    lease_generation: int | None = None,
+) -> bool:
     normalized_id = str(episode_id or "").strip()
     if not normalized_id:
-        return
+        return False
     try:
-        db.heartbeat_runtime_episode(
+        accepted = db.heartbeat_runtime_episode(
             normalized_id,
             progress=str(progress or "").strip() or None,
+            worker_id=worker_id,
+            lease_generation=lease_generation,
         )
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeEpisodeDurabilityError(
+            f"runtime episode {normalized_id} heartbeat failed to persist"
+        ) from exc
+    if not accepted:
+        raise RuntimeEpisodeDurabilityError(
+            f"runtime episode {normalized_id} heartbeat was rejected"
+        )
+    return True
 
 
 def enqueue_runtime_episode(
@@ -670,16 +701,27 @@ def persist_handoff_ref(
 ) -> dict[str, Any]:
     producer_id = str((handoff_ref or {}).get("producerEpisodeId") or "").strip()
     if not producer_id:
-        return dict(handoff_ref or {})
+        raise RuntimeEpisodeDurabilityError(
+            "runtime episode handoff requires producerEpisodeId before persistence"
+        )
     try:
-        return db.add_runtime_episode_handoff(
+        persisted = db.add_runtime_episode_handoff(
             episode_id=producer_id,
             handoff=handoff_ref,
             session_id=session_id,
             run_id=run_id,
         )
-    except Exception:
-        return dict(handoff_ref or {})
+    except RuntimeEpisodeDurabilityError:
+        raise
+    except Exception as exc:
+        raise RuntimeEpisodeDurabilityError(
+            f"runtime episode {producer_id} handoff failed to persist"
+        ) from exc
+    if not persisted:
+        raise RuntimeEpisodeDurabilityError(
+            f"runtime episode {producer_id} handoff persistence was rejected"
+        )
+    return persisted
 
 
 def emit_runtime_episode_event(topic: str, payload: dict[str, Any], *, source: dict[str, Any] | None = None) -> None:

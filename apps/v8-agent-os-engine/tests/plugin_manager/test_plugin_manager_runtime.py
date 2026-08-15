@@ -1357,20 +1357,20 @@ def test_grants_are_explicit_scoped_revocable_and_terminal_after_grandchild(runt
         scope="task",
         session_id="s1",
         run_id="r1",
-        component_ids=["gh"],
+        component_ids=["gh", "github-cli-skill"],
     )
     assert service.active_grants(session_id="s1", run_id="r2") == []
     assert [item["id"] for item in service.projection_for(session_id="s1", run_id="r1")["cliProfiles"]] == ["gh"]
 
     child = service.delegate_grants_to_subagent(
-        plugin_references=[{"pluginId": "github", "componentIds": ["gh"]}],
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh", "github-cli-skill"]}],
         session_id="s1",
         run_id="r1",
         subagent_id="child-1",
         delegation_id="delegation-child-1",
         delegation_depth=1,
     )[0]
-    assert child["componentIds"] == ["gh"]
+    assert child["componentIds"] == ["gh", "github-cli-skill"]
     with pytest.raises(PluginManagerError) as implicit_all:
         service.delegate_grants_to_subagent(
             plugin_references=[{"pluginId": "github", "componentIds": []}],
@@ -1381,6 +1381,38 @@ def test_grants_are_explicit_scoped_revocable_and_terminal_after_grandchild(runt
             delegation_depth=1,
         )
     assert implicit_all.value.code == "delegation_components_required"
+
+    with pytest.raises(PluginManagerError) as equal_scope:
+        service.delegate_grants_to_subagent(
+            plugin_references=[
+                {"pluginId": "github", "componentIds": ["gh", "github-cli-skill"]}
+            ],
+            session_id="s1",
+            run_id="r1",
+            subagent_id="grandchild-equal",
+            delegation_id="delegation-grandchild-equal",
+            delegation_depth=2,
+            parent_agent_id="child-1",
+            parent_delegation_id="delegation-child-1",
+        )
+    assert equal_scope.value.code == "grant_scope_not_strict_subset"
+
+    with pytest.raises(PluginManagerError) as equal_create:
+        service.create_grant(
+            plugin_id="github",
+            scope="task",
+            session_id="s1",
+            run_id="r1",
+            grantee_type="subagent",
+            grantee_id="grandchild-equal-create",
+            component_ids=["gh", "github-cli-skill"],
+            parent_grant_id=child["grantId"],
+            delegation_id="delegation-grandchild-equal-create",
+            delegation_depth=2,
+            grant_source="delegation",
+        )
+    assert equal_create.value.code == "grant_scope_not_strict_subset"
+
     grandchild = service.delegate_grants_to_subagent(
         plugin_references=[{"pluginId": "github", "componentIds": ["gh"]}],
         session_id="s1",

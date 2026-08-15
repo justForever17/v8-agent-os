@@ -25,6 +25,12 @@ def test_new_database_is_initialized_and_versioned(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
         ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_episode_idempotency'"
+        ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_side_effect_receipts'"
+        ).fetchone()
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
         assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
@@ -79,7 +85,42 @@ def test_unversioned_legacy_database_runs_idempotent_upgrade_once(tmp_path: Path
         ).fetchone()
 
 
-def test_current_schema_uses_constant_time_version_probe(tmp_path: Path) -> None:
+def test_version_one_database_upgrades_runtime_safety_ledgers(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    DatabaseManager(path)
+
+    assert _schema_version(path) == DATABASE_SCHEMA_VERSION
+    with sqlite3.connect(path) as conn:
+        table_names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert {"runtime_episode_idempotency", "runtime_side_effect_receipts"}.issubset(table_names)
+
+
+def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
+
+    DatabaseManager(path)
+
+    with sqlite3.connect(path) as conn:
+        table_names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert {"runtime_episode_idempotency", "runtime_side_effect_receipts"}.issubset(table_names)
+
+
+def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
     DatabaseManager(path)
 
@@ -97,7 +138,10 @@ def test_current_schema_uses_constant_time_version_probe(tmp_path: Path) -> None
     manager = TracingDatabaseManager(path)
     normalized = [statement.strip().upper() for statement in manager.schema_statements]
 
-    assert normalized == ["PRAGMA USER_VERSION"]
+    assert normalized[0] == "PRAGMA USER_VERSION"
+    assert any("CREATE TABLE IF NOT EXISTS RUNTIME_EPISODE_IDEMPOTENCY" in statement for statement in normalized)
+    assert any("CREATE TABLE IF NOT EXISTS RUNTIME_SIDE_EFFECT_RECEIPTS" in statement for statement in normalized)
+    assert not any(statement.startswith("ALTER TABLE") for statement in normalized)
 
 
 def test_failed_legacy_migration_is_not_marked_current(

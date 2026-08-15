@@ -230,6 +230,24 @@ def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtim
     return _dedupe_tools(baseline_tools + collaboration_tools + granted_runtime_tools)
 
 
+def _resolve_delegated_runtime_access(
+    agent_data: dict[str, Any] | None,
+    requested_runtime_access: Any,
+    *,
+    delegation_depth: Any,
+) -> list[str]:
+    """Resolve direct-child bindings without re-expanding a terminal grandchild."""
+
+    try:
+        depth = max(0, int(delegation_depth or 0))
+    except (TypeError, ValueError):
+        depth = 0
+    requested = normalize_runtime_access(requested_runtime_access)
+    if depth >= 2:
+        return requested
+    return resolve_subagent_runtime_access(agent_data, requested)
+
+
 def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> list:
     task_brief = dict(task_brief or {})
     policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
@@ -1256,9 +1274,15 @@ def build_contextual_auto_tool_node(
             list(route_context.get("selectedMcpTools") or []),
         )
         task_brief = route_context.get("taskBrief") if isinstance(route_context.get("taskBrief"), dict) else {}
-        runtime_access = resolve_subagent_runtime_access(
+        runtime_access = _resolve_delegated_runtime_access(
             agent_data,
             (task_brief or {}).get("runtimeAccess") or route_context.get("runtimeAccess"),
+            delegation_depth=(
+                route_context.get("delegationDepth")
+                or route_context.get("delegation_depth")
+                or (task_brief or {}).get("delegationDepth")
+                or (task_brief or {}).get("delegation_depth")
+            ),
         )
         actor_base_tools = filter_visible_tools_for_actor(
             list(all_native_tools or base_tools or []),
@@ -1400,9 +1424,10 @@ def build_agent_node(
                     "Execute only the assigned task brief and acceptance contract. Keep context narrow, do not adopt another persistent role, do not create or modify Agent registry assets, and return a compact typed handoff to your parent. Your identity ends when this delegated shard is delivered."
                 )
                 active_plan_context = ""
-            delegated_runtime_access = resolve_subagent_runtime_access(
+            delegated_runtime_access = _resolve_delegated_runtime_access(
                 agent_data,
                 (delegated_task_brief or {}).get("runtimeAccess"),
+                delegation_depth=delegation_depth,
             )
             if delegated_runtime_access:
                 delegated_task_brief = {

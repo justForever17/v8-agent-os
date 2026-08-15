@@ -282,6 +282,25 @@ def test_waiting_episode_can_resume_after_database_reopen(tmp_path, monkeypatch)
     assert queued[0]["episode_id"] == "episode-creative-1"
     assert queued[0]["state"] == "queued"
 
+    with restarted_db.get_connection() as conn:
+        conn.execute(
+            "UPDATE runtime_episodes SET state = 'waiting_input', worker_id = NULL, lease_expires_at = NULL WHERE id = ?",
+            ("episode-creative-1",),
+        )
+        conn.commit()
+    monkeypatch.setattr(restarted_db, "resume_runtime_episode", lambda *_args, **_kwargs: None)
+    rejected_cas = runtime_broker.func(
+        mode="resume",
+        episode_id="episode-creative-1",
+        continuation_request_id=request["requestId"],
+        continuation_inputs={"format": "png", "includeCaption": False},
+        state={"session_id": "session-creative-1", "current_route_context": {}},
+        tool_call_id="call-runtime-resume-cas-rejected",
+    )
+    assert _tool_payload(rejected_cas)["error"] == "runtime_episode_resume_conflict"
+    assert rejected_cas.update["runtime_dispatch_status"]["blocked"] is True
+    assert restarted_db.get_runtime_episode("episode-creative-1")["state"] == "waiting_input"
+
 
 def test_creative_evidence_comes_only_from_matched_successful_tool_messages() -> None:
     branch = _creative_branch()

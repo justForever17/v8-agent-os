@@ -6,6 +6,7 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_requires_child_delegation,
 )
+from core.tools.native.delegation import _terminalize_grandchild_task_brief
 from graph.parallel_support import (
     _fallback_child_delegation_request,
     _subagent_reported_terminal_failure,
@@ -331,3 +332,65 @@ def test_task_brief_normalization_preserves_explicit_verification_evidence_contr
         "requiredCommands": ["python src/result.py"],
         "expectedStdout": ["exact-result"],
     }
+
+
+def test_terminal_grandchild_projects_runtime_tools_and_plugins_to_parent_scope():
+    parent = {
+        "runtimeAccess": ["research.core", "delegation.recursive"],
+        "allowedTools": ["read_native_file", "research_broker"],
+        "pluginReferences": [
+            {"pluginId": "docs", "componentIds": ["read", "cite"]},
+        ],
+    }
+    child = {
+        "runtimeAccess": ["research.core", "memory.read", "delegation.recursive"],
+        "allowedTools": ["read_native_file", "run_system_command", "delegation_broker"],
+        "pluginReferences": [
+            {"pluginId": "docs", "componentIds": ["cite", "write"]},
+            {"pluginId": "unavailable", "componentIds": ["x"]},
+        ],
+        "toolPolicy": {
+            "allowedTools": ["read_native_file", "run_system_command", "delegation_broker"]
+        },
+    }
+
+    terminal = _terminalize_grandchild_task_brief(child, parent_task_brief=parent)
+
+    assert terminal["runtimeAccess"] == ["research.core"]
+    assert terminal["allowedTools"] == ["read_native_file"]
+    assert terminal["toolPolicy"]["mode"] == "allowlist"
+    assert terminal["toolPolicy"]["allowedTools"] == ["read_native_file"]
+    assert "delegation_broker" in terminal["toolPolicy"]["forbiddenTools"]
+    assert terminal["pluginReferences"] == [
+        {"pluginId": "docs", "componentIds": ["cite"]}
+    ]
+    assert terminal["allowChildDelegation"] is False
+
+    equal_scope = _terminalize_grandchild_task_brief(
+        {
+            "runtimeAccess": ["research.core"],
+            "pluginReferences": [
+                {"pluginId": "docs", "componentIds": ["read", "cite"]},
+            ],
+        },
+        parent_task_brief=parent,
+    )
+    assert equal_scope["pluginReferences"] == []
+
+
+def test_terminal_grandchild_fails_closed_when_parent_has_no_explicit_scope():
+    terminal = _terminalize_grandchild_task_brief(
+        {
+            "runtimeAccess": ["research.core"],
+            "allowedTools": ["research_broker"],
+            "pluginReferences": [{"pluginId": "docs", "componentIds": ["read"]}],
+            "toolPolicy": {"allowedTools": ["research_broker"]},
+        },
+        parent_task_brief={"goal": "Verify one bounded result."},
+    )
+
+    assert terminal["runtimeAccess"] == []
+    assert terminal["allowedTools"] == []
+    assert terminal["toolPolicy"]["mode"] == "none"
+    assert terminal["toolPolicy"]["allowedTools"] == []
+    assert terminal["pluginReferences"] == []

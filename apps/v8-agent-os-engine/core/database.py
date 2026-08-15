@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import hashlib
 import threading
 import time
 import uuid
@@ -19,7 +20,35 @@ from core.runtime_compatibility import (
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 
-DATABASE_SCHEMA_VERSION = 1
+DATABASE_SCHEMA_VERSION = 2
+
+
+class RuntimeEpisodeIdempotencyConflict(ValueError):
+    """The same episode idempotency key was reused for a different payload."""
+
+
+def _runtime_episode_payload_fingerprint(payload: Dict[str, Any]) -> str:
+    canonical = json.dumps(
+        to_jsonable(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _runtime_episode_ledger_key(
+    idempotency_key: str,
+    *,
+    session_id: Optional[str],
+    run_id: Optional[str],
+) -> str:
+    """Scope caller keys to a session while keeping unbound legacy keys stable."""
+    normalized_key = str(idempotency_key or "").strip()
+    scope = str(session_id or run_id or "").strip()
+    if not scope:
+        return normalized_key
+    return f"scope:{len(scope)}:{scope}:{normalized_key}"
 
 
 class DatabaseManager:
@@ -69,12 +98,18 @@ class DatabaseManager:
             schema_version_row = conn.execute("PRAGMA user_version").fetchone()
             schema_version = int(schema_version_row[0] if schema_version_row else 0)
             if schema_version == DATABASE_SCHEMA_VERSION:
+                # Safety ledgers were added without a schema bump.  A database
+                # created by an earlier v2 binary may therefore have the
+                # current version marker but still lack these tables.
+                self._ensure_runtime_safety_tables(conn)
+                conn.commit()
                 return
             if schema_version > DATABASE_SCHEMA_VERSION:
                 raise RuntimeError(
                     "Database schema version "
                     f"{schema_version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
                 )
+            self._ensure_runtime_safety_tables(conn)
 
             # 1. Sessions Table (Threads)
             conn.execute('''
@@ -1980,6 +2015,55 @@ class DatabaseManager:
                 conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             conn.commit()
 
+    @staticmethod
+    def _ensure_runtime_safety_tables(conn: sqlite3.Connection) -> None:
+        """Create idempotency and receipt ledgers without requiring a schema bump."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_episode_idempotency (
+                idempotency_key TEXT PRIMARY KEY,
+                episode_id TEXT NOT NULL UNIQUE,
+                session_id TEXT,
+                run_id TEXT,
+                payload_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_side_effect_receipts (
+                idempotency_key TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT,
+                effect_kind TEXT NOT NULL,
+                step_key TEXT NOT NULL,
+                target_identity TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL,
+                owner_id TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_expires_at TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                failed_at TEXT,
+                last_error TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runtime_side_effect_receipts_session "
+            "ON runtime_side_effect_receipts (session_id, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runtime_side_effect_receipts_state "
+            "ON runtime_side_effect_receipts (state, lease_expires_at)"
+        )
+
     # --- Session Operations ---
 
     def _is_diagnostic_history_metadata(self, metadata: dict[str, Any], *, user_id: str | None = None, agent_id: str | None = None) -> bool:
@@ -2431,9 +2515,72 @@ class DatabaseManager:
             return data
 
     def delete_session(self, session_id: str):
-        with self.get_connection() as conn:
-            conn.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
-            conn.commit()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+
+        def _write():
+            with self.get_connection() as conn:
+                # Capture all run/episode lineage before the session cascade;
+                # the safety ledgers intentionally have no FK so their cleanup
+                # must be explicit and atomic with the session delete.
+                conn.execute("BEGIN IMMEDIATE")
+                run_rows = conn.execute(
+                    "SELECT id FROM run_records WHERE session_id = ?",
+                    (normalized_session_id,),
+                ).fetchall()
+                run_ids = [str(row["id"]) for row in run_rows if str(row["id"] or "").strip()]
+                run_clause = ""
+                run_params: list[Any] = []
+                if run_ids:
+                    run_clause = " OR run_id IN (" + ", ".join("?" for _ in run_ids) + ")"
+                    run_params.extend(run_ids)
+                episode_rows = conn.execute(
+                    f"""
+                    WITH RECURSIVE episode_tree(id) AS (
+                        SELECT id
+                        FROM runtime_episodes
+                        WHERE session_id = ?{run_clause}
+                        UNION
+                        SELECT child.id
+                        FROM runtime_episodes AS child
+                        JOIN episode_tree AS parent ON child.parent_episode_id = parent.id
+                    )
+                    SELECT id FROM episode_tree
+                    """,
+                    (normalized_session_id, *run_params),
+                ).fetchall()
+                episode_ids = [str(row["id"]) for row in episode_rows if str(row["id"] or "").strip()]
+
+                run_filter = ""
+                run_filter_params: list[Any] = []
+                if run_ids:
+                    run_filter = " OR run_id IN (" + ", ".join("?" for _ in run_ids) + ")"
+                    run_filter_params.extend(run_ids)
+                conn.execute(
+                    f"""
+                    DELETE FROM runtime_side_effect_receipts
+                    WHERE session_id = ?{run_filter}
+                    """,
+                    (normalized_session_id, *run_filter_params),
+                )
+
+                ledger_conditions = ["session_id = ?"]
+                ledger_params: list[Any] = [normalized_session_id]
+                if run_ids:
+                    ledger_conditions.append("run_id IN (" + ", ".join("?" for _ in run_ids) + ")")
+                    ledger_params.extend(run_ids)
+                if episode_ids:
+                    ledger_conditions.append("episode_id IN (" + ", ".join("?" for _ in episode_ids) + ")")
+                    ledger_params.extend(episode_ids)
+                conn.execute(
+                    "DELETE FROM runtime_episode_idempotency WHERE " + " OR ".join(ledger_conditions),
+                    tuple(ledger_params),
+                )
+                conn.execute("DELETE FROM sessions WHERE id = ?", (normalized_session_id,))
+                conn.commit()
+
+        self._run_write_with_retry(_write)
 
     # --- Message Operations ---
     
@@ -3564,6 +3711,363 @@ class DatabaseManager:
             row = cursor.fetchone()
             return int(row["latest_seq"]) if row else 0
 
+    def get_side_effect_receipt(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            return None
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime_side_effect_receipts WHERE idempotency_key = ?",
+                (normalized_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def claim_side_effect_receipt(
+        self,
+        *,
+        session_id: str,
+        run_id: Optional[str],
+        idempotency_key: str,
+        effect_kind: str,
+        step_key: str,
+        target_identity: str,
+        payload_fingerprint: str,
+        owner_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        lease_seconds: int = 300,
+        retry_failed: bool = True,
+        replay_safe: bool = False,
+        legacy_completed: bool = False,
+    ) -> Dict[str, Any]:
+        """Atomically claim a side effect or return its durable disposition."""
+        normalized_key = str(idempotency_key or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        normalized_owner_id = str(owner_id or "").strip()
+        if not normalized_key or not normalized_session_id or not normalized_owner_id:
+            raise ValueError("side-effect claim requires session_id, idempotency_key, and owner_id")
+        now_iso = utc_now_iso()
+        expires_iso = (
+            datetime.now(timezone.utc) + timedelta(seconds=max(1, int(lease_seconds or 300)))
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        metadata_json = json.dumps(to_jsonable(metadata or {}), ensure_ascii=False)
+
+        def _write() -> Dict[str, Any]:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM runtime_side_effect_receipts WHERE idempotency_key = ?",
+                    (normalized_key,),
+                ).fetchone()
+                if row is None:
+                    if legacy_completed:
+                        conn.execute(
+                            """
+                            INSERT INTO runtime_side_effect_receipts
+                            (idempotency_key, session_id, run_id, effect_kind, step_key,
+                             target_identity, payload_fingerprint, state, owner_id,
+                             attempt_count, lease_expires_at, started_at, completed_at,
+                             metadata_json, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', NULL,
+                                    1, NULL, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                normalized_key,
+                                normalized_session_id,
+                                str(run_id or "").strip() or None,
+                                str(effect_kind or "").strip() or "unknown",
+                                str(step_key or "").strip() or "unknown",
+                                str(target_identity or "").strip(),
+                                str(payload_fingerprint or "").strip(),
+                                now_iso,
+                                now_iso,
+                                metadata_json,
+                                now_iso,
+                                now_iso,
+                            ),
+                        )
+                        conn.commit()
+                        return {
+                            "execute": False,
+                            "reason": "legacy_completed_receipt",
+                            "prior_topic": "side_effect.completed",
+                            "state": "completed",
+                            "attempt_count": 1,
+                        }
+                    conn.execute(
+                        """
+                        INSERT INTO runtime_side_effect_receipts
+                        (idempotency_key, session_id, run_id, effect_kind, step_key,
+                         target_identity, payload_fingerprint, state, owner_id,
+                         attempt_count, lease_expires_at, started_at, metadata_json,
+                         created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, 1, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized_key,
+                            normalized_session_id,
+                            str(run_id or "").strip() or None,
+                            str(effect_kind or "").strip() or "unknown",
+                            str(step_key or "").strip() or "unknown",
+                            str(target_identity or "").strip(),
+                            str(payload_fingerprint or "").strip(),
+                            normalized_owner_id,
+                            expires_iso,
+                            now_iso,
+                            metadata_json,
+                            now_iso,
+                            now_iso,
+                        ),
+                    )
+                    conn.commit()
+                    return {
+                        "execute": True,
+                        "reason": "claimed",
+                        "prior_topic": None,
+                        "state": "claimed",
+                        "attempt_count": 1,
+                    }
+
+                current = dict(row)
+                if str(current.get("payload_fingerprint") or "") != str(payload_fingerprint or ""):
+                    conn.rollback()
+                    raise ValueError(
+                        f"side-effect idempotency key {normalized_key!r} was reused with a different payload"
+                    )
+                state = str(current.get("state") or "").strip().lower()
+                attempt_count = int(current.get("attempt_count") or 0)
+                prior_topic = {
+                    "completed": "side_effect.completed",
+                    "failed": "side_effect.failed",
+                    "claimed": "side_effect.started",
+                    "indeterminate": "side_effect.outcome_unknown",
+                }.get(state)
+                if state == "completed":
+                    conn.commit()
+                    return {
+                        "execute": False,
+                        "reason": "completed_receipt",
+                        "prior_topic": prior_topic,
+                        "state": state,
+                        "attempt_count": attempt_count,
+                    }
+                if state == "failed" and retry_failed:
+                    attempt_count += 1
+                    conn.execute(
+                        """
+                        UPDATE runtime_side_effect_receipts
+                        SET state = 'claimed', owner_id = ?, attempt_count = ?,
+                            lease_expires_at = ?, started_at = ?, failed_at = NULL,
+                            last_error = NULL, metadata_json = ?, updated_at = ?
+                        WHERE idempotency_key = ? AND state = 'failed'
+                        """,
+                        (
+                            normalized_owner_id,
+                            attempt_count,
+                            expires_iso,
+                            now_iso,
+                            metadata_json,
+                            now_iso,
+                            normalized_key,
+                        ),
+                    )
+                    conn.commit()
+                    return {
+                        "execute": True,
+                        "reason": "failed_receipt_retry",
+                        "prior_topic": prior_topic,
+                        "state": "claimed",
+                        "attempt_count": attempt_count,
+                    }
+                if state == "indeterminate":
+                    conn.commit()
+                    return {
+                        "execute": False,
+                        "reason": "unknown_outcome_reconciliation_required",
+                        "prior_topic": prior_topic,
+                        "state": state,
+                        "attempt_count": attempt_count,
+                    }
+                if state == "claimed" and str(current.get("lease_expires_at") or "") <= now_iso:
+                    if not replay_safe:
+                        unknown_metadata = {
+                            **dict(metadata or {}),
+                            "reconciliationRequired": True,
+                            "unknownOutcomeDetectedAt": now_iso,
+                        }
+                        conn.execute(
+                            """
+                            UPDATE runtime_side_effect_receipts
+                            SET state = 'indeterminate', owner_id = NULL,
+                                lease_expires_at = NULL,
+                                last_error = 'side_effect_outcome_unknown',
+                                metadata_json = ?, updated_at = ?
+                            WHERE idempotency_key = ? AND state = 'claimed'
+                            """,
+                            (
+                                json.dumps(to_jsonable(unknown_metadata), ensure_ascii=False),
+                                now_iso,
+                                normalized_key,
+                            ),
+                        )
+                        conn.commit()
+                        return {
+                            "execute": False,
+                            "reason": "unknown_outcome_reconciliation_required",
+                            "prior_topic": "side_effect.started",
+                            "state": "indeterminate",
+                            "attempt_count": attempt_count,
+                        }
+                    attempt_count += 1
+                    conn.execute(
+                        """
+                        UPDATE runtime_side_effect_receipts
+                        SET owner_id = ?, attempt_count = ?, lease_expires_at = ?,
+                            started_at = ?, metadata_json = ?, updated_at = ?
+                        WHERE idempotency_key = ? AND state = 'claimed'
+                        """,
+                        (
+                            normalized_owner_id,
+                            attempt_count,
+                            expires_iso,
+                            now_iso,
+                            metadata_json,
+                            now_iso,
+                            normalized_key,
+                        ),
+                    )
+                    conn.commit()
+                    return {
+                        "execute": True,
+                        "reason": "expired_claim_reclaimed",
+                        "prior_topic": prior_topic,
+                        "state": "claimed",
+                        "attempt_count": attempt_count,
+                    }
+                conn.commit()
+                return {
+                    "execute": False,
+                    "reason": "in_flight_receipt" if state == "claimed" else "failed_receipt",
+                    "prior_topic": prior_topic,
+                    "state": state,
+                    "attempt_count": attempt_count,
+                }
+
+        return self._run_write_with_retry(_write)
+
+    def complete_side_effect_receipt(
+        self,
+        *,
+        idempotency_key: str,
+        owner_id: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        now_iso = utc_now_iso()
+        normalized_key = str(idempotency_key or "").strip()
+        normalized_owner_id = str(owner_id or "").strip()
+
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                updated = conn.execute(
+                    """
+                    UPDATE runtime_side_effect_receipts
+                    SET state = 'completed', completed_at = ?, lease_expires_at = NULL,
+                        last_error = NULL,
+                        metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE ? END,
+                        updated_at = ?
+                    WHERE idempotency_key = ? AND owner_id = ? AND state = 'claimed'
+                    """,
+                    (
+                        now_iso,
+                        json.dumps(to_jsonable(result), ensure_ascii=False) if result is not None else None,
+                        json.dumps(to_jsonable(result), ensure_ascii=False) if result is not None else None,
+                        now_iso,
+                        normalized_key,
+                        normalized_owner_id,
+                    ),
+                )
+                accepted = updated.rowcount == 1
+                conn.commit() if accepted else conn.rollback()
+                return accepted
+
+        return bool(self._run_write_with_retry(_write))
+
+    def fail_side_effect_receipt(
+        self,
+        *,
+        idempotency_key: str,
+        owner_id: str,
+        error: str,
+    ) -> bool:
+        now_iso = utc_now_iso()
+        normalized_key = str(idempotency_key or "").strip()
+        normalized_owner_id = str(owner_id or "").strip()
+
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                updated = conn.execute(
+                    """
+                    UPDATE runtime_side_effect_receipts
+                    SET state = 'failed', failed_at = ?, lease_expires_at = NULL,
+                        last_error = ?, updated_at = ?
+                    WHERE idempotency_key = ? AND owner_id = ? AND state = 'claimed'
+                    """,
+                    (now_iso, str(error or ""), now_iso, normalized_key, normalized_owner_id),
+                )
+                accepted = updated.rowcount == 1
+                conn.commit() if accepted else conn.rollback()
+                return accepted
+
+        return bool(self._run_write_with_retry(_write))
+
+    def reconcile_side_effect_receipt(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: str,
+        evidence: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        normalized_key = str(idempotency_key or "").strip()
+        normalized_outcome = str(outcome or "").strip().lower()
+        if not normalized_key or normalized_outcome not in {"completed", "failed"}:
+            raise ValueError("side-effect reconciliation requires a key and completed/failed outcome")
+        now_iso = utc_now_iso()
+        evidence_json = json.dumps(to_jsonable(evidence or {}), ensure_ascii=False)
+
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                updated = conn.execute(
+                    """
+                    UPDATE runtime_side_effect_receipts
+                    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
+                        completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END,
+                        failed_at = CASE WHEN ? = 'failed' THEN ? ELSE failed_at END,
+                        last_error = CASE WHEN ? = 'failed' THEN ? ELSE NULL END,
+                        metadata_json = ?, updated_at = ?
+                    WHERE idempotency_key = ? AND state = 'indeterminate'
+                    """,
+                    (
+                        normalized_outcome,
+                        normalized_outcome,
+                        now_iso,
+                        normalized_outcome,
+                        now_iso,
+                        normalized_outcome,
+                        str(error or "reconciled_external_failure"),
+                        evidence_json,
+                        now_iso,
+                        normalized_key,
+                    ),
+                )
+                accepted = updated.rowcount == 1
+                conn.commit() if accepted else conn.rollback()
+                return accepted
+
+        return bool(self._run_write_with_retry(_write))
+
     def add_runtime_event(self, event: Dict[str, Any]):
         def _write():
             source_payload = to_jsonable(event.get("source") or {})
@@ -3791,6 +4295,7 @@ class DatabaseManager:
         created_at = utc_now_iso()
         def _write():
             with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     '''
                     DELETE FROM runtime_snapshots
@@ -3929,14 +4434,225 @@ class DatabaseManager:
         resume_token = episode.get("resumeToken") if isinstance(episode.get("resumeToken"), dict) else continuation_token
         compensation_plan = episode.get("compensationPlan") if isinstance(episode.get("compensationPlan"), dict) else {}
         idempotency_key = str(episode.get("idempotencyKey") or episode.get("idempotency_key") or "").strip() or None
+        ledger_key = _runtime_episode_ledger_key(
+            idempotency_key or "",
+            session_id=resolved_session_id,
+            run_id=resolved_run_id,
+        ) if idempotency_key else None
         deadline_at = str(episode.get("deadlineAt") or episode.get("deadline_at") or "").strip() or None
         target_kind = str(episode.get("targetKind") or episode.get("target_kind") or "").strip() or None
         target_id = str(episode.get("targetId") or episode.get("target_id") or "").strip() or None
         max_attempts = int(retry_policy.get("maxAttempts") or retry_policy.get("max_attempts") or episode.get("maxAttempts") or 1)
         metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
+        # Session/run are represented by the scoped ledger key.  They are not
+        # part of the logical ingress payload, so a legacy unbound row can be
+        # safely bound later without becoming a false payload conflict.
+        idempotency_payload = {
+            "parentEpisodeId": parent_episode_id,
+            "kind": kind,
+            "source": source,
+            "reason": reason,
+            "inputs": inputs,
+            "requiredRuntimeAccess": required_runtime_access,
+            "handoffRefs": handoff_refs,
+            "targetKind": target_kind,
+            "targetId": target_id,
+        }
+        idempotency_fingerprint = _runtime_episode_payload_fingerprint(idempotency_payload)
+        # Rows written by the first v2 build included sessionId.  Accept that
+        # representation during migration and rewrite it to the canonical
+        # session-independent fingerprint after a successful match.
+        legacy_idempotency_fingerprint = _runtime_episode_payload_fingerprint(
+            {"sessionId": resolved_session_id, **idempotency_payload}
+        )
+        legacy_unbound_idempotency_fingerprint = _runtime_episode_payload_fingerprint(
+            {"sessionId": None, **idempotency_payload}
+        )
+        resolved_result_episode_id = episode_id
 
         def _write():
+            nonlocal resolved_result_episode_id
             with self.get_connection() as conn:
+                # Serialize the key lookup and insert across threads/processes.
+                # The ledger is the canonical uniqueness boundary; the legacy
+                # runtime_episodes index remains a compatibility projection.
+                conn.execute("BEGIN IMMEDIATE")
+                if ledger_key:
+                    ledger_storage_key = ledger_key
+                    ledger_row = conn.execute(
+                        """
+                        SELECT idempotency_key, episode_id, session_id, run_id, payload_fingerprint
+                        FROM runtime_episode_idempotency
+                        WHERE idempotency_key = ?
+                        """,
+                        (ledger_key,),
+                    ).fetchone()
+                    # Rows written before session scoping used the raw key.  A
+                    # raw row is a single legacy identity, not an invitation to
+                    # create a second scoped episode.  Rebind it only when the
+                    # caller is retrying the same episode; a different episode
+                    # gets a typed conflict instead of a silent duplicate.
+                    if ledger_row is None and ledger_key != idempotency_key:
+                        legacy_ledger_row = conn.execute(
+                            """
+                            SELECT idempotency_key, episode_id, session_id, run_id, payload_fingerprint
+                            FROM runtime_episode_idempotency
+                            WHERE idempotency_key = ?
+                            LIMIT 1
+                            """,
+                            (idempotency_key,),
+                        ).fetchone()
+                        if legacy_ledger_row is not None:
+                            legacy_episode_id = str(legacy_ledger_row["episode_id"] or "").strip()
+                            if legacy_episode_id != episode_id:
+                                conn.rollback()
+                                raise RuntimeEpisodeIdempotencyConflict(
+                                    f"runtime episode idempotency key {idempotency_key!r} is already bound "
+                                    f"to legacy episode {legacy_episode_id}"
+                                )
+                            prior_session_id = str(legacy_ledger_row["session_id"] or "").strip()
+                            prior_run_id = str(legacy_ledger_row["run_id"] or "").strip()
+                            if (
+                                prior_session_id and resolved_session_id and prior_session_id != resolved_session_id
+                            ) or (prior_run_id and resolved_run_id and prior_run_id != resolved_run_id):
+                                conn.rollback()
+                                raise RuntimeEpisodeIdempotencyConflict(
+                                    f"runtime episode idempotency key {idempotency_key!r} is bound to a different session/run"
+                                )
+                            ledger_row = legacy_ledger_row
+                            ledger_storage_key = idempotency_key
+                            conn.execute(
+                                """
+                                UPDATE runtime_episode_idempotency
+                                SET session_id = COALESCE(session_id, ?),
+                                    run_id = COALESCE(run_id, ?),
+                                    updated_at = ?
+                                WHERE idempotency_key = ? AND episode_id = ?
+                                """,
+                                (resolved_session_id, resolved_run_id, now_iso, idempotency_key, episode_id),
+                            )
+                    if ledger_row is None:
+                        legacy_keys = [idempotency_key]
+                        if ledger_key != idempotency_key:
+                            legacy_keys.append(ledger_key)
+                        legacy_key_placeholders = ", ".join("?" for _ in legacy_keys)
+                        legacy_row = conn.execute(
+                            f"""
+                            SELECT id, session_id, run_id FROM runtime_episodes
+                            WHERE idempotency_key IN ({legacy_key_placeholders})
+                            LIMIT 1
+                            """,
+                            tuple(legacy_keys),
+                        ).fetchone()
+                        if legacy_row is not None and str(legacy_row["id"] or "") != episode_id:
+                            # `runtime_episodes.idempotency_key` predates the
+                            # session-scoped ledger and is retained as a raw
+                            # compatibility projection.  Only an unbound row
+                            # (or a row in the same scope) blocks this key;
+                            # rows from another session/run must not collapse
+                            # otherwise independent requests into one episode.
+                            legacy_scope = _runtime_episode_ledger_key(
+                                idempotency_key,
+                                session_id=legacy_row["session_id"],
+                                run_id=legacy_row["run_id"],
+                            )
+                            if legacy_scope == ledger_key:
+                                conn.rollback()
+                                raise RuntimeEpisodeIdempotencyConflict(
+                                    f"runtime episode idempotency key {idempotency_key!r} is already bound "
+                                    f"to episode {legacy_row['id']}"
+                                )
+                        conn.execute(
+                            """
+                            INSERT INTO runtime_episode_idempotency
+                            (idempotency_key, episode_id, session_id, run_id, payload_fingerprint, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                ledger_key,
+                                episode_id,
+                                resolved_session_id,
+                                resolved_run_id,
+                                idempotency_fingerprint,
+                                now_iso,
+                                now_iso,
+                            ),
+                        )
+                    else:
+                        existing_episode_id = str(ledger_row["episode_id"] or "").strip()
+                        stored_fingerprint = str(ledger_row["payload_fingerprint"] or "")
+                        fingerprint_matches = stored_fingerprint in {
+                            idempotency_fingerprint,
+                            legacy_idempotency_fingerprint,
+                            legacy_unbound_idempotency_fingerprint,
+                        }
+                        if (
+                            not fingerprint_matches
+                            and not (
+                                existing_episode_id == episode_id
+                                and idempotency_key.startswith("episode:")
+                            )
+                        ):
+                            conn.rollback()
+                            raise RuntimeEpisodeIdempotencyConflict(
+                                f"runtime episode idempotency key {idempotency_key!r} was reused with a different payload"
+                            )
+                        if existing_episode_id != episode_id:
+                            resolved_result_episode_id = existing_episode_id
+                            if stored_fingerprint != idempotency_fingerprint:
+                                conn.execute(
+                                    "UPDATE runtime_episode_idempotency SET payload_fingerprint = ?, updated_at = ? WHERE idempotency_key = ?",
+                                    (idempotency_fingerprint, now_iso, ledger_storage_key),
+                                )
+                            conn.commit()
+                            return
+                        if stored_fingerprint != idempotency_fingerprint:
+                            conn.execute(
+                                "UPDATE runtime_episode_idempotency SET payload_fingerprint = ?, updated_at = ? WHERE idempotency_key = ?",
+                                (idempotency_fingerprint, now_iso, ledger_storage_key),
+                            )
+                if parent_episode_id:
+                    parent_row = conn.execute(
+                        "SELECT id, session_id FROM runtime_episodes WHERE id = ?",
+                        (parent_episode_id,),
+                    ).fetchone()
+                    if parent_row is not None:
+                        parent_session_id = str(parent_row["session_id"] or "").strip()
+                        if (
+                            resolved_session_id
+                            and parent_session_id
+                            and parent_session_id != resolved_session_id
+                        ):
+                            conn.rollback()
+                            raise ValueError(
+                                f"runtime episode {episode_id!r} references parent {parent_episode_id!r} "
+                                "from a different session"
+                            )
+                    else:
+                        # Child routing can arrive before the parent's durable
+                        # admission record. Keep the lineage in SQLite with a
+                        # non-executable placeholder; a later parent upsert
+                        # replaces this row by its stable id.
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO runtime_episodes
+                            (id, session_id, run_id, root_episode_id, kind, state,
+                             source, reason, need_json, inputs_json, metadata_json,
+                             created_at, updated_at)
+                            VALUES (?, ?, ?, ?, 'delegation', 'waiting_child',
+                                    'lineage_stub', 'parent admission pending',
+                                    '{}', '{}', ?, ?, ?)
+                            """,
+                            (
+                                parent_episode_id,
+                                resolved_session_id,
+                                resolved_run_id,
+                                parent_episode_id,
+                                json.dumps({"lineageStub": True}, ensure_ascii=False),
+                                now_iso,
+                                now_iso,
+                            ),
+                        )
                 root_episode_id = explicit_root_episode_id
                 if not root_episode_id:
                     existing_root = conn.execute(
@@ -4059,7 +4775,11 @@ class DatabaseManager:
                 conn.commit()
 
         self._run_write_with_retry(_write)
-        return self.get_runtime_episode(episode_id) or {**episode, "episodeId": episode_id, "state": state}
+        return self.get_runtime_episode(resolved_result_episode_id) or {
+            **episode,
+            "episodeId": resolved_result_episode_id,
+            "state": state,
+        }
 
     def enqueue_runtime_episode(
         self,
@@ -4119,6 +4839,7 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     '''
                     UPDATE runtime_episodes
@@ -4129,6 +4850,35 @@ class DatabaseManager:
                     ''',
                     (resolved_session_id, resolved_run_id, now_iso, episode_id),
                 )
+                ledger_row = conn.execute(
+                    """
+                    SELECT session_id, run_id
+                    FROM runtime_episode_idempotency
+                    WHERE episode_id = ?
+                    LIMIT 1
+                    """,
+                    (episode_id,),
+                ).fetchone()
+                if ledger_row is not None:
+                    prior_session_id = str(ledger_row["session_id"] or "").strip()
+                    prior_run_id = str(ledger_row["run_id"] or "").strip()
+                    if (
+                        prior_session_id and resolved_session_id and prior_session_id != resolved_session_id
+                    ) or (prior_run_id and resolved_run_id and prior_run_id != resolved_run_id):
+                        conn.rollback()
+                        raise RuntimeEpisodeIdempotencyConflict(
+                            f"runtime episode {episode_id!r} is already bound to a different session/run"
+                        )
+                    conn.execute(
+                        """
+                        UPDATE runtime_episode_idempotency
+                        SET session_id = COALESCE(session_id, ?),
+                            run_id = COALESCE(run_id, ?),
+                            updated_at = ?
+                        WHERE episode_id = ?
+                        """,
+                        (resolved_session_id, resolved_run_id, now_iso, episode_id),
+                    )
                 conn.execute(
                     '''
                     UPDATE runtime_episode_queue
@@ -4320,32 +5070,31 @@ class DatabaseManager:
                         conn.rollback()
                         return False
                 else:
+                    heartbeat = conn.execute(
+                        '''
+                        UPDATE runtime_episodes
+                        SET last_heartbeat_at = ?,
+                            last_progress = COALESCE(?, last_progress),
+                            updated_at = ?
+                        WHERE id = ?
+                          AND state <> 'leased'
+                          AND COALESCE(worker_id, '') = ''
+                        ''',
+                        (now_iso, progress, now_iso, episode_id),
+                    )
+                    if heartbeat.rowcount != 1:
+                        conn.rollback()
+                        return False
+                if fenced:
                     conn.execute(
                         '''
-                    UPDATE runtime_episodes
-                    SET last_heartbeat_at = ?,
-                        lease_expires_at = ?,
-                        last_progress = COALESCE(?, last_progress),
-                        updated_at = ?
-                    WHERE id = ?
-                    ''',
-                        (now_iso, expires_iso, progress, now_iso, episode_id),
+                        UPDATE runtime_episode_queue
+                        SET lease_expires_at = ?,
+                            updated_at = ?
+                        WHERE episode_id = ? AND state = 'leased' AND locked_by = ?
+                        ''',
+                        (expires_iso, now_iso, episode_id, worker_id),
                     )
-                queue_where = "episode_id = ?"
-                queue_params: list[Any] = [expires_iso, now_iso, episode_id]
-                if fenced:
-                    queue_where += " AND state = 'leased' AND locked_by = ?"
-                    queue_params.append(worker_id)
-                conn.execute(
-                    f'''
-                    UPDATE runtime_episode_queue
-                    SET lease_expires_at = ?,
-                        updated_at = ?
-                    WHERE {queue_where}
-                    ''',
-                    queue_params,
-                )
-                if worker_id:
                     conn.execute(
                         '''
                         UPDATE runtime_episode_leases
@@ -4371,9 +5120,11 @@ class DatabaseManager:
         metadata: Optional[Dict[str, Any]] = None,
         worker_id: Optional[str] = None,
         lease_generation: Optional[int] = None,
+        expected_state: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
         terminal = state in {"completed", "failed", "cancelled", "merged"}
+        release_lease = state != "active"
         fenced = worker_id is not None or lease_generation is not None
         if fenced and (not worker_id or lease_generation is None):
             raise ValueError("worker_id and lease_generation must be supplied together")
@@ -4387,6 +5138,8 @@ class DatabaseManager:
                     error_code,
                     error_message,
                     json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
+                    1 if release_lease else 0,
+                    1 if release_lease else 0,
                     1 if terminal else 0,
                     now_iso,
                     now_iso,
@@ -4398,6 +5151,35 @@ class DatabaseManager:
                         " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
                     )
                     episode_params.extend((worker_id, int(lease_generation), now_iso))
+                elif expected_state:
+                    normalized_expected_state = str(expected_state or "").strip()
+                    episode_where += " AND state = ?"
+                    episode_params.append(normalized_expected_state)
+                    if normalized_expected_state in {
+                        "leased",
+                        "active",
+                        "waiting",
+                        "waiting_dependency",
+                        "waiting_child",
+                        "waiting_external",
+                        "waiting_approval",
+                        "waiting_input",
+                    }:
+                        episode_where += (
+                            " AND (COALESCE(worker_id, '') = ''"
+                            " OR (lease_expires_at IS NOT NULL AND lease_expires_at <= ?))"
+                        )
+                        episode_params.append(now_iso)
+                else:
+                    # An episode with a live worker lease can only be finalized
+                    # by that worker's fence. Parent/admin cancellation uses the
+                    # run-scoped CAS below, never a bare episode id.
+                    episode_where += (
+                        " AND state NOT IN ("
+                        "'leased','active','waiting','waiting_dependency','waiting_child',"
+                        "'waiting_external','waiting_approval','waiting_input'"
+                        ")"
+                    )
                 completed = conn.execute(
                     f'''
                     UPDATE runtime_episodes
@@ -4406,6 +5188,8 @@ class DatabaseManager:
                         error_code = COALESCE(?, error_code),
                         error_message = COALESCE(?, error_message),
                         metadata_json = COALESCE(?, metadata_json),
+                        worker_id = CASE WHEN ? THEN NULL ELSE worker_id END,
+                        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
                         completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
                         updated_at = ?
                     WHERE {episode_where}
@@ -4419,6 +5203,8 @@ class DatabaseManager:
                 queue_params: list[Any] = [
                     "completed" if state in {"completed", "merged"} else state,
                     error_message,
+                    1 if release_lease else 0,
+                    1 if release_lease else 0,
                     now_iso,
                     episode_id,
                 ]
@@ -4430,6 +5216,8 @@ class DatabaseManager:
                     UPDATE runtime_episode_queue
                     SET state = ?,
                         last_error = COALESCE(?, last_error),
+                        locked_by = CASE WHEN ? THEN NULL ELSE locked_by END,
+                        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
                         updated_at = ?
                     WHERE {queue_where}
                     ''',
@@ -4485,11 +5273,24 @@ class DatabaseManager:
                         " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
                     )
                     episode_params.extend((worker_id, int(lease_generation), now_iso))
+                else:
+                    # A retry without a worker fence is only a recovery of an
+                    # unowned projection.  Never let a cross-episode callback
+                    # reset an active/leased episode, or an old waiting row
+                    # whose ownership has not been released yet.
+                    episode_where += (
+                        " AND state NOT IN ('active', 'leased')"
+                        " AND COALESCE(worker_id, '') = ''"
+                        " AND (lease_expires_at IS NULL OR lease_expires_at <= ?)"
+                    )
+                    episode_params.append(now_iso)
                 retried = conn.execute(
                     f'''
                     UPDATE runtime_episodes
                     SET state = 'queued',
                         error_message = COALESCE(?, error_message),
+                        worker_id = NULL,
+                        lease_expires_at = NULL,
                         updated_at = ?
                     WHERE {episode_where}
                     ''',
@@ -4543,6 +5344,8 @@ class DatabaseManager:
         episode_id: str,
         *,
         reason: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         return self.complete_runtime_episode(
             episode_id,
@@ -4550,6 +5353,8 @@ class DatabaseManager:
             error_code="episode_cancelled",
             error_message=reason or "Runtime episode cancelled.",
             metadata={"recoverable": True, "cancelReason": reason or "manual"},
+            worker_id=worker_id,
+            lease_generation=lease_generation,
         )
 
     def cancel_active_runtime_episodes_for_run(
@@ -4608,6 +5413,8 @@ class DatabaseManager:
                         error_code = 'parent_run_terminal',
                         error_message = ?,
                         metadata_json = ?,
+                        worker_id = NULL,
+                        lease_expires_at = NULL,
                         completed_at = COALESCE(completed_at, ?),
                         updated_at = ?
                     WHERE id IN ({id_placeholders})
@@ -4655,27 +5462,65 @@ class DatabaseManager:
         *,
         resume_token: Optional[Dict[str, Any]] = None,
         priority: Optional[int] = None,
+        expected_state: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
 
         def _write():
             with self.get_connection() as conn:
-                conn.execute(
-                    '''
+                episode_where = "id = ?"
+                episode_params: list[Any] = [
+                    json.dumps(to_jsonable(resume_token), ensure_ascii=False) if resume_token is not None else None,
+                    priority,
+                    now_iso,
+                    episode_id,
+                ]
+                normalized_expected_state = str(expected_state or "").strip()
+                if normalized_expected_state:
+                    episode_where += " AND state = ?"
+                    episode_params.append(normalized_expected_state)
+                    if normalized_expected_state in {
+                        "leased",
+                        "active",
+                        "waiting",
+                        "waiting_dependency",
+                        "waiting_child",
+                        "waiting_external",
+                        "waiting_approval",
+                        "waiting_input",
+                    }:
+                        episode_where += (
+                            " AND (COALESCE(worker_id, '') = ''"
+                            " OR (lease_expires_at IS NOT NULL AND lease_expires_at <= ?))"
+                        )
+                        episode_params.append(now_iso)
+                else:
+                    # A bare resume is still allowed for an unleased waiting
+                    # episode, but never reopens a live worker's state.
+                    episode_where += (
+                        " AND (state NOT IN ("
+                        "'leased','active','waiting','waiting_dependency','waiting_child',"
+                        "'waiting_external','waiting_approval','waiting_input'"
+                        ") OR COALESCE(worker_id, '') = ''"
+                        " OR (lease_expires_at IS NOT NULL AND lease_expires_at <= ?))"
+                    )
+                    episode_params.append(now_iso)
+                updated = conn.execute(
+                    f'''
                     UPDATE runtime_episodes
                     SET state = 'queued',
                         resume_token_json = COALESCE(?, resume_token_json),
                         priority = COALESCE(?, priority),
+                        worker_id = NULL,
+                        lease_expires_at = NULL,
                         updated_at = ?
-                    WHERE id = ?
+                    WHERE {episode_where}
                     ''',
-                    (
-                        json.dumps(to_jsonable(resume_token), ensure_ascii=False) if resume_token is not None else None,
-                        priority,
-                        now_iso,
-                        episode_id,
-                    ),
+                    episode_params,
                 )
+                if updated.rowcount != 1:
+                    conn.rollback()
+                    return False
                 cursor = conn.cursor()
                 cursor.execute('SELECT session_id, run_id, kind, priority FROM runtime_episodes WHERE id = ?', (episode_id,))
                 row = cursor.fetchone()
@@ -4690,6 +5535,8 @@ class DatabaseManager:
                             state = 'queued',
                             priority = excluded.priority,
                             available_at = excluded.available_at,
+                            locked_by = NULL,
+                            lease_expires_at = NULL,
                             updated_at = excluded.updated_at
                         ''',
                         (
@@ -4705,8 +5552,10 @@ class DatabaseManager:
                         ),
                     )
                 conn.commit()
+                return True
 
-        self._run_write_with_retry(_write)
+        if not self._run_write_with_retry(_write):
+            return None
         return self.get_runtime_episode(episode_id)
 
     def add_runtime_episode_event_record(
@@ -4754,6 +5603,7 @@ class DatabaseManager:
         run_id: Optional[str] = None,
         worker_id: Optional[str] = None,
         lease_generation: Optional[int] = None,
+        expected_state: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         handoff_id = str(handoff.get("handoffId") or handoff.get("id") or f"handoff:{episode_id}:{uuid.uuid4().hex[:10]}")
         now_iso = utc_now_iso()
@@ -4775,6 +5625,39 @@ class DatabaseManager:
                           AND COALESCE(lease_expires_at, '') > ?
                         ''',
                         (episode_id, worker_id, int(lease_generation), now_iso),
+                    ).fetchone()
+                    if not current_claim:
+                        conn.rollback()
+                        return False
+                elif expected_state:
+                    current_claim = conn.execute(
+                        '''
+                        SELECT 1
+                        FROM runtime_episodes
+                        WHERE id = ?
+                          AND state = ?
+                          AND COALESCE(worker_id, '') = ''
+                          AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                        ''',
+                        (episode_id, str(expected_state).strip(), now_iso),
+                    ).fetchone()
+                    if not current_claim:
+                        conn.rollback()
+                        return False
+                else:
+                    # A handoff without an explicit worker fence is still a
+                    # governed write: it may only target an unleased episode.
+                    # Otherwise a stale graph callback could append evidence
+                    # after another worker reclaimed the episode.
+                    current_claim = conn.execute(
+                        '''
+                        SELECT 1
+                        FROM runtime_episodes
+                        WHERE id = ?
+                          AND COALESCE(worker_id, '') = ''
+                          AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                        ''',
+                        (episode_id, now_iso),
                     ).fetchone()
                     if not current_claim:
                         conn.rollback()

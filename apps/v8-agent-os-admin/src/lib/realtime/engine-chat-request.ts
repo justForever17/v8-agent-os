@@ -1,5 +1,8 @@
 import crypto from "crypto";
-import { isSupervisorRuntimeMode } from "./supervisor-runtime-mode";
+import {
+    isSupervisorRuntimeMode,
+    SupervisorRuntimeModeValidationError,
+} from "./supervisor-runtime-mode";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -24,8 +27,30 @@ function toOptionalRecord(value: unknown) {
     return value && typeof value === "object" ? value as JsonRecord : undefined;
 }
 
-function toSupervisorRuntimeMode(value: unknown) {
-    return isSupervisorRuntimeMode(value) ? value : undefined;
+function readSupervisorRuntimeMode(root: JsonRecord, data: JsonRecord) {
+    const candidates = [
+        [data, "supervisorRuntimeMode"],
+        [data, "supervisor_runtime_mode"],
+        [root, "supervisorRuntimeMode"],
+        [root, "supervisor_runtime_mode"],
+    ] as const;
+    const candidate = candidates.find(([record, key]) => (
+        Object.prototype.hasOwnProperty.call(record, key)
+        && record[key] !== undefined
+    ));
+    if (!candidate) {
+        return undefined;
+    }
+    const value = candidate[0][candidate[1]];
+    if (!isSupervisorRuntimeMode(value)) {
+        throw new SupervisorRuntimeModeValidationError();
+    }
+    return value;
+}
+
+export function validateSupervisorRuntimeMode(payload: unknown) {
+    const root = asRecord(payload);
+    return readSupervisorRuntimeMode(root, asRecord(root.data));
 }
 
 function toAttachmentList(value: unknown, fallbackFileUrls: string[] = []) {
@@ -106,12 +131,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const safetyApprovalMode = typeof data.safetyApprovalMode === "string"
         ? data.safetyApprovalMode
         : undefined;
-    const supervisorRuntimeMode = toSupervisorRuntimeMode(
-        data.supervisorRuntimeMode
-        ?? data.supervisor_runtime_mode
-        ?? root.supervisorRuntimeMode
-        ?? root.supervisor_runtime_mode,
-    );
+    const supervisorRuntimeMode = readSupervisorRuntimeMode(root, data);
     const canvasSupervisorDirect = data.canvasSupervisorDirect === true ? true : undefined;
     const composerPresentation = toOptionalRecord(data.composerPresentation);
     const contextMentions = toRecordList(data.contextMentions);

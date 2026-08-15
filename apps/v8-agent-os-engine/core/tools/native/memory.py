@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import sys
 from typing import Any, Optional
@@ -113,6 +114,34 @@ def _memory_runtime_scope_context(requested_scope: Optional[str] = None) -> dict
         "surfaceScope": "current_workspace" if any(item != "global" for item in scope_chain) else "global",
         "runtimeContext": context,
     }
+
+
+def _memory_runtime_unified_recall(
+    runtime: Any,
+    *,
+    query: str,
+    limit: int,
+    scope: Optional[str],
+    scopes: Optional[list[str]],
+) -> Any:
+    """Call current or legacy Memory Runtime contracts without dropping scope."""
+
+    method = getattr(runtime, "unified_recall")
+    kwargs = {"query": query, "limit": limit, "scope": scope, "scopes": scopes}
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None and not any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if name in signature.parameters
+        }
+    return method(**kwargs)
 
 
 def _memory_broker_clamp_limit(limit: int | None, *, default: int = 5, maximum: int = 12) -> int:
@@ -634,7 +663,13 @@ def _memory_route_core(
     scopes: Optional[list[str]] = None,
     limit: int,
 ) -> dict[str, Any]:
-    results = runtime.unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
+    results = _memory_runtime_unified_recall(
+        runtime,
+        query=query,
+        limit=limit,
+        scope=scope,
+        scopes=scopes,
+    )
     selected = [
         _memory_broker_compact_recall_item(item, allowed_scopes=scopes)
         for item in list(results or [])[:limit]
@@ -783,7 +818,8 @@ def memory_broker(
                     summary="memory_broker recall needs a query.",
                     nextAction="Call memory_broker(mode='recall', query='...') with the memory question or keywords.",
                 )
-            results = runtime.unified_recall(
+            results = _memory_runtime_unified_recall(
+                runtime,
                 query=search_text,
                 limit=effective_limit,
                 scope=effective_scope,
@@ -1083,7 +1119,8 @@ def memory_recall(query: str, limit: int = 5) -> str:
     """
     try:
         ownership = _memory_runtime_scope_context()
-        results = _get_memory_runtime().unified_recall(
+        results = _memory_runtime_unified_recall(
+            _get_memory_runtime(),
             query=query,
             limit=limit,
             scope=str(ownership["scope"]),

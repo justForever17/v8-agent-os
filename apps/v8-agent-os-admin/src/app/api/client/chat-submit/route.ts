@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { buildEngineChatRequestPayload } from "@/lib/realtime/engine-chat-request";
+import {
+    serializeSupervisorRuntimeModeValidationError,
+    SupervisorRuntimeModeValidationError,
+} from "@/lib/realtime/supervisor-runtime-mode";
 import { fetchClientEngine } from "@/lib/server/client-proxy";
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 
@@ -25,6 +29,9 @@ export async function POST(req: NextRequest) {
         const json = await response.json().catch(() => ({}));
         return NextResponse.json(json, { status: response.status });
     } catch (error: unknown) {
+        if (error instanceof SupervisorRuntimeModeValidationError) {
+            return NextResponse.json(serializeSupervisorRuntimeModeValidationError(error), { status: 400 });
+        }
         console.error("[ClientChatSubmitAPI] Fatal Error:", error);
         return NextResponse.json({ error: String(error) }, { status: 500 });
     }

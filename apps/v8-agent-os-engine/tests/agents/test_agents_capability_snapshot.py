@@ -179,6 +179,56 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         ):
             self.assertNotIn(runtime_owned_detail, research_agent.system_prompt)
 
+    def test_registered_runtime_families_have_resolvable_subagent_bindings(self):
+        defaults = default_subagent_configs()
+        for runtime_kind in ("engineering", "research", "creative_media"):
+            bound = [
+                agent
+                for agent in defaults
+                if any(
+                    binding.get("runtimeKind") == runtime_kind
+                    for binding in agent.capabilitySnapshot.get("runtimeBindings", [])
+                    if isinstance(binding, dict)
+                )
+            ]
+            self.assertTrue(bound, runtime_kind)
+
+        synthesizer = next(agent for agent in defaults if agent.id == "research-synthesizer")
+        self.assertEqual(synthesizer.capabilitySnapshot.get("specialistFamily"), "research")
+        self.assertEqual(
+            synthesizer.capabilitySnapshot.get("runtimeBindings"),
+            [
+                {
+                    "runtimeKind": "research",
+                    "grantGroups": ["research.core"],
+                    "label": "Research",
+                    "source": "system_default",
+                }
+            ],
+        )
+
+        engineering = next(agent for agent in defaults if agent.id == "implementation-engineer")
+        self.assertEqual(
+            engineering.capabilitySnapshot.get("runtimeBindings"),
+            [
+                {
+                    "runtimeKind": "engineering",
+                    "grantGroups": ["engineering.core"],
+                    "label": "Engineering",
+                    "source": "system_default",
+                }
+            ],
+        )
+
+        built_in_kinds = {"computer_use", "rpa", "memory", "safety"}
+        for agent in defaults:
+            bound_kinds = {
+                str(binding.get("runtimeKind") or "").strip()
+                for binding in agent.capabilitySnapshot.get("runtimeBindings", [])
+                if isinstance(binding, dict)
+            }
+            self.assertTrue(built_in_kinds.isdisjoint(bound_kinds), agent.id)
+
         runtime_prompt = build_research_runtime_system_prompt(
             stage="evidence_plan",
             stage_prompt="Return the verified evidence plan.",

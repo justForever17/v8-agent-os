@@ -554,6 +554,29 @@ def test_grandchild_capsule_allows_only_explicit_strict_write_partition(tmp_path
     assert "grandchild_write_authority_not_inherited" in rejected["engineeringTaskCapsule"]["riskFlags"]
 
 
+def test_grandchild_without_parent_capsule_cannot_gain_write_authority(tmp_path: Path) -> None:
+    derived = derive_grandchild_engineering_task(
+        {"taskBriefId": "parent-without-capsule", "goal": "Research only."},
+        normalize_task_brief(
+            {
+                "taskBriefId": "write-without-parent-authority",
+                "goal": "Write an unassigned file.",
+                "context": {"workspacePath": str(tmp_path)},
+                "writeRequired": True,
+                "writeSet": ["src/unassigned.py"],
+                "expectedOutputs": ["src/unassigned.py"],
+                "acceptanceContract": "The file exists.",
+            }
+        ),
+    )
+
+    assert engineering_capsule_mode(derived) != "write"
+    assert derived["readOnly"] is True
+    assert derived["writeRequired"] is False
+    assert derived["writeSet"] == []
+    assert derived["engineeringTaskCapsule"]["writeSet"] == []
+
+
 def test_peer_help_derives_verify_grandchild_capsule(tmp_path: Path) -> None:
     parent = _write_task(tmp_path)
     command = request_peer_help.func(

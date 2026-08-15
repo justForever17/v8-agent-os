@@ -73,9 +73,14 @@ function encodeWorkspacePath(workspacePath: string) {
     .join("/");
 }
 
-export function buildAdminArtifactContentPath(artifactId: string) {
+export function buildAdminArtifactContentPath(artifactId: string, sessionId: string) {
   const normalizedId = String(artifactId || "").trim();
-  return normalizedId ? `/api/client/artifacts/${encodeURIComponent(normalizedId)}/content` : "";
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedId || !normalizedSessionId) {
+    return "";
+  }
+  const params = new URLSearchParams({ sessionId: normalizedSessionId });
+  return `/api/client/artifacts/${encodeURIComponent(normalizedId)}/content?${params.toString()}`;
 }
 
 export function buildAdminWorkspaceFilePath(workspacePath: string) {
@@ -110,17 +115,19 @@ export function buildAdminScopedWorkspaceResourcePath(options: {
 
 export function buildAdminArtifactContentRef(
   artifactId: string,
-  extras: Omit<AdminResourceRef, "kind" | "artifactId" | "adminPath"> = {},
+  extras: Omit<AdminResourceRef, "kind" | "artifactId" | "adminPath" | "sessionId"> & { sessionId: string },
 ): AdminResourceRef | null {
   const normalizedId = String(artifactId || "").trim();
-  if (!normalizedId) {
+  const normalizedSessionId = String(extras.sessionId || "").trim();
+  if (!normalizedId || !normalizedSessionId) {
     return null;
   }
   return {
     kind: "artifact_content",
     artifactId: normalizedId,
-    adminPath: buildAdminArtifactContentPath(normalizedId),
     ...extras,
+    sessionId: normalizedSessionId,
+    adminPath: buildAdminArtifactContentPath(normalizedId, normalizedSessionId),
   };
 }
 
@@ -183,7 +190,13 @@ function deriveAdminResourceRefFromUrl(value: string): AdminResourceRef | null {
 
   const artifactMatch = raw.match(ARTIFACT_CONTENT_PATH_PATTERN);
   if (artifactMatch?.[1]) {
-    return buildAdminArtifactContentRef(artifactMatch[1]);
+    try {
+      const parsed = new URL(raw.startsWith("/") ? raw : `/${raw}`, "https://v8.invalid");
+      const sessionId = parsed.searchParams.get("sessionId") || parsed.searchParams.get("session_id") || "";
+      return buildAdminArtifactContentRef(decodeURIComponent(artifactMatch[1]), { sessionId });
+    } catch {
+      return null;
+    }
   }
 
   try {
@@ -324,6 +337,7 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
         : typeof record.artifact_id === "string"
           ? record.artifact_id
           : undefined,
+      sessionId: normalizeScopedIdentifier(record.sessionId ?? record.session_id),
       workspaceId: normalizeScopedIdentifier(record.workspaceId ?? record.workspace_id),
       projectId: normalizeScopedIdentifier(record.projectId ?? record.project_id),
       workspacePath: typeof record.workspacePath === "string"
@@ -363,6 +377,12 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
     if (!resourceRef.workspacePath && resourceRef.workspaceRelativePath) {
       resourceRef.workspacePath = resourceRef.workspaceRelativePath;
     }
+    if (kind === "artifact_content") {
+      if (!resourceRef.artifactId || !resourceRef.sessionId) {
+        return null;
+      }
+      resourceRef.adminPath = buildAdminArtifactContentPath(resourceRef.artifactId, resourceRef.sessionId);
+    }
     if (!resourceRef.adminPath) {
       if (
         kind === "workspace_file"
@@ -376,9 +396,6 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
           projectId: resourceRef.projectId,
         });
       }
-      if (kind === "artifact_content" && resourceRef.artifactId) {
-        resourceRef.adminPath = buildAdminArtifactContentPath(resourceRef.artifactId);
-      }
       if (kind === "workspace_file" && resourceRef.workspacePath) {
         resourceRef.adminPath = resourceRef.adminPath || buildAdminWorkspaceFilePath(resourceRef.workspacePath);
       }
@@ -391,11 +408,7 @@ export function coerceAdminResourceRef(value: unknown): AdminResourceRef | null 
 
 export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminResourceRef | null {
   const record = asRecord(value);
-  const existing = coerceAdminResourceRef(record.resourceRef);
-  if (existing) {
-    return existing;
-  }
-
+  const sessionId = normalizeScopedIdentifier(record.sessionId ?? record.session_id);
   const artifactId =
     typeof record.artifactId === "string"
       ? record.artifactId
@@ -404,8 +417,22 @@ export function deriveAdminResourceRefFromArtifactLike(value: unknown): AdminRes
         : typeof record.id === "string"
           ? record.id
           : "";
+  const existing = coerceAdminResourceRef(record.resourceRef);
+  if (existing) {
+    if (existing.kind === "artifact_content") {
+      if (
+        (sessionId && existing.sessionId !== sessionId)
+        || (artifactId.trim() && existing.artifactId !== artifactId.trim())
+      ) {
+        return null;
+      }
+    }
+    return existing;
+  }
+
   if (artifactId.trim()) {
     return buildAdminArtifactContentRef(artifactId, {
+      sessionId: sessionId || "",
       mimeType: typeof record.mimeType === "string"
         ? record.mimeType
         : typeof record.mime_type === "string"
@@ -532,8 +559,8 @@ export function resolveAdminResourceUrl(
   }
 
   const path = normalized.adminPath
-    || (normalized.kind === "artifact_content" && normalized.artifactId
-      ? buildAdminArtifactContentPath(normalized.artifactId)
+    || (normalized.kind === "artifact_content" && normalized.artifactId && normalized.sessionId
+      ? buildAdminArtifactContentPath(normalized.artifactId, normalized.sessionId)
       : normalized.kind === "workspace_file" && normalized.workspaceRelativePath && normalizePathPlane(normalized.pathPlane)
         ? buildAdminScopedWorkspaceResourcePath({
           workspaceRelativePath: normalized.workspaceRelativePath,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -20,11 +22,35 @@ def _get(base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def _verify_artifact_content(base_url: str, artifact: dict[str, Any]) -> None:
+def _create_session(base_url: str, workspace_path: Path) -> str:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    session = _post(
+        base_url,
+        "/sessions",
+        {
+            "title": "Creative Media live smoke",
+            "userId": "creative-media-live-smoke",
+            "projectId": f"creative-media-live-{stamp}",
+            "workspaceId": f"creative-media-live-workspace-{stamp}",
+            "workspacePath": str(workspace_path),
+            "scopeMode": "explicit",
+        },
+    )
+    session_id = str(session.get("id") or session.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError(f"session creation returned no id: {session}")
+    return session_id
+
+
+def _verify_artifact_content(base_url: str, artifact: dict[str, Any], session_id: str) -> None:
     artifact_id = artifact.get("artifactId") or artifact.get("id")
     if not artifact_id:
         raise RuntimeError(f"artifact missing id: {artifact}")
-    response = requests.get(f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content", timeout=120)
+    response = requests.get(
+        f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content",
+        params={"sessionId": session_id},
+        timeout=120,
+    )
     response.raise_for_status()
     if len(response.content) <= 0:
         raise RuntimeError(f"artifact content is empty: {artifact_id}")
@@ -47,8 +73,11 @@ def _submit_and_verify(base_url: str, payload: dict[str, Any], label: str) -> di
     artifacts = job.get("artifacts") or []
     if not artifacts:
         raise RuntimeError(f"{label} succeeded without artifacts: {job}")
+    session_id = str(payload.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("live smoke job is missing required session authority")
     for artifact in artifacts:
-        _verify_artifact_content(base_url, artifact)
+        _verify_artifact_content(base_url, artifact, session_id)
     print(f"[PASS] {label}: {job['jobId']} -> {[item.get('artifactId') for item in artifacts]}")
     return job
 
@@ -56,6 +85,7 @@ def _submit_and_verify(base_url: str, payload: dict[str, Any], label: str) -> di
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live creative media smoke checks against an already running V8 engine.")
     parser.add_argument("--base-url", default="http://127.0.0.1:9530/v1")
+    parser.add_argument("--workspace-path", default="")
     parser.add_argument("--live", action="store_true", help="Actually call providers. Without this flag, only prints the planned checks.")
     args = parser.parse_args()
 
@@ -113,8 +143,16 @@ def main() -> int:
         print("Pass --live to execute provider calls.")
         return 0
 
+    workspace_path = Path(args.workspace_path).expanduser().resolve()
+    if not args.workspace_path or not workspace_path.is_dir():
+        raise RuntimeError("--workspace-path must be an existing directory for --live")
+    session_id = _create_session(args.base_url, workspace_path)
     for label, payload in checks:
-        _submit_and_verify(args.base_url, payload, label)
+        _submit_and_verify(
+            args.base_url,
+            {**payload, "sessionId": session_id, "workspacePath": str(workspace_path)},
+            label,
+        )
     return 0
 
 

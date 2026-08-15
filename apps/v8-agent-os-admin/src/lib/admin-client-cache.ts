@@ -79,7 +79,6 @@ const ROUTE_DATA_PREFETCH: Record<string, RoutePrefetchTarget[]> = {
     "/api/memory/knowledge?scope=global&status=quarantined&limit=100",
     "/api/memory/knowledge-resolution-candidates?limit=100",
     "/api/memory/knowledge-health",
-    "/api/memory/artifacts?limit=160",
     "/api/storage-retention/stats",
   ],
   "/admin/automation": ["/api/hooks"],

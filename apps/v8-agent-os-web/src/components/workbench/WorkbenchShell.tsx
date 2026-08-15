@@ -327,6 +327,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                 {canvasTab?.document.kind === "creative_canvas" ? (
                     <div className={cn("absolute inset-0", document.kind !== "creative_canvas" && "invisible pointer-events-none")}>
                         <CreativeArtifactCanvas
+                            key={canvasTab.document.subjectRef.sessionId}
                             document={canvasTab.document}
                             messages={props.messages}
                             workspacePath={props.workspacePath}

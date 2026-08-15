@@ -144,7 +144,7 @@ function ArtifactPreview({
                     truncated = raw.length > MAX_INLINE_TEXT_CHARS || Boolean(page.hasMore);
                     raw = raw.slice(0, MAX_INLINE_TEXT_CHARS);
                 } else {
-                    const response = await fetchArtifactContentResponse(authorizedFetch, artifact.id);
+                    const response = await fetchArtifactContentResponse(authorizedFetch, artifact.id, sessionId);
                     const bounded = await readBoundedResponseText(response, {
                         maxBytes: MAX_INLINE_TEXT_BYTES,
                         maxChars: MAX_INLINE_TEXT_CHARS,
@@ -248,7 +248,7 @@ export default function ArtifactsScreen() {
         const [scopeResult, listResult, detailResult] = await Promise.allSettled([
             conversationId ? getSessionScope(authorizedFetch, conversationId) : Promise.resolve(null),
             conversationId ? listArtifacts(authorizedFetch, conversationId) : Promise.resolve([]),
-            artifactId ? getArtifact(authorizedFetch, artifactId) : Promise.resolve(null),
+            artifactId && conversationId ? getArtifact(authorizedFetch, artifactId, conversationId) : Promise.resolve(null),
         ]);
         if (requestId !== loadRequestRef.current) return;
 
@@ -313,7 +313,7 @@ export default function ArtifactsScreen() {
             let lastError: unknown = null;
             if (selectedArtifact.id) {
                 try {
-                    const response = await fetchArtifactContentResponse(authorizedFetch, selectedArtifact.id);
+                    const response = await fetchArtifactContentResponse(authorizedFetch, selectedArtifact.id, conversationId);
                     const cached = await saveResponseToCache(response, {
                         prefix: `artifact-${selectedArtifact.id}`,
                     });

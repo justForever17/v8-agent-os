@@ -22,11 +22,32 @@ def _get(base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def _verify_artifact_content(base_url: str, artifact: dict[str, Any]) -> None:
+def _create_session(base_url: str, scope: dict[str, str]) -> str:
+    session = _post(
+        base_url,
+        "/sessions",
+        {
+            "title": "Creative Media project live smoke",
+            "userId": "creative-media-project-live-smoke",
+            **scope,
+            "scopeMode": "explicit",
+        },
+    )
+    session_id = str(session.get("id") or session.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError(f"session creation returned no id: {session}")
+    return session_id
+
+
+def _verify_artifact_content(base_url: str, artifact: dict[str, Any], session_id: str) -> None:
     artifact_id = artifact.get("artifactId") or artifact.get("id")
     if not artifact_id:
         raise RuntimeError(f"artifact missing id: {artifact}")
-    response = requests.get(f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content", timeout=120)
+    response = requests.get(
+        f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content",
+        params={"sessionId": session_id},
+        timeout=120,
+    )
     response.raise_for_status()
     if len(response.content) <= 0:
         raise RuntimeError(f"artifact content is empty: {artifact_id}")
@@ -48,8 +69,11 @@ def _submit_job(base_url: str, payload: dict[str, Any], label: str) -> dict[str,
     artifacts = list(job.get("artifacts") or [])
     if not artifacts:
         raise RuntimeError(f"{label} succeeded without artifacts")
+    session_id = str(payload.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("live smoke job is missing required session authority")
     for artifact in artifacts:
-        _verify_artifact_content(base_url, artifact)
+        _verify_artifact_content(base_url, artifact, session_id)
     return job
 
 
@@ -99,6 +123,7 @@ def main() -> int:
             "active": True,
         },
     )
+    scope["sessionId"] = _create_session(args.base_url, scope)
 
     image_job = _submit_job(
         args.base_url,

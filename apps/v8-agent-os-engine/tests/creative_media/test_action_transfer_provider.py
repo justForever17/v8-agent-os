@@ -7,6 +7,59 @@ import pytest
 from runtimes.creative_media.runtime import creative_media_runtime
 
 
+def _dashscope_action_transfer_config() -> dict:
+    return {
+        "providers": {
+            "dashscope": {
+                "provider": {
+                    "name": "DashScope",
+                    "base_url": "https://dashscope.example.test/api/v1",
+                    "api_key": "stored-key",
+                    "api_standard": "dashscope",
+                },
+                "models": {
+                    "wan2.2-animate-move": {
+                        "type": "VIDEO",
+                        "operationKinds": ["video.action_transfer"],
+                        "mediaLimits": {
+                            "adapter": "dashscope",
+                            "operationKinds": ["video.action_transfer"],
+                        },
+                        "endpointBinding": {
+                            "route": "wan2.2-animate-move",
+                            "providerModelId": "wan2.2-animate-move",
+                            "operationKind": "video.action_transfer",
+                            "adapter": "dashscope",
+                        },
+                    },
+                    "wan2.7-i2v": {
+                        "type": "VIDEO",
+                        "operationKinds": ["video.action_transfer"],
+                        "mediaLimits": {
+                            "adapter": "dashscope",
+                            "operationKinds": ["video.action_transfer"],
+                        },
+                        "endpointBinding": {
+                            "route": "wan2.7-i2v",
+                            "providerModelId": "wan2.7-i2v",
+                            "operationKind": "video.action_transfer",
+                            "adapter": "dashscope",
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+
+@pytest.fixture(autouse=True)
+def _configured_dashscope_action_transfer(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        _dashscope_action_transfer_config,
+    )
+
+
 def _job() -> dict:
     return {
         "jobId": "cm-action-transfer",
@@ -121,34 +174,7 @@ def test_dashscope_action_transfer_rejects_wrong_model_and_local_only_canvas_inp
 def test_configured_dashscope_action_transfer_candidate_is_executable(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",
-        lambda: {
-            "providers": {
-                "dashscope": {
-                    "provider": {
-                        "name": "DashScope",
-                        "base_url": "https://dashscope.example.test/api/v1",
-                        "api_key": "stored-key",
-                        "api_standard": "dashscope",
-                    },
-                    "models": {
-                        "wan2.2-animate-move": {
-                            "type": "VIDEO",
-                            "operationKinds": ["video.action_transfer"],
-                            "mediaLimits": {
-                                "adapter": "dashscope",
-                                "operationKinds": ["video.action_transfer"],
-                            },
-                            "endpointBinding": {
-                                "route": "wan2.2-animate-move",
-                                "providerModelId": "wan2.2-animate-move",
-                                "operationKind": "video.action_transfer",
-                                "adapter": "dashscope",
-                            },
-                        }
-                    },
-                }
-            }
-        },
+        _dashscope_action_transfer_config,
     )
     monkeypatch.setattr(creative_media_runtime, "_volc_credentials", lambda: {})
 

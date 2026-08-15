@@ -44,7 +44,19 @@ class SessionEventEmitter:
         *,
         kind: str = "event",
         source: Optional[RuntimeSource] = None,
-    ) -> Dict[str, Any]:
+        canvas_run_guard: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        def append(candidate: Dict[str, Any]) -> bool:
+            if canvas_run_guard is None:
+                db.add_runtime_event(candidate)
+                return True
+            return db.add_runtime_event_if_current(
+                candidate,
+                graph_run_id=str(canvas_run_guard.get("graphRunId") or ""),
+                expected_status=str(canvas_run_guard.get("status") or ""),
+                expected_updated_at=str(canvas_run_guard.get("updatedAt") or ""),
+            )
+
         with _EMIT_LOCK:
             while True:
                 event = build_runtime_event(
@@ -58,7 +70,8 @@ class SessionEventEmitter:
                     source=(source or self.default_source).as_dict(),
                 )
                 try:
-                    db.add_runtime_event(event)
+                    if not append(event):
+                        return None
                     self._seq += 1
                     return event
                 except sqlite3.IntegrityError:
@@ -81,7 +94,8 @@ class SessionEventEmitter:
                             source=(source or self.default_source).as_dict(),
                         )
                         try:
-                            db.add_runtime_event(event)
+                            if not append(event):
+                                return None
                             self._seq += 1
                             recovered = True
                             return event

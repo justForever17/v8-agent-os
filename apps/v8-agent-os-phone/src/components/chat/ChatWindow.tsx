@@ -406,6 +406,7 @@ export const ChatWindow = memo(function ChatWindow({
                         || (pendingApproval as PendingApproval).approval_id
                         || "",
                     )}
+                    sessionId={String(sessionId || "")}
                     busy={approvalBusy}
                     onCancel={() => setAskUserOpen(false)}
                     onSubmit={async (_toolCallId, answer, approve) => {

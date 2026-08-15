@@ -1,7 +1,5 @@
 import type { NextRequest } from "next/server";
 import {
-    buildAdminArtifactContentRef,
-    coerceAdminResourceRef,
     deriveAdminResourceRefFromArtifactLike,
     type AdminResourceRef,
 } from "@v8/session-realtime";
@@ -20,6 +18,10 @@ function stringValue(value: unknown) {
 
 function artifactIdOf(record: Record<string, unknown>) {
     return stringValue(record.artifactId) || stringValue(record.id);
+}
+
+function artifactSessionIdOf(record: Record<string, unknown>) {
+    return stringValue(record.sessionId) || stringValue(record.session_id);
 }
 
 function hasLocalBacking(record: Record<string, unknown>) {
@@ -83,10 +85,9 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
 
     const next = { ...(record as Record<string, unknown>) };
     const artifactId = artifactIdOf(next);
+    const sessionId = artifactSessionIdOf(next);
     const derivedResourceRef = attachSignedSurfaceUrl(
-        coerceAdminResourceRef(next.resourceRef)
-        || buildAdminArtifactContentRef(artifactId)
-        || deriveAdminResourceRefFromArtifactLike(next),
+        deriveAdminResourceRefFromArtifactLike(next),
         req,
     );
     if (!derivedResourceRef || (!artifactId && !hasLocalBacking(next))) {
@@ -94,7 +95,8 @@ export function normalizeArtifactForAdminSurface(record: unknown, req: NextReque
     }
 
     const encodedId = encodeURIComponent(artifactId);
-    const adminContentPath = `/api/memory/artifacts/${encodedId}/content`;
+    const adminContentParams = new URLSearchParams({ sessionId });
+    const adminContentPath = `/api/memory/artifacts/${encodedId}/content?${adminContentParams.toString()}`;
     const adminSurfacePath = derivedResourceRef.kind === "artifact_content"
         ? adminContentPath
         : normalizeAdminSurfacePath(stringValue(derivedResourceRef.adminPath));

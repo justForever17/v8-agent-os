@@ -78,6 +78,7 @@ export type AdminResourceRef = {
   adminPath?: string;
   signedUrl?: string;
   artifactId?: string;
+  sessionId?: string;
   workspaceId?: string;
   projectId?: string;
   workspacePath?: string;

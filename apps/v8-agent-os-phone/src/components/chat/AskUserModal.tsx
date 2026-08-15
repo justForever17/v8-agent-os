@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from "react";
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { buildAdminArtifactContentRef, coerceAdminResourceRef, type AdminResourceRef } from "@v8/session-realtime";
 
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -41,6 +42,8 @@ type AskUserMedia = {
     previewUrl?: string;
     thumbnailUrl?: string;
     contentUrl?: string;
+    sessionId?: string;
+    resourceRef?: unknown;
 };
 
 type AskUserRequest = Record<string, unknown> & {
@@ -58,6 +61,7 @@ type AskUserModalProps = {
     question: string;
     request?: AskUserRequest | null;
     toolCallId: string;
+    sessionId: string;
     busy?: boolean;
     onSubmit: (toolCallId: string, answer: string, approve: boolean) => void | Promise<void>;
     onCancel?: () => void;
@@ -129,15 +133,38 @@ function mediaKind(item: AskUserMedia) {
     return "image";
 }
 
-function mediaUrl(item: AskUserMedia) {
-    return asText(item.previewUrl) || asText(item.thumbnailUrl) || asText(item.url) || asText(item.contentUrl) || asText(item.href);
+function sessionBoundMediaRef(item: AskUserMedia, sessionId: string): AdminResourceRef | null {
+    const expectedSessionId = asText(sessionId);
+    const declaredSessionId = asText(item.sessionId);
+    if (!expectedSessionId || (declaredSessionId && declaredSessionId !== expectedSessionId)) return null;
+
+    const rawResourceRef = item.resourceRef;
+    const declaredRef = rawResourceRef && typeof rawResourceRef === "object" && !Array.isArray(rawResourceRef)
+        ? coerceAdminResourceRef(rawResourceRef)
+        : null;
+    if (declaredRef?.kind === "external_url") return declaredRef;
+    if (declaredRef?.kind === "artifact_content") {
+        if (declaredRef.sessionId !== expectedSessionId) return null;
+        const declaredArtifactId = asText(item.artifactId);
+        if (declaredArtifactId && declaredArtifactId !== declaredRef.artifactId) return null;
+        return buildAdminArtifactContentRef(declaredRef.artifactId || "", { sessionId: expectedSessionId });
+    }
+
+    const artifactId = asText(item.artifactId) || asText(item.id);
+    return artifactId ? buildAdminArtifactContentRef(artifactId, { sessionId: expectedSessionId }) : null;
 }
 
-function mediaPlaybackUrl(item: AskUserMedia) {
-    const direct = asText(item.contentUrl) || asText(item.url) || asText(item.href) || asText(item.previewUrl);
-    if (direct) return direct;
-    const artifactId = asText(item.artifactId) || asText(item.id);
-    return artifactId ? `/api/client/artifacts/${encodeURIComponent(artifactId)}/content` : "";
+function mediaPlaybackUrl(item: AskUserMedia, sessionId: string) {
+    const resourceRef = sessionBoundMediaRef(item, sessionId);
+    if (!resourceRef) return "";
+    if (resourceRef.kind === "external_url") return asText(resourceRef.signedUrl) || asText(resourceRef.url);
+    if (resourceRef.kind !== "artifact_content" || !resourceRef.artifactId || !resourceRef.sessionId) return "";
+    const query = new URLSearchParams({ sessionId: resourceRef.sessionId });
+    return `/api/client/artifacts/${encodeURIComponent(resourceRef.artifactId)}/content?${query.toString()}`;
+}
+
+function mediaUrl(item: AskUserMedia, sessionId: string) {
+    return mediaPlaybackUrl(item, sessionId);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -160,18 +187,20 @@ function specClarificationContext(request?: AskUserRequest | null) {
 function AskUserMediaCard({
     item,
     index,
+    sessionId,
     selected,
     onToggle,
 }: {
     item: AskUserMedia;
     index: number;
+    sessionId: string;
     selected: boolean;
     onToggle: () => void;
 }) {
     const { colors } = useUiPrefs();
     const kind = mediaKind(item);
-    const previewUrl = mediaUrl(item);
-    const playbackUrl = mediaPlaybackUrl(item);
+    const previewUrl = mediaUrl(item, sessionId);
+    const playbackUrl = mediaPlaybackUrl(item, sessionId);
     const label = mediaLabel(item, index);
     const [playing, setPlaying] = useState(false);
     const { resolvedSrc } = usePreparedPhoneMediaSource({ src: playbackUrl, title: label });
@@ -258,6 +287,7 @@ export const AskUserModal = memo(function AskUserModal({
     question,
     request,
     toolCallId,
+    sessionId,
     busy = false,
     onSubmit,
     onCancel,
@@ -414,6 +444,7 @@ export const AskUserModal = memo(function AskUserModal({
                                             key={key}
                                             item={item}
                                             index={index}
+                                            sessionId={sessionId}
                                             selected={selected}
                                             onToggle={() => toggleMedia(item, index)}
                                         />

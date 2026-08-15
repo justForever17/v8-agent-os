@@ -1,9 +1,27 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
 import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
-export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {
+function passthroughContentHeaders(response: Response) {
+    const headers = new Headers();
+    for (const name of [
+        "Content-Type",
+        "Content-Disposition",
+        "Content-Length",
+        "Accept-Ranges",
+        "Content-Range",
+        "ETag",
+        "Last-Modified",
+    ]) {
+        const value = response.headers.get(name);
+        if (value) headers.set(name, value);
+    }
+    headers.set("Cache-Control", "no-store");
+    return headers;
+}
+
+export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
     const session = await auth();
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -15,10 +33,21 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
 
     try {
         const { id } = await context.params;
-        const response = await fetch(`${await resolveAdminApiBaseUrl()}/memory/artifacts/${encodeURIComponent(id)}/content`, {
+        const sessionId = String(req.nextUrl.searchParams.get("sessionId") || "").trim();
+        if (!sessionId) {
+            return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+        }
+        const query = new URLSearchParams({ sessionId });
+        if (req.nextUrl.searchParams.get("download") === "1") query.set("download", "1");
+        const headers = new Headers({
+            "x-v8-agent-os-secret": internalSecret,
+            "x-v8-agent-os-user-email": session.user.email,
+        });
+        const range = req.headers.get("range");
+        if (range) headers.set("Range", range);
+        const response = await fetch(`${await resolveAdminApiBaseUrl()}/memory/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`, {
             headers: {
-                "x-v8-agent-os-secret": internalSecret,
-                "x-v8-agent-os-user-email": session.user.email,
+                ...Object.fromEntries(headers.entries()),
             },
             cache: "no-store",
         });
@@ -28,11 +57,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
         }
         return new NextResponse(response.body, {
             status: response.status,
-            headers: {
-                "Content-Type": response.headers.get("Content-Type") || "application/octet-stream",
-                "Content-Disposition": response.headers.get("Content-Disposition") || "",
-                "Cache-Control": "no-store",
-            },
+            headers: passthroughContentHeaders(response),
         });
     } catch (error) {
         console.error("[ArtifactsProxy] CONTENT failed:", error);

@@ -52,6 +52,24 @@ test("artifact routes fail closed unless artifact, conversation, and workspace s
   assert.match(screen, /setDetailError\(t\("src\.screens\.artifactsscreen\.artifact_binding_mismatch"\)\)/);
   assert.match(screen, /workspaceReadAllowed && workspacePath/);
   assert.match(screen, /sessionId=\{conversationId\}/);
+  assert.match(screen, /getArtifact\(authorizedFetch, artifactId, conversationId\)/);
+  assert.match(screen, /fetchArtifactContentResponse\(authorizedFetch, selectedArtifact\.id, conversationId\)/);
+
+  const api = read("src/lib/phone-api.ts");
+  assert.match(api, /\/api\/client\/artifacts\/\$\{encodeURIComponent\(id\)\}\?sessionId=\$\{encodeURIComponent\(sessionId\)\}/);
+  assert.match(api, /\/content\?sessionId=\$\{encodeURIComponent\(sessionId\)\}/);
+});
+
+test("ask_user media stays bound to the active session authority", () => {
+  const askUser = read("src/components/chat/AskUserModal.tsx");
+
+  assert.match(askUser, /declaredSessionId && declaredSessionId !== expectedSessionId/);
+  assert.match(askUser, /rawResourceRef && typeof rawResourceRef === "object" && !Array\.isArray\(rawResourceRef\)/);
+  assert.match(askUser, /coerceAdminResourceRef\(rawResourceRef\)/);
+  assert.match(askUser, /resourceRef\.kind === "external_url"/);
+  assert.match(askUser, /new URLSearchParams\(\{ sessionId: resourceRef\.sessionId \}\)/);
+  assert.match(askUser, /\/api\/client\/artifacts\/\$\{encodeURIComponent\(resourceRef\.artifactId\)\}\/content\?\$\{query\.toString\(\)\}/);
+  assert.doesNotMatch(askUser, /const direct = asText\(item\.contentUrl\)/);
 });
 
 test("artifact Human Surface omits raw lineage, paths, and metadata", () => {

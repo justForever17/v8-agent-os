@@ -927,6 +927,107 @@ def _runtime_timeline_entry(
     }
 
 
+CANVAS_GRAPH_RUN_STATE_TOPIC = "canvas.graph.run.state"
+CANVAS_GRAPH_RUN_STATE_SCHEMA = "v8.creative_canvas_graph_run_state.v1"
+CANVAS_GRAPH_RUN_STATE_STATUSES = {
+    "queued",
+    "running",
+    "cancelling",
+    "cancelled",
+    "failed",
+    "interrupted",
+    "recovered",
+    "completed",
+}
+CANVAS_GRAPH_RUN_STATE_SUMMARIES = {
+    "queued": "创作画布任务已排队",
+    "running": "创作画布任务正在运行",
+    "cancelling": "正在取消创作画布任务",
+    "cancelled": "创作画布任务已取消",
+    "failed": "创作画布任务执行失败",
+    "interrupted": "创作画布任务因 Engine 重启而中断",
+    "recovered": "创作画布任务已恢复",
+    "completed": "创作画布任务执行完成",
+}
+
+
+def _canvas_graph_run_state_metadata(
+    event: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if payload.get("schema") != CANVAS_GRAPH_RUN_STATE_SCHEMA:
+        return None
+    if any(
+        alias in payload
+        for alias in (
+            "session_id",
+            "workspace_id",
+            "graph_id",
+            "graph_run_id",
+            "canvas_operation_id",
+            "run_id",
+            "retry_of_graph_run_id",
+        )
+    ):
+        return None
+
+    def canonical_text(key: str) -> str:
+        value = payload.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    session_id = canonical_text("sessionId")
+    workspace_id = canonical_text("workspaceId")
+    graph_id = canonical_text("graphId")
+    graph_run_id = canonical_text("graphRunId")
+    canvas_operation_id = canonical_text("canvasOperationId")
+    if not all((session_id, workspace_id, graph_id, graph_run_id, canvas_operation_id)):
+        return None
+    event_session_id = str(event.get("session_id") or "").strip()
+    if event_session_id != session_id:
+        return None
+
+    raw_run_id = payload.get("runId")
+    if raw_run_id is not None and not isinstance(raw_run_id, str):
+        return None
+    run_id = str(raw_run_id or "").strip() or None
+    event_run_id = str(event.get("run_id") or "").strip() or None
+    if event_run_id != run_id:
+        return None
+
+    status = canonical_text("status").lower()
+    if status not in CANVAS_GRAPH_RUN_STATE_STATUSES:
+        return None
+    transition = canonical_text("transition").lower()
+    if transition not in {"", "recovered", "retry_failed_branch"}:
+        return None
+    retry_of_graph_run_id = canonical_text("retryOfGraphRunId")
+    if transition == "retry_failed_branch" and not retry_of_graph_run_id:
+        return None
+
+    metadata: Dict[str, Any] = {
+        "schema": CANVAS_GRAPH_RUN_STATE_SCHEMA,
+        "sessionId": session_id,
+        "workspaceId": workspace_id,
+        "graphId": graph_id,
+        "graphRunId": graph_run_id,
+        "canvasOperationId": canvas_operation_id,
+        "runId": run_id,
+        "status": status,
+    }
+    if transition:
+        metadata["transition"] = transition
+    if retry_of_graph_run_id:
+        metadata["retryOfGraphRunId"] = retry_of_graph_run_id
+    recovery = payload.get("recovery") if isinstance(payload.get("recovery"), dict) else {}
+    if (
+        status in {"failed", "interrupted"}
+        and recovery.get("canRetry") is True
+        and str(recovery.get("mode") or "").strip() == "failed_branch"
+    ):
+        metadata["recovery"] = {"canRetry": True, "mode": "failed_branch"}
+    return metadata
+
+
 RUNTIME_EPISODE_ACTOR_LABELS = {
     "research": "Research Runtime",
     "engineering": "Engineering Runtime",
@@ -1500,6 +1601,7 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
 
 
 RUNTIME_TIMELINE_MILESTONE_TOPICS = {
+    CANVAS_GRAPH_RUN_STATE_TOPIC,
     "handoff.ref.created",
     "runtime.episode.active",
     "runtime.episode.cancelled",
@@ -1575,6 +1677,19 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
         orchestration_entry = _runtime_orchestration_entry(event, topic, payload if isinstance(payload, dict) else {})
         if orchestration_entry:
             entry = orchestration_entry
+        elif topic == CANVAS_GRAPH_RUN_STATE_TOPIC:
+            canvas_metadata = _canvas_graph_run_state_metadata(event, payload)
+            if canvas_metadata:
+                canvas_status = str(canvas_metadata["status"])
+                entry = _runtime_timeline_entry(
+                    event,
+                    runtime_id="creative_media",
+                    kind="progress",
+                    summary=CANVAS_GRAPH_RUN_STATE_SUMMARIES[canvas_status],
+                    status=canvas_status,
+                    actor_label=_runtime_actor_label("creative_media"),
+                    metadata=canvas_metadata,
+                )
         elif topic == "extension.route.selected":
             skill_count = len(list(payload.get("skillCandidates") or []))
             mcp_count = len(list(payload.get("mcpToolCandidates") or []))

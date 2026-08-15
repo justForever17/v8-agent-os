@@ -70,7 +70,8 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
     useEffect(() => {
         if (cached?.inlineContent || cached?.resourceUrl) return;
         let cancelled = false;
-        void fetch(`/api/artifacts/${encodeURIComponent(document.subjectRef.artifactId)}`, { cache: "no-store" })
+        const query = new URLSearchParams({ sessionId: String(document.subjectRef.sessionId || "") });
+        void fetch(`/api/artifacts/${encodeURIComponent(document.subjectRef.artifactId)}?${query.toString()}`, { cache: "no-store" })
             .then(async (response) => {
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));

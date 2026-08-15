@@ -35,6 +35,7 @@ _ACTIVITY_PREFIXES = (
     "approval.",
     "ask_user.",
     "human_guidance.",
+    "canvas.graph.",
     "session_coordination.",
     "spec.",
     "workspace.binding_",

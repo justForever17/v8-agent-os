@@ -181,8 +181,10 @@ Network Runtime 提供 OpenAI / Anthropic 兼容入口，常见路径如下：
 - 产物内容仍通过 Admin client artifact proxy 读取：
 
 ```text
-/api/client/artifacts/{artifactId}/content
+/api/client/artifacts/{artifactId}/content?sessionId={sessionId}
 ```
+
+`sessionId` 是必填资源权限边界；缺失或不匹配当前 Session/Workspace 的请求会被拒绝。短期 signed URL 的签名覆盖完整路径和该查询参数。
 
 V8 不会因为 active mesh profile 把所有 LAN 产物链接全局改写成 Mesh 地址。
 

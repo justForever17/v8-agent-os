@@ -3628,6 +3628,99 @@ class DatabaseManager:
             # wakeup failure must never roll back or falsify runtime progress.
             return
 
+    def add_runtime_event_if_current(
+        self,
+        event: Dict[str, Any],
+        *,
+        graph_run_id: str,
+        expected_status: str,
+        expected_updated_at: str,
+    ) -> bool:
+        """Append a runtime event only while its Canvas run row is unchanged.
+
+        Canvas state transitions commit before their event is published.  This
+        guarded write keeps a concurrent cancellation/retry from appending a
+        stale state after the transition has already won the SQLite write lock.
+        The generic event path remains unchanged for all other topics.
+        """
+        normalized_session_id = str(event.get("session_id") or "").strip()
+        normalized_graph_run_id = str(graph_run_id or "").strip()
+        normalized_status = str(expected_status or "").strip()
+        normalized_updated_at = str(expected_updated_at or "").strip()
+
+        def _write() -> bool:
+            source_payload = to_jsonable(event.get("source") or {})
+            event_payload = to_jsonable(event.get("payload") or {})
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute(
+                    """
+                    SELECT status, updated_at
+                    FROM creative_canvas_graph_runs
+                    WHERE graph_run_id = ? AND session_id = ? LIMIT 1
+                    """,
+                    (normalized_graph_run_id, normalized_session_id),
+                ).fetchone()
+                if (
+                    not current
+                    or str(current["status"] or "") != normalized_status
+                    or str(current["updated_at"] or "") != normalized_updated_at
+                ):
+                    conn.rollback()
+                    return False
+                for attempt in range(5):
+                    row = conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?",
+                        (normalized_session_id,),
+                    ).fetchone()
+                    seq = int(row["next_seq"]) if row else 1
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO runtime_events
+                            (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                event["event_id"],
+                                normalized_session_id,
+                                event.get("run_id"),
+                                seq,
+                                event.get("kind", "event"),
+                                event.get("topic"),
+                                event.get("ts"),
+                                json.dumps(source_payload, ensure_ascii=False),
+                                json.dumps(event_payload, ensure_ascii=False),
+                            ),
+                        )
+                        conn.commit()
+                        return True
+                    except sqlite3.IntegrityError as exc:
+                        if "runtime_events.session_id, runtime_events.seq" not in str(exc):
+                            raise
+                        if attempt >= 4:
+                            raise
+                conn.rollback()
+                return False
+
+        inserted = bool(self._run_write_with_retry(_write))
+        if not inserted or not normalized_session_id:
+            return inserted
+        try:
+            from core.session_activity import is_session_activity_topic, session_activity_broker
+
+            topic = str(event.get("topic") or "").strip()
+            if is_session_activity_topic(topic):
+                session = self.get_session(normalized_session_id) or {}
+                session_activity_broker.publish(
+                    owner_id=str(session.get("user_id") or session.get("userId") or ""),
+                    session_id=normalized_session_id,
+                    topic=topic,
+                )
+        except Exception:
+            return inserted
+        return inserted
+
     def get_runtime_events(self, session_id: str, after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

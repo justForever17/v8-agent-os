@@ -182,8 +182,10 @@ Artifacts follow the current connection entrypoint.
 - Content still goes through the Admin client artifact proxy:
 
 ```text
-/api/client/artifacts/{artifactId}/content
+/api/client/artifacts/{artifactId}/content?sessionId={sessionId}
 ```
+
+`sessionId` is a required resource-authority boundary; requests that omit it or do not match the current Session/Workspace are rejected. Short-lived signed URLs cover the full path and this query parameter.
 
 V8 does not globally rewrite LAN artifact links to mesh URLs because a mesh profile exists.
 

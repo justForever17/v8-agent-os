@@ -1,6 +1,6 @@
 # Phone Canvas 与会话权威测试矩阵
 
-更新时间：2026-08-05
+更新时间：2026-08-15
 
 ## 1. 证据等级
 
@@ -69,10 +69,10 @@ node --test tests/workbench-human-surface-contract.test.cjs
 | GRAPH-01 | CONTRACT | queued/running/cancelling/cancelled/failed/interrupted/recovered/completed | 只消费 canonical typed event，显示紧凑双语状态，不复制 Web Canvas UI | PASS |
 | GRAPH-02 | CONTRACT | wrong schema、缺 lineage、跨 scope、summary 猜状态 | 全部拒绝，不从文案制造状态 | PASS |
 | GRAPH-03 | UNIT | retry failed branch | 复用原 run/operation；成功且可能付费的祖先 attempt 保持 1 | PASS，Engine 4 项 graph 组之一 |
-| GRAPH-04 | DESKTOP_PROXY / REAL_DEVICE | live/history/reload graph 状态 parity | Engine 发布 `canvas.graph.run.state` v1，Phone 实时与重载一致 | BLOCKED：Engine 尚无 canonical realtime producer |
+| GRAPH-04 | DESKTOP_PROXY / REAL_DEVICE | live/history/reload graph 状态 parity | Engine 发布 `canvas.graph.run.state` v1，Phone 实时与重载一致 | NOT-RUN（Engine producer、snapshot/history projection 与真实 Graph run 序列已通过；Phone 代理/真机 parity 尚未执行） |
 | PHONE-SCOPE-01 | STATIC | Phone 图状态界面 | 只有状态与产物投影，没有节点拖拽、连线或 Web Canvas 编辑器 | PASS |
 
-`GRAPH-04` 不允许用 summary 解析、轮询伪装或客户端自造状态绕过。Engine 当前 `_write_run_state` 只写 SQLite；待权威 producer 落地后复用本矩阵补真实端到端证据。
+`GRAPH-04` 不允许用 summary 解析、轮询伪装或客户端自造状态绕过。Engine 已在状态提交后发布 canonical v1 event，并由 snapshot/history projection 保留；下一步使用本矩阵补 Phone 代理与真机的 live/history/reload parity。
 
 ## 6. 资源容错与预览
 
@@ -93,9 +93,9 @@ node --test tests/workbench-human-surface-contract.test.cjs
 | BUILD-01 | CONTRACT | Phone `typecheck` | PASS |
 | BUILD-02 | CONTRACT | Phone i18n | PASS |
 | BUILD-03 | CONTRACT | Phone tests | PASS，20/20 |
-| BUILD-04 | CONTRACT | Shared build/tests | PASS，61/61 |
+| BUILD-04 | CONTRACT | Shared build/tests | PASS，63/63 |
 | BUILD-05 | CONTRACT | Web Human Surface | PASS，13/13 |
-| BUILD-06 | CONTRACT | Web Canvas | PASS，12/12 |
+| BUILD-06 | CONTRACT | Web Canvas | PASS，13/13 |
 | BUILD-07 | BUILD | Shared tgz 与 Phone/Web/Admin/Pet lock integrity | PASS，四端同一 integrity |
 | BUILD-08 | BUILD | Phone Android export / Expo doctor | PASS，Android bundle 导出；Expo Doctor 19/19；React Native 0.83.10 与 SDK 55 对齐 |
 | PROXY-01 | DESKTOP_PROXY | `v8os preview --rebuild`、9530/9528/9527 | PASS，Admin/Web production build；Engine `/health`、Admin/Web 根页面 HTTP 200；Shell 存活；Engine 使用 `pythonw.exe`，服务子进程无可见终端窗口；Engine 稳态 10 次 `/health` 平均 1.82 秒、P95 2.36 秒 |

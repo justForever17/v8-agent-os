@@ -199,6 +199,151 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(timeline[0]["summary"], "运行状态已切换为：completed")
         self.assertEqual(timeline[0]["status"], "completed")
 
+    def test_canvas_graph_run_state_projects_only_canonical_metadata(self):
+        events = [
+            {
+                "event_id": "evt_canvas_retry",
+                "session_id": "session-a",
+                "run_id": "chat-run-a",
+                "seq": 3,
+                "topic": "canvas.graph.run.state",
+                "payload": {
+                    "schema": "v8.creative_canvas_graph_run_state.v1",
+                    "sessionId": "session-a",
+                    "workspaceId": "workspace-a",
+                    "graphId": "graph-a",
+                    "graphRunId": "graph-run-a",
+                    "canvasOperationId": "canvas-op-a",
+                    "runId": "chat-run-a",
+                    "status": "running",
+                    "transition": "retry_failed_branch",
+                    "retryOfGraphRunId": "graph-run-a",
+                    "nodeStates": {"private-node": {"providerPayload": "do-not-project"}},
+                    "workspacePath": "C:/private/workspace",
+                    "providerResponse": {"secret": "do-not-project"},
+                },
+                "event_ts": "2026-08-15T00:00:00Z",
+                "source": {"component": "creative_canvas_graph"},
+            }
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["runtimeId"], "creative_media")
+        self.assertEqual(timeline[0]["topic"], "canvas.graph.run.state")
+        self.assertEqual(timeline[0]["status"], "running")
+        self.assertEqual(timeline[0]["metadata"], {
+            "schema": "v8.creative_canvas_graph_run_state.v1",
+            "sessionId": "session-a",
+            "workspaceId": "workspace-a",
+            "graphId": "graph-a",
+            "graphRunId": "graph-run-a",
+            "canvasOperationId": "canvas-op-a",
+            "runId": "chat-run-a",
+            "status": "running",
+            "transition": "retry_failed_branch",
+            "retryOfGraphRunId": "graph-run-a",
+        })
+        self.assertNotIn("do-not-project", str(timeline))
+        self.assertNotIn("C:/private/workspace", str(timeline))
+
+    def test_canvas_graph_run_state_rejects_noncanonical_authority_and_retry_lineage(self):
+        canonical_payload = {
+            "schema": "v8.creative_canvas_graph_run_state.v1",
+            "sessionId": "session-a",
+            "workspaceId": "workspace-a",
+            "graphId": "graph-a",
+            "graphRunId": "graph-run-a",
+            "canvasOperationId": "canvas-op-a",
+            "runId": None,
+            "status": "running",
+        }
+        events = [
+            {
+                "event_id": "evt_canvas_wrong_session",
+                "session_id": "session-b",
+                "run_id": None,
+                "seq": 4,
+                "topic": "canvas.graph.run.state",
+                "payload": canonical_payload,
+                "source": {},
+            },
+            {
+                "event_id": "evt_canvas_alias_conflict",
+                "session_id": "session-a",
+                "run_id": None,
+                "seq": 5,
+                "topic": "canvas.graph.run.state",
+                "payload": {**canonical_payload, "session_id": "session-b"},
+                "source": {},
+            },
+            {
+                "event_id": "evt_canvas_retry_without_lineage",
+                "session_id": "session-a",
+                "run_id": None,
+                "seq": 6,
+                "topic": "canvas.graph.run.state",
+                "payload": {**canonical_payload, "transition": "retry_failed_branch"},
+                "source": {},
+            },
+        ]
+
+        self.assertEqual(project_runtime_timeline_from_events(events), [])
+
+    def test_canvas_graph_run_state_survives_compact_reload_window(self):
+        events = [
+            {
+                "event_id": "evt_canvas_completed",
+                "session_id": "session-a",
+                "run_id": None,
+                "seq": 1,
+                "topic": "canvas.graph.run.state",
+                "payload": {
+                    "schema": "v8.creative_canvas_graph_run_state.v1",
+                    "sessionId": "session-a",
+                    "workspaceId": "workspace-a",
+                    "graphId": "graph-a",
+                    "graphRunId": "graph-run-a",
+                    "canvasOperationId": "canvas-op-a",
+                    "runId": None,
+                    "status": "completed",
+                },
+                "source": {},
+            },
+            {
+                "event_id": "evt_lane_queued",
+                "run_id": "chat-run-b",
+                "seq": 2,
+                "topic": "run.lane.queued",
+                "payload": {},
+                "source": {},
+            },
+            {
+                "event_id": "evt_lane_acquired",
+                "run_id": "chat-run-b",
+                "seq": 3,
+                "topic": "run.lane.acquired",
+                "payload": {},
+                "source": {},
+            },
+            {
+                "event_id": "evt_lane_released",
+                "run_id": "chat-run-b",
+                "seq": 4,
+                "topic": "run.lane.released",
+                "payload": {},
+                "source": {},
+            },
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+        compact = select_runtime_timeline_window(timeline, recent_limit=2, milestone_limit=1)
+
+        self.assertEqual([entry["seq"] for entry in compact], [1, 3, 4])
+        self.assertEqual(compact[0]["topic"], "canvas.graph.run.state")
+        self.assertEqual(compact[0]["metadata"]["status"], "completed")
+
     def test_runtime_episode_projection_routes_by_nested_kind(self):
         events = [
             {

@@ -6,7 +6,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
@@ -24,6 +24,7 @@ from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.workbench_files import workbench_file_service
 from core.workbench_events import emit_workbench_document_event
+from core.workspace_authority import WorkspaceAuthorityDescriptor, workspace_authority_service
 from core.workspace_media_library import WorkspaceMediaLibraryError, workspace_media_library
 from core.session_activity import session_activity_broker
 from core.runtime_projection import (
@@ -199,6 +200,159 @@ def _scope_history_event_payload(event) -> dict:
 def _memory_runtime():
     return importlib.import_module("runtimes.memory.runtime").memory_runtime
 
+
+def _artifact_not_found() -> NoReturn:
+    raise HTTPException(status_code=404, detail="Artifact not found")
+
+
+def _artifact_authority(session_id: str) -> tuple[str, WorkspaceAuthorityDescriptor, Path]:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id or db.get_session(normalized_session_id) is None:
+        _artifact_not_found()
+    authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=normalized_session_id)
+    workspace_root = str(authority.workspace_root or "").strip()
+    if not workspace_root:
+        _artifact_not_found()
+    resolved_workspace_root = _artifact_resolved_path(workspace_root)
+    if resolved_workspace_root is None:
+        _artifact_not_found()
+    return normalized_session_id, authority, resolved_workspace_root
+
+
+def _artifact_resolved_path(value: str, *, workspace_root: Path | None = None) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        path = Path(raw).expanduser()
+        if workspace_root is not None and not path.is_absolute():
+            path = workspace_root / path
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _artifact_path_is_absolute(value: str) -> bool:
+    try:
+        return Path(str(value or "")).expanduser().is_absolute()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _artifact_path_is_within(path: Path, workspace_root: Path) -> bool:
+    try:
+        path.relative_to(workspace_root)
+        return True
+    except ValueError:
+        return False
+
+
+def _artifact_matches_authority(
+    artifact: dict,
+    *,
+    session_id: str,
+    authority: WorkspaceAuthorityDescriptor,
+    workspace_root: Path,
+) -> bool:
+    normalized = normalize_artifact_record(artifact)
+    if str(normalized.get("sessionId") or "").strip() != session_id:
+        return False
+
+    metadata = normalized.get("metadata") if isinstance(normalized.get("metadata"), dict) else {}
+    authority_workspace_id = str(authority.workspace_id or "").strip()
+    authority_project_id = str(authority.project_id or "").strip()
+    artifact_workspace_id = str(normalized.get("workspaceId") or "").strip()
+    artifact_project_id = str(normalized.get("projectId") or "").strip()
+    if artifact_workspace_id and artifact_workspace_id != authority_workspace_id:
+        return False
+    if artifact_project_id and artifact_project_id != authority_project_id:
+        return False
+
+    has_workspace_evidence = bool(
+        (artifact_workspace_id and artifact_workspace_id == authority_workspace_id)
+        or (artifact_project_id and artifact_project_id == authority_project_id)
+    )
+
+    declared_root = str(normalized.get("workspaceRoot") or "").strip()
+    if declared_root:
+        resolved_root = _artifact_resolved_path(declared_root)
+        if resolved_root != workspace_root:
+            return False
+        has_workspace_evidence = True
+
+    metadata_workspace_path = str(metadata.get("workspacePath") or metadata.get("workspace_path") or "").strip()
+    if metadata_workspace_path:
+        resolved_metadata_workspace = _artifact_resolved_path(metadata_workspace_path)
+        if resolved_metadata_workspace != workspace_root:
+            return False
+        has_workspace_evidence = True
+
+    source_value = str(normalized.get("sourcePath") or "").strip()
+    source_path = _artifact_resolved_path(source_value, workspace_root=workspace_root)
+    if source_value and source_path is None:
+        return False
+    source_is_within_workspace = bool(source_path and _artifact_path_is_within(source_path, workspace_root))
+    if source_path and not _artifact_path_is_absolute(source_value) and not source_is_within_workspace:
+        return False
+    has_workspace_evidence = has_workspace_evidence or source_is_within_workspace
+
+    workspace_value = str(normalized.get("workspacePath") or "").strip()
+    workspace_path = _artifact_resolved_path(workspace_value, workspace_root=workspace_root)
+    if workspace_value and workspace_path is None:
+        return False
+    if workspace_path:
+        if not _artifact_path_is_within(workspace_path, workspace_root):
+            return False
+        if source_path and workspace_path != workspace_root and workspace_path != source_path:
+            return False
+        has_workspace_evidence = True
+
+    relative_value = str(normalized.get("workspaceRelativePath") or "").strip()
+    relative_path = _artifact_resolved_path(relative_value, workspace_root=workspace_root)
+    if relative_value and relative_path is None:
+        return False
+    if relative_path:
+        if _artifact_path_is_absolute(relative_value) or not _artifact_path_is_within(relative_path, workspace_root):
+            return False
+        if source_path and source_path != relative_path:
+            return False
+        has_workspace_evidence = True
+
+    storage_class = str(normalized.get("storageClass") or "").strip().lower()
+    path_plane = str(normalized.get("pathPlane") or "").strip().lower()
+    is_workspace_artifact = storage_class == "workspace" or path_plane.startswith("workspace_")
+    if is_workspace_artifact and not source_is_within_workspace:
+        return False
+    return has_workspace_evidence
+
+
+def _authorized_runtime_artifact(artifact_id: str, session_id: str) -> tuple[dict, Path]:
+    normalized_session_id, authority, workspace_root = _artifact_authority(session_id)
+    artifact = _memory_runtime().get_artifact(artifact_id)
+    if artifact is None or not _artifact_matches_authority(
+        artifact,
+        session_id=normalized_session_id,
+        authority=authority,
+        workspace_root=workspace_root,
+    ):
+        _artifact_not_found()
+    return normalize_artifact_record(artifact), workspace_root
+
+
+def _authorized_runtime_artifacts(*, session_id: str, run_id: str | None, limit: int) -> list[dict]:
+    normalized_session_id, authority, workspace_root = _artifact_authority(session_id)
+    artifacts = _memory_runtime().list_artifacts(session_id=normalized_session_id, run_id=run_id, limit=limit)
+    return [
+        normalize_artifact_record(item)
+        for item in artifacts
+        if _artifact_matches_authority(
+            item,
+            session_id=normalized_session_id,
+            authority=authority,
+            workspace_root=workspace_root,
+        )
+    ]
+
 def _build_durable_detail_payload(
     *,
     session_id: str,
@@ -212,7 +366,10 @@ def _build_durable_detail_payload(
 ) -> dict:
     from erc.session_coordination_service import session_coordination_service
 
-    workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+    # Canvas-only sessions may not have a workflow-ledger row yet.  Keep all
+    # durable projections on the same empty-object contract as the history
+    # builders instead of leaking a None into downstream callers.
+    workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
     approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
     ask_user_interactions = project_ask_user_interactions(
         db.list_ask_user_interactions(session_id=session_id, status="pending")
@@ -624,7 +781,7 @@ async def create_session(data: dict = Body(...)):
                 scope_mode=data.get("scopeMode", "explicit"),
             )
         session = db.get_session(session_id)
-        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
         approvals: list[dict] = []
         controls = build_projection_controls(workflow_view, approvals)
         session_source = _derive_session_source(session or {"id": session_id, "metadata": {}}, None)
@@ -702,7 +859,7 @@ async def patch_session_presentation(session_id: str, data: dict = Body(...)):
         session = db.update_session_presentation(session_id, updates)
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
         approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
         controls = build_projection_controls(workflow_view, approvals)
         root_run_id = str((workflow_view or {}).get("rootRunId") or "").strip()
@@ -1146,25 +1303,23 @@ async def get_session_runtime_events(session_id: str, after_seq: int | None = No
 @router.get("/sessions/{session_id}/artifacts")
 async def get_session_runtime_artifacts(session_id: str, run_id: str | None = None, limit: int = 100):
     try:
-        return {
-            "artifacts": [
-                normalize_artifact_record(item)
-                for item in _memory_runtime().list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
-            ],
-        }
+        return {"artifacts": _authorized_runtime_artifacts(session_id=session_id, run_id=run_id, limit=limit)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/artifacts")
-async def list_runtime_artifacts(session_id: str | None = None, run_id: str | None = None, limit: int = 100):
+async def list_runtime_artifacts(
+    session_id: str = Query(..., alias="sessionId"),
+    run_id: str | None = None,
+    limit: int = 100,
+):
     try:
-        return {
-            "artifacts": [
-                normalize_artifact_record(item)
-                for item in _memory_runtime().list_artifacts(session_id=session_id, run_id=run_id, limit=limit)
-            ],
-        }
+        return {"artifacts": _authorized_runtime_artifacts(session_id=session_id, run_id=run_id, limit=limit)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1335,12 +1490,10 @@ async def adopt_workspace_artifact(body: dict = Body(...)):
 
 
 @router.get("/artifacts/{artifact_id}")
-async def get_runtime_artifact(artifact_id: str):
+async def get_runtime_artifact(artifact_id: str, session_id: str = Query(..., alias="sessionId")):
     try:
-        artifact = _memory_runtime().get_artifact(artifact_id)
-        if artifact is None:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-        return normalize_artifact_record(artifact)
+        artifact, _ = _authorized_runtime_artifact(artifact_id, session_id)
+        return artifact
     except HTTPException:
         raise
     except Exception as e:
@@ -1348,21 +1501,29 @@ async def get_runtime_artifact(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}/content")
-async def get_runtime_artifact_content(artifact_id: str):
+async def get_runtime_artifact_content(
+    artifact_id: str,
+    session_id: str = Query(..., alias="sessionId"),
+    download: bool = False,
+):
     try:
-        artifact = _memory_runtime().get_artifact(artifact_id)
-        if artifact is None:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-        normalized = normalize_artifact_record(artifact)
+        normalized, workspace_root = _authorized_runtime_artifact(artifact_id, session_id)
         source_path = str(normalized.get("sourcePath") or "").strip()
         if not source_path:
             raise HTTPException(status_code=404, detail="Artifact has no local source path")
-        path = Path(source_path).expanduser()
+        path = _artifact_resolved_path(source_path, workspace_root=workspace_root)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Artifact source file not found")
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=404, detail="Artifact source file not found")
         filename = path.name
         media_type = str(normalized.get("mimeType") or "application/octet-stream")
-        return FileResponse(path, media_type=media_type, filename=filename, content_disposition_type="inline")
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=filename,
+            content_disposition_type="attachment" if download else "inline",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1450,7 +1611,7 @@ async def get_session_history(session_id: str):
         runtime_events = db.get_runtime_events(session_id)
         timings["dbRuntimeEventsMs"] = _elapsed_ms(step_started)
         step_started = _now_perf_ms()
-        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
         timings["workflowViewMs"] = _elapsed_ms(step_started)
         step_started = _now_perf_ms()
         approvals = project_pending_approvals(
@@ -1640,7 +1801,7 @@ async def get_session_processes(session_id: str):
             raise HTTPException(status_code=404, detail="Session not found")
 
         step_started = _now_perf_ms()
-        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id) or {}
         timings["workflowViewMs"] = _elapsed_ms(step_started)
 
         step_started = _now_perf_ms()

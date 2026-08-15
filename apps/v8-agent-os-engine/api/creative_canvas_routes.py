@@ -289,8 +289,8 @@ async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        prepared = await asyncio.to_thread(
-            creative_canvas_graph_service.prepare_failed_retry,
+        claim = await asyncio.to_thread(
+            creative_canvas_graph_service.claim_failed_retry,
             session_id=session_id,
             graph_run_id=graph_run_id,
         )
@@ -298,6 +298,7 @@ async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
             creative_media_runtime,
             session_id=session_id,
             graph_run_id=graph_run_id,
+            claim=claim,
         ))
 
         def consume_background_error(completed: asyncio.Task[object]) -> None:
@@ -310,13 +311,8 @@ async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
                 pass
 
         task.add_done_callback(consume_background_error)
-        await asyncio.sleep(0)
-        run = await asyncio.to_thread(
-            creative_canvas_graph_service.get_run,
-            session_id=session_id,
-            graph_run_id=graph_run_id,
-        )
-        return {"accepted": True, "status": str(run.get("status") or "queued"), "prepared": prepared, "run": run}
+        run = dict(claim.get("projectedRun") or {})
+        return {"accepted": True, "status": str(run.get("status") or "running"), "run": run}
     except Exception as error:
         _raise_canvas_http(error)
 

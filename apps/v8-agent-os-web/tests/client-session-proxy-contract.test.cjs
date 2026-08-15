@@ -28,7 +28,14 @@ test("Web keeps session detail reads behind the authenticated local proxy", () =
   assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/turns/);
   assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/turn-index/);
   assert.match(client, /\/api\/sessions\/\$\{encodeURIComponent\(conversationId\)\}\/processes/);
-  assert.match(askUser, /\/api\/artifacts\/\$\{encodeURIComponent\(artifactId\)\}\/content/);
+  assert.match(askUser, /declaredSessionId && declaredSessionId !== expectedSessionId/);
+  assert.match(askUser, /rawResourceRef && typeof rawResourceRef === "object" && !Array\.isArray\(rawResourceRef\)/);
+  assert.match(askUser, /coerceAdminResourceRef\(rawResourceRef\)/);
+  assert.match(askUser, /resourceRef\.kind === "external_url"/);
+  assert.match(askUser, /new URLSearchParams\(\{ sessionId: resourceRef\.sessionId \}\)/);
+  assert.match(askUser, /\/api\/artifacts\/\$\{encodeURIComponent\(resourceRef\.artifactId\)\}\/content\?\$\{query\.toString\(\)\}/);
+  assert.doesNotMatch(askUser, /const direct = asText\(item\.contentUrl\)/);
+  assert.match(client, /sessionId=\{activeConversationId\}/);
   assert.doesNotMatch(`${client}\n${askUser}`, /\/api\/client\/(?:conversations|sessions|artifacts)/);
   assert.match(nextConfig, /beforeFiles:/);
   assert.match(nextConfig, /fallback:/);

@@ -1,6 +1,6 @@
 # Creative Artifact Canvas 测试矩阵
 
-更新：2026-08-05
+更新：2026-08-15
 范围：V8OS Web / Phone / Workbench / Creative Media runtime
 原则：`Supervisor First, Runtime Grounded`。STATIC、MOCK、REAL-LIVE 与桌面 Preview 的结果分开记录，未跑项不得写成通过。
 
@@ -61,14 +61,14 @@ Real-live 时限：
 |---|---|---|---|---|
 | BIND-01 | INTEGRATION | W1/S-A 刷新、重启 Web | Session 仍绑定 W1，不重新发现工作区 | PASS |
 | BIND-02 | INTEGRATION | 同一 W1 下建立 S-A、S-B | source/artifact/node/edge/tab/localStorage 集合互斥 | PASS |
-| BIND-03 | INTEGRATION | W1/S-A 与 W2/S-C | S-C 无法搜索、预览、下载 W1/S-A 资源 | FAIL（CODE-FACT：generic artifact list/detail/content 缺少 Session/Workspace authority；Canvas 专用 preview 路径已受约束） |
-| BIND-04 | INTEGRATION | S-A 运行中切换 S-B | S-B 不继承锁、占位卡、进度或错误 | PARTIAL |
+| BIND-03 | INTEGRATION | W1/S-A 与 W2/S-C | S-C 无法搜索、预览、下载 W1/S-A 资源 | PASS（Engine list/detail/content 强制 `sessionId` 并核对 Workspace；跨 Session HTTP matrix、Admin/Web/Phone/shared authority 合同通过；完整桌面搜索 UI 仍按浏览器项单独验收） |
+| BIND-04 | INTEGRATION | S-A 运行中切换 S-B | S-B 不继承锁、占位卡、进度或错误 | PARTIAL（owner token、AbortController、Session/run gate、按 Session key 重挂载已通过合同；完整 deferred-response Playwright 乱序矩阵未跑） |
 | BIND-05 | INTEGRATION | S-A 异步响应前切到 S-B | 迟到 source/artifact/event 被 Session gate 丢弃 | PASS |
 | SRC-01 | INTEGRATION | Web/Canvas 上传图片、视频、音频、3D | 每项只新增一个当前 Session source | PARTIAL |
 | SRC-02 | INTEGRATION | 上传后离开并重进 S-A | 媒体内容仍可读，不退化为永久占位 | PASS（图片） |
 | SRC-03 | INTEGRATION | S-B 猜测 S-A source ID/URL | 服务端内容路由 fail closed | NOT-RUN |
 | ART-01 | REAL-LIVE | S-A 生成文件产物 | session/run/workspace/tool lineage 精确 | PASS |
-| ART-02 | INTEGRATION | S-B 猜测 S-A artifact detail/content | detail 与 content 两层均拒绝 | FAIL（Engine generic detail/content 仅按 artifactId 读取；客户端事后过滤不能替代服务端 authority） |
+| ART-02 | INTEGRATION | S-B 猜测 S-A artifact detail/content | detail 与 content 两层均拒绝 | PASS（正确 Session 200/206，缺 Session 422，跨 Session/Workspace 404；代理、Phone、shared resourceRef 与 signed URL 均携带 Session） |
 | ART-03 | INTEGRATION | 普通聊天 Artifact 无 Canvas lineage | 可进素材抽屉，但不能填任意占位卡 | NOT-RUN |
 | ART-04 | INTEGRATION | Canvas 产物回填 | 仅显式 `canvasOperationId` 更新原占位卡 | PASS |
 | MAT-01 | STATIC | Creative Media 素材纪律 | 角色、用途、manifest、lineage、owner 与 artifact proof 均有明确合同 | PASS |
@@ -88,7 +88,7 @@ Real-live 时限：
 | EVT-04 | RUNTIME | Canonical 请求 | Supervisor 仍收到精简结构化 execution contract | PASS |
 | EVT-05 | REAL-LIVE | 宽屏同时观察消息区和 Canvas | 同一时点可见 Supervisor 进度、Canvas 锁和占位卡 | PASS |
 | EVT-06 | REAL-LIVE | 成功终态 | 对应占位卡填充、消息区终态、Canvas 5 秒内解锁 | PASS |
-| EVT-07 | REAL-LIVE | failed/cancelled/timeout | 错误可见、无伪产物、Canvas 5 秒内解锁 | PARTIAL |
+| EVT-07 | REAL-LIVE | failed/cancelled/timeout | 错误可见、无伪产物、Canvas 5 秒内解锁 | PARTIAL（本地 Graph/Canvas 终态与 cleanup 通过；Volcengine running cancel 真实返回 409，远端可能继续，不能宣称 Provider 已停止） |
 | EVT-08 | UNIT / CONTRACT | 快速双击/同帧重复点击/另一 operation 抢占 | 前端同步门禁阻止重复提交；Engine 原子拒绝同 Session 第二个 active Graph Run | PASS（Graph 10；Web 10） |
 | EVT-09 | RUNTIME | Supervisor 终态 Human Surface | 精确 artifact/source/mask/job/operation ID 与绝对路径只留结构化 Runtime Surface | PASS（回归；未重复付费 Live） |
 | EVT-10 | CONTRACT | 失败状态从实时事件切换到历史重载 | `recoverable_failed` 保持失败图标，不因状态从瞬时 `failed` 细化后消失 | PASS（Web 10；指定 V8ID 持久证据） |
@@ -128,7 +128,7 @@ Real-live 时限：
 | 状态反馈 | 配置真相、输入数量、治理来源、运行/等待/失败/过期、进度、重试和预检原因均可见；禁止仅靠 prompt 猜“已配置” | 当前动作卡显示“已完成 / 已配置 / video 1/1 / 受治理 / 本地”；Engine validate 预检可打开且不触发执行 | PASS |
 | 素材预览 | 图片/视频/音频/3D/PSD 使用对应查看器；离屏暂停、URL 就绪缓存和稳定占位避免重开白屏；时间轴媒体只预载 metadata | 真实 GLB 在桌面/390px 均通过截图像素检查；30 次切换只保留 1 个 WebGL Canvas，租约最多保留 8 个 idle GLTF 资源 | PASS |
 | 效率工具 | 快捷键、框选后浮动工具条、批量对齐/分布、拓扑整理、小地图、工作区模板；单动作卡与运行全部均为显式执行入口 | typecheck/合同通过；当前源码浏览器验证框选工具条与 Undo | PASS |
-| 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | Web Canvas 12/12；Graph/Creative/时间轴 107/107；取消、重启对账与失败分支恢复均持久化错误码 | PASS |
+| 容错设计 | 所有图编辑默认惰性；pointer cancel 回滚；无效连接保留原边；Escape 关闭临时浮层；运行锁与 Session gate fail closed | Web Canvas 13/13；Graph/Creative/时间轴与 lifecycle 定向回归；取消、重启对账、retry CAS 与失败分支恢复均持久化错误码 | PASS |
 | 视觉动效 | 数据类型线色、关系虚线、选中高亮/非相关降噪、拖线反馈与运行状态过渡明确，并尊重 reduced-motion | 当前源码浏览器视觉 smoke；连接颜色/透明度/`motion-reduce` 合同 | PASS |
 | 生成业务 | Session 可恢复 Graph、显式运行、动作持久结果槽、旧版本缩略图、素材/动作分层、Engine 权威编译与模板去 Session 化 | Graph/Creative Engine 定向 25 项；当前源码预检与结果槽浏览器 smoke | PASS |
 
@@ -150,9 +150,9 @@ Real-live 时限：
 | GRAPH-10 | UNIT | 同工作区另一 Session 实例化模板 | 图可恢复但未绑定输入不可执行；显式绑定素材后才可运行 | PASS |
 | GRAPH-11 | UNIT | 不同物理工作区读取/删除模板 | workspace_key authority 拒绝；同工作区删除后双方均不可见 | PASS |
 | GRAPH-12 | MIGRATION | 从已发布 v2 Session 本地画布迁移 | 首次写入 Engine/v3 后删除 v2 key，旧图不能在清缓存后复活 | PASS（合同；桌面待复跑） |
-| GRAPH-13 | UNIT / API / BROWSER-MOCK | 运行中取消 Graph | Web 一次性请求取消并在 `cancelling` 期间保持锁与轮询；Engine 尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PARTIAL（Web 12、Engine Graph 23、production Preview 浏览器状态机通过；真实 CreativeMediaRuntime/Provider cancel/cleanup 未闭环） |
+| GRAPH-13 | UNIT / API / BROWSER-MOCK | 运行中取消 Graph | Web 一次性请求取消并在 `cancelling` 期间保持锁与轮询；Engine 尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PARTIAL（Web 13、Engine Graph/生命周期回归通过；真实图片链成功；Volcengine running cancel 409 -> `unsupported`/`remoteTaskMayContinue=true`，本地 cleanup 完成但远端终止未证明） |
 | GRAPH-14 | STARTUP | Engine 在 queued/running/cancelling 时重启 | 启动对账写为 `interrupted`，保留成功节点与产物版本，活动节点标记可恢复 | PASS（Engine 107） |
-| GRAPH-15 | CONTRACT | 失败分支重试 | Web 复用原 `graphRunId/canvasOperationId` 走正常消息链；只重跑非成功节点；成功付费祖先的同 Run 产物缺失时拒绝 | PASS（Web 12；Engine 107） |
+| GRAPH-15 | CONTRACT | 失败分支重试 | Web 复用原 `graphRunId/canvasOperationId` 走正常消息链；只重跑非成功节点；成功付费祖先的同 Run 产物缺失时拒绝 | PASS（Web owner contract；Engine SQLite CAS 单领取、reserved provider handle、cancel-before-submit 与并发冲突回归） |
 
 兼容债务：旧 Graph `sink` 节点只在 Engine 输入解析层保留两个完整客户端迁移周期；当前 Web 加载时直接丢弃，且不再创建或渲染。迁移期须补旧 Graph 读取量观测，降至可忽略后删除 Engine parser 分支。
 

@@ -1,6 +1,7 @@
 import {
     coerceAdminProcessRef,
     coerceAdminResourceRef,
+    deriveAdminResourceRefFromArtifactLike,
     type AdminProcessRef,
     type AdminResourceRef,
 } from "@v8/session-realtime";
@@ -106,23 +107,10 @@ function materializeSurfaceUrl(resourceRef: AdminResourceRef | null) {
 }
 
 function canonicalResourceRefFromArtifactRecord(record: JsonRecord) {
-    const explicit = coerceAdminResourceRef(record.resourceRef || record.resource_ref);
-    if (explicit) {
-        return explicit;
-    }
-    const artifactId = String(record.artifactId || record.artifact_id || "").trim();
-    if (artifactId) {
-        return coerceAdminResourceRef({
-            kind: "artifact_content",
-            artifactId,
-            mimeType: record.mimeType,
-            displayLabel: record.displayLabel || record.title,
-            displaySubtitle: record.displaySubtitle,
-            surfaceVisible: record.surfaceVisible,
-        });
-    }
-    const externalUrl = String(record.previewUrl || record.preview_url || record.externalUrl || record.external_url || record.url || "").trim();
-    return externalUrl ? coerceAdminResourceRef(externalUrl) : null;
+    return deriveAdminResourceRefFromArtifactLike({
+        ...record,
+        resourceRef: record.resourceRef || record.resource_ref,
+    });
 }
 
 function attachSignedSurfaceUrl(resourceRef: AdminResourceRef | null, options?: SurfaceNormalizationOptions) {

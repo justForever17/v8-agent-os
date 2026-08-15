@@ -125,6 +125,12 @@ import {
     type CanvasGraphSaveScheduler,
 } from "./creative-canvas/save-scheduler";
 import {
+    isActiveCanvasRequestOwner,
+    isCurrentCanvasRuntimeEpoch,
+    reconcileCanvasRuntimeProjection,
+    sameCanvasRequestOwner,
+} from "./creative-canvas/request-owner";
+import {
     CANVAS_DRAG_TYPE,
     EMPTY_GRAPH_HISTORY,
     EMPTY_GRAPH_RUNTIME,
@@ -167,6 +173,16 @@ const DRAWER_OVERSCAN_ROWS = 2;
 const CATALOG_CHANNELS = ["artifacts", "sources", "assets", "folders"] as const;
 
 type CatalogChannel = typeof CATALOG_CHANNELS[number];
+type CanvasMutationOwner = {
+    sessionId: string;
+    token: string;
+    kind: "composer" | "run" | "retry";
+};
+type CanvasCancelOwner = {
+    sessionId: string;
+    graphRunId: string;
+    token: string;
+};
 
 function getCanvasAssetWindow(itemCount: number, scrollTop: number, viewportHeight: number) {
     const rowCount = Math.ceil(Math.max(0, itemCount) / DRAWER_COLUMN_COUNT);
@@ -293,8 +309,9 @@ export function CreativeArtifactCanvas({
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const graphRevisionRef = useRef(0);
-    const graphSubmittingRef = useRef(false);
-    const graphCancellingRunRef = useRef("");
+    const mutationOwnerRef = useRef<CanvasMutationOwner | null>(null);
+    const graphCancelOwnerRef = useRef<CanvasCancelOwner | null>(null);
+    const runtimeMutationEpochRef = useRef(0);
     const clipboardRef = useRef<CanvasClipboard | null>(null);
     const lastSavedGraphRef = useRef("");
     const graphPersistedRef = useRef(false);
@@ -371,6 +388,38 @@ export function CreativeArtifactCanvas({
     useEffect(() => {
         sessionRunningRef.current = sessionRunning;
     }, [sessionRunning]);
+
+    const acquireMutationOwner = useCallback((kind: CanvasMutationOwner["kind"]) => {
+        if (mutationOwnerRef.current?.sessionId === sessionId) return null;
+        const owner = { sessionId, token: createId("canvas-mutation"), kind } satisfies CanvasMutationOwner;
+        mutationOwnerRef.current = owner;
+        setSubmitting(true);
+        return owner;
+    }, [sessionId]);
+
+    const isCurrentMutationOwner = useCallback((owner: CanvasMutationOwner) => (
+        isActiveCanvasRequestOwner(
+            mutationOwnerRef.current,
+            owner,
+            sessionIdRef.current,
+            mountedRef.current,
+        )
+    ), []);
+
+    const releaseMutationOwner = useCallback((owner: CanvasMutationOwner) => {
+        if (!sameCanvasRequestOwner(mutationOwnerRef.current, owner)) return;
+        mutationOwnerRef.current = null;
+        if (mountedRef.current && sessionIdRef.current === owner.sessionId) setSubmitting(false);
+    }, []);
+
+    const advanceRuntimeMutationEpoch = useCallback(() => {
+        runtimeMutationEpochRef.current += 1;
+        return runtimeMutationEpochRef.current;
+    }, []);
+
+    useLayoutEffect(() => {
+        setSubmitting(mutationOwnerRef.current?.sessionId === sessionId);
+    }, [sessionId]);
 
     useLayoutEffect(() => {
         sessionIdRef.current = sessionId;
@@ -822,21 +871,47 @@ export function CreativeArtifactCanvas({
 
     useEffect(() => {
         if (!upstreamSessionRunning && !graphRunActive) return;
+        const controller = new AbortController();
+        let inFlight = false;
         const refresh = async () => {
+            if (inFlight) return;
+            const requestEpoch = runtimeMutationEpochRef.current;
+            inFlight = true;
             try {
-                const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, { cache: "no-store" });
+                const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, {
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-                if (sessionIdRef.current !== sessionId) return;
-                setGraphRuntime({ ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime);
-                if (String(payload?.runtime?.status || "") === "succeeded") void loadCatalog(true);
+                if (controller.signal.aborted || !mountedRef.current || sessionIdRef.current !== sessionId) return;
+                const incomingRuntime = { ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload.runtime) } as CanvasGraphRuntime;
+                setGraphRuntime((current) => {
+                    if (!isCurrentCanvasRuntimeEpoch(requestEpoch, runtimeMutationEpochRef.current)) return current;
+                    return reconcileCanvasRuntimeProjection(current, incomingRuntime);
+                });
+                if (
+                    isCurrentCanvasRuntimeEpoch(requestEpoch, runtimeMutationEpochRef.current)
+                    && String(payload?.runtime?.status || "") === "succeeded"
+                ) void loadCatalog(true);
             } catch (reason) {
+                if (
+                    controller.signal.aborted
+                    || !mountedRef.current
+                    || sessionIdRef.current !== sessionId
+                    || !isCurrentCanvasRuntimeEpoch(requestEpoch, runtimeMutationEpochRef.current)
+                ) return;
                 setError(reason instanceof Error ? reason.message : String(reason));
+            } finally {
+                inFlight = false;
             }
         };
         void refresh();
         const interval = window.setInterval(() => void refresh(), 2200);
-        return () => window.clearInterval(interval);
+        return () => {
+            controller.abort();
+            window.clearInterval(interval);
+        };
     }, [graphRunActive, loadCatalog, sessionId, upstreamSessionRunning]);
 
     useEffect(() => {
@@ -2264,9 +2339,10 @@ export function CreativeArtifactCanvas({
     }, [sessionId, t]);
 
     const submitComposer = useCallback(async () => {
-        if (!composer || submitting || sessionRunning) return;
+        if (!composer || sessionRunning) return;
         if (composer.action.requiresPrompt && !composer.text.trim()) return;
-        setSubmitting(true);
+        const owner = acquireMutationOwner("composer");
+        if (!owner) return;
         setError("");
         try {
             if (composer.action.executionClass === "supervisor_message") {
@@ -2305,10 +2381,12 @@ export function CreativeArtifactCanvas({
                         binding: composer.action.binding,
                     },
                 });
+                if (!isCurrentMutationOwner(owner)) return;
                 if (accepted === false) throw new Error(t("web.workbench.canvas.graph.submitRejected"));
                 setComposer(null);
                 return;
             }
+            if (!isCurrentMutationOwner(owner)) return;
             if (!composer.actionNodeId) return;
             if (composer.action.parameterEditor === "psd_composition" && !composer.psdComposition?.layers.length) return;
             if (composer.action.parameterEditor === "psd_layers" && !composer.psdEdits?.length) return;
@@ -2327,21 +2405,37 @@ export function CreativeArtifactCanvas({
             }));
             setComposer(null);
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
+            if (isCurrentMutationOwner(owner)) {
+                setError(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            setSubmitting(false);
+            releaseMutationOwner(owner);
         }
-    }, [actionLabel, commitSnapshot, composer, displayResourceForNode, onSubmitTask, sessionId, sessionRunning, snapshot, submitting, t]);
+    }, [
+        acquireMutationOwner,
+        actionLabel,
+        commitSnapshot,
+        composer,
+        displayResourceForNode,
+        isCurrentMutationOwner,
+        onSubmitTask,
+        releaseMutationOwner,
+        sessionId,
+        sessionRunning,
+        snapshot,
+        t,
+    ]);
 
     const runGraph = useCallback(async (targetNodeIds: string[], acknowledgeWarnings = false) => {
-        if (sessionRunning || submitting || graphSubmittingRef.current) return;
+        if (sessionRunning) return;
         const targetIds = Array.from(new Set(targetNodeIds.filter(Boolean)));
-        graphSubmittingRef.current = true;
-        setSubmitting(true);
+        const owner = acquireMutationOwner("run");
+        if (!owner) return;
+        advanceRuntimeMutationEpoch();
         setError("");
         try {
             const persisted = await persistGraph(snapshot);
-            if (!persisted || sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            if (!persisted || !isCurrentMutationOwner(owner)) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
             const validationResponse = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/validate`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -2354,7 +2448,7 @@ export function CreativeArtifactCanvas({
             });
             const validationPayload = await validationResponse.json().catch(() => ({}));
             if (!validationResponse.ok) throw new Error(String(validationPayload?.detail || validationPayload?.error || `HTTP ${validationResponse.status}`));
-            if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            if (!isCurrentMutationOwner(owner)) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
             const engineIssues: CanvasPreflightIssue[] = (Array.isArray(validationPayload?.issues) ? validationPayload.issues : []).flatMap((raw: unknown) => {
                 const issue = recordOf(raw);
                 const severity = issue.severity === "warning" ? "warning" : "error";
@@ -2389,8 +2483,9 @@ export function CreativeArtifactCanvas({
             if (!startResponse.ok || startPayload?.accepted === false) {
                 throw new Error(String(startPayload?.detail || startPayload?.error || `HTTP ${startResponse.status}`));
             }
-            if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
-            setGraphRuntime((current) => ({
+            if (!isCurrentMutationOwner(owner)) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            advanceRuntimeMutationEpoch();
+            setGraphRuntime((current) => reconcileCanvasRuntimeProjection(current, {
                 ...current,
                 status: String(startPayload?.status || "queued"),
                 graphRunId: String(startPayload?.graphRunId || ""),
@@ -2399,14 +2494,26 @@ export function CreativeArtifactCanvas({
                 targetNodeIds: targetIds,
             }));
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
+            if (isCurrentMutationOwner(owner)) {
+                advanceRuntimeMutationEpoch();
+                setError(reason instanceof Error ? reason.message : String(reason));
+            }
         } finally {
-            graphSubmittingRef.current = false;
-            setSubmitting(false);
+            releaseMutationOwner(owner);
         }
-    }, [persistGraph, sessionId, sessionRunning, snapshot, submitting, t]);
+    }, [
+        acquireMutationOwner,
+        advanceRuntimeMutationEpoch,
+        isCurrentMutationOwner,
+        persistGraph,
+        releaseMutationOwner,
+        sessionId,
+        sessionRunning,
+        snapshot,
+        t,
+    ]);
 
-    const retryFailedGraph = useCallback(() => {
+    const retryFailedGraph = useCallback(async () => {
         const graphRunId = String(graphRuntime.graphRunId || "").trim();
         const originalRevision = Number(graphRuntime.graphRevision || 0);
         if (
@@ -2422,38 +2529,66 @@ export function CreativeArtifactCanvas({
             setError(t("web.workbench.canvas.graph.sessionChanged"));
             return;
         }
-        if (submitting || graphSubmittingRef.current) return;
-        graphSubmittingRef.current = true;
-        setSubmitting(true);
+        const owner = acquireMutationOwner("retry");
+        if (!owner) return;
+        advanceRuntimeMutationEpoch();
         setError("");
-        void fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/runs/${encodeURIComponent(graphRunId)}/retry-failed-branch`, {
-            method: "POST",
-            cache: "no-store",
-        }).then(async (response) => {
+        try {
+            const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/runs/${encodeURIComponent(graphRunId)}/retry-failed-branch`, {
+                method: "POST",
+                cache: "no-store",
+            });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-            if (sessionIdRef.current !== sessionId) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
+            if (!isCurrentMutationOwner(owner)) throw new Error(t("web.workbench.canvas.graph.sessionChanged"));
             const run = recordOf(payload?.run);
-            setGraphRuntime((current) => ({
+            advanceRuntimeMutationEpoch();
+            setGraphRuntime((current) => reconcileCanvasRuntimeProjection(current, {
                 ...current,
                 status: String(run.status || payload?.status || "queued"),
                 graphRunId: String(run.graphRunId || run.graph_run_id || graphRunId),
                 canvasOperationId: String(run.canvasOperationId || run.canvas_operation_id || current.canvasOperationId || ""),
                 graphRevision: Number(run.graphRevision || run.graph_revision || originalRevision),
                 targetNodeIds: Array.isArray(run.targetNodeIds) ? run.targetNodeIds.map(String) : current.targetNodeIds,
-            }));
-        }).catch((reason) => {
-            setError(reason instanceof Error ? reason.message : String(reason));
-        }).finally(() => {
-            graphSubmittingRef.current = false;
-            setSubmitting(false);
-        });
-    }, [graphRuntime, sessionId, submitting, t]);
+            }, { allowExplicitActiveTransition: true }));
+        } catch (reason) {
+            if (isCurrentMutationOwner(owner)) {
+                advanceRuntimeMutationEpoch();
+                setError(reason instanceof Error ? reason.message : String(reason));
+            }
+        } finally {
+            releaseMutationOwner(owner);
+        }
+    }, [
+        acquireMutationOwner,
+        advanceRuntimeMutationEpoch,
+        graphRuntime,
+        isCurrentMutationOwner,
+        releaseMutationOwner,
+        sessionId,
+        t,
+    ]);
 
     const cancelGraphRun = useCallback(async () => {
         const graphRunId = String(graphRuntime.graphRunId || "").trim();
-        if (!graphRunId || !graphRunCancellable || graphCancellingRunRef.current === graphRunId) return;
-        graphCancellingRunRef.current = graphRunId;
+        if (!graphRunId || !graphRunCancellable) return;
+        if (
+            graphCancelOwnerRef.current?.sessionId === sessionId
+            && graphCancelOwnerRef.current.graphRunId === graphRunId
+        ) return;
+        const owner = {
+            sessionId,
+            graphRunId,
+            token: createId("canvas-cancel"),
+        } satisfies CanvasCancelOwner;
+        graphCancelOwnerRef.current = owner;
+        advanceRuntimeMutationEpoch();
+        const isCurrentOwner = () => isActiveCanvasRequestOwner(
+            graphCancelOwnerRef.current,
+            owner,
+            sessionIdRef.current,
+            mountedRef.current,
+        );
         setError("");
         setGraphRuntime((current) => (
             current.graphRunId === graphRunId && ["queued", "running"].includes(current.status)
@@ -2469,10 +2604,11 @@ export function CreativeArtifactCanvas({
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-            if (sessionIdRef.current !== sessionId) return;
+            if (!isCurrentOwner()) return;
             const projected = recordOf(payload);
             const projectedError = recordOf(projected.error);
-            setGraphRuntime((current) => current.graphRunId === graphRunId ? ({
+            advanceRuntimeMutationEpoch();
+            setGraphRuntime((current) => current.graphRunId === graphRunId ? reconcileCanvasRuntimeProjection(current, ({
                 ...EMPTY_GRAPH_RUNTIME,
                 ...current,
                 ...projected,
@@ -2482,15 +2618,21 @@ export function CreativeArtifactCanvas({
                     message: String(projectedError.message || ""),
                 } : undefined,
                 outputs: current.outputs,
-            }) as CanvasGraphRuntime : current);
+            }) as CanvasGraphRuntime) : current);
         } catch (reason) {
-            if (sessionIdRef.current === sessionId) {
+            if (isCurrentOwner()) {
+                advanceRuntimeMutationEpoch();
+                setGraphRuntime((current) => (
+                    current.graphRunId === graphRunId && current.status === "cancelling"
+                        ? { ...current, status: graphRuntime.status }
+                        : current
+                ));
                 setError(reason instanceof Error ? reason.message : String(reason));
             }
         } finally {
-            if (graphCancellingRunRef.current === graphRunId) graphCancellingRunRef.current = "";
+            if (sameCanvasRequestOwner(graphCancelOwnerRef.current, owner)) graphCancelOwnerRef.current = null;
         }
-    }, [graphRunCancellable, graphRuntime.graphRunId, sessionId]);
+    }, [advanceRuntimeMutationEpoch, graphRunCancellable, graphRuntime.graphRunId, graphRuntime.status, sessionId]);
 
     const requestGraphRun = useCallback((targetNodeIds: string[]) => {
         const targets = Array.from(new Set(targetNodeIds.filter(Boolean)));

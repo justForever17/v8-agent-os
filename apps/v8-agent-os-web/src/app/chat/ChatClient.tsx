@@ -4060,6 +4060,7 @@ export default function ChatClient() {
                                                 question={askUserQuestion}
                                                 request={askUserRequest}
                                                 toolCallId={askUserToolCallId}
+                                                sessionId={activeConversationId}
                                                 onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
                                                 onCancel={() => setAskUserCollapsed(true)}
                                             />

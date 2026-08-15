@@ -51,7 +51,6 @@ interface ArtifactRecord {
 }
 
 const ARTIFACT_KINDS: ArtifactKind[] = ["image", "video", "audio", "document", "code", "file"];
-const ARTIFACTS_URL = "/api/memory/artifacts?limit=160";
 const STORAGE_STATS_URL = "/api/storage-retention/stats";
 
 interface ArtifactListPayload {
@@ -125,15 +124,14 @@ export function ArtifactExplorerPanel() {
   const { toast } = useToast();
   const t = useT();
   const { locale } = useLocale();
-  const cachedArtifactPayload = peekAdminJsonCache<ArtifactListPayload>(ARTIFACTS_URL);
-  const cachedArtifacts = Array.isArray(cachedArtifactPayload?.artifacts) ? cachedArtifactPayload.artifacts : [];
   const cachedStats = peekAdminJsonCache<StorageStatsPayload>(STORAGE_STATS_URL);
   const cachedBudget = cachedStats?.budgetComponents?.artifacts || cachedStats?.config?.budgets?.artifacts;
-  const [loading, setLoading] = useState(cachedArtifactPayload === undefined);
+  const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>(cachedArtifacts);
-  const [selectedId, setSelectedId] = useState<string | null>(() => getArtifactId(cachedArtifacts[0] || {}) || null);
-  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(cachedArtifacts[0] || null);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
+  const [sessionIdFilter, setSessionIdFilter] = useState("");
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ArtifactKind>("all");
   const [artifactBudgetMb, setArtifactBudgetMb] = useState(() => cachedBudget?.maxBytes ? String(bytesToMb(cachedBudget.maxBytes)) : "");
@@ -178,9 +176,17 @@ export function ArtifactExplorerPanel() {
   );
 
   const loadArtifacts = useCallback(async (force = false) => {
-    if (peekAdminJsonCache<ArtifactListPayload>(ARTIFACTS_URL) === undefined) setLoading(true);
+    const sessionId = sessionIdFilter.trim();
+    if (!sessionId) {
+      setArtifacts([]);
+      setSelectedId(null);
+      setSelectedArtifact(null);
+      return;
+    }
+    const artifactsUrl = `/api/memory/artifacts?sessionId=${encodeURIComponent(sessionId)}&limit=160`;
+    setLoading(true);
     try {
-      const data = await fetchAdminJson<ArtifactListPayload>(ARTIFACTS_URL, { force });
+      const data = await fetchAdminJson<ArtifactListPayload>(artifactsUrl, { force });
       const list = Array.isArray(data.artifacts) ? data.artifacts : [];
       setArtifacts(list);
       setSelectedId((currentId) => currentId && list.some((artifact) => getArtifactId(artifact) === currentId)
@@ -202,7 +208,7 @@ export function ArtifactExplorerPanel() {
     } finally {
       setLoading(false);
     }
-  }, [t, toast]);
+  }, [sessionIdFilter, t, toast]);
 
   const loadArtifactBudget = useCallback(async (force = false) => {
     const payload = await fetchAdminJson<StorageStatsPayload>(STORAGE_STATS_URL, { force }).catch(() => null);
@@ -239,9 +245,12 @@ export function ArtifactExplorerPanel() {
   }, [artifactBudgetMb, loadArtifactBudget, t, toast]);
 
   const loadArtifactDetail = useCallback(async (artifactId: string, fallback?: ArtifactRecord) => {
+    const sessionId = String(fallback?.sessionId || fallback?.session_id || sessionIdFilter).trim();
+    if (!sessionId) return;
     setDetailLoading(true);
     try {
-      const response = await fetch(`/api/memory/artifacts/${encodeURIComponent(artifactId)}`, { cache: "no-store" });
+      const query = new URLSearchParams({ sessionId });
+      const response = await fetch(`/api/memory/artifacts/${encodeURIComponent(artifactId)}?${query.toString()}`, { cache: "no-store" });
       if (!response.ok) {
         throw new Error(`Artifact detail failed: ${response.status}`);
       }
@@ -260,12 +269,11 @@ export function ArtifactExplorerPanel() {
     } finally {
       setDetailLoading(false);
     }
-  }, [t, toast]);
+  }, [sessionIdFilter, t, toast]);
 
   useEffect(() => {
-    void loadArtifacts();
     void loadArtifactBudget();
-  }, [loadArtifacts, loadArtifactBudget]);
+  }, [loadArtifactBudget]);
 
   const filteredArtifacts = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -319,7 +327,7 @@ export function ArtifactExplorerPanel() {
                             <FileImage className="h-5 w-5 text-primary" />
                             {t("components.memory.ArtifactExplorerPanel.title")}
                         </span>
-                        <Button variant="outline" size="sm" onClick={() => void loadArtifacts(true)}>
+                        <Button variant="outline" size="sm" disabled={!sessionIdFilter.trim() || loading} onClick={() => void loadArtifacts(true)}>
                             <RefreshCw className="mr-2 h-4 w-4" />
                             {t("components.memory.ArtifactExplorerPanel.k876e8c06")}
                         </Button>
@@ -377,6 +385,20 @@ export function ArtifactExplorerPanel() {
                     </div>
 
                     <div className="flex flex-col gap-3 lg:flex-row">
+                        <Input
+              value={sessionIdFilter}
+              onChange={(event) => {
+                setSessionIdFilter(event.target.value);
+                setArtifacts([]);
+                setSelectedId(null);
+                setSelectedArtifact(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void loadArtifacts(true);
+              }}
+              placeholder={t("components.common.sessionReference")}
+              className="lg:w-[280px]" />
+
                         <div className="relative flex-1">
                             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                             <Input

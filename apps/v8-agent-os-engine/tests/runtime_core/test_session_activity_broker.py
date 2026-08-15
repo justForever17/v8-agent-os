@@ -8,6 +8,7 @@ def test_activity_topic_filter_ignores_high_frequency_runtime_noise() -> None:
     assert is_session_activity_topic("run.started") is True
     assert is_session_activity_topic("runtime.episode.completed") is True
     assert is_session_activity_topic("subagent.task.failed") is True
+    assert is_session_activity_topic("canvas.graph.run.state") is True
     assert is_session_activity_topic("run.text.delta") is False
     assert is_session_activity_topic("creative_media.tool.finished") is False
     assert is_session_activity_topic("run.liveness.heartbeat") is False

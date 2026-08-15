@@ -80,7 +80,7 @@ def test_computer_use_local_artifact_uses_canonical_content_endpoint(tmp_path, m
 
     artifact = store.record_local_file(
         file_path=screenshot,
-        session_id="session-computer-use",
+        session_id="  session-computer-use  ",
         run_id="run-computer-use",
         workspace_path=".v8-agent-os/artifacts/session-computer-use/run-computer-use/capture.png",
         metadata={
@@ -93,11 +93,60 @@ def test_computer_use_local_artifact_uses_canonical_content_endpoint(tmp_path, m
         source_component="computer_use_runtime",
     )
 
-    canonical_url = f"/v1/artifacts/{artifact['artifactId']}/content"
+    canonical_url = f"/v1/artifacts/{artifact['artifactId']}/content?sessionId=session-computer-use"
+    assert artifact["previewUrl"] == canonical_url
+    assert artifact["contentUrl"] == canonical_url
+    assert artifact["sessionId"] == "session-computer-use"
+    assert stored["session_id"] == "session-computer-use"
+    assert stored["preview_url"] == canonical_url
+    assert stored["source_path"] == str(screenshot)
+
+
+def test_artifact_content_url_encodes_canonical_session_id() -> None:
+    content_url = ArtifactStore._build_content_url("art-1", "session /?&")
+
+    assert content_url == "/v1/artifacts/art-1/content?sessionId=session+%2F%3F%26"
+
+
+def test_record_artifact_uses_session_scoped_content_url(tmp_path) -> None:
+    local_file = tmp_path / "creative.png"
+    local_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    stored: dict = {}
+
+    class _Database:
+        @staticmethod
+        def add_runtime_artifact(**kwargs):
+            stored.update(kwargs)
+
+    artifact = ArtifactStore(database=_Database()).record_artifact(
+        artifact_kind="image",
+        mime_type="image/png",
+        session_id="session-creative",
+        source_path=str(local_file),
+    )
+    canonical_url = f"/v1/artifacts/{artifact['artifactId']}/content?sessionId=session-creative"
+
     assert artifact["previewUrl"] == canonical_url
     assert artifact["contentUrl"] == canonical_url
     assert stored["preview_url"] == canonical_url
-    assert stored["source_path"] == str(screenshot)
+
+
+def test_unbound_local_artifact_has_no_generic_content_or_preview_url(tmp_path) -> None:
+    local_file = tmp_path / "unbound.txt"
+    local_file.write_text("private", encoding="utf-8")
+    stored: dict = {}
+
+    class _Database:
+        @staticmethod
+        def add_runtime_artifact(**kwargs):
+            stored.update(kwargs)
+
+    artifact = ArtifactStore(database=_Database()).record_local_file(file_path=local_file)
+
+    assert artifact["sessionId"] is None
+    assert artifact["previewUrl"] is None
+    assert artifact["contentUrl"] is None
+    assert stored["preview_url"] is None
 
 
 def test_missing_managed_delivery_artifact_is_hidden_before_worktree_cleanup(tmp_path) -> None:

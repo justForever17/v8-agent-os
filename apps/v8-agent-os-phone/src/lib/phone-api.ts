@@ -820,8 +820,8 @@ export async function listSkillsAndSubagentFamilies(authorizedFetch: AuthorizedF
     };
 }
 
-export async function listArtifacts(authorizedFetch: AuthorizedFetch, conversationId?: string | null) {
-    const search = conversationId ? `?sessionId=${encodeURIComponent(conversationId)}` : "";
+export async function listArtifacts(authorizedFetch: AuthorizedFetch, conversationId: string) {
+    const search = `?sessionId=${encodeURIComponent(conversationId)}`;
     const payload = await authorizedJson<{ artifacts?: ArtifactDetail[] }>(
         authorizedFetch,
         `/api/client/artifacts${search}`,
@@ -831,17 +831,17 @@ export async function listArtifacts(authorizedFetch: AuthorizedFetch, conversati
     return normalizeArray<ArtifactDetail>(payload.artifacts);
 }
 
-export async function getArtifact(authorizedFetch: AuthorizedFetch, id: string) {
+export async function getArtifact(authorizedFetch: AuthorizedFetch, id: string, sessionId: string) {
     return authorizedJson<ArtifactDetail>(
         authorizedFetch,
-        `/api/client/artifacts/${encodeURIComponent(id)}`,
+        `/api/client/artifacts/${encodeURIComponent(id)}?sessionId=${encodeURIComponent(sessionId)}`,
         translateCurrent("src.lib.phone_api.text_22"),
         { cache: "no-store" },
     );
 }
 
-export function getArtifactContentUrl(adminBaseUrl: string, id: string) {
-    return buildAdminApiUrl(adminBaseUrl, `/api/client/artifacts/${encodeURIComponent(id)}/content`);
+export function getArtifactContentUrl(adminBaseUrl: string, id: string, sessionId: string) {
+    return buildAdminApiUrl(adminBaseUrl, `/api/client/artifacts/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
 export function getWorkspaceFileUrl(adminBaseUrl: string, path: string) {
@@ -853,8 +853,8 @@ export function getWorkspaceFileUrl(adminBaseUrl: string, path: string) {
     return buildAdminApiUrl(adminBaseUrl, `/api/client/workspace/files/${normalized}`);
 }
 
-export async function fetchArtifactContentResponse(authorizedFetch: AuthorizedFetch, id: string) {
-    const response = await authorizedFetch(`/api/client/artifacts/${encodeURIComponent(id)}/content`, {
+export async function fetchArtifactContentResponse(authorizedFetch: AuthorizedFetch, id: string, sessionId: string) {
+    const response = await authorizedFetch(`/api/client/artifacts/${encodeURIComponent(id)}/content?sessionId=${encodeURIComponent(sessionId)}`, {
         cache: "no-store",
     });
     if (!response.ok) {

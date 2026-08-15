@@ -26,11 +26,20 @@ function passthroughContentHeaders(response: Response) {
 export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
     try {
         const { id } = await context.params;
+        const sessionId = String(req.nextUrl.searchParams.get("sessionId") || "").trim();
+        if (!sessionId) {
+            return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+        }
         const range = req.headers.get("range");
         const headers = range ? { Range: range } : undefined;
+        const query = new URLSearchParams({ sessionId });
+        if (req.nextUrl.searchParams.get("download") === "1") {
+            query.set("download", "1");
+        }
+        const target = `/memory/artifacts/${encodeURIComponent(id)}/content?${query.toString()}`;
         const response = verifySignedClientSurfaceRequest(req)
-            ? await fetchSignedClientAdminPath(`/memory/artifacts/${encodeURIComponent(id)}/content`, { method: "GET", headers })
-            : await fetchClientAdmin(req, `/memory/artifacts/${encodeURIComponent(id)}/content`, {
+            ? await fetchSignedClientAdminPath(target, { method: "GET", headers })
+            : await fetchClientAdmin(req, target, {
                 method: "GET",
                 headers,
             });

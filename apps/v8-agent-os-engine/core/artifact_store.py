@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 from core.artifact_policy import apply_artifact_surface_policy
 from core.database import db
@@ -17,8 +18,13 @@ class ArtifactStore:
         self.database = database or db
 
     @staticmethod
-    def _build_content_url(artifact_id: str) -> str:
-        return f"/v1/artifacts/{artifact_id}/content"
+    def _build_content_url(artifact_id: str, session_id: Optional[str]) -> Optional[str]:
+        normalized_artifact_id = str(artifact_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_artifact_id or not normalized_session_id:
+            return None
+        query = urlencode({"sessionId": normalized_session_id})
+        return f"/v1/artifacts/{normalized_artifact_id}/content?{query}"
 
     def _emit_artifact_recorded_event(
         self,
@@ -105,7 +111,9 @@ class ArtifactStore:
         source_component: str = "artifact_store",
         node: str = "artifact_store",
     ) -> Dict[str, Any]:
+        session_id = str(session_id or "").strip() or None
         artifact_id = f"art_{uuid.uuid4().hex}"
+        local_content_url = self._build_content_url(artifact_id, session_id)
         descriptor = build_artifact_descriptor(
             artifact_id=artifact_id,
             artifact_kind=artifact_kind,
@@ -114,8 +122,8 @@ class ArtifactStore:
             source_path=source_path,
             workspace_path=workspace_path,
             external_url=external_url,
-            preview_url=preview_url or external_url or (self._build_content_url(artifact_id) if source_path else None),
-            content_url=self._build_content_url(artifact_id) if source_path else external_url,
+            preview_url=preview_url or external_url or (local_content_url if source_path else None),
+            content_url=local_content_url if source_path else external_url,
             metadata=metadata or {},
         )
         descriptor.update(
@@ -181,19 +189,21 @@ class ArtifactStore:
         source_component: str = "artifact_store",
         node: str = "artifact_store",
     ) -> Dict[str, Any]:
+        session_id = str(session_id or "").strip() or None
         path = Path(file_path)
         artifact_id = f"art_{uuid.uuid4().hex}"
+        local_content_url = self._build_content_url(artifact_id, session_id)
         descriptor = build_artifact_descriptor(
             artifact_id=artifact_id,
             file_path=path,
             workspace_path=workspace_path,
             external_url=external_url,
-            preview_url=preview_url or external_url or self._build_content_url(artifact_id),
-            content_url=self._build_content_url(artifact_id),
+            preview_url=preview_url or external_url or local_content_url,
+            content_url=local_content_url,
             metadata=metadata or {},
         )
         if not descriptor.get("contentUrl"):
-            descriptor["contentUrl"] = self._build_content_url(artifact_id)
+            descriptor["contentUrl"] = local_content_url
         if not descriptor.get("previewUrl"):
             descriptor["previewUrl"] = descriptor.get("contentUrl")
         descriptor.update(

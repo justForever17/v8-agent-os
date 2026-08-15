@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
+import { buildAdminArtifactContentRef, coerceAdminResourceRef, type AdminResourceRef } from "@v8/session-realtime";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,6 +39,8 @@ type AskUserMedia = {
     previewUrl?: string;
     thumbnailUrl?: string;
     contentUrl?: string;
+    sessionId?: string;
+    resourceRef?: unknown;
 };
 
 type AskUserRequest = Record<string, unknown> & {
@@ -55,6 +58,7 @@ interface AskUserModalProps {
     question: string;
     request?: AskUserRequest | null;
     toolCallId: string;
+    sessionId: string;
     onSubmit: (toolCallId: string, answer: string, approve: boolean) => void;
     onCancel?: () => void;
 }
@@ -139,15 +143,38 @@ function mediaKind(item: AskUserMedia) {
     return "image";
 }
 
-function mediaUrl(item: AskUserMedia) {
-    return asText(item.previewUrl) || asText(item.thumbnailUrl) || asText(item.url) || asText(item.contentUrl) || asText(item.href);
+function sessionBoundMediaRef(item: AskUserMedia, sessionId: string): AdminResourceRef | null {
+    const expectedSessionId = asText(sessionId);
+    const declaredSessionId = asText(item.sessionId);
+    if (!expectedSessionId || (declaredSessionId && declaredSessionId !== expectedSessionId)) return null;
+
+    const rawResourceRef = item.resourceRef;
+    const declaredRef = rawResourceRef && typeof rawResourceRef === "object" && !Array.isArray(rawResourceRef)
+        ? coerceAdminResourceRef(rawResourceRef)
+        : null;
+    if (declaredRef?.kind === "external_url") return declaredRef;
+    if (declaredRef?.kind === "artifact_content") {
+        if (declaredRef.sessionId !== expectedSessionId) return null;
+        const declaredArtifactId = asText(item.artifactId);
+        if (declaredArtifactId && declaredArtifactId !== declaredRef.artifactId) return null;
+        return buildAdminArtifactContentRef(declaredRef.artifactId || "", { sessionId: expectedSessionId });
+    }
+
+    const artifactId = asText(item.artifactId) || asText(item.id);
+    return artifactId ? buildAdminArtifactContentRef(artifactId, { sessionId: expectedSessionId }) : null;
 }
 
-function mediaPlaybackUrl(item: AskUserMedia) {
-    const direct = asText(item.contentUrl) || asText(item.url) || asText(item.href) || asText(item.previewUrl);
-    if (direct) return direct;
-    const artifactId = asText(item.artifactId) || asText(item.id);
-    return artifactId ? `/api/artifacts/${encodeURIComponent(artifactId)}/content` : "";
+function mediaPlaybackUrl(item: AskUserMedia, sessionId: string) {
+    const resourceRef = sessionBoundMediaRef(item, sessionId);
+    if (!resourceRef) return "";
+    if (resourceRef.kind === "external_url") return asText(resourceRef.signedUrl) || asText(resourceRef.url);
+    if (resourceRef.kind !== "artifact_content" || !resourceRef.artifactId || !resourceRef.sessionId) return "";
+    const query = new URLSearchParams({ sessionId: resourceRef.sessionId });
+    return `/api/artifacts/${encodeURIComponent(resourceRef.artifactId)}/content?${query.toString()}`;
+}
+
+function mediaUrl(item: AskUserMedia, sessionId: string) {
+    return mediaPlaybackUrl(item, sessionId);
 }
 
 function mediaLabel(item: AskUserMedia, index: number) {
@@ -173,18 +200,20 @@ function questionDetail(questionItem: AskUserQuestion) {
 function AskUserMediaCard({
     item,
     index,
+    sessionId,
     selected,
     onToggle,
 }: {
     item: AskUserMedia;
     index: number;
+    sessionId: string;
     selected: boolean;
     onToggle: () => void;
 }) {
     const t = useT();
     const kind = mediaKind(item);
-    const previewUrl = mediaUrl(item);
-    const playbackUrl = mediaPlaybackUrl(item);
+    const previewUrl = mediaUrl(item, sessionId);
+    const playbackUrl = mediaPlaybackUrl(item, sessionId);
     const label = mediaLabel(item, index);
     const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
     const [playing, setPlaying] = useState(false);
@@ -288,7 +317,7 @@ function AskUserMediaCard({
     );
 }
 
-export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, onCancel }: AskUserModalProps) {
+export function AskUserModal({ isOpen, question, request, toolCallId, sessionId, onSubmit, onCancel }: AskUserModalProps) {
     const t = useT();
     const questions = useMemo(() => normalizeQuestions(question, request), [question, request]);
     const mediaItems = useMemo(() => normalizeMedia(request), [request]);
@@ -482,6 +511,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                             key={key}
                                             item={item}
                                             index={index}
+                                            sessionId={sessionId}
                                             selected={selectedMedia.includes(key)}
                                             onToggle={() => toggleMedia(item, index)}
                                         />

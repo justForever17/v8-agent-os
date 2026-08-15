@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -24,7 +25,24 @@ def _get(base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def _verify_artifacts(base_url: str, job: dict[str, Any]) -> None:
+def _create_session(base_url: str, scope: dict[str, str]) -> str:
+    session = _post(
+        base_url,
+        "/sessions",
+        {
+            "title": "Creative Media P4 live smoke",
+            "userId": "creative-media-p4-live-smoke",
+            **scope,
+            "scopeMode": "explicit",
+        },
+    )
+    session_id = str(session.get("id") or session.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError(f"session creation returned no id: {session}")
+    return session_id
+
+
+def _verify_artifacts(base_url: str, job: dict[str, Any], session_id: str) -> None:
     artifacts = job.get("artifacts") or []
     if not artifacts:
         raise RuntimeError(f"job succeeded without artifacts: {job.get('jobId')}")
@@ -32,7 +50,11 @@ def _verify_artifacts(base_url: str, job: dict[str, Any]) -> None:
         artifact_id = artifact.get("artifactId") or artifact.get("id")
         if not artifact_id:
             raise RuntimeError(f"artifact missing id: {artifact}")
-        response = requests.get(f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content", timeout=120)
+        response = requests.get(
+            f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content",
+            params={"sessionId": session_id},
+            timeout=120,
+        )
         response.raise_for_status()
         if not response.content:
             raise RuntimeError(f"artifact content is empty: {artifact_id}")
@@ -46,7 +68,10 @@ def _submit_job(base_url: str, payload: dict[str, Any], label: str, *, timeout_s
         job = _get(base_url, f"/creative-media/jobs/{job['jobId']}")["job"]
     if job.get("status") != "succeeded":
         raise RuntimeError(f"{label} did not succeed: {job}")
-    _verify_artifacts(base_url, job)
+    session_id = str(payload.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("live smoke job is missing required session authority")
+    _verify_artifacts(base_url, job, session_id)
     print(f"[PASS] {label}: {job['jobId']} quality={job.get('qualityStatus')}")
     return job
 
@@ -83,6 +108,12 @@ def main() -> int:
             print(f"- {label}: operation={payload.get('operationKind', 'image.generate')} model={payload.get('model')} workspace={args.workspace}")
         print("Pass --live-dashscope and ensure DASHSCOPE_API_KEY is set to execute DashScope calls.")
         return 0
+
+    workspace_path = Path(args.workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        raise RuntimeError("--workspace must be an existing directory for live execution")
+    scope["workspacePath"] = str(workspace_path)
+    scope["sessionId"] = _create_session(args.base_url, scope)
 
     if args.live_dashscope:
         if not os.getenv("DASHSCOPE_API_KEY"):

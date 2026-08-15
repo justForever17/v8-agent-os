@@ -16,10 +16,13 @@ export async function GET(req: NextRequest) {
     try {
         const { searchParams } = new URL(req.url);
         const query = new URLSearchParams();
-        const sessionId = searchParams.get("sessionId");
+        const sessionId = String(searchParams.get("sessionId") || "").trim();
+        if (!sessionId) {
+            return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+        }
         const runId = searchParams.get("runId");
         const limit = searchParams.get("limit");
-        if (sessionId) query.set("sessionId", sessionId);
+        query.set("sessionId", sessionId);
         if (runId) query.set("runId", runId);
         if (limit) query.set("limit", limit);
 

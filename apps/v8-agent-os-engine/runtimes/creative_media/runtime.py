@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import mimetypes
 import os
@@ -110,6 +111,15 @@ _PROVIDER_CREDENTIAL_OVERRIDES: ContextVar[dict[str, str]] = ContextVar(
     "creative_media_provider_credential_overrides",
     default={},
 )
+_ASYNC_REMOTE_JOB_ADAPTERS = {
+    "agnes_video",
+    "comfyui_workflow",
+    "dashscope",
+    "minimax_video",
+    "mureka_music",
+    "tencent_hunyuan_3d",
+    "volcengine_ark",
+}
 
 
 @contextmanager
@@ -800,6 +810,13 @@ class CreativeMediaRuntime:
         # The artifact store is the recovery truth; this bounded map only avoids
         # repeated lookups while the current Engine process is alive.
         self._provider_transport_urls: dict[str, str] = {}
+        self._job_tasks: dict[str, dict[int, asyncio.Task[Any]]] = {}
+        self._job_processes: dict[str, dict[int, Any]] = {}
+        self._job_leases: dict[str, dict[int, Any]] = {}
+        # Provider cancellation/cleanup are side-effecting lifecycle phases.
+        # Keep one task per phase/job so a graph executor and an explicit
+        # cancellation request cannot issue duplicate provider operations.
+        self._lifecycle_tasks: dict[tuple[str, str], asyncio.Task[Any]] = {}
 
     def runtime_descriptor(self) -> dict[str, Any]:
         try:
@@ -3165,19 +3182,92 @@ class CreativeMediaRuntime:
     def _write_jobs(self, payload: dict[str, Any]) -> None:
         storage.write_json(JOB_STORE_FILE, {"version": 1, "jobs": dict(payload.get("jobs") or {})})
 
-    def _save_job(self, job: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _provider_handle_for_job(job: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            return {}
+        provider_response = dict(job.get("providerResponse") or {})
+        return {
+            "schema": "v8.creative_media_provider_handle.v1",
+            "adapter": str(job.get("adapter") or "").strip(),
+            "providerId": str(provider_response.get("providerId") or "").strip(),
+            "taskId": task_id,
+            "operationKind": str(job.get("operationKind") or "").strip(),
+        }
+
+    def _track_current_job_task(self, job: dict[str, Any]) -> None:
+        if str(job.get("status") or "").strip().lower() in {"succeeded", "failed", "cancelled"}:
+            return
+        job_id = str(job.get("jobId") or "").strip()
+        if not job_id:
+            return
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is None:
+            return
+        self._register_job_resource(job_id, "task", task)
+
+    def _register_job_resource(self, job_id: str, kind: str, resource: Any) -> Any:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id or resource is None:
+            raise ValueError("Creative Media resource registration requires jobId and resource handle")
+        stores = {
+            "task": self._job_tasks,
+            "process": self._job_processes,
+            "lease": self._job_leases,
+        }
+        if kind not in stores:
+            raise ValueError(f"Unsupported Creative Media job resource kind: {kind}")
+        stores[kind].setdefault(normalized_job_id, {})[id(resource)] = resource
+        if kind != "task":
+            return resource
+
+        def discard(completed: asyncio.Task[Any], *, tracked_job_id: str = normalized_job_id) -> None:
+            tracked = self._job_tasks.get(tracked_job_id)
+            if not tracked:
+                return
+            tracked.pop(id(completed), None)
+            if not tracked:
+                self._job_tasks.pop(tracked_job_id, None)
+
+        resource.add_done_callback(discard)
+        return resource
+
+    def _save_job(self, job: dict[str, Any], *, track_task: bool = True) -> dict[str, Any]:
+        payload = self._read_jobs()
+        jobs = dict(payload.get("jobs") or {})
+        stored = dict(jobs.get(str(job.get("jobId") or "")) or {})
+        if stored.get("status") == "cancelled" and job.get("status") != "cancelled":
+            job["status"] = "cancelled"
+            for key in (
+                "cancelRequestedAt",
+                "cancelledAt",
+                "cancellationReason",
+                "completedAt",
+                "lifecycle",
+                "providerHandle",
+            ):
+                if stored.get(key) not in (None, "", {}, []):
+                    job[key] = stored[key]
+            job["error"] = stored.get("error") or job.get("error")
+        provider_handle = self._provider_handle_for_job(job)
+        if provider_handle:
+            job["providerHandle"] = provider_handle
         if job.get("status") in {"succeeded", "failed", "cancelled"} and not job.get("p4RecordedAt"):
             try:
                 self._record_terminal_job_observations(job)
             except Exception as exc:
                 job["p4ObservationError"] = _exception_summary(exc)
             job["p4RecordedAt"] = utc_now_iso()
-        payload = self._read_jobs()
-        jobs = dict(payload.get("jobs") or {})
         job["updatedAt"] = utc_now_iso()
         jobs[str(job["jobId"])] = job
         payload["jobs"] = jobs
         self._write_jobs(payload)
+        if track_task:
+            self._track_current_job_task(job)
         return job
 
     def _scope_fields(self, request: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, str]:
@@ -3365,10 +3455,21 @@ class CreativeMediaRuntime:
             "Lower similarity to any known character and use generic descriptive traits only."
         )
 
+    @staticmethod
+    def _reserve_job_id() -> str:
+        return f"cm_{uuid.uuid4().hex}"
+
     def _new_job(self, *, modality: str, adapter: str, request: dict[str, Any]) -> dict[str, Any]:
         now = utc_now_iso()
         operation_kind = str(request.get("operationKind") or request.get("operation_kind") or self._operation_kind_for_request(modality, request)).strip()
-        normalized_request = dict(request)
+        reserved_job_id = str(request.get("_reservedJobId") or "").strip()
+        if reserved_job_id and not re.fullmatch(r"cm_[a-f0-9]{32}", reserved_job_id):
+            raise ValueError("Creative Media reserved job id is invalid")
+        normalized_request = {
+            key: value
+            for key, value in request.items()
+            if key != "_reservedJobId"
+        }
         if modality == "image":
             quality_profile = str(request.get("qualityProfile") or request.get("quality_profile") or "").strip()
             if quality_profile not in QUALITY_PROFILES:
@@ -3385,7 +3486,7 @@ class CreativeMediaRuntime:
                     quality_profile = "storyboard_frame"
             normalized_request["qualityProfile"] = quality_profile
         return {
-            "jobId": f"cm_{uuid.uuid4().hex}",
+            "jobId": reserved_job_id or self._reserve_job_id(),
             **self._scope_fields(request),
             "canvasOperationId": str(request.get("canvasOperationId") or "").strip(),
             # Graph lineage is not merely request decoration: local and provider
@@ -3432,7 +3533,7 @@ class CreativeMediaRuntime:
         job = self.get_job(job_id, refresh=False)
         if not job:
             return None
-        if job.get("status") in {"succeeded", "failed", "cancelled"}:
+        if job.get("status") in {"succeeded", "failed", "cancelling", "cancelled"}:
             return job
         if job.get("adapter") == "volcengine_ark" and job.get("modality") == "video":
             return await self._poll_volcengine_video_job(job)
@@ -3449,6 +3550,473 @@ class CreativeMediaRuntime:
         if job.get("adapter") == "tencent_hunyuan_3d" and job.get("providerTaskId"):
             return await self._poll_tencent_hunyuan_3d_job(job)
         return job
+
+    def _record_job_lifecycle(
+        self,
+        job: dict[str, Any],
+        *,
+        phase: str,
+        status: str,
+        detail_code: str,
+        remote_task_may_continue: bool = False,
+        resources: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+        report = {
+            "schema": "v8.creative_media_job_lifecycle.v1",
+            "phase": phase,
+            "status": status,
+            "detailCode": detail_code,
+            "adapter": str(job.get("adapter") or "").strip(),
+            "providerHandle": provider_handle,
+            "remoteTaskMayContinue": bool(remote_task_may_continue),
+            "completedAt": now,
+        }
+        if resources is not None:
+            report["resources"] = resources
+        if error:
+            report["error"] = error
+        lifecycle = dict(job.get("lifecycle") or {})
+        lifecycle[phase] = report
+        job["lifecycle"] = lifecycle
+        return report
+
+    @staticmethod
+    def _provider_cancel_result(status: str, detail_code: str, *, remote_may_continue: bool = False) -> dict[str, Any]:
+        return {
+            "status": status,
+            "detailCode": detail_code,
+            "remoteTaskMayContinue": remote_may_continue,
+        }
+
+    @staticmethod
+    def _missing_job_lifecycle_report(job_id: str, phase: str) -> dict[str, Any]:
+        return {
+            "schema": "v8.creative_media_job_lifecycle.v1",
+            "phase": phase,
+            "status": "failed",
+            "detailCode": "job_not_found",
+            "jobId": str(job_id or ""),
+            "providerHandle": {},
+            # A missing local record cannot prove that the remote task stopped.
+            # Cancellation therefore fails closed; cleanup alone has no remote
+            # claim to make.
+            "remoteTaskMayContinue": phase == "cancel",
+            "completedAt": utc_now_iso(),
+        }
+
+    def _provider_cancel_endpoint(
+        self,
+        job: dict[str, Any],
+        *,
+        default_model: str,
+        fallback_credentials: dict[str, str] | None = None,
+        require_api_key: bool = True,
+    ) -> tuple[str, str]:
+        request = dict(job.get("request") or {})
+        provider_response = dict(job.get("providerResponse") or {})
+        stored_binding = dict(request.get("endpointBinding") or {})
+        try:
+            binding = self._configured_endpoint_binding(
+                request,
+                default_model=str(provider_response.get("model") or request.get("model") or default_model),
+            )
+        except ValueError:
+            binding = {}
+        provider_meta = dict(binding.get("providerMeta") or {})
+        fallback = {} if stored_binding or binding else dict(fallback_credentials or {})
+        provider_id = str(
+            (job.get("providerHandle") or {}).get("providerId")
+            or provider_response.get("providerId")
+            or binding.get("providerId")
+            or "configured_provider"
+        )
+        api_key = str(
+            provider_meta.get("api_key")
+            or provider_meta.get("apiKey")
+            or fallback.get("apiKey")
+            or ""
+        ).strip()
+        base_url = str(
+            stored_binding.get("baseUrl")
+            or binding.get("baseUrl")
+            or provider_meta.get("base_url")
+            or provider_meta.get("baseUrl")
+            or fallback.get("baseUrl")
+            or ""
+        ).rstrip("/")
+        if require_api_key and not api_key:
+            raise ValueError(f"Provider {provider_id} has no API key for cancellation")
+        if not base_url:
+            raise ValueError(f"Provider {provider_id} has no base_url for cancellation")
+        return base_url, api_key
+
+    @staticmethod
+    def _comfyui_queue_ids(queue_items: Any) -> set[str]:
+        result: set[str] = set()
+        for item in list(queue_items or []):
+            if isinstance(item, dict):
+                value = item.get("prompt_id") or item.get("promptId") or item.get("id")
+                if value not in (None, ""):
+                    result.add(str(value))
+            elif isinstance(item, (list, tuple)):
+                for value in item[:2]:
+                    if isinstance(value, str) and value:
+                        result.add(value)
+        return result
+
+    async def _cancel_comfyui_provider_job(self, job: dict[str, Any], task_id: str) -> dict[str, Any]:
+        base_url, api_key = self._provider_cancel_endpoint(
+            job,
+            default_model="comfyui-workflow",
+            require_api_key=False,
+        )
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            response = await self._request_json(
+                "POST",
+                self._join_api_path(base_url, f"api/jobs/{quote(task_id, safe='')}/cancel"),
+                headers=headers,
+                json={},
+                timeout=30,
+            )
+        except RuntimeError as exc:
+            error = str(exc)
+            if "Provider request failed (404)" not in error and "Provider request failed (405)" not in error:
+                raise
+        else:
+            cancelled = response.get("cancelled")
+            if cancelled is True:
+                remote_terminal = str(
+                    response.get("status")
+                    or response.get("state")
+                    or response.get("jobStatus")
+                    or ""
+                ).strip().lower() in {"cancelled", "canceled", "stopped", "terminated"}
+                return self._provider_cancel_result(
+                    "completed",
+                    "comfyui_job_cancel_event_dispatched",
+                    remote_may_continue=not remote_terminal,
+                )
+            if cancelled is False:
+                return self._provider_cancel_result(
+                    "not_active",
+                    "comfyui_job_cancel_noop",
+                    remote_may_continue=True,
+                )
+            raise RuntimeError("ComfyUI job cancel response did not include cancelled:boolean")
+
+        # Pre-v0.26 servers have no job-scoped running cancellation. Only a
+        # prompt-specific pending dequeue is safe; never fall back to /interrupt.
+        queue = await self._request_json(
+            "GET",
+            self._join_api_path(base_url, "queue"),
+            headers=headers,
+            timeout=30,
+        )
+        pending_ids = self._comfyui_queue_ids(queue.get("queue_pending"))
+        running_ids = self._comfyui_queue_ids(queue.get("queue_running"))
+        if task_id in pending_ids:
+            await self._request_json(
+                "POST",
+                self._join_api_path(base_url, "queue"),
+                headers=headers,
+                json={"delete": [task_id]},
+                timeout=30,
+            )
+            return self._provider_cancel_result(
+                "completed",
+                "comfyui_pending_prompt_deleted",
+                remote_may_continue=True,
+            )
+        if task_id in running_ids:
+            return self._provider_cancel_result(
+                "unsupported",
+                "comfyui_job_cancel_endpoint_unavailable",
+                remote_may_continue=True,
+            )
+        return self._provider_cancel_result(
+            "unsupported",
+            "comfyui_prompt_not_located",
+            remote_may_continue=True,
+        )
+
+    async def _cancel_provider_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        adapter = str(job.get("adapter") or "").strip().lower()
+        task_id = str(job.get("providerTaskId") or "").strip()
+        if not task_id:
+            if adapter in _ASYNC_REMOTE_JOB_ADAPTERS:
+                return self._provider_cancel_result(
+                    "unsupported",
+                    "provider_handle_not_available",
+                    remote_may_continue=True,
+                )
+            return self._provider_cancel_result("not_started", "no_remote_provider_task")
+        if adapter == "volcengine_ark":
+            credentials = self._volc_credentials()
+            base_url, api_key = self._provider_cancel_endpoint(
+                job,
+                default_model=credentials["videoModel"],
+                fallback_credentials=credentials,
+            )
+            try:
+                response = await self._request_json(
+                    "DELETE",
+                    self._join_api_path(base_url, f"contents/generations/tasks/{quote(task_id, safe='')}"),
+                    headers=self._bearer_headers(api_key),
+                    timeout=60,
+                )
+            except RuntimeError as exc:
+                # Volcengine only accepts DELETE while a task is queued. A
+                # running task returns RunningTaskDeletion/409; preserve that
+                # limitation instead of reporting a generic provider failure.
+                message = str(exc)
+                if "Provider request failed (409)" in message and (
+                    "RunningTaskDeletion" in message
+                    or "currently running" in message
+                ):
+                    return self._provider_cancel_result(
+                        "unsupported",
+                        "volcengine_running_task_not_cancellable",
+                        remote_may_continue=True,
+                    )
+                raise
+            remote_terminal = str(
+                (response or {}).get("status")
+                or (response or {}).get("state")
+                or ""
+            ).strip().lower() in {"cancelled", "canceled", "stopped", "terminated"}
+            return self._provider_cancel_result(
+                "completed",
+                "volcengine_cancel_request_accepted",
+                remote_may_continue=not remote_terminal,
+            )
+        if adapter == "dashscope":
+            raw_status = str(
+                (job.get("providerResponse") or {}).get("lastStatus")
+                or job.get("statusBeforeCancellation")
+                or job.get("status")
+                or ""
+            ).strip().lower()
+            if raw_status not in {"pending", "queued", "waiting"}:
+                return self._provider_cancel_result(
+                    "unsupported",
+                    "dashscope_only_cancels_pending_tasks",
+                    remote_may_continue=True,
+                )
+            base_url, api_key = self._provider_cancel_endpoint(
+                job,
+                default_model="wan2.7-t2v",
+                fallback_credentials=self._dashscope_credentials(),
+            )
+            response = await self._request_json(
+                "POST",
+                self._join_api_path(base_url, f"tasks/{quote(task_id, safe='')}/cancel"),
+                headers=self._dashscope_headers(api_key),
+                json={},
+                timeout=60,
+            )
+            output = response.get("output") if isinstance(response, dict) else {}
+            remote_status = str(
+                (output or {}).get("task_status")
+                or (output or {}).get("taskStatus")
+                or (response or {}).get("status")
+                or (response or {}).get("state")
+                or ""
+            ).strip().lower()
+            remote_terminal = remote_status in {"cancelled", "canceled", "stopped", "terminated"}
+            return self._provider_cancel_result(
+                "completed",
+                "dashscope_pending_cancel_request_accepted",
+                remote_may_continue=not remote_terminal,
+            )
+        if adapter == "comfyui_workflow":
+            return await self._cancel_comfyui_provider_job(job, task_id)
+        if adapter in {"agnes_video", "minimax_video", "mureka_music", "tencent_hunyuan_3d"}:
+            return self._provider_cancel_result(
+                "unsupported",
+                f"{adapter}_cancel_not_supported",
+                remote_may_continue=True,
+            )
+        return self._provider_cancel_result(
+            "unsupported",
+            "adapter_cancel_not_implemented",
+            remote_may_continue=True,
+        )
+
+    async def _run_lifecycle_singleflight(
+        self,
+        phase: str,
+        job_id: str,
+        operation: Any,
+    ) -> dict[str, Any]:
+        normalized_phase = str(phase or "").strip().lower()
+        normalized_job_id = str(job_id or "").strip()
+        key = (normalized_phase, normalized_job_id)
+        task = self._lifecycle_tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(operation())
+            self._lifecycle_tasks[key] = task
+
+            def clear(completed: asyncio.Task[Any], *, lifecycle_key: tuple[str, str] = key) -> None:
+                if self._lifecycle_tasks.get(lifecycle_key) is completed:
+                    self._lifecycle_tasks.pop(lifecycle_key, None)
+
+            task.add_done_callback(clear)
+        # shield is intentional: cancellation of the graph owner must not
+        # interrupt the provider DELETE/POST or local cleanup already in flight.
+        return await asyncio.shield(task)
+
+    async def _cancel_job_once(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id, refresh=False)
+        if not job:
+            return self._missing_job_lifecycle_report(job_id, "cancel")
+        existing = dict((job.get("lifecycle") or {}).get("cancel") or {})
+        if job.get("status") == "cancelled" and existing:
+            return existing
+        if job.get("status") in {"succeeded", "failed"}:
+            report = self._record_job_lifecycle(
+                job,
+                phase="cancel",
+                status="not_active",
+                detail_code="job_already_terminal",
+            )
+            self._save_job(job, track_task=False)
+            return report
+
+        job["statusBeforeCancellation"] = str(job.get("status") or "")
+        job["status"] = "cancelling"
+        job["cancelRequestedAt"] = job.get("cancelRequestedAt") or utc_now_iso()
+        self._save_job(job, track_task=False)
+        try:
+            outcome = await self._cancel_provider_job(job)
+        except Exception as exc:
+            outcome = self._provider_cancel_result(
+                "failed",
+                "provider_cancel_failed",
+                remote_may_continue=True,
+            )
+            outcome["error"] = _exception_summary(exc)
+        report = self._record_job_lifecycle(
+            job,
+            phase="cancel",
+            status=str(outcome.get("status") or "failed"),
+            detail_code=str(outcome.get("detailCode") or "provider_cancel_result_missing"),
+            remote_task_may_continue=bool(outcome.get("remoteTaskMayContinue", True)),
+            error=str(outcome.get("error") or ""),
+        )
+        job["status"] = "cancelled"
+        job["cancellationReason"] = "runtime_cancel_requested"
+        job["cancelledAt"] = utc_now_iso()
+        job["completedAt"] = job["cancelledAt"]
+        job["error"] = job.get("error") or "Creative Media job was cancelled"
+        self._save_job(job, track_task=False)
+        return report
+
+    async def cancel_job(self, job_id: str) -> dict[str, Any]:
+        return await self._run_lifecycle_singleflight("cancel", job_id, lambda: self._cancel_job_once(job_id))
+
+    @staticmethod
+    def _terminate_registered_process_sync(process: Any) -> dict[str, str]:
+        try:
+            if process.poll() is not None:
+                return {"status": "not_active", "action": "already_exited"}
+            process.terminate()
+            action = "terminated"
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3.0)
+                action = "killed_after_timeout"
+            return {"status": "completed", "action": action}
+        except Exception as exc:
+            return {"status": "failed", "action": _exception_summary(exc)}
+
+    @classmethod
+    async def _terminate_registered_process(cls, process: Any) -> dict[str, str]:
+        return await asyncio.to_thread(cls._terminate_registered_process_sync, process)
+
+    @staticmethod
+    async def _release_registered_lease(lease: Any) -> dict[str, str]:
+        for method_name in ("release", "close", "dispose", "shutdown"):
+            method = getattr(lease, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+                return {"status": "completed", "action": method_name}
+            except Exception as exc:
+                return {"status": "failed", "action": f"{method_name}:{_exception_summary(exc)}"}
+        return {"status": "failed", "action": "missing_release_method"}
+
+    async def _cleanup_job_once(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id, refresh=False)
+        if not job:
+            return self._missing_job_lifecycle_report(job_id, "cleanup")
+
+        process_results = [
+            await self._terminate_registered_process(process)
+            for process in self._job_processes.pop(str(job_id), {}).values()
+        ]
+        lease_results = [
+            await self._release_registered_lease(lease)
+            for lease in self._job_leases.pop(str(job_id), {}).values()
+        ]
+        task_results: list[dict[str, str]] = []
+        current_task = asyncio.current_task()
+        # Cancellation may commit while process/lease cleanup is yielding;
+        # re-read before touching tracked tasks so a Canvas owner is preserved
+        # even when cleanup was started concurrently with cancel_job.
+        latest_for_owner = self.get_job(job_id, refresh=False) or job
+        # Canvas owns the parent execution task.  Provider failure is just as
+        # terminal as explicit cancellation: cleanup must release child
+        # resources without cancelling the Graph task that records failed.
+        preserve_graph_owner = bool(latest_for_owner.get("canvasGraphRunId"))
+        for task in self._job_tasks.pop(str(job_id), {}).values():
+            if task is current_task or task.done():
+                action = "current_task" if task is current_task else "already_completed"
+                task_results.append({"status": "not_active", "action": action})
+                continue
+            if preserve_graph_owner:
+                # The explicit Canvas cancel route owns the graph task.  It
+                # cancels that task after this lifecycle phase has committed;
+                # cleanup must not cancel its owner while writing the report.
+                task_results.append({"status": "not_active", "action": "preserved_graph_owner"})
+                continue
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            task_results.append({"status": "completed", "action": "cancelled"})
+
+        resources = {"tasks": task_results, "processes": process_results, "leases": lease_results}
+        results = [*task_results, *process_results, *lease_results]
+        if any(item.get("status") == "failed" for item in results):
+            status, detail_code = "failed", "local_resource_cleanup_failed"
+        elif any(item.get("status") == "completed" for item in results):
+            status, detail_code = "completed", "local_resources_released"
+        else:
+            status, detail_code = "not_active", "no_local_resources_registered"
+
+        latest = self.get_job(job_id, refresh=False) or job
+        report = self._record_job_lifecycle(
+            latest,
+            phase="cleanup",
+            status=status,
+            detail_code=detail_code,
+            resources=resources,
+        )
+        self._save_job(latest, track_task=False)
+        return report
+
+    async def cleanup_job(self, job_id: str) -> dict[str, Any]:
+        return await self._run_lifecycle_singleflight("cleanup", job_id, lambda: self._cleanup_job_once(job_id))
 
     def job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
         job = self.get_job(job_id, refresh=False) or {}
@@ -3468,7 +4036,19 @@ class CreativeMediaRuntime:
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
 
-    async def create_job(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def create_job(
+        self,
+        request: dict[str, Any],
+        *,
+        reserved_job_id: str = "",
+    ) -> dict[str, Any]:
+        request = {
+            key: value
+            for key, value in dict(request).items()
+            if key != "_reservedJobId"
+        }
+        if reserved_job_id:
+            request["_reservedJobId"] = reserved_job_id
         if str(request.get("operationKind") or "").strip() == "canvas.graph.execute":
             from core.creative_canvas_graph import creative_canvas_graph_service
 
@@ -6698,6 +7278,8 @@ class CreativeMediaRuntime:
             response = await client.request(method, url, headers=headers, json=json)
             if response.status_code >= 400:
                 raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
+            if response.status_code == 204 or not response.content:
+                return {}
             return response.json()
 
     async def _request_multipart_json(

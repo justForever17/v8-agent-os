@@ -25,14 +25,40 @@ def _get(base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def _download_artifacts(base_url: str, job: dict[str, Any], output_dir: Path) -> list[dict[str, Any]]:
+def _create_session(base_url: str, scope: dict[str, str]) -> str:
+    session = _post(
+        base_url,
+        "/sessions",
+        {
+            "title": "Creative Media music and 3D live smoke",
+            "userId": "creative-media-music-3d-live-smoke",
+            **scope,
+            "scopeMode": "explicit",
+        },
+    )
+    session_id = str(session.get("id") or session.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError(f"session creation returned no id: {session}")
+    return session_id
+
+
+def _download_artifacts(
+    base_url: str,
+    job: dict[str, Any],
+    output_dir: Path,
+    session_id: str,
+) -> list[dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     downloads: list[dict[str, Any]] = []
     for artifact in list(job.get("artifacts") or []):
         artifact_id = str(artifact.get("artifactId") or artifact.get("id") or "").strip()
         if not artifact_id:
             raise RuntimeError(f"artifact missing id: {artifact}")
-        response = requests.get(f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content", timeout=180)
+        response = requests.get(
+            f"{base_url.rstrip('/')}/artifacts/{artifact_id}/content",
+            params={"sessionId": session_id},
+            timeout=180,
+        )
         response.raise_for_status()
         if not response.content:
             raise RuntimeError(f"artifact content is empty: {artifact_id}")
@@ -62,7 +88,15 @@ def _submit_and_wait(base_url: str, label: str, payload: dict[str, Any], report_
         job = _get(base_url, f"/creative-media/jobs/{job['jobId']}")["job"]
     if job.get("status") != "succeeded":
         raise RuntimeError(f"{label} did not succeed: {job}")
-    downloads = _download_artifacts(base_url, job, report_dir / label.replace(" ", "_").lower())
+    session_id = str(payload.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("live smoke job is missing required session authority")
+    downloads = _download_artifacts(
+        base_url,
+        job,
+        report_dir / label.replace(" ", "_").lower(),
+        session_id,
+    )
     return {"label": label, "jobId": job.get("jobId"), "status": job.get("status"), "artifacts": downloads}
 
 
@@ -145,7 +179,15 @@ def main() -> int:
         print(f"[DRY-RUN] Report: {report_dir / 'dry_run.json'}")
         return 0
 
-    scope = {"projectId": args.project_id, "workspaceId": args.workspace_id, "workspacePath": args.workspace}
+    workspace_path = Path(args.workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        raise RuntimeError("--workspace must be an existing directory for --live")
+    scope = {
+        "projectId": args.project_id,
+        "workspaceId": args.workspace_id,
+        "workspacePath": str(workspace_path),
+    }
+    scope["sessionId"] = _create_session(args.base_url, scope)
     if not args.skip_music:
         music_option = _option_payload(report["operations"]["music.generate"])
         if not music_option:

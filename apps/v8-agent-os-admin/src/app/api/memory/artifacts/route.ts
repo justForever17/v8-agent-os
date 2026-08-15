@@ -1,17 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeArtifactsForAdminSurface } from "@/lib/server/artifact-surface";
+import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineOrigin();
 
 export async function GET(req: NextRequest) {
+    const userEmail = await resolveAuthorizedUserEmail(req);
+    if (!userEmail) {
+        return unauthorizedJson();
+    }
+
     try {
         const { searchParams } = new URL(req.url);
         const limit = searchParams.get("limit") || "120";
-        const sessionId = searchParams.get("sessionId");
+        const sessionId = String(searchParams.get("sessionId") || "").trim();
+        if (!sessionId) {
+            return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+        }
         const runId = searchParams.get("runId");
         const query = new URLSearchParams({ limit });
-        if (sessionId) query.set("session_id", sessionId);
+        query.set("sessionId", sessionId);
         if (runId) query.set("run_id", runId);
 
         const response = await fetch(`${ENGINE_URL}/v1/artifacts?${query.toString()}`, {

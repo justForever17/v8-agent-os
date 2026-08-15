@@ -231,9 +231,12 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(canvas, /canvas\/graph\/runs\/\$\{encodeURIComponent\(graphRunId\)\}\/cancel/);
   assert.match(canvas, /body: JSON\.stringify\(\{ reason: "user_cancelled" \}\)/);
   assert.match(canvas, /\? \{ \.\.\.current, status: "cancelling" \}/);
-  assert.match(canvas, /current\.graphRunId === graphRunId \? \(\{/);
+  assert.match(canvas, /current\.graphRunId === graphRunId \? reconcileCanvasRuntimeProjection\(current/);
   assert.match(canvas, /error: String\(projectedError\.message \|\| ""\)/);
   assert.match(canvas, /outputs: current\.outputs/);
+  assert.match(canvas, /current\.graphRunId === graphRunId && current\.status === "cancelling"/);
+  assert.match(canvas, /\? \{ \.\.\.current, status: graphRuntime\.status \}/);
+  assert.match(canvas, /sameCanvasRequestOwner\(graphCancelOwnerRef\.current, owner\)/);
   assert.match(canvas, /disabled=\{!graphRunCancellable\}/);
   assert.match(canvas, /h-8 shrink-0 items-center gap-1\.5 whitespace-nowrap/);
   assert.match(canvas, /pointer-events-none absolute left-1\/2 top-14[\s\S]{0,300}web\.workbench\.canvas\.graph\.locked/);
@@ -475,6 +478,7 @@ test("canvas graph actions persist parameters and run through the direct session
   const timelineEditor = read("apps/v8-agent-os-web/src/components/workbench/creative-canvas/time-range-editor.tsx");
   const conversationGroups = read("apps/v8-agent-os-web/src/lib/conversation-groups.ts");
   const actions = read("apps/v8-agent-os-web/src/lib/creative-canvas-actions.ts");
+  const workbenchShell = read("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
   const route = read("apps/v8-agent-os-engine/api/creative_canvas_routes.py");
   const workbenchProxy = read("apps/v8-agent-os-web/src/app/api/workbench/[[...segments]]/route.ts");
   const configSlice = canvas.slice(canvas.indexOf("const submitComposer"), canvas.indexOf("const runGraph"));
@@ -484,8 +488,14 @@ test("canvas graph actions persist parameters and run through the direct session
   assert.doesNotMatch(runSlice, /onSubmitTask\(\{/);
   assert.match(runSlice, /canvas\/graph\/runs/);
   assert.match(runSlice, /startResponse/);
-  assert.match(runSlice, /sessionIdRef\.current !== sessionId/);
-  assert.match(runSlice, /graphSubmittingRef\.current/);
+  assert.match(runSlice, /isCurrentMutationOwner\(owner\)/);
+  assert.match(runSlice, /releaseMutationOwner\(owner\)/);
+  assert.match(canvas, /isActiveCanvasRequestOwner\(/);
+  assert.match(canvas, /sameCanvasRequestOwner\(/);
+  assert.doesNotMatch(canvas, /graphSubmittingRef/);
+  assert.match(canvas, /signal: controller\.signal/);
+  assert.match(canvas, /controller\.signal\.aborted \|\| !mountedRef\.current \|\| sessionIdRef\.current !== sessionId/);
+  assert.match(workbenchShell, /key=\{canvasTab\.document\.subjectRef\.sessionId\}/);
   assert.match(canvas, /const runnablePreviewTargetIds/);
   assert.match(canvas, /const canvasNodeTitle/);
   assert.match(canvas, /const blockingIssues = issues\.filter\(\(issue\) => issue\.severity === "error"\)/);
@@ -526,6 +536,63 @@ test("canvas graph actions persist parameters and run through the direct session
   assert.match(route, /asyncio\.create_task/);
   assert.match(workbenchProxy, /\|runs\(\?:/);
   assert.match(workbenchProxy, /retry-failed-branch/);
+});
+
+test("canvas request ownership prevents a stale Session from clearing the active Session", () => {
+  const owners = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/components/workbench/creative-canvas/request-owner.ts",
+  );
+  const ownerA = { sessionId: "session-a", token: "request-a" };
+  const ownerB = { sessionId: "session-b", token: "request-b" };
+
+  assert.equal(owners.isActiveCanvasRequestOwner(ownerA, ownerA, "session-a", true), true);
+  assert.equal(owners.isActiveCanvasRequestOwner(ownerB, ownerA, "session-b", true), false);
+  assert.equal(owners.sameCanvasRequestOwner(ownerB, ownerA), false);
+  assert.equal(owners.sameCanvasRequestOwner(ownerB, ownerB), true);
+  assert.equal(owners.isActiveCanvasRequestOwner(ownerB, ownerB, "session-b", false), false);
+});
+
+test("canvas runtime polling rejects stale epochs and same-run status regressions", () => {
+  const canvas = read("apps/v8-agent-os-web/src/components/workbench/CreativeArtifactCanvas.tsx");
+  const runtime = loadTypeScriptModule(
+    "apps/v8-agent-os-web/src/components/workbench/creative-canvas/request-owner.ts",
+  );
+  const running = { graphRunId: "graph-run-a", status: "running" };
+
+  assert.match(canvas, /const requestEpoch = runtimeMutationEpochRef\.current/);
+  assert.match(canvas, /isCurrentCanvasRuntimeEpoch\(requestEpoch, runtimeMutationEpochRef\.current\)/);
+  assert.match(canvas, /advanceRuntimeMutationEpoch\(\)/);
+  assert.match(canvas, /allowExplicitActiveTransition: true/);
+  assert.equal(runtime.isCurrentCanvasRuntimeEpoch(4, 4), true);
+  assert.equal(runtime.isCurrentCanvasRuntimeEpoch(4, 5), false);
+  for (const status of ["cancelling", "cancelled", "failed", "succeeded", "interrupted"]) {
+    const current = { graphRunId: "graph-run-a", status };
+    assert.equal(runtime.reconcileCanvasRuntimeProjection(current, running), current);
+  }
+  const failed = { graphRunId: "graph-run-a", status: "failed" };
+  assert.equal(runtime.reconcileCanvasRuntimeProjection(
+    failed,
+    running,
+    { allowExplicitActiveTransition: true },
+  ), running);
+  assert.equal(runtime.reconcileCanvasRuntimeProjection(
+    { ...failed, updatedAt: "2026-08-15T08:00:00Z" },
+    { ...running, updatedAt: "2026-08-15T08:00:01Z" },
+  ).status, "running");
+  assert.equal(runtime.reconcileCanvasRuntimeProjection(
+    { ...failed, updatedAt: "2026-08-15T08:00:01Z" },
+    { ...running, updatedAt: "2026-08-15T08:00:00Z" },
+  ).status, "failed");
+  for (const status of ["cancelling", "cancelled", "completed", "succeeded", "interrupted"]) {
+    assert.equal(runtime.reconcileCanvasRuntimeProjection(
+      { graphRunId: "graph-run-a", status, updatedAt: "2026-08-15T08:00:00Z" },
+      { ...running, updatedAt: "2026-08-15T08:00:01Z" },
+    ).status, status);
+  }
+  assert.equal(runtime.reconcileCanvasRuntimeProjection(
+    failed,
+    { graphRunId: "graph-run-b", status: "running" },
+  ).graphRunId, "graph-run-b");
 });
 
 test("canvas Human Surface stays one opaque product message after authoritative replay", () => {
@@ -899,7 +966,8 @@ test("Workbench fails closed on artifact sessions and previews text formats by f
   assert.match(workbench, /\["md", "markdown", "mdown", "mkd"\]\.includes\(extension\)/);
   assert.match(workbench, /"json", "jsonc", "jsonl", "ndjson", "txt", "log"/);
   assert.match(workbench, /return "code"/);
-  assert.match(renderer, /fetch\(`\/api\/artifacts\/\$\{encodeURIComponent\(document\.subjectRef\.artifactId\)\}`/);
+  assert.match(renderer, /new URLSearchParams\(\{ sessionId: String\(document\.subjectRef\.sessionId \|\| ""\) \}\)/);
+  assert.match(renderer, /fetch\(`\/api\/artifacts\/\$\{encodeURIComponent\(document\.subjectRef\.artifactId\)\}\?\$\{query\.toString\(\)\}`/);
   assert.match(renderer, /artifactSessionId !== document\.subjectRef\.sessionId/);
   const openOutput = overview.slice(
     overview.indexOf("const openOutput = useCallback"),

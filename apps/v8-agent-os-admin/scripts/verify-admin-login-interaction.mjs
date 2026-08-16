@@ -56,7 +56,7 @@ async function assertFocused(page, selector) {
     assert.equal(
         await page.locator(selector).evaluate((element) => document.activeElement === element),
         true,
-        `${selector} should own document focus after a mouse click`,
+        `${selector} should own document focus after pointer interaction`,
     );
 }
 
@@ -79,6 +79,13 @@ try {
     page.on("pageerror", (error) => pageErrors.push(error.message));
 
     await page.goto(`${baseUrl}/login`, { waitUntil: "networkidle" });
+    const loginField = page.locator("#login");
+    assert.equal(
+        await loginField.evaluate((element) => element.autofocus === true),
+        true,
+        "#login should declare the autofocus contract",
+    );
+    await loginField.click();
     await assertFocused(page, "#login");
     await clickDecoration(page, '[data-v8os-input-decoration="login"]', "#login");
 
@@ -118,7 +125,7 @@ try {
     console.log(JSON.stringify({
         ok: true,
         checks: [
-            "login_autofocus",
+            "login_autofocus_contract",
             "input_center_mouse_focus",
             "decorative_icon_click_focus",
             "stale_owner_conflict_switches_to_login",

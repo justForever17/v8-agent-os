@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
+from runtimes.creative_media import runtime as creative_media_runtime_module
 from runtimes.creative_media.production_pack import (
     PRODUCTION_PACK_STAGES,
     artifact_qa_markdown,
@@ -14,6 +16,17 @@ from runtimes.creative_media.production_pack import (
     run_artifact_qa,
     sample_approval_markdown,
 )
+
+
+class FakeJsonStorage:
+    def __init__(self) -> None:
+        self.payloads: dict[str, dict] = {}
+
+    def read_json(self, filename: str):
+        return deepcopy(self.payloads.get(filename) or {})
+
+    def write_json(self, filename: str, data) -> None:
+        self.payloads[filename] = deepcopy(data)
 
 
 def test_production_pack_has_stable_stage_contract_and_markdown_surface():
@@ -178,7 +191,9 @@ def test_sample_approval_packet_maps_to_ask_user_arguments():
     assert not markdown.lstrip().startswith(("{", "["))
 
 
-def test_artifact_qa_checks_file_existence_and_required_kinds(tmp_path: Path):
+def test_artifact_qa_checks_file_existence_and_required_kinds(tmp_path: Path, monkeypatch):
+    fake_storage = FakeJsonStorage()
+    monkeypatch.setattr(creative_media_runtime_module, "storage", fake_storage)
     audio = tmp_path / "sample.mp3"
     audio.write_bytes(b"not a real mp3 but exists")
     subtitle = tmp_path / "sample.vtt"
@@ -199,3 +214,5 @@ def test_artifact_qa_checks_file_existence_and_required_kinds(tmp_path: Path):
     assert "Sample audio: 存在" in markdown
     assert "缺失关键产物" in markdown
     assert not markdown.lstrip().startswith(("{", "["))
+    quality_jobs = fake_storage.payloads["creative_media/quality_jobs.json"]["qualityJobs"]
+    assert report["qaReportId"] in quality_jobs

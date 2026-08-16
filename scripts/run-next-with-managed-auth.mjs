@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -175,11 +176,19 @@ function main(args = process.argv.slice(2)) {
     stdio: "inherit",
     windowsHide: true,
   });
+  const runId = randomUUID();
+  const childStartedAtMs = Date.now();
+  console.log(
+    `[V8OS Next] run-start run=${runId} app=${app} mode=${mode} pid=${child.pid || "unknown"} host=${runtimeHostname} port=${port}`,
+  );
 
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => child.kill(signal));
   }
-  child.on("exit", (code) => {
+  child.on("exit", (code, signal) => {
+    console.log(
+      `[V8OS Next] run-exit run=${runId} app=${app} mode=${mode} pid=${child.pid || "unknown"} code=${code ?? "null"} signal=${signal || "none"} elapsedMs=${Date.now() - childStartedAtMs}`,
+    );
     let exitCode = code ?? 1;
     if (exitCode === 0 && mode === "build") {
       try {

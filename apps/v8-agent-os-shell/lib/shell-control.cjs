@@ -186,6 +186,7 @@ function createShellControlServer(options = {}) {
           runtimeKind: 'shell',
           executablePath: path.resolve(String(options.executablePath || process.execPath)),
           repoRoot: path.resolve(String(options.repoRoot || process.env.V8_REPO_ROOT || '')),
+          softwareRendering: options.softwareRendering === true,
         } : {}),
       };
       server = net.createServer(handleConnection);

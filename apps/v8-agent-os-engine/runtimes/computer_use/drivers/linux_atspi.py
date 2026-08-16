@@ -67,8 +67,10 @@ class LinuxATSPIADriver:
         atspi_available = pyatspi is not None
         xdotool_available = tool_exists("xdotool")
         wmctrl_available = tool_exists("wmctrl")
-        portal_available = self._portal_available()
-        screenshot_available = bool(tool_exists("grim") or tool_exists("gnome-screenshot") or self._mss_available())
+        screenshot_available = bool(
+            session_type == "x11"
+            and (tool_exists("gnome-screenshot") or self._mss_available())
+        )
         semantic_input_available = session_type == "x11" and xdotool_available
         return DesktopDriverCapabilities(
             platform=self.platform,
@@ -101,8 +103,8 @@ class LinuxATSPIADriver:
                 ],
             ),
             window=DesktopWindowCapabilities(
-                supports_focus=xdotool_available or wmctrl_available or atspi_available,
-                supports_activate=xdotool_available or wmctrl_available or atspi_available,
+                supports_focus=session_type == "x11" and (xdotool_available or wmctrl_available),
+                supports_activate=session_type == "x11" and (xdotool_available or wmctrl_available),
                 supports_dialog_detection=False,
                 supports_window_candidates=atspi_available or wmctrl_available,
                 supports_foreground_window=xdotool_available or atspi_available,
@@ -153,10 +155,10 @@ class LinuxATSPIADriver:
             ),
             permission=DesktopPermissionCapabilities(
                 accessibility_status="granted" if atspi_available else "unknown",
-                automation_status="granted" if tool_exists("gdbus") or tool_exists("dbus-send") else "unknown",
+                automation_status="not_used",
                 screenshot_status="granted" if screenshot_available else "blocked",
                 input_synthesis_status="granted" if semantic_input_available else "blocked",
-                portal_capture_status="available" if portal_available else "unknown",
+                portal_capture_status="unsupported",
                 portal_input_status="unsupported",
                 session_type=session_type,
                 compositor=compositor,
@@ -298,6 +300,8 @@ class LinuxATSPIADriver:
         backend_name: str = "atspi",
     ) -> Dict[str, Any]:
         self.ensure_available()
+        if self._session_type() != "x11":
+            raise LinuxATSPIError("当前 Linux session 不是 X11，已阻止不可靠的窗口聚焦。")
         if window_handle not in (None, ""):
             cached = self._window_cache.get(int(window_handle))
             if self._session_type() == "x11" and tool_exists("xdotool"):
@@ -708,6 +712,10 @@ class LinuxATSPIADriver:
         element_id: str | None = None,
     ) -> Dict[str, Any]:
         self.ensure_available()
+        if self._session_type() != "x11":
+            raise LinuxATSPIError(
+                "Wayland 截图必须通过用户授权的 ScreenCast portal；当前 driver 尚未实现该会话，已阻止直接抓屏。"
+            )
         target_path = Path(output_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         bounds = None
@@ -795,9 +803,6 @@ class LinuxATSPIADriver:
             or str(os.environ.get("DESKTOP_SESSION") or "").strip()
             or ("wayland" if self._session_type() == "wayland" else "unknown")
         )
-
-    def _portal_available(self) -> bool:
-        return bool(tool_exists("gdbus") or tool_exists("dbus-send"))
 
     def _mss_available(self) -> bool:
         try:

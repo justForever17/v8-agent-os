@@ -108,6 +108,7 @@ nsis:
 mac:
   icon: assets/icon.icns
   category: public.app-category.developer-tools
+  minimumSystemVersion: "12.0"
   extendInfo:
     NSMicrophoneUsageDescription: V8 Agent OS uses the microphone only when you start voice capture.
     NSCameraUsageDescription: V8 Agent OS uses the camera only when you start a camera capture.
@@ -132,6 +133,7 @@ linux:
         - x64
         - arm64
 deb:
+  appArmorProfile: electron/apparmor-profile
   depends:
     - libgtk-3-0
     - libnotify4
@@ -139,7 +141,13 @@ deb:
     - libxss1
     - libxtst6
     - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
     - at-spi2-core
+    - gir1.2-atspi-2.0
+    - libgirepository-1.0-1
+    - libcairo2
     - xdotool
     - wmctrl
     - xclip

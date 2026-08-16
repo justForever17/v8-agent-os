@@ -5,6 +5,13 @@ export function printJson(payload) {
 export function renderStatus(statuses) {
   console.log("V8OS 服务状态");
   for (const item of statuses) {
+    if (item.status === "unavailable") {
+      const pid = item.pid ? ` pid=${item.pid}` : "";
+      const residual = item.pidAlive ? " (residual process detected; stop remains available)" : "";
+      console.log(`- ${item.label}: UNAVAILABLE${pid}${residual}`);
+      if (item.message) console.log(`  ${item.message}`);
+      continue;
+    }
     const marker = item.state === "managed_running" ? "RUNNING" : item.state === "external_port_in_use" ? "EXTERNAL" : "STOPPED";
     const pid = item.pid ? ` pid=${item.pid}` : "";
     const port = item.port ? ` port=${item.port}` : "";
@@ -17,6 +24,7 @@ export function renderStartResults(results) {
     if (item.status === "started") console.log(`Started ${item.id}: pid=${item.pid}${item.port ? `, port=${item.port}` : ""}`);
     else if (item.status === "already_running") console.log(`${item.id} already running: pid=${item.pid}`);
     else if (item.status === "port_in_use") console.log(`${item.id} skipped: port ${item.port} is already in use by an external process.`);
+    else if (item.status === "unavailable") console.log(`${item.id}: unavailable. ${item.message || item.reasonCode}`);
     else console.log(`${item.id}: ${item.status}`);
   }
 }

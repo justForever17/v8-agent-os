@@ -11,8 +11,10 @@ const TARGETS = [
   // the native Apple Silicon label (macos-15-intel is the x64 counterpart).
   { id: "macos-x64", label: "macOS Intel unsigned preview installer", runner: "macos-15-intel", os: "macos", arch: "x64" },
   { id: "macos-arm64", label: "macOS Apple Silicon unsigned preview installer", runner: "macos-15", os: "macos", arch: "arm64" },
-  { id: "linux-x64", label: "Linux x64 unsigned preview packages", runner: "ubuntu-24.04", os: "linux", arch: "x64" },
-  { id: "linux-arm64", label: "Linux arm64 unsigned preview packages", runner: "ubuntu-24.04-arm", os: "linux", arch: "arm64" },
+  // Build native extensions on the oldest declared GNU/Linux baseline. The
+  // exact artifacts are consumed again by clean Ubuntu 24.04 smoke jobs.
+  { id: "linux-x64", label: "Linux x64 unsigned preview packages", runner: "ubuntu-22.04", os: "linux", arch: "x64" },
+  { id: "linux-arm64", label: "Linux arm64 unsigned preview packages", runner: "ubuntu-22.04-arm", os: "linux", arch: "arm64" },
 ];
 
 function argValue(name) {
@@ -52,7 +54,21 @@ function resolveTargets({ eventName, platform, targetsJson }) {
   if (enabled && include.length === 0) {
     throw new Error("At least one desktop target is required when desktop packaging is enabled");
   }
-  return { enabled, matrix: { include } };
+  const linuxCleanInclude = include
+    .filter((target) => target.os === "linux")
+    .flatMap((target) => ["22.04", "24.04"].map((ubuntuVersion) => ({
+      id: target.id,
+      arch: target.arch,
+      distro: `ubuntu-${ubuntuVersion}`,
+      runner: target.arch === "arm64" ? `ubuntu-${ubuntuVersion}-arm` : `ubuntu-${ubuntuVersion}`,
+      label: `${target.id} clean Ubuntu ${ubuntuVersion} DEB smoke`,
+    })));
+  return {
+    enabled,
+    matrix: { include },
+    linuxCleanEnabled: enabled && linuxCleanInclude.length > 0,
+    linuxCleanMatrix: { include: linuxCleanInclude },
+  };
 }
 
 try {
@@ -64,6 +80,8 @@ try {
   const lines = [
     `enabled=${result.enabled}`,
     `matrix=${JSON.stringify(result.matrix)}`,
+    `linux_clean_enabled=${result.linuxCleanEnabled}`,
+    `linux_clean_matrix=${JSON.stringify(result.linuxCleanMatrix)}`,
   ];
   const output = argValue("--github-output");
   if (output) {

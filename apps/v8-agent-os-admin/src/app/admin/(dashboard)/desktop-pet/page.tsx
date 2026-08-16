@@ -496,6 +496,16 @@ export default function DesktopPetSettingsPage() {
   const floatAmplitude = clampNumber(data.appearance?.floatAmplitude, 14, 0, 40);
   const floatSpeed = clampNumber(data.appearance?.floatSpeed, 3.5, 1, 8);
   const glowIntensity = clampNumber(data.effectSpectrum?.intensity, 0.75, 0, 1);
+  const runtimeUnavailable = runtimeState?.available === false;
+  const linuxRuntimeUnavailable = runtimeUnavailable
+    && runtimeState.reasonCode === "linux_desktop_pet_input_passthrough_unreliable";
+  const runtimeStatus = !runtimeState
+    ? t("app.admin.dashboard.desktopPet.runtimeUnavailable")
+    : linuxRuntimeUnavailable
+      ? t(runtimeState.enabled
+          ? "app.admin.dashboard.desktopPet.runtimeLinuxUnavailableRunning"
+          : "app.admin.dashboard.desktopPet.runtimeLinuxUnavailable")
+      : t(`app.admin.dashboard.desktopPet.runtimeStates.${runtimeState.state}`);
 
   return (
     <div className="space-y-6">
@@ -518,14 +528,16 @@ export default function DesktopPetSettingsPage() {
           <div className="min-w-0">
             <div className="font-medium">{t("app.admin.dashboard.desktopPet.runtimeToggle")}</div>
             <div className="mt-1 text-sm text-muted-foreground">
-              {runtimeState
-                ? t(`app.admin.dashboard.desktopPet.runtimeStates.${runtimeState.state}`)
-                : t("app.admin.dashboard.desktopPet.runtimeUnavailable")}
+              {runtimeStatus}
             </div>
           </div>
           <Switch
             checked={Boolean(runtimeState?.enabled)}
-            disabled={!runtimeState || runtimeBusy || runtimeState.state === "starting" || runtimeState.state === "stopping"}
+            disabled={!runtimeState
+              || runtimeBusy
+              || runtimeState.state === "starting"
+              || runtimeState.state === "stopping"
+              || (runtimeUnavailable && !runtimeState.enabled)}
             onCheckedChange={(checked) => { void setDesktopPetRuntimeEnabled(checked); }}
             aria-label={t("app.admin.dashboard.desktopPet.runtimeToggle")}
           />

@@ -1,6 +1,6 @@
 # V8OS 发布版本管理基线
 
-更新时间：2026-08-10
+更新时间：2026-08-16
 
 ## 目标
 
@@ -22,12 +22,13 @@
 - Admin 生产构建
 - Web 生产构建
 - Shell
-- 受控桌宠
+- 受控桌宠（Windows/macOS；Linux 当前 fail-closed unavailable）
 
 当前状态：
 
 - 已有源码树 `v8os preview`。
 - 已有 Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/arm64 的 unsigned preview reusable workflow；每个平台只负责构建并上传本次 workflow run 的工件，不直接创建 GitHub Release。
+- Linux Desktop Pet 当前因 Electron 43 与 V8OS 全屏透明交互实现尚无可靠的跨 X11/Wayland 输入区域合同而 fail-closed，稳定原因码为 `linux_desktop_pet_input_passthrough_unreliable`；Engine/Admin/Web/Shell 不受影响，且不得为启用桌宠而关闭 Chromium sandbox 或引入未经验证的穿透回退。
 - schema 2 当前把 Desktop 及六个桌面目标全部标记为 `required`。统一发布只有在这些目标和 Android 都成功后才可进入最终 fan-in Release。
 - 最终 Release 上传 Windows 安装包、macOS DMG、Linux AppImage/DEB、Android APK 和统一的 `SHA256SUMS.txt`。`RUNTIME_PROBE-<platform>.json` 与 `PACKAGE_LAYOUT-<platform>.json` 是 CI 诊断证据，只保留在 GitHub Actions artifact，不进入普通用户的 Release 下载资产列表。
 - 尚未签名，不宣传为 stable。客户端可自动探测统一 Preview Release，并由用户手动进入受控下载页；没有自动下载或静默安装。
@@ -41,7 +42,7 @@
 - Windows、macOS、Linux 都必须完成对应平台的实体 GUI/权限验收，才可进入 stable。
 - 安装后启动不弹终端黑框。
 - Shell 是唯一本地产品窗口。
-- Engine/Admin/Web/桌宠由 Shell 看护。
+- Engine/Admin/Web 与平台上已启用的桌宠由 Shell 看护。
 - 支持签名、更新、卸载、崩溃日志和修复入口。
 
 ### `phone-preview` / `phone-production`
@@ -158,12 +159,12 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 2. Shell 启动后无 dev server、Turbopack、HMR 日志。
 3. Engine 无控制台黑框，日志进入 V8OS 日志目录。
 4. Shell 可按登录态进入 Admin 或 Web。
-5. 托盘能打开 Web/Admin、启动/退出桌宠、退出 V8OS。
+5. 托盘能打开 Web/Admin、退出 V8OS；Windows/macOS 还必须能启动/退出桌宠，Linux 必须显示桌宠不可用且不能提供启动动作。
 6. 退出后清理受管进程。
 7. 产物资源在 Shell/Web 与 Phone 可访问。
 8. `SHA256SUMS.txt` 与发布资产同批生成。
 9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
-10. Windows 必须由 NSIS 静默安装到一次性目录后启动安装树应用，验证 Shell、Engine/Admin/Web、桌宠和清理；该证据仍不替代用户真机的安装器交互与系统安全提示。Linux x64/arm64 必须把 DEB 安装到 root-owned `/opt/V8 Agent OS`，再以普通 runner 用户在独立 D-Bus、Secret Service 与 Xvfb 会话中启动；同一构建还必须解包 AppImage、把整个包树改成只读并完成相同服务与桌宠 smoke。macOS 必须以只读方式挂载 DMG，在挂载树内完成 Keychain round-trip 与打包应用 smoke。四种格式的 Engine/Admin/Web 必须在 90 秒内全部就绪，Shell 和桌宠进程必须持续存活并建立受鉴权控制连接。TCC/辅助功能、真实 X11/Wayland、托盘、窗口管理器及安装器交互必须在同平台实体主机另行验收，不能被 CI smoke 替代。
+10. Windows 必须由 NSIS 静默安装到一次性目录后启动安装树应用，验证 Engine/Admin/Web/Shell、桌宠存活与受鉴权控制连接以及退出清理；该证据仍不替代用户真机的安装器交互与系统安全提示。Linux x64/arm64 必须把 DEB 安装到 root-owned `/opt/V8 Agent OS`，再以普通 runner 用户在独立 D-Bus、Secret Service 与 Xvfb 会话中启动；同一构建还必须解包 AppImage、把整个包树改成只读。Linux 两种格式都必须证明 Engine/Admin/Web 在 90 秒内就绪、Shell 持续存活，并证明桌宠启动被非零退出码拒绝，启动与状态响应均为结构化 `unavailable`、携带 `linux_desktop_pet_input_passthrough_unreliable`，且没有桌宠 PID、存活进程或运行时 descriptor。macOS 必须以只读方式挂载 DMG，在挂载树内完成 Keychain round-trip，并验证 Engine/Admin/Web/Shell、桌宠存活与受鉴权控制连接以及退出清理。上述 hosted runner 结果只能记为 `CI package smoke`；TCC/辅助功能、真实 X11/Wayland、托盘、窗口管理器及安装器交互必须在同平台实体主机另行验收，不能据此标记为 `physical host verified`。
 
 ### Linux DEB 非 root 启动门禁与跨平台凭据合同
 

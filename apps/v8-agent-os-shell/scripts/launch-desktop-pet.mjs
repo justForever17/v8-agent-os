@@ -1,6 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { launchDetachedElectron, paths } from "./electron-launcher.mjs";
+import desktopPetPlatform from "../../v8-agent-os-cli/src/desktop_pet_platform.cjs";
+
+const {
+  desktopPetAvailability,
+  LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+} = desktopPetPlatform;
+
+const platformAvailability = desktopPetAvailability();
+if (!platformAvailability.available) {
+  const error = new Error(platformAvailability.message || LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
+  error.code = platformAvailability.reasonCode || LINUX_DESKTOP_PET_UNAVAILABLE_REASON;
+  throw error;
+}
 
 const serverBundle = path.join(paths.desktopPetDir, "dist", "server.cjs");
 if (!fs.existsSync(serverBundle)) {

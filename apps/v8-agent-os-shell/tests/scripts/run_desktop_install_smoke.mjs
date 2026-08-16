@@ -6,8 +6,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import readinessProbe from "../../lib/readiness-probe.cjs";
+import desktopPetPlatform from "../../../v8-agent-os-cli/src/desktop_pet_platform.cjs";
 
 const { validateReadinessResponse } = readinessProbe;
+const {
+  desktopPetAvailability,
+  LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+} = desktopPetPlatform;
 
 function argValue(name) {
   const index = process.argv.indexOf(name);
@@ -155,6 +160,15 @@ function isPidAlive(pid) {
   }
 }
 
+function processCommandLine(pid) {
+  if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 0) return "";
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`).toString("utf8").replaceAll("\0", " ").trim();
+  } catch {
+    return "";
+  }
+}
+
 function packagedResourceRoot(shellExecutable) {
   const executableDir = path.dirname(path.resolve(shellExecutable));
   return process.platform === "darwin"
@@ -217,16 +231,20 @@ async function waitForPidExit(pid, timeoutMs = 20_000) {
   return !isPidAlive(pid);
 }
 
-async function bootstrapSmokeOwner() {
+function createSmokeOwnerCredentials() {
   const nonce = randomUUID().replaceAll("-", "");
+  return {
+    login: `v8os-smoke-${nonce.slice(0, 12)}`,
+    name: "V8OS Smoke Owner",
+    password: `${randomUUID()}${randomUUID()}`,
+  };
+}
+
+async function bootstrapSmokeOwner(credentials) {
   const result = await fetchJson("http://127.0.0.1:9528/api/auth/bootstrap", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      login: `v8os-smoke-${nonce.slice(0, 12)}`,
-      name: "V8OS Smoke Owner",
-      password: `${randomUUID()}${randomUUID()}`,
-    }),
+    body: JSON.stringify(credentials),
     timeoutMs: 15_000,
   });
   return {
@@ -235,6 +253,39 @@ async function bootstrapSmokeOwner() {
     error: result.ok && result.payload?.success === true
       ? ""
       : safeErrorCode(result.error, "owner_bootstrap_failed"),
+  };
+}
+
+async function loginSmokeOwner(credentials) {
+  const result = await fetchJson("http://127.0.0.1:9528/api/client/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      login: credentials.login,
+      password: credentials.password,
+    }),
+    timeoutMs: 15_000,
+  });
+  const httpOk = result.ok && result.status === 200;
+  const sessionIssued = typeof result.payload?.accessToken === "string"
+    && result.payload.accessToken.trim().length > 0;
+  const ownerIdentityMatched = result.payload?.user?.login === credentials.login
+    && result.payload?.user?.role === "ADMIN";
+  const ok = Boolean(httpOk && sessionIssued && ownerIdentityMatched);
+  return {
+    ok,
+    httpOk,
+    sessionIssued,
+    ownerIdentityMatched,
+    error: ok
+      ? ""
+      : !httpOk
+        ? Number.isInteger(result.status)
+          ? `owner_login_http_${result.status}`
+          : safeErrorCode(result.error, "owner_login_request_failed")
+        : !sessionIssued
+          ? "owner_login_session_missing"
+          : "owner_login_identity_mismatch",
   };
 }
 
@@ -360,6 +411,7 @@ function readShellSurface(descriptorPath, expectedPid) {
     return {
       ok,
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+      softwareRendering: descriptor?.softwareRendering === true,
       surfaceKind: allowedSurfaceKinds.has(surfaceKind) ? surfaceKind : null,
       surfaceReadyAt: typeof descriptor?.surfaceReadyAt === "string" ? descriptor.surfaceReadyAt : null,
       error: ok ? "" : "shell_surface_not_ready",
@@ -411,6 +463,16 @@ async function fetchJson(url, options = {}) {
 function safeErrorCode(value, fallback) {
   const candidate = String(value || "").trim();
   return /^[a-z0-9_]{1,96}$/i.test(candidate) ? candidate : fallback;
+}
+
+function packagedCliItem(result, componentId) {
+  try {
+    const payload = JSON.parse(String(result?.stdout || ""));
+    if (!Array.isArray(payload)) return null;
+    return payload.find((item) => item?.id === componentId) || null;
+  } catch {
+    return null;
+  }
 }
 
 function packagedPython(resourceRoot) {
@@ -735,12 +797,15 @@ function reportPath() {
   return path.join(dir, "install_smoke.json");
 }
 
-const shellExe = argValue("--shell-exe") || process.env.V8OS_SHELL_EXE || "";
+const shellExeInput = argValue("--shell-exe") || process.env.V8OS_SHELL_EXE || "";
+const shellExe = shellExeInput ? path.resolve(shellExeInput) : "";
 const explicitResourceRoot = argValue("--resource-root");
 const explicitAppImageRoot = argValue("--appimage-root");
 const shellNoSandbox = booleanArg("--shell-no-sandbox", false);
+const softwareRendering = booleanArg("--software-rendering", false);
 const serviceTimeoutMs = positiveIntegerArg("--timeout-ms", 90_000);
 const startupBudgetMs = positiveIntegerArg("--startup-budget-ms", 90_000);
+const stabilityWindowMs = positiveIntegerArg("--stability-window-ms", 15_000);
 const featurePackSmokeEnabled = booleanArg("--feature-pack-smoke", true);
 const occupyDefaultWebPort = booleanArg("--occupy-default-web-port", false);
 const featurePackProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--feature-pack-probe-timeout-ms", 30_000));
@@ -779,8 +844,14 @@ if (appImageRoot) {
     process.exit(2);
   }
 }
-const runtimeEnvironment = appImageRuntimeEnvironment(appImageRoot, shellNoSandbox);
-const shellArgs = shellNoSandbox ? ["--no-sandbox"] : [];
+const runtimeEnvironment = {
+  ...appImageRuntimeEnvironment(appImageRoot, shellNoSandbox),
+  V8OS_DESKTOP_ISOLATED_USER_DATA_ROOT: path.join(stateRoot, "runtime", "electron-user-data"),
+};
+const shellArgs = [
+  ...(shellNoSandbox ? ["--no-sandbox"] : []),
+  ...(softwareRendering ? ["--v8os-software-rendering"] : []),
+];
 const defaultWebPortBlocker = occupyDefaultWebPort ? await occupyLoopbackPort(9527) : null;
 let child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
 const runtimePortProfile = await waitForRuntimePorts(runtimePortsPath, Math.min(serviceTimeoutMs, 15_000));
@@ -792,6 +863,46 @@ const [engine, admin, web, initialShellSurface] = await Promise.all([
   waitForReadiness("web", `http://127.0.0.1:${runtimePorts.web}/chat`, serviceTimeoutMs),
   waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs),
 ]);
+const startupDurationMs = Date.now() - startedAtMs;
+await sleep(stabilityWindowMs);
+const [stableEngine, stableAdmin, stableWeb, stableShellSurface] = await Promise.all([
+  waitForReadiness("engine", `http://127.0.0.1:${runtimePorts.engine}/readyz`, 3_000),
+  waitForReadiness("admin", `http://127.0.0.1:${runtimePorts.admin}/login`, 3_000),
+  waitForReadiness("web", `http://127.0.0.1:${runtimePorts.web}/chat`, 3_000),
+  waitForShellSurface(shellControlPath, child.pid || 0, 3_000),
+]);
+const stabilityCompletedDurationMs = Date.now() - startedAtMs;
+const initialRuntimeStability = {
+  ok: Boolean(
+    isPidAlive(child.pid || 0)
+    && stableEngine.ok
+    && stableAdmin.ok
+    && stableWeb.ok
+    && stableShellSurface.ok
+  ),
+  windowMs: stabilityWindowMs,
+  completedDurationMs: stabilityCompletedDurationMs,
+  shellAlive: isPidAlive(child.pid || 0),
+  services: {
+    engine: stableEngine.ok,
+    admin: stableAdmin.ok,
+    web: stableWeb.ok,
+    shellSurface: stableShellSurface.ok,
+  },
+  error: "",
+};
+if (!initialRuntimeStability.ok) initialRuntimeStability.error = "runtime_unstable_after_initial_readiness";
+const shellCommandLine = processCommandLine(child.pid || 0);
+const sandboxMode = {
+  ok: process.platform !== "linux" || Boolean(shellCommandLine && !shellCommandLine.split(/\s+/).includes("--no-sandbox")),
+  platform: process.platform,
+  commandLine: shellCommandLine || null,
+  error: process.platform === "linux" && !shellCommandLine
+    ? "shell_command_line_unavailable"
+    : process.platform === "linux" && shellCommandLine.split(/\s+/).includes("--no-sandbox")
+      ? "no_sandbox_flag_observed"
+      : "",
+};
 const rawInitialInstanceManifest = admin.ok
   ? await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 })
   : { ok: false, error: "admin_not_ready" };
@@ -811,12 +922,14 @@ const bootstrapSurface = {
       : initialShellSurface.error || "",
 };
 
+const ownerCredentials = createSmokeOwnerCredentials();
 let ownerBootstrap = { ok: false, error: "initial_bootstrap_surface_unavailable" };
+let existingOwnerLogin = { ok: false, error: "shell_restart_unavailable" };
 let shellRestart = { ok: false, error: "owner_bootstrap_unavailable" };
 let shellSurface = initialShellSurface;
 let rawInstanceManifest = rawInitialInstanceManifest;
 if (bootstrapSurface.ok) {
-  ownerBootstrap = await bootstrapSmokeOwner();
+  ownerBootstrap = await bootstrapSmokeOwner(ownerCredentials);
   if (ownerBootstrap.ok) {
     const initialShellPid = child.pid || 0;
     const stopped = await runPackagedCli(
@@ -831,12 +944,17 @@ if (bootstrapSurface.ok) {
       ok: Boolean(stopped.ok && exited),
       stopped: Boolean(stopped.ok),
       oldProcessExited: Boolean(exited),
+      cliExitCode: stopped.exitCode,
+      cliSignal: stopped.signal,
+      cliError: stopped.error,
+      cliStderr: String(stopped.stderr || '').slice(-4000),
       error: !stopped.ok ? "initial_shell_stop_failed" : exited ? "" : "initial_shell_exit_timeout",
     };
     if (shellRestart.ok) {
       child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
       shellSurface = await waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs);
       rawInstanceManifest = await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 });
+      existingOwnerLogin = await loginSmokeOwner(ownerCredentials);
     }
   }
 }
@@ -859,10 +977,11 @@ const instanceManifest = {
   initialized: instanceManifestValid ? true : null,
   error: instanceManifestValid ? "" : safeErrorCode(rawInstanceManifest.error, "instance_manifest_invalid"),
 };
-const startupDurationMs = Date.now() - startedAtMs;
 const serviceChecks = { engine, admin, web };
 const desktopPetStartedAtMs = Date.now();
-const desktopPetLaunch = Object.values(serviceChecks).every((item) => item.ok) && shellSurface.ok
+const coreSurfaceReady = Object.values(serviceChecks).every((item) => item.ok) && shellSurface.ok;
+const expectedDesktopPetAvailability = desktopPetAvailability();
+const desktopPetLaunch = coreSurfaceReady
   ? await runPackagedCli(
     shellExe,
     resourceRoot,
@@ -870,9 +989,75 @@ const desktopPetLaunch = Object.values(serviceChecks).every((item) => item.ok) &
     runtimeEnvironment,
   )
   : { ok: false, error: "core_surface_not_ready" };
-const desktopPet = desktopPetLaunch.ok
-  ? await waitForDesktopPet(desktopPetDescriptorPath, shellControlPath, Math.min(serviceTimeoutMs, 30_000))
-  : { ok: false, error: safeErrorCode(desktopPetLaunch.error, "desktop_pet_launch_failed") };
+let desktopPet;
+if (!expectedDesktopPetAvailability.available) {
+  const desktopPetStatus = coreSurfaceReady
+    ? await runPackagedCli(
+      shellExe,
+      resourceRoot,
+      ["status", "--json"],
+      runtimeEnvironment,
+    )
+    : { ok: false, error: "core_surface_not_ready" };
+  const launchItem = packagedCliItem(desktopPetLaunch, "desktop-pet");
+  const statusItem = packagedCliItem(desktopPetStatus, "desktop-pet");
+  const launchRejected = desktopPetLaunch.ok === false
+    && Number.isInteger(desktopPetLaunch.exitCode)
+    && desktopPetLaunch.exitCode !== 0;
+  const launchUnavailable = launchItem?.componentId === "desktop-pet"
+    && launchItem?.available === false
+    && launchItem?.status === "unavailable"
+    && launchItem?.reasonCode === LINUX_DESKTOP_PET_UNAVAILABLE_REASON
+    && launchItem?.pid == null;
+  const statusUnavailable = desktopPetStatus.ok
+    && statusItem?.componentId === "desktop-pet"
+    && statusItem?.available === false
+    && statusItem?.status === "unavailable"
+    && statusItem?.reasonCode === LINUX_DESKTOP_PET_UNAVAILABLE_REASON;
+  const processRunning = statusItem?.pidAlive === true;
+  const processAbsent = statusItem?.pid == null && statusItem?.pidAlive === false;
+  const descriptorCreated = fs.existsSync(desktopPetDescriptorPath);
+  const ok = Boolean(
+    coreSurfaceReady
+    && launchRejected
+    && launchUnavailable
+    && statusUnavailable
+    && processAbsent
+    && !descriptorCreated
+  );
+  desktopPet = {
+    ok,
+    mode: "unavailable",
+    available: false,
+    reasonCode: LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+    launchRejected,
+    launchUnavailable: Boolean(launchUnavailable),
+    statusUnavailable: Boolean(statusUnavailable),
+    processRunning,
+    descriptorCreated,
+    launchExitCode: desktopPetLaunch.exitCode ?? null,
+    error: ok
+      ? ""
+      : !coreSurfaceReady
+        ? "core_surface_not_ready"
+        : !launchRejected
+          ? "desktop_pet_linux_start_not_rejected"
+          : !launchUnavailable
+            ? "desktop_pet_linux_start_contract_invalid"
+            : !statusUnavailable
+              ? "desktop_pet_linux_status_contract_invalid"
+              : !processAbsent
+                ? "desktop_pet_linux_process_detected"
+                : "desktop_pet_linux_descriptor_created",
+  };
+} else {
+  desktopPet = desktopPetLaunch.ok
+    ? await waitForDesktopPet(desktopPetDescriptorPath, shellControlPath, Math.min(serviceTimeoutMs, 30_000))
+    : { ok: false, error: safeErrorCode(desktopPetLaunch.error, "desktop_pet_launch_failed") };
+  desktopPet.mode = "running";
+  desktopPet.available = true;
+  desktopPet.reasonCode = null;
+}
 desktopPet.startupDurationMs = Date.now() - desktopPetStartedAtMs;
 const config = readLocalConfig();
 const headers = serviceAuthHeaders(config.data);
@@ -939,6 +1124,10 @@ const defaultWebPortStillOccupied = occupyDefaultWebPort
 const packagedCleanup = {
   ok: Boolean(stopAll.ok && cleanupProof.ok && defaultWebPortStillOccupied),
   cliStopped: Boolean(stopAll.ok),
+  cliExitCode: stopAll.exitCode,
+  cliSignal: stopAll.signal,
+  cliError: stopAll.error,
+  cliStderr: String(stopAll.stderr || '').slice(-4000),
   managedPortsClosed: cleanupProof.openPorts.length === 0,
   managedProcessesExited: cleanupProof.livePids.length === 0,
   externalDefaultPortPreserved: defaultWebPortStillOccupied,
@@ -952,15 +1141,24 @@ const packagedCleanup = {
 };
 const checks = {
   ...serviceChecks,
+  initialRuntimeStability,
+  sandboxMode,
   bootstrapSurface,
   ownerBootstrap,
   shellRestart,
+  existingOwnerLogin,
   instanceManifest,
   shellProcess: {
     ok: shellProcessBeforeCleanup,
     pid: child.pid || null,
   },
   shellSurface,
+  renderingMode: {
+    ok: shellSurface.softwareRendering === softwareRendering,
+    requested: softwareRendering,
+    observed: shellSurface.softwareRendering === true,
+    error: shellSurface.softwareRendering === softwareRendering ? "" : "software_rendering_mode_mismatch",
+  },
   adaptiveWebPort: {
     ok: Boolean(runtimePortProfile
       && (!occupyDefaultWebPort
@@ -977,7 +1175,7 @@ const checks = {
   desktopPet,
   startupBudget: {
     ok: Object.values(serviceChecks).every((item) => item.ok)
-      && shellSurface.ok
+      && initialShellSurface.ok
       && startupDurationMs <= startupBudgetMs,
     durationMs: startupDurationMs,
     budgetMs: startupBudgetMs,
@@ -994,6 +1192,7 @@ const payload = {
   startupDurationMs,
   startupBudgetMs,
   serviceTimeoutMs,
+  stabilityWindowMs,
   shellPid: child.pid || null,
   ports: {
     ...runtimePorts,
@@ -1001,7 +1200,7 @@ const payload = {
   checks,
   failureStage: firstFailureStage(checks),
   passed: Object.values(checks).every((item) => item.ok),
-  note: "Automated packaged startup, product-surface, desktop-pet process/health, and authenticated Shell-control proof. Tray interaction and physical display behavior still require a matching host.",
+  note: "Automated packaged startup, product-surface, existing-Owner login, Windows/macOS desktop-pet process/health, or governed Linux desktop-pet unavailability/no-process proof. Tray interaction and physical display behavior still require a matching host.",
 };
 
 const output = reportPath();

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import desktopPetPlatform from "./desktop_pet_platform.cjs";
 import { ensureDir } from "./json_file.mjs";
 import { COMPONENTS, componentRuntimePorts, configureComponentRuntimePorts, logPathsFor } from "./components.mjs";
 import { LOG_DIR, REPO_ROOT, STATE_ROOT } from "./paths.mjs";
@@ -16,6 +17,8 @@ import {
   withComponentProcessLease,
   withRuntimePortsLease,
 } from "./process_state.mjs";
+
+const { desktopPetAvailability } = desktopPetPlatform;
 
 export const WINDOWS_PROCESS_PROBE_TIMEOUT_MS = 10_000;
 export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
@@ -812,6 +815,7 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
     const pidAlive = Boolean(identity.effectivePid || identity.unverifiedPids.length);
     const hasPort = componentHasPort(component);
     const portOpen = hasPort ? await isPortOpen(component.port) : false;
+    const availability = id === "desktop-pet" ? desktopPetAvailability() : null;
     statuses.push({
       id,
       label: component.label,
@@ -827,6 +831,7 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
       startedAt: runtimeDescriptor?.startedAt || record?.startedAt || null,
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
+      ...(availability && !availability.available ? availability : {}),
     });
   }
   await Promise.all(staleCleanups);
@@ -965,6 +970,9 @@ async function startComponent(id, options) {
 export async function startComponentsWithRuntimePorts(componentIds, options = {}) {
   ensureDir(LOG_DIR);
   const selected = componentIds.filter((id) => COMPONENTS[id]);
+  const desktopPetStartBlock = selected.includes("desktop-pet")
+    ? desktopPetAvailability()
+    : null;
   let webResult = null;
   const profile = await withRuntimePortsLease(async () => {
     const state = readProcessState();
@@ -985,9 +993,14 @@ export async function startComponentsWithRuntimePorts(componentIds, options = {}
     return profile;
   });
   configureComponentRuntimePorts(profile.ports);
-  const results = await Promise.all(selected.map((id) => id === "web"
-    ? webResult
-    : startComponent(id, { ...options, runtimePorts: profile.ports })));
+  const results = await Promise.all(selected.map((id) => {
+    if (id === "desktop-pet" && desktopPetStartBlock && !desktopPetStartBlock.available) {
+      return { id, ...desktopPetStartBlock };
+    }
+    return id === "web"
+      ? webResult
+      : startComponent(id, { ...options, runtimePorts: profile.ports });
+  }));
   return { profile, results };
 }
 

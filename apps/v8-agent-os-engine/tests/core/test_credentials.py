@@ -424,6 +424,7 @@ def test_platform_dependencies_and_packaged_runtime_probes_are_explicit():
     helper_source = NATIVE_HELPER.read_text(encoding="utf-8")
 
     assert 'keyring==25.7.0 ; sys_platform == "linux"' in linux_requirements
+    assert 'PyGObject==3.48.2 ; sys_platform == "linux"' in linux_requirements
     assert 'keyring==25.7.0 ; sys_platform == "darwin"' in macos_requirements
     assert "keyring" not in windows_requirements.lower()
     assert "keyrings.alt" not in linux_requirements.lower()

@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import desktopPetPlatform from "../src/desktop_pet_platform.cjs";
 import {
   ALL_COMPONENTS,
   COMPONENTS,
@@ -60,6 +61,13 @@ import {
 } from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 import { commandResultsHaveFailures, main as runCli } from "../src/cli.mjs";
+import { renderStartResults, renderStatus } from "../src/render.mjs";
+import { shellDesktopPetAvailability } from "../src/shell_api.mjs";
+
+const {
+  desktopPetAvailability,
+  LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+} = desktopPetPlatform;
 
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
@@ -115,6 +123,65 @@ test("--all returns all components", () => {
   assert.deepEqual(parseComponentSelection(["--all"]), ALL_COMPONENTS);
   assert.ok(ALL_COMPONENTS.includes("shell"));
   assert.ok(ALL_COMPONENTS.includes("desktop-pet"));
+});
+
+test("desktop pet capability is fail-closed only on Linux", () => {
+  const linux = desktopPetAvailability("linux");
+  assert.equal(LINUX_DESKTOP_PET_UNAVAILABLE_REASON, "linux_desktop_pet_input_passthrough_unreliable");
+  assert.deepEqual(linux, {
+    componentId: "desktop-pet",
+    platform: "linux",
+    available: false,
+    status: "unavailable",
+    reasonCode: LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+    message: "Desktop Pet is unavailable on Linux because its current full-screen interactive window has no verified safe click-through contract. Core V8OS interfaces (Engine, Admin, Web, and Shell) are unaffected.",
+  });
+  for (const platform of ["win32", "darwin"]) {
+    const availability = desktopPetAvailability(platform);
+    assert.equal(availability.available, true, platform);
+    assert.equal(availability.status, "available", platform);
+    assert.equal(availability.reasonCode, null, platform);
+  }
+  assert.deepEqual(shellDesktopPetAvailability("linux"), linux);
+});
+
+test("Linux desktop pet selection remains explicit for --only, --with, and --all", () => {
+  const selections = [
+    parseComponentSelection(["--only", "desktop-pet"]),
+    parseComponentSelection(["--with", "desktop-pet"]),
+    parseComponentSelection(["--all"]),
+  ];
+  for (const selected of selections) {
+    assert.ok(selected.includes("desktop-pet"));
+    assert.equal(commandResultsHaveFailures("start", [{
+      id: "desktop-pet",
+      ...desktopPetAvailability("linux"),
+    }]), true);
+  }
+  assert.equal(parseComponentSelection([]).includes("desktop-pet"), false);
+});
+
+test("Linux desktop pet human output explains that core interfaces are unaffected", () => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  try {
+    const availability = desktopPetAvailability("linux");
+    renderStartResults([{ id: "desktop-pet", ...availability }]);
+    renderStatus([{
+      id: "desktop-pet",
+      label: "Desktop Pet",
+      state: "managed_running",
+      pid: 44001,
+      pidAlive: true,
+      ...availability,
+    }]);
+  } finally {
+    console.log = originalLog;
+  }
+  const output = lines.join("\n");
+  assert.match(output, /Core V8OS interfaces \(Engine, Admin, Web, and Shell\) are unaffected\./);
+  assert.match(output, /residual process detected; stop remains available/);
 });
 
 test("subcommand help is read-only and does not execute preview", async () => {
@@ -204,6 +271,72 @@ test("CLI prints structured start failures before exiting nonzero", (t) => {
   });
   assert.equal(child.status, 1, child.stderr);
   assert.equal(JSON.parse(child.stdout)[0].status, "startup_exit");
+});
+
+test("Linux explicit desktop pet starts return unavailable and exit nonzero", (t) => {
+  const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-repo-"));
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-state-"));
+  t.after(() => {
+    fs.rmSync(fakeRepo, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  });
+  const cliUrl = new URL("../src/cli.mjs", import.meta.url).href;
+  const cases = [
+    ["--only", "desktop-pet"],
+    ["--with", "desktop-pet"],
+    ["--all"],
+  ];
+  for (const args of cases) {
+    const child = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `Object.defineProperty(process, "platform", { value: "linux" }); const { main } = await import(${JSON.stringify(cliUrl)}); await main(${JSON.stringify(["start", ...args, "--mode", "start", "--json"])});`,
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        V8_REPO_ROOT: fakeRepo,
+        V8_AGENT_OS_HOME: stateRoot,
+      },
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    assert.equal(child.status, 1, `${args.join(" ")}: ${child.stderr}`);
+    const desktopPet = JSON.parse(child.stdout).find((item) => item.id === "desktop-pet");
+    assert.ok(desktopPet, args.join(" "));
+    assert.equal(desktopPet.componentId, "desktop-pet");
+    assert.equal(desktopPet.status, "unavailable");
+    assert.equal(desktopPet.available, false);
+    assert.equal(desktopPet.reasonCode, LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
+    assert.equal(desktopPet.pid, undefined);
+  }
+});
+
+test("Linux desktop pet status reports capability while stop remains available", async () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-linux-pet-lifecycle-"));
+  const processManagerUrl = new URL("../src/process_manager.mjs", import.meta.url).href;
+  const script = [
+    `Object.defineProperty(process, "platform", { value: "linux" });`,
+    `const { statusComponents, stopComponents } = await import(${JSON.stringify(processManagerUrl)});`,
+    `const status = await statusComponents(["desktop-pet"]);`,
+    `const stop = await stopComponents(["desktop-pet"]);`,
+    `process.stdout.write(JSON.stringify({ status, stop }));`,
+  ].join("\n");
+  try {
+    const payload = JSON.parse(await runIsolatedModuleScript(script, {
+      V8_AGENT_OS_HOME: stateRoot,
+      V8_REPO_ROOT: repoRoot,
+    }));
+    assert.equal(payload.status[0].state, "stopped");
+    assert.equal(payload.status[0].pidAlive, false);
+    assert.equal(payload.status[0].available, false);
+    assert.equal(payload.status[0].status, "unavailable");
+    assert.equal(payload.status[0].reasonCode, LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
+    assert.deepEqual(payload.stop, [{ id: "desktop-pet", status: "not_managed" }]);
+  } finally {
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test("Windows process ownership probes pass the governed cold-start timeout to the runner", async () => {

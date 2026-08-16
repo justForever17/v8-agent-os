@@ -1,3 +1,15 @@
+const {
+  desktopPetAvailability,
+  LINUX_DESKTOP_PET_UNAVAILABLE_REASON,
+} = require('../../v8-agent-os-cli/src/desktop_pet_platform.cjs');
+
+const platformAvailability = desktopPetAvailability();
+if (!platformAvailability.available) {
+  const error = new Error(platformAvailability.message || LINUX_DESKTOP_PET_UNAVAILABLE_REASON);
+  error.code = platformAvailability.reasonCode || LINUX_DESKTOP_PET_UNAVAILABLE_REASON;
+  throw error;
+}
+
 const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, net, protocol, shell, session, screen, systemPreferences, desktopCapturer } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -38,6 +50,7 @@ let lastShellActiveSessionId = '';
 let lastPetStatus = { state: 'waiting_v8os', activeSessionId: null };
 let shutdownTimer = null;
 let shutdownRequestId = '';
+let gpuRecoveryRelaunchArgs = null;
 
 const V8_WEB_URL = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 const MANAGED_BY_SHELL = process.env.V8_DESKTOP_PET_MANAGED_BY_SHELL === '1';
@@ -459,6 +472,9 @@ function finalizeShutdown(reason = 'renderer_ready') {
   shellControlClient?.stop();
   shellControlClient = null;
   removeOwnedDesktopPetProcessDescriptor();
+  const relaunchArgs = gpuRecoveryRelaunchArgs;
+  gpuRecoveryRelaunchArgs = null;
+  if (relaunchArgs) app.relaunch({ args: relaunchArgs });
   app.exit(0);
   return true;
 }
@@ -466,6 +482,7 @@ function finalizeShutdown(reason = 'renderer_ready') {
 function safeShutdown(options = {}) {
   if (shuttingDown) return true;
   shuttingDown = true;
+  app.emit('v8os-governed-shutdown-started');
   shellLifecycleWatchdog?.stop();
   shellLifecycleWatchdog = null;
   shutdownRequestId = String(options.requestId || `pet-${Date.now()}`);
@@ -623,6 +640,7 @@ async function createMainWindowInternal() {
     width,
     height,
     frame: false,
+    roundedCorners: false,
     transparent: true,
     backgroundColor: '#00000000',
     alwaysOnTop: true,
@@ -638,6 +656,9 @@ async function createMainWindowInternal() {
     },
   });
 
+  mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  clickThrough = true;
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     if (errorCode === -3 || shuttingDown) return;
     console.error('[CyberCore Desktop] load failed:', errorCode, errorDescription, validatedURL);
@@ -652,14 +673,11 @@ async function createMainWindowInternal() {
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow?.show();
     sendToRenderer('v8-desktop:shell-active-session', { sessionId: lastShellActiveSessionId || null });
   });
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    mainWindow?.setIgnoreMouseEvents(true, { forward: true });
-    clickThrough = true;
     updateTrayMenu();
   });
 
@@ -845,6 +863,11 @@ ipcMain.handle('v8-desktop:quit', () => {
 });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+app.on('v8os-gpu-recovery-requested', (relaunchArgs) => {
+  if (shuttingDown || gpuRecoveryRelaunchArgs) return;
+  gpuRecoveryRelaunchArgs = Array.isArray(relaunchArgs) ? relaunchArgs.map(String) : [];
+  safeShutdown({ source: 'gpu_recovery' });
+});
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {

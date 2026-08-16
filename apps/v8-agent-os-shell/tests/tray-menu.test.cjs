@@ -50,3 +50,54 @@ test('tray menu disables lifecycle actions during transitions', () => {
     assert.equal(action?.enabled, false);
   }
 });
+
+test('tray menu exposes no Linux desktop pet start action when the runtime is unavailable', () => {
+  const model = buildTrayMenuModel({
+    desktopPetState: 'stopped',
+    desktopPetProcessRunning: false,
+    desktopPetAvailability: {
+      available: false,
+      status: 'unavailable',
+      reasonCode: 'linux_desktop_pet_input_passthrough_unreliable',
+    },
+  });
+  const ids = model.map((item) => item.id || item.type);
+  assert.equal(
+    model.find((item) => item.id === 'desktop-pet-status')?.label,
+    '桌宠：Linux 暂不可用 / Companion unavailable on Linux',
+  );
+  assert.equal(ids.includes('start-desktop-pet'), false);
+  assert.equal(ids.includes('stop-desktop-pet'), false);
+});
+
+test('tray menu can stop a residual desktop pet even when Linux runtime is unavailable', () => {
+  const model = buildTrayMenuModel({
+    desktopPetState: 'starting',
+    desktopPetProcessRunning: true,
+    desktopPetAvailability: {
+      available: false,
+      status: 'unavailable',
+      reasonCode: 'linux_desktop_pet_input_passthrough_unreliable',
+    },
+  });
+  const ids = model.map((item) => item.id || item.type);
+  assert.ok(ids.includes('stop-desktop-pet'));
+  assert.equal(ids.includes('start-desktop-pet'), false);
+  assert.equal(model.find((item) => item.id === 'stop-desktop-pet')?.enabled, true);
+});
+
+test('tray menu does not label an unconfirmed capability as Linux-specific', () => {
+  const model = buildTrayMenuModel({
+    desktopPetState: 'stopped',
+    desktopPetProcessRunning: false,
+    desktopPetAvailability: {
+      available: false,
+      status: 'unavailable',
+      reasonCode: 'desktop_pet_availability_unconfirmed',
+    },
+  });
+  assert.equal(
+    model.find((item) => item.id === 'desktop-pet-status')?.label,
+    '桌宠：运行状态不可用 / Companion runtime unavailable',
+  );
+});

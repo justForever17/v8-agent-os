@@ -42,6 +42,11 @@ class MacAXUIDriverError(DesktopDriverError):
     pass
 
 
+SCREEN_CAPTURE_PERMISSION_BLOCKED = (
+    "permission_blocked: macOS 未授予 Screen Recording 权限，已阻止截图。"
+)
+
+
 class MacAXUIDriver:
     platform = "macos"
     backend = "axui"
@@ -68,13 +73,14 @@ class MacAXUIDriver:
     def capability_summary(self) -> Dict[str, Any]:
         probe = self._probe()
         accessibility_granted = bool(probe.get("accessibilityGranted"))
-        screenshot_available = bool(tool_exists("screencapture"))
+        screen_capture_granted = bool(probe.get("screenCaptureGranted"))
+        screenshot_available = bool(tool_exists("screencapture") and screen_capture_granted)
         input_available = accessibility_granted
         return DesktopDriverCapabilities(
             platform=self.platform,
             backend=self.backend,
             input=DesktopInputCapabilities(
-                strategy_order=["axui_semantic", "cg_event", "applescript"],
+                strategy_order=["axui_semantic", "cg_event"],
                 supports_send_keys=input_available,
                 supports_sendinput=False,
                 supports_window_message=False,
@@ -82,11 +88,11 @@ class MacAXUIDriver:
                 supports_clipboard_files=False,
                 supports_modifier_normalization=True,
                 supports_coordinate_typing=False,
-                notes=["macOS 优先走 AXUIElement 与 CGEvent；AppleScript 仅用于辅助自动化与剪贴板。"],
+                notes=["macOS 输入仅走 AXUIElement 与 CGEvent；当前未实现 Apple Events 自动化。"],
             ),
             accessibility=DesktopAccessibilityCapabilities(
                 primary_backend="axui",
-                fallback_backends=["cgwindow", "applescript"],
+                fallback_backends=["cgwindow"],
                 supports_window_enumeration=True,
                 supports_element_observation=accessibility_granted,
                 supports_visual_fallback=screenshot_available,
@@ -147,11 +153,11 @@ class MacAXUIDriver:
                     "coordinate_fallback",
                     "human_approval",
                 ],
-                notes=["macOS 默认优先 AXUIElement/Apple Events，visual 与 coordinate 只是降级链。"],
+                notes=["macOS 默认优先 AXUIElement/CGEvent，visual 与 coordinate 只是降级链。"],
             ),
             permission=DesktopPermissionCapabilities(
                 accessibility_status="granted" if accessibility_granted else "blocked",
-                automation_status="granted" if tool_exists("osascript") else "unknown",
+                automation_status="not_used",
                 screenshot_status="granted" if screenshot_available else "blocked",
                 input_synthesis_status="granted" if input_available else "blocked",
                 portal_capture_status="unsupported",
@@ -692,6 +698,7 @@ class MacAXUIDriver:
         element_id: str | None = None,
     ) -> Dict[str, Any]:
         self.ensure_available()
+        self._ensure_screen_capture_granted()
         target_path = Path(output_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if tool_exists("screencapture"):
@@ -769,6 +776,10 @@ class MacAXUIDriver:
     def _ensure_input_granted(self) -> None:
         if not bool(self._probe().get("accessibilityGranted")):
             raise MacAXUIDriverError("macOS 未授予 Accessibility 权限，当前无法执行点击、输入或拖拽。")
+
+    def _ensure_screen_capture_granted(self) -> None:
+        if not bool(self._probe().get("screenCaptureGranted")):
+            raise MacAXUIDriverError(SCREEN_CAPTURE_PERMISSION_BLOCKED)
 
     def _helper_source_path(self) -> Path:
         return Path(__file__).with_name("mac_ax_helper.swift")

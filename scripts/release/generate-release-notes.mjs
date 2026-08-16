@@ -189,13 +189,19 @@ function knownLimits(product, channel) {
   if (channel === "stable") {
     return [
       "- 本版本属于 desktop-stable 通道，请仅在 stable 门禁完成后发布。",
-      "- Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
+      "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
+      "- Ubuntu 24.04 在 AppArmor 限制 unprivileged user namespace 时请优先使用 DEB；DEB 随包安装 Electron 启动兼容 profile，但该 profile 不是安全隔离边界。AppImage 不会静默回退到 `--no-sandbox`；宿主必须提供可用 user namespace，否则启动与烟测会明确失败。",
       "- macOS/Linux 的 GUI 权限、窗口管理器与桌面自动化需要在对应实体主机验收；Linux Wayland 的输入限制会被显式投影为 blocked。",
     ].join("\n");
   }
   return [
     "- 本版本是未签名的多平台桌面预览包，不代表 stable 版本。",
-    "- Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+    "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+    "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
+    "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
+    "- Ubuntu 24.04 在 AppArmor 限制 unprivileged user namespace 时请优先使用 DEB；DEB 随包安装 Electron 启动兼容 profile，但该 profile 不是安全隔离边界。AppImage 不会静默回退到 `--no-sandbox`；宿主必须提供可用 user namespace，否则启动与烟测会明确失败。",
     "- 自动更新与代码签名仍在后续阶段；macOS/Linux 的 GUI 权限、窗口管理器与桌面自动化需要在对应实体主机验收。Linux DEB 声明 X11 辅助工具；AppImage 仍要求宿主安装 xdotool、wmctrl 与 xclip/xsel 之一，Wayland 限制会显式显示为 blocked。",
   ].join("\n");
 }

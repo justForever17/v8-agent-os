@@ -1,6 +1,9 @@
 function buildTrayMenuModel(options = {}) {
   const desktopPetState = String(options.desktopPetState || 'stopped');
   const desktopPetProcessRunning = Boolean(options.desktopPetProcessRunning);
+  const desktopPetAvailable = options.desktopPetAvailability?.available !== false;
+  const linuxDesktopPetUnavailable = !desktopPetAvailable
+    && options.desktopPetAvailability?.reasonCode === 'linux_desktop_pet_input_passthrough_unreliable';
   const updateStatus = options.updateStatus && typeof options.updateStatus === 'object'
     ? options.updateStatus
     : { state: 'idle' };
@@ -12,8 +15,22 @@ function buildTrayMenuModel(options = {}) {
     stopping: '退出中',
     error: '异常',
   };
-  const busy = desktopPetState === 'starting' || desktopPetState === 'stopping';
-  const shouldStop = desktopPetProcessRunning || ['waiting_v8os', 'connected', 'error'].includes(desktopPetState);
+  const busy = desktopPetState === 'stopping' || (desktopPetAvailable && desktopPetState === 'starting');
+  const shouldStop = desktopPetProcessRunning
+    || (desktopPetAvailable && ['waiting_v8os', 'connected', 'error'].includes(desktopPetState));
+  const desktopPetAction = shouldStop
+    ? {
+        id: 'stop-desktop-pet',
+        label: '退出桌宠',
+        enabled: !busy,
+      }
+    : desktopPetAvailable
+      ? {
+          id: 'start-desktop-pet',
+          label: '启动桌宠',
+          enabled: !busy,
+        }
+      : null;
   const updateAction = (() => {
     if (updateStatus.state === 'checking') {
       return { id: 'update-status', label: '正在检查更新... / Checking for updates...', enabled: false };
@@ -36,18 +53,22 @@ function buildTrayMenuModel(options = {}) {
     { id: 'open-web', label: '打开 V8OS' },
     { id: 'open-admin', label: '打开设置' },
     { type: 'separator' },
-    { id: 'desktop-pet-status', label: `桌宠：${stateLabels[desktopPetState] || stateLabels.error}`, enabled: false },
     {
-      id: shouldStop ? 'stop-desktop-pet' : 'start-desktop-pet',
-      label: shouldStop ? '退出桌宠' : '启动桌宠',
-      enabled: !busy,
+      id: 'desktop-pet-status',
+      label: desktopPetAvailable
+        ? `桌宠：${stateLabels[desktopPetState] || stateLabels.error}`
+        : linuxDesktopPetUnavailable
+          ? '桌宠：Linux 暂不可用 / Companion unavailable on Linux'
+          : '桌宠：运行状态不可用 / Companion runtime unavailable',
+      enabled: false,
     },
+    desktopPetAction,
     { type: 'separator' },
     updateAction,
     { id: 'service-status', label: '查看服务状态' },
     { type: 'separator' },
     { id: 'quit-v8os', label: '退出 V8OS' },
-  ];
+  ].filter(Boolean);
 }
 
 module.exports = {

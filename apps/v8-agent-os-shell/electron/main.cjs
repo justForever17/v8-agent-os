@@ -55,6 +55,11 @@ let quitting = false;
 let desktopPetState = 'stopped';
 let desktopPetStateChangedAt = Date.now();
 let desktopPetProcessRunning = false;
+let desktopPetPlatformAvailability = {
+  available: false,
+  status: 'unavailable',
+  reasonCode: 'desktop_pet_availability_unconfirmed',
+};
 let activeSessionId = null;
 let desktopPetActiveSessionId = null;
 let shellControl = null;
@@ -78,16 +83,19 @@ let manualUpdateDialogRequested = false;
 let automaticUpdateCheckScheduled = false;
 let automaticUpdateCheckTimer = null;
 let notifiedUpdateTag = null;
+let gpuRecoveryRelaunchArgs = null;
 const SURFACE_RECOVERY_WINDOW_MS = 60_000;
 const MAX_SURFACE_RECOVERY_ATTEMPTS = 2;
 const desktopPetShutdown = createDesktopPetShutdownCoordinator();
 
 function currentDesktopPetStatus() {
   return {
-    state: desktopPetState,
+    state: desktopPetPlatformAvailability.available ? desktopPetState : 'unavailable',
     processRunning: desktopPetProcessRunning,
     controlConnected: Boolean(shellControl?.hasAuthenticatedClient()),
     activeSessionId: desktopPetActiveSessionId,
+    available: desktopPetPlatformAvailability.available,
+    reasonCode: desktopPetPlatformAvailability.reasonCode || null,
     enabled: desktopPetProcessRunning
       || Boolean(shellControl?.hasAuthenticatedClient())
       || ['starting', 'waiting_v8os', 'connected', 'stopping'].includes(desktopPetState),
@@ -106,6 +114,8 @@ function publishShellControlStatus() {
     desktopPetProcessRunning: current.processRunning,
     controlConnected: current.controlConnected,
     desktopPetActiveSessionId: current.activeSessionId,
+    desktopPetAvailable: current.available,
+    desktopPetUnavailableReasonCode: current.reasonCode,
   };
   const fingerprint = JSON.stringify(status);
   if (fingerprint === lastPublishedControlStatus) return;
@@ -808,6 +818,7 @@ async function startShellControl() {
     packaged: app.isPackaged,
     executablePath: process.execPath,
     repoRoot,
+    softwareRendering: process.env.V8OS_SOFTWARE_RENDERING === '1',
     onAuthenticated() {
       if (desktopPetState !== 'stopping') setDesktopPetState('waiting_v8os');
       publishShellControlStatus();
@@ -860,9 +871,12 @@ function reportActiveSession(sessionId) {
 
 async function refreshStatusOnce() {
   try {
-    const { shellStatus } = await cliApi();
+    const { shellDesktopPetAvailability, shellStatus } = await cliApi();
+    desktopPetPlatformAvailability = shellDesktopPetAvailability();
     const statuses = await shellStatus(['desktop-pet']);
-    desktopPetProcessRunning = statuses.some((item) => item.id === 'desktop-pet' && item.state === 'managed_running');
+    desktopPetProcessRunning = statuses.some((item) => (
+      item.id === 'desktop-pet' && (item.state === 'managed_running' || item.pidAlive === true)
+    ));
   } catch {
     if (desktopPetProcessRunning) setDesktopPetState('error');
     updateTrayMenu();
@@ -956,6 +970,11 @@ function notifyUpdateAvailable(result) {
       silent: true,
     });
     notification.on('click', () => { void openUpdateRelease(result); });
+    notification.on('failed', (_event, error) => {
+      console.warn('[v8os-shell] update notification unavailable', {
+        reason: String(error || 'notification_failed').slice(0, 200),
+      });
+    });
     notification.show();
   } catch {
     console.warn('[v8os-shell] update notification unavailable');
@@ -1099,12 +1118,15 @@ async function stopDesktopPetGracefully() {
 }
 
 async function setDesktopPetEnabled(enabled) {
-  if (desktopPetState === 'starting' || desktopPetState === 'stopping') return currentDesktopPetStatus();
+  const shouldStop = desktopPetProcessRunning || shellControl?.hasAuthenticatedClient();
+  if (desktopPetState === 'stopping') return currentDesktopPetStatus();
+  if (desktopPetState === 'starting' && (desktopPetPlatformAvailability.available || enabled || !shouldStop)) {
+    return currentDesktopPetStatus();
+  }
   try {
-    const shouldStop = desktopPetProcessRunning || shellControl?.hasAuthenticatedClient();
     if (!enabled && shouldStop) {
       await stopDesktopPetGracefully();
-    } else if (enabled && !shouldStop) {
+    } else if (enabled && !shouldStop && desktopPetPlatformAvailability.available) {
       setDesktopPetState('starting');
       const { shellStart } = await cliApi();
       const results = await shellStart(['desktop-pet'], { mode: 'start' });
@@ -1245,6 +1267,7 @@ async function showShutdownFailure(result) {
 async function quitV8OS() {
   if (quitting) return;
   quitting = true;
+  app.emit('v8os-governed-shutdown-started');
   let failure = null;
   try {
     const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
@@ -1261,7 +1284,12 @@ async function quitV8OS() {
       stopControl: async () => {
         await shellControl?.stop();
       },
-      quitApplication: () => app.quit(),
+      quitApplication: () => {
+        const relaunchArgs = gpuRecoveryRelaunchArgs;
+        gpuRecoveryRelaunchArgs = null;
+        if (relaunchArgs) app.relaunch({ args: relaunchArgs });
+        app.quit();
+      },
       onDesktopPetShutdownError: (error) => {
         console.error('[V8OS Shell] Desktop pet graceful shutdown failed; verifying CLI fallback', {
           reason: error?.message || 'unknown_error',
@@ -1284,6 +1312,7 @@ async function quitV8OS() {
   }
   if (!failure) return;
 
+  gpuRecoveryRelaunchArgs = null;
   quitting = false;
   let retry = false;
   try {
@@ -1296,7 +1325,12 @@ async function quitV8OS() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const model = buildTrayMenuModel({ desktopPetState, desktopPetProcessRunning, updateStatus });
+  const model = buildTrayMenuModel({
+    desktopPetState,
+    desktopPetProcessRunning: desktopPetProcessRunning || Boolean(shellControl?.hasAuthenticatedClient()),
+    desktopPetAvailability: desktopPetPlatformAvailability,
+    updateStatus,
+  });
   const template = model.map((item) => {
     if (item.type === 'separator') return { type: 'separator' };
     if (item.id === 'open-web') return { label: item.label, enabled: !adminSessionLocked, click: openWeb };
@@ -1326,6 +1360,7 @@ function createMainWindow() {
     minHeight: 640,
     title: 'V8 Agent OS',
     frame: false,
+    roundedCorners: false,
     icon: taskbarIconPath() || undefined,
     show: false,
     webPreferences: {
@@ -1615,6 +1650,7 @@ handleTrustedShellIpc('v8os-shell:check-for-updates', async () => {
 handleTrustedShellIpc('v8os-shell:open-update-release', async () => openUpdateRelease());
 
 function registerShellProtocol() {
+  if (process.env.V8OS_DESKTOP_ISOLATED_USER_DATA_ROOT) return false;
   if (process.defaultApp && process.argv.length >= 2) {
     return app.setAsDefaultProtocolClient('v8os', process.execPath, [path.resolve(process.argv[1])]);
   }
@@ -1622,6 +1658,11 @@ function registerShellProtocol() {
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+app.on('v8os-gpu-recovery-requested', (relaunchArgs) => {
+  if (quitting || gpuRecoveryRelaunchArgs) return;
+  gpuRecoveryRelaunchArgs = Array.isArray(relaunchArgs) ? relaunchArgs.map(String) : [];
+  void quitV8OS();
+});
 if (!hasSingleInstanceLock) {
   app.quit();
 } else if (process.argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)) {
@@ -1647,10 +1688,13 @@ if (!hasSingleInstanceLock) {
     app.setAppUserModelId('V8OS.LocalShell');
     registerShellProtocol();
     try {
-      const { getShellProcessRecordIdentity } = await cliApi();
+      const { getShellProcessRecordIdentity, shellDesktopPetAvailability } = await cliApi();
       shellProcessRecordIdentity = getShellProcessRecordIdentity();
+      desktopPetPlatformAvailability = shellDesktopPetAvailability();
     } catch (error) {
-      console.warn('[V8OS Shell] Unable to capture managed Shell identity', { reason: error?.message || 'unknown_error' });
+      console.warn('[V8OS Shell] Unable to load managed Shell identity and platform capabilities', {
+        reason: error?.message || 'unknown_error',
+      });
     }
     try {
       await startShellControl();

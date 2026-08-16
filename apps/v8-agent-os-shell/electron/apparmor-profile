@@ -1,0 +1,11 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Electron 43 needs the user namespace capability for its Chromium sandbox on
+# Ubuntu 24.04. Keep the profile unconfined otherwise and grant only userns;
+# site-specific policy can be layered through AppArmor's local include.
+profile "v8-agent-os-shell" "/opt/V8 Agent OS/v8-agent-os-shell" flags=(unconfined) {
+  userns,
+
+  include if exists <local/v8-agent-os-shell>
+}

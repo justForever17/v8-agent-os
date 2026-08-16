@@ -1,4 +1,5 @@
 import { ALL_COMPONENTS } from "./components.mjs";
+import desktopPetPlatform from "./desktop_pet_platform.cjs";
 import {
   getManagedComponentProcessRecordIdentity,
   startComponents,
@@ -7,6 +8,12 @@ import {
   stopComponents,
 } from "./process_manager.mjs";
 import { compareAndSwapProcessRecord } from "./process_state.mjs";
+
+const { desktopPetAvailability } = desktopPetPlatform;
+
+export function shellDesktopPetAvailability(platform = process.platform) {
+  return desktopPetAvailability(platform);
+}
 
 export async function shellStatus(componentIds = ALL_COMPONENTS) {
   return statusComponents(componentIds);

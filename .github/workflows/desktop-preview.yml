@@ -74,10 +74,19 @@ jobs:
     outputs:
       enabled: ${{ steps.targets.outputs.enabled }}
       matrix: ${{ steps.targets.outputs.matrix }}
+      linux_clean_enabled: ${{ steps.targets.outputs.linux_clean_enabled }}
+      linux_clean_matrix: ${{ steps.targets.outputs.linux_clean_matrix }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Reject unsigned stable desktop releases
+        if: inputs.release_channel != '' && inputs.release_channel != 'preview'
+        shell: bash
+        run: |
+          echo "Desktop stable requires signed and notarized packages; this workflow is unsigned preview only." >&2
+          exit 1
 
       - id: targets
         name: Resolve requested platforms
@@ -119,14 +128,23 @@ jobs:
             arm64) test "$(uname -m)" = "arm64" || test "$(uname -m)" = "aarch64" ;;
           esac
 
+      - name: Pin macOS native deployment target
+        if: matrix.os == 'macos'
+        shell: bash
+        run: echo 'MACOSX_DEPLOYMENT_TARGET=12.0' >>"$GITHUB_ENV"
+
       - name: Install Linux desktop runtime build dependencies
         if: matrix.os == 'linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          GI_DEV="libgirepository-2.0-dev"
-          if ! apt-cache show "$GI_DEV" >/dev/null 2>&1; then GI_DEV="libgirepository1.0-dev"; fi
+          # PyGObject 3.48.2 is deliberately built against the GI 1.x ABI on
+          # the Ubuntu 22.04 source baseline. A future runner migration must
+          # explicitly re-vet the PyGObject/GLib pair instead of changing this
+          # package name opportunistically.
+          GI_DEV="libgirepository1.0-dev"
+          apt-cache show "$GI_DEV" 2>/dev/null | grep -q '^Package:'
           sudo apt-get install -y \
             build-essential pkg-config meson ninja-build xz-utils \
             "$GI_DEV" gobject-introspection libglib2.0-dev libcairo2-dev libffi-dev \
@@ -237,6 +255,10 @@ jobs:
         timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
+      - name: Acquire and verify pinned Electron runtimes
+        timeout-minutes: 20
+        run: node scripts/desktop/ensure-electron-runtime.mjs
+
       - name: Build native engineering sandbox host
         timeout-minutes: 10
         run: node scripts/desktop/build-sandbox-host.mjs --force
@@ -246,6 +268,12 @@ jobs:
         run: |
           node scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528
           node scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527
+
+      - name: Verify Admin first-run mouse interaction and stale Owner recovery
+        if: matrix.id == 'windows-x64'
+        working-directory: apps/v8-agent-os-admin
+        timeout-minutes: 5
+        run: npm run verify:admin-login-interaction
 
       - name: Build desktop pet
         working-directory: apps/v8-agent-os-desktop-pet
@@ -259,6 +287,8 @@ jobs:
         if: matrix.os == 'macos'
         shell: bash
         timeout-minutes: 5
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: node scripts/desktop/build-macos-ax-helper.mjs
 
       - name: Verify desktop runtime payload
@@ -287,6 +317,7 @@ jobs:
         timeout-minutes: 35
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: npm --prefix apps/v8-agent-os-shell run dist:mac:preview -- --${{ matrix.arch }}
 
       - name: Build unsigned Linux desktop preview
@@ -449,14 +480,16 @@ jobs:
           resource_root="$package_root/resources/v8os"
           test -x "$shell_exe"
           test -x "$package_root/AppRun"
-          shell_no_sandbox=false
-          if ! unshare -Ur true 2>/dev/null; then shell_no_sandbox=true; fi
+          if ! unshare -Ur true 2>/dev/null; then
+            echo "AppImage smoke requires an enabled unprivileged user namespace; refusing --no-sandbox fallback." >&2
+            exit 1
+          fi
           chmod -R a-w "$package_root"
           dbus-run-session -- xvfb-run -a node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs \
             --shell-exe "$shell_exe" \
             --resource-root "$resource_root" \
             --appimage-root "$package_root" \
-            --shell-no-sandbox "$shell_no_sandbox" \
+            --software-rendering true \
             --occupy-default-web-port true \
             --timeout-ms 90000 \
             --startup-budget-ms 90000
@@ -673,6 +706,10 @@ jobs:
           credential_probe="$V8_AGENT_OS_HOME/credential-smoke.py"
           test -x "$shell_exe"
           test -x "$engine_python"
+          bash scripts/desktop/ci-macos-package-audit.sh \
+            "$mount_point/V8 Agent OS.app" \
+            "${{ matrix.arch }}" \
+            "12.0"
           cat >"$credential_probe" <<'PY'
           import secrets
 
@@ -791,3 +828,94 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+  linux-clean-deb-smoke:
+    name: ${{ matrix.label }}
+    needs:
+      - resolve-desktop-platforms
+      - desktop-package
+    if: needs.resolve-desktop-platforms.outputs.linux_clean_enabled == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-desktop-platforms.outputs.linux_clean_matrix) }}
+
+    steps:
+      - name: Checkout smoke harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+
+      - name: Download exact Linux platform artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: v8os-desktop-${{ matrix.id }}
+          path: ${{ runner.temp }}/v8os-desktop-${{ matrix.id }}
+
+      - name: Clean-install and lifecycle smoke exact DEB
+        shell: bash
+        env:
+          V8OS_CLEAN_ARTIFACT_ROOT: ${{ runner.temp }}/v8os-desktop-${{ matrix.id }}
+          V8OS_CLEAN_STATE_ROOT: ${{ runner.temp }}/v8os-linux-clean-${{ matrix.arch }}
+        run: >-
+          bash scripts/desktop/ci-linux-clean-deb-smoke.sh
+          "$V8OS_CLEAN_ARTIFACT_ROOT"
+          "${{ matrix.arch }}"
+          "$V8OS_CLEAN_STATE_ROOT"
+          "$GITHUB_WORKSPACE"
+          "${{ matrix.distro }}"
+
+      - name: Print clean Linux smoke service logs
+        if: failure()
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-clean-${{ matrix.arch }}
+        run: |
+          log_dir="$V8_AGENT_OS_HOME/logs/cli"
+          [[ ! -d "$log_dir" ]] || find "$log_dir" -maxdepth 1 -type f -name '*.log' -print -exec tail -n 200 {} \;
+        continue-on-error: true
+
+      - name: Cleanup clean Linux smoke
+        if: always()
+        shell: bash
+        env:
+          V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-linux-clean-${{ matrix.arch }}
+          V8OS_CLEAN_ARTIFACT_ROOT: ${{ runner.temp }}/v8os-desktop-${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          shell_exe="/opt/V8 Agent OS/v8-agent-os-shell"
+          resource_root="/opt/V8 Agent OS/resources/v8os"
+          installed_cli="$resource_root/apps/v8-agent-os-cli/bin/v8os.mjs"
+          if [[ -x "$shell_exe" && -f "$installed_cli" ]]; then
+            ELECTRON_RUN_AS_NODE=1 \
+            V8OS_SHELL_PACKAGED=1 \
+            V8_REPO_ROOT="$resource_root" \
+              "$shell_exe" "$installed_cli" stop --all || true
+          fi
+          pkill -TERM -f '^/opt/V8 Agent OS/v8-agent-os-shell($| )' || true
+          deb_path="$(find "$V8OS_CLEAN_ARTIFACT_ROOT" -type f -name '*.deb' -print -quit)"
+          if [[ -n "$deb_path" ]]; then
+            package_name="$(dpkg-deb -f "$deb_path" Package)"
+            sudo apt-get purge -y "$package_name" || true
+          fi
+          node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \
+            --state-root "$V8_AGENT_OS_HOME"
+
+      - name: Upload clean Linux smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: v8os-desktop-clean-smoke-diagnostics-${{ matrix.id }}-${{ matrix.distro }}
+          path: |
+            ${{ runner.temp }}/v8os-linux-clean-${{ matrix.arch }}/reports/desktop_release/**
+            ${{ runner.temp }}/v8os-linux-clean-${{ matrix.arch }}/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+        continue-on-error: true

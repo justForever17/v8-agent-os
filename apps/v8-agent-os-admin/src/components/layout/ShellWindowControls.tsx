@@ -5,10 +5,12 @@ import { ProductTrafficLightWindowControls } from "@v8/product-ui";
 import { useT } from "@/components/providers/LocaleProvider";
 
 export type ShellDesktopPetState = {
-    state: "stopped" | "starting" | "waiting_v8os" | "connected" | "stopping" | "error";
+    state: "stopped" | "starting" | "waiting_v8os" | "connected" | "stopping" | "error" | "unavailable";
     processRunning: boolean;
     controlConnected: boolean;
     activeSessionId?: string | null;
+    available: boolean;
+    reasonCode?: string | null;
     enabled: boolean;
 };
 

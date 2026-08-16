@@ -427,6 +427,7 @@ func probe() -> [String: Any] {
         "platform": "macos",
         "backend": "axui",
         "accessibilityGranted": AXIsProcessTrusted(),
+        "screenCaptureGranted": CGPreflightScreenCaptureAccess(),
         "swiftRuntimeAvailable": true,
         "frontmostWindow": foreground as Any,
         "windowCount": windows.count,

@@ -1,6 +1,20 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'node:crypto';
+
+export class AdminStorageUnavailableError extends Error {
+    readonly code = 'owner_state_unavailable';
+
+    constructor(readonly filename: string, operation: 'read' | 'write') {
+        super(`Admin storage ${operation} failed for ${filename}`);
+        this.name = 'AdminStorageUnavailableError';
+    }
+}
+
+export const isAdminStorageUnavailableError = (error: unknown): error is AdminStorageUnavailableError => (
+    error instanceof AdminStorageUnavailableError
+);
 
 export const getBaseDir = () => {
     const configured = String(process.env.V8_AGENT_OS_HOME || '').trim();
@@ -53,12 +67,61 @@ export const readJson = <T>(filename: string, defaultValue: T): T => {
     }
 };
 
+export const readJsonStrict = <T>(filename: string): T => {
+    const filePath = path.join(getBaseDir(), filename);
+    try {
+        return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
+    } catch (error) {
+        console.error(`Failed to read required admin storage ${filename}:`, error);
+        throw new AdminStorageUnavailableError(filename, 'read');
+    }
+};
+
 export const writeJson = <T>(filename: string, data: T) => {
     try {
         const filePath = path.join(getBaseDir(), filename);
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
     } catch (e) {
         console.error(`Failed to write ${filename}:`, e);
+    }
+};
+
+export const writeJsonStrict = <T>(filename: string, data: T) => {
+    const filePath = path.join(getBaseDir(), filename);
+    const directory = path.dirname(filePath);
+    const temporaryFile = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+    let temporaryFileDescriptor: number | null = null;
+    try {
+        ensureDir(directory);
+        let temporaryFileMode = 0o600;
+        try {
+            temporaryFileMode = fs.statSync(filePath).mode & 0o777;
+        } catch (statError) {
+            if ((statError as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                throw statError;
+            }
+        }
+        temporaryFileDescriptor = fs.openSync(temporaryFile, 'wx', temporaryFileMode);
+        fs.writeFileSync(temporaryFileDescriptor, JSON.stringify(data, null, 2), 'utf-8');
+        fs.fsyncSync(temporaryFileDescriptor);
+        fs.closeSync(temporaryFileDescriptor);
+        temporaryFileDescriptor = null;
+        fs.renameSync(temporaryFile, filePath);
+    } catch (error) {
+        if (temporaryFileDescriptor !== null) {
+            try {
+                fs.closeSync(temporaryFileDescriptor);
+            } catch {}
+        }
+        try {
+            fs.unlinkSync(temporaryFile);
+        } catch (cleanupError) {
+            if ((cleanupError as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                console.warn(`Failed to clean temporary admin storage ${filename}:`, cleanupError);
+            }
+        }
+        console.error(`Failed to write required admin storage ${filename}:`, error);
+        throw new AdminStorageUnavailableError(filename, 'write');
     }
 };
 

@@ -13,19 +13,25 @@ import { useT } from "@/components/providers/LocaleProvider";
 
 type AdminLoginScreenProps = {
     bootstrapMode: boolean;
+    ownerStateUnavailable?: boolean;
 };
 
-export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
+export function AdminLoginScreen({ bootstrapMode, ownerStateUnavailable = false }: AdminLoginScreenProps) {
     const t = useT();
+    const [isBootstrapMode, setIsBootstrapMode] = useState(bootstrapMode && !ownerStateUnavailable);
     const [login, setLogin] = useState("");
     const [name, setName] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
-    const [error, setError] = useState("");
+    const [error, setError] = useState(
+        ownerStateUnavailable ? t("components.admin.AdminLoginScreen.ownerStateUnavailable") : "",
+    );
     const [isLoading, setIsLoading] = useState(false);
+    const controlsDisabled = isLoading || ownerStateUnavailable;
 
     const handleLogin = async (event: React.FormEvent) => {
         event.preventDefault();
+        if (ownerStateUnavailable) return;
         setIsLoading(true);
         setError("");
 
@@ -51,6 +57,7 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
 
     const handleBootstrap = async (event: React.FormEvent) => {
         event.preventDefault();
+        if (ownerStateUnavailable) return;
         if (password !== confirmPassword) {
             setError(t("components.admin.AdminLoginScreen.kc494ae80"));
             return;
@@ -65,6 +72,13 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                 body: JSON.stringify({ login, name, password }),
             });
             const data = await response.json().catch(() => ({}));
+            if (response.status === 409 && data.code === "owner_already_initialized") {
+                setIsBootstrapMode(false);
+                setName("");
+                setConfirmPassword("");
+                setError("");
+                return;
+            }
             if (!response.ok) {
                 throw new Error(String(data.error || t("components.admin.AdminLoginScreen.k3407cd6e")));
             }
@@ -87,22 +101,26 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
     };
 
     return (
-        <div className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-12">
+        <div
+            className="flex min-h-screen items-center justify-center bg-muted/20 px-4 py-12"
+            data-v8os-owner-state-unavailable={ownerStateUnavailable ? "true" : "false"}
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
             <Card className="w-full max-w-md shadow-lg border-0 sm:border">
                 <CardHeader className="space-y-2 text-center">
                     <CardTitle className="text-2xl font-bold tracking-tight">
-                        {bootstrapMode
+                        {isBootstrapMode
                             ? t("components.admin.AdminLoginScreen.k15bbd23b")
                             : t("components.admin.AdminLoginScreen.k7fb1b1d9")}
                     </CardTitle>
                     <CardDescription>
-                        {bootstrapMode
+                        {isBootstrapMode
                             ? t("components.admin.AdminLoginScreen.k9da1e463")
                             : t("components.admin.AdminLoginScreen.ke6914745")}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <form onSubmit={bootstrapMode ? handleBootstrap : handleLogin} className="space-y-4">
+                    <form onSubmit={isBootstrapMode ? handleBootstrap : handleLogin} className="space-y-4">
                         {error ? (
                             <Alert variant="destructive">
                                 <AlertDescription>{error}</AlertDescription>
@@ -111,23 +129,28 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                         <div className="space-y-2">
                             <Label htmlFor="login">{t("components.admin.AdminLoginScreen.k27ba7ff8")}</Label>
                             <div className="relative">
-                                <UserCircle2 className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                                <UserCircle2
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground"
+                                    data-v8os-input-decoration="login"
+                                />
                                 <Input
                                     id="login"
                                     type="text"
+                                    autoFocus
                                     autoComplete="username"
-                                    placeholder={bootstrapMode
+                                    placeholder={isBootstrapMode
                                         ? t("components.admin.AdminLoginScreen.ka7b7cd19")
                                         : t("components.admin.AdminLoginScreen.k2f2f47d8")}
                                     className="pl-9"
                                     value={login}
                                     onChange={(event) => setLogin(event.target.value)}
                                     required
-                                    disabled={isLoading}
+                                    disabled={controlsDisabled}
                                 />
                             </div>
                         </div>
-                        {bootstrapMode ? (
+                        {isBootstrapMode ? (
                             <div className="space-y-2">
                                 <Label htmlFor="name">{t("components.admin.AdminLoginScreen.k59737457")}</Label>
                                 <Input
@@ -138,29 +161,33 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                                     value={name}
                                     onChange={(event) => setName(event.target.value)}
                                     required
-                                    disabled={isLoading}
+                                    disabled={controlsDisabled}
                                 />
                             </div>
                         ) : null}
                         <div className="space-y-2">
                             <Label htmlFor="password">
-                                {bootstrapMode ? t("components.admin.AdminLoginScreen.kc88150fa") : t("components.admin.AdminLoginScreen.ka3779233")}
+                                {isBootstrapMode ? t("components.admin.AdminLoginScreen.kc88150fa") : t("components.admin.AdminLoginScreen.ka3779233")}
                             </Label>
                             <div className="relative">
-                                <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                                <Lock
+                                    aria-hidden="true"
+                                    className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground"
+                                    data-v8os-input-decoration="password"
+                                />
                                 <Input
                                     id="password"
                                     type="password"
-                                    autoComplete={bootstrapMode ? "new-password" : "current-password"}
+                                    autoComplete={isBootstrapMode ? "new-password" : "current-password"}
                                     className="pl-9"
                                     value={password}
                                     onChange={(event) => setPassword(event.target.value)}
                                     required
-                                    disabled={isLoading}
+                                    disabled={controlsDisabled}
                                 />
                             </div>
                         </div>
-                        {bootstrapMode ? (
+                        {isBootstrapMode ? (
                             <div className="space-y-2">
                                 <Label htmlFor="confirmPassword">{t("components.admin.AdminLoginScreen.k641b208a")}</Label>
                                 <Input
@@ -170,23 +197,23 @@ export function AdminLoginScreen({ bootstrapMode }: AdminLoginScreenProps) {
                                     value={confirmPassword}
                                     onChange={(event) => setConfirmPassword(event.target.value)}
                                     required
-                                    disabled={isLoading}
+                                    disabled={controlsDisabled}
                                 />
                             </div>
                         ) : null}
-                        <Button type="submit" className="w-full" disabled={isLoading}>
+                        <Button type="submit" className="w-full" disabled={controlsDisabled}>
                             {isLoading ? (
                                 <>
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    {bootstrapMode ? t("components.admin.AdminLoginScreen.kdc92690a") : t("components.admin.AdminLoginScreen.k057cb3cb")}
+                                    {isBootstrapMode ? t("components.admin.AdminLoginScreen.kdc92690a") : t("components.admin.AdminLoginScreen.k057cb3cb")}
                                 </>
-                            ) : bootstrapMode ? t("components.admin.AdminLoginScreen.kea4c62a1") : t("components.admin.AdminLoginScreen.k97aefe66")}
+                            ) : isBootstrapMode ? t("components.admin.AdminLoginScreen.kea4c62a1") : t("components.admin.AdminLoginScreen.k97aefe66")}
                         </Button>
                     </form>
                 </CardContent>
                 <CardFooter className="justify-center">
                     <p className="text-xs text-muted-foreground">
-                        {bootstrapMode
+                        {isBootstrapMode
                             ? t("components.admin.AdminLoginScreen.k5fe1be7e")
                             : t("components.admin.AdminLoginScreen.kcf04987c")}
                     </p>

@@ -8,6 +8,7 @@
     "start": "node ../../scripts/run-next-with-managed-auth.mjs --app admin --mode start --port 9528",
     "lint": "node scripts/validate-i18n.mjs && node scripts/validate-theme-coverage.mjs && eslint",
     "verify:instance-pairing": "node scripts/verify-instance-pairing.mjs",
+    "verify:admin-login-interaction": "node scripts/verify-admin-login-interaction.mjs",
     "smoke:owner-pairing": "node scripts/verify-instance-pairing.mjs",
     "verify:device-connect-ui": "node scripts/verify-device-connect-ui.mjs",
     "verify:desktop-pet-settings": "node scripts/verify-desktop-pet-settings.mjs",

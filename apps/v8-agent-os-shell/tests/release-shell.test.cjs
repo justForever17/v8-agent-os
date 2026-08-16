@@ -461,6 +461,8 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(preview, /win-arm64-setup\.exe/);
   assert.match(preview, /macos-x64\.dmg/);
   assert.match(preview, /macos-arm64\.dmg/);
+  assert.match(preview, /macOS 12 及以上 Intel/);
+  assert.match(preview, /macOS 12 及以上 Apple Silicon/);
   assert.match(preview, /linux-x64\.AppImage/);
   assert.match(preview, /linux-arm64\.deb/);
   assert.doesNotMatch(preview, /win-x64\.zip/);
@@ -869,6 +871,23 @@ test('desktop preview uses a slim portable Python release profile', () => {
   }
   assert.match(releaseRequirements, /-r platform-macos\.txt/);
   assert.match(releaseRequirements, /-r platform-linux\.txt/);
+  const macRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-macos.txt'),
+    'utf8',
+  );
+  for (const [packageName, version] of [
+    ['numpy', '1.26.4'],
+    ['scipy', '1.13.1'],
+    ['onnxruntime', '1.19.2'],
+    ['orjson', '3.9.15'],
+    ['aggdraw', '1.3.18'],
+  ]) {
+    assert.match(
+      macRequirements,
+      new RegExp(`^${packageName}==${version.replaceAll('.', '\\.')}`
+        + ' ; sys_platform == "darwin"$', 'm'),
+    );
+  }
   const linuxRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-linux.txt'),
     'utf8',

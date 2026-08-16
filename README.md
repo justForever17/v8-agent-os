@@ -65,7 +65,7 @@ Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signe
 
 Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
 
-- Desktop Preview: Windows x64/ARM64 installers, macOS Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages.
+- Desktop Preview: Windows x64/ARM64 installers, macOS 12+ Intel/Apple Silicon DMGs, and Linux x64/arm64 AppImage or DEB packages.
 - Android Phone Preview: APK package.
 
 The desktop build is currently an unsigned preview. After startup, the client checks the unified Preview Release automatically, and the tray also provides a manual check. Downloads and installation always require user confirmation; no update is installed silently. Windows may show a security confirmation and macOS may require an explicit system confirmation before first launch. Code signing and signed automatic installation remain future work. Linux stores secrets through the desktop Secret Service; the DEB declares GNOME Keyring while AppImage users must provide a compatible Secret Service on the host. Linux Wayland input restrictions and macOS accessibility permissions are surfaced explicitly rather than silently bypassed.

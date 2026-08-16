@@ -18,11 +18,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.v8agentos.phone",
-      "buildNumber": "2026081605"
+      "buildNumber": "2026081606"
     },
     "android": {
       "package": "com.v8agentos.phone",
-      "versionCode": 26081605,
+      "versionCode": 26081606,
       "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",

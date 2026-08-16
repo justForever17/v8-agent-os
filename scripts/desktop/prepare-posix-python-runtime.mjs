@@ -19,24 +19,6 @@ const LINUX_PYATSPI_SOURCE = {
   archive: "24590e5b60fec8dfb59fcd27d2a90de7034060be318ca3f7770e0f984f1f94e2",
   url: "https://download.gnome.org/sources/pyatspi/2.58/pyatspi-2.58.2.tar.xz",
 };
-const MACOS_MINIMUM_SYSTEM_VERSION = "12.3";
-const MACOS_SQLITE_VEC_SOURCE = {
-  version: "0.1.9",
-  archive: "3acd67cb4aff080c7050926fd3cf8227905fe5b7ee3829d8ee5024ab1283cf61",
-  url: "https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/sqlite-vec-0.1.9-amalgamation.tar.gz",
-  licenses: [
-    {
-      name: "LICENSE-MIT",
-      sha256: "6ce72bbe12d975bd5286e5ab0a064c069693300c47bccbc57bec18485f1621ea",
-      url: "https://raw.githubusercontent.com/asg017/sqlite-vec/v0.1.9/LICENSE-MIT",
-    },
-    {
-      name: "LICENSE-APACHE",
-      sha256: "a38070a94d4afd9cd710e3ce67bd1de78097cfe1784c1f0109ac95d3c196bfdc",
-      url: "https://raw.githubusercontent.com/asg017/sqlite-vec/v0.1.9/LICENSE-APACHE",
-    },
-  ],
-};
 const RUNTIMES = {
   "macos-x64": {
     platform: "darwin",
@@ -193,90 +175,69 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
     });
 }
 
-function updateSqliteVecWheelRecord(sitePackages, installedLibrary) {
-  const relativeLibrary = "sqlite_vec/vec0.dylib";
-  const recordPath = path.join(
-    sitePackages,
-    `sqlite_vec-${MACOS_SQLITE_VEC_SOURCE.version}.dist-info`,
-    "RECORD",
+function verifyMacosCheckpointSaverWithoutSqliteVec(python) {
+  // sqlite-vec's published macOS binary exceeds V8OS's declared system floor,
+  // while the checkpoint saver used by V8OS does not import the extension.
+  // Remove it, allow only that exact metadata gap, then prove both saver paths.
+  run(python, ["-m", "pip", "uninstall", "--yes", "sqlite-vec"]);
+
+  const pipCheck = spawnSync(
+    python,
+    ["-m", "pip", "check", "--disable-pip-version-check"],
+    { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 2 * 60 * 1000 },
   );
-  if (!fs.existsSync(recordPath)) fail(`Installed sqlite-vec RECORD was not found: ${recordPath}`);
-
-  const library = fs.readFileSync(installedLibrary);
-  const digest = createHash("sha256").update(library).digest("base64url");
-  const rows = fs.readFileSync(recordPath, "utf8").split(/\r?\n/);
-  let updatedRows = 0;
-  const updated = rows.map((row) => {
-    if (!row.startsWith(`${relativeLibrary},`)) return row;
-    updatedRows += 1;
-    return `${relativeLibrary},sha256=${digest},${library.length}`;
-  });
-  if (updatedRows !== 1) fail(`Expected one sqlite-vec RECORD row for ${relativeLibrary}; found ${updatedRows}`);
-  fs.writeFileSync(recordPath, updated.join("\n"), "utf8");
-}
-
-async function rebuildMacosSqliteVec(python, runtimeDir, workDir, arch) {
-  const deploymentTarget = String(process.env.MACOSX_DEPLOYMENT_TARGET || MACOS_MINIMUM_SYSTEM_VERSION).trim();
-  if (deploymentTarget !== MACOS_MINIMUM_SYSTEM_VERSION) {
-    fail(`macOS sqlite-vec must be built for ${MACOS_MINIMUM_SYSTEM_VERSION}; got ${deploymentTarget}`);
+  const pipCheckLines = String(pipCheck.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const expectedGap = pipCheck.status === 1
+    && !pipCheck.error
+    && pipCheckLines.length === 1
+    && /^langgraph-checkpoint-sqlite 3\.1\.1 requires sqlite-vec, which is not installed\.?$/i.test(pipCheckLines[0]);
+  if (!expectedGap) {
+    if (pipCheck.stdout) process.stdout.write(pipCheck.stdout);
+    if (pipCheck.stderr) process.stderr.write(pipCheck.stderr);
+    fail(`Unexpected dependency defect in macOS Python runtime (pip check status ${String(pipCheck.status)})`);
   }
+  console.log("V8OS_MACOS_PIP_CHECK_EXPECTED_GAP_ONLY");
 
-  const sitePackages = portableSitePackages(python, runtimeDir);
-  const sqliteVecPackage = path.join(sitePackages, "sqlite_vec");
-  const installedLibrary = path.join(sqliteVecPackage, "vec0.dylib");
-  if (!fs.existsSync(installedLibrary)) {
-    fail(`Installed sqlite-vec ${MACOS_SQLITE_VEC_SOURCE.version} library was not found: ${installedLibrary}`);
-  }
-  run(python, [
-    "-c",
-    `import sqlite_vec; assert sqlite_vec.__version__ == '${MACOS_SQLITE_VEC_SOURCE.version}', sqlite_vec.__version__`,
-  ]);
+  const checkpointProbe = String.raw`
+import asyncio
+import importlib.util
+import tempfile
+from pathlib import Path
 
-  const archivePath = path.join(workDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-amalgamation.tar.gz`);
-  const sourceDir = path.join(workDir, "sqlite-vec-source");
-  fs.mkdirSync(sourceDir, { recursive: true });
-  await download(MACOS_SQLITE_VEC_SOURCE.url, archivePath, MACOS_SQLITE_VEC_SOURCE.archive, "sqlite-vec source archive");
-  run("tar", ["-xzf", archivePath, "-C", sourceDir]);
-  const source = path.join(sourceDir, "sqlite-vec.c");
-  if (!fs.existsSync(source)) fail(`Pinned sqlite-vec archive did not contain sqlite-vec.c`);
+from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-  const targetArch = arch === "x64" ? "x86_64" : "arm64";
-  const compiledLibrary = path.join(sqliteVecPackage, "vec0.v8os.dylib");
-  run("clang", [
-    "-O3",
-    "-fPIC",
-    "-dynamiclib",
-    "-Wl,-undefined,dynamic_lookup",
-    "-arch",
-    targetArch,
-    `-mmacosx-version-min=${deploymentTarget}`,
-    source,
-    "-o",
-    compiledLibrary,
-  ]);
-  fs.renameSync(compiledLibrary, installedLibrary);
-  updateSqliteVecWheelRecord(sitePackages, installedLibrary);
+assert importlib.util.find_spec("sqlite_vec") is None
+config = {"configurable": {"thread_id": "v8os-macos-probe", "checkpoint_ns": ""}}
+metadata = {"source": "input", "step": 0, "parents": {}}
 
-  const noticesDir = path.join(runtimeDir, "THIRD_PARTY_NOTICES");
-  fs.mkdirSync(noticesDir, { recursive: true });
-  for (const license of MACOS_SQLITE_VEC_SOURCE.licenses) {
-    const licensePath = path.join(workDir, `sqlite-vec-${license.name}`);
-    await download(license.url, licensePath, license.sha256, `sqlite-vec ${license.name}`);
-    fs.copyFileSync(
-      licensePath,
-      path.join(noticesDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-${license.name}`),
-    );
-  }
-  fs.writeFileSync(
-    path.join(noticesDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-SOURCE.txt`),
-    `V8 Agent OS rebuilds sqlite-vec ${MACOS_SQLITE_VEC_SOURCE.version} from the official amalgamation source for macOS ${deploymentTarget}.\n`
-      + `${MACOS_SQLITE_VEC_SOURCE.url}\nSHA256 ${MACOS_SQLITE_VEC_SOURCE.archive}\n`,
-    "utf8",
-  );
-  run(python, [
-    "-c",
-    `import sqlite3, sqlite_vec; db = sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); version = db.execute('select vec_version()').fetchone()[0]; assert version == 'v${MACOS_SQLITE_VEC_SOURCE.version}', version; print('SQLITE_VEC_MACOS_REBUILD_OK')`,
-  ]);
+async def async_probe(database_path):
+    async with AsyncSqliteSaver.from_conn_string(str(database_path)) as saver:
+        stored_config = await saver.aput(config, empty_checkpoint(), metadata, {})
+        loaded = await saver.aget_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    async with AsyncSqliteSaver.from_conn_string(str(database_path)) as saver:
+        loaded = await saver.aget_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+
+with tempfile.TemporaryDirectory(prefix="v8os-macos-checkpoint-") as tmp_dir:
+    root = Path(tmp_dir)
+    with SqliteSaver.from_conn_string(str(root / "sync.db")) as saver:
+        stored_config = saver.put(config, empty_checkpoint(), metadata, {})
+        loaded = saver.get_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    with SqliteSaver.from_conn_string(str(root / "sync.db")) as saver:
+        loaded = saver.get_tuple(stored_config)
+        assert loaded and loaded.checkpoint["id"] == stored_config["configurable"]["checkpoint_id"]
+    asyncio.run(async_probe(root / "async.db"))
+
+print("V8OS_MACOS_CHECKPOINT_SQLITE_OK")
+`;
+  run(python, ["-X", "utf8", "-c", checkpointProbe]);
 }
 
 async function main() {
@@ -334,10 +295,10 @@ async function main() {
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", requirementsPath]);
     if (runtime.platform === "linux") {
       await installLinuxPyatspi(python, runtimeDir, workDir);
+      run(python, ["-m", "pip", "check"]);
     } else if (runtime.platform === "darwin") {
-      await rebuildMacosSqliteVec(python, runtimeDir, workDir, runtime.arch);
+      verifyMacosCheckpointSaverWithoutSqliteVec(python);
     }
-    run(python, ["-m", "pip", "check"]);
 
     fs.mkdirSync(browserDir, { recursive: true });
     if (hasFlag("--skip-playwright-browsers")) {

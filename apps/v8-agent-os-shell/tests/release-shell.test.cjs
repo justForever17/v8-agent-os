@@ -831,14 +831,14 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(posixRuntimeScript, /path\.join\(extractDir, "python"\)/);
   assert.match(posixRuntimeScript, /verbatimSymlinks:\s*true/);
   assert.match(posixRuntimeScript, /Portable Python .*resolved outside the packaged runtime/);
-  assert.match(posixRuntimeScript, /sqlite-vec-0\.1\.9-amalgamation\.tar\.gz/);
-  assert.match(posixRuntimeScript, /3acd67cb4aff080c7050926fd3cf8227905fe5b7ee3829d8ee5024ab1283cf61/);
-  assert.match(posixRuntimeScript, /-mmacosx-version-min=\$\{deploymentTarget\}/);
-  assert.match(posixRuntimeScript, /-Wl,-undefined,dynamic_lookup/);
-  assert.match(posixRuntimeScript, /SQLITE_VEC_MACOS_REBUILD_OK/);
-  assert.match(posixRuntimeScript, /sqlite_vec-/);
-  assert.match(posixRuntimeScript, /digest\("base64url"\)/);
-  assert.match(posixRuntimeScript, /pip", "check/);
+  assert.match(posixRuntimeScript, /pip", "uninstall", "--yes", "sqlite-vec/);
+  assert.match(posixRuntimeScript, /V8OS_MACOS_PIP_CHECK_EXPECTED_GAP_ONLY/);
+  assert.match(posixRuntimeScript, /V8OS_MACOS_CHECKPOINT_SQLITE_OK/);
+  assert.match(posixRuntimeScript, /from langgraph\.checkpoint\.sqlite import SqliteSaver/);
+  assert.match(posixRuntimeScript, /from langgraph\.checkpoint\.sqlite\.aio import AsyncSqliteSaver/);
+  assert.match(posixRuntimeScript, /find_spec\("sqlite_vec"\) is None/);
+  assert.match(posixRuntimeScript, /langgraph-checkpoint-sqlite 3\\\.1\\\.1 requires sqlite-vec/);
+  assert.doesNotMatch(posixRuntimeScript, /SQLITE_VEC_MACOS_REBUILD_OK/);
   assert.match(posixRuntimeScript, /runtime\.platform === "darwin"/);
 
   const macHelperBuild = fs.readFileSync(
@@ -893,7 +893,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
     ['scipy', '1.13.1'],
     ['onnxruntime', '1.19.2'],
     ['aggdraw', '1.3.18'],
-    ['sqlite-vec', '0.1.9'],
+    ['langgraph-checkpoint-sqlite', '3.1.1'],
   ]) {
     assert.match(
       macRequirements,
@@ -909,6 +909,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
       + 'a94f0f0c6fcbb2b5bd9734c57a489c7584a732bbdf04a39e8c83b861e9d03e92'
       + ' ; sys_platform == "darwin"',
   ));
+  assert.doesNotMatch(macRequirements, /^sqlite-vec(?:[<=>\\[]|\\s|$)/im);
   const linuxRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-linux.txt'),
     'utf8',

@@ -342,7 +342,9 @@ if (exists(pythonExe)) {
     sqliteVec:
       process.platform === "win32" && process.arch === "arm64"
         ? "sqlite-vec does not publish a Windows ARM64 wheel; the required checkpoint saver path is verified separately"
-        : "sqlite-vec is an optional checkpoint extension and is not used by the current V8OS checkpoint path",
+        : process.platform === "darwin"
+          ? "sqlite-vec is not packaged because its upstream binary exceeds the declared macOS floor; the required checkpoint saver path is verified separately"
+          : "sqlite-vec is an optional checkpoint extension and is not used by the current V8OS checkpoint path",
   };
   const moduleResult = pythonModuleCheck(pythonExe, { ...requiredModules, ...optionalModules });
   if (moduleResult.ok) {

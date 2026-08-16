@@ -2063,6 +2063,68 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_runtime_side_effect_receipts_state "
             "ON runtime_side_effect_receipts (state, lease_expires_at)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_canvas_graph_run_event_outbox (
+                outbox_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                outbox_id TEXT NOT NULL UNIQUE,
+                event_id TEXT NOT NULL UNIQUE,
+                graph_run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                expected_status TEXT NOT NULL,
+                expected_updated_at TEXT NOT NULL,
+                transition TEXT NOT NULL DEFAULT '',
+                retry_of_graph_run_id TEXT,
+                run_row_json TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_attempt_at TEXT,
+                runtime_event_id TEXT,
+                created_at TEXT NOT NULL,
+                projected_at TEXT,
+                UNIQUE (graph_run_id, expected_status, expected_updated_at, transition),
+                FOREIGN KEY (graph_run_id) REFERENCES creative_canvas_graph_runs(graph_run_id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        outbox_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(creative_canvas_graph_run_event_outbox)").fetchall()
+        }
+        if "next_attempt_at" not in outbox_columns:
+            conn.execute(
+                "ALTER TABLE creative_canvas_graph_run_event_outbox ADD COLUMN next_attempt_at TEXT"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_graph_run_event_outbox_pending "
+            "ON creative_canvas_graph_run_event_outbox (projected_at, outbox_sequence)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_graph_run_event_outbox_session "
+            "ON creative_canvas_graph_run_event_outbox (session_id, outbox_sequence)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_canvas_graph_remote_terminal_receipts (
+                job_id TEXT NOT NULL,
+                proof_digest TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                graph_run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                provider_status TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, proof_digest),
+                FOREIGN KEY (graph_run_id) REFERENCES creative_canvas_graph_runs(graph_run_id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_graph_remote_terminal_receipts_run "
+            "ON creative_canvas_graph_remote_terminal_receipts (graph_run_id, node_id)"
+        )
 
     # --- Session Operations ---
 
@@ -4068,6 +4130,326 @@ class DatabaseManager:
 
         return bool(self._run_write_with_retry(_write))
 
+    def enqueue_canvas_graph_run_event_outbox(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        run_row: Dict[str, Any],
+        expected_status: str,
+        transition: str = "",
+        retry_of_graph_run_id: str = "",
+    ) -> Dict[str, Any]:
+        """Persist a Canvas run-state event intent in the caller's transaction."""
+        if not conn.in_transaction:
+            raise ValueError("Canvas graph run event outbox must join the run-state write transaction")
+        serialized_row = to_jsonable(run_row)
+        if not isinstance(serialized_row, dict):
+            raise ValueError("Canvas graph run event outbox requires an object run row")
+        normalized_row = {
+            key: serialized_row.get(key)
+            for key in (
+                "graph_run_id",
+                "graph_id",
+                "session_id",
+                "chat_run_id",
+                "canvas_operation_id",
+                "node_states_json",
+                "status",
+                "current_node_id",
+                "error_message",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            )
+        }
+        graph_run_id = str(normalized_row.get("graph_run_id") or "").strip()
+        session_id = str(normalized_row.get("session_id") or "").strip()
+        expected_updated_at = str(normalized_row.get("updated_at") or "").strip()
+        normalized_status = str(expected_status or "").strip().lower()
+        normalized_transition = str(transition or "").strip()
+        normalized_retry_id = str(retry_of_graph_run_id or "").strip()
+        if not graph_run_id or not session_id or not expected_updated_at or not normalized_status:
+            raise ValueError("Canvas graph run event outbox requires run, session, status, and updated_at")
+        committed_state = conn.execute(
+            """
+            SELECT session_id, status, updated_at
+            FROM creative_canvas_graph_runs
+            WHERE graph_run_id = ? LIMIT 1
+            """,
+            (graph_run_id,),
+        ).fetchone()
+        if (
+            not committed_state
+            or str(committed_state["session_id"] or "") != session_id
+            or str(committed_state["status"] or "") != normalized_status
+            or str(committed_state["updated_at"] or "") != expected_updated_at
+        ):
+            raise ValueError("Canvas graph run event outbox does not match the transaction's run state")
+
+        existing = conn.execute(
+            """
+            SELECT * FROM creative_canvas_graph_run_event_outbox
+            WHERE graph_run_id = ? AND expected_status = ?
+              AND expected_updated_at = ? AND transition = ?
+            LIMIT 1
+            """,
+            (graph_run_id, normalized_status, expected_updated_at, normalized_transition),
+        ).fetchone()
+        if existing:
+            existing_row = json.loads(str(existing["run_row_json"] or "{}"))
+            if (
+                existing_row != normalized_row
+                or str(existing["retry_of_graph_run_id"] or "") != normalized_retry_id
+            ):
+                raise ValueError("Canvas graph run event outbox identity collided with another transition")
+            return dict(existing)
+
+        outbox_id = f"canvas-outbox-{uuid.uuid4().hex}"
+        event_id = f"evt_canvas_{uuid.uuid4().hex}"
+        created_at = utc_now_iso()
+        conn.execute(
+            """
+            INSERT INTO creative_canvas_graph_run_event_outbox(
+                outbox_id, event_id, graph_run_id, session_id, expected_status,
+                expected_updated_at, transition, retry_of_graph_run_id,
+                run_row_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                outbox_id,
+                event_id,
+                graph_run_id,
+                session_id,
+                normalized_status,
+                expected_updated_at,
+                normalized_transition,
+                normalized_retry_id or None,
+                json.dumps(normalized_row, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        return {
+            "outbox_id": outbox_id,
+            "event_id": event_id,
+            "graph_run_id": graph_run_id,
+            "session_id": session_id,
+            "expected_status": normalized_status,
+            "expected_updated_at": expected_updated_at,
+            "transition": normalized_transition,
+            "retry_of_graph_run_id": normalized_retry_id or None,
+            "run_row_json": json.dumps(normalized_row, ensure_ascii=False),
+            "attempt_count": 0,
+            "created_at": created_at,
+            "projected_at": None,
+        }
+
+    def list_pending_canvas_graph_run_event_outbox(self, *, limit: int = 256) -> List[Dict[str, Any]]:
+        bounded_limit = max(1, min(int(limit or 256), 2048))
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM creative_canvas_graph_run_event_outbox
+                WHERE projected_at IS NULL
+                ORDER BY outbox_sequence ASC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_pending_canvas_graph_run_event_outbox(self) -> int:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS pending_count FROM creative_canvas_graph_run_event_outbox WHERE projected_at IS NULL"
+            ).fetchone()
+        return int(row["pending_count"] or 0) if row else 0
+
+    def record_canvas_graph_run_event_outbox_failure(self, outbox_id: str, error: str) -> bool:
+        normalized_id = str(outbox_id or "").strip()
+        if not normalized_id:
+            return False
+
+        def _write() -> bool:
+            with self.get_connection() as conn:
+                current = conn.execute(
+                    """
+                    SELECT attempt_count FROM creative_canvas_graph_run_event_outbox
+                    WHERE outbox_id = ? AND projected_at IS NULL
+                    """,
+                    (normalized_id,),
+                ).fetchone()
+                if not current:
+                    return False
+                next_attempt_count = int(current["attempt_count"] or 0) + 1
+                delay_seconds = min(300, 5 * (2 ** min(next_attempt_count - 1, 6)))
+                next_attempt_at = (
+                    datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+                ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                updated = conn.execute(
+                    """
+                    UPDATE creative_canvas_graph_run_event_outbox
+                    SET attempt_count = ?, last_error = ?, next_attempt_at = ?
+                    WHERE outbox_id = ? AND projected_at IS NULL
+                    """,
+                    (
+                        next_attempt_count,
+                        str(error or "unknown_projection_failure")[:2000],
+                        next_attempt_at,
+                        normalized_id,
+                    ),
+                )
+                conn.commit()
+                return updated.rowcount == 1
+
+        return bool(self._run_write_with_retry(_write))
+
+    def project_canvas_graph_run_event_outbox(
+        self,
+        event: Dict[str, Any],
+        *,
+        outbox_id: str,
+    ) -> bool:
+        """Idempotently append one durable Canvas outbox intent to runtime_events."""
+        normalized_id = str(outbox_id or "").strip()
+        source_payload = to_jsonable(event.get("source") or {})
+        event_payload = to_jsonable(event.get("payload") or {})
+
+        def _write() -> tuple[bool, bool]:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                outbox = conn.execute(
+                    "SELECT * FROM creative_canvas_graph_run_event_outbox WHERE outbox_id = ? LIMIT 1",
+                    (normalized_id,),
+                ).fetchone()
+                if not outbox:
+                    conn.rollback()
+                    return False, False
+                session_id = str(outbox["session_id"] or "")
+                event_id = str(outbox["event_id"] or "")
+                expected_status = str(outbox["expected_status"] or "")
+                expected_event_status = "completed" if expected_status == "succeeded" else expected_status
+                stored_run_row = json.loads(str(outbox["run_row_json"] or "{}"))
+                if (
+                    str(event.get("event_id") or "") != event_id
+                    or str(event.get("session_id") or "") != session_id
+                    or str(event.get("topic") or "") != "canvas.graph.run.state"
+                    or str(event_payload.get("graphRunId") or "") != str(outbox["graph_run_id"] or "")
+                    or str(event_payload.get("status") or "") != expected_event_status
+                    or str(event_payload.get("transition") or "") != str(outbox["transition"] or "")
+                    or str(event_payload.get("retryOfGraphRunId") or "") != str(outbox["retry_of_graph_run_id"] or "")
+                    or str(event.get("ts") or "") != str(outbox["expected_updated_at"] or "")
+                    or str(stored_run_row.get("graph_run_id") or "") != str(outbox["graph_run_id"] or "")
+                    or str(stored_run_row.get("session_id") or "") != session_id
+                    or str(stored_run_row.get("status") or "") != expected_status
+                    or str(stored_run_row.get("updated_at") or "") != str(outbox["expected_updated_at"] or "")
+                ):
+                    conn.rollback()
+                    raise ValueError("Canvas graph outbox projection does not match its durable intent")
+
+                if not outbox["projected_at"]:
+                    earlier_pending = conn.execute(
+                        """
+                        SELECT 1
+                        FROM creative_canvas_graph_run_event_outbox
+                        WHERE session_id = ? AND projected_at IS NULL
+                          AND outbox_sequence < ?
+                        LIMIT 1
+                        """,
+                        (session_id, int(outbox["outbox_sequence"])),
+                    ).fetchone()
+                    if earlier_pending:
+                        conn.rollback()
+                        return False, False
+
+                existing = conn.execute(
+                    "SELECT session_id, run_id, kind, topic, event_ts, source_json, payload_json FROM runtime_events WHERE id = ? LIMIT 1",
+                    (event_id,),
+                ).fetchone()
+                if existing:
+                    try:
+                        existing_source = json.loads(str(existing["source_json"] or "{}"))
+                    except (TypeError, ValueError):
+                        existing_source = {}
+                    try:
+                        existing_payload = json.loads(str(existing["payload_json"] or "{}"))
+                    except (TypeError, ValueError):
+                        existing_payload = {}
+                    if (
+                        str(existing["session_id"] or "") != session_id
+                        or str(existing["run_id"] or "") != str(event.get("run_id") or "")
+                        or str(existing["kind"] or "") != str(event.get("kind") or "event")
+                        or str(existing["topic"] or "") != str(event.get("topic") or "")
+                        or str(existing["event_ts"] or "") != str(event.get("ts") or "")
+                        or existing_source != source_payload
+                        or existing_payload != event_payload
+                    ):
+                        conn.rollback()
+                        raise ValueError("Canvas graph outbox event id is already bound to a different event")
+                    conn.execute(
+                        """
+                        UPDATE creative_canvas_graph_run_event_outbox
+                        SET runtime_event_id = ?, projected_at = COALESCE(projected_at, ?),
+                            last_error = NULL, next_attempt_at = NULL
+                        WHERE outbox_id = ?
+                        """,
+                        (event_id, utc_now_iso(), normalized_id),
+                    )
+                    conn.commit()
+                    return True, False
+
+                next_seq_row = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                seq = int(next_seq_row["next_seq"]) if next_seq_row else 1
+                conn.execute(
+                    """
+                    INSERT INTO runtime_events
+                    (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        session_id,
+                        event.get("run_id"),
+                        seq,
+                        event.get("kind", "event"),
+                        event.get("topic"),
+                        event.get("ts"),
+                        json.dumps(source_payload, ensure_ascii=False),
+                        json.dumps(event_payload, ensure_ascii=False),
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE creative_canvas_graph_run_event_outbox
+                    SET runtime_event_id = ?, projected_at = ?, last_error = NULL, next_attempt_at = NULL
+                    WHERE outbox_id = ? AND projected_at IS NULL
+                    """,
+                    (event_id, utc_now_iso(), normalized_id),
+                )
+                conn.commit()
+                return True, True
+
+        projected, inserted = self._run_write_with_retry(_write)
+        if not projected or not inserted:
+            return bool(projected)
+        session_id = str(event.get("session_id") or "").strip()
+        try:
+            from core.session_activity import is_session_activity_topic, session_activity_broker
+
+            topic = str(event.get("topic") or "").strip()
+            if is_session_activity_topic(topic):
+                session = self.get_session(session_id) or {}
+                session_activity_broker.publish(
+                    owner_id=str(session.get("user_id") or session.get("userId") or ""),
+                    session_id=session_id,
+                    topic=topic,
+                )
+        except Exception:
+            pass
+        return True
+
     def add_runtime_event(self, event: Dict[str, Any]):
         def _write():
             source_payload = to_jsonable(event.get("source") or {})
@@ -4131,99 +4513,6 @@ class DatabaseManager:
             # The durable runtime event is authoritative. A transient client
             # wakeup failure must never roll back or falsify runtime progress.
             return
-
-    def add_runtime_event_if_current(
-        self,
-        event: Dict[str, Any],
-        *,
-        graph_run_id: str,
-        expected_status: str,
-        expected_updated_at: str,
-    ) -> bool:
-        """Append a runtime event only while its Canvas run row is unchanged.
-
-        Canvas state transitions commit before their event is published.  This
-        guarded write keeps a concurrent cancellation/retry from appending a
-        stale state after the transition has already won the SQLite write lock.
-        The generic event path remains unchanged for all other topics.
-        """
-        normalized_session_id = str(event.get("session_id") or "").strip()
-        normalized_graph_run_id = str(graph_run_id or "").strip()
-        normalized_status = str(expected_status or "").strip()
-        normalized_updated_at = str(expected_updated_at or "").strip()
-
-        def _write() -> bool:
-            source_payload = to_jsonable(event.get("source") or {})
-            event_payload = to_jsonable(event.get("payload") or {})
-            with self.get_connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                current = conn.execute(
-                    """
-                    SELECT status, updated_at
-                    FROM creative_canvas_graph_runs
-                    WHERE graph_run_id = ? AND session_id = ? LIMIT 1
-                    """,
-                    (normalized_graph_run_id, normalized_session_id),
-                ).fetchone()
-                if (
-                    not current
-                    or str(current["status"] or "") != normalized_status
-                    or str(current["updated_at"] or "") != normalized_updated_at
-                ):
-                    conn.rollback()
-                    return False
-                for attempt in range(5):
-                    row = conn.execute(
-                        "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?",
-                        (normalized_session_id,),
-                    ).fetchone()
-                    seq = int(row["next_seq"]) if row else 1
-                    try:
-                        conn.execute(
-                            """
-                            INSERT INTO runtime_events
-                            (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                event["event_id"],
-                                normalized_session_id,
-                                event.get("run_id"),
-                                seq,
-                                event.get("kind", "event"),
-                                event.get("topic"),
-                                event.get("ts"),
-                                json.dumps(source_payload, ensure_ascii=False),
-                                json.dumps(event_payload, ensure_ascii=False),
-                            ),
-                        )
-                        conn.commit()
-                        return True
-                    except sqlite3.IntegrityError as exc:
-                        if "runtime_events.session_id, runtime_events.seq" not in str(exc):
-                            raise
-                        if attempt >= 4:
-                            raise
-                conn.rollback()
-                return False
-
-        inserted = bool(self._run_write_with_retry(_write))
-        if not inserted or not normalized_session_id:
-            return inserted
-        try:
-            from core.session_activity import is_session_activity_topic, session_activity_broker
-
-            topic = str(event.get("topic") or "").strip()
-            if is_session_activity_topic(topic):
-                session = self.get_session(normalized_session_id) or {}
-                session_activity_broker.publish(
-                    owner_id=str(session.get("user_id") or session.get("userId") or ""),
-                    session_id=normalized_session_id,
-                    topic=topic,
-                )
-        except Exception:
-            return inserted
-        return inserted
 
     def get_runtime_events(self, session_id: str, after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:

@@ -145,12 +145,15 @@ export type CanvasActionPort = {
 
 export type CanvasActionDefinition = {
     actionId: string;
+    binding?: { kind: string; capability?: string };
     inputs: CanvasActionPort[];
     output: { portId: string; slot: string; mediaTypes: CreativeCanvasMediaType[] };
     requiresPrompt: boolean;
     parameterEditor?: "frame_pick" | "time_range" | "psd_composition" | "psd_layers";
     networkRequired?: boolean;
     mayIncurCost?: boolean;
+    providerLabel?: string;
+    modelLabel?: string;
 };
 
 export type CanvasOutputVersion = {

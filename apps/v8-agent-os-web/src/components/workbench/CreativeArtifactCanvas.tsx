@@ -17,13 +17,14 @@ import {
     AlignLeft,
     Camera,
     Check,
+    Columns2,
     Copy,
-    Download,
     Folder,
     FolderPlus,
     Focus,
     Hand,
     ImagePlus,
+    Info,
     Link2,
     LayoutGrid,
     Loader2,
@@ -78,6 +79,11 @@ import {
 } from "./CreativeCanvasPsdEditor";
 import { useCanvasHistory } from "./creative-canvas/history";
 import { CanvasActionMenu, CanvasMiniMap, CanvasPreflightPanel } from "./creative-canvas/overlays";
+import {
+    CanvasInspectorReviewPanel,
+    type CanvasInspectorMode,
+    type CanvasReviewVersion,
+} from "./creative-canvas/inspector-review";
 import { CanvasTimeRangeEditor } from "./creative-canvas/time-range-editor";
 import {
 } from "./creative-canvas/timeline";
@@ -125,6 +131,7 @@ import {
     type CanvasGraphSaveScheduler,
 } from "./creative-canvas/save-scheduler";
 import {
+    createCanvasSessionRequestCoordinator,
     isActiveCanvasRequestOwner,
     isCurrentCanvasRuntimeEpoch,
     reconcileCanvasRuntimeProjection,
@@ -309,7 +316,7 @@ export function CreativeArtifactCanvas({
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const graphRevisionRef = useRef(0);
-    const mutationOwnerRef = useRef<CanvasMutationOwner | null>(null);
+    const mutationCoordinatorRef = useRef(createCanvasSessionRequestCoordinator(sessionId));
     const graphCancelOwnerRef = useRef<CanvasCancelOwner | null>(null);
     const runtimeMutationEpochRef = useRef(0);
     const clipboardRef = useRef<CanvasClipboard | null>(null);
@@ -370,6 +377,7 @@ export function CreativeArtifactCanvas({
     const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
     const [inspectNodeId, setInspectNodeId] = useState<string | null>(null);
     const [inspectResourceOverride, setInspectResourceOverride] = useState<CanvasResource | null>(null);
+    const [inspectMode, setInspectMode] = useState<CanvasInspectorMode>("details");
     const [maskNodeId, setMaskNodeId] = useState<string | null>(null);
     const [spacePanning, setSpacePanning] = useState(false);
     const [preflightOpen, setPreflightOpen] = useState(false);
@@ -390,25 +398,18 @@ export function CreativeArtifactCanvas({
     }, [sessionRunning]);
 
     const acquireMutationOwner = useCallback((kind: CanvasMutationOwner["kind"]) => {
-        if (mutationOwnerRef.current?.sessionId === sessionId) return null;
         const owner = { sessionId, token: createId("canvas-mutation"), kind } satisfies CanvasMutationOwner;
-        mutationOwnerRef.current = owner;
+        if (!mutationCoordinatorRef.current.acquire(owner)) return null;
         setSubmitting(true);
         return owner;
     }, [sessionId]);
 
     const isCurrentMutationOwner = useCallback((owner: CanvasMutationOwner) => (
-        isActiveCanvasRequestOwner(
-            mutationOwnerRef.current,
-            owner,
-            sessionIdRef.current,
-            mountedRef.current,
-        )
+        mutationCoordinatorRef.current.isActive(owner, mountedRef.current)
     ), []);
 
     const releaseMutationOwner = useCallback((owner: CanvasMutationOwner) => {
-        if (!sameCanvasRequestOwner(mutationOwnerRef.current, owner)) return;
-        mutationOwnerRef.current = null;
+        if (!mutationCoordinatorRef.current.release(owner)) return;
         if (mountedRef.current && sessionIdRef.current === owner.sessionId) setSubmitting(false);
     }, []);
 
@@ -418,7 +419,8 @@ export function CreativeArtifactCanvas({
     }, []);
 
     useLayoutEffect(() => {
-        setSubmitting(mutationOwnerRef.current?.sessionId === sessionId);
+        mutationCoordinatorRef.current.activateSession(sessionId);
+        setSubmitting(mutationCoordinatorRef.current.current()?.sessionId === sessionId);
     }, [sessionId]);
 
     useLayoutEffect(() => {
@@ -530,6 +532,7 @@ export function CreativeArtifactCanvas({
             setComposer(null);
             setInspectNodeId(null);
             setInspectResourceOverride(null);
+            setInspectMode("details");
             setMaskNodeId(null);
             setEnginePreflightIssues([]);
             setConnectionSourceId(null);
@@ -619,9 +622,14 @@ export function CreativeArtifactCanvas({
                 if (!isCurrentSession()) return;
                 setActionDefinitions((Array.isArray(actionPayload?.actions) ? actionPayload.actions : []).map((item: unknown) => {
                     const action = recordOf(item);
+                    const binding = recordOf(action.binding);
                     const output = recordOf(action.output);
                     return {
                         actionId: stringValue(action, "actionId"),
+                        binding: stringValue(binding, "kind") ? {
+                            kind: stringValue(binding, "kind"),
+                            capability: stringValue(binding, "capability") || undefined,
+                        } : undefined,
                         inputs: (Array.isArray(action.inputs) ? action.inputs : []).map((raw: unknown) => {
                             const port = recordOf(raw);
                             return {
@@ -643,6 +651,8 @@ export function CreativeArtifactCanvas({
                             : undefined,
                         networkRequired: Boolean(action.networkRequired),
                         mayIncurCost: Boolean(action.mayIncurCost),
+                        providerLabel: stringValue(action, "providerLabel", "providerDisplayName") || undefined,
+                        modelLabel: stringValue(action, "modelLabel", "modelDisplayName") || undefined,
                     } satisfies CanvasActionDefinition;
                 }).filter((item: CanvasActionDefinition) => Boolean(item.actionId)));
             };
@@ -2780,6 +2790,52 @@ export function CreativeArtifactCanvas({
     );
     const inspectNode = inspectNodeId ? snapshot.nodes.find((node) => node.nodeId === inspectNodeId) || null : null;
     const inspectResource = inspectResourceOverride || (inspectNode ? displayResourceForNode(inspectNode) : null);
+    const inspectActionNode = inspectNode?.kind === "action"
+        ? inspectNode
+        : inspectNode?.kind === "result" && inspectNode.producerActionNodeId
+            ? nodeMap.get(inspectNode.producerActionNodeId) || null
+            : null;
+    const inspectActionDefinition = inspectActionNode?.actionDefinitionId
+        ? actionDefinitionMap.get(inspectActionNode.actionDefinitionId) || null
+        : null;
+    const inspectActionCatalogEntry = inspectActionNode?.actionDefinitionId
+        ? CREATIVE_CANVAS_ACTIONS.find((action) => action.actionId === inspectActionNode.actionDefinitionId) || null
+        : null;
+    const inspectAction = inspectActionNode && inspectActionDefinition ? {
+        label: inspectActionCatalogEntry ? t(inspectActionCatalogEntry.labelKey) : canvasNodeTitle(inspectActionNode),
+        definition: inspectActionDefinition,
+        configured: isCanvasActionConfigured(inspectActionNode, inspectActionDefinition),
+        runtimeState: graphRuntime.nodeStates[inspectActionNode.nodeId] || {},
+    } : null;
+    const inspectInputs = inspectActionNode ? snapshot.edges
+        .filter((edge) => edge.role === "data" && edge.to === inspectActionNode.nodeId)
+        .sort((left, right) => left.order - right.order)
+        .flatMap((edge) => {
+            const sourceNode = nodeMap.get(edge.from);
+            if (!sourceNode) return [];
+            const sourceResource = displayResourceForNode(sourceNode);
+            return [{
+                label: sourceResource?.name || canvasNodeTitle(sourceNode),
+                mediaType: sourceResource ? mediaTypeOf(sourceResource) : mediaTypeForNode(sourceNode),
+            }];
+        }) : [];
+    const inspectOutputNode = inspectActionNode
+        ? snapshot.nodes.find((node) => node.kind === "result" && node.producerActionNodeId === inspectActionNode.nodeId) || null
+        : inspectNode?.kind === "result" ? inspectNode : null;
+    const inspectOutputResource = inspectOutputNode ? displayResourceForNode(inspectOutputNode) : inspectResource;
+    const inspectOutputLabel = inspectOutputResource?.name
+        || (inspectOutputNode ? canvasNodeTitle(inspectOutputNode) : inspectResource?.name || "");
+    const inspectVersions = inspectNode?.kind === "result"
+        ? (graphRuntime.outputs[inspectNode.nodeId] || []).flatMap((version) => {
+            const versionResource = version.artifactId ? resourceMap.get(`artifact:${version.artifactId}`) : null;
+            return versionResource?.url ? [{
+                identity: version.outputVersionId,
+                resultNodeId: inspectNode.nodeId,
+                version,
+                resource: versionResource,
+            } satisfies CanvasReviewVersion] : [];
+        })
+        : [];
     const maskNode = maskNodeId ? snapshot.nodes.find((node) => node.nodeId === maskNodeId) || null : null;
     const maskResource = maskNode ? displayResourceForNode(maskNode) : null;
 
@@ -3123,7 +3179,11 @@ export function CreativeArtifactCanvas({
                             onDoubleClick={(event) => {
                                 event.stopPropagation();
                                 if (node.kind === "action" && ["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor))) openPsdActionEditor(node);
-                                else if (resource) { setInspectResourceOverride(null); setInspectNodeId(node.nodeId); }
+                                else {
+                                    setInspectResourceOverride(null);
+                                    setInspectMode("details");
+                                    setInspectNodeId(node.nodeId);
+                                }
                             }}
                             onContextMenu={(event) => {
                                 event.preventDefault();
@@ -3262,7 +3322,7 @@ export function CreativeArtifactCanvas({
                                                 <div className="absolute bottom-2 right-2 flex max-w-[70%] flex-row-reverse gap-1 rounded-lg border border-white/70 bg-background/80 p-1 shadow-lg backdrop-blur dark:border-white/10">
                                                     {versions.slice(1, 6).map((version) => {
                                                         const previous = version.artifactId ? resourceMap.get(`artifact:${version.artifactId}`) : null;
-                                                        return <button key={version.outputVersionId} type="button" onClick={(event) => { event.stopPropagation(); if (previous) { setInspectResourceOverride(previous); setInspectNodeId(node.nodeId); } }} title={`v${version.version}`} className="grid h-8 w-8 place-items-center overflow-hidden rounded border border-border/60 bg-muted text-[8px] font-semibold text-muted-foreground">{previous?.url && mediaTypeOf(previous) === "image" ? <img src={previous.url} alt="" className="h-full w-full object-cover" /> : `v${version.version}`}</button>;
+                                                        return <button key={version.outputVersionId} type="button" onClick={(event) => { event.stopPropagation(); if (previous) { setInspectResourceOverride(previous); setInspectMode("details"); setInspectNodeId(node.nodeId); } }} title={`v${version.version}`} className="grid h-8 w-8 place-items-center overflow-hidden rounded border border-border/60 bg-muted text-[8px] font-semibold text-muted-foreground">{previous?.url && mediaTypeOf(previous) === "image" ? <img src={previous.url} alt="" className="h-full w-full object-cover" /> : `v${version.version}`}</button>;
                                                     })}
                                                 </div>
                                             ) : null}
@@ -3282,6 +3342,7 @@ export function CreativeArtifactCanvas({
                                 >
                                     <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", node.kind === "action" ? "bg-violet-500" : node.kind === "result" ? "bg-emerald-500" : node.origin === "source" ? "bg-cyan-500" : node.origin === "artifact" ? "bg-violet-500" : "bg-slate-400")} />
                                     <span className="min-w-0 flex-1 truncate text-[11px] font-medium transition-colors group-hover/title:text-violet-700 dark:group-hover/title:text-violet-300">{nodeTitle || t("web.workbench.canvas.graph.result")}</span>
+                                    {node.kind === "result" && versions.length > 1 ? <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setInspectResourceOverride(null); setInspectMode("review"); setInspectNodeId(node.nodeId); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-violet-500/10 hover:text-violet-600" aria-label={t("web.workbench.canvas.review.title")} title={t("web.workbench.canvas.review.title")}><Columns2 className="h-3.5 w-3.5" /></button> : null}
                                     {node.kind === "result" && versions[0] ? <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">v{versions[0].version}</span> : null}
                                     {node.mask?.strokes.length ? <span className="rounded-full bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-rose-600">{t("web.workbench.canvas.graph.maskRevision", { revision: node.mask.revision })}</span> : null}
                                 </div>
@@ -3536,6 +3597,7 @@ export function CreativeArtifactCanvas({
                     className="custom-scrollbar absolute z-30 flex max-w-[calc(100%-24px)] -translate-x-1/2 -translate-y-[calc(100%+10px)] items-center gap-1 overflow-x-auto rounded-2xl border border-white/80 bg-background/92 p-1.5 shadow-[0_14px_42px_rgba(15,23,42,.16)] backdrop-blur-xl dark:border-white/10"
                 >
                     <span className="px-2 text-[10px] font-semibold text-muted-foreground">{t("web.workbench.canvas.graph.selectedCount", { count: selectedIds.length })}</span>
+                    {selectedIds.length === 1 ? <button type="button" onClick={() => { setInspectResourceOverride(null); setInspectMode("details"); setInspectNodeId(selectedIds[0]); }} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-violet-600" aria-label={t("web.workbench.canvas.inspector.open")} title={t("web.workbench.canvas.inspector.open")}><Info className="h-4 w-4" /></button> : null}
                     <button type="button" disabled={sessionRunning} onClick={openSelectionInteraction} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-primary disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.relationshipNote")}><MessageSquare className="h-4 w-4" /></button>
                     <button type="button" disabled={sessionRunning} onClick={() => selectedIds.length > 1 ? connectSelection(selectedIds) : setConnectionSourceId(selectedIds[0])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-emerald-600 disabled:opacity-30" aria-label={selectedIds.length > 1 ? t("web.workbench.canvas.graph.connectSelection") : t("web.workbench.canvas.graph.connectNode")}><Link2 className="h-4 w-4" /></button>
                     {selectedImageNode ? <button type="button" disabled={sessionRunning} onClick={() => setMaskNodeId(selectedImageNode.nodeId)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-rose-600 disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.drawMask")}><Sparkles className="h-4 w-4" /></button> : null}
@@ -3631,14 +3693,24 @@ export function CreativeArtifactCanvas({
                 </div>
             ) : null}
 
-            {inspectNode && inspectResource ? (
-                <div data-canvas-wheel-isolation className="absolute inset-6 z-50 flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/80 bg-background/96 shadow-[0_30px_100px_rgba(15,23,42,.28)] backdrop-blur-xl dark:border-white/10">
-                    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3"><span className="min-w-0 flex-1 truncate text-xs font-semibold">{inspectResource.name}</span>{inspectResource.url ? <a href={inspectResource.url} download={inspectResource.name} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.preview.download")}><Download className="h-4 w-4" /></a> : null}<button type="button" onClick={() => { setInspectNodeId(null); setInspectResourceOverride(null); }} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.canvas.preview.close")}><X className="h-4 w-4" /></button></div>
-                    <div className="min-h-0 flex-1 overflow-auto bg-black/5 p-2">
-                        {mediaTypeOf(inspectResource) === "psd" ? (
-                            <CreativeCanvasPsdLayerEditor sessionId={sessionId} resource={inspectResource} edits={[]} onChange={() => undefined} readOnly />
-                        ) : <CreativeCanvasMedia resource={inspectResource} inspect visible={visible} />}
-                    </div>
+            {inspectNode ? (
+                <div data-canvas-wheel-isolation onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                    <CanvasInspectorReviewPanel
+                        node={inspectNode}
+                        resource={inspectResource}
+                        versions={inspectVersions}
+                        mode={inspectMode}
+                        action={inspectAction}
+                        inputs={inspectInputs}
+                        outputLabel={inspectOutputLabel}
+                        graphRuntime={graphRuntime}
+                        renderPreview={(candidate) => mediaTypeOf(candidate) === "psd" ? (
+                            <CreativeCanvasPsdLayerEditor sessionId={sessionId} resource={candidate} edits={[]} onChange={() => undefined} readOnly />
+                        ) : <CreativeCanvasMedia resource={candidate} inspect visible={visible} />}
+                        onModeChange={setInspectMode}
+                        onRetry={() => void retryFailedGraph()}
+                        onClose={() => { setInspectNodeId(null); setInspectResourceOverride(null); setInspectMode("details"); }}
+                    />
                 </div>
             ) : null}
 

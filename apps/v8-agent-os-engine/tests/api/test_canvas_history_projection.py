@@ -22,7 +22,9 @@ def test_canvas_only_session_history_allows_missing_workflow_ledger(monkeypatch)
                 "graphRunId": "canvas-run-1",
                 "canvasOperationId": "canvas-operation-1",
                 "runId": "canvas-run-1",
-                "status": "completed",
+                "status": "failed",
+                "transition": "remote_terminal_reconciled",
+                "recovery": {"canRetry": True, "mode": "failed_branch"},
             },
         }
     ]
@@ -59,4 +61,9 @@ def test_canvas_only_session_history_allows_missing_workflow_ledger(monkeypatch)
     assert result["record"]["sessionId"] == session_id
     assert result["record"]["workflowStatus"] == "idle"
     assert result["runtimeTimeline"][0]["topic"] == "canvas.graph.run.state"
+    assert result["runtimeTimeline"][0]["metadata"]["transition"] == "remote_terminal_reconciled"
+    assert result["runtimeTimeline"][0]["metadata"]["recovery"] == {
+        "canRetry": True,
+        "mode": "failed_branch",
+    }
     assert result["ledger"][0]["eventName"] == "canvas.graph.run.state"

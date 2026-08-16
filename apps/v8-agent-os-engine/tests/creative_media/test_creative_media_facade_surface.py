@@ -138,6 +138,7 @@ def test_every_facade_action_dispatches_through_the_registry(monkeypatch) -> Non
         return "fixture"
 
     monkeypatch.setattr(facade, "_resolve_handler", lambda _spec: FakeHandler())
+    monkeypatch.setattr(facade, "get_runtime_context", lambda: {"session_id": "session-fixture"})
     monkeypatch.setattr(facade, "_record_internal_detail", lambda _spec, _raw: "toolobs://registry-dispatch")
     monkeypatch.setattr(
         facade,
@@ -199,6 +200,59 @@ def test_unknown_and_missing_action_fields_are_rejected_before_handler(monkeypat
     assert invoked is False
 
 
+def test_job_facade_passes_canonical_runtime_session_to_every_read_and_retry_handler(monkeypatch) -> None:
+    monkeypatch.setattr(
+        facade,
+        "get_runtime_context",
+        lambda: {
+            "session_id": "session-canonical",
+            "run_id": "run-canonical",
+            "workspace_id": "workspace-canonical",
+            "workspace_path": "/workspace/canonical",
+        },
+    )
+    requests = {
+        "get": {"jobId": "job-fixture"},
+        "list": {},
+        "artifacts": {"jobId": "job-fixture"},
+        "retry": {
+            "jobId": "job-fixture",
+            "retryRequest": {
+                "sessionId": "session-spoofed",
+                "workspaceId": "workspace-spoofed",
+            },
+        },
+    }
+
+    for action, request in requests.items():
+        spec = CREATIVE_MEDIA_ACTION_REGISTRY["jobs"][action]
+        payload, error = facade._validate_request(spec, request)
+        assert error is None
+        arguments = facade._handler_arguments(spec, payload or {})
+        assert arguments["session_id"] == "session-canonical"
+
+    retry_spec = CREATIVE_MEDIA_ACTION_REGISTRY["jobs"]["retry"]
+    retry_payload, _ = facade._validate_request(retry_spec, requests["retry"])
+    retry_arguments = facade._handler_arguments(retry_spec, retry_payload or {})
+    assert retry_arguments["request"]["sessionId"] == "session-spoofed"
+    assert retry_arguments["session_id"] == "session-canonical"
+
+
+def test_job_facade_fails_closed_without_runtime_session(monkeypatch) -> None:
+    monkeypatch.setattr(facade, "get_runtime_context", lambda: {})
+
+    for action, request in {
+        "get": {"jobId": "job-fixture"},
+        "list": {},
+        "artifacts": {"jobId": "job-fixture"},
+        "retry": {"jobId": "job-fixture"},
+    }.items():
+        spec = CREATIVE_MEDIA_ACTION_REGISTRY["jobs"][action]
+        payload, error = facade._validate_request(spec, request)
+        assert payload is None
+        assert json.loads(error or "{}")["error"]["code"] == "runtime_scope_unavailable"
+
+
 def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_surface(monkeypatch) -> None:
     class FakeHandler:
         async def ainvoke(self, _payload):
@@ -257,6 +311,7 @@ def test_facade_normalizes_internal_failure(monkeypatch) -> None:
             )
 
     monkeypatch.setattr(facade, "_resolve_handler", lambda _spec: FakeHandler())
+    monkeypatch.setattr(facade, "get_runtime_context", lambda: {"session_id": "session-fixture"})
     monkeypatch.setattr(facade, "_record_internal_detail", lambda _spec, _raw: "toolobs://provider-failure")
 
     result = json.loads(

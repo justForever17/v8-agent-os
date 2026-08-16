@@ -175,6 +175,61 @@ def _wait_for_terminal(base_url: str, session_id: str, graph_run_id: str, timeou
     raise TimeoutError("Canvas run did not reach a terminal state within the live acceptance deadline")
 
 
+def _wait_for_remote_terminal_proof(
+    base_url: str,
+    provider_job_id: str,
+    timeout_seconds: int,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    deadline = time.time() + timeout_seconds
+    last_summary: dict[str, Any] = {}
+    while time.time() < deadline:
+        provider_job = _request(
+            "GET",
+            base_url,
+            f"/creative-media/jobs/{provider_job_id}?refresh=false",
+        ).get("job") or {}
+        lifecycle = dict(provider_job.get("lifecycle") or {})
+        cancellation = dict(lifecycle.get("cancel") or {})
+        reconciliation = dict(lifecycle.get("remoteReconcile") or {})
+        for phase, report in (("cancel", cancellation), ("remoteReconcile", reconciliation)):
+            proof = dict(report.get("terminalProof") or {})
+            if not proof:
+                continue
+            provider_status = str(proof.get("providerStatus") or "").strip().lower()
+            if proof.get("schema") != "v8.creative_media_remote_terminal_proof.v1":
+                raise RuntimeError(f"provider terminal proof used an unsupported schema: {proof.get('schema')}")
+            if provider_status not in {"cancelled", "failed", "succeeded"}:
+                raise RuntimeError(f"provider terminal proof was not terminal: {provider_status or 'missing'}")
+            if report.get("remoteTaskMayContinue") is not False:
+                raise RuntimeError(f"provider terminal proof did not clear remote uncertainty: phase={phase}")
+            if not str(proof.get("observedAt") or "").strip():
+                raise RuntimeError("provider terminal proof did not include its observation time")
+            expected_task_id = str(
+                provider_job.get("providerTaskId")
+                or (provider_job.get("providerHandle") or {}).get("taskId")
+                or ""
+            ).strip()
+            proof_task_id = str((proof.get("providerHandle") or {}).get("taskId") or "").strip()
+            if not expected_task_id or proof_task_id != expected_task_id:
+                raise RuntimeError("provider terminal proof was not bound to the cancelled Provider task")
+            return provider_job, proof, phase
+        last_summary = {
+            "cancelStatus": cancellation.get("status"),
+            "cancelDetailCode": cancellation.get("detailCode"),
+            "cancelRemoteTaskMayContinue": cancellation.get("remoteTaskMayContinue"),
+            "reconcileStatus": reconciliation.get("status"),
+            "reconcileDetailCode": reconciliation.get("detailCode"),
+            "reconcileProviderStatus": reconciliation.get("providerStatus"),
+            "reconcileRemoteTaskMayContinue": reconciliation.get("remoteTaskMayContinue"),
+            "nextReconcileAt": reconciliation.get("nextReconcileAt"),
+        }
+        time.sleep(2)
+    raise TimeoutError(
+        "Provider did not produce terminal proof within the live acceptance deadline: "
+        f"{last_summary}"
+    )
+
+
 def _assert_realtime_reload(base_url: str, session_id: str, graph_run_id: str, expected_statuses: list[str]) -> None:
     events_payload = _request("GET", base_url, f"/sessions/{session_id}/runtime-events")
     events = list(events_payload.get("events") or events_payload.get("items") or [])
@@ -222,13 +277,20 @@ def _run_video_cancel(base_url: str, workspace_path: Path, model_ref: str) -> di
     terminal = _wait_for_terminal(base_url, session_id, graph_run_id, 10)
     if terminal.get("status") != "cancelled":
         raise RuntimeError(f"Canvas run did not remain cancelled: {terminal}")
-    provider_job = _request("GET", base_url, f"/creative-media/jobs/{provider_job_id}?refresh=false").get("job") or {}
+    provider_job, terminal_proof, proof_phase = _wait_for_remote_terminal_proof(
+        base_url,
+        provider_job_id,
+        180,
+    )
     lifecycle = dict((provider_job.get("lifecycle") or {}).get("cancel") or {})
     cleanup = dict((provider_job.get("lifecycle") or {}).get("cleanup") or {})
-    if lifecycle.get("status") != "completed" or lifecycle.get("remoteTaskMayContinue") is not False:
-        raise RuntimeError(f"provider cancellation was not accepted with a remote task handle: {provider_job}")
+    if not lifecycle:
+        raise RuntimeError("provider cancellation lifecycle was not persisted")
     if cleanup.get("status") not in {"completed", "not_active"}:
-        raise RuntimeError(f"provider cleanup lifecycle was not persisted: {provider_job}")
+        raise RuntimeError(
+            "provider cleanup lifecycle was not persisted: "
+            f"status={cleanup.get('status')} detailCode={cleanup.get('detailCode')}"
+        )
     _assert_realtime_reload(
         base_url,
         session_id,
@@ -241,7 +303,10 @@ def _run_video_cancel(base_url: str, workspace_path: Path, model_ref: str) -> di
         "providerJobId": provider_job_id,
         "graphStatus": terminal.get("status"),
         "providerCancellation": lifecycle.get("status"),
-        "remoteTaskMayContinue": lifecycle.get("remoteTaskMayContinue"),
+        "remoteTaskMayContinue": False,
+        "remoteTerminalStatus": terminal_proof.get("providerStatus"),
+        "remoteTerminalProofSource": terminal_proof.get("source"),
+        "remoteTerminalProofPhase": proof_phase,
         "providerCleanup": cleanup.get("status"),
         "cancelResponseStatus": cancelled.get("status"),
     }

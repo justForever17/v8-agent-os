@@ -54,6 +54,7 @@ STATE_LOG_DELETE_TABLES = (
 )
 DEFAULT_LOG_BUDGET_BYTES = 1 * 1024 * 1024 * 1024
 DEFAULT_CHECKPOINT_BUDGET_BYTES = 4 * 1024 * 1024 * 1024
+DEFAULT_RAW_EVIDENCE_RETENTION_DAYS = 30
 RECOVERY_CHECKPOINT_MAX_COUNT = 8
 RECOVERY_CHECKPOINT_MAX_BYTES = 256 * 1024 * 1024
 
@@ -963,6 +964,29 @@ class StorageRetentionService:
                     break
                 runtime_snapshot_actions = self._prune_runtime_snapshots(dry_run=False)
                 actions.extend(runtime_snapshot_actions)
+        # Direct Canvas runs have no chat run_id, so the generic completed-run
+        # event pruning path cannot own their lifecycle. Retire their derived
+        # events only after the graph run is terminal and its evidence TTL has
+        # elapsed; projected outbox intents are pruned in the following step.
+        canvas_event_actions = self._prune_terminal_canvas_runtime_events(dry_run=dry_run)
+        actions.extend(canvas_event_actions)
+        if not dry_run:
+            for _ in range(20):
+                if not canvas_event_actions:
+                    break
+                canvas_event_actions = self._prune_terminal_canvas_runtime_events(dry_run=False)
+                actions.extend(canvas_event_actions)
+        # Canvas outbox intents remain repairable until their runtime event is
+        # projected. Once runtime-event retention removes that projection, the
+        # matching projected intent has completed its lifecycle as well.
+        canvas_outbox_actions = self._prune_projected_canvas_outbox(dry_run=dry_run)
+        actions.extend(canvas_outbox_actions)
+        if not dry_run:
+            for _ in range(20):
+                if not canvas_outbox_actions:
+                    break
+                canvas_outbox_actions = self._prune_projected_canvas_outbox(dry_run=False)
+                actions.extend(canvas_outbox_actions)
         # Session/thread lifecycle retention is a safety invariant, not merely
         # a budget response. Run one complete dry-run plan or drain bounded
         # apply batches before checking whether additional budget pruning is
@@ -1104,6 +1128,106 @@ class StorageRetentionService:
                 conn.execute(f"DELETE FROM runtime_events WHERE id IN ({','.join('?' for _ in ids)})", ids)
                 conn.commit()
             return [{"action": "prune_completed_runtime_events", "rows": len(ids), "dryRun": dry_run}]
+
+    def _prune_terminal_canvas_runtime_events(self, *, dry_run: bool) -> List[Dict[str, Any]]:
+        if not STATE_DB_PATH.exists():
+            return []
+        budgets = dict(self.get_config().get("budgets") or {})
+        retention_days = max(
+            1,
+            int(
+                (budgets.get("rawEvidence") or {}).get("retentionDays")
+                or DEFAULT_RAW_EVIDENCE_RETENTION_DAYS
+            ),
+        )
+        cutoff_modifier = f"-{retention_days} days"
+        with _connect(STATE_DB_PATH) as conn:
+            required_tables = {
+                "runtime_events",
+                "creative_canvas_graph_runs",
+            }
+            existing_tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            if not required_tables.issubset(existing_tables):
+                return []
+            rows = conn.execute(
+                """
+                SELECT event.id
+                FROM runtime_events event
+                WHERE event.run_id IS NULL
+                  AND event.topic = 'canvas.graph.run.state'
+                  AND json_valid(event.payload_json)
+                  AND COALESCE(json_extract(event.payload_json, '$.graphRunId'), '') <> ''
+                  AND datetime(COALESCE(event.created_at, event.event_ts)) <= datetime('now', ?)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM creative_canvas_graph_runs graph_run
+                    WHERE graph_run.graph_run_id = json_extract(event.payload_json, '$.graphRunId')
+                      AND graph_run.session_id = event.session_id
+                      AND graph_run.chat_run_id IS NULL
+                      AND graph_run.status IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+                      AND datetime(COALESCE(graph_run.completed_at, graph_run.updated_at)) <= datetime('now', ?)
+                  )
+                ORDER BY COALESCE(event.created_at, event.event_ts) ASC, event.seq ASC
+                LIMIT 500
+                """,
+                (cutoff_modifier, cutoff_modifier),
+            ).fetchall()
+            ids = [str(row["id"]) for row in rows]
+            if not ids:
+                return []
+            if not dry_run:
+                conn.execute(
+                    f"DELETE FROM runtime_events WHERE id IN ({','.join('?' for _ in ids)})",
+                    ids,
+                )
+                conn.commit()
+            return [
+                {
+                    "action": "prune_terminal_canvas_runtime_events",
+                    "rows": len(ids),
+                    "retentionDays": retention_days,
+                    "dryRun": dry_run,
+                }
+            ]
+
+    def _prune_projected_canvas_outbox(self, *, dry_run: bool) -> List[Dict[str, Any]]:
+        if not STATE_DB_PATH.exists():
+            return []
+        with _connect(STATE_DB_PATH) as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_graph_run_event_outbox'"
+            ).fetchone()
+            if not table:
+                return []
+            rows = conn.execute(
+                """
+                SELECT outbox_id
+                FROM creative_canvas_graph_run_event_outbox outbox
+                WHERE outbox.projected_at IS NOT NULL
+                  AND outbox.runtime_event_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM runtime_events event
+                    WHERE event.id = outbox.runtime_event_id
+                  )
+                ORDER BY outbox.outbox_sequence ASC
+                LIMIT 1000
+                """
+            ).fetchall()
+            ids = [str(row["outbox_id"]) for row in rows]
+            if not ids:
+                return []
+            if not dry_run:
+                conn.execute(
+                    f"DELETE FROM creative_canvas_graph_run_event_outbox WHERE outbox_id IN ({','.join('?' for _ in ids)})",
+                    ids,
+                )
+                conn.commit()
+            return [{"action": "prune_projected_canvas_outbox", "rows": len(ids), "dryRun": dry_run}]
 
     def _prune_old_checkpoints(self, *, dry_run: bool) -> List[Dict[str, Any]]:
         if not CHECKPOINT_DB_PATH.exists():

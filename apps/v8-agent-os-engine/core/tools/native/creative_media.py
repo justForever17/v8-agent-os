@@ -598,7 +598,7 @@ async def creative_media_create_job(request: dict[str, Any]) -> str:
 
 
 @tool
-async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
+async def creative_media_get_job(job_id: str, session_id: str, refresh: bool = True) -> str:
     """Get or refresh a 多媒体创作 job.
 
     Use after `creative_media_create_job`. Keep `refresh=True` to poll supported
@@ -609,7 +609,11 @@ async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        job = await creative_media_runtime.refresh_job(job_id) if refresh else creative_media_runtime.get_job(job_id, refresh=False)
+        job = (
+            await creative_media_runtime.refresh_authorized_job(job_id, session_id=session_id)
+            if refresh
+            else creative_media_runtime.get_authorized_job(job_id, session_id=session_id)
+        )
         if not job:
             return f"Error: CreativeMedia job not found: {job_id}"
         return json.dumps({"job": _creative_media_job_detail(job)}, ensure_ascii=False, indent=2)
@@ -618,12 +622,22 @@ async def creative_media_get_job(job_id: str, refresh: bool = True) -> str:
 
 
 @tool
-def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[str] = None, limit: int = 20, detail_level: str = "summary") -> str:
+def creative_media_list_jobs(
+    session_id: str,
+    modality: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 20,
+    detail_level: str = "summary",
+) -> str:
     """List CreativeMediaRuntime jobs, optionally filtered by modality or status."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        jobs = creative_media_runtime.list_jobs(modality=modality, status=status)
+        jobs = creative_media_runtime.list_authorized_jobs(
+            session_id=session_id,
+            modality=modality,
+            status=status,
+        )
         normalized_detail = str(detail_level or "summary").strip().lower()
         effective_limit = max(1, min(int(limit or 20), 50))
         if normalized_detail == "summary":
@@ -658,7 +672,7 @@ def creative_media_list_jobs(modality: Optional[str] = None, status: Optional[st
 
 
 @tool
-def creative_media_job_artifacts(job_id: str) -> str:
+def creative_media_job_artifacts(job_id: str, session_id: str) -> str:
     """List deliverable artifact refs for a 多媒体创作 job.
 
     Use this after a job succeeds. Return artifact IDs, kind, file type, and
@@ -669,7 +683,15 @@ def creative_media_job_artifacts(job_id: str) -> str:
         from runtimes.creative_media.runtime import creative_media_runtime
 
         return json.dumps(
-            {"artifacts": [_creative_media_artifact_summary(item) for item in creative_media_runtime.job_artifacts(job_id)]},
+            {
+                "artifacts": [
+                    _creative_media_artifact_summary(item)
+                    for item in creative_media_runtime.authorized_job_artifacts(
+                        job_id,
+                        session_id=session_id,
+                    )
+                ]
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -1065,12 +1087,20 @@ def creative_media_get_quality_job(quality_job_id: str) -> str:
 
 
 @tool
-async def creative_media_retry_job(job_id: str, request: Optional[dict[str, Any]] = None) -> str:
+async def creative_media_retry_job(
+    job_id: str,
+    session_id: str,
+    request: Optional[dict[str, Any]] = None,
+) -> str:
     """Retry a CreativeMedia job within the same operationKind using runtime retry policy."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        job = await creative_media_runtime.retry_job(job_id, dict(request or {}))
+        job = await creative_media_runtime.retry_authorized_job(
+            job_id,
+            session_id=session_id,
+            request=dict(request or {}),
+        )
         return json.dumps({"job": _creative_media_job_detail(job)}, ensure_ascii=False, indent=2)
     except Exception as e:
         return f"Error retrying CreativeMedia job: {str(e)}"

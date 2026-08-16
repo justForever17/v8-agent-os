@@ -1,6 +1,6 @@
 # Creative Artifact Canvas 测试矩阵
 
-更新：2026-08-15
+更新：2026-08-16
 范围：V8OS Web / Phone / Workbench / Creative Media runtime
 原则：`Supervisor First, Runtime Grounded`。STATIC、MOCK、REAL-LIVE 与桌面 Preview 的结果分开记录，未跑项不得写成通过。
 
@@ -62,7 +62,7 @@ Real-live 时限：
 | BIND-01 | INTEGRATION | W1/S-A 刷新、重启 Web | Session 仍绑定 W1，不重新发现工作区 | PASS |
 | BIND-02 | INTEGRATION | 同一 W1 下建立 S-A、S-B | source/artifact/node/edge/tab/localStorage 集合互斥 | PASS |
 | BIND-03 | INTEGRATION | W1/S-A 与 W2/S-C | S-C 无法搜索、预览、下载 W1/S-A 资源 | PASS（Engine list/detail/content 强制 `sessionId` 并核对 Workspace；跨 Session HTTP matrix、Admin/Web/Phone/shared authority 合同通过；完整桌面搜索 UI 仍按浏览器项单独验收） |
-| BIND-04 | INTEGRATION | S-A 运行中切换 S-B | S-B 不继承锁、占位卡、进度或错误 | PARTIAL（owner token、AbortController、Session/run gate、按 Session key 重挂载已通过合同；完整 deferred-response Playwright 乱序矩阵未跑） |
+| BIND-04 | BROWSER | S-A 运行中切换 S-B | S-B 不继承锁、占位卡、进度或错误；A 的迟到结果、事件、错误与 `finally` 不能覆盖或解锁 B；切回 A 重载权威终态 | PASS（`creative_canvas_session_race_e2e.py` 使用生产 request coordinator、浏览器原生 deferred fetch/CustomEvent 与 system Edge，覆盖 poll/run/retry/cancel 的 A-first、B-first、error、reload，以及 A→B→A 后旧 A 响应晚到；desktop/mobile 截图通过） |
 | BIND-05 | INTEGRATION | S-A 异步响应前切到 S-B | 迟到 source/artifact/event 被 Session gate 丢弃 | PASS |
 | SRC-01 | INTEGRATION | Web/Canvas 上传图片、视频、音频、3D | 每项只新增一个当前 Session source | PARTIAL |
 | SRC-02 | INTEGRATION | 上传后离开并重进 S-A | 媒体内容仍可读，不退化为永久占位 | PASS（图片） |
@@ -153,6 +153,10 @@ Real-live 时限：
 | GRAPH-13 | UNIT / API / BROWSER-MOCK | 运行中取消 Graph | Web 一次性请求取消并在 `cancelling` 期间保持锁与轮询；Engine 尝试 provider cancel/cleanup；不支持远程取消时显式记录 `unsupported`，不得伪称已取消 Provider | PARTIAL（Web 13、Engine Graph/生命周期回归通过；真实图片链成功；Volcengine running cancel 409 -> `unsupported`/`remoteTaskMayContinue=true`，本地 cleanup 完成但远端终止未证明） |
 | GRAPH-14 | STARTUP | Engine 在 queued/running/cancelling 时重启 | 启动对账写为 `interrupted`，保留成功节点与产物版本，活动节点标记可恢复 | PASS（Engine 107） |
 | GRAPH-15 | CONTRACT | 失败分支重试 | Web 复用原 `graphRunId/canvasOperationId` 走正常消息链；只重跑非成功节点；成功付费祖先的同 Run 产物缺失时拒绝 | PASS（Web owner contract；Engine SQLite CAS 单领取、reserved provider handle、cancel-before-submit 与并发冲突回归） |
+| GRAPH-16 | BROWSER / CONTRACT | 选中素材、动作或结果后打开 Inspector | 复用现有 action/resource/runtime 投影人话输入、输出、Provider、模型、就绪、运行和恢复；不显示 Run/Artifact ID、绝对路径或 raw payload | PASS（Inspector 独立组件、双语合同、typecheck/i18n/eslint） |
+| GRAPH-17 | BROWSER / CONTRACT | 同一结果槽存在两个以上版本 | A/B 候选只来自同一 result node 的 output-version identity；图片支持并排/wipe，视频与音频同步 seek/play/pause，3D 明确不可对比且不创建第二状态面 | PASS（result-node gate 与交互合同；真实媒体浏览器验收仍随 Live matrix 执行） |
+| GRAPH-18 | RUNTIME / RESTART | Graph 状态提交后事件投影瞬时失败或 Engine 重启 | 状态与 outbox intent 同事务提交；同 Session 严格按 intent 顺序投影；失败持久退避，周期 repair 无需新业务写入即可补齐；history/reload 不复活旧状态 | PASS（SQLite rollback、并发延迟旧 intent、restart repair、main 周期接线与 live/history/reload projection 回归） |
+| GRAPH-19 | RUNTIME / PROVIDER | 取消请求只获 accepted/unknown，或重启发现带远端 handle 的活动节点 | 没有 canonical terminal proof 时始终保持 `remoteTaskMayContinue=true` 并阻断 retry；reconciler 复用锁定 Provider 身份探测，只有终态证明才原子投影回 Graph，失败按持久退避重试 | PASS（多 Provider parser/identity/credential、single-flight/shield、startup recovery candidate、projection pending/backoff 合同；真实 Provider 远端终止 Live 仍为 NOT-RUN） |
 
 兼容债务：旧 Graph `sink` 节点只在 Engine 输入解析层保留两个完整客户端迁移周期；当前 Web 加载时直接丢弃，且不再创建或渲染。迁移期须补旧 Graph 读取量观测，降至可忽略后删除 Engine parser 分支。
 

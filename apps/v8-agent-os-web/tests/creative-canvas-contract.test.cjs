@@ -209,7 +209,8 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.match(modelLease, /disposeSceneResources/);
   assert.match(canvas, /active=\{selected && inspectNodeId !== node\.nodeId\}/);
   assert.match(canvas, /visible=\{visible && visibleNodeIds\.has\(node\.nodeId\)\}/);
-  assert.match(canvas, /<CreativeCanvasMedia resource=\{inspectResource\} inspect visible=\{visible\} \/>/);
+  assert.match(canvas, /<CanvasInspectorReviewPanel/);
+  assert.match(canvas, /<CreativeCanvasMedia resource=\{candidate\} inspect visible=\{visible\} \/>/);
   assert.match(media, /preload="metadata"/);
   assert.doesNotMatch(media, /preload="auto"/);
   assert.match(media, /pointer-events-none h-full w-full object-contain/);

@@ -31,6 +31,12 @@ def test_new_database_is_initialized_and_versioned(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_side_effect_receipts'"
         ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_graph_run_event_outbox'"
+        ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_graph_remote_terminal_receipts'"
+        ).fetchone()
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
         assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
@@ -64,6 +70,7 @@ def test_unversioned_legacy_database_runs_idempotent_upgrade_once(tmp_path: Path
         )
         conn.execute("PRAGMA user_version = 0")
 
+    DatabaseManager(path)
     DatabaseManager(path)
 
     assert _schema_version(path) == DATABASE_SCHEMA_VERSION
@@ -100,7 +107,12 @@ def test_version_one_database_upgrades_runtime_safety_ledgers(tmp_path: Path) ->
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert {"runtime_episode_idempotency", "runtime_side_effect_receipts"}.issubset(table_names)
+    assert {
+        "runtime_episode_idempotency",
+        "runtime_side_effect_receipts",
+        "creative_canvas_graph_run_event_outbox",
+        "creative_canvas_graph_remote_terminal_receipts",
+    }.issubset(table_names)
 
 
 def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path) -> None:
@@ -108,6 +120,7 @@ def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path
     with sqlite3.connect(path) as conn:
         conn.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
 
+    DatabaseManager(path)
     DatabaseManager(path)
 
     with sqlite3.connect(path) as conn:
@@ -117,7 +130,12 @@ def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert {"runtime_episode_idempotency", "runtime_side_effect_receipts"}.issubset(table_names)
+    assert {
+        "runtime_episode_idempotency",
+        "runtime_side_effect_receipts",
+        "creative_canvas_graph_run_event_outbox",
+        "creative_canvas_graph_remote_terminal_receipts",
+    }.issubset(table_names)
 
 
 def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Path) -> None:
@@ -141,6 +159,11 @@ def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Pat
     assert normalized[0] == "PRAGMA USER_VERSION"
     assert any("CREATE TABLE IF NOT EXISTS RUNTIME_EPISODE_IDEMPOTENCY" in statement for statement in normalized)
     assert any("CREATE TABLE IF NOT EXISTS RUNTIME_SIDE_EFFECT_RECEIPTS" in statement for statement in normalized)
+    assert any("CREATE TABLE IF NOT EXISTS CREATIVE_CANVAS_GRAPH_RUN_EVENT_OUTBOX" in statement for statement in normalized)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS CREATIVE_CANVAS_GRAPH_REMOTE_TERMINAL_RECEIPTS" in statement
+        for statement in normalized
+    )
     assert not any(statement.startswith("ALTER TABLE") for statement in normalized)
 
 

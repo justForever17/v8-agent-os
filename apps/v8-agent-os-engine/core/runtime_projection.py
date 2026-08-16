@@ -998,7 +998,7 @@ def _canvas_graph_run_state_metadata(
     if status not in CANVAS_GRAPH_RUN_STATE_STATUSES:
         return None
     transition = canonical_text("transition").lower()
-    if transition not in {"", "recovered", "retry_failed_branch"}:
+    if transition not in {"", "recovered", "retry_failed_branch", "remote_terminal_reconciled"}:
         return None
     retry_of_graph_run_id = canonical_text("retryOfGraphRunId")
     if transition == "retry_failed_branch" and not retry_of_graph_run_id:

@@ -472,12 +472,17 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
             "jobs", "get", "creative", "creative_media_get_job",
             required={"jobId"}, allowed={"jobId", "refresh"}, output_kind="job",
             async_handler=True,
-            args=(("job_id", "jobId", _MISSING), ("refresh", "refresh", True)),
+            args=(
+                ("job_id", "jobId", _MISSING),
+                ("session_id", "sessionId", _MISSING),
+                ("refresh", "refresh", True),
+            ),
         ),
         "list": _spec(
             "jobs", "list", "creative", "creative_media_list_jobs",
             allowed={"detailLevel", "limit", "modality", "status"}, output_kind="job_list",
             args=(
+                ("session_id", "sessionId", _MISSING),
                 ("modality", "modality", None),
                 ("status", "status", None),
                 ("limit", "limit", 20),
@@ -487,13 +492,17 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "artifacts": _spec(
             "jobs", "artifacts", "creative", "creative_media_job_artifacts",
             required={"jobId"}, allowed={"jobId"}, output_kind="artifact_list",
-            args=(("job_id", "jobId", _MISSING),),
+            args=(("job_id", "jobId", _MISSING), ("session_id", "sessionId", _MISSING)),
         ),
         "retry": _spec(
             "jobs", "retry", "creative", "creative_media_retry_job",
             required={"jobId"}, allowed={"jobId", "retryRequest"},
             mutating=True, output_kind="job", async_handler=True,
-            args=(("job_id", "jobId", _MISSING), ("request", "retryRequest", {})),
+            args=(
+                ("job_id", "jobId", _MISSING),
+                ("session_id", "sessionId", _MISSING),
+                ("request", "retryRequest", {}),
+            ),
         ),
     },
     "edit": {
@@ -692,10 +701,21 @@ def _validate_request(spec: CreativeMediaActionSpec, request: Any) -> tuple[dict
         return None, _validation_error(spec, "invalid_limit", "limit must be between 1 and 100")
     if payload.get("maxLayers") is not None and not 1 <= int(payload["maxLayers"]) <= 500:
         return None, _validation_error(spec, "invalid_max_layers", "maxLayers must be between 1 and 500")
-    return _inject_runtime_scope(
+    scoped = _inject_runtime_scope(
         payload,
         include_canvas_operation=spec.facade == "jobs" and spec.action == "create",
-    ), None
+    )
+    if (
+        spec.facade == "jobs"
+        and spec.action in {"get", "list", "artifacts", "retry"}
+        and _is_empty(scoped.get("sessionId"))
+    ):
+        return None, _validation_error(
+            spec,
+            "runtime_scope_unavailable",
+            "current runtime session is required for Creative Media job access",
+        )
+    return scoped, None
 
 
 def _inject_runtime_scope(

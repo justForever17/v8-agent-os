@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import hmac
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
+
+from core.system_base import get_internal_secret
 
 
 class _LazyCreativeMediaRuntime:
@@ -14,7 +17,22 @@ class _LazyCreativeMediaRuntime:
 creative_media_runtime = _LazyCreativeMediaRuntime()
 
 
-router = APIRouter(prefix="/creative-media", tags=["creative-media"])
+def require_creative_media_internal_secret(
+    x_v8_agent_os_secret: str | None = Header(default=None),
+) -> None:
+    expected_secret = str(get_internal_secret() or "").strip()
+    if not expected_secret or not hmac.compare_digest(
+        str(x_v8_agent_os_secret or ""),
+        expected_secret,
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+router = APIRouter(
+    prefix="/creative-media",
+    tags=["creative-media"],
+    dependencies=[Depends(require_creative_media_internal_secret)],
+)
 
 
 @router.get("/catalog")
@@ -233,7 +251,7 @@ async def get_creative_media_render(render_job_id: str):
 async def create_creative_media_job(body: dict = Body(...)):
     try:
         job = await creative_media_runtime.create_job(body)
-        return {"job": job}
+        return {"job": creative_media_runtime.public_job_projection(job)}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -242,7 +260,12 @@ async def create_creative_media_job(body: dict = Body(...)):
 
 @router.get("/jobs")
 async def list_creative_media_jobs(modality: str | None = None, status: str | None = None):
-    return {"jobs": creative_media_runtime.list_jobs(modality=modality, status=status)}
+    return {
+        "jobs": [
+            creative_media_runtime.public_job_projection(job)
+            for job in creative_media_runtime.list_jobs(modality=modality, status=status)
+        ]
+    }
 
 
 @router.get("/jobs/{job_id}")
@@ -251,7 +274,7 @@ async def get_creative_media_job(job_id: str, refresh: bool = True):
         job = await creative_media_runtime.refresh_job(job_id) if refresh else creative_media_runtime.get_job(job_id, refresh=False)
         if not job:
             raise HTTPException(status_code=404, detail="creative media job not found")
-        return {"job": job}
+        return {"job": creative_media_runtime.public_job_projection(job)}
     except HTTPException:
         raise
     except Exception as exc:
@@ -293,7 +316,7 @@ async def get_creative_media_quality_job(quality_job_id: str):
 async def retry_creative_media_job(job_id: str, body: dict = Body(default_factory=dict)):
     try:
         job = await creative_media_runtime.retry_job(job_id, body)
-        return {"job": job}
+        return {"job": creative_media_runtime.public_job_projection(job)}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:

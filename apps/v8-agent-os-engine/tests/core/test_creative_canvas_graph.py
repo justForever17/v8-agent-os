@@ -6,7 +6,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, Lock
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -159,6 +159,30 @@ def _canvas_graph_run_state_events(database: DatabaseManager, session_id: str = 
         for event in database.get_runtime_events(session_id)
         if event.get("topic") == "canvas.graph.run.state"
     ]
+
+
+def _provider_terminal_report(job_id: str, *, status: str, detail_code: str) -> dict:
+    provider_handle = {
+        "schema": "v8.creative_media_provider_handle.v1",
+        "adapter": "fake",
+        "providerId": "fake-provider",
+        "taskId": job_id,
+        "operationKind": "image.edit",
+    }
+    return {
+        "status": status,
+        "detailCode": detail_code,
+        "remoteTaskMayContinue": False,
+        "providerHandle": provider_handle,
+        "terminalProof": {
+            "schema": "v8.creative_media_remote_terminal_proof.v1",
+            "providerHandle": provider_handle,
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELLED",
+            "source": "fake_provider_status_api",
+            "observedAt": "2026-08-16T00:00:00Z",
+        },
+    }
 
 
 def test_draft_save_is_recoverable_but_execution_checks_only_the_target_subgraph(canvas_service) -> None:
@@ -426,12 +450,12 @@ class _FakeCreativeRuntime:
     def _save_job(self, job: dict) -> dict:
         return dict(job)
 
-    async def cancel_job(self, _job_id: str) -> dict:
-        return {
-            "status": "not_active",
-            "detailCode": "fake_provider_terminal",
-            "remoteTaskMayContinue": False,
-        }
+    async def cancel_job(self, job_id: str) -> dict:
+        return _provider_terminal_report(
+            job_id,
+            status="not_active",
+            detail_code="fake_provider_terminal",
+        )
 
     async def cleanup_job(self, _job_id: str) -> dict:
         return {
@@ -566,11 +590,7 @@ class _PendingLifecycleRuntime(_FakeCreativeRuntime):
         self.cancelled_job_ids.append(job_id)
         self.jobs[job_id]["status"] = "cancelled"
         self.release_poll.set()
-        return {
-            "status": "completed",
-            "detailCode": "fake_cancelled",
-            "remoteTaskMayContinue": False,
-        }
+        return _provider_terminal_report(job_id, status="completed", detail_code="fake_cancelled")
 
     async def cleanup_job(self, job_id: str) -> dict:
         self.cleaned_job_ids.append(job_id)
@@ -593,11 +613,7 @@ class _SlowCancelLifecycleRuntime(_PendingLifecycleRuntime):
         self.release_poll.set()
         await self.release_cancel.wait()
         self.jobs[job_id]["status"] = "cancelled"
-        return {
-            "status": "completed",
-            "detailCode": "fake_slow_cancelled",
-            "remoteTaskMayContinue": False,
-        }
+        return _provider_terminal_report(job_id, status="completed", detail_code="fake_slow_cancelled")
 
 
 class _PollFailureRuntime(_FakeCreativeRuntime):
@@ -644,11 +660,11 @@ class _PollFailureRuntime(_FakeCreativeRuntime):
     async def cancel_job(self, job_id: str) -> dict:
         self.cancelled_job_ids.append(job_id)
         self.jobs[job_id]["status"] = "cancelled"
-        return {
-            "status": "completed",
-            "detailCode": "fake_poll_failure_cancelled",
-            "remoteTaskMayContinue": False,
-        }
+        return _provider_terminal_report(
+            job_id,
+            status="completed",
+            detail_code="fake_poll_failure_cancelled",
+        )
 
     async def cleanup_job(self, job_id: str) -> dict:
         self.cleaned_job_ids.append(job_id)
@@ -988,9 +1004,62 @@ def test_graph_lifecycle_preserves_structured_provider_outcomes(canvas_service) 
         "providerCancellationDetailCode": "",
         "providerCancellationRemoteTaskMayContinue": True,
         "providerCancellationError": "",
+        "providerCancellationTerminalProof": None,
+        "providerCancellationLocalTerminalProof": None,
         "providerCleanup": "failed",
         "providerCleanupDetailCode": "",
         "providerCleanupError": "",
+    }
+
+
+def test_graph_lifecycle_requires_terminal_proof_before_remote_retry_unlock(canvas_service) -> None:
+    service, _database = canvas_service
+
+    class UnprovenLifecycleRuntime:
+        async def cancel_job(self, _job_id: str) -> dict:
+            return {"status": "completed", "remoteTaskMayContinue": False}
+
+        async def cleanup_job(self, _job_id: str) -> dict:
+            return {"status": "completed", "remoteTaskMayContinue": False}
+
+    lifecycle = asyncio.run(service._cancel_and_cleanup_job(UnprovenLifecycleRuntime(), "provider-job"))
+
+    assert lifecycle["providerCancellation"] == "completed"
+    assert lifecycle["providerCancellationRemoteTaskMayContinue"] is True
+    assert lifecycle["providerCancellationTerminalProof"] is None
+    assert lifecycle["providerCancellationLocalTerminalProof"] is None
+
+
+def test_graph_lifecycle_accepts_only_exact_governed_local_terminal_proof(canvas_service) -> None:
+    service, _database = canvas_service
+
+    class LocalTerminalRuntime:
+        async def cancel_job(self, job_id: str) -> dict:
+            return {
+                "status": "not_active",
+                "remoteTaskMayContinue": False,
+                "providerHandle": {},
+                "terminalProof": {
+                    "schema": "v8.creative_media_local_terminal_proof.v1",
+                    "jobId": job_id,
+                    "status": "failed",
+                    "source": "governed_local_job_state",
+                    "observedAt": "2026-08-16T00:00:00Z",
+                },
+            }
+
+        async def cleanup_job(self, _job_id: str) -> dict:
+            return {"status": "completed", "remoteTaskMayContinue": True}
+
+    lifecycle = asyncio.run(service._cancel_and_cleanup_job(LocalTerminalRuntime(), "local-job"))
+
+    assert lifecycle["providerCancellationRemoteTaskMayContinue"] is False
+    assert lifecycle["providerCancellationTerminalProof"] is None
+    assert lifecycle["providerCancellationLocalTerminalProof"] == {
+        "schema": "v8.creative_media_local_terminal_proof.v1",
+        "status": "failed",
+        "source": "governed_local_job_state",
+        "observedAt": "2026-08-16T00:00:00Z",
     }
 
 
@@ -1042,7 +1111,7 @@ def test_parent_task_cancellation_cleans_provider_job_and_remains_cancelled(
     ]
 
 
-def test_stale_retry_state_event_is_dropped_after_run_is_cancelled(canvas_service) -> None:
+def test_remote_terminal_reconciliation_receipt_survives_retry_advance(canvas_service) -> None:
     service, database = canvas_service
     saved = service.save_graph(
         session_id="session-a",
@@ -1056,38 +1125,199 @@ def test_stale_retry_state_event_is_dropped_after_run_is_cancelled(canvas_servic
         "sessionId": "session-a",
         "graphId": saved["graph"]["graphId"],
         "graphRevision": saved["revision"],
-        "canvasOperationId": "canvas-op-stale-event",
+        "canvasOperationId": "canvas-op-remote-terminal",
         "targetNodeIds": ["result-b"],
     }
     failed = asyncio.run(service.execute_as_creative_job(runtime, request))
     graph_run_id = str(failed["canvasGraphRunId"])
-    claim = service.claim_failed_retry(session_id="session-a", graph_run_id=graph_run_id)
-    stale_row = dict(claim["run"])
+    with database.get_connection() as conn:
+        row = dict(conn.execute(
+            "SELECT * FROM creative_canvas_graph_runs WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone())
+    node_states = dict(graph_module._json(row["node_states_json"], {}))
+    current_node_id = str(row["current_node_id"] or "")
+    current_state = dict(node_states[current_node_id])
+    current_state.update({
+        "recoverable": False,
+        "providerCancellationRemoteTaskMayContinue": True,
+    })
+    node_states[current_node_id] = current_state
+    with database.get_connection() as conn:
+        conn.execute(
+            "UPDATE creative_canvas_graph_runs SET node_states_json = ? WHERE graph_run_id = ?",
+            (graph_module.json.dumps(node_states), graph_run_id),
+        )
+        conn.commit()
+    job_id = str(current_state["jobId"])
+    report = {
+        "status": "resolved",
+        "sessionId": "session-a",
+        "jobId": job_id,
+        "canvasGraphRunId": graph_run_id,
+        "canvasGraphNodeId": current_node_id,
+        "remoteTaskMayContinue": False,
+        "terminalProof": {
+            "schema": "v8.creative_media_remote_terminal_proof.v1",
+            "source": "provider_status_api",
+            "providerHandle": {"providerId": "provider-a", "taskId": "remote-secret-id"},
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "observedAt": "2026-08-16T00:00:00Z",
+        },
+    }
 
-    cancelled = asyncio.run(service.cancel_run(
-        runtime,
-        session_id="session-a",
-        graph_run_id=graph_run_id,
-        reason="user_cancelled",
-    ))
-    assert cancelled["status"] == "cancelled"
-    assert service._emit_graph_run_state_event(
-        row=stale_row,
-        status="running",
-        transition="retry_failed_branch",
-        retry_of_graph_run_id=graph_run_id,
-    ) is False
+    with pytest.raises(CreativeCanvasGraphConflict, match="does not match"):
+        service.apply_remote_terminal_reconciliation({**report, "jobId": "stale-job"})
+    assert service.get_run(session_id="session-a", graph_run_id=graph_run_id)["recovery"]["canRetry"] is False
+
+    applied = service.apply_remote_terminal_reconciliation(report)
+    assert applied["status"] == "applied"
+    recovered = service.get_run(session_id="session-a", graph_run_id=graph_run_id)
+    assert recovered["recovery"]["canRetry"] is True
+    reconciled_state = recovered["nodeStates"][current_node_id]
+    assert reconciled_state["providerCancellationRemoteTaskMayContinue"] is False
+    assert reconciled_state["remoteTerminalProof"] == {
+        "schema": "v8.creative_media_remote_terminal_proof.v1",
+        "source": "provider_status_api",
+        "providerStatus": "cancelled",
+        "observedAt": "2026-08-16T00:00:00Z",
+    }
+    assert "providerHandle" not in reconciled_state["remoteTerminalProof"]
+    events = _canvas_graph_run_state_events(database)
     assert [event["payload"]["status"] for event in _canvas_graph_run_state_events(database)] == [
         "queued",
         "running",
         "failed",
-        "running",
-        "cancelling",
-        "cancelled",
+        "failed",
     ]
+    assert events[-1]["payload"]["transition"] == "remote_terminal_reconciled"
+    assert events[-1]["payload"]["recovery"] == {"canRetry": True, "mode": "failed_branch"}
+
+    with database.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_remote_terminal_receipts WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0] == 1
+
+    claim = service.claim_failed_retry(session_id="session-a", graph_run_id=graph_run_id)
+    assert claim["run"]["status"] == "running"
+    event_count_after_claim = len(_canvas_graph_run_state_events(database))
+    assert service.apply_remote_terminal_reconciliation(report)["status"] == "already_applied"
+    assert service.get_run(session_id="session-a", graph_run_id=graph_run_id)["status"] == "running"
+    assert len(_canvas_graph_run_state_events(database)) == event_count_after_claim
+
+    with database.get_connection() as conn:
+        outbox_before_delete = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM creative_canvas_graph_runs WHERE graph_run_id = ?", (graph_run_id,))
+        conn.commit()
+        receipt_after_delete = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_remote_terminal_receipts WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+        outbox_after_delete = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+    assert outbox_before_delete > 0
+    assert receipt_after_delete == 0
+    assert outbox_after_delete == 0
 
 
-def test_guarded_event_append_cannot_publish_retry_running_after_cancel(
+def test_remote_terminal_reconciliation_rolls_back_state_receipt_and_outbox(
+    canvas_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_chain_graph("source-a"),
+        expected_revision=0,
+    )
+    failed = asyncio.run(service.execute_as_creative_job(_BranchRetryRuntime(database), {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "sessionId": "session-a",
+        "graphId": saved["graph"]["graphId"],
+        "graphRevision": saved["revision"],
+        "canvasOperationId": "canvas-op-remote-terminal-rollback",
+        "targetNodeIds": ["result-b"],
+    }))
+    graph_run_id = str(failed["canvasGraphRunId"])
+    with database.get_connection() as conn:
+        row = dict(conn.execute(
+            "SELECT * FROM creative_canvas_graph_runs WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone())
+    node_states = dict(graph_module._json(row["node_states_json"], {}))
+    current_node_id = str(row["current_node_id"] or "")
+    current_state = dict(node_states[current_node_id])
+    current_state.update({
+        "recoverable": False,
+        "providerCancellationRemoteTaskMayContinue": True,
+    })
+    node_states[current_node_id] = current_state
+    before_node_states_json = graph_module.json.dumps(node_states)
+    with database.get_connection() as conn:
+        conn.execute(
+            "UPDATE creative_canvas_graph_runs SET node_states_json = ? WHERE graph_run_id = ?",
+            (before_node_states_json, graph_run_id),
+        )
+        before_outbox_count = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+        conn.commit()
+
+    job_id = str(current_state["jobId"])
+    report = {
+        "status": "resolved",
+        "sessionId": "session-a",
+        "jobId": job_id,
+        "canvasGraphRunId": graph_run_id,
+        "canvasGraphNodeId": current_node_id,
+        "remoteTaskMayContinue": False,
+        "terminalProof": {
+            "schema": "v8.creative_media_remote_terminal_proof.v1",
+            "source": "provider_status_api",
+            "providerHandle": {"providerId": "provider-a", "taskId": "remote-secret-id"},
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "observedAt": "2026-08-16T00:00:00Z",
+        },
+    }
+
+    def fail_enqueue(*_args, **_kwargs) -> None:
+        raise RuntimeError("simulated reconciliation outbox failure")
+
+    monkeypatch.setattr(database, "enqueue_canvas_graph_run_event_outbox", fail_enqueue)
+    with pytest.raises(RuntimeError, match="simulated reconciliation outbox failure"):
+        service.apply_remote_terminal_reconciliation(report)
+
+    with database.get_connection() as conn:
+        after = conn.execute(
+            "SELECT node_states_json, error_message, updated_at FROM creative_canvas_graph_runs WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()
+        receipt_count = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_remote_terminal_receipts WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+        outbox_count = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+    assert after["node_states_json"] == before_node_states_json
+    assert after["error_message"] == row["error_message"]
+    assert after["updated_at"] == row["updated_at"]
+    assert receipt_count == 0
+    assert outbox_count == before_outbox_count
+
+
+def test_outbox_projection_preserves_retry_then_cancel_order_when_first_drain_is_delayed(
     canvas_service,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1110,16 +1340,25 @@ def test_guarded_event_append_cannot_publish_retry_running_after_cancel(
     graph_run_id = str(failed["canvasGraphRunId"])
     append_started = Event()
     release_append = Event()
-    original_append = database.add_runtime_event_if_current
+    delay_claim_lock = Lock()
+    delay_claimed = False
+    original_project = database.project_canvas_graph_run_event_outbox
 
-    def delayed_append(event: dict, **guard) -> bool:
+    def delayed_project(event: dict, *, outbox_id: str) -> bool:
+        nonlocal delay_claimed
         payload = dict(event.get("payload") or {})
+        should_delay = False
         if payload.get("transition") == "retry_failed_branch":
+            with delay_claim_lock:
+                if not delay_claimed:
+                    delay_claimed = True
+                    should_delay = True
+        if should_delay:
             append_started.set()
             assert release_append.wait(timeout=5)
-        return original_append(event, **guard)
+        return original_project(event, outbox_id=outbox_id)
 
-    monkeypatch.setattr(database, "add_runtime_event_if_current", delayed_append)
+    monkeypatch.setattr(database, "project_canvas_graph_run_event_outbox", delayed_project)
     with ThreadPoolExecutor(max_workers=2) as executor:
         claimed_future = executor.submit(
             service.claim_failed_retry,
@@ -1137,23 +1376,173 @@ def test_guarded_event_append_cannot_publish_retry_running_after_cancel(
             ),
         )
         deadline = time.monotonic() + 5
-        while service._run_status(graph_run_id=graph_run_id) != "cancelling":
+        while True:
+            observed_statuses = [
+                event["payload"]["status"] for event in _canvas_graph_run_state_events(database)
+            ]
+            if service._run_status(graph_run_id=graph_run_id) == "cancelled" and observed_statuses[-1:] == ["cancelled"]:
+                break
             if time.monotonic() >= deadline:
-                raise AssertionError("cancellation did not commit before the delayed event append")
+                raise AssertionError("cancellation did not finish while the original retry projection was delayed")
             time.sleep(0.01)
+        statuses_before_release = observed_statuses
+        assert statuses_before_release[-3:] == ["running", "cancelling", "cancelled"]
         release_append.set()
         claim = claimed_future.result(timeout=5)
         cancelled = cancelled_future.result(timeout=5)
 
     assert claim["run"]["status"] == "running"
     assert cancelled["status"] == "cancelled"
-    assert [event["payload"]["status"] for event in _canvas_graph_run_state_events(database)] == [
+    ordered_events = _canvas_graph_run_state_events(database)
+    assert [event["payload"]["status"] for event in ordered_events] == [
         "queued",
         "running",
         "failed",
+        "running",
         "cancelling",
         "cancelled",
     ]
+    event_sequences = [int(event["seq"]) for event in ordered_events]
+    assert event_sequences == sorted(event_sequences)
+    assert len(set(event_sequences)) == len(event_sequences)
+
+
+def test_canvas_run_state_rolls_back_when_outbox_intent_cannot_be_written(
+    canvas_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Atomic transition"),
+        expected_revision=0,
+    )
+    now = "2026-08-16T00:00:00Z"
+    with database.get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO creative_canvas_graph_runs(
+                graph_run_id, graph_id, session_id, canvas_operation_id, graph_revision,
+                target_node_ids_json, plan_json, node_states_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, '[]', '{}', '{}', 'queued', ?, ?)
+            """,
+            ("canvas-run-atomic", saved["graph"]["graphId"], "session-a", "canvas-op-atomic", 1, now, now),
+        )
+        conn.commit()
+
+    def fail_enqueue(*_args, **_kwargs):
+        raise RuntimeError("simulated outbox write failure")
+
+    monkeypatch.setattr(database, "enqueue_canvas_graph_run_event_outbox", fail_enqueue)
+    with pytest.raises(RuntimeError, match="simulated outbox write failure"):
+        service._write_run_state(
+            graph_run_id="canvas-run-atomic",
+            status="running",
+            node_states={},
+            expected_statuses={"queued"},
+        )
+
+    with database.get_connection() as conn:
+        row = conn.execute(
+            "SELECT status, updated_at FROM creative_canvas_graph_runs WHERE graph_run_id = ?",
+            ("canvas-run-atomic",),
+        ).fetchone()
+        outbox_count = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            ("canvas-run-atomic",),
+        ).fetchone()[0]
+    assert dict(row) == {"status": "queued", "updated_at": now}
+    assert outbox_count == 0
+
+
+def test_restart_repairs_unprojected_canvas_events_once_in_commit_order(
+    canvas_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Repair after restart"),
+        expected_revision=0,
+    )
+    original_project = database.project_canvas_graph_run_event_outbox
+    monkeypatch.setattr(database, "project_canvas_graph_run_event_outbox", lambda *_args, **_kwargs: False)
+
+    job = asyncio.run(service.execute_as_creative_job(_FakeCreativeRuntime(database), {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "sessionId": "session-a",
+        "graphId": saved["graph"]["graphId"],
+        "graphRevision": saved["revision"],
+        "canvasOperationId": "canvas-op-repair",
+        "targetNodeIds": ["result-node"],
+    }))
+    assert job["status"] == "succeeded"
+    assert _canvas_graph_run_state_events(database) == []
+    assert len(database.list_pending_canvas_graph_run_event_outbox()) == 3
+    deferred_repair = service.repair_graph_run_state_outbox()
+    assert deferred_repair == {"projectedEvents": 0, "failedEvents": 0, "pendingEvents": 3}
+    with database.get_connection() as conn:
+        attempts = conn.execute(
+            """
+            SELECT attempt_count, next_attempt_at
+            FROM creative_canvas_graph_run_event_outbox
+            WHERE projected_at IS NULL
+            ORDER BY outbox_sequence
+            """
+        ).fetchall()
+    assert [int(row["attempt_count"]) for row in attempts] == [1, 0, 0]
+    assert attempts[0]["next_attempt_at"]
+
+    monkeypatch.setattr(database, "project_canvas_graph_run_event_outbox", original_project)
+    with database.get_connection() as conn:
+        conn.execute(
+            "UPDATE creative_canvas_graph_run_event_outbox SET next_attempt_at = NULL WHERE projected_at IS NULL"
+        )
+        conn.commit()
+    restarted_service = CreativeCanvasGraphService()
+    first_repair = restarted_service.repair_graph_run_state_outbox()
+    second_repair = restarted_service.repair_graph_run_state_outbox()
+
+    events = _canvas_graph_run_state_events(database)
+    assert first_repair == {"projectedEvents": 3, "failedEvents": 0, "pendingEvents": 0}
+    assert second_repair == {"projectedEvents": 0, "failedEvents": 0, "pendingEvents": 0}
+    assert [event["payload"]["status"] for event in events] == ["queued", "running", "completed"]
+    assert [event["seq"] for event in events] == [1, 2, 3]
+    assert len({event["id"] for event in events}) == 3
+
+
+def test_canvas_outbox_rows_follow_graph_run_retention_delete(canvas_service) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_graph("source-a", prompt="Retention cascade"),
+        expected_revision=0,
+    )
+    job = asyncio.run(service.execute_as_creative_job(_FakeCreativeRuntime(database), {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "sessionId": "session-a",
+        "graphId": saved["graph"]["graphId"],
+        "graphRevision": saved["revision"],
+        "canvasOperationId": "canvas-op-retention",
+        "targetNodeIds": ["result-node"],
+    }))
+    graph_run_id = str(job["canvasGraphRunId"])
+    with database.get_connection() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM creative_canvas_graph_runs WHERE graph_run_id = ?", (graph_run_id,))
+        conn.commit()
+        after = conn.execute(
+            "SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox WHERE graph_run_id = ?",
+            (graph_run_id,),
+        ).fetchone()[0]
+
+    assert before == 3
+    assert after == 0
 
 
 def test_explicit_cancel_owns_slow_provider_lifecycle_and_outer_job_finishes(
@@ -1303,7 +1692,16 @@ def test_startup_reconciliation_marks_orphaned_runs_interrupted_and_retryable(ca
         conn.commit()
 
     result = service.reconcile_startup()
-    assert result == {"interruptedRuns": 1, "interruptedNodes": 1}
+    assert result == {
+        "interruptedRuns": 1,
+        "interruptedNodes": 1,
+        "remoteReconcileCandidates": [{
+            "sessionId": "session-a",
+            "graphRunId": "canvas-run-orphan",
+            "nodeId": "action-b",
+            "jobId": "provider-orphan",
+        }],
+    }
     run = service.get_run(session_id="session-a", graph_run_id="canvas-run-orphan")
     assert run["status"] == "interrupted"
     assert run["error"]["code"] == "engine_restart_provider_task_unknown"
@@ -1391,6 +1789,59 @@ def test_retry_failed_branch_reuses_run_operation_and_paid_ancestor(canvas_servi
     assert events[2]["payload"]["recovery"] == {"canRetry": True, "mode": "failed_branch"}
     assert events[3]["payload"]["transition"] == "retry_failed_branch"
     assert events[3]["payload"]["retryOfGraphRunId"] == failed_run_id
+
+
+def test_governed_local_terminal_proof_unlocks_failed_branch_retry(canvas_service) -> None:
+    service, database = canvas_service
+    saved = service.save_graph(
+        session_id="session-a",
+        graph=_chain_graph("source-a"),
+        expected_revision=0,
+    )
+
+    class LocalBranchRetryRuntime(_BranchRetryRuntime):
+        async def cancel_job(self, job_id: str) -> dict:
+            return {
+                "status": "not_active",
+                "detailCode": "governed_local_job_already_terminal",
+                "remoteTaskMayContinue": False,
+                "providerHandle": {},
+                "terminalProof": {
+                    "schema": "v8.creative_media_local_terminal_proof.v1",
+                    "jobId": job_id,
+                    "status": "failed",
+                    "source": "governed_local_job_state",
+                    "observedAt": "2026-08-16T00:00:00Z",
+                },
+            }
+
+    runtime = LocalBranchRetryRuntime(database)
+    request = {
+        "modality": "workflow",
+        "operationKind": "canvas.graph.execute",
+        "sessionId": "session-a",
+        "graphId": saved["graph"]["graphId"],
+        "graphRevision": saved["revision"],
+        "canvasOperationId": "canvas-op-local-retry",
+        "targetNodeIds": ["result-b"],
+    }
+
+    failed = asyncio.run(service.execute_as_creative_job(runtime, request))
+    failed_run = service.get_run(
+        session_id="session-a",
+        graph_run_id=str(failed["canvasGraphRunId"]),
+    )
+    failed_state = failed_run["nodeStates"]["action-b"]
+    assert failed_run["recovery"]["canRetry"] is True
+    assert failed_state["providerCancellationRemoteTaskMayContinue"] is False
+    assert failed_state["providerCancellationLocalTerminalProof"]["status"] == "failed"
+
+    retried = asyncio.run(service.execute_as_creative_job(runtime, {
+        **request,
+        "retryGraphRunId": failed["canvasGraphRunId"],
+    }))
+    assert retried["status"] == "succeeded"
+    assert runtime.node_attempts == {"action-a": 1, "action-b": 2}
 
 
 def test_failed_branch_retry_claim_is_atomic_across_service_instances(canvas_service) -> None:

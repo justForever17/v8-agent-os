@@ -291,6 +291,38 @@ class RuntimeProjectionContractTests(unittest.TestCase):
 
         self.assertEqual(project_runtime_timeline_from_events(events), [])
 
+    def test_canvas_remote_terminal_reconciliation_projects_retry_recovery(self):
+        event = {
+            "event_id": "evt_canvas_remote_terminal",
+            "session_id": "session-a",
+            "run_id": None,
+            "seq": 7,
+            "topic": "canvas.graph.run.state",
+            "payload": {
+                "schema": "v8.creative_canvas_graph_run_state.v1",
+                "sessionId": "session-a",
+                "workspaceId": "workspace-a",
+                "graphId": "graph-a",
+                "graphRunId": "graph-run-a",
+                "canvasOperationId": "canvas-op-a",
+                "runId": None,
+                "status": "failed",
+                "transition": "remote_terminal_reconciled",
+                "recovery": {"canRetry": True, "mode": "failed_branch"},
+            },
+            "source": {"component": "creative_canvas_graph"},
+        }
+
+        timeline = project_runtime_timeline_from_events([event])
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["status"], "failed")
+        self.assertEqual(timeline[0]["metadata"]["transition"], "remote_terminal_reconciled")
+        self.assertEqual(
+            timeline[0]["metadata"]["recovery"],
+            {"canRetry": True, "mode": "failed_branch"},
+        )
+
     def test_canvas_graph_run_state_survives_compact_reload_window(self):
         events = [
             {

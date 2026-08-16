@@ -25,6 +25,8 @@ GRAPH_VERSION = 3
 TEMPLATE_SCHEMA = "v8.creative_canvas_template.v1"
 CANVAS_GRAPH_RUN_STATE_TOPIC = "canvas.graph.run.state"
 CANVAS_GRAPH_RUN_STATE_SCHEMA = "v8.creative_canvas_graph_run_state.v1"
+REMOTE_TERMINAL_PROOF_SCHEMA = "v8.creative_media_remote_terminal_proof.v1"
+LOCAL_TERMINAL_PROOF_SCHEMA = "v8.creative_media_local_terminal_proof.v1"
 MAX_GRAPH_NODES = 160
 MAX_GRAPH_EDGES = 320
 MAX_TEMPLATE_TITLE = 80
@@ -993,11 +995,12 @@ class CreativeCanvasGraphService:
             raise CreativeCanvasGraphError("Canvas graph run is not bound to the current session")
         return self._project_run(dict(row))
 
-    def reconcile_startup(self) -> dict[str, int]:
+    def reconcile_startup(self) -> dict[str, Any]:
+        self.repair_graph_run_state_outbox(limit=2048)
         now = _utc_now()
         interrupted_runs = 0
         interrupted_nodes = 0
-        interrupted_event_rows: list[dict[str, Any]] = []
+        remote_reconcile_candidates: list[dict[str, str]] = []
         with db.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -1017,6 +1020,14 @@ class CreativeCanvasGraphService:
                         or str(state.get("providerTaskId") or "").strip()
                         or _record(state.get("providerHandle"))
                     )
+                    job_id = str(state.get("jobId") or "").strip()
+                    if job_id:
+                        remote_reconcile_candidates.append({
+                            "sessionId": str(row.get("session_id") or "").strip(),
+                            "graphRunId": str(row.get("graph_run_id") or "").strip(),
+                            "nodeId": str(node_id),
+                            "jobId": job_id,
+                        })
                     remote_task_uncertain = remote_task_uncertain or has_provider_handle
                     states[node_id] = {
                         **state,
@@ -1042,7 +1053,7 @@ class CreativeCanvasGraphService:
                     if remote_task_uncertain
                     else "Engine restarted before the Canvas graph run reached a terminal state"
                 )
-                conn.execute(
+                updated = conn.execute(
                     """
                     UPDATE creative_canvas_graph_runs
                     SET status = 'interrupted', node_states_json = ?, current_node_id = NULL,
@@ -1057,7 +1068,9 @@ class CreativeCanvasGraphService:
                         row["graph_run_id"],
                     ),
                 )
-                interrupted_event_rows.append({
+                if updated.rowcount != 1:
+                    continue
+                committed_row = {
                     **row,
                     "status": "interrupted",
                     "node_states_json": json.dumps(states, ensure_ascii=False),
@@ -1065,12 +1078,208 @@ class CreativeCanvasGraphService:
                     "error_message": error_message,
                     "updated_at": now,
                     "completed_at": now,
-                })
+                }
+                self._enqueue_graph_run_state_event(
+                    conn,
+                    row=committed_row,
+                    status="interrupted",
+                )
                 interrupted_runs += 1
             conn.commit()
-        for row in interrupted_event_rows:
-            self._emit_graph_run_state_event(row=row, status="interrupted")
-        return {"interruptedRuns": interrupted_runs, "interruptedNodes": interrupted_nodes}
+        self.repair_graph_run_state_outbox(limit=2048)
+        return {
+            "interruptedRuns": interrupted_runs,
+            "interruptedNodes": interrupted_nodes,
+            "remoteReconcileCandidates": remote_reconcile_candidates,
+        }
+
+    def apply_remote_terminal_reconciliation(self, report: dict[str, Any]) -> dict[str, Any]:
+        terminal_proof = _record(report.get("terminalProof"))
+        provider_status = str(terminal_proof.get("providerStatus") or "").strip().lower()
+        if (
+            str(report.get("status") or "").strip().lower() != "resolved"
+            or report.get("remoteTaskMayContinue") is not False
+            or str(terminal_proof.get("schema") or "").strip() != REMOTE_TERMINAL_PROOF_SCHEMA
+            or provider_status not in {"cancelled", "failed", "succeeded"}
+        ):
+            raise CreativeCanvasGraphConflict("Remote media task does not have a verified terminal proof")
+
+        session_id = _clean_id(report.get("sessionId"), label="Remote reconciliation session id")
+        graph_run_id = _clean_id(report.get("canvasGraphRunId"), label="Remote reconciliation graph run id")
+        node_id = _clean_id(report.get("canvasGraphNodeId"), label="Remote reconciliation node id")
+        job_id = _clean_id(report.get("jobId"), label="Remote reconciliation job id")
+        authority = self._authority(session_id, require_write=True)
+        reported_workspace_id = str(report.get("workspaceId") or "").strip()
+        if reported_workspace_id and reported_workspace_id != str(authority.workspace_id or "").strip():
+            raise CreativeCanvasGraphConflict("Remote terminal proof workspace does not match the current session")
+        observed_at = _clean_text(terminal_proof.get("observedAt"), limit=64)
+        if not observed_at:
+            raise CreativeCanvasGraphConflict("Remote terminal proof has no observation timestamp")
+        canonical_proof = {
+            "schema": REMOTE_TERMINAL_PROOF_SCHEMA,
+            "source": _clean_text(terminal_proof.get("source"), limit=80),
+            "providerHandle": _record(terminal_proof.get("providerHandle")),
+            "providerStatus": provider_status,
+            "providerStatusRaw": _clean_text(terminal_proof.get("providerStatusRaw"), limit=120),
+            "observedAt": observed_at,
+        }
+        proof_digest = _digest(canonical_proof)
+        projected_proof = {
+            "schema": REMOTE_TERMINAL_PROOF_SCHEMA,
+            "source": canonical_proof["source"],
+            "providerStatus": provider_status,
+            "observedAt": observed_at,
+        }
+        now = _utc_now()
+        committed_row: dict[str, Any] | None = None
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            raw_row = conn.execute(
+                """
+                SELECT * FROM creative_canvas_graph_runs
+                WHERE graph_run_id = ? AND session_id = ? LIMIT 1
+                """,
+                (graph_run_id, session_id),
+            ).fetchone()
+            if not raw_row:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Remote terminal proof is not bound to the current Canvas run")
+            row = dict(raw_row)
+            status = str(row.get("status") or "").strip().lower()
+            graph_row = conn.execute(
+                "SELECT workspace_key FROM creative_canvas_graphs WHERE graph_id = ? AND session_id = ? LIMIT 1",
+                (str(row.get("graph_id") or ""), session_id),
+            ).fetchone()
+            if not graph_row or str(graph_row["workspace_key"] or "") != self._workspace_key(authority):
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas graph workspace authority changed before reconciliation")
+            receipt_row = conn.execute(
+                """
+                SELECT session_id, graph_run_id, node_id
+                FROM creative_canvas_graph_remote_terminal_receipts
+                WHERE job_id = ? AND proof_digest = ? LIMIT 1
+                """,
+                (job_id, proof_digest),
+            ).fetchone()
+            if receipt_row:
+                receipt_binding = (
+                    str(receipt_row["session_id"] or ""),
+                    str(receipt_row["graph_run_id"] or ""),
+                    str(receipt_row["node_id"] or ""),
+                )
+                if receipt_binding != (session_id, graph_run_id, node_id):
+                    conn.rollback()
+                    raise CreativeCanvasGraphConflict(
+                        "Remote terminal proof receipt is not bound to the current Canvas node"
+                    )
+                conn.rollback()
+                return {
+                    "status": "already_applied",
+                    "sessionId": session_id,
+                    "graphRunId": graph_run_id,
+                    "nodeId": node_id,
+                    "jobId": job_id,
+                    "proofDigest": proof_digest,
+                }
+            if status not in {"failed", "interrupted", "cancelled"}:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas run is not awaiting remote terminal reconciliation")
+            node_states = _record(_json(row.get("node_states_json"), {}))
+            state = _record(node_states.get(node_id))
+            if str(state.get("jobId") or "").strip() != job_id:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Remote terminal proof does not match the current Canvas node job")
+            if (
+                state.get("providerCancellationRemoteTaskMayContinue") is False
+                and str(state.get("remoteTerminalProofDigest") or "") == proof_digest
+            ):
+                conn.rollback()
+                return {
+                    "status": "already_applied",
+                    "sessionId": session_id,
+                    "graphRunId": graph_run_id,
+                    "nodeId": node_id,
+                    "jobId": job_id,
+                    "proofDigest": proof_digest,
+                }
+            if state.get("providerCancellationRemoteTaskMayContinue") is not True:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas node is not awaiting remote terminal reconciliation")
+
+            cleanup_failed = str(state.get("providerCleanup") or "").strip().lower() == "failed"
+            state.update({
+                "providerCancellationRemoteTaskMayContinue": False,
+                # Provider task ids stay in the Creative Media Runtime Surface.
+                # Canvas persists only a proof summary and its integrity digest.
+                "remoteTerminalProof": projected_proof,
+                "remoteTerminalProofDigest": proof_digest,
+                "remoteReconciledAt": now,
+                "remoteProviderStatus": provider_status,
+                "recoverable": status in RETRYABLE_GRAPH_STATES and not cleanup_failed,
+            })
+            node_states[node_id] = state
+            error_message = str(row.get("error_message") or "")
+            if status == "interrupted" and not cleanup_failed:
+                error_message = "The interrupted media task reached a verified terminal state and can be retried"
+            updated = conn.execute(
+                """
+                UPDATE creative_canvas_graph_runs
+                SET node_states_json = ?, error_message = ?, updated_at = ?
+                WHERE graph_run_id = ? AND session_id = ? AND status = ? AND updated_at = ?
+                """,
+                (
+                    json.dumps(node_states, ensure_ascii=False),
+                    error_message or None,
+                    now,
+                    graph_run_id,
+                    session_id,
+                    status,
+                    row.get("updated_at"),
+                ),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas run changed before remote reconciliation was applied")
+            committed_row = {
+                **row,
+                "node_states_json": json.dumps(node_states, ensure_ascii=False),
+                "error_message": error_message or None,
+                "updated_at": now,
+            }
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_graph_remote_terminal_receipts(
+                    job_id, proof_digest, session_id, graph_run_id, node_id,
+                    provider_status, observed_at, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    proof_digest,
+                    session_id,
+                    graph_run_id,
+                    node_id,
+                    provider_status,
+                    observed_at,
+                    now,
+                ),
+            )
+            self._enqueue_graph_run_state_event(
+                conn,
+                row=committed_row,
+                status=status,
+                transition="remote_terminal_reconciled",
+            )
+            conn.commit()
+        self.repair_graph_run_state_outbox()
+        return {
+            "status": "applied",
+            "sessionId": session_id,
+            "graphRunId": graph_run_id,
+            "nodeId": node_id,
+            "jobId": job_id,
+            "proofDigest": proof_digest,
+        }
 
     @staticmethod
     def _history_rows(conn: Any, *, graph_id: str) -> list[dict[str, Any]]:
@@ -1754,135 +1963,163 @@ class CreativeCanvasGraphService:
     def _public_graph_run_status(status: str) -> str:
         return GRAPH_RUN_PUBLIC_STATUS_BY_INTERNAL.get(str(status or "").strip().lower(), "")
 
-    def _emit_graph_run_state_event(
+    def _graph_run_state_event_payload(
         self,
         *,
         row: dict[str, Any],
         status: str,
         transition: str = "",
         retry_of_graph_run_id: str = "",
-    ) -> bool:
+    ) -> dict[str, Any]:
         public_status = self._public_graph_run_status(status)
         if not public_status:
             raise CreativeCanvasGraphError(f"Canvas graph run realtime status is unsupported: {status or 'unknown'}")
         normalized_transition = str(transition or "").strip()
         normalized_retry_id = str(retry_of_graph_run_id or "").strip()
-        if normalized_transition not in {"", "retry_failed_branch"}:
+        if normalized_transition not in {"", "retry_failed_branch", "remote_terminal_reconciled"}:
             raise CreativeCanvasGraphError(f"Canvas graph run realtime transition is unsupported: {normalized_transition}")
         if normalized_transition == "retry_failed_branch" and not normalized_retry_id:
             raise CreativeCanvasGraphError("Canvas failed-branch retry realtime event requires its original graph run id")
 
         session_id = str(row.get("session_id") or "").strip()
         graph_id = str(row.get("graph_id") or "").strip()
-        graph_run_id = str(row.get("graph_run_id") or "").strip()
-        canvas_operation_id = str(row.get("canvas_operation_id") or "").strip()
-        try:
-            expected_updated_at = str(row.get("updated_at") or "").strip()
-            with db.get_connection() as conn:
-                current = conn.execute(
-                    """
-                    SELECT status, updated_at
-                    FROM creative_canvas_graph_runs
-                    WHERE graph_run_id = ? AND session_id = ? LIMIT 1
-                    """,
-                    (graph_run_id, session_id),
-                ).fetchone()
-            current_status = str((current or {})["status"] or "") if current else ""
-            current_updated_at = str((current or {})["updated_at"] or "") if current else ""
-            if (
-                not current
-                or self._public_graph_run_status(current_status) != public_status
-                or (expected_updated_at and current_updated_at != expected_updated_at)
-            ):
-                logger.warning(
-                    "Skipped stale Canvas graph run realtime state "
-                    "(session=%s graph_run=%s requested=%s current=%s expected_updated_at=%s current_updated_at=%s)",
-                    session_id,
-                    graph_run_id,
-                    public_status,
-                    self._public_graph_run_status(current_status) or current_status or "missing",
-                    expected_updated_at or "missing",
-                    current_updated_at or "missing",
-                )
-                return False
-            authority = self._authority(session_id)
-            self._assert_graph_workspace_authority(
-                session_id=session_id,
-                graph_id=graph_id,
-                authority=authority,
-            )
-            workspace_id = str(authority.workspace_id or "").strip()
-            if not workspace_id:
-                raise CreativeCanvasGraphError("Current session workspace id is unavailable for Canvas realtime state")
-            payload: dict[str, Any] = {
-                "schema": CANVAS_GRAPH_RUN_STATE_SCHEMA,
-                "sessionId": session_id,
-                "workspaceId": workspace_id,
-                "graphId": graph_id,
-                "graphRunId": graph_run_id,
-                "canvasOperationId": canvas_operation_id,
-                "runId": str(row.get("chat_run_id") or "").strip() or None,
-                "status": public_status,
+        authority = self._authority(session_id)
+        self._assert_graph_workspace_authority(
+            session_id=session_id,
+            graph_id=graph_id,
+            authority=authority,
+        )
+        workspace_id = str(authority.workspace_id or "").strip()
+        if not workspace_id:
+            raise CreativeCanvasGraphError("Current session workspace id is unavailable for Canvas realtime state")
+        payload: dict[str, Any] = {
+            "schema": CANVAS_GRAPH_RUN_STATE_SCHEMA,
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "graphId": graph_id,
+            "graphRunId": str(row.get("graph_run_id") or "").strip(),
+            "canvasOperationId": str(row.get("canvas_operation_id") or "").strip(),
+            "runId": str(row.get("chat_run_id") or "").strip() or None,
+            "status": public_status,
+        }
+        if public_status in {"failed", "interrupted"}:
+            node_states = _record(_json(row.get("node_states_json"), {}))
+            retry_state = self._retry_state(node_states, str(row.get("current_node_id") or ""))
+            remote_task_may_continue = bool(retry_state.get("providerCancellationRemoteTaskMayContinue"))
+            can_retry = retry_state.get("recoverable") is not False and not remote_task_may_continue
+            payload["recovery"] = {
+                "canRetry": can_retry,
+                "mode": "failed_branch" if can_retry else None,
             }
-            if public_status in {"failed", "interrupted"}:
-                node_states = _record(_json(row.get("node_states_json"), {}))
-                current_state = _record(node_states.get(str(row.get("current_node_id") or "")))
-                retry_state = self._retry_state(node_states, str(row.get("current_node_id") or ""))
-                remote_task_may_continue = bool(retry_state.get("providerCancellationRemoteTaskMayContinue"))
-                can_retry = (
-                    retry_state.get("recoverable") is not False
-                    and not remote_task_may_continue
+        if normalized_transition:
+            payload["transition"] = normalized_transition
+        if normalized_retry_id:
+            payload["retryOfGraphRunId"] = normalized_retry_id
+        return payload
+
+    def _enqueue_graph_run_state_event(
+        self,
+        conn: Any,
+        *,
+        row: dict[str, Any],
+        status: str,
+        transition: str = "",
+        retry_of_graph_run_id: str = "",
+    ) -> None:
+        public_status = self._public_graph_run_status(status)
+        if not public_status:
+            raise CreativeCanvasGraphError(f"Canvas graph run realtime status is unsupported: {status or 'unknown'}")
+        normalized_transition = str(transition or "").strip()
+        normalized_retry_id = str(retry_of_graph_run_id or "").strip()
+        if normalized_transition not in {"", "retry_failed_branch", "remote_terminal_reconciled"}:
+            raise CreativeCanvasGraphError(f"Canvas graph run realtime transition is unsupported: {normalized_transition}")
+        if normalized_transition == "retry_failed_branch" and not normalized_retry_id:
+            raise CreativeCanvasGraphError("Canvas failed-branch retry realtime event requires its original graph run id")
+        db.enqueue_canvas_graph_run_event_outbox(
+            conn,
+            run_row=row,
+            expected_status=str(status or "").strip().lower(),
+            transition=normalized_transition,
+            retry_of_graph_run_id=normalized_retry_id,
+        )
+
+    def repair_graph_run_state_outbox(self, *, limit: int = 256) -> dict[str, int]:
+        projected = 0
+        failed = 0
+        blocked_sessions: set[str] = set()
+        now = datetime.now(timezone.utc)
+        pending = db.list_pending_canvas_graph_run_event_outbox(limit=limit)
+        for intent in pending:
+            session_id = str(intent.get("session_id") or "").strip()
+            if session_id in blocked_sessions:
+                continue
+            next_attempt_at = str(intent.get("next_attempt_at") or "").strip()
+            if next_attempt_at:
+                try:
+                    next_attempt = datetime.fromisoformat(next_attempt_at.replace("Z", "+00:00"))
+                except ValueError:
+                    next_attempt = None
+                if next_attempt and next_attempt.tzinfo is None:
+                    next_attempt = next_attempt.replace(tzinfo=timezone.utc)
+                if next_attempt and next_attempt > now:
+                    blocked_sessions.add(session_id)
+                    continue
+            outbox_id = str(intent.get("outbox_id") or "").strip()
+            try:
+                row = _record(_json(intent.get("run_row_json"), {}))
+                status = str(intent.get("expected_status") or "").strip().lower()
+                transition = str(intent.get("transition") or "").strip()
+                retry_of_graph_run_id = str(intent.get("retry_of_graph_run_id") or "").strip()
+                payload = self._graph_run_state_event_payload(
+                    row=row,
+                    status=status,
+                    transition=transition,
+                    retry_of_graph_run_id=retry_of_graph_run_id,
                 )
-                payload["recovery"] = {
-                    "canRetry": can_retry,
-                    "mode": "failed_branch" if can_retry else None,
-                }
-            if normalized_transition:
-                payload["transition"] = normalized_transition
-            if normalized_retry_id:
-                payload["retryOfGraphRunId"] = normalized_retry_id
-            emitter = event_bus.create_emitter(
-                session_id=session_id,
-                conversation_id=session_id,
-                run_id=payload["runId"],
-                source=RuntimeSource(
-                    plane="engine",
-                    component="creative_canvas_graph",
-                    node="graph_run_state",
-                    agent_id=None,
-                ),
-            )
-            emitted = emitter.emit(
-                CANVAS_GRAPH_RUN_STATE_TOPIC,
-                payload,
-                canvas_run_guard={
-                    "graphRunId": graph_run_id,
-                    "status": str(status or "").strip().lower(),
-                    "updatedAt": expected_updated_at,
-                },
-            )
-            if emitted is None:
-                logger.warning(
-                    "Skipped stale Canvas graph run realtime state at guarded append "
-                    "(session=%s graph_run=%s status=%s updated_at=%s)",
+                emitter = event_bus.create_emitter(
+                    session_id=session_id,
+                    conversation_id=session_id,
+                    run_id=payload["runId"],
+                    source=RuntimeSource(
+                        plane="engine",
+                        component="creative_canvas_graph",
+                        node="graph_run_state",
+                        agent_id=None,
+                    ),
+                )
+                emitted = emitter.emit(
+                    CANVAS_GRAPH_RUN_STATE_TOPIC,
+                    payload,
+                    canvas_outbox_id=outbox_id,
+                    event_id=str(intent.get("event_id") or "").strip(),
+                    event_ts=str(intent.get("expected_updated_at") or "").strip(),
+                )
+                if emitted is None:
+                    raise CreativeCanvasGraphError("Canvas graph outbox projection was not accepted")
+                projected += 1
+            except Exception as exc:
+                failed += 1
+                blocked_sessions.add(session_id)
+                db.record_canvas_graph_run_event_outbox_failure(outbox_id, str(exc))
+                log_message = (
+                    "Canvas graph run event outbox projection failed "
+                    "(outbox=%s session=%s graph_run=%s status=%s)"
+                )
+                log_args = (
+                    outbox_id,
                     session_id,
-                    graph_run_id,
-                    public_status,
-                    expected_updated_at,
+                    str(intent.get("graph_run_id") or ""),
+                    str(intent.get("expected_status") or ""),
                 )
-                return False
-            return True
-        except Exception:
-            # The graph state is already committed. Keep execution truth intact
-            # and expose the non-atomic event append through Engine diagnostics.
-            logger.exception(
-                "Canvas graph run state committed but durable realtime emission failed "
-                "(session=%s graph_run=%s status=%s)",
-                session_id,
-                graph_run_id,
-                public_status,
-            )
-            return False
+                if int(intent.get("attempt_count") or 0) == 0:
+                    logger.exception(log_message, *log_args)
+                else:
+                    logger.warning(log_message, *log_args)
+        return {
+            "projectedEvents": projected,
+            "failedEvents": failed,
+            "pendingEvents": db.count_pending_canvas_graph_run_event_outbox(),
+        }
 
     def _write_run_state(
         self,
@@ -1902,6 +2139,8 @@ class CreativeCanvasGraphService:
             raise CreativeCanvasGraphError(f"Canvas graph run state is unsupported: {status or 'unknown'}")
         now = _utc_now()
         previous_row: dict[str, Any] | None = None
+        committed_row: dict[str, Any] | None = None
+        event_enqueued = False
         with db.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -1938,25 +2177,28 @@ class CreativeCanvasGraphService:
                     graph_run_id,
                 ),
             )
+            committed_row = {
+                **previous_row,
+                "status": status,
+                "node_states_json": json.dumps(node_states, ensure_ascii=False),
+                "current_node_id": current_node_id or None,
+                "error_message": error or None,
+                "updated_at": now,
+                "completed_at": now if completed else None if status in ACTIVE_GRAPH_STATES else previous_row.get("completed_at"),
+            }
+            previous_public_status = self._public_graph_run_status(str(previous_row.get("status") or ""))
+            if previous_public_status != public_status or str(transition or "").strip():
+                self._enqueue_graph_run_state_event(
+                    conn,
+                    row=committed_row,
+                    status=status,
+                    transition=transition,
+                    retry_of_graph_run_id=retry_of_graph_run_id,
+                )
+                event_enqueued = True
             conn.commit()
-        previous_public_status = self._public_graph_run_status(str(previous_row.get("status") or ""))
-        if previous_public_status == public_status:
-            return True
-        committed_row = {
-            **previous_row,
-            "status": status,
-            "node_states_json": json.dumps(node_states, ensure_ascii=False),
-            "current_node_id": current_node_id or None,
-            "error_message": error or None,
-            "updated_at": now,
-            "completed_at": now if completed else None if status in ACTIVE_GRAPH_STATES else previous_row.get("completed_at"),
-        }
-        self._emit_graph_run_state_event(
-            row=committed_row,
-            status=status,
-            transition=transition,
-            retry_of_graph_run_id=retry_of_graph_run_id,
-        )
+        if event_enqueued:
+            self.repair_graph_run_state_outbox()
         return True
 
     def _run_result_artifact(self, *, graph_run_id: str, result_node_id: str) -> dict[str, Any] | None:
@@ -2145,6 +2387,33 @@ class CreativeCanvasGraphService:
         return str(row["status"] or "") if row else ""
 
     @staticmethod
+    def _valid_lifecycle_terminal_proof(report: dict[str, Any]) -> bool:
+        provider_handle = _record(report.get("providerHandle"))
+        proof = _record(report.get("terminalProof"))
+        return bool(
+            provider_handle
+            and str(proof.get("schema") or "") == REMOTE_TERMINAL_PROOF_SCHEMA
+            and str(proof.get("providerStatus") or "").strip().lower()
+            in {"cancelled", "failed", "succeeded"}
+            and str(proof.get("source") or "").strip()
+            and str(proof.get("observedAt") or "").strip()
+            and _record(proof.get("providerHandle")) == provider_handle
+        )
+
+    @staticmethod
+    def _valid_local_lifecycle_terminal_proof(report: dict[str, Any], *, job_id: str) -> bool:
+        provider_handle = _record(report.get("providerHandle"))
+        proof = _record(report.get("terminalProof"))
+        return bool(
+            not provider_handle
+            and str(proof.get("schema") or "") == LOCAL_TERMINAL_PROOF_SCHEMA
+            and str(proof.get("jobId") or "").strip() == str(job_id or "").strip()
+            and str(proof.get("status") or "").strip().lower() in {"failed", "succeeded"}
+            and str(proof.get("source") or "").strip() == "governed_local_job_state"
+            and str(proof.get("observedAt") or "").strip()
+        )
+
+    @staticmethod
     async def _invoke_job_lifecycle(runtime: Any, method_name: str, job_id: str) -> dict[str, Any]:
         method = getattr(runtime, method_name, None)
         if not callable(method):
@@ -2165,17 +2434,24 @@ class CreativeCanvasGraphService:
                 return {
                     "status": "completed",
                     "detailCode": "legacy_lifecycle_completed",
-                    "remoteTaskMayContinue": False,
+                    "remoteTaskMayContinue": True,
                 }
             if isinstance(result, dict):
                 status = str(result.get("status") or "").strip().lower()
                 if status in {"completed", "unsupported", "failed", "not_active", "not_started"}:
+                    remote_task_may_continue = bool(result.get("remoteTaskMayContinue", True))
+                    if not (
+                        CreativeCanvasGraphService._valid_lifecycle_terminal_proof(result)
+                        or CreativeCanvasGraphService._valid_local_lifecycle_terminal_proof(
+                            result,
+                            job_id=job_id,
+                        )
+                    ):
+                        remote_task_may_continue = True
                     return {
                         **result,
                         "status": status,
-                        "remoteTaskMayContinue": bool(
-                            result.get("remoteTaskMayContinue", status != "completed")
-                        ),
+                        "remoteTaskMayContinue": remote_task_may_continue,
                     }
             return {
                 "status": "failed",
@@ -2219,6 +2495,23 @@ class CreativeCanvasGraphService:
                     save_job(stored)
         cleanup_report = await self._invoke_job_lifecycle(runtime, "cleanup_job", job_id)
         cleanup = str(cleanup_report.get("status") or "failed")
+        terminal_proof = _record(cancellation_report.get("terminalProof"))
+        terminal_proof_summary = None
+        local_terminal_proof_summary = None
+        if self._valid_lifecycle_terminal_proof(cancellation_report):
+            terminal_proof_summary = {
+                "schema": REMOTE_TERMINAL_PROOF_SCHEMA,
+                "source": _clean_text(terminal_proof.get("source"), limit=80),
+                "providerStatus": str(terminal_proof.get("providerStatus") or "").strip().lower(),
+                "observedAt": _clean_text(terminal_proof.get("observedAt"), limit=64),
+            }
+        elif self._valid_local_lifecycle_terminal_proof(cancellation_report, job_id=job_id):
+            local_terminal_proof_summary = {
+                "schema": LOCAL_TERMINAL_PROOF_SCHEMA,
+                "status": str(terminal_proof.get("status") or "").strip().lower(),
+                "source": "governed_local_job_state",
+                "observedAt": _clean_text(terminal_proof.get("observedAt"), limit=64),
+            }
         return {
             "providerCancellation": cancellation,
             "providerCancellationDetailCode": str(cancellation_report.get("detailCode") or ""),
@@ -2226,6 +2519,8 @@ class CreativeCanvasGraphService:
                 cancellation_report.get("remoteTaskMayContinue", cancellation != "completed")
             ),
             "providerCancellationError": str(cancellation_report.get("error") or ""),
+            "providerCancellationTerminalProof": terminal_proof_summary,
+            "providerCancellationLocalTerminalProof": local_terminal_proof_summary,
             "providerCleanup": cleanup,
             "providerCleanupDetailCode": str(cleanup_report.get("detailCode") or ""),
             "providerCleanupError": str(cleanup_report.get("error") or ""),
@@ -2239,6 +2534,7 @@ class CreativeCanvasGraphService:
         reason: str,
     ) -> dict[str, Any]:
         now = _utc_now()
+        claimed_run: dict[str, Any] = {}
         with db.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -2290,18 +2586,23 @@ class CreativeCanvasGraphService:
             if cursor.rowcount != 1:
                 conn.rollback()
                 raise CreativeCanvasGraphConflict("Canvas graph run changed before cancellation could be claimed")
+            claimed_run = {
+                **run,
+                "status": "cancelling",
+                "node_states_json": json.dumps(node_states, ensure_ascii=False),
+                "current_node_id": current_node_id or None,
+                "error_message": "Canvas graph run cancellation was requested",
+                "updated_at": now,
+                "completed_at": None,
+            }
+            self._enqueue_graph_run_state_event(
+                conn,
+                row=claimed_run,
+                status="cancelling",
+            )
             conn.commit()
 
-        claimed_run = {
-            **run,
-            "status": "cancelling",
-            "node_states_json": json.dumps(node_states, ensure_ascii=False),
-            "current_node_id": current_node_id or None,
-            "error_message": "Canvas graph run cancellation was requested",
-            "updated_at": now,
-            "completed_at": None,
-        }
-        self._emit_graph_run_state_event(row=claimed_run, status="cancelling")
+        self.repair_graph_run_state_outbox()
         return {
             "claimed": True,
             "run": claimed_run,
@@ -2319,6 +2620,7 @@ class CreativeCanvasGraphService:
         lifecycle: dict[str, Any],
     ) -> bool:
         now = _utc_now()
+        event_enqueued = False
         with db.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -2345,7 +2647,7 @@ class CreativeCanvasGraphService:
                     "completedAt": now,
                 })
                 node_states[current_node_id] = current_state
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE creative_canvas_graph_runs
                 SET status = 'cancelled', node_states_json = ?, current_node_id = ?,
@@ -2362,10 +2664,11 @@ class CreativeCanvasGraphService:
                     session_id,
                 ),
             )
-            conn.commit()
-        if self._public_graph_run_status(str(run.get("status") or "")) != "cancelled":
-            self._emit_graph_run_state_event(
-                row={
+            if updated.rowcount != 1:
+                conn.rollback()
+                return False
+            if self._public_graph_run_status(str(run.get("status") or "")) != "cancelled":
+                committed_row = {
                     **run,
                     "status": "cancelled",
                     "node_states_json": json.dumps(node_states, ensure_ascii=False),
@@ -2373,9 +2676,16 @@ class CreativeCanvasGraphService:
                     "error_message": "Canvas graph run was cancelled",
                     "updated_at": now,
                     "completed_at": now,
-                },
-                status="cancelled",
-            )
+                }
+                self._enqueue_graph_run_state_event(
+                    conn,
+                    row=committed_row,
+                    status="cancelled",
+                )
+                event_enqueued = True
+            conn.commit()
+        if event_enqueued:
+            self.repair_graph_run_state_outbox()
         return True
 
     async def cancel_run(
@@ -2494,14 +2804,16 @@ class CreativeCanvasGraphService:
             if cursor.rowcount != 1:
                 conn.rollback()
                 raise CreativeCanvasGraphConflict("Canvas graph failed-branch retry was already claimed")
+            run.update({"status": "running", "error_message": None, "completed_at": None, "updated_at": now})
+            self._enqueue_graph_run_state_event(
+                conn,
+                row=run,
+                status="running",
+                transition="retry_failed_branch",
+                retry_of_graph_run_id=graph_run_id,
+            )
             conn.commit()
-        run.update({"status": "running", "error_message": None, "completed_at": None, "updated_at": now})
-        self._emit_graph_run_state_event(
-            row=run,
-            status="running",
-            transition="retry_failed_branch",
-            retry_of_graph_run_id=graph_run_id,
-        )
+        self.repair_graph_run_state_outbox()
         plan = _record(_json(run.get("plan_json"), {}))
         return {
             "run": run,
@@ -2680,6 +2992,28 @@ class CreativeCanvasGraphService:
                             now,
                         ),
                     )
+                    queued_row = {
+                        "graph_run_id": graph_run_id,
+                        "graph_id": graph_id,
+                        "session_id": session_id,
+                        "chat_run_id": chat_run_id or None,
+                        "canvas_operation_id": canvas_operation_id,
+                        "graph_revision": graph_revision,
+                        "target_node_ids_json": json.dumps(plan["targetNodeIds"], ensure_ascii=False),
+                        "plan_json": json.dumps(plan, ensure_ascii=False),
+                        "node_states_json": json.dumps(node_states, ensure_ascii=False),
+                        "status": "queued",
+                        "current_node_id": None,
+                        "error_message": None,
+                        "created_at": now,
+                        "updated_at": now,
+                        "completed_at": None,
+                    }
+                    self._enqueue_graph_run_state_event(
+                        conn,
+                        row=queued_row,
+                        status="queued",
+                    )
                     conn.commit()
                     created_graph_run = True
                 else:
@@ -2692,13 +3026,13 @@ class CreativeCanvasGraphService:
                     canvas_operation_id = str(existing.get("canvas_operation_id") or canvas_operation_id)
 
             if created_graph_run:
+                self.repair_graph_run_state_outbox()
                 created_row = self._run_row(
                     session_id=session_id,
                     canvas_operation_id=canvas_operation_id,
                 )
                 if not created_row:
                     raise CreativeCanvasGraphError("Canvas graph run disappeared before queued state publication")
-                self._emit_graph_run_state_event(row=created_row, status="queued")
                 if not self._write_run_state(
                     graph_run_id=graph_run_id,
                     status="running",
@@ -2734,7 +3068,18 @@ class CreativeCanvasGraphService:
                     "interruptedAt",
                     "priorState",
                     "providerCancellation",
+                    "providerCancellationDetailCode",
+                    "providerCancellationRemoteTaskMayContinue",
+                    "providerCancellationError",
+                    "providerCancellationTerminalProof",
+                    "providerCancellationLocalTerminalProof",
                     "providerCleanup",
+                    "providerCleanupDetailCode",
+                    "providerCleanupError",
+                    "remoteTerminalProof",
+                    "remoteTerminalProofDigest",
+                    "remoteReconciledAt",
+                    "remoteProviderStatus",
                 ):
                     current_state.pop(stale_key, None)
                 current_state.update({

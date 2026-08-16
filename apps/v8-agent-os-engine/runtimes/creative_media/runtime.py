@@ -10,11 +10,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import quote, urlencode, urlparse
@@ -30,6 +31,8 @@ from core.model_ref import parse_model_ref
 from core.process_launch import run_windowless
 from core.storage import storage
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
+from core.workspace_authority import WorkspaceAuthorityDescriptor, workspace_authority_service
+from core.workspace_identity import workspace_path_key
 from core.workspace_media_library import workspace_media_library
 from erc.runtime_registry import runtime_registry
 
@@ -120,6 +123,17 @@ _ASYNC_REMOTE_JOB_ADAPTERS = {
     "tencent_hunyuan_3d",
     "volcengine_ark",
 }
+_REMOTE_RECONCILE_SCHEMA = "v8.creative_media_remote_reconcile.v1"
+_REMOTE_TERMINAL_PROOF_SCHEMA = "v8.creative_media_remote_terminal_proof.v1"
+_LOCAL_TERMINAL_PROOF_SCHEMA = "v8.creative_media_local_terminal_proof.v1"
+_REMOTE_RECONCILE_BASE_DELAY_SECONDS = 15
+_REMOTE_RECONCILE_MAX_DELAY_SECONDS = 15 * 60
+
+
+class _RemoteReconcileUnsupported(RuntimeError):
+    def __init__(self, detail_code: str) -> None:
+        super().__init__(detail_code)
+        self.detail_code = detail_code
 
 
 @contextmanager
@@ -817,6 +831,16 @@ class CreativeMediaRuntime:
         # Keep one task per phase/job so a graph executor and an explicit
         # cancellation request cannot issue duplicate provider operations.
         self._lifecycle_tasks: dict[tuple[str, str], asyncio.Task[Any]] = {}
+        # Different lifecycle phases use different single-flight keys. Keep a
+        # per-job mutation lock so a stale cancel/reconcile snapshot cannot
+        # overwrite a sibling phase during its read/modify/write transaction.
+        self._job_mutation_locks: dict[str, asyncio.Lock] = {}
+        # jobs.json is one aggregate document. Its entire read/merge/write
+        # transaction must be serialized even when two different jobs mutate.
+        self._jobs_store_lock = threading.RLock()
+        self._remote_reconciler_task: asyncio.Task[Any] | None = None
+        self._remote_reconciler_stop: asyncio.Event | None = None
+        self._remote_reconciler_last_cycle: dict[str, Any] = {}
 
     def runtime_descriptor(self) -> dict[str, Any]:
         try:
@@ -3236,36 +3260,69 @@ class CreativeMediaRuntime:
         resource.add_done_callback(discard)
         return resource
 
+    def _job_storage_lock(self, job_id: str) -> threading.RLock:
+        del job_id
+        return self._jobs_store_lock
+
+    def _job_mutation_lock(self, job_id: str) -> asyncio.Lock:
+        normalized_job_id = str(job_id or "").strip()
+        lock = self._job_mutation_locks.get(normalized_job_id)
+        if lock is None:
+            # This method runs on the Engine event loop and has no await point,
+            # so competing lifecycle tasks cannot interleave dictionary setup.
+            lock = asyncio.Lock()
+            self._job_mutation_locks[normalized_job_id] = lock
+        return lock
+
     def _save_job(self, job: dict[str, Any], *, track_task: bool = True) -> dict[str, Any]:
-        payload = self._read_jobs()
-        jobs = dict(payload.get("jobs") or {})
-        stored = dict(jobs.get(str(job.get("jobId") or "")) or {})
-        if stored.get("status") == "cancelled" and job.get("status") != "cancelled":
-            job["status"] = "cancelled"
-            for key in (
-                "cancelRequestedAt",
-                "cancelledAt",
-                "cancellationReason",
-                "completedAt",
-                "lifecycle",
-                "providerHandle",
-            ):
-                if stored.get(key) not in (None, "", {}, []):
-                    job[key] = stored[key]
-            job["error"] = stored.get("error") or job.get("error")
-        provider_handle = self._provider_handle_for_job(job)
-        if provider_handle:
-            job["providerHandle"] = provider_handle
-        if job.get("status") in {"succeeded", "failed", "cancelled"} and not job.get("p4RecordedAt"):
-            try:
-                self._record_terminal_job_observations(job)
-            except Exception as exc:
-                job["p4ObservationError"] = _exception_summary(exc)
-            job["p4RecordedAt"] = utc_now_iso()
-        job["updatedAt"] = utc_now_iso()
-        jobs[str(job["jobId"])] = job
-        payload["jobs"] = jobs
-        self._write_jobs(payload)
+        job_id = str(job.get("jobId") or "").strip()
+        if not job_id:
+            raise ValueError("Creative Media job persistence requires jobId")
+        # Keep read/merge/write atomic for both event-loop and worker-thread
+        # callers. The async lifecycle lock below prevents stale snapshots
+        # from reaching this boundary in the first place.
+        with self._job_storage_lock(job_id):
+            payload = self._read_jobs()
+            jobs = dict(payload.get("jobs") or {})
+            stored = dict(jobs.get(job_id) or {})
+            stored_lifecycle = dict(stored.get("lifecycle") or {})
+            incoming_lifecycle = dict(job.get("lifecycle") or {})
+            if stored_lifecycle or incoming_lifecycle:
+                # Preserve phases written by the other operation. This merge is
+                # defensive for direct/threaded storage callers.
+                job["lifecycle"] = {**stored_lifecycle, **incoming_lifecycle}
+            if stored.get("status") == "cancelled" and job.get("status") != "cancelled":
+                job["status"] = "cancelled"
+                for key in (
+                    "cancelRequestedAt",
+                    "cancelledAt",
+                    "cancellationReason",
+                    "completedAt",
+                    "lifecycle",
+                    "providerHandle",
+                ):
+                    if stored.get(key) not in (None, "", {}, []):
+                        job[key] = stored[key]
+                job["error"] = stored.get("error") or job.get("error")
+            if stored.get("providerHandle") and not job.get("providerHandle"):
+                job["providerHandle"] = stored["providerHandle"]
+            provider_handle = self._provider_handle_for_job(job)
+            if provider_handle:
+                job["providerHandle"] = provider_handle
+            if job.get("status") in {"succeeded", "failed", "cancelled"} and not job.get("p4RecordedAt"):
+                try:
+                    self._record_terminal_job_observations(job)
+                except Exception as exc:
+                    job["p4ObservationError"] = self._redact_lifecycle_error(_exception_summary(exc))
+                job["p4RecordedAt"] = utc_now_iso()
+            if job.get("error"):
+                job["error"] = self._redact_lifecycle_error(job.get("error"))
+            if job.get("p4ObservationError"):
+                job["p4ObservationError"] = self._redact_lifecycle_error(job.get("p4ObservationError"))
+            job["updatedAt"] = utc_now_iso()
+            jobs[job_id] = job
+            payload["jobs"] = jobs
+            self._write_jobs(payload)
         if track_task:
             self._track_current_job_task(job)
         return job
@@ -3529,6 +3586,93 @@ class CreativeMediaRuntime:
             return None
         return job
 
+    @staticmethod
+    def _assert_job_workspace_authority(
+        job: dict[str, Any],
+        *,
+        session_id: str,
+        authority: WorkspaceAuthorityDescriptor,
+    ) -> None:
+        if str(job.get("sessionId") or "").strip() != session_id:
+            raise PermissionError("Creative Media job is unavailable in the current session")
+        job_workspace_id = str(job.get("workspaceId") or "").strip()
+        authority_workspace_id = str(authority.workspace_id or "").strip()
+        job_workspace_key = workspace_path_key(str(job.get("workspacePath") or ""))
+        authority_workspace_key = workspace_path_key(authority.workspace_root)
+        if (
+            not job_workspace_id
+            or not authority_workspace_id
+            or job_workspace_id != authority_workspace_id
+            or not job_workspace_key
+            or not authority_workspace_key
+            or job_workspace_key != authority_workspace_key
+        ):
+            raise PermissionError("Creative Media job is unavailable in the current workspace")
+
+    def _job_workspace_authority(
+        self,
+        session_id: str,
+        *,
+        require_write: bool = False,
+    ) -> WorkspaceAuthorityDescriptor:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id or not db.get_session(normalized_session_id):
+            raise PermissionError("Current session is unavailable")
+        authority = workspace_authority_service.resolve(
+            runtime_kind="chat",
+            session_id=normalized_session_id,
+        )
+        if (
+            not str(authority.workspace_id or "").strip()
+            or not workspace_path_key(authority.workspace_root)
+        ):
+            raise PermissionError("Current session workspace authority is unavailable")
+        if require_write and not authority.side_effects_allowed:
+            raise PermissionError("Current session workspace does not allow Creative Media writes")
+        return authority
+
+    def get_authorized_job(
+        self,
+        job_id: str,
+        *,
+        session_id: str,
+        require_write: bool = False,
+    ) -> dict[str, Any] | None:
+        normalized_session_id = str(session_id or "").strip()
+        authority = self._job_workspace_authority(
+            normalized_session_id,
+            require_write=require_write,
+        )
+        job = self.get_job(job_id, refresh=False)
+        if not job:
+            return None
+        self._assert_job_workspace_authority(
+            job,
+            session_id=normalized_session_id,
+            authority=authority,
+        )
+        return job
+
+    async def refresh_authorized_job(self, job_id: str, *, session_id: str) -> dict[str, Any] | None:
+        normalized_session_id = str(session_id or "").strip()
+        authority = self._job_workspace_authority(normalized_session_id, require_write=True)
+        job = self.get_job(job_id, refresh=False)
+        if not job:
+            return None
+        self._assert_job_workspace_authority(
+            job,
+            session_id=normalized_session_id,
+            authority=authority,
+        )
+        refreshed = await self.refresh_job(job_id)
+        if refreshed:
+            self._assert_job_workspace_authority(
+                refreshed,
+                session_id=normalized_session_id,
+                authority=authority,
+            )
+        return refreshed
+
     async def refresh_job(self, job_id: str) -> dict[str, Any] | None:
         job = self.get_job(job_id, refresh=False)
         if not job:
@@ -3577,19 +3721,249 @@ class CreativeMediaRuntime:
         if resources is not None:
             report["resources"] = resources
         if error:
-            report["error"] = error
+            report["error"] = self._redact_lifecycle_error(error)
         lifecycle = dict(job.get("lifecycle") or {})
         lifecycle[phase] = report
         job["lifecycle"] = lifecycle
         return report
 
-    @staticmethod
-    def _provider_cancel_result(status: str, detail_code: str, *, remote_may_continue: bool = False) -> dict[str, Any]:
-        return {
+    @classmethod
+    def _provider_cancel_result(
+        cls,
+        status: str,
+        detail_code: str,
+        *,
+        remote_may_continue: bool = False,
+        provider_status: Any = None,
+        source: str = "",
+    ) -> dict[str, Any]:
+        result = {
             "status": status,
             "detailCode": detail_code,
             "remoteTaskMayContinue": remote_may_continue,
         }
+        canonical_status = cls._canonical_remote_provider_status(provider_status)
+        if not remote_may_continue and canonical_status in {"cancelled", "failed", "succeeded"}:
+            result.update(
+                {
+                    "providerStatus": canonical_status,
+                    "providerStatusRaw": str(provider_status or "").strip(),
+                    "source": str(source or "provider_cancel_response"),
+                }
+            )
+        return result
+
+    @staticmethod
+    def _parse_utc_iso(value: Any) -> datetime | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _next_remote_reconcile_at(cls, *, attempt: int, now: str) -> str:
+        delay_seconds = min(
+            _REMOTE_RECONCILE_BASE_DELAY_SECONDS * (2 ** max(0, min(int(attempt) - 1, 6))),
+            _REMOTE_RECONCILE_MAX_DELAY_SECONDS,
+        )
+        base = cls._parse_utc_iso(now) or datetime.now(timezone.utc)
+        return (base + timedelta(seconds=delay_seconds)).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _canonical_remote_provider_status(value: Any) -> str:
+        normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {"cancelled", "canceled", "stopped", "terminated", "aborted"}:
+            return "cancelled"
+        if normalized in {"-1", "_1", "3", "4", "failed", "fail", "failure", "error", "errored", "rejected"}:
+            return "failed"
+        if normalized in {"2", "200", "succeeded", "success", "completed", "complete", "done", "finished", "finish"}:
+            return "succeeded"
+        if normalized in {"queued", "queueing", "pending", "created", "submitted", "ordered", "waiting"}:
+            return "queued"
+        if normalized in {"running", "processing", "in_progress", "started", "preparing"}:
+            return "running"
+        return "unknown"
+
+    @classmethod
+    def _remote_provider_status_result(cls, raw_status: Any, *, source: str) -> dict[str, Any]:
+        return {
+            "providerStatus": cls._canonical_remote_provider_status(raw_status),
+            "providerStatusRaw": str(raw_status or "").strip(),
+            "source": source,
+        }
+
+    @staticmethod
+    def _assert_remote_provider_identity(job: dict[str, Any], provider_id: Any) -> None:
+        provider_handle = dict(job.get("providerHandle") or {})
+        expected = str(provider_handle.get("providerId") or "").strip()
+        observed = str(provider_id or "").strip()
+        if not expected or not observed:
+            raise _RemoteReconcileUnsupported("provider_binding_unavailable")
+        if expected != observed:
+            raise _RemoteReconcileUnsupported("provider_identity_changed")
+
+    @staticmethod
+    def _redact_lifecycle_error(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"https?://[^\s]+", "<redacted-provider-url>", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"(?i)(authorization|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
+            r"\1=<redacted>",
+            text,
+        )
+        provider_failure = re.search(r"Provider request failed \(\d+\)", text)
+        if provider_failure:
+            text = text[: provider_failure.end()] + ": <redacted-provider-response>"
+        return text[:500]
+
+    @staticmethod
+    def _provider_handles_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        keys = ("schema", "adapter", "providerId", "taskId", "operationKind")
+        return bool(left) and bool(right) and all(
+            str(left.get(key) or "").strip()
+            and str(right.get(key) or "").strip()
+            and str(left.get(key) or "").strip() == str(right.get(key) or "").strip()
+            for key in keys
+        )
+
+    @classmethod
+    def _valid_remote_terminal_proof(cls, report: dict[str, Any], job: dict[str, Any]) -> bool:
+        proof = dict(report.get("terminalProof") or {})
+        provider_handle = dict(job.get("providerHandle") or cls._provider_handle_for_job(job))
+        provider_status = cls._canonical_remote_provider_status(proof.get("providerStatus"))
+        return bool(
+            provider_handle
+            and proof.get("schema") == _REMOTE_TERMINAL_PROOF_SCHEMA
+            and provider_status in {"cancelled", "failed", "succeeded"}
+            and str(proof.get("providerStatus") or "") == provider_status
+            and str(proof.get("source") or "").strip()
+            and str(proof.get("observedAt") or "").strip()
+            and cls._provider_handles_match(
+                dict(proof.get("providerHandle") or {}),
+                provider_handle,
+            )
+        )
+
+    @classmethod
+    def _effective_remote_task_may_continue(cls, report: dict[str, Any], job: dict[str, Any]) -> bool:
+        provider_handle = dict(job.get("providerHandle") or cls._provider_handle_for_job(job))
+        if not provider_handle:
+            return bool(report.get("remoteTaskMayContinue"))
+        return not cls._valid_remote_terminal_proof(report, job)
+
+    def _assert_remote_configured_identity(self, job: dict[str, Any], *, default_model: str) -> None:
+        try:
+            binding = self._configured_endpoint_binding(
+                dict(job.get("request") or {}),
+                default_model=default_model,
+            )
+        except ValueError as exc:
+            raise _RemoteReconcileUnsupported("provider_binding_unavailable") from exc
+        request_binding = dict((job.get("request") or {}).get("endpointBinding") or {})
+        self._assert_remote_provider_identity(
+            job,
+            binding.get("providerId") or request_binding.get("providerId"),
+        )
+
+    def _record_remote_reconcile(
+        self,
+        job: dict[str, Any],
+        *,
+        status: str,
+        detail_code: str,
+        provider_status: str = "unknown",
+        provider_status_raw: str = "",
+        remote_task_may_continue: bool,
+        attempt: int,
+        reconciled_at: str | None,
+        next_reconcile_at: str | None,
+        terminal_proof: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> dict[str, Any]:
+        provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+        if provider_handle:
+            job["providerHandle"] = provider_handle
+        lifecycle = dict(job.get("lifecycle") or {})
+        existing = dict(lifecycle.get("remoteReconcile") or {})
+        normalized_terminal_proof = dict(terminal_proof or {}) or None
+        same_proof = bool(
+            normalized_terminal_proof
+            and normalized_terminal_proof == dict(existing.get("terminalProof") or {})
+        )
+        report: dict[str, Any] = {
+            "schema": _REMOTE_RECONCILE_SCHEMA,
+            "phase": "remote_reconcile",
+            "jobId": str(job.get("jobId") or ""),
+            "sessionId": str(job.get("sessionId") or "") or None,
+            "canvasGraphRunId": str(job.get("canvasGraphRunId") or "") or None,
+            "canvasGraphNodeId": str(job.get("canvasGraphNodeId") or "") or None,
+            "status": str(status or "waiting"),
+            "detailCode": str(detail_code or "remote_status_unverified"),
+            "adapter": str(job.get("adapter") or "").strip(),
+            "providerHandle": provider_handle,
+            "providerStatus": str(provider_status or "unknown"),
+            "providerStatusRaw": str(provider_status_raw or ""),
+            "remoteTaskMayContinue": bool(remote_task_may_continue),
+            "attempt": max(0, int(attempt)),
+            "reconciledAt": reconciled_at,
+            "nextReconcileAt": next_reconcile_at,
+            "terminalProof": normalized_terminal_proof,
+            "projectionPending": False,
+            "projectedAt": existing.get("projectedAt") if same_proof else None,
+            "projectionAttempts": int(existing.get("projectionAttempts") or 0) if same_proof else 0,
+            "lastProjectionError": existing.get("lastProjectionError") if same_proof else None,
+            "nextProjectionAt": existing.get("nextProjectionAt") if same_proof else None,
+        }
+        if dict(job.get("providerHandle") or {}) and not self._valid_remote_terminal_proof(report, job):
+            report["remoteTaskMayContinue"] = True
+            if normalized_terminal_proof:
+                report["detailCode"] = "remote_terminal_proof_invalid"
+                report["terminalProof"] = None
+        elif normalized_terminal_proof and not report["remoteTaskMayContinue"]:
+            report["projectionPending"] = not bool(report.get("projectedAt"))
+            if report["projectionPending"]:
+                report["nextProjectionAt"] = reconciled_at or utc_now_iso()
+        if error:
+            report["error"] = self._redact_lifecycle_error(error)
+        lifecycle["remoteReconcile"] = report
+        job["lifecycle"] = lifecycle
+        return report
+
+    def _schedule_remote_reconcile(
+        self,
+        job: dict[str, Any],
+        *,
+        detail_code: str = "remote_terminal_proof_required",
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        existing = dict((job.get("lifecycle") or {}).get("remoteReconcile") or {})
+        return self._record_remote_reconcile(
+            job,
+            status="pending",
+            detail_code=detail_code,
+            provider_status=str(existing.get("providerStatus") or "unknown"),
+            provider_status_raw=str(existing.get("providerStatusRaw") or ""),
+            remote_task_may_continue=True,
+            attempt=int(existing.get("attempt") or 0),
+            reconciled_at=str(existing.get("reconciledAt") or "") or None,
+            next_reconcile_at=now,
+            terminal_proof=None,
+        )
+
+    @classmethod
+    def _remote_reconcile_is_due(cls, report: dict[str, Any], *, now: datetime | None = None) -> bool:
+        next_at = cls._parse_utc_iso(report.get("nextReconcileAt"))
+        if next_at is None:
+            return True
+        return next_at <= (now or datetime.now(timezone.utc))
 
     @staticmethod
     def _missing_job_lifecycle_report(job_id: str, phase: str) -> dict[str, Any]:
@@ -3599,6 +3973,8 @@ class CreativeMediaRuntime:
             "status": "failed",
             "detailCode": "job_not_found",
             "jobId": str(job_id or ""),
+            "canvasGraphRunId": None,
+            "canvasGraphNodeId": None,
             "providerHandle": {},
             # A missing local record cannot prove that the remote task stopped.
             # Cancellation therefore fails closed; cleanup alone has no remote
@@ -3613,6 +3989,7 @@ class CreativeMediaRuntime:
         *,
         default_model: str,
         fallback_credentials: dict[str, str] | None = None,
+        fallback_provider_ids: set[str] | None = None,
         require_api_key: bool = True,
     ) -> tuple[str, str]:
         request = dict(job.get("request") or {})
@@ -3623,10 +4000,29 @@ class CreativeMediaRuntime:
                 request,
                 default_model=str(provider_response.get("model") or request.get("model") or default_model),
             )
-        except ValueError:
-            binding = {}
+        except ValueError as exc:
+            raise _RemoteReconcileUnsupported("provider_binding_unavailable") from exc
+        provider_handle = dict(job.get("providerHandle") or {})
+        expected_provider_id = str(
+            (provider_handle.get("providerId") if provider_handle else provider_response.get("providerId"))
+            or ""
+        ).strip()
+        stored_provider_id = str(stored_binding.get("providerId") or "").strip()
+        configured_provider_id = str(binding.get("providerId") or stored_provider_id).strip()
+        if not expected_provider_id or not configured_provider_id:
+            raise _RemoteReconcileUnsupported("provider_binding_unavailable")
+        if expected_provider_id != configured_provider_id:
+            raise _RemoteReconcileUnsupported("provider_identity_changed")
         provider_meta = dict(binding.get("providerMeta") or {})
-        fallback = {} if stored_binding or binding else dict(fallback_credentials or {})
+        fallback_allowed = bool(
+            expected_provider_id
+            and expected_provider_id in set(fallback_provider_ids or set())
+        )
+        fallback = (
+            dict(fallback_credentials or {})
+            if not stored_binding and not binding and fallback_allowed
+            else {}
+        )
         provider_id = str(
             (job.get("providerHandle") or {}).get("providerId")
             or provider_response.get("providerId")
@@ -3652,6 +4048,229 @@ class CreativeMediaRuntime:
         if not base_url:
             raise ValueError(f"Provider {provider_id} has no base_url for cancellation")
         return base_url, api_key
+
+    async def _probe_provider_remote_status(self, job: dict[str, Any]) -> dict[str, Any]:
+        adapter = str(job.get("adapter") or "").strip().lower()
+        task_id = str(
+            job.get("providerTaskId")
+            or (job.get("providerHandle") or {}).get("taskId")
+            or ""
+        ).strip()
+        if not task_id:
+            raise _RemoteReconcileUnsupported("provider_handle_not_available")
+        if adapter not in _ASYNC_REMOTE_JOB_ADAPTERS:
+            raise _RemoteReconcileUnsupported("provider_status_probe_not_supported")
+
+        request = dict(job.get("request") or {})
+        provider_response = dict(job.get("providerResponse") or {})
+        if adapter == "volcengine_ark":
+            credentials = self._volc_credentials()
+            self._assert_remote_configured_identity(
+                job,
+                default_model=str(provider_response.get("model") or credentials.get("videoModel") or ""),
+            )
+            base_url, api_key = self._provider_cancel_endpoint(
+                job,
+                default_model=str(provider_response.get("model") or credentials.get("videoModel") or ""),
+                fallback_credentials=credentials,
+                fallback_provider_ids={"volcengine_seedance"},
+            )
+            response = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, f"contents/generations/tasks/{quote(task_id, safe='')}"),
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+            return self._remote_provider_status_result(
+                response.get("status") or response.get("state"),
+                source="volcengine_task_status",
+            )
+
+        if adapter == "dashscope":
+            self._assert_remote_configured_identity(
+                job,
+                default_model=str(provider_response.get("model") or "wan2.7-t2v"),
+            )
+            base_url, api_key = self._provider_cancel_endpoint(
+                job,
+                default_model=str(provider_response.get("model") or "wan2.7-t2v"),
+                fallback_credentials=self._dashscope_credentials(),
+                fallback_provider_ids={"aliyun_bailian_dashscope", "dashscope"},
+            )
+            response = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, f"tasks/{quote(task_id, safe='')}"),
+                headers=self._dashscope_headers(api_key),
+                timeout=60,
+            )
+            output = dict(response.get("output") or {})
+            return self._remote_provider_status_result(
+                output.get("task_status")
+                or output.get("taskStatus")
+                or response.get("task_status")
+                or response.get("status")
+                or response.get("state"),
+                source="dashscope_task_status",
+            )
+
+        if adapter == "comfyui_workflow":
+            self._assert_remote_configured_identity(job, default_model="comfyui-workflow")
+            base_url, api_key = self._provider_cancel_endpoint(
+                job,
+                default_model="comfyui-workflow",
+                require_api_key=False,
+            )
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            history = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, f"history/{quote(task_id, safe='')}"),
+                headers=headers,
+                timeout=30,
+            )
+            history_item = dict(history.get(task_id) or {})
+            if history_item:
+                status_payload = dict(history_item.get("status") or {})
+                raw_status = str(
+                    status_payload.get("status_str")
+                    or status_payload.get("status")
+                    or history_item.get("state")
+                    or ""
+                ).strip()
+                if status_payload.get("completed") is True:
+                    canonical = self._canonical_remote_provider_status(raw_status)
+                    raw_status = raw_status if canonical in {"cancelled", "failed"} else "completed"
+                return self._remote_provider_status_result(
+                    raw_status,
+                    source="comfyui_history_status",
+                )
+            queue = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, "queue"),
+                headers=headers,
+                timeout=30,
+            )
+            if task_id in self._comfyui_queue_ids(queue.get("queue_pending")):
+                return self._remote_provider_status_result("queued", source="comfyui_queue_status")
+            if task_id in self._comfyui_queue_ids(queue.get("queue_running")):
+                return self._remote_provider_status_result("running", source="comfyui_queue_status")
+            return self._remote_provider_status_result("", source="comfyui_task_not_observed")
+
+        if adapter == "agnes_video":
+            provider_id, provider_meta, _model = self._configured_provider_for_model(
+                request,
+                default_model=str(provider_response.get("model") or "agnes-video-v2.0"),
+            )
+            self._assert_remote_provider_identity(job, provider_id)
+            base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+            api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+            if not base_url:
+                raise ValueError(f"Provider {provider_id} has no base_url")
+            api_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+            video_id = str(provider_response.get("videoId") or "").strip()
+            provider_task_id = str(provider_response.get("taskId") or task_id).strip()
+            if video_id:
+                response = await self._request_json(
+                    "GET",
+                    f"{api_root}/agnesapi?video_id={quote(video_id)}",
+                    headers=self._bearer_headers(api_key),
+                    timeout=60,
+                )
+            else:
+                response = await self._request_json(
+                    "GET",
+                    f"{api_root}/v1/videos/{quote(provider_task_id)}",
+                    headers=self._bearer_headers(api_key),
+                    timeout=60,
+                )
+            return self._remote_provider_status_result(
+                response.get("status") or response.get("state"),
+                source="agnes_video_status",
+            )
+
+        if adapter == "minimax_video":
+            binding = self._configured_endpoint_binding(
+                request,
+                default_model=str(provider_response.get("model") or "S2V-01"),
+            )
+            provider_id = str(binding.get("providerId") or provider_response.get("providerId") or "")
+            self._assert_remote_provider_identity(job, provider_id)
+            provider_meta = dict(binding.get("providerMeta") or {})
+            base_url = str(
+                binding.get("baseUrl")
+                or provider_meta.get("base_url")
+                or provider_meta.get("baseUrl")
+                or ""
+            ).rstrip("/")
+            api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+            if not base_url or not api_key:
+                raise ValueError(f"Provider {provider_id or 'minimax'} status endpoint is unavailable")
+            api_version = str(provider_response.get("apiVersion") or "v1")
+            response = await self._request_json(
+                "GET",
+                self._join_api_path(
+                    base_url,
+                    f"/v2/query/video_generation/{quote(task_id)}"
+                    if api_version == "v2"
+                    else f"/v1/query/video_generation?task_id={quote(task_id)}",
+                ),
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+            if api_version != "v2":
+                self._validate_minimax_business_response(
+                    response,
+                    action="video remote reconciliation",
+                )
+            task = dict(response.get("task") or {}) if api_version == "v2" else response
+            return self._remote_provider_status_result(
+                task.get("status") or task.get("state"),
+                source="minimax_video_status",
+            )
+
+        if adapter == "mureka_music":
+            provider_id, provider_meta, _model = self._configured_provider_for_model(request, default_model="auto")
+            self._assert_remote_provider_identity(job, provider_id)
+            base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
+            api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+            if not base_url or not api_key:
+                raise _RemoteReconcileUnsupported("provider_credentials_unavailable")
+            response = await self._request_json(
+                "GET",
+                self._join_api_path(base_url, f"/v1/song/query/{quote(task_id)}"),
+                headers=self._bearer_headers(api_key),
+                timeout=60,
+            )
+            return self._remote_provider_status_result(
+                response.get("status")
+                or response.get("state")
+                or response.get("task_status"),
+                source="mureka_music_status",
+            )
+
+        if adapter == "tencent_hunyuan_3d":
+            provider_id, provider_meta, model = self._configured_provider_for_model(
+                request,
+                default_model="hy-3d-3.0",
+            )
+            self._assert_remote_provider_identity(job, provider_id)
+            model = self._strip_provider_model_prefix(model)
+            endpoints = self._tencent_tokenhub_3d_endpoints(provider_meta)
+            api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+            if not api_key:
+                raise _RemoteReconcileUnsupported("provider_credentials_unavailable")
+            response = await self._request_json(
+                "POST",
+                endpoints["query"],
+                headers=self._bearer_headers(api_key),
+                json={"model": model, "id": task_id},
+                timeout=60,
+            )
+            return self._remote_provider_status_result(
+                response.get("status") or response.get("state"),
+                source="tencent_hunyuan_3d_status",
+            )
+
+        raise _RemoteReconcileUnsupported("provider_status_probe_not_supported")
 
     @staticmethod
     def _comfyui_queue_ids(queue_items: Any) -> set[str]:
@@ -3689,16 +4308,19 @@ class CreativeMediaRuntime:
         else:
             cancelled = response.get("cancelled")
             if cancelled is True:
-                remote_terminal = str(
+                remote_status = str(
                     response.get("status")
                     or response.get("state")
                     or response.get("jobStatus")
                     or ""
-                ).strip().lower() in {"cancelled", "canceled", "stopped", "terminated"}
+                ).strip()
+                remote_terminal = remote_status.lower() in {"cancelled", "canceled", "stopped", "terminated"}
                 return self._provider_cancel_result(
                     "completed",
                     "comfyui_job_cancel_event_dispatched",
                     remote_may_continue=not remote_terminal,
+                    provider_status=remote_status,
+                    source="comfyui_cancel_response",
                 )
             if cancelled is False:
                 return self._provider_cancel_result(
@@ -3760,6 +4382,7 @@ class CreativeMediaRuntime:
                 job,
                 default_model=credentials["videoModel"],
                 fallback_credentials=credentials,
+                fallback_provider_ids={"volcengine_seedance"},
             )
             try:
                 response = await self._request_json(
@@ -3783,15 +4406,18 @@ class CreativeMediaRuntime:
                         remote_may_continue=True,
                     )
                 raise
-            remote_terminal = str(
+            remote_status = str(
                 (response or {}).get("status")
                 or (response or {}).get("state")
                 or ""
-            ).strip().lower() in {"cancelled", "canceled", "stopped", "terminated"}
+            ).strip()
+            remote_terminal = remote_status.lower() in {"cancelled", "canceled", "stopped", "terminated"}
             return self._provider_cancel_result(
                 "completed",
                 "volcengine_cancel_request_accepted",
                 remote_may_continue=not remote_terminal,
+                provider_status=remote_status,
+                source="volcengine_cancel_response",
             )
         if adapter == "dashscope":
             raw_status = str(
@@ -3810,6 +4436,7 @@ class CreativeMediaRuntime:
                 job,
                 default_model="wan2.7-t2v",
                 fallback_credentials=self._dashscope_credentials(),
+                fallback_provider_ids={"aliyun_bailian_dashscope", "dashscope"},
             )
             response = await self._request_json(
                 "POST",
@@ -3831,6 +4458,8 @@ class CreativeMediaRuntime:
                 "completed",
                 "dashscope_pending_cancel_request_accepted",
                 remote_may_continue=not remote_terminal,
+                provider_status=remote_status,
+                source="dashscope_cancel_response",
             )
         if adapter == "comfyui_workflow":
             return await self._cancel_comfyui_provider_job(job, task_id)
@@ -3857,7 +4486,11 @@ class CreativeMediaRuntime:
         key = (normalized_phase, normalized_job_id)
         task = self._lifecycle_tasks.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(operation())
+            async def guarded_operation() -> dict[str, Any]:
+                async with self._job_mutation_lock(normalized_job_id):
+                    return await operation()
+
+            task = asyncio.create_task(guarded_operation())
             self._lifecycle_tasks[key] = task
 
             def clear(completed: asyncio.Task[Any], *, lifecycle_key: tuple[str, str] = key) -> None:
@@ -3869,6 +4502,555 @@ class CreativeMediaRuntime:
         # interrupt the provider DELETE/POST or local cleanup already in flight.
         return await asyncio.shield(task)
 
+    @staticmethod
+    def _remote_reconcile_not_found(job_id: str) -> dict[str, Any]:
+        return {
+            "schema": _REMOTE_RECONCILE_SCHEMA,
+            "phase": "remote_reconcile",
+            "status": "failed",
+            "detailCode": "job_not_found",
+            "jobId": str(job_id or ""),
+            "sessionId": None,
+            "canvasGraphRunId": None,
+            "canvasGraphNodeId": None,
+            "providerHandle": {},
+            "providerStatus": "unknown",
+            "providerStatusRaw": "",
+            "remoteTaskMayContinue": True,
+            "attempt": 0,
+            "reconciledAt": utc_now_iso(),
+            "nextReconcileAt": None,
+            "terminalProof": None,
+            "projectionPending": False,
+            "projectedAt": None,
+            "projectionAttempts": 0,
+            "lastProjectionError": None,
+        }
+
+    async def _reconcile_remote_job_once(self, job_id: str, *, force: bool = False) -> dict[str, Any]:
+        job = self.get_job(job_id, refresh=False)
+        if not job:
+            return self._remote_reconcile_not_found(job_id)
+        lifecycle = dict(job.get("lifecycle") or {})
+        cancellation = dict(lifecycle.get("cancel") or {})
+        existing = dict(lifecycle.get("remoteReconcile") or {})
+        provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+        cancellation_uncertain = bool(cancellation) and self._effective_remote_task_may_continue(
+            cancellation,
+            job,
+        )
+        reconcile_uncertain = bool(existing) and self._effective_remote_task_may_continue(
+            existing,
+            job,
+        )
+        uncertain = cancellation_uncertain or reconcile_uncertain
+        if not uncertain:
+            if existing:
+                return existing
+            if provider_handle and self._valid_remote_terminal_proof(cancellation, job):
+                proof = dict(cancellation["terminalProof"])
+                return self._record_remote_reconcile(
+                    job,
+                    status="resolved",
+                    detail_code="provider_terminal_status_confirmed",
+                    provider_status=str(proof.get("providerStatus") or "unknown"),
+                    remote_task_may_continue=False,
+                    attempt=0,
+                    reconciled_at=str(proof.get("observedAt") or utc_now_iso()),
+                    next_reconcile_at=None,
+                    terminal_proof=proof,
+                )
+            return self._record_remote_reconcile(
+                job,
+                status="not_required",
+                detail_code="remote_task_not_uncertain",
+                remote_task_may_continue=False,
+                attempt=0,
+                reconciled_at=utc_now_iso(),
+                next_reconcile_at=None,
+            )
+        if provider_handle and existing and not self._valid_remote_terminal_proof(existing, job) and not bool(
+            existing.get("remoteTaskMayContinue")
+        ):
+            existing = self._schedule_remote_reconcile(
+                job,
+                detail_code="legacy_remote_terminal_proof_missing",
+            )
+            self._save_job(job, track_task=False)
+        if not str(job.get("canvasGraphRunId") or "").strip():
+            return self._record_remote_reconcile(
+                job,
+                status="unsupported",
+                detail_code="remote_reconcile_requires_canvas_graph_lineage",
+                provider_status=str(existing.get("providerStatus") or "unknown"),
+                provider_status_raw=str(existing.get("providerStatusRaw") or ""),
+                remote_task_may_continue=True,
+                attempt=int(existing.get("attempt") or 0),
+                reconciled_at=utc_now_iso(),
+                next_reconcile_at=None,
+            )
+        if not force and existing and not self._remote_reconcile_is_due(existing):
+            return existing
+
+        attempt = int(existing.get("attempt") or 0) + 1
+        attempt_started_at = utc_now_iso()
+        next_reconcile_at = self._next_remote_reconcile_at(attempt=attempt, now=attempt_started_at)
+        self._record_remote_reconcile(
+            job,
+            status="checking",
+            detail_code="provider_status_check_started",
+            provider_status=str(existing.get("providerStatus") or "unknown"),
+            provider_status_raw=str(existing.get("providerStatusRaw") or ""),
+            remote_task_may_continue=True,
+            attempt=attempt,
+            reconciled_at=attempt_started_at,
+            next_reconcile_at=next_reconcile_at,
+        )
+        self._save_job(job, track_task=False)
+
+        try:
+            observed = await self._probe_provider_remote_status(dict(job))
+        except _RemoteReconcileUnsupported as exc:
+            reconciled_at = utc_now_iso()
+            report = self._record_remote_reconcile(
+                job,
+                status="unsupported",
+                detail_code=exc.detail_code,
+                provider_status="unknown",
+                remote_task_may_continue=True,
+                attempt=attempt,
+                reconciled_at=reconciled_at,
+                next_reconcile_at=self._next_remote_reconcile_at(attempt=attempt, now=reconciled_at),
+            )
+            self._save_job(job, track_task=False)
+            return report
+        except Exception as exc:
+            reconciled_at = utc_now_iso()
+            report = self._record_remote_reconcile(
+                job,
+                status="waiting",
+                detail_code="provider_status_check_failed",
+                provider_status=str(existing.get("providerStatus") or "unknown"),
+                provider_status_raw=str(existing.get("providerStatusRaw") or ""),
+                remote_task_may_continue=True,
+                attempt=attempt,
+                reconciled_at=reconciled_at,
+                next_reconcile_at=self._next_remote_reconcile_at(attempt=attempt, now=reconciled_at),
+                error=_exception_summary(exc),
+            )
+            self._save_job(job, track_task=False)
+            return report
+
+        provider_status = str(observed.get("providerStatus") or "unknown")
+        provider_status_raw = str(observed.get("providerStatusRaw") or "")
+        source = str(observed.get("source") or "provider_status_api")
+        reconciled_at = utc_now_iso()
+        if provider_status in {"cancelled", "failed", "succeeded"}:
+            terminal_proof = {
+                "schema": _REMOTE_TERMINAL_PROOF_SCHEMA,
+                "source": source,
+                "providerHandle": dict(job.get("providerHandle") or self._provider_handle_for_job(job)),
+                "providerStatus": provider_status,
+                "observedAt": reconciled_at,
+            }
+            report = self._record_remote_reconcile(
+                job,
+                status="resolved",
+                detail_code="provider_terminal_status_confirmed",
+                provider_status=provider_status,
+                provider_status_raw=provider_status_raw,
+                remote_task_may_continue=False,
+                attempt=attempt,
+                reconciled_at=reconciled_at,
+                next_reconcile_at=None,
+                terminal_proof=terminal_proof,
+            )
+            if cancellation:
+                cancellation["remoteTaskMayContinue"] = False
+                cancellation["reconciledAt"] = reconciled_at
+                cancellation["terminalProof"] = terminal_proof
+                lifecycle = dict(job.get("lifecycle") or {})
+                lifecycle["cancel"] = cancellation
+                job["lifecycle"] = lifecycle
+            self._save_job(job, track_task=False)
+            return report
+
+        detail_code = (
+            "provider_task_still_active"
+            if provider_status in {"queued", "running"}
+            else "provider_status_unrecognized"
+        )
+        report = self._record_remote_reconcile(
+            job,
+            status="waiting",
+            detail_code=detail_code,
+            provider_status=provider_status,
+            provider_status_raw=provider_status_raw,
+            remote_task_may_continue=True,
+            attempt=attempt,
+            reconciled_at=reconciled_at,
+            next_reconcile_at=self._next_remote_reconcile_at(attempt=attempt, now=reconciled_at),
+        )
+        self._save_job(job, track_task=False)
+        return report
+
+    async def reconcile_remote_job(self, job_id: str, *, force: bool = False) -> dict[str, Any]:
+        return await self._run_lifecycle_singleflight(
+            "remote_reconcile",
+            job_id,
+            lambda: self._reconcile_remote_job_once(job_id, force=force),
+        )
+
+    async def reconcile_remote_jobs(
+        self,
+        *,
+        force: bool = False,
+        limit: int = 25,
+        recovery_candidates: Iterable[dict[str, Any]] | None = None,
+        stop_event: asyncio.Event | None = None,
+    ) -> dict[str, Any]:
+        bounded_limit = max(1, min(int(limit), 100))
+        jobs = list((self._read_jobs().get("jobs") or {}).values())
+        candidates: list[dict[str, Any]] = []
+        recovered_orphans = 0
+        stopped = False
+        recovery_keys = {
+            (
+                str(item.get("sessionId") or "").strip(),
+                str(item.get("graphRunId") or item.get("canvasGraphRunId") or "").strip(),
+                str(item.get("nodeId") or item.get("canvasGraphNodeId") or "").strip(),
+                str(item.get("jobId") or "").strip(),
+            )
+            for item in list(recovery_candidates or [])
+            if isinstance(item, dict)
+            and all(
+                str(item.get(key) or item.get(alias) or "").strip()
+                for key, alias in (
+                    ("sessionId", "session_id"),
+                    ("graphRunId", "canvasGraphRunId"),
+                    ("nodeId", "canvasGraphNodeId"),
+                    ("jobId", "id"),
+                )
+            )
+        }
+        for raw_job in jobs:
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                break
+            job = dict(raw_job or {})
+            if not str(job.get("canvasGraphRunId") or "").strip():
+                continue
+            lifecycle = dict(job.get("lifecycle") or {})
+            cancellation = dict(lifecycle.get("cancel") or {})
+            reconcile = dict(lifecycle.get("remoteReconcile") or {})
+            local_status = str(job.get("status") or "").strip().lower()
+            provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+            lineage_key = (
+                str(job.get("sessionId") or "").strip(),
+                str(job.get("canvasGraphRunId") or "").strip(),
+                str(job.get("canvasGraphNodeId") or "").strip(),
+                str(job.get("jobId") or "").strip(),
+            )
+            cancellation_uncertain = bool(cancellation) and self._effective_remote_task_may_continue(
+                cancellation,
+                job,
+            )
+            reconcile_uncertain = bool(reconcile) and self._effective_remote_task_may_continue(
+                reconcile,
+                job,
+            )
+            orphaned_active_job = local_status in {"queued", "running", "cancelling"}
+            orphaned_legacy_cancel = local_status == "cancelled" and not cancellation and not reconcile
+            orphaned_archived_job = local_status in {"archived", "deleted"}
+            has_terminal_proof = (
+                self._valid_remote_terminal_proof(reconcile, job)
+                or self._valid_remote_terminal_proof(cancellation, job)
+            )
+            if (
+                lineage_key in recovery_keys
+                and provider_handle
+                and (orphaned_active_job or orphaned_legacy_cancel or orphaned_archived_job)
+                and not cancellation_uncertain
+                and not reconcile_uncertain
+            ):
+                job["providerHandle"] = provider_handle
+                self._schedule_remote_reconcile(
+                    job,
+                    detail_code="engine_restart_interrupted_provider_task_unknown",
+                )
+                self._save_job(job, track_task=False)
+                lifecycle = dict(job.get("lifecycle") or {})
+                cancellation = dict(lifecycle.get("cancel") or {})
+                reconcile = dict(lifecycle.get("remoteReconcile") or {})
+                recovered_orphans += 1
+                reconcile_uncertain = True
+            elif (
+                orphaned_archived_job
+                and provider_handle
+                and not cancellation_uncertain
+                and not reconcile_uncertain
+                and not has_terminal_proof
+            ):
+                # Work-order archive/delete can hide a still-running provider
+                # task. Unlike ordinary active jobs, these terminal-looking
+                # local states are always scheduled for conservative remote
+                # reconciliation unless a canonical proof already exists.
+                job["providerHandle"] = provider_handle
+                self._schedule_remote_reconcile(
+                    job,
+                    detail_code="archived_provider_task_status_unknown",
+                )
+                self._save_job(job, track_task=False)
+                lifecycle = dict(job.get("lifecycle") or {})
+                cancellation = dict(lifecycle.get("cancel") or {})
+                reconcile = dict(lifecycle.get("remoteReconcile") or {})
+                recovered_orphans += 1
+                reconcile_uncertain = True
+            if cancellation_uncertain or reconcile_uncertain:
+                if not reconcile_uncertain:
+                    self._schedule_remote_reconcile(
+                        job,
+                        detail_code="legacy_remote_terminal_proof_missing",
+                    )
+                    self._save_job(job, track_task=False)
+                    reconcile = dict((job.get("lifecycle") or {}).get("remoteReconcile") or {})
+                    reconcile_uncertain = True
+            if not reconcile_uncertain:
+                continue
+            if not force and reconcile and not self._remote_reconcile_is_due(reconcile):
+                continue
+            candidates.append(job)
+        candidates.sort(
+            key=lambda item: str(
+                ((item.get("lifecycle") or {}).get("remoteReconcile") or {}).get("nextReconcileAt")
+                or item.get("updatedAt")
+                or ""
+            )
+        )
+        reports: list[dict[str, Any]] = []
+        for job in candidates[:bounded_limit]:
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                break
+            reports.append(
+                await self.reconcile_remote_job(str(job.get("jobId") or ""), force=force)
+            )
+        summary = {
+            "schema": _REMOTE_RECONCILE_SCHEMA,
+            "scanned": len(jobs),
+            "recoveredOrphans": recovered_orphans,
+            "eligible": len(candidates),
+            "checked": len(reports),
+            "resolved": sum(
+                not bool(item.get("remoteTaskMayContinue", True))
+                and bool(item.get("terminalProof"))
+                for item in reports
+            ),
+            "uncertain": sum(
+                bool(item.get("remoteTaskMayContinue", True))
+                or not bool(item.get("terminalProof"))
+                for item in reports
+            ),
+            "hasMore": len(candidates) > bounded_limit,
+            "stopped": stopped,
+            "completedAt": utc_now_iso(),
+            "reports": reports,
+        }
+        self._remote_reconciler_last_cycle = summary
+        return summary
+
+    async def run_remote_reconciler(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        interval_seconds: float = 5.0,
+        batch_limit: int = 25,
+        on_cycle: Any = None,
+        recovery_candidates: Iterable[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        interval = max(0.1, min(float(interval_seconds), 60.0))
+        cycles = 0
+        recovery_candidates = list(recovery_candidates or [])
+        should_recover_orphans = bool(recovery_candidates)
+        while not stop_event.is_set():
+            try:
+                summary = await self.reconcile_remote_jobs(
+                    limit=batch_limit,
+                    recovery_candidates=recovery_candidates if should_recover_orphans else None,
+                    stop_event=stop_event,
+                )
+                should_recover_orphans = False
+                if callable(on_cycle):
+                    try:
+                        callback_result = on_cycle(summary)
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
+                    except Exception as exc:
+                        summary["cycleCallbackError"] = _exception_summary(exc)
+                        self._remote_reconciler_last_cycle = summary
+            except Exception as exc:
+                self._remote_reconciler_last_cycle = {
+                    "schema": _REMOTE_RECONCILE_SCHEMA,
+                    "status": "failed",
+                    "detailCode": "reconcile_cycle_failed",
+                    "error": _exception_summary(exc),
+                    "completedAt": utc_now_iso(),
+                }
+            cycles += 1
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+        return {"cycles": cycles, "stoppedAt": utc_now_iso()}
+
+    def start_remote_reconciler(
+        self,
+        *,
+        interval_seconds: float = 5.0,
+        batch_limit: int = 25,
+        on_cycle: Any = None,
+        recovery_candidates: Iterable[dict[str, Any]] | None = None,
+    ) -> asyncio.Task[Any]:
+        task = self._remote_reconciler_task
+        if task is not None and not task.done():
+            return task
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            self.run_remote_reconciler(
+                stop_event,
+                interval_seconds=interval_seconds,
+                batch_limit=batch_limit,
+                on_cycle=on_cycle,
+                recovery_candidates=recovery_candidates,
+            ),
+            name="creative-media-remote-reconciler",
+        )
+        self._remote_reconciler_stop = stop_event
+        self._remote_reconciler_task = task
+        return task
+
+    async def stop_remote_reconciler(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        task = self._remote_reconciler_task
+        stop_event = self._remote_reconciler_stop
+        if task is None:
+            return {"status": "not_active", "stoppedAt": utc_now_iso()}
+        if stop_event is not None:
+            stop_event.set()
+        timed_out = False
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=max(0.1, min(float(timeout_seconds), 30.0)),
+            )
+        except asyncio.TimeoutError:
+            timed_out = True
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            pending_lifecycle = [
+                lifecycle_task
+                for (phase, _job_id), lifecycle_task in list(self._lifecycle_tasks.items())
+                if phase == "remote_reconcile" and not lifecycle_task.done()
+            ]
+            for lifecycle_task in pending_lifecycle:
+                lifecycle_task.cancel()
+            if pending_lifecycle:
+                await asyncio.gather(*pending_lifecycle, return_exceptions=True)
+            for key in list(self._lifecycle_tasks):
+                if key[0] == "remote_reconcile":
+                    self._lifecycle_tasks.pop(key, None)
+            result = {"cycles": 0, "stoppedAt": utc_now_iso()}
+        finally:
+            for key, lifecycle_task in list(self._lifecycle_tasks.items()):
+                if key[0] == "remote_reconcile" and lifecycle_task.done():
+                    self._lifecycle_tasks.pop(key, None)
+            if self._remote_reconciler_task is task:
+                self._remote_reconciler_task = None
+                self._remote_reconciler_stop = None
+        return {"status": "timed_out" if timed_out else "completed", **dict(result or {})}
+
+    def remote_reconciler_status(self) -> dict[str, Any]:
+        task = self._remote_reconciler_task
+        return {
+            "running": bool(task is not None and not task.done()),
+            "lastCycle": dict(self._remote_reconciler_last_cycle or {}),
+        }
+
+    def list_remote_reconcile_reports(
+        self,
+        *,
+        remote_task_may_continue: bool | None = None,
+        projection_pending: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        reports: list[dict[str, Any]] = []
+        for job in (self._read_jobs().get("jobs") or {}).values():
+            report = dict(((job or {}).get("lifecycle") or {}).get("remoteReconcile") or {})
+            if not report:
+                continue
+            projection_is_pending = bool(report.get("projectionPending")) or bool(
+                report.get("terminalProof")
+                and not report.get("projectedAt")
+                and self._valid_remote_terminal_proof(report, dict(job))
+            )
+            if (
+                remote_task_may_continue is not None
+                and self._effective_remote_task_may_continue(report, dict(job)) is not remote_task_may_continue
+            ):
+                continue
+            if projection_pending is not None and projection_is_pending is not projection_pending:
+                continue
+            if projection_pending is True and not self._remote_reconcile_is_due(
+                {"nextReconcileAt": report.get("nextProjectionAt")}
+            ):
+                continue
+            reports.append(report)
+        reports.sort(key=lambda item: str(item.get("reconciledAt") or ""), reverse=True)
+        return reports
+
+    def mark_remote_reconcile_projected(
+        self,
+        job_id: str,
+        terminal_proof: dict[str, Any],
+        *,
+        projected_at: str | None = None,
+        projection_error: str = "",
+    ) -> dict[str, Any]:
+        normalized_job_id = str(job_id or "").strip()
+        with self._job_storage_lock(normalized_job_id):
+            job = self.get_job(normalized_job_id, refresh=False)
+            if not job:
+                raise ValueError("creative media remote reconcile job not found")
+            lifecycle = dict(job.get("lifecycle") or {})
+            report = dict(lifecycle.get("remoteReconcile") or {})
+            if not report or not self._valid_remote_terminal_proof(report, job):
+                raise ValueError("creative media remote reconcile has no valid terminal proof")
+            expected_proof = dict(report.get("terminalProof") or {})
+            supplied_proof = dict(terminal_proof or {})
+            if supplied_proof != expected_proof:
+                raise ValueError("creative media remote reconcile terminal proof does not match")
+            # A successful projection is monotonic. A late duplicate callback
+            # cannot reopen an already acknowledged proof as pending.
+            if not bool(report.get("projectionPending", True)):
+                return report
+            attempts = int(report.get("projectionAttempts") or 0)
+            report["projectionAttempts"] = attempts + 1
+            if projection_error:
+                report["projectionPending"] = True
+                report["projectedAt"] = None
+                report["lastProjectionError"] = self._redact_lifecycle_error(projection_error)
+                report["nextProjectionAt"] = self._next_remote_reconcile_at(
+                    attempt=attempts + 1,
+                    now=utc_now_iso(),
+                )
+            else:
+                report["projectionPending"] = False
+                report["projectedAt"] = projected_at or utc_now_iso()
+                report["lastProjectionError"] = None
+                report["nextProjectionAt"] = None
+            lifecycle["remoteReconcile"] = report
+            job["lifecycle"] = lifecycle
+            self._save_job(job, track_task=False)
+            return report
+
     async def _cancel_job_once(self, job_id: str) -> dict[str, Any]:
         job = self.get_job(job_id, refresh=False)
         if not job:
@@ -3877,11 +5059,74 @@ class CreativeMediaRuntime:
         if job.get("status") == "cancelled" and existing:
             return existing
         if job.get("status") in {"succeeded", "failed"}:
+            provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+            if provider_handle:
+                job["providerHandle"] = provider_handle
+                lifecycle = dict(job.get("lifecycle") or {})
+                proved_report = next(
+                    (
+                        candidate
+                        for candidate in (
+                            dict(lifecycle.get("cancel") or {}),
+                            dict(lifecycle.get("remoteReconcile") or {}),
+                        )
+                        if self._valid_remote_terminal_proof(candidate, job)
+                    ),
+                    None,
+                )
+                if proved_report:
+                    proof = dict(proved_report.get("terminalProof") or {})
+                    report = self._record_job_lifecycle(
+                        job,
+                        phase="cancel",
+                        status="not_active",
+                        detail_code="provider_terminal_status_confirmed",
+                        remote_task_may_continue=False,
+                    )
+                    report["providerStatus"] = str(proof.get("providerStatus") or "")
+                    report["terminalProof"] = proof
+                else:
+                    report = self._record_job_lifecycle(
+                        job,
+                        phase="cancel",
+                        status="not_active",
+                        detail_code="provider_terminal_reconciliation_scheduled",
+                        remote_task_may_continue=True,
+                    )
+                    self._schedule_remote_reconcile(
+                        job,
+                        detail_code="provider_terminal_proof_required",
+                    )
+                self._save_job(job, track_task=False)
+                return report
+
+            operation_kind = str(job.get("operationKind") or "").strip()
+            if operation_kind in GOVERNED_LOCAL_OPERATION_KINDS:
+                observed_at = utc_now_iso()
+                terminal_proof = {
+                    "schema": _LOCAL_TERMINAL_PROOF_SCHEMA,
+                    "jobId": str(job.get("jobId") or "").strip(),
+                    "status": str(job.get("status") or "").strip(),
+                    "source": "governed_local_job_state",
+                    "observedAt": observed_at,
+                }
+                report = self._record_job_lifecycle(
+                    job,
+                    phase="cancel",
+                    status="not_active",
+                    detail_code="governed_local_job_already_terminal",
+                    remote_task_may_continue=False,
+                )
+                report["terminalProof"] = terminal_proof
+                self._save_job(job, track_task=False)
+                return report
+
             report = self._record_job_lifecycle(
                 job,
                 phase="cancel",
                 status="not_active",
-                detail_code="job_already_terminal",
+                detail_code="terminal_job_origin_unverified",
+                remote_task_may_continue=True,
             )
             self._save_job(job, track_task=False)
             return report
@@ -3907,6 +5152,31 @@ class CreativeMediaRuntime:
             remote_task_may_continue=bool(outcome.get("remoteTaskMayContinue", True)),
             error=str(outcome.get("error") or ""),
         )
+        provider_status = str(outcome.get("providerStatus") or "")
+        if (
+            report["remoteTaskMayContinue"] is False
+            and provider_status in {"cancelled", "failed", "succeeded"}
+        ):
+            terminal_proof = {
+                "schema": _REMOTE_TERMINAL_PROOF_SCHEMA,
+                "source": str(outcome.get("source") or "provider_cancel_response"),
+                "providerHandle": dict(report.get("providerHandle") or {}),
+                "providerStatus": provider_status,
+                "observedAt": str(report.get("completedAt") or utc_now_iso()),
+            }
+            report["providerStatus"] = provider_status
+            report["providerStatusRaw"] = str(outcome.get("providerStatusRaw") or "")
+            report["terminalProof"] = terminal_proof
+            lifecycle = dict(job.get("lifecycle") or {})
+            lifecycle["cancel"] = report
+            job["lifecycle"] = lifecycle
+        remote_task_may_continue = self._effective_remote_task_may_continue(report, job)
+        if remote_task_may_continue:
+            # A durable provider handle is uncertain until a canonical terminal
+            # proof is attached, even when a legacy adapter returned false.
+            report["remoteTaskMayContinue"] = True
+        if remote_task_may_continue and str(job.get("canvasGraphRunId") or "").strip():
+            self._schedule_remote_reconcile(job)
         job["status"] = "cancelled"
         job["cancellationReason"] = "runtime_cancel_requested"
         job["cancelledAt"] = utc_now_iso()
@@ -4022,6 +5292,117 @@ class CreativeMediaRuntime:
         job = self.get_job(job_id, refresh=False) or {}
         return [dict(item) for item in list(job.get("artifacts") or []) if isinstance(item, dict)]
 
+    def authorized_job_artifacts(self, job_id: str, *, session_id: str) -> list[dict[str, Any]]:
+        job = self.get_authorized_job(job_id, session_id=session_id)
+        if not job:
+            return []
+        return [dict(item) for item in list(job.get("artifacts") or []) if isinstance(item, dict)]
+
+    @staticmethod
+    def public_job_projection(job: dict[str, Any]) -> dict[str, Any]:
+        public_job_keys = {
+            "jobId",
+            "sessionId",
+            "runId",
+            "canvasGraphRunId",
+            "canvasGraphNodeId",
+            "modality",
+            "operationKind",
+            "adapter",
+            "status",
+            "qualityStatus",
+            "model",
+            "modelUsed",
+            "artifacts",
+            "error",
+            "createdAt",
+            "updatedAt",
+            "completedAt",
+            "cancelledAt",
+            "cancellationReason",
+            "statusBeforeCancellation",
+            "lifecycle",
+        }
+
+        def strip_provider_urls(value: Any, *, key: str = "") -> Any:
+            normalized_key = key.lower()
+            if any(marker in normalized_key for marker in (
+                "url",
+                "endpoint",
+                "apikey",
+                "api_key",
+                "token",
+                "secret",
+                "providerhandle",
+                "terminalproof",
+                "providerstatusraw",
+                "sourcepath",
+                "workspacepath",
+            )):
+                return None
+            if isinstance(value, dict):
+                return {
+                    str(child_key): child_value
+                    for child_key, child in value.items()
+                    if (child_value := strip_provider_urls(child, key=str(child_key))) is not None
+                    and str(child_key).lower() not in {"raw", "responsebody", "providerresponsebody"}
+                }
+            if isinstance(value, list):
+                return [item for child in value if (item := strip_provider_urls(child, key=key)) is not None]
+            return value
+
+        projected = {
+            key: value
+            for key, value in dict(job or {}).items()
+            if key in public_job_keys
+        }
+        projected["request"] = strip_provider_urls({
+            key: dict(job or {}).get(key)
+            for key in (
+                "modality",
+                "operationKind",
+                "sessionId",
+                "runId",
+                "canvasGraphRunId",
+                "canvasGraphNodeId",
+                "model",
+                "modelRef",
+            )
+            if dict(job or {}).get(key) not in (None, "", {}, [])
+        })
+        projected["artifacts"] = strip_provider_urls(list(dict(job or {}).get("artifacts") or []))
+        if projected.get("error"):
+            projected["error"] = CreativeMediaRuntime._redact_lifecycle_error(projected["error"])
+        lifecycle = dict(projected.get("lifecycle") or {})
+        lifecycle_keys = {
+            "phase",
+            "status",
+            "detailCode",
+            "adapter",
+            "providerStatus",
+            "remoteTaskMayContinue",
+            "attempt",
+            "reconciledAt",
+            "nextReconcileAt",
+            "projectionPending",
+            "projectedAt",
+            "projectionAttempts",
+            "lastProjectionError",
+            "nextProjectionAt",
+            "completedAt",
+        }
+        lifecycle = {
+            phase: {
+                key: value
+                for key, value in dict(raw_report).items()
+                if key in lifecycle_keys
+            }
+            for phase, raw_report in lifecycle.items()
+            if isinstance(raw_report, dict)
+        }
+        projected["lifecycle"] = lifecycle
+        return projected
+
     def list_jobs(self, *, modality: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
         jobs = list((self._read_jobs().get("jobs") or {}).values())
         normalized_modality = str(modality or "").strip().lower()
@@ -4034,6 +5415,28 @@ class CreativeMediaRuntime:
                 continue
             result.append(dict(job))
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        return result
+
+    def list_authorized_jobs(
+        self,
+        *,
+        session_id: str,
+        modality: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_session_id = str(session_id or "").strip()
+        authority = self._job_workspace_authority(normalized_session_id)
+        result: list[dict[str, Any]] = []
+        for job in self.list_jobs(modality=modality, status=status):
+            try:
+                self._assert_job_workspace_authority(
+                    job,
+                    session_id=normalized_session_id,
+                    authority=authority,
+                )
+            except PermissionError:
+                continue
+            result.append(job)
         return result
 
     async def create_job(
@@ -4614,7 +6017,27 @@ class CreativeMediaRuntime:
         original = self.get_job(job_id, refresh=False)
         if not original:
             raise ValueError(f"Creative Media job not found: {job_id}")
-        payload = {**dict(original.get("request") or {}), **dict(request or {})}
+        retry_request = dict(request or {})
+        for key in (
+            "sessionId",
+            "session_id",
+            "projectId",
+            "project_id",
+            "workspaceId",
+            "workspace_id",
+            "workspacePath",
+            "workspace_path",
+        ):
+            retry_request.pop(key, None)
+        payload = {**dict(original.get("request") or {}), **retry_request}
+        payload.update(
+            {
+                "sessionId": str(original.get("sessionId") or "").strip(),
+                "projectId": str(original.get("projectId") or "").strip(),
+                "workspaceId": str(original.get("workspaceId") or "").strip(),
+                "workspacePath": str(original.get("workspacePath") or "").strip(),
+            }
+        )
         payload["retryOfJobId"] = job_id
         payload["operationKind"] = original.get("operationKind") or payload.get("operationKind")
         payload["modality"] = original.get("modality") or payload.get("modality")
@@ -4624,6 +6047,22 @@ class CreativeMediaRuntime:
         else:
             payload["retryReason"] = str(payload.get("retryReason") or "quality_or_provider_retry")
         return await self.create_job(payload)
+
+    async def retry_authorized_job(
+        self,
+        job_id: str,
+        *,
+        session_id: str,
+        request: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        original = self.get_authorized_job(
+            job_id,
+            session_id=session_id,
+            require_write=True,
+        )
+        if not original:
+            raise ValueError(f"Creative Media job not found: {job_id}")
+        return await self.retry_job(job_id, request)
 
     async def _create_job_with_model_fallback(
         self,
@@ -6809,7 +8248,7 @@ class CreativeMediaRuntime:
         return binding, workflow, base_url, headers
 
     async def _submit_comfyui_workflow_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        _binding, workflow, base_url, headers = self._comfyui_binding(request)
+        binding, workflow, base_url, headers = self._comfyui_binding(request)
         session_id = str(request.get("sessionId") or request.get("session_id") or "").strip()
         canvas_inputs = [dict(item) for item in list(request.get("canvasInputs") or []) if isinstance(item, dict)]
         uploaded_inputs: dict[str, str] = {}
@@ -6851,7 +8290,7 @@ class CreativeMediaRuntime:
         job["providerTaskId"] = prompt_id
         job["providerRequestHash"] = self._provider_request_hash(prompt)
         job["providerResponse"] = {
-            "providerId": str(job.get("providerId") or "comfyui"),
+            "providerId": str(binding.get("providerId") or "comfyui"),
             "promptId": prompt_id,
             "workflowDigest": workflow["digest"],
             "uploadedInputs": upload_proof,

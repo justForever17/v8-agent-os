@@ -306,6 +306,7 @@ def _new_lifespan_state(app: FastAPI) -> dict[str, object]:
             "network_neighbor": False,
             "network_relay": False,
             "episode_runner": False,
+            "creative_media_reconciler": False,
         },
         "tasks": [],
         "cleanup_started": False,
@@ -425,6 +426,14 @@ async def _shutdown_lifespan_services(
         await _attempt(f"task.cancel:{attribute}", _cancel_task)
         setattr(app.state, attribute, None)
 
+    if started.get("creative_media_reconciler"):
+        async def _stop_creative_media_reconciler() -> None:
+            from runtimes.creative_media.runtime import creative_media_runtime
+
+            await creative_media_runtime.stop_remote_reconciler()
+
+        await _attempt("creative_media_reconciler.stop", _stop_creative_media_reconciler)
+
     if started.get("mcp"):
         await _attempt("mcp.cleanup", _safe_cleanup)
     if reason == "shutdown":
@@ -491,8 +500,82 @@ async def _reconcile_creative_canvas_graph_runs():
         result = await asyncio.to_thread(creative_canvas_graph_service.reconcile_startup)
         if any(result.values()):
             print("[Engine] Creative Canvas graph reconciliation completed.", result)
+        return result
     except Exception as e:
         print(f"[Engine] Creative Canvas graph reconciliation error (non-fatal): {e}")
+        return {}
+
+
+async def _start_creative_media_remote_reconciler(
+    recovery_candidates: list[dict[str, object]] | None = None,
+) -> asyncio.Task:
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    async def project_remote_terminal_reports(_summary: dict[str, object] | None = None) -> None:
+        from core.creative_canvas_graph import creative_canvas_graph_service
+
+        reports = await asyncio.to_thread(
+            creative_media_runtime.list_remote_reconcile_reports,
+            remote_task_may_continue=False,
+            projection_pending=True,
+        )
+        for report in reports:
+            job_id = str(report.get("jobId") or "").strip()
+            proof = dict(report.get("terminalProof") or {})
+            if not job_id or not proof:
+                continue
+            try:
+                await asyncio.to_thread(
+                    creative_canvas_graph_service.apply_remote_terminal_reconciliation,
+                    dict(report),
+                )
+            except Exception as exc:
+                try:
+                    await asyncio.to_thread(
+                        creative_media_runtime.mark_remote_reconcile_projected,
+                        job_id,
+                        proof,
+                        projection_error=f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception as mark_exc:
+                    print(
+                        "[Engine] Creative Media remote terminal projection retry could not be recorded:",
+                        type(mark_exc).__name__,
+                    )
+                continue
+            try:
+                await asyncio.to_thread(
+                    creative_media_runtime.mark_remote_reconcile_projected,
+                    job_id,
+                    proof,
+                )
+            except Exception as exc:
+                print(
+                    "[Engine] Creative Media remote terminal projection acknowledgement failed:",
+                    type(exc).__name__,
+                )
+
+    return creative_media_runtime.start_remote_reconciler(
+        on_cycle=project_remote_terminal_reports,
+        recovery_candidates=recovery_candidates or [],
+    )
+
+
+async def _run_creative_canvas_outbox_repair_loop(*, interval_seconds: float = 5.0) -> None:
+    from core.creative_canvas_graph import creative_canvas_graph_service
+
+    interval = max(0.1, min(float(interval_seconds), 60.0))
+    while True:
+        try:
+            await asyncio.to_thread(
+                creative_canvas_graph_service.repair_graph_run_state_outbox,
+                limit=2048,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[Engine] Creative Canvas outbox repair cycle failed:", type(exc).__name__)
+        await asyncio.sleep(interval)
 
 
 async def _reconcile_config_broker_transactions(
@@ -618,7 +701,24 @@ async def _start_lifespan_services(app: FastAPI, state: dict[str, object]) -> No
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
     await _reconcile_engineering_workspaces()
-    await _reconcile_creative_canvas_graph_runs()
+    canvas_reconciliation = await _reconcile_creative_canvas_graph_runs() or {}
+    recovery_candidates = list(canvas_reconciliation.get("remoteReconcileCandidates") or [])
+    canvas_outbox_repair_task = asyncio.create_task(
+        _run_creative_canvas_outbox_repair_loop(),
+        name="creative-canvas-outbox-repair",
+    )
+    _track_lifespan_task(
+        app,
+        state,
+        "creative_canvas_outbox_repair_task",
+        canvas_outbox_repair_task,
+    )
+    _mark_lifespan_service_starting(state, "creative_media_reconciler")
+    creative_media_reconciler_task = await _start_creative_media_remote_reconciler(recovery_candidates)
+    creative_media_reconciler_task.add_done_callback(
+        lambda task: _log_background_task(task, "creative_media_remote_reconciler")
+    )
+    app.state.creative_media_remote_reconciler_task = creative_media_reconciler_task
     startup_metrics["reconciliationMs"] = round((time.perf_counter() - reconciliation_started_at) * 1000, 2)
     service_start_started_at = time.perf_counter()
     async def _cleanup_terminal_engineering_workspaces() -> None:

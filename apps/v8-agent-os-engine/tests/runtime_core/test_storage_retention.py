@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -241,6 +242,212 @@ def test_retention_prune_preserves_user_visible_messages(monkeypatch):
         with db.get_connection() as conn:
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM chat_canonical_messages").fetchone()[0] == 1
+
+
+def test_retention_prunes_only_projected_canvas_outbox_without_runtime_events(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+        now = "2026-08-16T00:00:00Z"
+        with db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_graphs(
+                    graph_id, session_id, workspace_key, schema_version, revision,
+                    graph_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 3, 1, ?, ?, ?)
+                """,
+                ("graph-retention", "s1", "workspace-key", "{}", now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_graph_runs(
+                    graph_run_id, graph_id, session_id, canvas_operation_id, graph_revision,
+                    target_node_ids_json, plan_json, node_states_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, '[]', '{}', '{}', 'succeeded', ?, ?)
+                """,
+                ("run-retention", "graph-retention", "s1", "operation-retention", now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO runtime_events(
+                    id, session_id, seq, kind, topic, event_ts, source_json, payload_json
+                ) VALUES (?, ?, ?, 'event', 'canvas.graph.run.state', ?, '{}', '{}')
+                """,
+                ("runtime-live", "s1", 1, now),
+            )
+            outbox_rows = [
+                ("outbox-live", "event-live", "runtime-live", now, now, ""),
+                ("outbox-orphan", "event-orphan", "runtime-orphan", now, now, "retry_failed_branch"),
+                ("outbox-pending", "event-pending", None, "2026-08-16T00:00:00.001Z", None, ""),
+            ]
+            for outbox_id, event_id, runtime_event_id, expected_at, projected_at, transition in outbox_rows:
+                conn.execute(
+                    """
+                    INSERT INTO creative_canvas_graph_run_event_outbox(
+                        outbox_id, event_id, graph_run_id, session_id, expected_status,
+                        expected_updated_at, transition, run_row_json, runtime_event_id,
+                        created_at, projected_at
+                    ) VALUES (?, ?, 'run-retention', 's1', 'succeeded', ?, ?, '{}', ?, ?, ?)
+                    """,
+                    (outbox_id, event_id, expected_at, transition, runtime_event_id, now, projected_at),
+                )
+            conn.commit()
+
+        service = _make_service(1)
+        dry_run = service._prune_projected_canvas_outbox(dry_run=True)
+        assert dry_run == [{"action": "prune_projected_canvas_outbox", "rows": 1, "dryRun": True}]
+        with db.get_connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM creative_canvas_graph_run_event_outbox").fetchone()[0] == 3
+
+        applied = service._prune_projected_canvas_outbox(dry_run=False)
+        assert applied == [{"action": "prune_projected_canvas_outbox", "rows": 1, "dryRun": False}]
+        with db.get_connection() as conn:
+            remaining = {
+                row["outbox_id"]
+                for row in conn.execute(
+                    "SELECT outbox_id FROM creative_canvas_graph_run_event_outbox"
+                ).fetchall()
+            }
+        assert remaining == {"outbox-live", "outbox-pending"}
+
+
+def test_retention_expires_only_old_terminal_direct_canvas_events_and_projected_outbox(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        old_at = "2020-01-01T00:00:00Z"
+        recent_at = "2099-01-01T00:00:00Z"
+
+        cases = (
+            ("old", "succeeded", old_at, ("queued", "completed")),
+            ("recent", "succeeded", recent_at, ("completed",)),
+            ("active", "running", old_at, ("running",)),
+        )
+        for case, _run_status, _event_at, _event_statuses in cases:
+            db.create_or_update_session(f"session-{case}", case, user_id="user")
+        with db.get_connection() as conn:
+            for case, run_status, event_at, event_statuses in cases:
+                session_id = f"session-{case}"
+                graph_id = f"graph-{case}"
+                graph_run_id = f"run-{case}"
+                conn.execute(
+                    """
+                    INSERT INTO creative_canvas_graphs(
+                        graph_id, session_id, workspace_key, schema_version, revision,
+                        graph_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, 3, 1, '{}', ?, ?)
+                    """,
+                    (graph_id, session_id, f"workspace-{case}", event_at, event_at),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO creative_canvas_graph_runs(
+                        graph_run_id, graph_id, session_id, chat_run_id, canvas_operation_id,
+                        graph_revision, target_node_ids_json, plan_json, node_states_json,
+                        status, created_at, updated_at, completed_at
+                    ) VALUES (?, ?, ?, NULL, ?, 1, '[]', '{}', '{}', ?, ?, ?, ?)
+                    """,
+                    (
+                        graph_run_id,
+                        graph_id,
+                        session_id,
+                        f"operation-{case}",
+                        run_status,
+                        event_at,
+                        event_at,
+                        event_at if run_status != "running" else None,
+                    ),
+                )
+                for seq, public_status in enumerate(event_statuses, start=1):
+                    event_id = f"event-{case}-{seq}"
+                    outbox_id = f"outbox-{case}-{seq}"
+                    payload = json.dumps(
+                        {
+                            "schema": "v8.canvas_graph_run_state.v1",
+                            "sessionId": session_id,
+                            "graphRunId": graph_run_id,
+                            "status": public_status,
+                        }
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO runtime_events(
+                            id, session_id, run_id, seq, kind, topic, event_ts,
+                            source_json, payload_json, created_at
+                        ) VALUES (?, ?, NULL, ?, 'event', 'canvas.graph.run.state', ?, '{}', ?, ?)
+                        """,
+                        (event_id, session_id, seq, event_at, payload, event_at),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO creative_canvas_graph_run_event_outbox(
+                            outbox_id, event_id, graph_run_id, session_id, expected_status,
+                            expected_updated_at, transition, run_row_json, runtime_event_id,
+                            created_at, projected_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, '', '{}', ?, ?, ?)
+                        """,
+                        (
+                            outbox_id,
+                            f"intent-event-{case}-{seq}",
+                            graph_run_id,
+                            session_id,
+                            run_status if seq == len(event_statuses) else "queued",
+                            f"{event_at}.{seq}",
+                            event_id,
+                            event_at,
+                            event_at,
+                        ),
+                    )
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_graph_run_event_outbox(
+                    outbox_id, event_id, graph_run_id, session_id, expected_status,
+                    expected_updated_at, transition, run_row_json, created_at
+                ) VALUES (
+                    'outbox-old-pending', 'intent-event-old-pending', 'run-old', 'session-old',
+                    'succeeded', '2020-01-01T00:00:00Z.pending',
+                    'remote_terminal_reconciled', '{}', '2020-01-01T00:00:00Z'
+                )
+                """
+            )
+            conn.commit()
+
+        service = _make_service(1)
+        dry_run = service._prune_terminal_canvas_runtime_events(dry_run=True)
+        assert dry_run == [
+            {
+                "action": "prune_terminal_canvas_runtime_events",
+                "rows": 2,
+                "retentionDays": 30,
+                "dryRun": True,
+            }
+        ]
+        with db.get_connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0] == 4
+
+        applied = service._prune_terminal_canvas_runtime_events(dry_run=False)
+        assert applied[0]["rows"] == 2
+        assert service._prune_projected_canvas_outbox(dry_run=False)[0]["rows"] == 2
+        with db.get_connection() as conn:
+            remaining_events = {
+                row["id"] for row in conn.execute("SELECT id FROM runtime_events").fetchall()
+            }
+            remaining_outbox = {
+                row["outbox_id"]
+                for row in conn.execute(
+                    "SELECT outbox_id FROM creative_canvas_graph_run_event_outbox"
+                ).fetchall()
+            }
+        assert remaining_events == {"event-recent-1", "event-active-1"}
+        assert remaining_outbox == {
+            "outbox-recent-1",
+            "outbox-active-1",
+            "outbox-old-pending",
+        }
 
 
 def test_add_message_is_idempotent_for_canonical_projection_updates():

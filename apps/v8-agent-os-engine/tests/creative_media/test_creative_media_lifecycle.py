@@ -44,7 +44,7 @@ def _provider_job(
         adapter=adapter,
         request={
             "operationKind": "video.text_to_video",
-            "endpointBinding": {"baseUrl": base_url, "adapter": adapter},
+            "endpointBinding": {"baseUrl": base_url, "adapter": adapter, "providerId": provider_id},
         },
     )
     job["status"] = status
@@ -69,6 +69,59 @@ def test_provider_handle_is_persisted_with_recoverable_job_state(lifecycle_runti
         "operationKind": "video.text_to_video",
     }
     assert fake_storage.payloads[JOB_STORE_FILE]["jobs"][job["jobId"]]["providerHandle"] == job["providerHandle"]
+
+
+def test_terminal_provider_job_without_proof_schedules_remote_reconciliation(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(
+        runtime,
+        adapter="minimax_video",
+        status="failed",
+        task_id="terminal-provider-unproved",
+    )
+    job["sessionId"] = "session-terminal-provider"
+    job["canvasGraphRunId"] = "canvas-run-terminal-provider"
+    job["canvasGraphNodeId"] = "action-terminal-provider"
+    runtime._save_job(job, track_task=False)
+
+    report = asyncio.run(runtime.cancel_job(job["jobId"]))
+    stored = runtime.get_job(job["jobId"], refresh=False)
+
+    assert report["status"] == "not_active"
+    assert report["detailCode"] == "provider_terminal_reconciliation_scheduled"
+    assert report["remoteTaskMayContinue"] is True
+    assert report.get("terminalProof") is None
+    assert stored["lifecycle"]["remoteReconcile"]["status"] == "pending"
+    assert stored["lifecycle"]["remoteReconcile"]["remoteTaskMayContinue"] is True
+    assert stored["lifecycle"]["remoteReconcile"]["nextReconcileAt"]
+
+
+def test_terminal_governed_local_job_emits_strong_local_terminal_proof(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = runtime._new_job(
+        modality="video",
+        adapter="governed_local",
+        request={"operationKind": "video.trim_exact"},
+    )
+    job["status"] = "failed"
+    job["error"] = "local trim fixture failed"
+    runtime._save_job(job, track_task=False)
+
+    report = asyncio.run(runtime.cancel_job(job["jobId"]))
+    stored = runtime.get_job(job["jobId"], refresh=False)
+
+    assert report["status"] == "not_active"
+    assert report["detailCode"] == "governed_local_job_already_terminal"
+    assert report["remoteTaskMayContinue"] is False
+    assert report["terminalProof"] == {
+        "schema": "v8.creative_media_local_terminal_proof.v1",
+        "jobId": job["jobId"],
+        "status": "failed",
+        "source": "governed_local_job_state",
+        "observedAt": report["terminalProof"]["observedAt"],
+    }
+    assert stored["lifecycle"]["cancel"]["terminalProof"] == report["terminalProof"]
+    assert "remoteReconcile" not in stored["lifecycle"]
 
 
 def test_cancel_lifecycle_is_singleflight_and_shielded_from_caller_cancel(
@@ -226,6 +279,7 @@ def test_volcengine_cancel_calls_bound_delete_route(lifecycle_runtime, monkeypat
     assert report["status"] == "completed"
     assert report["detailCode"] == "volcengine_cancel_request_accepted"
     assert report["remoteTaskMayContinue"] is True
+    assert report.get("terminalProof") is None
     assert calls == [
         {
             "method": "DELETE",
@@ -284,6 +338,15 @@ def test_dashscope_only_calls_cancel_for_pending_task(lifecycle_runtime, monkeyp
     assert pending_report["status"] == "completed"
     assert pending_report["detailCode"] == "dashscope_pending_cancel_request_accepted"
     assert pending_report["remoteTaskMayContinue"] is False
+    assert pending_report["providerStatus"] == "cancelled"
+    assert pending_report["providerStatusRaw"] == "canceled"
+    assert pending_report["terminalProof"] == {
+        "schema": "v8.creative_media_remote_terminal_proof.v1",
+        "source": "dashscope_cancel_response",
+        "providerHandle": pending["providerHandle"],
+        "providerStatus": "cancelled",
+        "observedAt": pending_report["completedAt"],
+    }
     assert running_report["status"] == "unsupported"
     assert running_report["detailCode"] == "dashscope_only_cancels_pending_tasks"
     assert running_report["remoteTaskMayContinue"] is True
@@ -603,3 +666,799 @@ def test_late_provider_poll_cannot_resurrect_cancelled_job(lifecycle_runtime) ->
     assert saved["status"] == "cancelled"
     assert saved["lifecycle"]["cancel"]["status"] == "unsupported"
     assert saved["completedAt"] != "later-provider-write"
+
+
+def _cancelled_uncertain_canvas_job(
+    runtime: CreativeMediaRuntime,
+    *,
+    adapter: str = "minimax_video",
+    task_id: str = "remote-reconcile-task",
+) -> dict:
+    job = _provider_job(runtime, adapter=adapter, task_id=task_id)
+    job["sessionId"] = "session-reconcile"
+    job["canvasGraphRunId"] = "canvas-run-reconcile"
+    job["canvasGraphNodeId"] = "action-reconcile"
+    runtime._save_job(job, track_task=False)
+    asyncio.run(runtime.cancel_job(job["jobId"]))
+    return runtime.get_job(job["jobId"], refresh=False)
+
+
+def test_uncertain_canvas_cancel_persists_remote_reconcile_schedule(lifecycle_runtime) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime)
+
+    report = job["lifecycle"]["remoteReconcile"]
+    assert report == fake_storage.payloads[JOB_STORE_FILE]["jobs"][job["jobId"]]["lifecycle"]["remoteReconcile"]
+    assert report["schema"] == "v8.creative_media_remote_reconcile.v1"
+    assert report["jobId"] == job["jobId"]
+    assert report["sessionId"] == "session-reconcile"
+    assert report["canvasGraphRunId"] == "canvas-run-reconcile"
+    assert report["canvasGraphNodeId"] == "action-reconcile"
+    assert report["status"] == "pending"
+    assert report["detailCode"] == "remote_terminal_proof_required"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["attempt"] == 0
+    assert report["nextReconcileAt"]
+    assert report["terminalProof"] is None
+    assert report["providerHandle"]["taskId"] == "remote-reconcile-task"
+
+
+def test_remote_reconcile_keeps_active_provider_task_uncertain(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime)
+
+    async def running_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "running",
+            "providerStatusRaw": "processing",
+            "source": "provider_test_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", running_probe)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "waiting"
+    assert report["detailCode"] == "provider_task_still_active"
+    assert report["providerStatus"] == "running"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["attempt"] == 1
+    assert report["reconciledAt"]
+    assert report["nextReconcileAt"]
+    assert report["terminalProof"] is None
+    stored = runtime.get_job(job["jobId"], refresh=False)
+    assert stored["status"] == "cancelled"
+    assert stored["lifecycle"]["cancel"]["remoteTaskMayContinue"] is True
+
+
+@pytest.mark.parametrize("provider_status", ["cancelled", "failed", "succeeded"])
+def test_remote_reconcile_requires_explicit_terminal_status_before_clearing_uncertainty(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_status: str,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id=f"terminal-{provider_status}")
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": provider_status,
+            "providerStatusRaw": provider_status.upper(),
+            "source": "provider_test_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "resolved"
+    assert report["detailCode"] == "provider_terminal_status_confirmed"
+    assert report["providerStatus"] == provider_status
+    assert report["remoteTaskMayContinue"] is False
+    assert report["nextReconcileAt"] is None
+    assert report["terminalProof"] == {
+        "schema": "v8.creative_media_remote_terminal_proof.v1",
+        "source": "provider_test_status",
+        "providerHandle": job["providerHandle"],
+        "providerStatus": provider_status,
+        "observedAt": report["reconciledAt"],
+    }
+    stored = runtime.get_job(job["jobId"], refresh=False)
+    assert stored["status"] == "cancelled"
+    assert stored["lifecycle"]["cancel"]["remoteTaskMayContinue"] is False
+    assert stored["lifecycle"]["cancel"]["terminalProof"] == report["terminalProof"]
+
+
+def test_remote_reconcile_failure_remains_uncertain_and_restart_scan_recovers(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="restart-reconcile")
+
+    async def unreachable_probe(_job: dict) -> dict:
+        raise RuntimeError("provider is unreachable")
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", unreachable_probe)
+    failed = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    assert failed["detailCode"] == "provider_status_check_failed"
+    assert failed["remoteTaskMayContinue"] is True
+    assert failed["nextReconcileAt"]
+
+    recovered_runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(recovered_runtime, "_record_terminal_job_observations", lambda _job: None)
+
+    async def recovered_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "source": "provider_restart_status",
+        }
+
+    monkeypatch.setattr(recovered_runtime, "_probe_provider_remote_status", recovered_probe)
+    summary = asyncio.run(recovered_runtime.reconcile_remote_jobs(force=True))
+
+    assert summary["checked"] == 1
+    assert summary["resolved"] == 1
+    assert summary["uncertain"] == 0
+    assert summary["reports"][0]["jobId"] == job["jobId"]
+    assert summary["reports"][0]["terminalProof"]["source"] == "provider_restart_status"
+    stored = fake_storage.payloads[JOB_STORE_FILE]["jobs"][job["jobId"]]
+    assert stored["lifecycle"]["cancel"]["remoteTaskMayContinue"] is False
+    assert recovered_runtime.list_remote_reconcile_reports(remote_task_may_continue=False)[0]["jobId"] == job["jobId"]
+
+
+def test_restart_recovery_discovers_active_canvas_provider_orphan_only_when_explicit(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="restart-active-provider")
+    job["sessionId"] = "session-restarted"
+    job["canvasGraphRunId"] = "canvas-run-restarted"
+    job["canvasGraphNodeId"] = "action-restarted"
+    runtime._save_job(job, track_task=False)
+
+    recovered_runtime = CreativeMediaRuntime()
+    monkeypatch.setattr(recovered_runtime, "_record_terminal_job_observations", lambda _job: None)
+    ordinary_cycle = asyncio.run(recovered_runtime.reconcile_remote_jobs())
+    assert ordinary_cycle["checked"] == 0
+    assert ordinary_cycle["recoveredOrphans"] == 0
+    assert recovered_runtime.get_job(job["jobId"], refresh=False).get("lifecycle") is None
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "failed",
+            "providerStatusRaw": "FAILED",
+            "source": "provider_restart_orphan_status",
+        }
+
+    monkeypatch.setattr(recovered_runtime, "_probe_provider_remote_status", terminal_probe)
+    recovered_cycle = asyncio.run(
+        recovered_runtime.reconcile_remote_jobs(
+            recovery_candidates=[
+                {
+                    "sessionId": "session-restarted",
+                    "graphRunId": "canvas-run-restarted",
+                    "nodeId": "action-restarted",
+                    "jobId": job["jobId"],
+                }
+            ]
+        )
+    )
+
+    assert recovered_cycle["recoveredOrphans"] == 1
+    assert recovered_cycle["checked"] == 1
+    assert recovered_cycle["resolved"] == 1
+    report = recovered_cycle["reports"][0]
+    assert report["jobId"] == job["jobId"]
+    assert report["canvasGraphRunId"] == "canvas-run-restarted"
+    assert report["canvasGraphNodeId"] == "action-restarted"
+    assert report["remoteTaskMayContinue"] is False
+    assert report["terminalProof"]["providerStatus"] == "failed"
+    assert report["terminalProof"]["source"] == "provider_restart_orphan_status"
+
+
+def test_archived_canvas_provider_orphan_is_reconciled_without_broad_active_scan(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="archived-provider-orphan")
+    job["sessionId"] = "session-archived-orphan"
+    job["canvasGraphRunId"] = "canvas-run-archived-orphan"
+    job["canvasGraphNodeId"] = "action-archived-orphan"
+    job["status"] = "archived"
+    job["archivedAt"] = "2026-08-16T00:00:00Z"
+    runtime._save_job(job, track_task=False)
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "failed",
+            "providerStatusRaw": "-1",
+            "source": "archived_orphan_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    summary = asyncio.run(runtime.reconcile_remote_jobs())
+
+    assert summary["recoveredOrphans"] == 1
+    assert summary["checked"] == 1
+    assert summary["resolved"] == 1
+    report = summary["reports"][0]
+    assert report["detailCode"] == "provider_terminal_status_confirmed"
+    assert report["terminalProof"]["providerStatus"] == "failed"
+
+
+def test_archived_canvas_provider_orphan_with_terminal_proof_is_not_rescanned(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="archived-terminal-proof")
+    stored = fake_storage.payloads[JOB_STORE_FILE]["jobs"][job["jobId"]]
+    stored["status"] = "archived"
+    stored["archivedAt"] = "2026-08-16T00:00:00Z"
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "source": "archived_terminal_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    first = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    assert first["remoteTaskMayContinue"] is False
+    calls = 0
+
+    async def should_not_probe(_job: dict) -> dict:
+        nonlocal calls
+        calls += 1
+        return {"providerStatus": "running", "source": "unexpected"}
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", should_not_probe)
+    summary = asyncio.run(runtime.reconcile_remote_jobs(force=True))
+    assert summary["checked"] == 0
+    assert calls == 0
+
+
+def test_remote_reconcile_is_singleflight_and_shielded(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="reconcile-singleflight")
+    calls = 0
+
+    async def scenario() -> tuple[dict, dict]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_probe(_job: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {
+                "providerStatus": "running",
+                "providerStatusRaw": "RUNNING",
+                "source": "provider_singleflight_status",
+            }
+
+        monkeypatch.setattr(runtime, "_probe_provider_remote_status", slow_probe)
+        first = asyncio.create_task(runtime.reconcile_remote_job(job["jobId"], force=True))
+        await started.wait()
+        second = asyncio.create_task(runtime.reconcile_remote_job(job["jobId"], force=True))
+        await asyncio.sleep(0)
+        first.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        return await second, runtime.get_job(job["jobId"], refresh=False)["lifecycle"]["remoteReconcile"]
+
+    report, stored_report = asyncio.run(scenario())
+    assert calls == 1
+    assert report == stored_report
+    assert report["attempt"] == 1
+
+
+def test_resolved_remote_reconcile_is_idempotent_without_another_provider_call(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="reconcile-idempotent")
+    calls = 0
+
+    async def terminal_probe(_job: dict) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "cancelled",
+            "source": "provider_idempotent_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    first = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    second = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert calls == 1
+    assert second == first
+    assert second["remoteTaskMayContinue"] is False
+    assert second["terminalProof"] is not None
+
+
+def test_remote_reconciler_monitor_runs_due_scan_and_stops_cleanly(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="monitor-reconcile")
+    observed_cycles: list[dict] = []
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "cancelled",
+            "source": "provider_monitor_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+
+    async def scenario() -> dict:
+        cycle_seen = asyncio.Event()
+
+        def on_cycle(summary: dict) -> None:
+            observed_cycles.append(deepcopy(summary))
+            cycle_seen.set()
+
+        task = runtime.start_remote_reconciler(interval_seconds=0.1, on_cycle=on_cycle)
+        await asyncio.wait_for(cycle_seen.wait(), timeout=1.0)
+        stopped = await runtime.stop_remote_reconciler()
+        assert task.done() is True
+        return stopped
+
+    stopped = asyncio.run(scenario())
+    assert stopped["status"] == "completed"
+    assert stopped["cycles"] >= 1
+    assert observed_cycles[0]["resolved"] == 1
+    assert observed_cycles[0]["reports"][0]["jobId"] == job["jobId"]
+    assert runtime.remote_reconciler_status()["running"] is False
+
+
+def test_volcengine_remote_status_probe_is_read_only_and_strict(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(
+        runtime,
+        adapter="volcengine_ark",
+        task_id="task/strict",
+        provider_id="volcengine_seedance",
+        base_url="https://ark.example/api/v3",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_configured_endpoint_binding",
+        lambda *_args, **_kwargs: {
+            "providerId": "volcengine_seedance",
+            "providerMeta": {"api_key": "secret"},
+            "baseUrl": "https://ark.example/api/v3",
+        },
+    )
+    monkeypatch.setattr(runtime, "_volc_credentials", lambda: {"apiKey": "", "baseUrl": "", "videoModel": "test"})
+    calls: list[tuple[str, str]] = []
+
+    async def fake_request(method, url, **_kwargs):
+        calls.append((method, url))
+        return {"status": "completed"}
+
+    monkeypatch.setattr(runtime, "_request_json", fake_request)
+    result = asyncio.run(runtime._probe_provider_remote_status(job))
+
+    assert result == {
+        "providerStatus": "succeeded",
+        "providerStatusRaw": "completed",
+        "source": "volcengine_task_status",
+    }
+    assert calls == [("GET", "https://ark.example/api/v3/contents/generations/tasks/task%2Fstrict")]
+    assert runtime.get_job(job["jobId"], refresh=False)["status"] == "running"
+
+
+def test_unknown_adapter_reconcile_is_conservative(
+    lifecycle_runtime,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, adapter="unknown_async_adapter")
+
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "unsupported"
+    assert report["detailCode"] == "provider_status_probe_not_supported"
+    assert report["providerStatus"] == "unknown"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["nextReconcileAt"]
+    assert report["terminalProof"] is None
+
+
+def test_remote_reconcile_rejects_provider_identity_drift_before_network_call(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, adapter="volcengine_ark", task_id="identity-drift")
+    monkeypatch.setattr(
+        runtime,
+        "_configured_endpoint_binding",
+        lambda *_args, **_kwargs: {
+            "providerId": "different-provider",
+            "providerMeta": {"api_key": "different-secret"},
+            "baseUrl": "https://different-provider.example/api/v3",
+        },
+    )
+    monkeypatch.setattr(runtime, "_volc_credentials", lambda: {"apiKey": "", "baseUrl": "", "videoModel": "test"})
+    called = False
+
+    async def fail_if_called(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(runtime, "_request_json", fail_if_called)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "unsupported"
+    assert report["detailCode"] == "provider_identity_changed"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["terminalProof"] is None
+    assert called is False
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "expected"),
+    [
+        ("ordered", "queued"),
+        ("2", "succeeded"),
+        ("200", "succeeded"),
+        ("-1", "failed"),
+        ("3", "failed"),
+        ("4", "failed"),
+    ],
+)
+def test_remote_reconcile_status_parser_covers_provider_contract_values(
+    provider_status: str,
+    expected: str,
+) -> None:
+    assert CreativeMediaRuntime._canonical_remote_provider_status(provider_status) == expected
+
+
+def test_cancel_false_without_terminal_proof_is_forced_uncertain_and_scheduled(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="legacy-false-cancel")
+    job["sessionId"] = "session-legacy-false"
+    job["canvasGraphRunId"] = "canvas-run-legacy-false"
+    job["canvasGraphNodeId"] = "action-legacy-false"
+    runtime._save_job(job, track_task=False)
+
+    async def legacy_cancel(_job: dict) -> dict:
+        return {
+            "status": "completed",
+            "detailCode": "legacy_provider_reported_cancelled",
+            "remoteTaskMayContinue": False,
+        }
+
+    monkeypatch.setattr(runtime, "_cancel_provider_job", legacy_cancel)
+    report = asyncio.run(runtime.cancel_job(job["jobId"]))
+
+    assert report["remoteTaskMayContinue"] is True
+    assert report.get("terminalProof") is None
+    stored = runtime.get_job(job["jobId"], refresh=False)
+    assert stored["lifecycle"]["remoteReconcile"]["remoteTaskMayContinue"] is True
+    assert stored["lifecycle"]["remoteReconcile"]["nextReconcileAt"]
+
+
+def test_legacy_false_reconcile_without_terminal_proof_is_not_resolved(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="legacy-false-reconcile")
+    job["sessionId"] = "session-legacy-reconcile"
+    job["canvasGraphRunId"] = "canvas-run-legacy-reconcile"
+    job["canvasGraphNodeId"] = "action-legacy-reconcile"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    stored = fake_storage.payloads[JOB_STORE_FILE]["jobs"][job["jobId"]]
+    stored["lifecycle"]["remoteReconcile"]["remoteTaskMayContinue"] = False
+    stored["lifecycle"]["remoteReconcile"]["terminalProof"] = None
+
+    assert runtime.list_remote_reconcile_reports(remote_task_may_continue=False) == []
+    assert runtime.list_remote_reconcile_reports(remote_task_may_continue=True)[0]["jobId"] == job["jobId"]
+
+    async def running_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "running",
+            "providerStatusRaw": "processing",
+            "source": "legacy_false_probe",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", running_probe)
+    summary = asyncio.run(runtime.reconcile_remote_jobs(force=True))
+
+    assert summary["resolved"] == 0
+    assert summary["uncertain"] == 1
+    assert summary["reports"][0]["remoteTaskMayContinue"] is True
+    assert summary["reports"][0]["terminalProof"] is None
+
+
+def test_remote_reconcile_projection_is_durable_replayable_and_proof_compared(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id="projection-reconcile")
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "source": "projection_provider_status",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    resolved = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    proof = resolved["terminalProof"]
+
+    assert set(proof) == {"schema", "source", "providerHandle", "providerStatus", "observedAt"}
+    assert resolved["projectionPending"] is True
+    pending = runtime.list_remote_reconcile_reports(
+        remote_task_may_continue=False,
+        projection_pending=True,
+    )
+    assert [(item["sessionId"], item["canvasGraphRunId"], item["canvasGraphNodeId"], item["jobId"]) for item in pending] == [
+        ("session-reconcile", "canvas-run-reconcile", "action-reconcile", job["jobId"])
+    ]
+
+    failed = runtime.mark_remote_reconcile_projected(
+        job["jobId"],
+        proof,
+        projection_error="callback https://private.example/path Authorization: Bearer secret-value",
+    )
+    assert failed["projectionPending"] is True
+    assert failed["projectionAttempts"] == 1
+    assert "private.example" not in failed["lastProjectionError"]
+    assert "secret-value" not in failed["lastProjectionError"]
+
+    projected = runtime.mark_remote_reconcile_projected(
+        job["jobId"],
+        proof,
+        projected_at="2026-08-16T00:00:00Z",
+    )
+    assert projected["projectionPending"] is False
+    assert projected["projectionAttempts"] == 2
+    assert projected["projectedAt"] == "2026-08-16T00:00:00Z"
+    assert runtime.list_remote_reconcile_reports(projection_pending=True) == []
+    assert runtime.mark_remote_reconcile_projected(job["jobId"], proof) == projected
+    with pytest.raises(ValueError, match="terminal proof does not match"):
+        runtime.mark_remote_reconcile_projected(job["jobId"], {**proof, "source": "wrong_source"})
+
+
+def test_remote_reconcile_binding_resolution_failure_is_fail_closed(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(
+        runtime,
+        adapter="volcengine_ark",
+        task_id="binding-resolution-failed",
+        provider_id="volcengine_seedance",
+        base_url="https://stored-provider.example/api/v3",
+    )
+    job["sessionId"] = "session-binding-failed"
+    job["canvasGraphRunId"] = "canvas-run-binding-failed"
+    job["canvasGraphNodeId"] = "action-binding-failed"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    monkeypatch.setattr(
+        runtime,
+        "_configured_endpoint_binding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("binding missing")),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_volc_credentials",
+        lambda: {"apiKey": "fallback-secret", "baseUrl": "https://fallback.invalid", "videoModel": "seedance"},
+    )
+    called = False
+
+    async def fail_if_called(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(runtime, "_request_json", fail_if_called)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "unsupported"
+    assert report["detailCode"] == "provider_binding_unavailable"
+    assert report["remoteTaskMayContinue"] is True
+    assert called is False
+
+
+@pytest.mark.parametrize("adapter", ["mureka_music", "tencent_hunyuan_3d"])
+def test_remote_reconcile_requires_provider_credentials_before_probe(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: str,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter=adapter, task_id=f"credentials-{adapter}")
+    job["sessionId"] = "session-credentials"
+    job["canvasGraphRunId"] = "canvas-run-credentials"
+    job["canvasGraphNodeId"] = "action-credentials"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    monkeypatch.setattr(
+        runtime,
+        "_configured_provider_for_model",
+        lambda *_args, **_kwargs: (
+            "provider-a",
+            {"base_url": "https://provider.example/api"},
+            "hy-3d-3.0" if adapter == "tencent_hunyuan_3d" else "auto",
+        ),
+    )
+    if adapter == "tencent_hunyuan_3d":
+        monkeypatch.setattr(
+            runtime,
+            "_tencent_tokenhub_3d_endpoints",
+            lambda _provider_meta: {"query": "https://provider.example/query"},
+        )
+    called = False
+
+    async def fail_if_called(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(runtime, "_request_json", fail_if_called)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "unsupported"
+    assert report["detailCode"] == "provider_credentials_unavailable"
+    assert report["remoteTaskMayContinue"] is True
+    assert called is False
+
+
+def test_minimax_business_error_cannot_become_terminal_proof(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="minimax-business-error")
+    job["sessionId"] = "session-minimax-error"
+    job["canvasGraphRunId"] = "canvas-run-minimax-error"
+    job["canvasGraphNodeId"] = "action-minimax-error"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    monkeypatch.setattr(
+        runtime,
+        "_configured_endpoint_binding",
+        lambda *_args, **_kwargs: {
+            "providerId": "provider-a",
+            "providerMeta": {"api_key": "secret"},
+            "baseUrl": "https://minimax.example",
+        },
+    )
+
+    async def business_error(*_args, **_kwargs) -> dict:
+        return {
+            "status": "completed",
+            "trace_id": "trace-private",
+            "base_resp": {"status_code": 1001, "status_msg": "invalid request"},
+        }
+
+    monkeypatch.setattr(runtime, "_request_json", business_error)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "waiting"
+    assert report["detailCode"] == "provider_status_check_failed"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["terminalProof"] is None
+
+
+def test_mureka_business_code_without_task_status_cannot_become_terminal_proof(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="mureka_music", task_id="mureka-business-code")
+    job["sessionId"] = "session-mureka-code"
+    job["canvasGraphRunId"] = "canvas-run-mureka-code"
+    job["canvasGraphNodeId"] = "action-mureka-code"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    monkeypatch.setattr(
+        runtime,
+        "_configured_provider_for_model",
+        lambda *_args, **_kwargs: (
+            "provider-a",
+            {"base_url": "https://mureka.example", "api_key": "secret"},
+            "auto",
+        ),
+    )
+
+    async def business_code_only(*_args, **_kwargs) -> dict:
+        return {"code": 200, "message": "request accepted"}
+
+    monkeypatch.setattr(runtime, "_request_json", business_code_only)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "waiting"
+    assert report["detailCode"] == "provider_status_unrecognized"
+    assert report["providerStatus"] == "unknown"
+    assert report["remoteTaskMayContinue"] is True
+    assert report["terminalProof"] is None
+
+
+def test_cancel_and_remote_reconcile_are_serialized_per_job_without_lost_phase(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="cancel-reconcile-race")
+    job["sessionId"] = "session-cancel-reconcile"
+    job["canvasGraphRunId"] = "canvas-run-cancel-reconcile"
+    job["canvasGraphNodeId"] = "action-cancel-reconcile"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+
+    async def scenario() -> tuple[dict, dict, dict]:
+        cancel_started = asyncio.Event()
+        release_cancel = asyncio.Event()
+        reconcile_started = asyncio.Event()
+
+        async def slow_cancel(_job: dict) -> dict:
+            cancel_started.set()
+            await release_cancel.wait()
+            return {
+                "status": "completed",
+                "detailCode": "cancel_accepted_without_terminal_status",
+                "remoteTaskMayContinue": True,
+            }
+
+        async def terminal_probe(_job: dict) -> dict:
+            reconcile_started.set()
+            return {
+                "providerStatus": "cancelled",
+                "providerStatusRaw": "CANCELED",
+                "source": "concurrent_reconcile_status",
+            }
+
+        monkeypatch.setattr(runtime, "_cancel_provider_job", slow_cancel)
+        monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+        cancel_task = asyncio.create_task(runtime.cancel_job(job["jobId"]))
+        await cancel_started.wait()
+        reconcile_task = asyncio.create_task(runtime.reconcile_remote_job(job["jobId"], force=True))
+        await asyncio.sleep(0)
+        assert reconcile_started.is_set() is False
+        release_cancel.set()
+        cancel_report, reconcile_report = await asyncio.gather(cancel_task, reconcile_task)
+        await asyncio.sleep(0)
+        return cancel_report, reconcile_report, runtime.get_job(job["jobId"], refresh=False)
+
+    cancel_report, reconcile_report, stored = asyncio.run(scenario())
+
+    assert cancel_report["remoteTaskMayContinue"] is True
+    assert reconcile_report["remoteTaskMayContinue"] is False
+    assert set(stored["lifecycle"]) >= {"cancel", "remoteReconcile"}
+    assert stored["lifecycle"]["cancel"]["terminalProof"] == reconcile_report["terminalProof"]
+    assert stored["lifecycle"]["remoteReconcile"]["projectionPending"] is True
+    assert runtime._lifecycle_tasks == {}

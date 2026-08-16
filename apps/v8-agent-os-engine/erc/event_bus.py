@@ -44,18 +44,33 @@ class SessionEventEmitter:
         *,
         kind: str = "event",
         source: Optional[RuntimeSource] = None,
-        canvas_run_guard: Optional[Dict[str, str]] = None,
+        canvas_outbox_id: Optional[str] = None,
+        event_id: Optional[str] = None,
+        event_ts: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         def append(candidate: Dict[str, Any]) -> bool:
-            if canvas_run_guard is None:
-                db.add_runtime_event(candidate)
-                return True
-            return db.add_runtime_event_if_current(
-                candidate,
-                graph_run_id=str(canvas_run_guard.get("graphRunId") or ""),
-                expected_status=str(canvas_run_guard.get("status") or ""),
-                expected_updated_at=str(canvas_run_guard.get("updatedAt") or ""),
+            if canvas_outbox_id:
+                return db.project_canvas_graph_run_event_outbox(candidate, outbox_id=canvas_outbox_id)
+            db.add_runtime_event(candidate)
+            return True
+
+        if canvas_outbox_id:
+            event = build_runtime_event(
+                kind=kind,
+                topic=topic,
+                payload=payload,
+                session_id=self.session_id,
+                conversation_id=self.conversation_id,
+                run_id=self.run_id,
+                seq=self._seq,
+                source=(source or self.default_source).as_dict(),
+                event_id=event_id,
+                ts=event_ts,
             )
+            if not append(event):
+                return None
+            self._seq += 1
+            return event
 
         with _EMIT_LOCK:
             while True:
@@ -68,6 +83,8 @@ class SessionEventEmitter:
                     run_id=self.run_id,
                     seq=self._seq,
                     source=(source or self.default_source).as_dict(),
+                    event_id=event_id,
+                    ts=event_ts,
                 )
                 try:
                     if not append(event):
@@ -92,6 +109,8 @@ class SessionEventEmitter:
                             run_id=self.run_id,
                             seq=self._seq,
                             source=(source or self.default_source).as_dict(),
+                            event_id=event_id,
+                            ts=event_ts,
                         )
                         try:
                             if not append(event):

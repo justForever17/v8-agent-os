@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
-import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 type RouteContext = {
     params: Promise<{ path?: string[] }>;
@@ -21,10 +21,15 @@ async function proxy(req: NextRequest, context: RouteContext, method: "GET" | "P
 
     try {
         const { path } = await context.params;
-        const init: RequestInit = { method, cache: "no-store", headers: {} };
+        const internalSecret = resolveInternalSecret();
+        if (!internalSecret) {
+            throw new Error("Internal service secret is unavailable");
+        }
+        const headers = new Headers({ "x-v8-agent-os-secret": internalSecret });
+        const init: RequestInit = { method, cache: "no-store", headers };
         if (method !== "GET") {
             const payload = await req.json().catch(() => ({}));
-            init.headers = { "Content-Type": "application/json" };
+            headers.set("Content-Type", "application/json");
             init.body = JSON.stringify(payload);
         }
         const response = await fetch(buildTarget(req, path), init);

@@ -10,6 +10,147 @@ def _app() -> SimpleNamespace:
     return SimpleNamespace(state=SimpleNamespace())
 
 
+def test_creative_media_reconciler_replays_terminal_proof_after_ack_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import core.creative_canvas_graph as graph_module
+    import main
+    import runtimes.creative_media.runtime as creative_runtime_module
+
+    async def exercise() -> None:
+        calls: list[tuple[object, ...]] = []
+        captured: dict[str, object] = {}
+        proof = {
+            "schema": "v8.creative_media_remote_terminal_proof.v1",
+            "source": "provider_status_api",
+            "providerStatus": "cancelled",
+            "observedAt": "2026-08-16T00:00:00Z",
+        }
+        report = {
+            "jobId": "job-a",
+            "remoteTaskMayContinue": False,
+            "projectionPending": True,
+            "terminalProof": proof,
+        }
+
+        class FakeGraphService:
+            def __init__(self) -> None:
+                self.applied = False
+                self.advanced = False
+                self.transition_count = 0
+                self.received_proofs: list[dict] = []
+
+            def apply_remote_terminal_reconciliation(self, candidate: dict) -> dict:
+                self.received_proofs.append(dict(candidate["terminalProof"]))
+                status = "already_applied" if self.applied else "applied"
+                calls.append(("project", status, self.advanced))
+                if not self.applied:
+                    self.applied = True
+                    self.transition_count += 1
+                return {"status": status}
+
+            def advance_after_retry(self) -> None:
+                assert self.applied is True
+                self.advanced = True
+                calls.append(("advance", "retry"))
+
+        class FakeRuntime:
+            def __init__(self) -> None:
+                self.pending = True
+                self.ack_attempts = 0
+
+            def list_remote_reconcile_reports(self, **filters) -> list[dict]:
+                assert filters == {"remote_task_may_continue": False, "projection_pending": True}
+                calls.append(("scan", self.pending))
+                return [dict(report)] if self.pending else []
+
+            def mark_remote_reconcile_projected(
+                self,
+                job_id: str,
+                terminal_proof: dict,
+                *,
+                projection_error: str = "",
+            ) -> dict:
+                assert job_id == "job-a"
+                assert terminal_proof == proof
+                assert projection_error == ""
+                self.ack_attempts += 1
+                calls.append(("ack", self.ack_attempts))
+                if self.ack_attempts == 1:
+                    raise OSError("simulated acknowledgement loss")
+                self.pending = False
+                report["projectionPending"] = False
+                report["projectedAt"] = "2026-08-16T00:00:01Z"
+                return dict(report)
+
+            def start_remote_reconciler(self, **kwargs) -> asyncio.Task:
+                captured.update(kwargs)
+                return asyncio.create_task(asyncio.sleep(0))
+
+        fake_graph = FakeGraphService()
+        fake_runtime = FakeRuntime()
+        monkeypatch.setattr(graph_module, "creative_canvas_graph_service", fake_graph)
+        monkeypatch.setattr(creative_runtime_module, "creative_media_runtime", fake_runtime)
+
+        task = await main._start_creative_media_remote_reconciler([{"jobId": "job-a"}])
+        callback = captured["on_cycle"]
+        assert callable(callback)
+        await callback({"checked": 0})
+        assert fake_runtime.pending is True
+        assert fake_graph.transition_count == 1
+
+        fake_graph.advance_after_retry()
+        await callback({"checked": 0})
+        assert fake_runtime.pending is False
+        assert report["projectedAt"] == "2026-08-16T00:00:01Z"
+
+        await callback({"checked": 0})
+        await task
+
+        assert captured["recovery_candidates"] == [{"jobId": "job-a"}]
+        assert calls == [
+            ("scan", True),
+            ("project", "applied", False),
+            ("ack", 1),
+            ("advance", "retry"),
+            ("scan", True),
+            ("project", "already_applied", True),
+            ("ack", 2),
+            ("scan", False),
+        ]
+        assert fake_graph.received_proofs == [proof, proof]
+        assert fake_graph.transition_count == 1
+
+    asyncio.run(exercise())
+
+
+def test_canvas_outbox_repair_loop_runs_independently_and_is_cancellable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import core.creative_canvas_graph as graph_module
+    import main
+
+    async def exercise() -> None:
+        repaired = asyncio.Event()
+        calls: list[int] = []
+
+        class FakeGraphService:
+            def repair_graph_run_state_outbox(self, *, limit: int) -> dict:
+                calls.append(limit)
+                repaired.set()
+                return {"projected": 1}
+
+        monkeypatch.setattr(graph_module, "creative_canvas_graph_service", FakeGraphService())
+        task = asyncio.create_task(main._run_creative_canvas_outbox_repair_loop(interval_seconds=0.1))
+        await asyncio.wait_for(repaired.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert calls == [2048]
+
+    asyncio.run(exercise())
+
+
 def test_lifespan_cleanup_stops_services_and_tasks_in_reverse_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

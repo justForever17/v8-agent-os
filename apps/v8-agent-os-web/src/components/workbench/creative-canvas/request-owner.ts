@@ -3,6 +3,14 @@ export type CanvasRequestOwner = {
   token: string;
 };
 
+export type CanvasSessionRequestCoordinator = {
+  activateSession: (sessionId: string) => void;
+  acquire: <T extends CanvasRequestOwner>(owner: T) => T | null;
+  current: () => CanvasRequestOwner | null;
+  isActive: (candidate: CanvasRequestOwner, mounted?: boolean) => boolean;
+  release: (candidate: CanvasRequestOwner) => boolean;
+};
+
 type CanvasRuntimeProjection = {
   graphRunId?: unknown;
   status?: unknown;
@@ -61,6 +69,38 @@ export function isActiveCanvasRequestOwner(
 
 export function isCurrentCanvasRuntimeEpoch(capturedEpoch: number, currentEpoch: number) {
   return capturedEpoch === currentEpoch;
+}
+
+export function createCanvasSessionRequestCoordinator(
+  initialSessionId: string,
+): CanvasSessionRequestCoordinator {
+  let activeSessionId = initialSessionId;
+  let owner: CanvasRequestOwner | null = null;
+
+  return {
+    activateSession(sessionId: string) {
+      activeSessionId = sessionId;
+      // A request from a previous visit to this Session must not become
+      // current again when the user navigates back.
+      owner = null;
+    },
+    acquire<T extends CanvasRequestOwner>(candidate: T) {
+      if (candidate.sessionId !== activeSessionId || owner?.sessionId === candidate.sessionId) return null;
+      owner = candidate;
+      return candidate;
+    },
+    current() {
+      return owner;
+    },
+    isActive(candidate: CanvasRequestOwner, mounted = true) {
+      return isActiveCanvasRequestOwner(owner, candidate, activeSessionId, mounted);
+    },
+    release(candidate: CanvasRequestOwner) {
+      if (!sameCanvasRequestOwner(owner, candidate)) return false;
+      owner = null;
+      return true;
+    },
+  };
 }
 
 export function reconcileCanvasRuntimeProjection<T extends CanvasRuntimeProjection>(

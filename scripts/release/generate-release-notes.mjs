@@ -122,7 +122,7 @@ function assetSection(product, version, channel) {
       : `V8OS-Phone-${version}-android-preview.apk`;
     return [
       "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe` 与 `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows x64/ARM64 " + desktopLabel + "；ARM64 包仅适用于原生 Windows on ARM，Intel/AMD 电脑请选择 x64 包。",
-      "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg` 与 `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS 12 及以上 Intel/Apple Silicon " + desktopLabel + "。",
+      "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg` 与 `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS 12.3 及以上 Intel/Apple Silicon " + desktopLabel + "。",
       "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage`、`.deb` 及对应 arm64 版本：Linux " + desktopLabel + "。",
       channel === "stable"
         ? "- `" + androidAsset + "`：Android Phone production 应用包。"
@@ -151,8 +151,8 @@ function assetSection(product, version, channel) {
   const assets = [
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：Windows x64 " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-win-arm64-setup.exe`：Windows ARM64 " + desktopLabel + "，仅适用于原生 Windows on ARM；Intel/AMD 电脑请选择 x64 包。",
-    "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg`：macOS 12 及以上 Intel " + desktopLabel + "。",
-    "- `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS 12 及以上 Apple Silicon " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-macos-x64.dmg`：macOS 12.3 及以上 Intel " + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-macos-arm64.dmg`：macOS 12.3 及以上 Apple Silicon " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-linux-x64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-x64.deb`：Linux x64 " + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-linux-arm64.AppImage` 与 `V8-Agent-OS-" + desktopVersion + "-linux-arm64.deb`：Linux arm64 " + desktopLabel + "。",
   ];

@@ -461,8 +461,10 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(preview, /win-arm64-setup\.exe/);
   assert.match(preview, /macos-x64\.dmg/);
   assert.match(preview, /macos-arm64\.dmg/);
-  assert.match(preview, /macOS 12 及以上 Intel/);
-  assert.match(preview, /macOS 12 及以上 Apple Silicon/);
+  assert.match(preview, /macOS 12\.3 及以上 Intel/);
+  assert.match(preview, /macOS 12\.3 及以上 Apple Silicon/);
+  assert.match(stable, /macOS 12\.3 及以上 Intel/);
+  assert.match(stable, /macOS 12\.3 及以上 Apple Silicon/);
   assert.match(preview, /linux-x64\.AppImage/);
   assert.match(preview, /linux-arm64\.deb/);
   assert.doesNotMatch(preview, /win-x64\.zip/);
@@ -829,6 +831,14 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(posixRuntimeScript, /path\.join\(extractDir, "python"\)/);
   assert.match(posixRuntimeScript, /verbatimSymlinks:\s*true/);
   assert.match(posixRuntimeScript, /Portable Python .*resolved outside the packaged runtime/);
+  assert.match(posixRuntimeScript, /sqlite-vec-0\.1\.9-amalgamation\.tar\.gz/);
+  assert.match(posixRuntimeScript, /3acd67cb4aff080c7050926fd3cf8227905fe5b7ee3829d8ee5024ab1283cf61/);
+  assert.match(posixRuntimeScript, /-mmacosx-version-min=\$\{deploymentTarget\}/);
+  assert.match(posixRuntimeScript, /SQLITE_VEC_MACOS_REBUILD_OK/);
+  assert.match(posixRuntimeScript, /sqlite_vec-/);
+  assert.match(posixRuntimeScript, /digest\("base64url"\)/);
+  assert.match(posixRuntimeScript, /pip", "check/);
+  assert.match(posixRuntimeScript, /runtime\.platform === "darwin"/);
 
   const macHelperBuild = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'build-macos-ax-helper.mjs'),
@@ -838,6 +848,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(macHelperBuild, /macos-\$\{arch\}/);
   assert.match(macHelperBuild, /MACOSX_DEPLOYMENT_TARGET/);
   assert.match(macHelperBuild, /-apple-macosx\$\{deploymentTarget\}/);
+  assert.match(macHelperBuild, /\|\| "12\.3"/);
   const macDriver = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'runtimes', 'computer_use', 'drivers', 'mac_ax.py'),
     'utf8',
@@ -881,6 +892,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
     ['scipy', '1.13.1'],
     ['onnxruntime', '1.19.2'],
     ['aggdraw', '1.3.18'],
+    ['sqlite-vec', '0.1.9'],
   ]) {
     assert.match(
       macRequirements,
@@ -1004,17 +1016,22 @@ test('Phone pairing exposes Admin on LAN without advertising wildcard bind hosts
 
 test('macOS preview declares only the media permissions used by the desktop surface', () => {
   const builder = fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'electron-builder.yml'), 'utf8');
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(builder, /extendInfo:/);
   assert.match(builder, /NSMicrophoneUsageDescription:/);
   assert.match(builder, /NSCameraUsageDescription:/);
   assert.match(builder, /NSScreenCaptureUsageDescription:/);
   assert.doesNotMatch(builder, /NSAppleEventsUsageDescription:/);
-  assert.match(builder, /minimumSystemVersion: "12\.0"/);
+  assert.match(builder, /minimumSystemVersion: "12\.3"/);
+  assert.match(workflow, /MACOSX_DEPLOYMENT_TARGET=12\.3/);
+  assert.match(workflow, /MACOSX_DEPLOYMENT_TARGET: "12\.3"/);
+  assert.doesNotMatch(workflow, /MACOSX_DEPLOYMENT_TARGET(?:=|:)\s*"?12\.0/);
   const packageAudit = fs.readFileSync(
     path.join(repoRoot, 'scripts', 'desktop', 'ci-macos-package-audit.sh'),
     'utf8',
   );
   assert.match(packageAudit, /LSMinimumSystemVersion/);
+  assert.match(packageAudit, /minimum_system_version="\$\{3:-12\.3\}"/);
   assert.match(packageAudit, /vtool -show-build/);
   assert.match(packageAudit, /lipo -archs/);
   assert.doesNotMatch(packageAudit, /for \(index =/, 'BSD awk reserves index as a built-in function');

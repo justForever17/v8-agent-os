@@ -10,7 +10,7 @@ const driverDir = path.join(repoRoot, "apps", "v8-agent-os-engine", "runtimes", 
 const source = path.join(driverDir, "mac_ax_helper.swift");
 const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : "";
 const output = arch ? path.join(driverDir, "bin", `macos-${arch}`, "mac_ax_helper") : "";
-const deploymentTarget = String(process.env.MACOSX_DEPLOYMENT_TARGET || "12.0").trim();
+const deploymentTarget = String(process.env.MACOSX_DEPLOYMENT_TARGET || "12.3").trim();
 
 try {
   if (process.platform !== "darwin" || !arch) {

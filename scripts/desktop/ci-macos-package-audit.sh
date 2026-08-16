@@ -3,7 +3,7 @@ set -euo pipefail
 
 app_path="${1:?mounted .app path is required}"
 expected_arch="${2:?x64 or arm64 is required}"
-minimum_system_version="${3:-12.0}"
+minimum_system_version="${3:-12.3}"
 
 app_path="$(cd "$(dirname "$app_path")" && pwd)/$(basename "$app_path")"
 test -d "$app_path"

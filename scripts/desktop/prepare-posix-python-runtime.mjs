@@ -19,6 +19,24 @@ const LINUX_PYATSPI_SOURCE = {
   archive: "24590e5b60fec8dfb59fcd27d2a90de7034060be318ca3f7770e0f984f1f94e2",
   url: "https://download.gnome.org/sources/pyatspi/2.58/pyatspi-2.58.2.tar.xz",
 };
+const MACOS_MINIMUM_SYSTEM_VERSION = "12.3";
+const MACOS_SQLITE_VEC_SOURCE = {
+  version: "0.1.9",
+  archive: "3acd67cb4aff080c7050926fd3cf8227905fe5b7ee3829d8ee5024ab1283cf61",
+  url: "https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/sqlite-vec-0.1.9-amalgamation.tar.gz",
+  licenses: [
+    {
+      name: "LICENSE-MIT",
+      sha256: "6ce72bbe12d975bd5286e5ab0a064c069693300c47bccbc57bec18485f1621ea",
+      url: "https://raw.githubusercontent.com/asg017/sqlite-vec/v0.1.9/LICENSE-MIT",
+    },
+    {
+      name: "LICENSE-APACHE",
+      sha256: "a38070a94d4afd9cd710e3ce67bd1de78097cfe1784c1f0109ac95d3c196bfdc",
+      url: "https://raw.githubusercontent.com/asg017/sqlite-vec/v0.1.9/LICENSE-APACHE",
+    },
+  ],
+};
 const RUNTIMES = {
   "macos-x64": {
     platform: "darwin",
@@ -135,7 +153,7 @@ function verifyPortablePythonLocation(python, runtimeDir) {
   }
 }
 
-function installLinuxPyatspi(python, runtimeDir, workDir) {
+function portableSitePackages(python, runtimeDir) {
   const sitePackagesResult = spawnSync(
     python,
     ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
@@ -148,6 +166,11 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
   if (!sitePackages || !isPathWithin(fs.realpathSync(runtimeDir), fs.realpathSync(sitePackages))) {
     fail(`Refusing unexpected portable Python site-packages path: ${sitePackages}`);
   }
+  return sitePackages;
+}
+
+function installLinuxPyatspi(python, runtimeDir, workDir) {
+  const sitePackages = portableSitePackages(python, runtimeDir);
 
   const archivePath = path.join(workDir, "pyatspi-2.58.2.tar.xz");
   const extractDir = path.join(workDir, "pyatspi2");
@@ -168,6 +191,91 @@ function installLinuxPyatspi(python, runtimeDir, workDir) {
       );
       run(python, ["-c", "import gi; gi.require_version('Atspi', '2.0'); import pyatspi; from gi.repository import Atspi; print('PYATSPI_IMPORT_OK')"]);
     });
+}
+
+function updateSqliteVecWheelRecord(sitePackages, installedLibrary) {
+  const relativeLibrary = "sqlite_vec/vec0.dylib";
+  const recordPath = path.join(
+    sitePackages,
+    `sqlite_vec-${MACOS_SQLITE_VEC_SOURCE.version}.dist-info`,
+    "RECORD",
+  );
+  if (!fs.existsSync(recordPath)) fail(`Installed sqlite-vec RECORD was not found: ${recordPath}`);
+
+  const library = fs.readFileSync(installedLibrary);
+  const digest = createHash("sha256").update(library).digest("base64url");
+  const rows = fs.readFileSync(recordPath, "utf8").split(/\r?\n/);
+  let updatedRows = 0;
+  const updated = rows.map((row) => {
+    if (!row.startsWith(`${relativeLibrary},`)) return row;
+    updatedRows += 1;
+    return `${relativeLibrary},sha256=${digest},${library.length}`;
+  });
+  if (updatedRows !== 1) fail(`Expected one sqlite-vec RECORD row for ${relativeLibrary}; found ${updatedRows}`);
+  fs.writeFileSync(recordPath, updated.join("\n"), "utf8");
+}
+
+async function rebuildMacosSqliteVec(python, runtimeDir, workDir, arch) {
+  const deploymentTarget = String(process.env.MACOSX_DEPLOYMENT_TARGET || MACOS_MINIMUM_SYSTEM_VERSION).trim();
+  if (deploymentTarget !== MACOS_MINIMUM_SYSTEM_VERSION) {
+    fail(`macOS sqlite-vec must be built for ${MACOS_MINIMUM_SYSTEM_VERSION}; got ${deploymentTarget}`);
+  }
+
+  const sitePackages = portableSitePackages(python, runtimeDir);
+  const sqliteVecPackage = path.join(sitePackages, "sqlite_vec");
+  const installedLibrary = path.join(sqliteVecPackage, "vec0.dylib");
+  if (!fs.existsSync(installedLibrary)) {
+    fail(`Installed sqlite-vec ${MACOS_SQLITE_VEC_SOURCE.version} library was not found: ${installedLibrary}`);
+  }
+  run(python, [
+    "-c",
+    `import sqlite_vec; assert sqlite_vec.__version__ == '${MACOS_SQLITE_VEC_SOURCE.version}', sqlite_vec.__version__`,
+  ]);
+
+  const archivePath = path.join(workDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-amalgamation.tar.gz`);
+  const sourceDir = path.join(workDir, "sqlite-vec-source");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  await download(MACOS_SQLITE_VEC_SOURCE.url, archivePath, MACOS_SQLITE_VEC_SOURCE.archive, "sqlite-vec source archive");
+  run("tar", ["-xzf", archivePath, "-C", sourceDir]);
+  const source = path.join(sourceDir, "sqlite-vec.c");
+  if (!fs.existsSync(source)) fail(`Pinned sqlite-vec archive did not contain sqlite-vec.c`);
+
+  const targetArch = arch === "x64" ? "x86_64" : "arm64";
+  const compiledLibrary = path.join(sqliteVecPackage, "vec0.v8os.dylib");
+  run("clang", [
+    "-O3",
+    "-fPIC",
+    "-dynamiclib",
+    "-arch",
+    targetArch,
+    `-mmacosx-version-min=${deploymentTarget}`,
+    source,
+    "-o",
+    compiledLibrary,
+  ]);
+  fs.renameSync(compiledLibrary, installedLibrary);
+  updateSqliteVecWheelRecord(sitePackages, installedLibrary);
+
+  const noticesDir = path.join(runtimeDir, "THIRD_PARTY_NOTICES");
+  fs.mkdirSync(noticesDir, { recursive: true });
+  for (const license of MACOS_SQLITE_VEC_SOURCE.licenses) {
+    const licensePath = path.join(workDir, `sqlite-vec-${license.name}`);
+    await download(license.url, licensePath, license.sha256, `sqlite-vec ${license.name}`);
+    fs.copyFileSync(
+      licensePath,
+      path.join(noticesDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-${license.name}`),
+    );
+  }
+  fs.writeFileSync(
+    path.join(noticesDir, `sqlite-vec-${MACOS_SQLITE_VEC_SOURCE.version}-SOURCE.txt`),
+    `V8 Agent OS rebuilds sqlite-vec ${MACOS_SQLITE_VEC_SOURCE.version} from the official amalgamation source for macOS ${deploymentTarget}.\n`
+      + `${MACOS_SQLITE_VEC_SOURCE.url}\nSHA256 ${MACOS_SQLITE_VEC_SOURCE.archive}\n`,
+    "utf8",
+  );
+  run(python, [
+    "-c",
+    `import sqlite3, sqlite_vec; db = sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); version = db.execute('select vec_version()').fetchone()[0]; assert version == 'v${MACOS_SQLITE_VEC_SOURCE.version}', version; print('SQLITE_VEC_MACOS_REBUILD_OK')`,
+  ]);
 }
 
 async function main() {
@@ -225,7 +333,10 @@ async function main() {
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", requirementsPath]);
     if (runtime.platform === "linux") {
       await installLinuxPyatspi(python, runtimeDir, workDir);
+    } else if (runtime.platform === "darwin") {
+      await rebuildMacosSqliteVec(python, runtimeDir, workDir, runtime.arch);
     }
+    run(python, ["-m", "pip", "check"]);
 
     fs.mkdirSync(browserDir, { recursive: true });
     if (hasFlag("--skip-playwright-browsers")) {

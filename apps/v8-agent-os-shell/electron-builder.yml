@@ -108,7 +108,7 @@ nsis:
 mac:
   icon: assets/icon.icns
   category: public.app-category.developer-tools
-  minimumSystemVersion: "12.0"
+  minimumSystemVersion: "12.3"
   extendInfo:
     NSMicrophoneUsageDescription: V8 Agent OS uses the microphone only when you start voice capture.
     NSCameraUsageDescription: V8 Agent OS uses the camera only when you start a camera capture.

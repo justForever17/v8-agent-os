@@ -43,9 +43,9 @@ version_is_greater() {
     candidate_count = split(candidate, candidate_parts, ".")
     ceiling_count = split(ceiling, ceiling_parts, ".")
     count = candidate_count > ceiling_count ? candidate_count : ceiling_count
-    for (index = 1; index <= count; index += 1) {
-      left = candidate_parts[index] + 0
-      right = ceiling_parts[index] + 0
+    for (part_index = 1; part_index <= count; part_index += 1) {
+      left = candidate_parts[part_index] + 0
+      right = ceiling_parts[part_index] + 0
       if (left > right) exit 0
       if (left < right) exit 1
     }

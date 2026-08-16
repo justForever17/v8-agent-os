@@ -990,6 +990,7 @@ test('macOS preview declares only the media permissions used by the desktop surf
   assert.match(packageAudit, /LSMinimumSystemVersion/);
   assert.match(packageAudit, /vtool -show-build/);
   assert.match(packageAudit, /lipo -archs/);
+  assert.doesNotMatch(packageAudit, /for \(index =/, 'BSD awk reserves index as a built-in function');
   assert.match(packageAudit, /V8OS_MACOS_PREVIEW_SIGNATURE_PRESENT_NOT_GATEKEEPER_PROOF/);
 });
 

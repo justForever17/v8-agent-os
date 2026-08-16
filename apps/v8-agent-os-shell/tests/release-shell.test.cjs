@@ -58,7 +58,7 @@ test('packaged shell checks only governed unified releases without installing up
     workflow.indexOf('Packaged macOS desktop smoke'),
     workflow.indexOf('Cleanup macOS desktop smoke processes'),
   );
-  assert.match(packagedMacSmoke, /timeout-minutes: 12/);
+  assert.match(packagedMacSmoke, /timeout-minutes: 15/);
 });
 
 test('packaged shell starts core services before waiting for them', () => {

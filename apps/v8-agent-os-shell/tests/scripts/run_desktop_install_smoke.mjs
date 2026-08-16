@@ -829,6 +829,18 @@ if (!fs.existsSync(resourceRoot) || !fs.statSync(resourceRoot).isDirectory()) {
   console.error(`Packaged resource root is not a directory: ${resourceRoot}`);
   process.exit(2);
 }
+const packagedEngineRoot = path.join(resourceRoot, "apps", "v8-agent-os-engine");
+const packagedPythonPath = packagedPython(resourceRoot);
+const packagedRuntimeLayout = {
+  ok: Boolean(packagedPythonPath && !fs.existsSync(path.join(packagedEngineRoot, ".venv"))),
+  portablePythonPresent: Boolean(packagedPythonPath),
+  devVenvAbsent: !fs.existsSync(path.join(packagedEngineRoot, ".venv")),
+  error: !packagedPythonPath
+    ? "packaged_portable_python_missing"
+    : fs.existsSync(path.join(packagedEngineRoot, ".venv"))
+      ? "packaged_dev_venv_present"
+      : "",
+};
 const appImageRoot = explicitAppImageRoot ? path.resolve(explicitAppImageRoot) : "";
 if (appImageRoot) {
   const relativeShellPath = path.relative(appImageRoot, path.resolve(shellExe));
@@ -1141,6 +1153,7 @@ const packagedCleanup = {
 };
 const checks = {
   ...serviceChecks,
+  packagedRuntimeLayout,
   initialRuntimeStability,
   sandboxMode,
   bootstrapSurface,

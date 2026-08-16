@@ -72,6 +72,14 @@ function standaloneServerFor(appRoot, appName) {
   return candidates.find((candidate) => exists(candidate)) || "";
 }
 
+function extraResourceBlock(config, sourcePath) {
+  const marker = `  - from: ${sourcePath}`;
+  const start = config.indexOf(marker);
+  if (start < 0) return "";
+  const next = config.indexOf("\n  - from:", start + marker.length);
+  return config.slice(start, next < 0 ? config.length : next);
+}
+
 function commandExists(command, args = ["--version"]) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -240,6 +248,9 @@ const pythonwExe = path.join(portablePythonRoot, "pythonw.exe");
 const legacyVenvPython = process.platform === "win32"
   ? path.join(engineRoot, ".venv", "Scripts", "python.exe")
   : path.join(engineRoot, ".venv", "bin", "python");
+const builderConfigPath = path.join(shellRoot, "electron-builder.yml");
+const builderConfig = fs.readFileSync(builderConfigPath, "utf8");
+const engineResourceBlock = extraResourceBlock(builderConfig, "../../apps/v8-agent-os-engine");
 const browserRoot = path.join(engineRoot, ".playwright-browsers");
 const adminStandaloneExpected = path.join(adminRoot, ".next", "standalone", "apps", "v8-agent-os-admin", "server.js");
 const webStandaloneExpected = path.join(webRoot, ".next", "standalone", "apps", "v8-agent-os-web", "server.js");
@@ -274,8 +285,10 @@ for (const [name, filePath] of requiredFiles) {
   pushCheck(checks, name, exists(filePath), { path: rel(filePath) });
 }
 
-pushCheck(checks, "engine.noPackagedVenvPython", !exists(legacyVenvPython), {
-  path: rel(legacyVenvPython),
+pushCheck(checks, "engine.devVenvExcludedFromPackage", engineResourceBlock.includes('- "!.venv/**"'), {
+  sourcePath: rel(legacyVenvPython),
+  sourcePresent: exists(legacyVenvPython),
+  exclusion: "!.venv/**",
 });
 
 if (exists(pythonExe)) {

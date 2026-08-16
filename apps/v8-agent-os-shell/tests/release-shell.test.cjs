@@ -103,6 +103,8 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /initialShellSurface\.surfaceKind === "admin-login"/);
   assert.match(installSmokeSource, /\/api\/auth\/bootstrap/);
   assert.match(installSmokeSource, /\/api\/client\/auth\/login/);
+  assert.match(installSmokeSource, /packagedRuntimeLayout/);
+  assert.match(installSmokeSource, /packaged_dev_venv_present/);
   assert.match(installSmokeSource, /result\.status === 200/);
   assert.match(installSmokeSource, /result\.payload\?\.accessToken/);
   assert.match(installSmokeSource, /result\.payload\?\.user\?\.login === credentials\.login/);
@@ -434,6 +436,10 @@ test('desktop release scripts build native installers for every supported deskto
   assert.doesNotMatch(config, /from: \.\.\/\.\.\/apps\/v8-agent-os-shell\/tests\/scripts/);
   assert.match(config, /!\.next\/dev\/\*\*/);
   assert.match(config, /!native\/\*\*\/target\/\*\*/);
+  assert.match(
+    config,
+    /from: \.\.\/\.\.\/apps\/v8-agent-os-engine[\s\S]*?- "!\.venv\/\*\*"/,
+  );
   assert.match(config, /to: v8os\/apps\/v8-agent-os-shell\/scripts/);
 });
 

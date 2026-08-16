@@ -879,7 +879,6 @@ test('desktop preview uses a slim portable Python release profile', () => {
     ['numpy', '1.26.4'],
     ['scipy', '1.13.1'],
     ['onnxruntime', '1.19.2'],
-    ['orjson', '3.9.15'],
     ['aggdraw', '1.3.18'],
   ]) {
     assert.match(
@@ -888,6 +887,14 @@ test('desktop preview uses a slim portable Python release profile', () => {
         + ' ; sys_platform == "darwin"$', 'm'),
     );
   }
+  assert.ok(macRequirements.includes(
+    'orjson @ https://files.pythonhosted.org/packages/75/1a/'
+      + 'a7075a8e8b0d3f5097d17ac3099017104b6b7b42012041147995d5b2da05/'
+      + 'orjson-3.12.0-cp311-cp311-macosx_10_15_x86_64.macosx_11_0_arm64.'
+      + 'macosx_10_15_universal2.whl#sha256='
+      + 'a94f0f0c6fcbb2b5bd9734c57a489c7584a732bbdf04a39e8c83b861e9d03e92'
+      + ' ; sys_platform == "darwin"',
+  ));
   const linuxRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-linux.txt'),
     'utf8',

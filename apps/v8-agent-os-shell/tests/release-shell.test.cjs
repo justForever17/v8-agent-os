@@ -834,6 +834,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(posixRuntimeScript, /sqlite-vec-0\.1\.9-amalgamation\.tar\.gz/);
   assert.match(posixRuntimeScript, /3acd67cb4aff080c7050926fd3cf8227905fe5b7ee3829d8ee5024ab1283cf61/);
   assert.match(posixRuntimeScript, /-mmacosx-version-min=\$\{deploymentTarget\}/);
+  assert.match(posixRuntimeScript, /-Wl,-undefined,dynamic_lookup/);
   assert.match(posixRuntimeScript, /SQLITE_VEC_MACOS_REBUILD_OK/);
   assert.match(posixRuntimeScript, /sqlite_vec-/);
   assert.match(posixRuntimeScript, /digest\("base64url"\)/);

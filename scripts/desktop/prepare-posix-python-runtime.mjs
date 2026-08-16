@@ -246,6 +246,7 @@ async function rebuildMacosSqliteVec(python, runtimeDir, workDir, arch) {
     "-O3",
     "-fPIC",
     "-dynamiclib",
+    "-Wl,-undefined,dynamic_lookup",
     "-arch",
     targetArch,
     `-mmacosx-version-min=${deploymentTarget}`,

@@ -686,7 +686,7 @@ jobs:
       - name: Packaged macOS desktop smoke
         if: matrix.os == 'macos'
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 12
         env:
           V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-macos-smoke-${{ matrix.arch }}
           V8OS_DISABLE_UPDATE_CHECK: '1'

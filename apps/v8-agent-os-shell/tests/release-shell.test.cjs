@@ -54,6 +54,11 @@ test('packaged shell checks only governed unified releases without installing up
   assert.match(workflow, /Read-only AppImage desktop smoke/);
   assert.match(workflow, /Installed Windows desktop smoke/);
   assert.match(workflow, /Packaged macOS desktop smoke/);
+  const packagedMacSmoke = workflow.slice(
+    workflow.indexOf('Packaged macOS desktop smoke'),
+    workflow.indexOf('Cleanup macOS desktop smoke processes'),
+  );
+  assert.match(packagedMacSmoke, /timeout-minutes: 12/);
 });
 
 test('packaged shell starts core services before waiting for them', () => {

@@ -876,6 +876,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
     'utf8',
   );
   for (const [packageName, version] of [
+    ['playwright', '1.56.0'],
     ['numpy', '1.26.4'],
     ['scipy', '1.13.1'],
     ['onnxruntime', '1.19.2'],

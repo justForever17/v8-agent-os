@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import subprocess
+import sys
+import time
+from types import SimpleNamespace
 
+import psutil
+import pytest
+from fastapi import HTTPException
+
+from api import ops_routes
 from core.tools.native import command as command_module
 
 
@@ -38,7 +47,8 @@ def test_windowless_subprocess_kwargs_are_windows_only(monkeypatch) -> None:
 def test_repeated_sync_system_and_skill_launches_share_windowless_kwargs(monkeypatch, tmp_path) -> None:
     _allow_command_launch(monkeypatch, tmp_path)
     create_no_window = 0x08000000
-    captured: list[dict[str, object]] = []
+    captured_runs: list[dict[str, object]] = []
+    captured_processes: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         command_module,
@@ -47,10 +57,24 @@ def test_repeated_sync_system_and_skill_launches_share_windowless_kwargs(monkeyp
     )
 
     def fake_run(argv, **kwargs):
-        captured.append(kwargs)
+        captured_runs.append(kwargs)
         return subprocess.CompletedProcess(argv, 0, stdout=b"ok\n", stderr=b"")
 
+    class FakeProcess:
+        returncode = 0
+        pid = 424242
+
+        @staticmethod
+        def communicate(*, timeout):
+            assert timeout == 90
+            return b"ok\n", b""
+
+    def fake_popen(argv, **kwargs):
+        captured_processes.append(kwargs)
+        return FakeProcess()
+
     monkeypatch.setattr(command_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(command_module.subprocess, "Popen", fake_popen)
 
     launch_pairs = 16
     for _ in range(launch_pairs):
@@ -69,11 +93,12 @@ def test_repeated_sync_system_and_skill_launches_share_windowless_kwargs(monkeyp
         assert skill_result["ok"] is True
         assert system_result["ok"] is True
 
-    assert len(captured) == launch_pairs * 2
-    assert {kwargs["creationflags"] for kwargs in captured} == {create_no_window}
+    assert len(captured_runs) == launch_pairs
+    assert len(captured_processes) == launch_pairs
+    assert {kwargs["creationflags"] for kwargs in [*captured_runs, *captured_processes]} == {create_no_window}
 
 
-def test_windows_command_session_fallback_uses_windowless_kwargs(monkeypatch, tmp_path) -> None:
+def test_windows_noninteractive_command_session_always_uses_pipe(monkeypatch, tmp_path) -> None:
     create_no_window = 0x08000000
     captured: dict[str, object] = {}
 
@@ -90,7 +115,12 @@ def test_windows_command_session_fallback_uses_windowless_kwargs(monkeypatch, tm
         return FakeProcess()
 
     monkeypatch.setattr(command_module.sys, "platform", "win32")
-    monkeypatch.setattr(command_module, "HAS_WINPTY", False)
+    monkeypatch.setattr(command_module, "HAS_WINPTY", True)
+    monkeypatch.setattr(
+        command_module,
+        "PTY",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("non-interactive command used WinPTY")),
+    )
     monkeypatch.setattr(command_module, "_resolve_shell_dialect", lambda *_args, **_kwargs: "cmd")
     monkeypatch.setattr(command_module, "_shell_command_argv", lambda command, _dialect: ["cmd.exe", "/c", command])
     monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), None))
@@ -106,4 +136,530 @@ def test_windows_command_session_fallback_uses_windowless_kwargs(monkeypatch, tm
     process.reader_thread.join(timeout=1)
 
     assert process.return_code == 0
+    assert process.backend == "pipe"
+    assert process.uses_tty is False
     assert captured["creationflags"] == create_no_window
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires cmd.exe quoting semantics")
+def test_windows_noninteractive_cmd_preserves_nested_quotes_and_exit_code(tmp_path) -> None:
+    command = subprocess.list2cmdline(
+        [sys.executable, "-I", "-u", "-c", "print('V8OS_CMD_QUOTES_OK'); raise SystemExit(7)"]
+    )
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=False,
+        cwd=str(tmp_path),
+        shell_dialect="cmd",
+        timeout_seconds=5,
+    )
+    process.reader_thread.join(timeout=5)
+
+    output = process.get_new_output()
+    status = process.status_snapshot()
+    assert "V8OS_CMD_QUOTES_OK" in output
+    assert status["backend"] == "pipe"
+    assert status["return_code"] == 7
+    assert status["failure_kind"] == "command_failed"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires cmd.exe quoting semantics")
+def test_windows_sync_cmd_preserves_nested_quotes(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(command_module, "get_runtime_context", lambda: {})
+    monkeypatch.setattr(
+        command_module,
+        "preflight_command_workspace",
+        lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path), "binding": {}},
+    )
+    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(command_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(command_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
+    command = subprocess.list2cmdline(
+        [sys.executable, "-I", "-u", "-c", "print('V8OS_SYNC_CMD_QUOTES_OK')"]
+    )
+
+    payload = json.loads(
+        command_module.execute_system_command.func(
+            command=command,
+            cwd=str(tmp_path),
+            shell_dialect="cmd",
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["returnCode"] == 0
+    assert "V8OS_SYNC_CMD_QUOTES_OK" in payload["keyOutput"]
+
+
+def test_windows_cmd_keeps_structured_argv_inside_governed_sandbox(monkeypatch) -> None:
+    command = 'python -c "print(\'sandboxed\')"'
+    base_argv = ["cmd.exe", "/d", "/s", "/c", command]
+    context = {"sandbox_policy": {"leaseId": "lease_test"}}
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "_shell_command_argv", lambda *_args: list(base_argv))
+    monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), {"V8_TEST": "1"}))
+
+    argv, environment = command_module._shell_subprocess_launch(command, "cmd", context)
+
+    assert argv == base_argv
+    assert isinstance(argv, list)
+    assert environment == {"V8_TEST": "1"}
+
+
+def test_sync_timeout_terminates_process_tree(monkeypatch, tmp_path) -> None:
+    _allow_command_launch(monkeypatch, tmp_path)
+    terminated: list[int] = []
+
+    class FakeProcess:
+        pid = 515151
+        returncode = None
+        calls = 0
+
+        def communicate(self, *, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired(cmd="echo slow", timeout=timeout)
+            return b"", b""
+
+    monkeypatch.setattr(command_module.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(command_module, "_terminate_process_tree", lambda pid: terminated.append(pid))
+
+    result = json.loads(
+        command_module.run_system_command.func(
+            command="echo slow",
+            mode="sync",
+            shell_dialect="sh",
+        )
+    )
+
+    assert result["toolExecution"]["failureClass"] == "deadline_exceeded"
+    assert terminated == [515151]
+
+
+def test_windows_interactive_backend_panic_is_normalized(monkeypatch, tmp_path) -> None:
+    class NativePanic(BaseException):
+        pass
+
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "HAS_WINPTY", True)
+    monkeypatch.setattr(
+        command_module,
+        "PTY",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(NativePanic("conpty path not found")),
+    )
+    monkeypatch.setattr(command_module, "_resolve_shell_dialect", lambda *_args, **_kwargs: "cmd")
+    monkeypatch.setattr(command_module, "_build_command_diagnostics_snapshot", lambda *_args, **_kwargs: {})
+
+    with pytest.raises(command_module.CommandSessionBackendError) as caught:
+        command_module.BackgroundProcess(
+            "python",
+            interactive=True,
+            cwd=str(tmp_path),
+            shell_dialect="cmd",
+        )
+
+    assert caught.value.backend == "winpty"
+    assert caught.value.operation == "initialize"
+    assert "NativePanic" in str(caught.value)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not command_module.HAS_WINPTY,
+    reason="requires the real Windows WinPTY backend",
+)
+def test_windows_interactive_backend_round_trip_uses_real_winpty(tmp_path) -> None:
+    marker = "V8OS_REAL_WINPTY_ROUND_TRIP"
+    command = subprocess.list2cmdline([sys.executable, "-I", "-u", "-i", "-q"])
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=True,
+        cwd=str(tmp_path),
+        shell_dialect="cmd",
+        timeout_seconds=20,
+    )
+    process_id = process._process_id()
+    output = ""
+    try:
+        process.write_input(f"print({marker!r})\n")
+        deadline = time.time() + 10
+        while marker not in output and process.is_running and time.time() < deadline:
+            output += process.get_new_output()
+            if marker not in output:
+                time.sleep(0.05)
+        output += process.get_new_output()
+        status = process.status_snapshot()
+        assert status["backend"] == "winpty"
+        assert status["uses_tty"] is True
+        assert marker in output or marker in str(status["screen_snapshot"])
+    finally:
+        process.terminate(reason="test_cleanup")
+        process.reader_thread.join(timeout=5)
+
+    assert process_id is not None
+    deadline = time.time() + 5
+    while psutil.pid_exists(process_id) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not psutil.pid_exists(process_id)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not command_module.HAS_WINPTY,
+    reason="requires the real Windows WinPTY backend",
+)
+@pytest.mark.parametrize("return_code", [0, 7])
+def test_windows_finite_interactive_command_reports_exact_exit(tmp_path, return_code) -> None:
+    marker = f"V8OS_REAL_WINPTY_EXIT_{return_code}"
+    command = subprocess.list2cmdline(
+        [
+            sys.executable,
+            "-I",
+            "-u",
+            "-c",
+            f"print({marker!r}); raise SystemExit({return_code})",
+        ]
+    )
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=True,
+        cwd=str(tmp_path),
+        shell_dialect="cmd",
+        timeout_seconds=20,
+    )
+    process.reader_thread.join(timeout=10)
+
+    output = process.get_new_output()
+    status = process.status_snapshot()
+    assert process.reader_thread.is_alive() is False
+    assert status["is_running"] is False
+    assert status["return_code"] == return_code
+    assert status["failure_kind"] == (None if return_code == 0 else "command_failed")
+    assert marker in output
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or not command_module.HAS_WINPTY,
+    reason="requires the real Windows WinPTY backend",
+)
+def test_windows_missing_interactive_command_fails_without_waiting_for_deadline(tmp_path) -> None:
+    process = command_module.BackgroundProcess(
+        "v8os-command-that-does-not-exist-43",
+        interactive=True,
+        cwd=str(tmp_path),
+        shell_dialect="cmd",
+        timeout_seconds=20,
+    )
+    process.reader_thread.join(timeout=10)
+
+    status = process.status_snapshot()
+    assert process.reader_thread.is_alive() is False
+    assert status["is_running"] is False
+    assert status["return_code"] not in (None, 0)
+    assert status["failure_kind"] == "command_failed"
+    assert status["timed_out"] is False
+
+
+def test_windows_interactive_spawn_panic_cleans_spawned_process(monkeypatch, tmp_path) -> None:
+    class NativePanic(BaseException):
+        pass
+
+    class FakePty:
+        pid = 616161
+
+        def spawn(self, _command, **_kwargs):
+            raise NativePanic("direct command spawn failed")
+
+        def cancel_io(self):
+            return None
+
+    terminated: list[int] = []
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "HAS_WINPTY", True)
+    monkeypatch.setattr(command_module, "PTY", lambda *_args, **_kwargs: FakePty())
+    monkeypatch.setattr(command_module, "_resolve_shell_dialect", lambda *_args, **_kwargs: "cmd")
+    monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), None))
+    monkeypatch.setattr(command_module, "_build_command_diagnostics_snapshot", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(command_module, "_terminate_process_tree", lambda pid: terminated.append(pid))
+
+    with pytest.raises(command_module.CommandSessionBackendError) as caught:
+        command_module.BackgroundProcess(
+            "python",
+            interactive=True,
+            cwd=str(tmp_path),
+            shell_dialect="cmd",
+        )
+
+    assert caught.value.operation == "spawn"
+    assert terminated == [616161]
+
+
+def test_command_session_read_backend_failure_terminates_process_tree(monkeypatch) -> None:
+    class NativePanic(BaseException):
+        pass
+
+    process = object.__new__(command_module.BackgroundProcess)
+    process.backend = "winpty"
+    process.failure_kind = None
+    process.failure_message = None
+    terminated: list[tuple[str, int]] = []
+    process.terminate = lambda *, reason, return_code: terminated.append((reason, return_code))
+
+    process._mark_backend_failure(NativePanic("conpty read failed"), operation="read")
+
+    assert process.failure_kind == "command_session_backend_failure"
+    assert "NativePanic" in str(process.failure_message)
+    assert terminated == [("backend_failure", 1)]
+
+
+def test_python_pip_install_is_observable_but_not_interactive() -> None:
+    command = "python -m pip install python-docx --index-url https://pypi.org/simple"
+
+    assert command_module._detect_session_preferred_command(command)
+    assert command_module._detect_interactive_command(command) is None
+
+
+def test_explicit_pipe_rejects_known_interactive_command() -> None:
+    with pytest.raises(RuntimeError) as caught:
+        command_module._launch_background_command("python", terminal_mode="pipe")
+
+    payload = json.loads(str(caught.value))
+    assert payload["ok"] is False
+    assert payload["kind"] == "command_terminal_mode_conflict"
+    assert payload["terminalMode"] == "pipe"
+    assert payload["recommendedNextAction"]
+
+
+def test_explicit_pty_forces_terminal_backend_for_unrecognized_command(monkeypatch, tmp_path) -> None:
+    _allow_command_launch(monkeypatch, tmp_path)
+    monkeypatch.setattr(command_module.safety_guardian, "assess_background_command", lambda *_args, **_kwargs: object())
+    captured: dict[str, object] = {}
+
+    class FakeBackgroundProcess:
+        uses_tty = True
+        backend = "test_pty"
+        timeout_seconds = 12.0
+        chat_cli_variant = ""
+        is_running = False
+
+        def __init__(self, _command, **kwargs):
+            captured.update(kwargs)
+            self.command_id = ""
+            self.workspace_binding = {}
+
+        @staticmethod
+        def get_new_output() -> str:
+            return ""
+
+        @staticmethod
+        def status_snapshot() -> dict[str, object]:
+            return {
+                "is_running": False,
+                "interactive": True,
+                "terminal_mode": "pty",
+                "resolved_terminal_mode": "pty",
+                "backend": "test_pty",
+                "return_code": 0,
+            }
+
+    monkeypatch.setattr(command_module, "BackgroundProcess", FakeBackgroundProcess)
+
+    launched = command_module._launch_background_command(
+        "v8os-custom-repl",
+        terminal_mode="pty",
+        timeout_seconds=12,
+    )
+
+    assert captured["interactive"] is True
+    assert captured["terminal_mode"] == "pty"
+    assert launched["terminalMode"] == "pty"
+    assert launched["resolvedTerminalMode"] == "pty"
+
+
+def test_command_session_input_rejects_pipe_without_writing(monkeypatch) -> None:
+    writes: list[str] = []
+
+    class FakePipeProcess:
+        is_running = True
+        completed_at = None
+
+        @staticmethod
+        def status_snapshot() -> dict[str, object]:
+            return {
+                "command": "python -c \"print('done')\"",
+                "is_running": True,
+                "interactive": False,
+                "terminal_mode": "auto",
+                "resolved_terminal_mode": "pipe",
+                "backend": "pipe",
+                "return_code": None,
+            }
+
+        @staticmethod
+        def write_input(value: str) -> None:
+            writes.append(value)
+
+    monkeypatch.setattr(command_module, "get_runtime_context", lambda: {})
+    command_module._bg_processes["pipe-session"] = FakePipeProcess()
+    try:
+        payload = json.loads(
+            command_module.command_session_broker.func(
+                mode="input",
+                session_id="pipe-session",
+                input_text="should-not-land",
+            )
+        )
+    finally:
+        command_module._bg_processes.pop("pipe-session", None)
+
+    assert payload["ok"] is False
+    assert payload["kind"] == "command_session_not_interactive"
+    assert payload["error"] == "command_session_not_interactive"
+    assert payload["resolvedTerminalMode"] == "pipe"
+    assert payload["recommendedNextAction"] == "terminate_then_restart_with_pty"
+    assert writes == []
+
+
+def test_background_process_rejects_direct_pipe_input() -> None:
+    process = object.__new__(command_module.BackgroundProcess)
+    process.interactive = False
+    process.terminal_mode = "auto"
+    process.resolved_terminal_mode = "pipe"
+    process.backend = "pipe"
+
+    with pytest.raises(RuntimeError) as caught:
+        process.write_input("must-not-land")
+
+    payload = json.loads(str(caught.value))
+    assert payload["kind"] == "command_session_not_interactive"
+    assert payload["resolvedTerminalMode"] == "pipe"
+
+
+def test_http_terminal_input_does_not_wrap_rejection_as_success(monkeypatch) -> None:
+    from core import native_tools
+
+    rejection = {
+        "ok": False,
+        "kind": "command_session_not_interactive",
+        "error": "command_session_not_interactive",
+        "summary": "pipe sessions do not accept input",
+    }
+    monkeypatch.setattr(
+        native_tools,
+        "send_background_input",
+        SimpleNamespace(invoke=lambda *_args, **_kwargs: json.dumps(rejection)),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            ops_routes.send_bg_process_input(
+                "pipe-session",
+                ops_routes.TerminalInputRequest(input_text="must-not-land"),
+            )
+        )
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == rejection
+
+
+def test_run_system_command_preserves_terminal_mode_conflict(monkeypatch) -> None:
+    monkeypatch.setattr(command_module, "_engineering_command_scope_block", lambda *_args, **_kwargs: None)
+
+    payload = json.loads(
+        command_module.run_system_command.func(
+            command="python",
+            mode="session",
+            terminal_mode="pipe",
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["kind"] == "command_terminal_mode_conflict"
+    assert payload["terminalMode"] == "pipe"
+
+
+def test_auto_install_session_reports_immediate_failure(monkeypatch) -> None:
+    command = "python -m pip install python-docx --index-url https://pypi.org/simple"
+
+    def fake_launch(*_args, **_kwargs):
+        return {
+            "commandId": "pip-failed",
+            "runId": "run-pip-failed",
+            "interactive": False,
+            "observableSession": True,
+            "profile": "shell",
+            "shellDialect": "cmd",
+            "cwd": "C:\\workspace",
+            "initialOutput": "ERROR: package install failed",
+            "status": {
+                "is_running": False,
+                "interactive": False,
+                "return_code": 1,
+                "backend": "pipe",
+                "failure_kind": "command_failed",
+                "failure_message": "Command exited with code 1.",
+            },
+        }
+
+    monkeypatch.setattr(command_module, "_engineering_command_scope_block", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        command_module,
+        "_compat_native_attr",
+        lambda name, local_value=None: fake_launch if name == "_launch_background_command" else local_value,
+    )
+
+    payload = json.loads(command_module.run_system_command.func(command=command, mode="auto"))
+
+    assert payload["ok"] is False
+    assert payload["state"] == "failed"
+    assert payload["failureKind"] == "command_failed"
+    assert payload["recommendedNextAction"] == "none"
+    assert payload["summary"] == "命令会话已异常结束。"
+    assert payload["finalPreview"] == "ERROR: package install failed"
+
+
+def test_noninteractive_nonzero_exit_is_a_failed_session(tmp_path) -> None:
+    shell_dialect = "cmd" if sys.platform == "win32" else "sh"
+    command = "exit /b 7" if sys.platform == "win32" else "exit 7"
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=False,
+        cwd=str(tmp_path),
+        shell_dialect=shell_dialect,
+        timeout_seconds=5,
+    )
+    process.reader_thread.join(timeout=5)
+
+    status = process.status_snapshot()
+    assert status["is_running"] is False
+    assert status["return_code"] == 7
+    assert status["failure_kind"] == "command_failed"
+    assert status["failure_message"] == "Command exited with code 7."
+    assert command_module._command_session_state_from_status(status) == "failed"
+
+
+def test_noninteractive_command_session_deadline_kills_process_tree(tmp_path) -> None:
+    shell_dialect = "cmd" if sys.platform == "win32" else "sh"
+    command = subprocess.list2cmdline([sys.executable, "-c", "import time; time.sleep(30)"])
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=False,
+        cwd=str(tmp_path),
+        shell_dialect=shell_dialect,
+        timeout_seconds=0.25,
+    )
+    process_id = process._process_id()
+    deadline = time.time() + 8
+    while process.is_running and time.time() < deadline:
+        time.sleep(0.05)
+    process.deadline_thread.join(timeout=5)
+    process.reader_thread.join(timeout=3)
+
+    status = process.status_snapshot()
+    assert process_id is not None
+    assert status["is_running"] is False
+    assert status["timed_out"] is True
+    assert status["failure_kind"] == "deadline_exceeded"
+    assert status["termination_reason"] == "deadline_exceeded"
+    assert status["return_code"] == 124
+    assert command_module._command_session_state_from_status(status) == "timed_out"
+    assert not psutil.pid_exists(process_id)

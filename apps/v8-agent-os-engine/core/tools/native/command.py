@@ -92,7 +92,6 @@ __all__ = [
     "_build_terminal_env_overrides",
     "_build_winpty_bootstrap_commands",
     "_extend_command_diagnostics_for_terminal",
-    "_run_winpty_bootstrap",
     "_strip_terminal_bootstrap_noise",
     "_normalize_terminal_snapshot_lines",
     "_looks_like_terminal_volatile_line",
@@ -326,6 +325,28 @@ def _shell_command_argv(command: str, shell_dialect: str) -> list[str]:
     if dialect == "bash":
         return [executable, "--noprofile", "--norc", "-c", command]
     return [executable, "-c", command]
+
+
+def _shell_subprocess_launch(
+    command: str,
+    shell_dialect: str,
+    runtime_context: dict[str, Any],
+) -> tuple[list[str] | str, dict[str, str] | None]:
+    base_argv = _shell_command_argv(command, shell_dialect)
+    wrapped_argv, environment = _sandbox_launch(runtime_context, base_argv)
+    sandbox_policy = runtime_context.get("sandbox_policy") or runtime_context.get("sandboxPolicy")
+    if (
+        sys.platform == "win32"
+        and _normalize_shell_dialect(shell_dialect) == "cmd"
+        and not isinstance(sandbox_policy, dict)
+        and list(wrapped_argv) == base_argv
+    ):
+        # Passing the final command as one argv item makes Python's Windows
+        # list2cmdline escape its nested quotes. cmd.exe then forwards literal
+        # quotes to tools such as `python -c`, changing the command semantics.
+        prefix = subprocess.list2cmdline(base_argv[:-1])
+        return f"{prefix} {command}", environment
+    return wrapped_argv, environment
 
 
 def _windowless_subprocess_kwargs() -> dict[str, int]:
@@ -668,11 +689,12 @@ def _terminate_run_background_commands(run_id: str | None, *, interactive_only: 
         if interactive_only and not getattr(bg_proc, "interactive", False):
             continue
         try:
-            bg_proc.terminate()
+            bg_proc.terminate(reason="run_terminal_cleanup", return_code=130)
         except Exception:
             pass
         _bg_processes.pop(command_id, None)
         removed += 1
+    return removed
 
 
 @tool
@@ -745,19 +767,41 @@ def execute_system_command(
         sync_deadline_ms = 90_000
         with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
             try:
-                command_argv, command_env = _sandbox_launch(
+                command_argv, command_env = _shell_subprocess_launch(
+                    command,
+                    resolved_shell_dialect,
                     runtime_context,
-                    _shell_command_argv(command, resolved_shell_dialect),
                 )
-                result = subprocess.run(
+                popen_kwargs: dict[str, Any] = {}
+                if sys.platform != "win32":
+                    popen_kwargs["start_new_session"] = True
+                process = subprocess.Popen(
                     command_argv,
                     shell=False,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     cwd=resolved_cwd,
                     env=command_env,
-                    timeout=sync_deadline_ms / 1000,
+                    **popen_kwargs,
                     **_windowless_subprocess_kwargs(),
                 )
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(timeout=sync_deadline_ms / 1000)
+                except subprocess.TimeoutExpired:
+                    _terminate_process_tree(process.pid)
+                    stdout_bytes, stderr_bytes = process.communicate(timeout=5)
+                    return json.dumps(
+                        envelope.failure_payload(
+                            summary="Synchronous command exceeded its tool deadline.",
+                            failure_class="deadline_exceeded",
+                            error=f"Command timed out after {sync_deadline_ms // 1000} seconds.",
+                            retryable=False,
+                            recommended_next_action="改用 command_session_broker(mode='start') 以可观察、可恢复的 session 运行，或缩小命令范围。",
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                result_return_code = process.returncode
             except subprocess.TimeoutExpired:
                 return json.dumps(
                     envelope.failure_payload(
@@ -770,8 +814,8 @@ def execute_system_command(
                     ensure_ascii=False,
                     indent=2,
                 )
-        stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
-        stderr, stderr_encoding = _decode_completed_process_bytes(result.stderr or b"", stream_name="stderr")
+        stdout, stdout_encoding = _decode_completed_process_bytes(stdout_bytes or b"", stream_name="stdout")
+        stderr, stderr_encoding = _decode_completed_process_bytes(stderr_bytes or b"", stream_name="stderr")
         encoding_diagnostics = {
             "stdout": stdout_encoding,
             "stderr": stderr_encoding,
@@ -789,7 +833,7 @@ def execute_system_command(
                 "cwd": resolved_cwd,
                 "shellDialect": resolved_shell_dialect,
                 "workspaceBinding": workspace_preflight.get("binding"),
-                "return_code": result.returncode,
+                "return_code": result_return_code,
                 "encodingDiagnostics": encoding_diagnostics,
             },
             runtime_context=runtime_context,
@@ -800,23 +844,23 @@ def execute_system_command(
                 reason="command_sync",
                 subject=command,
             )
-        if result.returncode == 0:
+        if result_return_code == 0:
             _notify_skills_inventory_command_completed(command)
         stdout_preview = _agent_preview_text(stdout, limit=5000)
         stderr_preview = _agent_preview_text(stderr, limit=5000)
         stdout_chars = len(stdout or "")
         stderr_chars = len(stderr or "")
         payload: dict[str, Any] = {
-            "ok": result.returncode == 0,
+            "ok": result_return_code == 0,
             "kind": "command_result",
             "command": command,
-            "summary": "命令执行成功。" if result.returncode == 0 else f"命令执行失败，退出码 {result.returncode}。",
+            "summary": "命令执行成功。" if result_return_code == 0 else f"命令执行失败，退出码 {result_return_code}。",
             "cwd": resolved_cwd,
             "shellDialect": resolved_shell_dialect,
-            "returnCode": result.returncode,
+            "returnCode": result_return_code,
             "keyOutput": stdout_preview,
             "keyErrors": stderr_preview,
-            "recommendedNextAction": "none" if result.returncode == 0 else "根据 stderr/stdout 摘要修复问题后重跑；若输出不足，请缩小命令范围或使用更具体的检查命令。",
+            "recommendedNextAction": "none" if result_return_code == 0 else "根据 stderr/stdout 摘要修复问题后重跑；若输出不足，请缩小命令范围或使用更具体的检查命令。",
         }
         if stdout_preview and "...[omitted " in stdout_preview:
             payload["stdoutTruncated"] = True
@@ -835,7 +879,8 @@ def execute_system_command(
             ensure_ascii=False,
             indent=2,
         )
-    except Exception as e:
+    except BaseException as e:
+        _raise_if_process_control_exception(e)
         _raise_runtime_governance_exception_if_needed(e)
         return f"Error executing command: {str(e)}"
 
@@ -847,6 +892,8 @@ def _launch_background_command(
     profile: str = "auto",
     cwd: str = "",
     shell_dialect: str = "auto",
+    terminal_mode: str = "auto",
+    timeout_seconds: float | int | None = None,
 ) -> dict[str, Any]:
     resolved_shell_dialect = _resolve_shell_dialect(command, shell_dialect)
     shell_violation = _windows_shell_syntax_violation_payload(command, shell_dialect=resolved_shell_dialect)
@@ -854,16 +901,30 @@ def _launch_background_command(
         raise RuntimeError(json.dumps(shell_violation, ensure_ascii=False))
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
+    requested_terminal_mode = _normalize_command_terminal_mode(terminal_mode)
     resolved_profile, profile_reason = _detect_background_command_profile(command, requested_profile=profile)
     # "Needs a session" is not the same as "is an interactive REPL".
-    # Installs/build checks should be observable and recoverable, but they still need
-    # an exit sentinel so observe can return the final result instead of leaving a
-    # persistent shell marked as running forever.
-    interactive_mode = interactive_reason is not None
+    # Installs/build checks should be observable and recoverable while still using
+    # a direct pipe process whose native exit status can be reported exactly.
+    if requested_terminal_mode == "pipe" and interactive_reason is not None:
+        raise RuntimeError(json.dumps({
+            "ok": False,
+            "kind": "command_terminal_mode_conflict",
+            "error": "command_terminal_mode_conflict",
+            "summary": "命令被识别为需要交互式终端，不能强制使用 pipe。",
+            "terminalMode": requested_terminal_mode,
+            "reason": interactive_reason,
+            "recommendedNextAction": "改用 terminal_mode=pty，或给命令补充明确的非交互参数。",
+        }, ensure_ascii=False))
+    interactive_mode = requested_terminal_mode == "pty" or (
+        requested_terminal_mode == "auto" and interactive_reason is not None
+    )
     observable_session = session_reason is not None
     if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
-        raise RuntimeError(
-            "当前 Windows 环境缺少 `winpty/PTY` 适配层，无法稳定自动化交互式 CLI。"
+        raise CommandSessionBackendError(
+            backend="winpty",
+            operation="initialize",
+            message="当前 Windows 环境缺少 WinPTY，无法启动交互式命令会话。",
         )
 
     runtime_context = get_runtime_context()
@@ -923,11 +984,16 @@ def _launch_background_command(
         session_id=runtime_context.get("session_id"),
         run_id=runtime_context.get("run_id"),
         interactive=interactive_mode,
+        terminal_mode=requested_terminal_mode,
         profile=resolved_profile,
         profile_reason=profile_reason or interactive_reason or session_reason,
         cwd=resolved_cwd,
         shell_dialect=resolved_shell_dialect,
         runtime_context=runtime_context,
+        timeout_seconds=_normalize_command_session_timeout_seconds(
+            timeout_seconds,
+            interactive=interactive_mode,
+        ),
     )
     bg_proc.command_id = cmd_id
     bg_proc.workspace_binding = workspace_preflight.get("binding")
@@ -965,6 +1031,8 @@ def _launch_background_command(
             "profile_reason": profile_reason,
             "shellDialect": resolved_shell_dialect,
             "chat_cli_variant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
+            "backend": bg_proc.backend,
+            "timeoutSeconds": bg_proc.timeout_seconds,
         },
         runtime_context=runtime_context,
     )
@@ -984,14 +1052,22 @@ def _launch_background_command(
         "profile": resolved_profile,
         "profileReason": profile_reason or interactive_reason or session_reason,
         "shellDialect": resolved_shell_dialect,
+        "terminalMode": requested_terminal_mode,
+        "resolvedTerminalMode": "pty" if interactive_mode else "pipe",
         "chatCliVariant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         "initialOutput": initial_out,
+        "backend": bg_proc.backend,
+        "timeoutSeconds": bg_proc.timeout_seconds,
     }
 
 # ==========================================
 
 
 _BACKGROUND_PROCESS_RETENTION_SECONDS = 300
+_DEFAULT_BACKGROUND_COMMAND_TIMEOUT_SECONDS = 15 * 60
+_DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_SECONDS = 60 * 60
+_MAX_COMMAND_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60
+_COMMAND_TERMINAL_MODES = {"auto", "pipe", "pty"}
 _SKILLS_ADD_COMMAND_PATTERN = re.compile(r"(?i)(?:^|[;&|]\s*)npx\s+skills\s+add\b")
 _PROMPT_HINT_PATTERN = re.compile(
     r"((^|\n)\s*(?:[>$#»❯]\s*|输入您的消息|Type your message|Press \? for shortcuts|按 \? 查看快捷键)|Ok to proceed\?\s*\(y\)|Proceed\?\s*(?:\([YyNn]/?[Nn]?\)|\[Y/n\]|\(y\))?|\[Y/n\]|Press Enter(?:\s+to\s+\w+)?)",
@@ -1014,6 +1090,91 @@ _SPACED_CJK_SEQUENCE_PATTERN = re.compile(r"(?:[\u3400-\u9fff]\s){4,}[\u3400-\u9
 _REPEATED_CJK_PATTERN = re.compile(r"([\u3400-\u9fff])\1{7,}")
 _BOX_DRAWING_ONLY_LINE_PATTERN = re.compile(r"^[\s┌┐└┘├┤┬┴┼─│╭╮╰╯═║╔╗╚╝╠╣╦╩╬]+$")
 _BACKGROUND_COMMAND_PROFILES = {"auto", "chat_cli", "shell"}
+
+
+class CommandSessionBackendError(RuntimeError):
+    def __init__(self, *, backend: str, operation: str, message: str):
+        self.backend = str(backend or "unknown")
+        self.operation = str(operation or "unknown")
+        super().__init__(message)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "kind": "command_session_backend_unavailable",
+            "error": "command_session_backend_unavailable",
+            "backend": self.backend,
+            "operation": self.operation,
+            "summary": str(self),
+            "recommendedNextAction": "检查交互终端运行时后重试；普通非交互命令会继续使用 pipe 后端。",
+        }
+
+
+def _command_exception_payload(exc: BaseException) -> dict[str, Any] | None:
+    if isinstance(exc, CommandSessionBackendError):
+        return exc.to_payload()
+    try:
+        decoded = json.loads(str(exc))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
+
+
+def _normalize_command_terminal_mode(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower()
+    if normalized not in _COMMAND_TERMINAL_MODES:
+        raise ValueError("terminal_mode 必须是 auto、pipe 或 pty。")
+    return normalized
+
+
+def _raise_if_process_control_exception(exc: BaseException) -> None:
+    if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+        raise exc
+
+
+def _normalize_command_session_timeout_seconds(
+    value: float | int | None,
+    *,
+    interactive: bool,
+) -> float:
+    default = (
+        _DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_SECONDS
+        if interactive
+        else _DEFAULT_BACKGROUND_COMMAND_TIMEOUT_SECONDS
+    )
+    try:
+        requested = float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        requested = float(default)
+    if requested <= 0:
+        requested = float(default)
+    return min(requested, float(_MAX_COMMAND_SESSION_TIMEOUT_SECONDS))
+
+
+def _terminate_process_tree(process_id: int | None, *, grace_seconds: float = 1.0) -> None:
+    if not process_id or process_id == os.getpid():
+        return
+    try:
+        root = psutil.Process(int(process_id))
+    except (psutil.Error, TypeError, ValueError):
+        return
+    try:
+        processes = [*root.children(recursive=True), root]
+    except psutil.Error:
+        processes = [root]
+    for process in reversed(processes):
+        try:
+            process.terminate()
+        except psutil.Error:
+            continue
+    _, alive = psutil.wait_procs(processes, timeout=max(0.0, grace_seconds))
+    for process in alive:
+        try:
+            process.kill()
+        except psutil.Error:
+            continue
 _TERMINAL_KEY_ALIASES = {
     "up": "\x1b[A",
     "arrowup": "\x1b[A",
@@ -1568,12 +1729,6 @@ def _extend_command_diagnostics_for_terminal(
             shell_dialect=shell_dialect,
         )
     return next_diagnostics
-
-
-def _run_winpty_bootstrap(pty_win: Any, env_overrides: dict[str, str], *, shell_dialect: str = "cmd") -> None:
-    for command in _build_winpty_bootstrap_commands(env_overrides, shell_dialect=shell_dialect):
-        _write_winpty_input(pty_win, f"{command}\n")
-        time.sleep(0.05)
 
 
 def _strip_terminal_bootstrap_noise(
@@ -2304,17 +2459,22 @@ class BackgroundProcess:
         session_id: str | None = None,
         run_id: str | None = None,
         interactive: bool = False,
+        terminal_mode: str = "auto",
         profile: str = "shell",
         profile_reason: str = "",
         cwd: str | None = None,
         shell_dialect: str = "auto",
         runtime_context: dict[str, Any] | None = None,
+        timeout_seconds: float | int | None = None,
     ):
         self.command = command
         self.cwd = str(cwd or os.getcwd())
         self.session_id = session_id
         self.run_id = run_id
         self.interactive = interactive
+        self.terminal_mode = _normalize_command_terminal_mode(terminal_mode)
+        self.resolved_terminal_mode = "pty" if interactive else "pipe"
+        self.backend = "pty" if interactive else "pipe"
         self.profile = profile if profile in {"shell", "chat_cli"} else "shell"
         self.profile_reason = str(profile_reason or "")
         self.shell_dialect = _resolve_shell_dialect(command, shell_dialect)
@@ -2345,6 +2505,17 @@ class BackgroundProcess:
         self.last_input_at = None
         self.completed_at = None
         self.return_code = None
+        self.failure_kind: str | None = None
+        self.failure_message: str | None = None
+        self.termination_reason: str | None = None
+        self.timed_out = False
+        self.timeout_seconds = _normalize_command_session_timeout_seconds(
+            timeout_seconds,
+            interactive=interactive,
+        )
+        self.deadline_at = self.started_at + self.timeout_seconds
+        self._termination_lock = threading.RLock()
+        self._deadline_stop = threading.Event()
         self.conversation_turns: list[dict[str, Any]] = []
         self.active_turn_index: int = -1
         self.current_turn_role: str | None = None
@@ -2358,71 +2529,85 @@ class BackgroundProcess:
         self.worker_result_raw_buffer = ""
         self.pending_input_echo = ""
         self.terminal_env_overrides = _build_terminal_env_overrides()
-        self.exit_sentinel = (
-            f"__V8_COMMAND_EXIT_{uuid.uuid4().hex[:12]}__"
-            if sys.platform == "win32" and HAS_WINPTY and not interactive
-            else ""
-        )
+        self.exit_sentinel = ""
         self.command_completed_by_sentinel = False
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
             _build_command_diagnostics_snapshot(command, cwd=self.cwd),
             env_overrides=self.terminal_env_overrides,
-            uses_winpty=bool(sys.platform == "win32" and HAS_WINPTY),
+            uses_winpty=bool(sys.platform == "win32" and interactive and HAS_WINPTY),
             shell_dialect=self.shell_dialect,
         )
-        posix_command_argv: list[str] | None = None
-        posix_command_env: dict[str, str] | None = None
-        if sys.platform != "win32":
-            posix_command_argv, posix_command_env = _sandbox_launch(
-                self.runtime_context,
-                _shell_command_argv(command, self.shell_dialect),
-            )
-        
-        if sys.platform == "win32" and HAS_WINPTY:
-            self.pty_win = PTY(self.cols, self.rows)
+
+        if interactive and sys.platform == "win32":
+            if not HAS_WINPTY:
+                raise CommandSessionBackendError(
+                    backend="winpty",
+                    operation="initialize",
+                    message="当前 Windows 环境缺少 WinPTY，无法启动交互式命令会话。",
+                )
+            self.backend = "winpty"
+            try:
+                self.pty_win = PTY(self.cols, self.rows)
+            except BaseException as exc:
+                _raise_if_process_control_exception(exc)
+                raise CommandSessionBackendError(
+                    backend="winpty",
+                    operation="initialize",
+                    message=f"WinPTY 初始化失败：{type(exc).__name__}: {exc}",
+                ) from exc
             self.uses_tty = True
-            if self.shell_dialect == "cmd":
-                shell_argv = [str(os.environ.get("COMSPEC") or "cmd.exe"), "/q", "/d"]
-            elif self.shell_dialect == "pwsh":
-                shell_argv = [str(shutil.which("pwsh") or "pwsh"), "-NoLogo", "-NoProfile"]
-            elif self.shell_dialect == "powershell":
-                shell_argv = [
-                    str(shutil.which("powershell.exe") or "powershell.exe"),
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                ]
-            else:
-                shell_argv = [str(shutil.which("bash") or "bash"), "--noprofile", "--norc"]
-            shell_argv, _ = _sandbox_launch(self.runtime_context, shell_argv)
-            self.pty_win.spawn(subprocess.list2cmdline(shell_argv))
-            time.sleep(0.5)
-            _run_winpty_bootstrap(
-                self.pty_win,
-                self.terminal_env_overrides,
-                shell_dialect=self.shell_dialect,
-            )
-            if self.shell_dialect == "cmd":
-                cwd_command = f'cd /d "{self.cwd}"'
-            elif self.shell_dialect in {"powershell", "pwsh"}:
-                escaped_cwd = self.cwd.replace("'", "''")
-                cwd_command = f"Set-Location -LiteralPath '{escaped_cwd}'"
-            else:
-                posix_cwd = self.cwd.replace("\\", "/")
-                cwd_command = f"cd {shlex.quote(posix_cwd)}"
-            _write_winpty_input(self.pty_win, f"{cwd_command}\n")
-            time.sleep(0.2)
-            _write_winpty_input(self.pty_win, f"{command}\n")
-            if self.exit_sentinel:
+            try:
+                pty_command = command
                 if self.shell_dialect == "cmd":
-                    sentinel_command = f"echo {self.exit_sentinel}:%ERRORLEVEL%"
+                    pty_command = f"@chcp 65001 >NUL & {command}"
                 elif self.shell_dialect in {"powershell", "pwsh"}:
-                    sentinel_command = f'Write-Output "{self.exit_sentinel}:$LASTEXITCODE"'
+                    pty_command = f"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); {command}"
+                base_argv = _shell_command_argv(pty_command, self.shell_dialect)
+                shell_argv, sandbox_env = _sandbox_launch(self.runtime_context, base_argv)
+                child_env = dict(sandbox_env or os.environ)
+                child_env.update(self.terminal_env_overrides)
+                executable = str(shutil.which(shell_argv[0], path=child_env.get("PATH")) or shell_argv[0])
+                sandbox_policy = self.runtime_context.get("sandbox_policy") or self.runtime_context.get("sandboxPolicy")
+                if (
+                    self.shell_dialect == "cmd"
+                    and not isinstance(sandbox_policy, dict)
+                    and list(shell_argv) == base_argv
+                ):
+                    prefix = subprocess.list2cmdline(base_argv[1:-1])
+                    cmdline = f" {prefix} {pty_command}" if prefix else f" {pty_command}"
                 else:
-                    sentinel_command = f'printf "{self.exit_sentinel}:%s\\n" "$?"'
-                _write_winpty_input(self.pty_win, f"{sentinel_command}\n")
-        elif sys.platform != "win32":
+                    cmdline = (
+                        f" {subprocess.list2cmdline(list(shell_argv[1:]))}"
+                        if len(shell_argv) > 1
+                        else None
+                    )
+                environment = "\0".join(
+                    f"{key}={value}"
+                    for key, value in sorted(child_env.items(), key=lambda item: item[0].lower())
+                ) + "\0"
+                spawned = self.pty_win.spawn(
+                    executable,
+                    cmdline=cmdline,
+                    cwd=self.cwd,
+                    env=environment,
+                )
+                if spawned is False:
+                    raise RuntimeError("WinPTY returned spawned=false")
+            except BaseException as exc:
+                _raise_if_process_control_exception(exc)
+                self._cleanup_backend_process()
+                raise CommandSessionBackendError(
+                    backend="winpty",
+                    operation="spawn",
+                    message=f"WinPTY 无法启动交互式命令：{type(exc).__name__}: {exc}",
+                ) from exc
+        elif interactive and sys.platform != "win32":
+            self.backend = "posix_pty"
+            posix_command_argv, posix_command_env = _shell_subprocess_launch(
+                command,
+                self.shell_dialect,
+                self.runtime_context,
+            )
             pid, self.fd = pty.fork()
             if pid == 0:
                 command_argv = list(posix_command_argv or ["sh", "-c", command])
@@ -2434,21 +2619,76 @@ class BackgroundProcess:
                 self.proc = pid
                 self.uses_tty = True
         else:
-            # Fallback for Windows without pywinpty
-            command_argv, sandbox_env = _sandbox_launch(
+            self.backend = "pipe"
+            command_argv, sandbox_env = _shell_subprocess_launch(
+                command,
+                self.shell_dialect,
                 self.runtime_context,
-                _shell_command_argv(command, self.shell_dialect),
             )
             child_env = dict(sandbox_env or os.environ)
             child_env.update(self.terminal_env_overrides)
+            popen_kwargs: dict[str, Any] = {}
+            if sys.platform != "win32":
+                popen_kwargs["start_new_session"] = True
             self.proc = subprocess.Popen(
                 command_argv, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env,
-                cwd=self.cwd, **_windowless_subprocess_kwargs(),
+                cwd=self.cwd, **popen_kwargs, **_windowless_subprocess_kwargs(),
             )
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
+        self.deadline_thread = threading.Thread(target=self._watch_deadline, daemon=True)
+        self.deadline_thread.start()
+
+    def _process_id(self) -> int | None:
+        if self.proc is not None:
+            if isinstance(self.proc, int):
+                return self.proc
+            try:
+                return int(self.proc.pid)
+            except (AttributeError, TypeError, ValueError):
+                return None
+        if self.pty_win is not None:
+            try:
+                raw_pid = self.pty_win.pid
+                return int(raw_pid() if callable(raw_pid) else raw_pid)
+            except BaseException as exc:
+                _raise_if_process_control_exception(exc)
+                return None
+        return None
+
+    def _cleanup_backend_process(self) -> None:
+        _terminate_process_tree(self._process_id())
+        if self.pty_win is not None:
+            cancel_io = getattr(self.pty_win, "cancel_io", None)
+            if callable(cancel_io):
+                try:
+                    cancel_io()
+                except BaseException as exc:
+                    _raise_if_process_control_exception(exc)
+        if self.proc is not None and hasattr(self.proc, "stdin") and self.proc.stdin:
+            try:
+                self.proc.stdin.close()
+            except Exception:
+                pass
+
+    def _mark_backend_failure(self, exc: BaseException, *, operation: str) -> None:
+        _raise_if_process_control_exception(exc)
+        self.failure_kind = "command_session_backend_failure"
+        self.failure_message = f"{self.backend} {operation} failed: {type(exc).__name__}: {exc}"
+        self.terminate(reason="backend_failure", return_code=1)
+
+    def _watch_deadline(self) -> None:
+        remaining = max(0.0, self.deadline_at - time.time())
+        if self._deadline_stop.wait(timeout=remaining):
+            return
+        if not self.is_running:
+            return
+        self.timed_out = True
+        self.failure_kind = "deadline_exceeded"
+        self.failure_message = f"Command session exceeded its {int(self.timeout_seconds)} second deadline."
+        self.terminate(reason="deadline_exceeded", return_code=124)
 
     def _chat_cli_turn(self) -> dict[str, Any] | None:
         if self.active_turn_index < 0 or self.active_turn_index >= len(self.conversation_turns):
@@ -2669,9 +2909,25 @@ class BackgroundProcess:
         }
 
     def _read_return_code(self) -> int | None:
+        if self.pty_win is not None:
+            try:
+                return int(self.pty_win.get_exitstatus())
+            except BaseException as exc:
+                _raise_if_process_control_exception(exc)
+                return None
+        if isinstance(self.proc, int) and sys.platform != "win32":
+            try:
+                _pid, wait_status = os.waitpid(self.proc, 0)
+                return os.waitstatus_to_exitcode(wait_status)
+            except (ChildProcessError, OSError):
+                return None
         if self.proc is not None and hasattr(self.proc, "poll"):
             try:
-                return self.proc.poll()
+                return_code = self.proc.poll()
+                if return_code is not None:
+                    return return_code
+                wait = getattr(self.proc, "wait", None)
+                return wait() if callable(wait) else None
             except Exception:
                 return None
         return None
@@ -2724,7 +2980,7 @@ class BackgroundProcess:
 
     def _read_output(self):
         try:
-            if sys.platform == "win32" and HAS_WINPTY:
+            if self.backend == "winpty" and self.pty_win is not None:
                 while self.is_running and self.pty_win.isalive():
                     try:
                         data = self.pty_win.read()
@@ -2732,9 +2988,10 @@ class BackgroundProcess:
                             self._ingest_output(data)
                         else:
                             time.sleep(0.05)
-                    except Exception:
+                    except BaseException as exc:
+                        self._mark_backend_failure(exc, operation="read")
                         break
-            elif sys.platform != "win32" and self.fd is not None:
+            elif self.backend == "posix_pty" and self.fd is not None:
                 while self.is_running:
                     try:
                         data = os.read(self.fd, 4096).decode('utf-8', 'replace')
@@ -2750,15 +3007,30 @@ class BackgroundProcess:
                     if not char:
                         break
                     self._ingest_output(char)
-        except Exception:
-            pass
+        except BaseException as exc:
+            self._mark_backend_failure(exc, operation="read_loop")
         finally:
             self.is_running = False
             self.completed_at = time.time()
+            self._deadline_stop.set()
             read_return_code = self._read_return_code()
             if self.return_code is None:
                 self.return_code = read_return_code
-            if self.return_code in (None, 0):
+            if (
+                self.return_code is None
+                and not self.failure_kind
+                and not self.termination_reason
+            ):
+                self.failure_kind = "command_exit_status_unavailable"
+                self.failure_message = "Command output closed before an exit status could be observed."
+            if (
+                self.return_code not in (None, 0)
+                and not self.failure_kind
+                and not self.termination_reason
+            ):
+                self.failure_kind = "command_failed"
+                self.failure_message = f"Command exited with code {self.return_code}."
+            if self.return_code == 0:
                 _notify_skills_inventory_command_completed(self.command)
 
     def get_new_output(self) -> str:
@@ -2784,11 +3056,35 @@ class BackgroundProcess:
         self.last_reported_raw_frame_version = self.raw_frame_version
 
     def write_input(self, data: str):
+        if not self.interactive or self.resolved_terminal_mode != "pty":
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "kind": "command_session_not_interactive",
+                        "error": "command_session_not_interactive",
+                        "summary": "当前命令会话使用 pipe 后端，不接受交互输入。",
+                        "terminalMode": self.terminal_mode,
+                        "resolvedTerminalMode": self.resolved_terminal_mode,
+                        "backend": self.backend,
+                        "recommendedNextAction": "terminate_then_restart_with_pty",
+                    },
+                    ensure_ascii=False,
+                )
+            )
         self.last_input_at = time.time()
         normalized_input = _decode_background_input_escapes(data)
-        if sys.platform == "win32" and HAS_WINPTY:
-            _write_winpty_input(self.pty_win, normalized_input)
-        elif sys.platform != "win32" and self.fd is not None:
+        if self.backend == "winpty" and self.pty_win is not None:
+            try:
+                _write_winpty_input(self.pty_win, normalized_input)
+            except BaseException as exc:
+                self._mark_backend_failure(exc, operation="write")
+                raise CommandSessionBackendError(
+                    backend=self.backend,
+                    operation="write",
+                    message=self.failure_message or "WinPTY input failed.",
+                ) from exc
+        elif self.backend == "posix_pty" and self.fd is not None:
             normalized_data = _normalize_background_input(normalized_input)
             os.write(self.fd, normalized_data.encode('utf-8'))
         elif self.proc and self.proc.stdin:
@@ -2812,7 +3108,7 @@ class BackgroundProcess:
         except Exception:
             pass
 
-        if sys.platform == "win32" and HAS_WINPTY and self.pty_win is not None:
+        if self.backend == "winpty" and self.pty_win is not None:
             for method_name in ("set_size", "resize"):
                 method = getattr(self.pty_win, method_name, None)
                 if not callable(method):
@@ -2917,6 +3213,8 @@ class BackgroundProcess:
             "is_running": self.is_running,
             "uses_tty": self.uses_tty,
             "interactive": self.interactive,
+            "terminal_mode": self.terminal_mode,
+            "resolved_terminal_mode": self.resolved_terminal_mode,
             "command_completed_by_sentinel": bool(self.command_completed_by_sentinel),
             "profile": self.profile,
             "profile_reason": self.profile_reason,
@@ -2952,6 +3250,13 @@ class BackgroundProcess:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "return_code": self.return_code,
+            "backend": self.backend,
+            "timeout_seconds": self.timeout_seconds,
+            "deadline_at": datetime.fromtimestamp(self.deadline_at, timezone.utc).isoformat(),
+            "timed_out": self.timed_out,
+            "failure_kind": self.failure_kind,
+            "failure_message": self.failure_message,
+            "termination_reason": self.termination_reason,
             "seconds_since_output": round(max(0.0, time.time() - self.last_output_at), 2),
             "seconds_since_input": None
             if self.last_input_at is None
@@ -2964,18 +3269,17 @@ class BackgroundProcess:
             "command_diagnostics": dict(self.command_diagnostics),
         }
 
-    def terminate(self):
-        self.is_running = False
-        if sys.platform == "win32" and HAS_WINPTY:
-            del self.pty_win
-        elif sys.platform != "win32" and self.proc is not None:
-            try:
-                import signal
-                os.kill(self.proc, signal.SIGKILL)
-            except Exception:
-                pass
-        elif self.proc:
-            self.proc.terminate()
+    def terminate(self, *, reason: str = "user_terminated", return_code: int = 130):
+        with self._termination_lock:
+            if self.termination_reason is None:
+                self.termination_reason = reason
+            self.is_running = False
+            self._deadline_stop.set()
+            if self.return_code is None:
+                self.return_code = return_code
+            if self.completed_at is None:
+                self.completed_at = time.time()
+            self._cleanup_backend_process()
 
 _bg_processes = {}
 
@@ -3013,9 +3317,7 @@ def list_background_process_snapshots(
         command_preview = command if len(command) <= 240 else f"{command[:237]}..."
         return_code = status.get("return_code")
         is_running = bool(status.get("is_running"))
-        process_status = "running" if is_running else (
-            "failed" if return_code not in (None, 0, "0") else "completed" if status.get("completed_at") else "stopped"
-        )
+        process_status = _command_session_state_from_status(status)
         snapshots.append({
             "processId": str(command_id),
             "commandId": str(command_id),
@@ -3027,6 +3329,9 @@ def list_background_process_snapshots(
             "cwd": status.get("cwd"),
             "workspaceBinding": status.get("workspace_binding"),
             "status": process_status,
+            "backend": status.get("backend"),
+            "terminalMode": status.get("terminal_mode"),
+            "resolvedTerminalMode": status.get("resolved_terminal_mode"),
             "interactive": bool(status.get("interactive")),
             "usesTty": bool(status.get("uses_tty")),
             "ttyMode": status.get("tty_mode"),
@@ -3049,12 +3354,18 @@ def list_background_process_snapshots(
             "lastRawFrameAt": _normalize_status_timestamp(status.get("last_raw_frame_at")),
             "lastRawFramePreview": status.get("last_raw_frame_preview"),
             "commandDiagnostics": status.get("command_diagnostics"),
-            "canTerminate": True,
-            "canInput": bool(status.get("interactive")),
+            "canTerminate": is_running,
+            "canInput": bool(is_running and status.get("interactive")),
             "startedAt": _normalize_status_timestamp(status.get("started_at") or time.time()),
             "completedAt": _normalize_status_timestamp(status.get("completed_at")),
             "secondsSinceOutput": status.get("seconds_since_output"),
             "secondsSinceInput": status.get("seconds_since_input"),
+            "timeoutSeconds": status.get("timeout_seconds"),
+            "deadlineAt": status.get("deadline_at"),
+            "timedOut": bool(status.get("timed_out")),
+            "failureKind": status.get("failure_kind"),
+            "failureMessage": status.get("failure_message"),
+            "terminationReason": status.get("termination_reason"),
         })
     snapshots.sort(key=lambda item: str(item.get("startedAt") or ""))
     return snapshots
@@ -3065,6 +3376,8 @@ def start_background_command(
     profile: str = "auto",
     cwd: str = "",
     shell_dialect: str = "auto",
+    terminal_mode: str = "auto",
+    timeout_seconds: float | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Start a long-running or interactive system command in the background.
@@ -3091,6 +3404,8 @@ def start_background_command(
             profile=profile,
             cwd=cwd,
             shell_dialect=shell_dialect,
+            terminal_mode=terminal_mode,
+            timeout_seconds=timeout_seconds,
         )
         if command_may_change_workspace(command):
             mark_workspace_state_stale(
@@ -3115,8 +3430,12 @@ def start_background_command(
             f"Status: {json.dumps(launched['status'], ensure_ascii=False)}\n"
             f"Initial output:\n{initial_section}{guidance}"
         )
-    except Exception as e:
+    except BaseException as e:
+        _raise_if_process_control_exception(e)
         _raise_runtime_governance_exception_if_needed(e)
+        structured_error = _command_exception_payload(e)
+        if structured_error is not None:
+            return json.dumps(structured_error, ensure_ascii=False, indent=2)
         return f"Error starting background command: {e}"
 
 
@@ -3127,6 +3446,8 @@ def run_system_command(
     profile: str = "auto",
     cwd: str = "",
     shell_dialect: str = "auto",
+    terminal_mode: str = "auto",
+    timeout_seconds: float | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run shell work with V8OS choosing the safest command path.
@@ -3150,7 +3471,16 @@ def run_system_command(
     - 不允许用于脚手架、依赖安装、dev server 或可能交互的命令
 
     mode=session:
-    - 兼容模式：强制后台/交互模式
+    - 强制进入可观察 session；终端后端仍由 terminal_mode 单独决定
+
+    terminal_mode:
+    - auto: 仅在命令被明确识别为交互程序时使用 PTY，否则使用可观察 pipe
+    - pipe: 强制非交互 pipe；若命令明显需要交互则结构化拒绝
+    - pty: 强制真实 PTY，适合未被自动识别的 REPL、TUI、密码或确认提示
+
+    timeout_seconds:
+    - session 模式的绝对执行期限；普通会话默认 15 分钟，交互会话默认 60 分钟，最长 2 小时
+    - 到期会终止完整子进程树，并返回 timed_out/124，而不是无限等待
 
     profile:
     - auto: 自动识别 shell / chat_cli
@@ -3173,12 +3503,17 @@ def run_system_command(
         return json.dumps(capsule_block, ensure_ascii=False, indent=2)
     try:
         normalized_profile = _normalize_background_command_profile(profile)
+        normalized_terminal_mode = _normalize_command_terminal_mode(terminal_mode)
     except ValueError as exc:
         return f"Error: {exc}"
 
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
-    prefer_session = interactive_reason is not None or session_reason is not None
+    prefer_session = (
+        normalized_terminal_mode == "pty"
+        or interactive_reason is not None
+        or session_reason is not None
+    )
     effective_mode = normalized_mode
     if normalized_mode == "auto":
         if prefer_session:
@@ -3205,6 +3540,8 @@ def run_system_command(
                             "profile": normalized_profile,
                             "cwd": cwd,
                             "shell_dialect": shell_dialect,
+                            "terminal_mode": normalized_terminal_mode,
+                            "timeout_seconds": timeout_seconds,
                         },
                     },
                 },
@@ -3226,6 +3563,8 @@ def run_system_command(
                 profile=normalized_profile,
                 cwd=cwd,
                 shell_dialect=shell_dialect,
+                terminal_mode=normalized_terminal_mode,
+                timeout_seconds=timeout_seconds,
             )
             if command_may_change_workspace(command):
                 mark_workspace_state_stale(
@@ -3236,11 +3575,13 @@ def run_system_command(
             status = dict(launched.get("status") or {})
             state = _command_session_state_from_status(status)
             payload = {
-                "ok": True,
+                "ok": _command_session_ok_for_state(state),
                 "kind": "command_session",
                 "mode": "session",
                 "command": command,
                 "shellDialect": launched.get("shellDialect"),
+                "terminalMode": launched.get("terminalMode"),
+                "resolvedTerminalMode": launched.get("resolvedTerminalMode"),
                 "commandId": launched["commandId"],
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
@@ -3259,20 +3600,32 @@ def run_system_command(
                     mode="start",
                     state=state,
                     awaiting_input=bool(status.get("awaiting_input")),
-                    has_more=bool(state not in {"completed", "failed"}),
+                    has_more=bool(state not in {"completed", "failed", "timed_out", "terminated"}),
                 ),
                 "state": state,
                 "awaitingInput": bool(status.get("awaiting_input")),
                 "returnCode": status.get("return_code"),
+                "backend": status.get("backend"),
+                "timeoutSeconds": status.get("timeout_seconds"),
+                "deadlineAt": status.get("deadline_at"),
+                "timedOut": bool(status.get("timed_out")),
+                "failureKind": status.get("failure_kind"),
+                "failureMessage": status.get("failure_message"),
+                "terminationReason": status.get("termination_reason"),
             }
             if launched["initialOutput"]:
                 initial_preview, initial_truncated = _command_session_preview_text(str(launched["initialOutput"] or ""))
                 if initial_preview:
-                    payload["finalPreview" if state in {"completed", "failed"} else "initialPreview"] = initial_preview
-                    payload["finalPreviewTruncated" if state in {"completed", "failed"} else "initialPreviewTruncated"] = initial_truncated
+                    terminal_state = state in {"completed", "failed", "timed_out", "terminated"}
+                    payload["finalPreview" if terminal_state else "initialPreview"] = initial_preview
+                    payload["finalPreviewTruncated" if terminal_state else "initialPreviewTruncated"] = initial_truncated
             return json.dumps(payload, ensure_ascii=False, indent=2)
-        except Exception as exc:
+        except BaseException as exc:
+            _raise_if_process_control_exception(exc)
             _raise_runtime_governance_exception_if_needed(exc)
+            structured_error = _command_exception_payload(exc)
+            if structured_error is not None:
+                return json.dumps(structured_error, ensure_ascii=False, indent=2)
             return f"Error starting session command: {exc}"
 
     return "Error: 未能解析命令执行模式。"
@@ -3301,6 +3654,12 @@ def _command_session_state_from_status(status: dict[str, Any]) -> str:
         if observation_state == "idle" and float(status.get("seconds_since_output") or 0) >= 90:
             return "recoverable_stalled"
         return "running"
+    if bool(status.get("timed_out")):
+        return "timed_out"
+    if status.get("failure_kind"):
+        return "failed"
+    if status.get("termination_reason"):
+        return "terminated"
     return_code = status.get("return_code")
     return "failed" if return_code not in (None, 0, "0") else "completed"
 
@@ -3313,10 +3672,16 @@ def _command_session_summary_for_state(
     delta_text: str = "",
     terminated: bool = False,
 ) -> str:
-    if mode == "start":
-        return "已启动交互式命令会话。" if interactive else "已启动后台命令会话。"
     if mode == "terminate":
         return "命令会话已终止。" if terminated else "命令会话终止请求已发送。"
+    if state == "completed":
+        return "命令会话已完成。"
+    if state == "failed":
+        return "命令会话已异常结束。"
+    if state == "timed_out":
+        return "命令会话达到执行期限，进程树已终止。"
+    if state == "terminated":
+        return "命令会话已终止。"
     if delta_text:
         if state == "awaiting_input":
             return "终端有新增输出，当前已等待输入。"
@@ -3327,11 +3692,13 @@ def _command_session_summary_for_state(
         return "终端有原始数据，但屏幕尚未稳定刷新。"
     if state == "recoverable_stalled":
         return "命令会话长时间无新增输出，处于可恢复停滞状态。"
-    if state == "completed":
-        return "命令会话已完成。"
-    if state == "failed":
-        return "命令会话已异常结束。"
+    if mode == "start":
+        return "已启动交互式命令会话。" if interactive else "已启动后台命令会话。"
     return "命令会话仍在运行。"
+
+
+def _command_session_ok_for_state(state: str) -> bool:
+    return str(state or "").strip().lower() not in {"failed", "timed_out"}
 
 
 def _command_session_recommended_next_action(
@@ -3341,7 +3708,7 @@ def _command_session_recommended_next_action(
     awaiting_input: bool,
     has_more: bool,
 ) -> str:
-    if mode == "terminate" or state in {"completed", "failed"}:
+    if mode == "terminate" or state in {"completed", "failed", "timed_out", "terminated"}:
         return "none"
     if awaiting_input:
         return "input"
@@ -3437,9 +3804,10 @@ def _command_session_result_preview_fields(
     limit: int = 1200,
 ) -> dict[str, Any]:
     """Build the compact result surface an agent needs when a command has no fresh delta."""
-    if state not in {"completed", "failed", "recoverable_stalled", "render_stalled"} and not delta_text:
+    terminal_states = {"completed", "failed", "timed_out", "terminated"}
+    if state not in {*terminal_states, "recoverable_stalled", "render_stalled"} and not delta_text:
         return {}
-    if interactive and state not in {"completed", "failed"}:
+    if interactive and state not in terminal_states:
         return {}
     source_candidates = (
         (
@@ -3448,7 +3816,7 @@ def _command_session_result_preview_fields(
             str(screen_preview or "").strip(),
             str(raw_frame_preview or "").strip(),
         )
-        if state in {"completed", "failed"}
+        if state in terminal_states
         else (
             str(delta_text or "").strip(),
             str(raw_buffer or "").strip(),
@@ -3465,7 +3833,7 @@ def _command_session_result_preview_fields(
     preview = _strip_command_echo_noise(preview, command=command)
     if not preview:
         return {}
-    field_name = "finalPreview" if state in {"completed", "failed"} else "outputPreview"
+    field_name = "finalPreview" if state in terminal_states else "outputPreview"
     return {
         field_name: preview,
         f"{field_name}Truncated": truncated,
@@ -3513,6 +3881,8 @@ def command_session_broker(
     profile: str = "auto",
     cwd: str = "",
     shell_dialect: str = "auto",
+    terminal_mode: str = "auto",
+    timeout_seconds: float | None = None,
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
@@ -3528,6 +3898,8 @@ def command_session_broker(
     - input: send input into the active session; submit=true appends Enter when input_text has no newline
       or when keys do not already include Enter.
     - terminate: stop the session
+    - start 可设置 timeout_seconds；普通会话默认 15 分钟，交互会话默认 60 分钟，最长 2 小时
+    - start 可设置 terminal_mode=auto|pipe|pty；需要输入但自动识别不足时必须显式选择 pty
 
     Usage guidance:
     - Prefer run_system_command(mode=auto) as the first shell entry; it starts this broker internally when needed.
@@ -3575,6 +3947,7 @@ def command_session_broker(
                 )
             try:
                 normalized_profile = _normalize_background_command_profile(profile)
+                normalized_terminal_mode = _normalize_command_terminal_mode(terminal_mode)
             except ValueError as exc:
                 return _command_session_payload(
                     mode=normalized_mode,
@@ -3592,6 +3965,8 @@ def command_session_broker(
                 profile=normalized_profile,
                 cwd=cwd,
                 shell_dialect=shell_dialect,
+                terminal_mode=normalized_terminal_mode,
+                timeout_seconds=timeout_seconds,
             )
             if command_may_change_workspace(normalized_command):
                 mark_workspace_state_stale(
@@ -3617,6 +3992,7 @@ def command_session_broker(
                 mode=normalized_mode,
                 session_id=str(launched.get("commandId") or ""),
                 command_id=str(launched.get("commandId") or ""),
+                ok=_command_session_ok_for_state(state),
                 summary=_command_session_summary_for_state(
                     mode=normalized_mode,
                     state=state,
@@ -3627,12 +4003,14 @@ def command_session_broker(
                     mode=normalized_mode,
                     state=state,
                     awaiting_input=bool(status.get("awaiting_input")),
-                    has_more=bool(state not in {"completed", "failed"}),
+                    has_more=bool(state not in {"completed", "failed", "timed_out", "terminated"}),
                 ),
                 interactive=bool(launched.get("interactive")),
                 observableSession=bool(launched.get("observableSession")),
                 profile=launched.get("profile"),
                 shellDialect=launched.get("shellDialect"),
+                terminalMode=launched.get("terminalMode"),
+                resolvedTerminalMode=launched.get("resolvedTerminalMode"),
                 reason=launched.get("interactiveReason") or launched.get("sessionReason") or launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
                 command=normalized_command,
                 cwd=launched.get("cwd"),
@@ -3642,6 +4020,13 @@ def command_session_broker(
                 initialPreview=initial_preview or None,
                 initialPreviewTruncated=initial_truncated if initial_preview else None,
                 runId=launched.get("runId"),
+                backend=status.get("backend"),
+                timeoutSeconds=status.get("timeout_seconds"),
+                deadlineAt=status.get("deadline_at"),
+                timedOut=bool(status.get("timed_out")),
+                failureKind=status.get("failure_kind"),
+                failureMessage=status.get("failure_message"),
+                terminationReason=status.get("termination_reason"),
                 debug=debug_payload,
             )
 
@@ -3731,6 +4116,7 @@ def command_session_broker(
                 mode=normalized_mode,
                 session_id=resolved_session_id,
                 command_id=resolved_session_id,
+                ok=_command_session_ok_for_state(state),
                 summary=_command_session_summary_for_state(
                     mode=normalized_mode,
                     state=state,
@@ -3757,6 +4143,15 @@ def command_session_broker(
                 terminalMenu=terminal_menu or None,
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
+                terminalMode=status.get("terminal_mode"),
+                resolvedTerminalMode=status.get("resolved_terminal_mode"),
+                backend=status.get("backend"),
+                timeoutSeconds=status.get("timeout_seconds"),
+                deadlineAt=status.get("deadline_at"),
+                timedOut=bool(status.get("timed_out")),
+                failureKind=status.get("failure_kind"),
+                failureMessage=status.get("failure_message"),
+                terminationReason=status.get("termination_reason"),
                 debug=debug_payload,
                 **result_fields,
             )
@@ -3775,6 +4170,23 @@ def command_session_broker(
                     command=status.get("command"),
                     returnCode=status.get("return_code"),
                     error="session_not_running",
+                )
+            input_status = bg_proc.status_snapshot()
+            if not bool(input_status.get("interactive")) or str(input_status.get("resolved_terminal_mode") or "pipe") != "pty":
+                return _command_session_payload(
+                    mode=normalized_mode,
+                    session_id=resolved_session_id,
+                    command_id=resolved_session_id,
+                    ok=False,
+                    kind="command_session_not_interactive",
+                    summary="当前命令会话使用 pipe 后端，不接受交互输入。",
+                    recommended_next_action="terminate_then_restart_with_pty",
+                    state=_command_session_state_from_status(input_status),
+                    command=input_status.get("command"),
+                    terminalMode=input_status.get("terminal_mode"),
+                    resolvedTerminalMode=input_status.get("resolved_terminal_mode") or "pipe",
+                    backend=input_status.get("backend"),
+                    error="command_session_not_interactive",
                 )
             key_input, accepted_keys, key_submitted_enter, used_key_input = _terminal_key_sequence(
                 input_text=input_text,
@@ -3880,6 +4292,7 @@ def command_session_broker(
                 mode=normalized_mode,
                 session_id=resolved_session_id,
                 command_id=resolved_session_id,
+                ok=_command_session_ok_for_state(state),
                 summary=_command_session_summary_for_state(
                     mode=normalized_mode,
                     state=state,
@@ -3907,12 +4320,21 @@ def command_session_broker(
                 terminalMenu=terminal_menu or None,
                 hasMore=has_more,
                 returnCode=status.get("return_code"),
+                terminalMode=status.get("terminal_mode"),
+                resolvedTerminalMode=status.get("resolved_terminal_mode"),
+                backend=status.get("backend"),
+                timeoutSeconds=status.get("timeout_seconds"),
+                deadlineAt=status.get("deadline_at"),
+                timedOut=bool(status.get("timed_out")),
+                failureKind=status.get("failure_kind"),
+                failureMessage=status.get("failure_message"),
+                terminationReason=status.get("termination_reason"),
                 debug=debug_payload,
                 **result_fields,
             )
 
         status_before = bg_proc.status_snapshot()
-        bg_proc.terminate()
+        bg_proc.terminate(reason="user_terminated", return_code=130)
         time.sleep(0.15)
         final_output = bg_proc.get_new_output()
         status = bg_proc.status_snapshot()
@@ -3946,22 +4368,26 @@ def command_session_broker(
             command=status.get("command"),
             cwd=status.get("cwd"),
             returnCode=status.get("return_code"),
+            terminalMode=status.get("terminal_mode"),
+            resolvedTerminalMode=status.get("resolved_terminal_mode"),
+            backend=status.get("backend"),
+            timeoutSeconds=status.get("timeout_seconds"),
+            deadlineAt=status.get("deadline_at"),
+            timedOut=bool(status.get("timed_out")),
+            failureKind=status.get("failure_kind"),
+            failureMessage=status.get("failure_message"),
+            terminationReason=status.get("termination_reason"),
             keyOutput=final_preview or None if debug else None,
             keyOutputTruncated=final_truncated if debug and final_preview else None,
             debug=debug_payload,
         )
-    except Exception as exc:
+    except BaseException as exc:
+        _raise_if_process_control_exception(exc)
         _raise_runtime_governance_exception_if_needed(exc)
         normalized_session = str(command_id or session_id or "").strip()
         error_text = str(exc)
-        structured_error: dict[str, Any] | None = None
-        try:
-            parsed_error = json.loads(error_text)
-            if isinstance(parsed_error, dict):
-                structured_error = parsed_error
-        except Exception:
-            structured_error = None
-        if structured_error:
+        structured_error = _command_exception_payload(exc)
+        if structured_error is not None:
             return _command_session_payload(
                 mode=normalized_mode,
                 session_id=normalized_session,
@@ -3970,9 +4396,20 @@ def command_session_broker(
                 summary=str(structured_error.get("summary") or structured_error.get("error") or error_text),
                 recommended_next_action=str(structured_error.get("recommendedNextAction") or "none"),
                 error=str(structured_error.get("error") or structured_error.get("kind") or error_text),
-                kind=structured_error.get("kind"),
-                suggestedCommand=structured_error.get("suggestedCommand"),
-                detailTool=structured_error.get("detailTool"),
+                **{
+                    key: value
+                    for key, value in structured_error.items()
+                    if key
+                    not in {
+                        "ok",
+                        "summary",
+                        "recommendedNextAction",
+                        "error",
+                        "mode",
+                        "sessionId",
+                        "commandId",
+                    }
+                },
             )
         return _command_session_payload(
             mode=normalized_mode,
@@ -3999,6 +4436,8 @@ def _build_terminal_status_tool_view(status: dict) -> dict:
         "chat_cli_variant",
         "uses_tty",
         "interactive",
+        "terminal_mode",
+        "resolved_terminal_mode",
         "tty_mode",
         "screen_mode",
         "screen_version",
@@ -4015,6 +4454,13 @@ def _build_terminal_status_tool_view(status: dict) -> dict:
         "started_at",
         "completed_at",
         "return_code",
+        "backend",
+        "timeout_seconds",
+        "deadline_at",
+        "timed_out",
+        "failure_kind",
+        "failure_message",
+        "termination_reason",
         "seconds_since_output",
         "seconds_since_input",
         "last_screen_at",

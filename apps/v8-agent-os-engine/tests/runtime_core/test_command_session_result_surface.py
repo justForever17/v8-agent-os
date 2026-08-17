@@ -120,6 +120,30 @@ def test_command_session_final_result_strips_command_echo():
     assert "python -c \"print('done')\"\ndone" not in rendered
 
 
+def test_command_session_timeout_is_terminal_and_exposes_backend_failure():
+    rendered = ChatRuntime._compact_command_session_broker_result(
+        {
+            "ok": True,
+            "mode": "observe",
+            "kind": "command_session",
+            "command": "python long_task.py",
+            "sessionId": "abc123",
+            "state": "timed_out",
+            "returnCode": 124,
+            "backend": "pipe",
+            "timedOut": True,
+            "failureKind": "deadline_exceeded",
+            "failureMessage": "Command session exceeded its 900 second deadline.",
+        }
+    )
+
+    assert "[deadline exceeded; process tree terminated]" in rendered
+    assert "[still running]" not in rendered
+    assert "[session: abc123]" not in rendered
+    assert "[exit code: 124]" in rendered
+    assert "deadline" in rendered
+
+
 def test_tool_node_budget_projects_command_json_to_terminal_surface():
     raw = json.dumps(
         {
@@ -145,3 +169,31 @@ def test_tool_node_budget_projects_command_json_to_terminal_surface():
     assert "<stdout>\nhello\n</stdout>" in visible
     assert '"ok"' not in visible
     assert "recommendedNextAction" not in visible
+
+
+def test_tool_node_budget_treats_command_timeout_as_terminal():
+    raw = json.dumps(
+        {
+            "ok": False,
+            "kind": "command_session",
+            "command": "python long_task.py",
+            "sessionId": "timeout-session",
+            "state": "timed_out",
+            "returnCode": 124,
+            "timedOut": True,
+            "failureKind": "deadline_exceeded",
+            "failureMessage": "Command session exceeded its deadline.",
+        }
+    )
+    message = ToolMessage(content=raw, name="command_session_broker", tool_call_id="call-timeout")
+
+    visible = apply_tool_surface_budget(
+        message,
+        {"agentVisibleBudget": 2500},
+        tool_name="command_session_broker",
+    ).content
+
+    assert "[deadline exceeded; process tree terminated]" in visible
+    assert "[still running]" not in visible
+    assert "[session: timeout-session]" not in visible
+    assert "[exit code: 124]" in visible

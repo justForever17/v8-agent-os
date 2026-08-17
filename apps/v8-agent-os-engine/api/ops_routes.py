@@ -1,4 +1,5 @@
 import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -450,7 +451,15 @@ async def send_bg_process_input(cmd_id: str, request: TerminalInputRequest):
         from core.native_tools import send_background_input
 
         result = send_background_input.invoke({"command_id": cmd_id, "input_text": request.input_text})
+        try:
+            result_payload = json.loads(str(result))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result_payload = None
+        if isinstance(result_payload, dict) and result_payload.get("ok") is False:
+            raise HTTPException(status_code=409, detail=result_payload)
         return {"status": "success", "message": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -463,6 +472,21 @@ async def send_bg_process_sensitive_input(cmd_id: str, request: SensitiveTermina
         process = _bg_processes.get(cmd_id)
         if process is None:
             raise HTTPException(status_code=404, detail=f"No active background command with ID: {cmd_id}")
+        process_status = process.status_snapshot()
+        if not bool(process_status.get("interactive")) or not bool(process_status.get("uses_tty")):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "kind": "command_session_not_interactive",
+                    "error": "command_session_not_interactive",
+                    "summary": "当前命令会话使用 pipe 后端，不接受交互输入。",
+                    "terminalMode": process_status.get("terminal_mode"),
+                    "resolvedTerminalMode": process_status.get("resolved_terminal_mode") or "pipe",
+                    "backend": process_status.get("backend"),
+                    "recommendedNextAction": "terminate_then_restart_with_pty",
+                },
+            )
         process.write_input(request.input_text)
         return {
             "status": "success",
@@ -498,6 +522,20 @@ async def bg_process_websocket(websocket: WebSocket, cmd_id: str):
         return
 
     bg_proc = _bg_processes[cmd_id]
+    process_status = bg_proc.status_snapshot()
+    if not bool(process_status.get("interactive")) or not bool(process_status.get("uses_tty")):
+        await websocket.send_json({
+            "ok": False,
+            "kind": "command_session_not_interactive",
+            "error": "command_session_not_interactive",
+            "summary": "当前命令会话使用 pipe 后端，不接受交互输入。",
+            "terminalMode": process_status.get("terminal_mode"),
+            "resolvedTerminalMode": process_status.get("resolved_terminal_mode") or "pipe",
+            "backend": process_status.get("backend"),
+            "recommendedNextAction": "terminate_then_restart_with_pty",
+        })
+        await websocket.close(code=1008)
+        return
     initial_output = "".join(bg_proc.output_history)
     if initial_output:
         await websocket.send_text(initial_output)

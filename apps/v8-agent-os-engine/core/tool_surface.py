@@ -2600,6 +2600,7 @@ def _command_agent_visible_surface(
         )
     if kind == "command_session":
         state = str(payload.get("state") or "").strip().lower()
+        terminal_states = {"completed", "failed", "timed_out", "terminated"}
         stdout_candidates = (
             (
                 payload.get("finalPreview"),
@@ -2607,7 +2608,7 @@ def _command_agent_visible_surface(
                 payload.get("deltaText"),
                 payload.get("outputPreview"),
             )
-            if state in {"completed", "failed"}
+            if state in terminal_states
             else (
                 payload.get("deltaText"),
                 payload.get("keyOutput"),
@@ -2617,18 +2618,20 @@ def _command_agent_visible_surface(
         )
         stdout = next((item for item in stdout_candidates if item not in (None, "")), "")
         control: list[str] = []
-        if session_id and state not in {"completed", "failed"}:
+        if session_id and state not in terminal_states:
             control.append(f"[session: {session_id}]")
         if state == "recoverable_stalled":
             control.append("[command appears stalled; observe later or terminate]")
         elif state == "render_stalled":
             control.append("[terminal screen is still settling]")
-        if payload.get("terminated"):
+        if state == "timed_out" or payload.get("timedOut"):
+            control.append("[deadline exceeded; process tree terminated]")
+        elif state == "terminated" or payload.get("terminated"):
             control.append("[terminated]")
         return _render_terminal_command_surface(
             command=command,
             stdout=stdout,
-            stderr=payload.get("error") or "",
+            stderr=payload.get("error") or payload.get("failureMessage") or "",
             exit_code=payload.get("returnCode"),
             session_id=session_id,
             waiting_input=bool(payload.get("awaitingInput")) or state == "awaiting_input",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -515,6 +516,55 @@ def test_read_native_file_reuses_document_parser_for_office_documents(tmp_path, 
     assert is_readable_native_file("brief.docx") is True
     assert "# Brief" in result
     assert "Parsed body" in result
+
+
+def test_read_native_file_returns_governed_feature_pack_guidance_when_document_dependencies_are_missing(tmp_path, monkeypatch):
+    from core import native_tools
+    from core.document_parser import DocumentIngestionDependencyError, DocumentParser
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    document = active_root / "brief.docx"
+    document.write_bytes(b"test fixture")
+
+    def _raise_missing(cls, file_path):
+        raise DocumentIngestionDependencyError(
+            filename=file_path.name,
+            suffix=file_path.suffix,
+            missing_dependencies=["python-docx"],
+        )
+
+    monkeypatch.setattr(DocumentParser, "parse_file", classmethod(_raise_missing))
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        result = json.loads(native_tools.read_native_file.func("brief.docx"))
+
+    assert result["ok"] is False
+    assert result["code"] == "document_ingestion_dependencies_missing"
+    assert result["details"]["featurePackId"] == "document_ingestion"
+    assert "能力包" in result["details"]["recommendedNextAction"]
+
+
+def test_read_native_file_rejects_legacy_binary_office_formats_without_fake_parser_support(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    document = active_root / "legacy.doc"
+    document.write_bytes(b"legacy fixture")
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        result = json.loads(native_tools.read_native_file.func("legacy.doc"))
+
+    assert result["ok"] is False
+    assert result["code"] == "legacy_document_conversion_required"
+    assert result["details"]["requiredFormat"] == "docx"
 
 
 def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):

@@ -400,10 +400,25 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
 
         suffix = target_path.suffix.lower()
         if suffix in DOCUMENT_EXTENSIONS:
-            from core.document_parser import DocumentParser
+            from core.document_parser import (
+                DocumentIngestionDependencyError,
+                DocumentParser,
+                UnsupportedLegacyDocumentError,
+            )
 
-            DocumentParser.ensure_document_ingestion_dependencies(target_path)
-            document_content = DocumentParser.parse_file(target_path)
+            try:
+                document_content = DocumentParser.parse_file(target_path)
+            except (DocumentIngestionDependencyError, UnsupportedLegacyDocumentError) as exc:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "kind": "document_ingestion_unavailable",
+                        "summary": str(exc),
+                        **exc.to_payload(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             if document_content.startswith("Error parsing document "):
                 return document_content
             lines = document_content.splitlines(keepends=True)

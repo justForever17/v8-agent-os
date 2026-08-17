@@ -144,7 +144,7 @@ test("feature pack cards localize metadata and do not expose raw installer error
   const en = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "en.json"), "utf8"));
   const zh = JSON.parse(fs.readFileSync(path.join(adminRoot, "src", "i18n", "locales", "zh-CN.json"), "utf8"));
 
-  for (const packId of ["computer_use_desktop", "rpa_automation", "local_asr_ocr", "creative_media_image_analysis", "creative_media_motion_capture"]) {
+  for (const packId of ["document_ingestion", "computer_use_desktop", "rpa_automation", "local_asr_ocr", "creative_media_image_analysis", "creative_media_motion_capture"]) {
     for (const field of ["name", "description", "hover"]) {
       const key = `components.layout.Topbar.featurePack.${packId}.${field}`;
       assert.ok(en[key], `missing English ${key}`);
@@ -436,6 +436,7 @@ test("feature pack child processes receive an explicit non-secret environment an
   assert.match(installerSource, /function requirementsEntries\(requirementsFile: string\)/);
   assert.match(installerSource, /id: "local_asr_ocr"[\s\S]*?enabled: false/);
   assert.match(installerSource, /smokeModulesByPlatform: \{ win32: \["pywinauto", "pycaw"\] \}/);
+  assert.match(installerSource, /id: "document_ingestion"[\s\S]*?requirementsFile: "document-ingestion\.txt"[\s\S]*?smokeModules: \["pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate"\]/);
   assert.match(installerSource, /if \(definition\.enabled === false\) return false/);
   assert.match(installerSource, /requirementsEntries\(requirementsFile\)\.length > 0/);
   assert.match(installerSource, /throw new Error\("feature_pack_not_available"\)/);

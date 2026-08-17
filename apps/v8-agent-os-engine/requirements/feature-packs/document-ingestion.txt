@@ -1,0 +1,20 @@
+# Modern Office/PDF readers used by read_native_file and Memory ingestion.
+# These are intentionally installed as a governed feature pack instead of
+# expanding every desktop installation. Legacy binary .doc/.ppt files require
+# conversion to .docx/.pptx before ingestion.
+numpy==1.26.4
+pandas==3.0.5
+python-dateutil==2.9.0.post0
+six==1.17.0
+tzdata==2025.3; sys_platform == "win32"
+openpyxl==3.1.5
+et-xmlfile==2.0.0
+xlrd==2.0.2
+python-docx==1.2.0
+python-pptx==1.0.2
+PyMuPDF==1.28.2
+lxml==6.0.2
+Pillow==12.1.1
+XlsxWriter==3.2.9
+typing-extensions==4.15.0
+tabulate==0.10.0

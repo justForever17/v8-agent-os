@@ -28,6 +28,21 @@ except ImportError:
     pd = None
 
 try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+
+try:
+    import xlrd
+except ImportError:
+    xlrd = None
+
+try:
+    import tabulate
+except ImportError:
+    tabulate = None
+
+try:
     from bs4 import BeautifulSoup
 except ImportError:
     BeautifulSoup = None
@@ -51,7 +66,30 @@ class DocumentIngestionDependencyError(RuntimeError):
                 "filename": self.filename,
                 "fileType": normalized_suffix,
                 "missingDependencies": self.missing_dependencies,
+                "featurePackId": "document_ingestion",
                 "requiredBundle": "document-ingestion",
+                "recommendedNextAction": "打开管理台顶部的能力包面板，安装“文档读取能力包”，重启 V8OS 后重试。",
+            },
+        }
+
+
+class UnsupportedLegacyDocumentError(RuntimeError):
+    def __init__(self, *, filename: str, suffix: str):
+        self.filename = filename
+        self.suffix = suffix
+        super().__init__(f"{filename} 是不受支持的旧版二进制文档格式")
+
+    def to_payload(self) -> dict:
+        normalized_suffix = self.suffix.lstrip(".").lower() or "unknown"
+        modern_suffix = "docx" if normalized_suffix == "doc" else "pptx"
+        return {
+            "code": "legacy_document_conversion_required",
+            "message": f"{self.filename} 使用旧版 {normalized_suffix.upper()} 二进制格式，当前不能可靠解析。",
+            "details": {
+                "filename": self.filename,
+                "fileType": normalized_suffix,
+                "requiredFormat": modern_suffix,
+                "recommendedNextAction": f"请先用受信任的 Office/LibreOffice 将文件转换为 .{modern_suffix}，再调用 read_native_file。",
             },
         }
 
@@ -62,13 +100,11 @@ class DocumentParser:
     Attempts to return content in Markdown format to leverage Semantic Chunking later.
     """
     DOCUMENT_INGESTION_DEPENDENCY_MAP = {
-        ".csv": ["pandas"],
-        ".xls": ["pandas", "openpyxl"],
-        ".xlsx": ["pandas", "openpyxl"],
+        ".csv": ["pandas", "tabulate"],
+        ".xls": ["pandas", "xlrd", "tabulate"],
+        ".xlsx": ["pandas", "openpyxl", "tabulate"],
         ".pdf": ["PyMuPDF"],
-        ".doc": ["python-docx"],
         ".docx": ["python-docx"],
-        ".ppt": ["python-pptx"],
         ".pptx": ["python-pptx"],
     }
 
@@ -80,7 +116,11 @@ class DocumentParser:
         for dependency in required:
             if dependency == "pandas" and pd is None:
                 missing.append(dependency)
-            elif dependency == "openpyxl" and pd is None:
+            elif dependency == "openpyxl" and openpyxl is None:
+                missing.append(dependency)
+            elif dependency == "xlrd" and xlrd is None:
+                missing.append(dependency)
+            elif dependency == "tabulate" and tabulate is None:
                 missing.append(dependency)
             elif dependency == "PyMuPDF" and fitz is None:
                 missing.append(dependency)
@@ -92,6 +132,11 @@ class DocumentParser:
 
     @classmethod
     def ensure_document_ingestion_dependencies(cls, file_path: Path) -> None:
+        if file_path.suffix.lower() in {".doc", ".ppt"}:
+            raise UnsupportedLegacyDocumentError(
+                filename=file_path.name,
+                suffix=file_path.suffix,
+            )
         missing = cls.get_missing_dependencies_for_suffix(file_path.suffix)
         if missing:
             raise DocumentIngestionDependencyError(
@@ -105,6 +150,8 @@ class DocumentParser:
         """Parse a single file and return its textual/markdown content."""
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
+
+        cls.ensure_document_ingestion_dependencies(file_path)
             
         ext = file_path.suffix.lower()
         
@@ -117,9 +164,9 @@ class DocumentParser:
                 return cls._parse_excel(file_path)
             elif ext == '.pdf':
                 return cls._parse_pdf(file_path)
-            elif ext in ['.doc', '.docx']:
+            elif ext == '.docx':
                 return cls._parse_docx(file_path)
-            elif ext in ['.ppt', '.pptx']:
+            elif ext == '.pptx':
                 return cls._parse_pptx(file_path)
             elif ext in ['.html', '.htm']:
                 return cls._parse_html(file_path)
@@ -132,6 +179,8 @@ class DocumentParser:
             else:
                 logger.warning(f"[DocumentParser] Unsupported extension '{ext}', falling back to plain text.")
                 return cls._parse_text(file_path)
+        except (DocumentIngestionDependencyError, UnsupportedLegacyDocumentError):
+            raise
         except Exception as e:
             logger.error(f"[DocumentParser] Error parsing {file_path}: {e}")
             return f"Error parsing document {file_path.name}: {e}"

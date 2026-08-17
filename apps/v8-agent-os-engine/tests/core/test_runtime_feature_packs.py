@@ -208,26 +208,31 @@ def test_feature_pack_contract_order_and_runtime_mapping():
     definitions = list(FEATURE_PACK_DEFINITIONS)
 
     assert [definition.id for definition in definitions] == [
+        "document_ingestion",
         "computer_use_desktop",
         "rpa_automation",
         "local_asr_ocr",
         "creative_media_image_analysis",
         "creative_media_motion_capture",
     ]
-    assert definitions[0].runtime_families == ("computer_use", "desktop_live")
+    assert definitions[0].requirements_file == "document-ingestion.txt"
+    assert definitions[0].probe_modules == ("pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate")
+    assert definitions[0].runtime_families == ()
     assert definitions[0].python_path_priority == "fallback"
-    assert definitions[1].runtime_families == ("rpa",)
+    assert definitions[1].runtime_families == ("computer_use", "desktop_live")
     assert definitions[1].python_path_priority == "fallback"
-    assert definitions[2].runtime_families == ()
-    assert definitions[2].product_name == "可选本地识别包"
-    assert definitions[2].enabled is False
+    assert definitions[2].runtime_families == ("rpa",)
+    assert definitions[2].python_path_priority == "fallback"
     assert definitions[3].runtime_families == ()
-    assert definitions[3].asset_manifest_file == "creative-media-image-analysis.manifest.json"
-    assert definitions[3].lock_file_prefix == "creative-media-image-analysis-cp311"
-    assert definitions[3].python_path_priority == "fallback"
+    assert definitions[3].product_name == "可选本地识别包"
+    assert definitions[3].enabled is False
     assert definitions[4].runtime_families == ()
-    assert definitions[4].asset_manifest_file == "creative-media-motion-capture.manifest.json"
+    assert definitions[4].asset_manifest_file == "creative-media-image-analysis.manifest.json"
+    assert definitions[4].lock_file_prefix == "creative-media-image-analysis-cp311"
     assert definitions[4].python_path_priority == "fallback"
+    assert definitions[5].runtime_families == ()
+    assert definitions[5].asset_manifest_file == "creative-media-motion-capture.manifest.json"
+    assert definitions[5].python_path_priority == "fallback"
 
 
 @pytest.mark.parametrize("platform_name,architecture", [

@@ -26,6 +26,10 @@ test("unified preview notes expose Desktop and Android without claiming iOS", ()
   assert.match(notes, /android-preview\.apk/);
   assert.match(notes, /iOS 因缺少非交互签名凭据被明确禁用/);
   assert.match(notes, /标签：`v8-os-v2026\.08\.07\.3`/);
+  assert.match(notes, /Linux 的 Engine\/Admin\/Web\/Shell 可用；当前桌宠.*blocked/);
+  assert.match(notes, /Ubuntu 22\.04\/24\.04 GNU x64\/arm64/);
+  assert.match(notes, /AppImage 不会静默回退到 `--no-sandbox`/);
+  assert.match(notes, /Linux Wayland 的输入限制会被显式投影为 blocked/);
 });
 
 test("stable notes match the production Android asset contract", () => {

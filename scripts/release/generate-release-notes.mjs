@@ -176,7 +176,11 @@ function knownLimits(product, channel) {
       channel === "stable"
         ? "- stable 发布必须通过签名与 stable 门禁。"
         : "- 本版本是未签名 preview；SmartScreen、macOS 打开确认、签名和自动更新限制仍然存在。",
-      "- macOS/Linux GUI 权限与桌面自动化仍需在对应实体主机验收。",
+      "- Windows/macOS 的 Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- Linux 的 Engine/Admin/Web/Shell 可用；当前桌宠的全屏透明交互窗口在 Electron 43 Linux 上没有经验证的安全输入区域合同，因此标记为 blocked 且不会启动。",
+      "- Linux 当前声明与 clean CI 验证范围为 Ubuntu 22.04/24.04 GNU x64/arm64；其他 glibc 发行版仅 best-effort，Alpine/musl 不受支持。",
+      "- Ubuntu 24.04 在 AppArmor 限制 unprivileged user namespace 时请优先使用 DEB；DEB 随包安装 Electron 启动兼容 profile，但该 profile 不是安全隔离边界。AppImage 不会静默回退到 `--no-sandbox`；宿主必须提供可用 user namespace，否则启动与烟测会明确失败。",
+      "- macOS/Linux 的 GUI 权限、窗口管理器与桌面自动化仍需在对应实体主机验收；Linux Wayland 的输入限制会被显式投影为 blocked。",
     ].join("\n");
   }
   if (product === "phone") {

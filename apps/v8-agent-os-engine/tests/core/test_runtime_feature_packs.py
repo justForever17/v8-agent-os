@@ -216,7 +216,7 @@ def test_feature_pack_contract_order_and_runtime_mapping():
         "creative_media_motion_capture",
     ]
     assert definitions[0].requirements_file == "document-ingestion.txt"
-    assert definitions[0].probe_modules == ("pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate")
+    assert definitions[0].probe_modules == ("openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate")
     assert definitions[0].runtime_families == ()
     assert definitions[0].python_path_priority == "fallback"
     assert definitions[1].runtime_families == ("computer_use", "desktop_live")

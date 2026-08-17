@@ -56,6 +56,7 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
                         "featurePacks": [
                             {"id": "rpa_automation", "status": "not_installed", "installed": False},
                             {"id": "creative_media_image_analysis", "status": "not_installed", "installed": False},
+                            {"id": "document_ingestion", "status": "not_installed", "installed": False},
                         ]
                     }
                 },
@@ -72,6 +73,7 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
             self.assertEqual(response["error"], None)
             self.assertEqual(response["rpa"], {"state": "not_installed", "failClosed": True, "checked": True, "error": None})
             self.assertEqual(response["image"], {"state": "not_installed", "failClosed": True, "checked": True, "error": None})
+            self.assertEqual(response["documents"], {"state": "not_installed", "failClosed": True, "checked": True, "error": None})
             self.assertEqual(config_path.read_bytes(), config_before)
             self.assertFalse((state_root / "runtime_registry.json").exists())
 
@@ -170,6 +172,42 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
         )
         self.assertEqual(observed["load"][0], "model.onnx")
         self.assertEqual(observed["load"][1], "python")
+
+    def test_installed_document_probe_requires_isolated_pack_origins_and_parser_checks(self) -> None:
+        module = load_probe_module()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "python"
+            target.mkdir()
+
+            class FakeModule:
+                def __init__(self, name: str):
+                    self.__file__ = str(target / name / "__init__.py")
+
+            observed: dict[str, object] = {}
+
+            def exercise(modules):
+                observed["modules"] = tuple(modules)
+                return True
+
+            result, ok = module._probe_documents(
+                {
+                    "status": "installed",
+                    "installed": True,
+                    "restartRequired": False,
+                    "targetDir": str(target),
+                },
+                import_module=lambda name: FakeModule(name),
+                exercise_parsers=exercise,
+                isolated_runtime=True,
+            )
+
+        self.assertTrue(ok)
+        self.assertTrue(result["available"])
+        self.assertTrue(result["isolated"])
+        self.assertTrue(result["moduleOriginsVerified"])
+        self.assertTrue(result["parsersVerified"])
+        self.assertEqual(observed["modules"], module.DOCUMENT_MODULE_NAMES)
 
 
 if __name__ == "__main__":

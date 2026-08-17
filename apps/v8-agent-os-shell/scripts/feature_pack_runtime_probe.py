@@ -9,6 +9,7 @@ text.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -20,6 +21,8 @@ from typing import Any
 
 RPA_PACK_ID = "rpa_automation"
 IMAGE_PACK_ID = "creative_media_image_analysis"
+DOCUMENT_PACK_ID = "document_ingestion"
+DOCUMENT_MODULE_NAMES = ("openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate")
 
 
 class ProbeInputError(ValueError):
@@ -38,12 +41,21 @@ def _safe_error_code(error: BaseException) -> str:
     return "probe_runtime_failed"
 
 
-def _result(*, ok: bool, mode: str, rpa: dict[str, Any], image: dict[str, Any], error: str | None) -> dict[str, Any]:
+def _result(
+    *,
+    ok: bool,
+    mode: str,
+    rpa: dict[str, Any],
+    image: dict[str, Any],
+    documents: dict[str, Any],
+    error: str | None,
+) -> dict[str, Any]:
     return {
         "ok": bool(ok),
         "mode": mode,
         "rpa": rpa,
         "image": image,
+        "documents": documents,
         "error": error,
     }
 
@@ -244,6 +256,114 @@ def _probe_image(resolve_asset, probe_onnx_runtime, status: dict[str, Any]) -> t
     )
 
 
+def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
+    with tempfile.TemporaryDirectory(prefix="v8os-document-pack-probe-") as temporary:
+        root = Path(temporary)
+
+        docx_path = root / "probe.docx"
+        document = modules["docx"].Document()
+        document.add_paragraph("V8OS document probe")
+        document.save(docx_path)
+        if "V8OS document probe" not in "\n".join(
+            paragraph.text for paragraph in modules["docx"].Document(docx_path).paragraphs
+        ):
+            return False
+
+        xlsx_path = root / "probe.xlsx"
+        workbook = modules["openpyxl"].Workbook()
+        workbook.active["A1"] = "V8OS spreadsheet probe"
+        workbook.save(xlsx_path)
+        reopened_workbook = modules["openpyxl"].load_workbook(xlsx_path, read_only=True, data_only=True)
+        try:
+            if reopened_workbook.active["A1"].value != "V8OS spreadsheet probe":
+                return False
+        finally:
+            reopened_workbook.close()
+
+        pptx_path = root / "probe.pptx"
+        presentation = modules["pptx"].Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[0])
+        slide.shapes.title.text = "V8OS presentation probe"
+        presentation.save(pptx_path)
+        if modules["pptx"].Presentation(pptx_path).slides[0].shapes.title.text != "V8OS presentation probe":
+            return False
+
+        pdf_path = root / "probe.pdf"
+        pdf = modules["pymupdf"].open()
+        pdf.new_page().insert_text((72, 72), "V8OS PDF probe")
+        pdf.save(pdf_path)
+        pdf.close()
+        reopened = modules["pymupdf"].open(pdf_path)
+        try:
+            if reopened.page_count != 1 or "V8OS PDF probe" not in reopened[0].get_text():
+                return False
+        finally:
+            reopened.close()
+
+        if "V8OS table probe" not in modules["tabulate"].tabulate(
+            [["ok"]],
+            headers=["V8OS table probe"],
+        ):
+            return False
+    return True
+
+
+def _probe_documents(
+    status: dict[str, Any],
+    *,
+    import_module=importlib.import_module,
+    exercise_parsers=None,
+    isolated_runtime: bool | None = None,
+) -> tuple[dict[str, Any], bool]:
+    if str(status.get("status") or "") == "not_installed":
+        result = _not_installed_result(status)
+        return result, bool(result["failClosed"])
+    if not bool(status.get("installed")) or bool(status.get("restartRequired")):
+        return _failed_result(status), False
+
+    target_dir = str(status.get("targetDir") or "").strip()
+    if not target_dir:
+        return {
+            "state": "installed",
+            "failClosed": False,
+            "checked": True,
+            "available": False,
+            "isolated": False,
+            "moduleOriginsVerified": False,
+            "parsersVerified": False,
+            "error": "document_target_unavailable",
+        }, False
+    target_root = Path(target_dir).resolve(strict=False)
+    modules: dict[str, Any] = {}
+    try:
+        modules = {name: import_module(name) for name in DOCUMENT_MODULE_NAMES}
+        origins_verified = all(
+            Path(str(getattr(module, "__file__", "") or "")).resolve(strict=False).is_relative_to(target_root)
+            for module in modules.values()
+        )
+        parser_check = exercise_parsers or _exercise_document_parsers
+        parsers_verified = bool(parser_check(modules))
+    except Exception:
+        origins_verified = False
+        parsers_verified = False
+    isolated = bool(sys.flags.isolated) if isolated_runtime is None else bool(isolated_runtime)
+    available = len(modules) == len(DOCUMENT_MODULE_NAMES)
+    ok = available and isolated and origins_verified and parsers_verified
+    return (
+        {
+            "state": "installed",
+            "failClosed": False,
+            "checked": True,
+            "available": available,
+            "isolated": isolated,
+            "moduleOriginsVerified": origins_verified,
+            "parsersVerified": parsers_verified,
+            "error": None if ok else "document_runtime_validation_failed",
+        },
+        ok,
+    )
+
+
 def run(payload: dict[str, Any]) -> dict[str, Any]:
     engine_root, _state_root = _resolve_context()
     storage, apply_paths, build_statuses, resolve_asset, probe_onnx_runtime, adapter_class = _load_engine_contract(engine_root)
@@ -255,13 +375,23 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     statuses = build_statuses(registry)
     rpa_status = _status_by_id(statuses, RPA_PACK_ID)
     image_status = _status_by_id(statuses, IMAGE_PACK_ID)
+    document_status = _status_by_id(statuses, DOCUMENT_PACK_ID)
     _assert_engine_status_agrees(payload, rpa_status, RPA_PACK_ID)
     _assert_engine_status_agrees(payload, image_status, IMAGE_PACK_ID)
+    _assert_engine_status_agrees(payload, document_status, DOCUMENT_PACK_ID)
 
     rpa, rpa_ok = _probe_rpa(adapter_class, rpa_status)
     image, image_ok = _probe_image(resolve_asset, probe_onnx_runtime, image_status)
-    ok = rpa_ok and image_ok
-    return _result(ok=ok, mode="offline_runtime_probe", rpa=rpa, image=image, error=None if ok else "feature_pack_runtime_unhealthy")
+    documents, documents_ok = _probe_documents(document_status)
+    ok = rpa_ok and image_ok and documents_ok
+    return _result(
+        ok=ok,
+        mode="offline_runtime_probe",
+        rpa=rpa,
+        image=image,
+        documents=documents,
+        error=None if ok else "feature_pack_runtime_unhealthy",
+    )
 
 
 def main() -> int:
@@ -277,6 +407,7 @@ def main() -> int:
                 mode="offline_runtime_probe",
                 rpa={"checked": False, "error": None},
                 image={"checked": False, "error": None},
+                documents={"checked": False, "error": None},
                 error=_safe_error_code(error),
             )
             exit_code = 2
@@ -286,6 +417,7 @@ def main() -> int:
                 mode="offline_runtime_probe",
                 rpa={"checked": False, "error": None},
                 image={"checked": False, "error": None},
+                documents={"checked": False, "error": None},
                 error=_safe_error_code(error),
             )
             exit_code = 1

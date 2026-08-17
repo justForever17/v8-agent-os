@@ -51,7 +51,7 @@ FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
         recommended_order=1,
         runtime_families=(),
         requirements_file="document-ingestion.txt",
-        probe_modules=("pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate"),
+        probe_modules=("openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate"),
     ),
     FeaturePackDefinition(
         id="computer_use_desktop",

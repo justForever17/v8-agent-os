@@ -154,7 +154,7 @@ const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
         recommendedOrder: 1,
         runtimeFamilies: [],
         requirementsFile: "document-ingestion.txt",
-        smokeModules: ["pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate"],
+        smokeModules: ["openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate"],
     },
     {
         id: "computer_use_desktop",
@@ -1708,6 +1708,35 @@ async function runPythonImportSmokeCheck(
     return JSON.parse(marker.slice("__V8_SMOKE__".length)) as Record<string, unknown>;
 }
 
+async function runFeaturePackDependencyCompatibilityCheck(
+    pythonExe: string,
+    pythonRoot: string,
+    output: fs.WriteStream,
+) {
+    const verifier = path.join(resolveEngineRoot(), "scripts", "verify_feature_pack_dependencies.py");
+    if (!fs.existsSync(verifier)) throw new Error("feature_pack_dependency_verifier_missing");
+    const result = await runProbeProcess(
+        pythonExe,
+        [verifier, "--target", pythonRoot],
+        60_000,
+    );
+    output.write(`\n[Python dependency compatibility]\n${result.output}`);
+    if (result.error === "feature_pack_worker_termination_unconfirmed") throw new Error(result.error);
+    const marker = result.output.split(/\r?\n/).find((line) => line.startsWith("__V8_DEPENDENCY_CHECK__"));
+    if (result.code !== 0 || !marker) {
+        throw new Error("Feature pack dependency compatibility validation failed. See logRef for details.");
+    }
+    const payload = JSON.parse(marker.slice("__V8_DEPENDENCY_CHECK__".length)) as Record<string, unknown>;
+    if (payload.ok !== true) {
+        throw new Error("Feature pack dependency compatibility validation failed. See logRef for details.");
+    }
+    return {
+        kind: "python_dependency_compatibility",
+        checkedPackages: Number(payload.checkedPackages || 0),
+        targetPackages: Array.isArray(payload.targetPackages) ? payload.targetPackages.map(String) : [],
+    };
+}
+
 async function runRpaDryRunSmokeCheck(
     pythonExe: string,
     pythonRoot: string,
@@ -1821,6 +1850,11 @@ async function runTransactionalPythonPackInstall(input: {
             path.join(stagingRoot, "pip-report.json"),
             Boolean(lockFile),
         );
+        const dependencyCompatibility = await runFeaturePackDependencyCompatibilityCheck(
+            pythonExe,
+            stagingPython,
+            output,
+        );
         const importSmoke = await runPythonImportSmokeCheck(
             pythonExe,
             stagingPython,
@@ -1853,6 +1887,7 @@ async function runTransactionalPythonPackInstall(input: {
                 lockSha256,
             },
             resolvedPackages,
+            dependencyCompatibility,
         };
         assertFeaturePackLogHealthy(output);
         fs.writeFileSync(path.join(stagingRoot, "receipt.json"), JSON.stringify(receipt, null, 2), "utf-8");
@@ -1948,6 +1983,11 @@ async function runTransactionalAssetPackInstall(input: {
             path.join(stagingRoot, "pip-report.json"),
             Boolean(lockFile),
         );
+        const dependencyCompatibility = await runFeaturePackDependencyCompatibilityCheck(
+            pythonExe,
+            stagingPython,
+            output,
+        );
         const verifiedAssets = [];
         for (const asset of manifest.assets) {
             verifiedAssets.push(
@@ -1980,6 +2020,7 @@ async function runTransactionalAssetPackInstall(input: {
                 lockSha256: lockFile ? sha256File(lockFile) : null,
             },
             resolvedPackages,
+            dependencyCompatibility,
             assets: verifiedAssets.map((asset) => ({
                 id: asset.id,
                 target: asset.target,

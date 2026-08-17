@@ -8,9 +8,9 @@ import tempfile
 import logging
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf
 except ImportError:
-    fitz = None
+    pymupdf = None
 
 try:
     from docx import Document
@@ -21,11 +21,6 @@ try:
     from pptx import Presentation
 except ImportError:
     Presentation = None
-
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
 
 try:
     import openpyxl
@@ -100,9 +95,9 @@ class DocumentParser:
     Attempts to return content in Markdown format to leverage Semantic Chunking later.
     """
     DOCUMENT_INGESTION_DEPENDENCY_MAP = {
-        ".csv": ["pandas", "tabulate"],
-        ".xls": ["pandas", "xlrd", "tabulate"],
-        ".xlsx": ["pandas", "openpyxl", "tabulate"],
+        ".csv": ["tabulate"],
+        ".xls": ["xlrd", "tabulate"],
+        ".xlsx": ["openpyxl", "tabulate"],
         ".pdf": ["PyMuPDF"],
         ".docx": ["python-docx"],
         ".pptx": ["python-pptx"],
@@ -114,15 +109,13 @@ class DocumentParser:
         required = cls.DOCUMENT_INGESTION_DEPENDENCY_MAP.get(normalized, [])
         missing: list[str] = []
         for dependency in required:
-            if dependency == "pandas" and pd is None:
-                missing.append(dependency)
-            elif dependency == "openpyxl" and openpyxl is None:
+            if dependency == "openpyxl" and openpyxl is None:
                 missing.append(dependency)
             elif dependency == "xlrd" and xlrd is None:
                 missing.append(dependency)
             elif dependency == "tabulate" and tabulate is None:
                 missing.append(dependency)
-            elif dependency == "PyMuPDF" and fitz is None:
+            elif dependency == "PyMuPDF" and pymupdf is None:
                 missing.append(dependency)
             elif dependency == "python-docx" and Document is None:
                 missing.append(dependency)
@@ -198,32 +191,41 @@ class DocumentParser:
 
     @staticmethod
     def _parse_csv(file_path: Path) -> str:
-        if pd:
-            df = pd.read_csv(file_path)
-            return df.to_markdown(index=False)
-        else:
-            # Fallback
-            result = []
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    result.append(" | ".join(row))
-            return "\n".join(result)
+        with open(file_path, 'r', encoding='utf-8-sig', errors='ignore', newline='') as f:
+            return DocumentParser._render_tabular_rows(list(csv.reader(f)))
 
     @staticmethod
     def _parse_excel(file_path: Path) -> str:
-        if pd:
-            df = pd.read_excel(file_path)
-            return df.to_markdown(index=False)
-        else:
-            return f"[Pandas not installed for Excel parsing of {file_path.name}]"
+        if file_path.suffix.lower() == ".xlsx":
+            workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            try:
+                rows = [list(row) for row in workbook.active.iter_rows(values_only=True)]
+            finally:
+                workbook.close()
+            return DocumentParser._render_tabular_rows(rows)
+
+        workbook = xlrd.open_workbook(file_path, on_demand=True)
+        try:
+            worksheet = workbook.sheet_by_index(0)
+            rows = [worksheet.row_values(index) for index in range(worksheet.nrows)]
+        finally:
+            workbook.release_resources()
+        return DocumentParser._render_tabular_rows(rows)
+
+    @staticmethod
+    def _render_tabular_rows(rows: list[list[object]]) -> str:
+        if not rows:
+            return ""
+        headers = ["" if value is None else value for value in rows[0]]
+        body = [["" if value is None else value for value in row] for row in rows[1:]]
+        return tabulate.tabulate(body, headers=headers, tablefmt="pipe", disable_numparse=True)
 
     @staticmethod
     def _parse_pdf(file_path: Path) -> str:
-        if not fitz:
+        if not pymupdf:
             return f"[PyMuPDF not installed for PDF parsing of {file_path.name}]"
         
-        doc = fitz.open(file_path)
+        doc = pymupdf.open(file_path)
         text_blocks = []
         for page in doc:
             text_blocks.append(page.get_text())

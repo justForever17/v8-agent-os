@@ -254,6 +254,9 @@ test("feature packs publish immutable version targets with journal recovery and 
   assert.match(installerSource, /function smokeModulesFor\(definition: FeaturePackDefinition\)/);
   assert.match(installerSource, /runTransactionalPythonPackInstall/);
   assert.match(installerSource, /runPythonImportSmokeCheck/);
+  assert.match(installerSource, /runFeaturePackDependencyCompatibilityCheck/);
+  assert.match(installerSource, /verify_feature_pack_dependencies\.py/);
+  assert.match(installerSource, /Feature pack dependency compatibility validation failed/);
   assert.match(installerSource, /module_not_loaded_from_staging/);
   assert.match(installerSource, /smokeCheck: smokeResult/);
   assert.match(installerSource, /environment,/);
@@ -327,6 +330,7 @@ test("feature pack transactions use Engine authority, bounded workers, and compa
   assert.match(installerSource, /"--report"/);
   assert.match(installerSource, /function readPipResolutionReport/);
   assert.match(installerSource, /resolvedPackages,/);
+  assert.match(installerSource, /dependencyCompatibility,/);
   assert.match(installerSource, /FEATURE_PACK_ASSET_TIMEOUT_MS/);
   assert.match(installerSource, /terminateFeaturePackChild/);
   assert.match(installerSource, /waitForFeaturePackChildExit/);
@@ -436,7 +440,7 @@ test("feature pack child processes receive an explicit non-secret environment an
   assert.match(installerSource, /function requirementsEntries\(requirementsFile: string\)/);
   assert.match(installerSource, /id: "local_asr_ocr"[\s\S]*?enabled: false/);
   assert.match(installerSource, /smokeModulesByPlatform: \{ win32: \["pywinauto", "pycaw"\] \}/);
-  assert.match(installerSource, /id: "document_ingestion"[\s\S]*?requirementsFile: "document-ingestion\.txt"[\s\S]*?smokeModules: \["pandas", "openpyxl", "xlrd", "docx", "pptx", "fitz", "tabulate"\]/);
+  assert.match(installerSource, /id: "document_ingestion"[\s\S]*?requirementsFile: "document-ingestion\.txt"[\s\S]*?smokeModules: \["openpyxl", "xlrd", "docx", "pptx", "pymupdf", "tabulate"\]/);
   assert.match(installerSource, /if \(definition\.enabled === false\) return false/);
   assert.match(installerSource, /requirementsEntries\(requirementsFile\)\.length > 0/);
   assert.match(installerSource, /throw new Error\("feature_pack_not_available"\)/);

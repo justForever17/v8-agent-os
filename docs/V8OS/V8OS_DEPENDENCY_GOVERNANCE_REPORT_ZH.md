@@ -199,7 +199,7 @@ Desktop Pet 已在 Tailwind 4，Admin/Web 仍为 Tailwind 3。迁移需要：
 1. Vite 6 -> 7，修正 Node 最低版本和旧 API。
 2. 先试 `rolldown-vite`，再升 Vite 8，验证 optimizeDeps、worker、asset 与 Electron renderer 构建。
 3. Express 4 -> 5，重点检查 wildcard/path-to-regexp、dotfiles、Promise error 和 body parser 默认值。
-4. Shell 与 Desktop Pet 的 Electron 39 -> 43 必须保持同一主版本，一次跨一个 major 验证 preload、IPC、tray、clipboard、PDF、通知和打包。
+4. Shell 与 Desktop Pet 已完成 Electron 39 -> 43 迁移，当前必须保持同一 `43.4.0` 主版本；后续升级从该基线一次跨一个 major 验证 preload、IPC、tray、clipboard、PDF、通知和打包。
 5. `@vitejs/plugin-react`、esbuild、TypeScript 等跟随 Vite 分阶段升级，避免一次更换整条工具链。
 
 ### P2：其他 major

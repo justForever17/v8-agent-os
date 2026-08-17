@@ -571,6 +571,9 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(linuxCleanSmoke, /expected_distro" == "ubuntu-24\.04/);
   assert.match(linuxCleanSmoke, /Ubuntu 24\.04 clean smoke requires enabled AppArmor/);
   assert.match(linuxCleanSmoke, /Ubuntu 24\.04 AppArmor parser rejected/);
+  assert.match(linuxCleanSmoke, /sudo apparmor_status/);
+  assert.match(linuxCleanSmoke, /Installed DEB did not register the V8 Agent OS AppArmor profile/);
+  assert.match(linuxCleanSmoke, /Installed V8 Agent OS AppArmor profile is not loaded/);
   assert.match(linuxCleanSmoke, /test ! -e \/etc\/apparmor\.d\/v8-agent-os-shell/);
   assert.match(linuxCleanSmoke, /grep -Fq 'v8-agent-os-shell'/);
   assert.match(linuxCleanSmoke, /stat -c '%U:%G'/);

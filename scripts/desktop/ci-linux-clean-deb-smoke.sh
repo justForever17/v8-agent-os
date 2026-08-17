@@ -131,6 +131,24 @@ test -x "$engine_python"
 bundled_apparmor_profile="$resource_root/../apparmor-profile"
 apparmor_enabled=false
 apparmor_profile_supported=false
+verify_apparmor_profile_loaded() {
+  if [[ ! -f /etc/apparmor.d/v8-agent-os-shell ]]; then
+    echo "Installed DEB did not register the V8 Agent OS AppArmor profile" >&2
+    exit 1
+  fi
+
+  local apparmor_profiles
+  if ! apparmor_profiles="$(sudo apparmor_status 2>&1)"; then
+    echo "Unable to inspect the loaded AppArmor profile set as root" >&2
+    echo "$apparmor_profiles" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'v8-agent-os-shell' <<<"$apparmor_profiles"; then
+    echo "Installed V8 Agent OS AppArmor profile is not loaded" >&2
+    exit 1
+  fi
+}
+
 if apparmor_status --enabled >/dev/null 2>&1; then
   apparmor_enabled=true
   if apparmor_parser --skip-kernel-load --debug "$bundled_apparmor_profile" >/dev/null 2>&1; then
@@ -147,13 +165,9 @@ if [[ "$expected_distro" == "ubuntu-24.04" ]]; then
     echo "Ubuntu 24.04 AppArmor parser rejected the bundled Electron userns compatibility profile" >&2
     exit 1
   fi
-  test -f /etc/apparmor.d/v8-agent-os-shell
-  apparmor_profiles="$(apparmor_status 2>/dev/null || true)"
-  grep -Fq 'v8-agent-os-shell' <<<"$apparmor_profiles"
+  verify_apparmor_profile_loaded
 elif [[ "$apparmor_profile_supported" == true ]]; then
-  test -f /etc/apparmor.d/v8-agent-os-shell
-  apparmor_profiles="$(apparmor_status 2>/dev/null || true)"
-  grep -Fq 'v8-agent-os-shell' <<<"$apparmor_profiles"
+  verify_apparmor_profile_loaded
 else
   test ! -e /etc/apparmor.d/v8-agent-os-shell
 fi

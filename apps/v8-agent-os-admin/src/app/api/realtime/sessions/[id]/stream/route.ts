@@ -13,10 +13,16 @@ import {
     shouldForwardRuntimeEventToRealtimeSurface,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
 } from "@v8/session-realtime";
+import { SessionRuntimeEventContiguousCursor } from "@v8/session-realtime/event-sequence";
 import {
     normalizeRuntimeEventForRealtimeSurface,
     normalizeSnapshotForRealtimeSurface,
 } from "@/lib/server/session-realtime-resource";
+import {
+    buildRuntimeEventDeliveryIdentity,
+    RuntimeEventGapRecoveryThrottle,
+    shouldDeliverRuntimeEventObservation,
+} from "@/lib/server/runtime-event-delivery";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 
@@ -53,10 +59,10 @@ export async function GET(
     const stream = new ReadableStream<Uint8Array>({
         start(controller) {
             let closed = false;
-            let latestSeq = 0;
+            const runtimeCursor = new SessionRuntimeEventContiguousCursor();
+            const gapRecovery = new RuntimeEventGapRecoveryThrottle();
             let lastSnapshotFingerprint = "";
-            const seenEventIds = new Set<string>();
-            const seenDedupeKeys = new Map<string, number>();
+            const seenDeliveryIdentities = new Map<string, number>();
             let idleBackoffMs = 350;
             let idlePollCount = 0;
             let lastForwardedAt = 0;
@@ -137,7 +143,10 @@ export async function GET(
                         return;
                     }
 
-                    latestSeq = Math.max(latestSeq, getSnapshotSeq(snapshotData));
+                    const snapshotContinuity = runtimeCursor.coverThrough(getSnapshotSeq(snapshotData));
+                    if (gapRecovery.shouldRequestSnapshot(snapshotContinuity.gap)) {
+                        queueSnapshotPush(480);
+                    }
                     const nextFingerprint = buildAuthoritativeSnapshotFingerprint(
                         coerceAuthoritativeSessionSnapshot(snapshotData),
                     );
@@ -169,6 +178,10 @@ export async function GET(
                 if (closed) {
                     return;
                 }
+                if (snapshotInflight) {
+                    snapshotPending = true;
+                    return;
+                }
                 if (snapshotTimer) {
                     snapshotPending = true;
                     return;
@@ -188,44 +201,51 @@ export async function GET(
                 if (!normalizedEvent) {
                     return;
                 }
-                if (!shouldForwardRuntimeEventToRealtimeSurface(normalizedEvent)) {
+                const seq = Number(normalizedEvent.seq || 0);
+                const continuity = runtimeCursor.observe(seq);
+                const gapSnapshotRequested = gapRecovery.shouldRequestSnapshot(continuity.gap);
+                if (gapSnapshotRequested) {
+                    queueSnapshotPush(120);
+                }
+                if (!shouldDeliverRuntimeEventObservation(continuity)) {
                     return;
                 }
-                const eventId = typeof normalizedEvent.event_id === "string" ? normalizedEvent.event_id : null;
-                if (eventId) {
-                    if (seenEventIds.has(eventId)) {
-                        return;
-                    }
-                    seenEventIds.add(eventId);
-                    if (seenEventIds.size > 512) {
-                        const first = seenEventIds.values().next();
-                        if (!first.done) {
-                            seenEventIds.delete(first.value);
-                        }
-                    }
-                }
-
-                const seq = Number(normalizedEvent.seq || 0);
-                if (seq > latestSeq) {
-                    latestSeq = seq;
+                if (!shouldForwardRuntimeEventToRealtimeSurface(normalizedEvent)) {
+                    return;
                 }
                 const surfaceEvent = normalizeRuntimeEventForRealtimeSurface(normalizedEvent, { publicBaseUrl });
                 const topic = String(surfaceEvent && typeof surfaceEvent === "object" ? (surfaceEvent as Record<string, unknown>).topic || "" : "").trim().toLowerCase();
                 const dedupeKey = String(surfaceEvent && typeof surfaceEvent === "object" ? (surfaceEvent as Record<string, unknown>).dedupeKey || "" : "").trim();
-                if (dedupeKey && !topic.endsWith(".delta")) {
-                    const lastSeq = seenDedupeKeys.get(dedupeKey) || 0;
-                    if (lastSeq) {
+                const deliveryIdentity = buildRuntimeEventDeliveryIdentity({
+                    eventId: normalizedEvent.event_id,
+                    dedupeKey,
+                    topic,
+                });
+                if (deliveryIdentity) {
+                    if (seenDeliveryIdentities.has(deliveryIdentity)) {
                         return;
                     }
-                    seenDedupeKeys.set(dedupeKey, seq || Date.now());
-                    if (seenDedupeKeys.size > 512) {
-                        const first = seenDedupeKeys.keys().next();
+                    seenDeliveryIdentities.set(deliveryIdentity, seq || Date.now());
+                    if (seenDeliveryIdentities.size > 512) {
+                        const first = seenDeliveryIdentities.keys().next();
                         if (!first.done) {
-                            seenDedupeKeys.delete(first.value);
+                            seenDeliveryIdentities.delete(first.value);
                         }
                     }
                 }
-                sendSse(surfaceEvent, "runtime");
+                const deliveryEvent = continuity.gap && surfaceEvent && typeof surfaceEvent === "object"
+                    ? {
+                        ...(surfaceEvent as Record<string, unknown>),
+                        _diagnostics: {
+                            ...asRecord((surfaceEvent as Record<string, unknown>)._diagnostics),
+                            runtimeSequenceGap: continuity.gap,
+                            runtimeSequenceGapRecovery: gapSnapshotRequested
+                                ? "authoritative_snapshot_requested"
+                                : "authoritative_snapshot_throttled",
+                        },
+                    }
+                    : surfaceEvent;
+                sendSse(deliveryEvent, "runtime");
                 if (shouldAuthoritativelyRefreshOnRuntimeEvent(normalizedEvent)) {
                     queueSnapshotPush();
                 }
@@ -243,7 +263,7 @@ export async function GET(
                 while (!closed) {
                     try {
                         const eventsStartedAt = Date.now();
-                        const eventsRes = await fetch(`${ENGINE_URL}/sessions/${id}/runtime-events?after_seq=${latestSeq}`, {
+                        const eventsRes = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/runtime-events?after_seq=${runtimeCursor.contiguousSeq}`, {
                             method: "GET",
                             headers: { "Content-Type": "application/json" },
                             cache: "no-store",

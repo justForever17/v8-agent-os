@@ -53,6 +53,13 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
+def _mapping_first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
 def _task_context(task_brief: dict[str, Any] | None) -> dict[str, Any]:
     task = task_brief if isinstance(task_brief, dict) else {}
     return dict(task.get("context") or {}) if isinstance(task.get("context"), dict) else {}
@@ -61,8 +68,8 @@ def _task_context(task_brief: dict[str, Any] | None) -> dict[str, Any]:
 def _declared_tools(task_brief: dict[str, Any]) -> set[str]:
     policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
     values = [
-        *_values(task_brief.get("allowedTools") or task_brief.get("allowed_tools")),
-        *_values(policy.get("allowedTools") or policy.get("allowed_tools")),
+        *_values(_mapping_first_present(task_brief, "allowedTools", "allowed_tools")),
+        *_values(_mapping_first_present(policy, "allowedTools", "allowed_tools")),
     ]
     return {str(value or "").strip() for value in values if str(value or "").strip()}
 
@@ -85,9 +92,17 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
 
     task = dict(task_brief or {})
     context = _task_context(task)
-    raw_capsule = task.get("engineeringTaskCapsule") or task.get("engineering_task_capsule")
+    raw_capsule = _mapping_first_present(
+        task,
+        "engineeringTaskCapsule",
+        "engineering_task_capsule",
+    )
     capsule = dict(raw_capsule or {}) if isinstance(raw_capsule, dict) else {}
-    raw_contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
+    raw_contract = _mapping_first_present(
+        context,
+        "engineeringExecutionContract",
+        "engineering_execution_contract",
+    )
     contract = dict(raw_contract or {}) if isinstance(raw_contract, dict) else {}
     declared_mutation_tools = _declared_tools(task) & ENGINEERING_FILE_MUTATION_TOOL_NAMES
 
@@ -113,29 +128,35 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
 
     read_set = _unique_text(
         [
-            *_values(capsule.get("readSet") or capsule.get("read_set")),
-            *_values(contract.get("mustRead") or contract.get("readSet") or contract.get("read_set")),
-            *_values(task.get("readSet") or task.get("read_set")),
+            *_values(_mapping_first_present(capsule, "readSet", "read_set")),
+            *_values(_mapping_first_present(contract, "mustRead", "readSet", "read_set")),
+            *_values(_mapping_first_present(task, "readSet", "read_set")),
         ]
     )
     write_set = _unique_text(
         [
-            *_values(capsule.get("writeSet") or capsule.get("write_set")),
-            *_values(contract.get("allowedWorkset") or contract.get("writeSet") or contract.get("write_set")),
-            *_values(task.get("writeSet") or task.get("write_set")),
+            *_values(_mapping_first_present(capsule, "writeSet", "write_set")),
+            *_values(
+                _mapping_first_present(contract, "allowedWorkset", "writeSet", "write_set")
+            ),
+            *_values(_mapping_first_present(task, "writeSet", "write_set")),
         ]
     )
     expected_outputs = _unique_text(
         [
-            *_values(task.get("expectedOutputs") or task.get("expected_outputs")),
-            *_values(task.get("expectedOutput") or task.get("expected_output")),
+            *_values(_mapping_first_present(task, "expectedOutputs", "expected_outputs")),
+            *_values(_mapping_first_present(task, "expectedOutput", "expected_output")),
         ]
     )
     explicit_expected_artifacts = _unique_text(
         [
-            *_values(capsule.get("expectedArtifacts") or capsule.get("expected_artifacts")),
-            *_values(contract.get("expectedArtifacts") or contract.get("expected_artifacts")),
-            *_values(task.get("expectedArtifacts") or task.get("expected_artifacts")),
+            *_values(
+                _mapping_first_present(capsule, "expectedArtifacts", "expected_artifacts")
+            ),
+            *_values(
+                _mapping_first_present(contract, "expectedArtifacts", "expected_artifacts")
+            ),
+            *_values(_mapping_first_present(task, "expectedArtifacts", "expected_artifacts")),
         ]
     )
     # Artifact existence checks operate on paths, never on prose acceptance
@@ -156,15 +177,19 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
     )
     proof_expectations = _unique_text(
         [
-            *_values(capsule.get("proofExpectations") or capsule.get("proof_expectations")),
-            *_values(contract.get("proofExpectations") or contract.get("proof_expectations")),
-            *_values(task.get("proofExpectations") or task.get("proof_expectations")),
+            *_values(
+                _mapping_first_present(capsule, "proofExpectations", "proof_expectations")
+            ),
+            *_values(
+                _mapping_first_present(contract, "proofExpectations", "proof_expectations")
+            ),
+            *_values(_mapping_first_present(task, "proofExpectations", "proof_expectations")),
         ]
     )
     risk_flags = _unique_text(
         [
-            *_values(capsule.get("riskFlags") or capsule.get("risk_flags")),
-            *_values(contract.get("riskFlags") or contract.get("risk_flags")),
+            *_values(_mapping_first_present(capsule, "riskFlags", "risk_flags")),
+            *_values(_mapping_first_present(contract, "riskFlags", "risk_flags")),
         ],
         limit=24,
     )
@@ -196,7 +221,9 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
         if acceptance in (None, "", [], {}):
             missing_contract_fields.append("acceptanceContract")
     contract_status = "invalid" if missing_contract_fields else "valid"
-    requested_mode = str(capsule.get("executionMode") or capsule.get("execution_mode") or "").strip().lower()
+    requested_mode = str(
+        _mapping_first_present(capsule, "executionMode", "execution_mode") or ""
+    ).strip().lower()
     execution_mode = (
         "read_only"
         if requested_mode == "read_only"
@@ -240,8 +267,8 @@ def effective_engineering_capsule(task_brief: dict[str, Any] | None) -> dict[str
         "writeRequired": write_required,
         "criticalFiles": _unique_text(
             [
-                *_values(capsule.get("criticalFiles") or capsule.get("critical_files")),
-                *_values(task.get("criticalFiles") or task.get("critical_files")),
+                *_values(_mapping_first_present(capsule, "criticalFiles", "critical_files")),
+                *_values(_mapping_first_present(task, "criticalFiles", "critical_files")),
             ]
         ),
         "readSet": read_set,
@@ -419,10 +446,14 @@ def derive_grandchild_engineering_task(
             or child_capsule.get("execution_mode")
             or ""
         ).strip().lower()
-        raw_child_capsule = child.get("engineeringTaskCapsule") or child.get("engineering_task_capsule")
+        raw_child_capsule = _mapping_first_present(
+            child,
+            "engineeringTaskCapsule",
+            "engineering_task_capsule",
+        )
         raw_child_capsule = raw_child_capsule if isinstance(raw_child_capsule, dict) else {}
         child_write_intent = bool(
-            _values(child.get("writeSet") or child.get("write_set"))
+            _values(_mapping_first_present(child, "writeSet", "write_set"))
             or child.get("writeRequired")
             or child.get("write_required")
             or child_capsule.get("writeRequired")

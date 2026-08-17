@@ -1038,6 +1038,55 @@ def test_runtime_episode_wait_node_merges_completed_handoff() -> None:
     assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
 
 
+def test_runtime_episode_wait_node_projects_result_ref_not_late_handoff_history() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_current_delivery_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "research", "reason": "need current evidence"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    current = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary="Current research evidence is ready.",
+        status="ready",
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=current)
+    db.complete_runtime_episode(
+        episode_id,
+        state="completed",
+        result_ref=current["handoffRefId"],
+    )
+    stale = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="research",
+        compact_summary="Late stale failure must remain history only.",
+        status="failed",
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=stale)
+
+    command = asyncio.run(
+        node(
+            {
+                "current_route_context": {
+                    "capabilityEpisodes": [episode],
+                    "handoffRefs": [stale],
+                }
+            }
+        )
+    )
+
+    refs = command.update["current_route_context"]["handoffRefs"]
+    assert command.goto == "supervisor"
+    assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
+    assert [item.get("handoffRefId") for item in refs] == [current["handoffRefId"]]
+    assert stale["handoffRefId"] not in str(command.update["messages"][0].content)
+    assert "Late stale failure" not in str(command.update["messages"][0].content)
+
+
 def test_runtime_episode_wait_node_keeps_direct_creative_refs_in_runtime_surface() -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_creative_refs_{uuid4().hex}"
@@ -1385,6 +1434,149 @@ def test_runtime_episode_wait_node_marks_multi_brief_research_answer_projection(
     assert "deliveryComplete=False; coverageComplete=False" in content
     assert projected_results[-1]["evidenceBundleId"] == f"research-multi-{brief_count}"
     assert projected_results[-1]["detailTool"] in content
+
+
+def test_runtime_episode_wait_node_aggregates_omitted_required_delegation_failure() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_delegation_omitted_failure_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "delegation", "reason": "review all delegated results"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    results = [
+        {
+            **(
+                {}
+                if index <= 2
+                else {
+                    "taskBriefId": f"brief-{index}",
+                    "delegationId": f"delegation-{index}",
+                }
+            ),
+            "status": "ready",
+            "resultText": f"Delegated result {index} is ready.",
+        }
+        for index in range(1, 9)
+    ]
+    results.append(
+        {
+            "taskBriefId": "brief-9",
+            "delegationId": "delegation-9",
+            "status": "failed",
+            "errorCode": "required_review_failed",
+            "error": "The required ninth review did not complete.",
+            "repairAction": "Retry only brief-9.",
+        }
+    )
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="delegation",
+        compact_summary="All delegated work is ready.",
+        status="ready",
+        extra={
+            "deliveryComplete": True,
+            "delegationHandoff": {"status": "ready", "results": results},
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]
+    content = str(message.content)
+    assert projected["projectionKind"] == "delegation"
+    assert projected["resultCount"] == 9
+    assert projected["projectedResultCount"] == 8
+    assert projected["omittedResultCount"] == 1
+    assert projected["blockingResultCount"] == 1
+    assert projected["omittedBlockingResultCount"] == 1
+    assert projected["hasBlockingResults"] is True
+    assert projected["hasBlockingOmittedResults"] is True
+    assert projected["blockingTaskBriefIds"] == ["brief-9"]
+    assert projected["blockingResults"] == [
+        {
+            "taskBriefId": "brief-9",
+            "delegationId": "delegation-9",
+            "status": "failed",
+            "reason": "status:failed",
+            "error": "The required ninth review did not complete.",
+            "errorCode": "required_review_failed",
+            "repairAction": "Retry only brief-9.",
+            "omittedFromProjection": True,
+        }
+    ]
+    assert projected["deliveryComplete"] is False
+    assert "All delegated work is ready" not in projected["summary"]
+    assert "bounded Delegation result projection" in content
+    assert "bounded Research delivery projection" not in content
+    assert "omittedRequiredFailures=1" in content
+    assert "brief=brief-9" in content
+    assert "No governed detailRef/detailTool pair is present" in content
+    assert "recoverable only through" not in content
+
+
+def test_runtime_episode_wait_node_reports_omitted_optional_delegation_failure_without_blocking() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_delegation_optional_failure_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "delegation", "reason": "review delegated results"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    results = [
+        {
+            "taskBriefId": f"brief-{index}",
+            "status": "ready",
+            "resultText": f"Delegated result {index} is ready.",
+        }
+        for index in range(1, 9)
+    ]
+    results.append(
+        {
+            "taskBriefId": "brief-9-optional",
+            "status": "failed",
+            "errorCode": "optional_review_failed",
+            "optional": True,
+        }
+    )
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="delegation",
+        compact_summary="Required delegated work is ready; one optional review failed.",
+        status="ready",
+        extra={
+            "deliveryComplete": True,
+            "delegationHandoff": {"status": "ready", "results": results},
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]
+    content = str(message.content)
+    assert projected["blockingResultCount"] == 0
+    assert projected["omittedBlockingResultCount"] == 0
+    assert projected["optionalFailedResultCount"] == 1
+    assert projected["omittedOptionalFailedResultCount"] == 1
+    assert projected["hasBlockingResults"] is False
+    assert projected["blockingResults"] == []
+    assert projected["optionalFailureResults"][0]["taskBriefId"] == "brief-9-optional"
+    assert projected["optionalFailureResults"][0]["omittedFromProjection"] is True
+    assert projected["summary"] == "Required delegated work is ready; one optional review failed."
+    assert "optionalFailures=1" in content
+    assert "omittedOptionalFailures=1" in content
+    assert "brief=brief-9-optional" in content
+    assert "non-blocking" in content
 
 
 def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss() -> None:

@@ -30,6 +30,46 @@ RUNNING_RUN_STATUSES = {"queued", "running"}
 RECOVERABLE_RUN_STATUSES = {"waiting_approval", "waiting_input", "waiting_external_tool", "paused", "interrupted"}
 ACTIVE_RUN_STATUSES = RUNNING_RUN_STATUSES | RECOVERABLE_RUN_STATUSES
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+# These compact events carry collaboration decisions that the current
+# snapshot/history materializers cannot reproduce losslessly from episode and
+# handoff rows: the canonical ledgers do not retain the original event seq,
+# event id, or source projection. High-frequency progress, text/reasoning
+# deltas, and subagent tool telemetry intentionally stay outside this set.
+COLLABORATION_MILESTONE_TOPICS = frozenset(
+    {
+        "runtime.episode.active",
+        "runtime.episode.cancelled",
+        "runtime.episode.completed",
+        "runtime.episode.degraded",
+        "runtime.episode.failed",
+        "runtime.episode.handoff_resume_not_scheduled",
+        "runtime.episode.handoff_resume_scheduled",
+        "runtime.episode.queued",
+        "runtime.episode.resumed",
+        "runtime.episode.retry_scheduled",
+        "runtime.episode.started",
+        "runtime.episode.transition_rejected",
+        "runtime.episode.waiting",
+        "runtime.episode.waiting_input",
+        "delegation.accepted",
+        "delegation.cancelled",
+        "delegation.child.requested",
+        "delegation.completed",
+        "delegation.dispatched",
+        "delegation.failed",
+        "delegation.request",
+        "delegation.requested",
+        "delegation.result",
+        "subagent.agent.started",
+        "subagent.delegation.claimed_without_dispatch",
+        "subagent.task.completed",
+        "subagent.task.failed",
+        "subagent.task.updated",
+    }
+)
+COLLABORATION_MILESTONE_TOPIC_PREFIXES = (
+    "handoff.ref.",
+)
 LOG_FILE_SUFFIXES = {".log", ".jsonl", ".html", ".txt"}
 IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 STATE_LOG_TABLES = (
@@ -1014,6 +1054,8 @@ class StorageRetentionService:
             "protected": {
                 "messages": True,
                 "chatCanonicalMessages": True,
+                "collaborationMilestones": True,
+                "collaborationProgressTelemetry": False,
                 "runtimeArtifacts": True,
                 "memoryDiariesAndSummaries": True,
             },
@@ -1105,9 +1147,21 @@ class StorageRetentionService:
     def _prune_completed_runtime_events(self, *, dry_run: bool) -> List[Dict[str, Any]]:
         if not STATE_DB_PATH.exists():
             return []
+        exact_topics = sorted(COLLABORATION_MILESTONE_TOPICS)
+        protected_clauses = [
+            f"COALESCE(re.topic, '') IN ({','.join('?' for _ in exact_topics)})",
+            *[
+                "COALESCE(re.topic, '') LIKE ?"
+                for _ in COLLABORATION_MILESTONE_TOPIC_PREFIXES
+            ],
+        ]
+        protected_params = [
+            *exact_topics,
+            *[f"{prefix}%" for prefix in COLLABORATION_MILESTONE_TOPIC_PREFIXES],
+        ]
         with _connect(STATE_DB_PATH) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT re.id
                 FROM runtime_events re
                 JOIN run_records rr ON rr.id = re.run_id
@@ -1117,9 +1171,11 @@ class StorageRetentionService:
                     WHERE ccm.session_id = re.session_id
                   )
                   AND COALESCE(re.topic, '') NOT LIKE 'chat.message%'
+                  AND NOT ({' OR '.join(protected_clauses)})
                 ORDER BY COALESCE(re.created_at, re.event_ts) ASC
                 LIMIT 500
-                """
+                """,
+                protected_params,
             ).fetchall()
             ids = [row["id"] for row in rows]
             if not ids:

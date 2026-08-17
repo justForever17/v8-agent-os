@@ -62,6 +62,7 @@ import {
     type PhoneRealtimeUiEvent,
 } from "@/src/lib/chat-stream-state";
 import { buildApprovalFromEvent, buildAskUserInteractionFromEvent, normalizePhoneRealtimeEvent } from "@/src/lib/chat-realtime";
+import { BoundedRuntimeEventIdentityLedger } from "@/src/lib/runtime-event-identity-ledger";
 import {
     buildPhoneRuntimeTimelineEntryFromEvent,
     getPhoneRuntimeDescriptor,
@@ -2097,7 +2098,7 @@ export default function ChatScreen() {
     const lastAppliedSnapshotSeqRef = useRef(0);
     const lastAppliedSnapshotFingerprintRef = useRef("");
     const lastRealtimeSnapshotAtRef = useRef(0);
-    const seenRealtimeEventKeysRef = useRef<Set<string>>(new Set());
+    const seenRealtimeEventKeysRef = useRef(new BoundedRuntimeEventIdentityLedger());
     const pendingRealtimeRenderDiagnosticRef = useRef<Record<string, unknown> | null>(null);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const messagesRef = useRef<ChatMessage[]>([]);
@@ -3799,6 +3800,7 @@ export default function ChatScreen() {
         const payloadBytes = measureJsonBytes(payload);
         const snapshotMessages = extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
+        const snapshotWatermarkAdvanced = snapshotSeq > lastAppliedSnapshotSeqRef.current;
         const snapshotQueuedMessages = extractQueuedMessages(payload);
         const targetConversationId = String(activeConversationIdRef.current || "").trim();
         if (isLegacyChatUnsupportedPayload(payload)) {
@@ -3865,7 +3867,9 @@ export default function ChatScreen() {
         if (snapshotSeq > 0) {
             latestSeqRef.current = Math.max(latestSeqRef.current, snapshotSeq);
             lastAppliedSnapshotSeqRef.current = Math.max(lastAppliedSnapshotSeqRef.current, snapshotSeq);
-            seenRealtimeEventKeysRef.current.clear();
+            if (snapshotWatermarkAdvanced) {
+                seenRealtimeEventKeysRef.current.pruneSnapshotCovered(snapshotSeq);
+            }
             lastRealtimeSnapshotAtRef.current = Date.now();
         }
         applyConversationProjection(payload);
@@ -4017,18 +4021,12 @@ export default function ChatScreen() {
 
         const acceptance = evaluateSessionRuntimeEvent(normalized, {
             snapshotCoveredSeq: lastAppliedSnapshotSeqRef.current,
-            seenEventIdentities: seenRealtimeEventKeysRef.current,
+            seenEventIdentities: seenRealtimeEventKeysRef.current.seenIdentities,
         });
         if (!acceptance.accept) {
             return;
         }
-        seenRealtimeEventKeysRef.current.add(acceptance.identity);
-        if (seenRealtimeEventKeysRef.current.size > 2048) {
-            const first = seenRealtimeEventKeysRef.current.values().next();
-            if (!first.done) {
-                seenRealtimeEventKeysRef.current.delete(first.value);
-            }
-        }
+        seenRealtimeEventKeysRef.current.remember(acceptance.identity, normalized.seq);
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }

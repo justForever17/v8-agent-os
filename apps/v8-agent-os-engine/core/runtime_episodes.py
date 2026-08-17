@@ -6,7 +6,12 @@ from typing import Any, Iterable, Mapping
 
 from erc.runtime_context import get_runtime_context
 from core.time_truth import utc_now_iso
-from core.database import RuntimeEpisodeIdempotencyConflict, db
+from core.database import (
+    RUNTIME_HANDOFF_SCHEMA_VERSION,
+    RuntimeEpisodeHandoffConflict,
+    RuntimeEpisodeIdempotencyConflict,
+    db,
+)
 
 
 ACTIVE_EPISODE_STATES = {
@@ -156,6 +161,151 @@ def _runtime_handoff_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     return {**dict(value), **dict(payload)}
 
 
+def runtime_handoff_identities(value: Mapping[str, Any]) -> set[str]:
+    payload = _runtime_handoff_payload(value)
+    identities = {
+        str(candidate or "").strip()
+        for candidate in (
+            value.get("id"),
+            value.get("handoffId"),
+            value.get("handoffRefId"),
+            payload.get("handoffId"),
+            payload.get("handoffRefId"),
+            payload.get("deliveryId"),
+        )
+        if str(candidate or "").strip()
+    }
+    raw_aliases = payload.get("identityAliases") or []
+    aliases = (
+        list(raw_aliases)
+        if isinstance(raw_aliases, (list, tuple, set))
+        else [raw_aliases]
+    )
+    identities.update(
+        str(candidate or "").strip()
+        for candidate in aliases
+        if str(candidate or "").strip()
+    )
+    return identities
+
+
+def resolve_runtime_episode_current_handoff(
+    episode: Mapping[str, Any],
+    handoffs: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Resolve the one delivery selected by an episode's durable result ref.
+
+    Handoff history remains durable, but only the result-ref target is current.
+    A single pre-resultRef legacy row is retained as an observable fallback;
+    ambiguous, mismatched, or corrupted deliveries are diagnosed, never guessed.
+    """
+
+    episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+    result_ref = str(episode.get("resultRef") or episode.get("result_ref") or "").strip()
+    candidates: list[tuple[dict[str, Any], set[str], bool, str]] = []
+    available_ids: list[str] = []
+    for raw_row in handoffs:
+        if not isinstance(raw_row, Mapping):
+            continue
+        row = dict(raw_row)
+        raw_payload = row.get("payload")
+        storage_safe_row = {
+            key: value
+            for key, value in row.items()
+            if key not in {"payload", "payload_json", "refs_json"}
+        }
+        payload = {
+            **storage_safe_row,
+            **(
+                dict(raw_payload)
+                if isinstance(raw_payload, Mapping) and raw_payload
+                else {}
+            ),
+        }
+        identities = runtime_handoff_identities(row)
+        available_ids.extend(sorted(identities))
+        corrupted = bool(
+            row.get("payloadCorrupted")
+            or row.get("deliverySupported") is False
+            or payload.get("payloadCorrupted")
+            or str(payload.get("deliveryState") or "").strip().lower() == "corrupted"
+        )
+        integrity_status = str(
+            (
+                row.get("deliveryIntegrity")
+                if isinstance(row.get("deliveryIntegrity"), Mapping)
+                else payload.get("deliveryIntegrity")
+                if isinstance(payload.get("deliveryIntegrity"), Mapping)
+                else {}
+            ).get("status")
+            or ""
+        ).strip()
+        candidates.append((payload, identities, corrupted, integrity_status))
+
+    resolution = "missing_handoff"
+    selected: dict[str, Any] | None = None
+    selected_corrupted = False
+    selected_integrity_status = ""
+    if result_ref:
+        matches = [item for item in candidates if result_ref in item[1]]
+        if len(matches) == 1:
+            selected, _, selected_corrupted, selected_integrity_status = matches[0]
+            resolution = "result_ref"
+        elif len(matches) > 1:
+            resolution = "ambiguous_result_ref"
+        else:
+            resolution = "result_ref_not_found"
+    elif len(candidates) == 1:
+        selected, _, selected_corrupted, selected_integrity_status = candidates[0]
+        resolution = "legacy_single_handoff"
+    elif len(candidates) > 1:
+        resolution = "missing_result_ref"
+
+    if selected is not None and selected_corrupted:
+        selected = None
+        resolution = (
+            "current_handoff_integrity_unverified"
+            if selected_integrity_status in {"legacy_unverified", "unsupported_schema"}
+            else "current_handoff_payload_corrupted"
+        )
+    producer_id = str((selected or {}).get("producerEpisodeId") or "").strip()
+    if selected is not None and producer_id and producer_id != episode_id:
+        selected = None
+        resolution = "producer_mismatch"
+
+    diagnostic: dict[str, Any] = {
+        "episodeId": episode_id,
+        "episodeState": str(episode.get("state") or "").strip(),
+        "resultRef": result_ref or None,
+        "resolution": resolution,
+        "availableHandoffIds": list(dict.fromkeys(available_ids)),
+    }
+    if resolution in {
+        "current_handoff_payload_corrupted",
+        "current_handoff_integrity_unverified",
+    }:
+        corrupted_payload = next(
+            (
+                (payload, integrity_status)
+                for payload, identities, corrupted, integrity_status in candidates
+                if corrupted and (not result_ref or result_ref in identities)
+            ),
+            ({}, ""),
+        )
+        payload, integrity_status = corrupted_payload
+        diagnostic["errorCode"] = (
+            "runtime_handoff_delivery_unverified"
+            if resolution == "current_handoff_integrity_unverified"
+            else "runtime_handoff_payload_corrupted"
+        )
+        diagnostic["deliveryIntegrityStatus"] = integrity_status or None
+        diagnostic["deliveryIntegrity"] = dict(
+            payload.get("deliveryIntegrity") or {}
+        )
+        diagnostic["payloadIntegrity"] = dict(payload.get("payloadIntegrity") or {})
+    return selected, diagnostic
+
+
 def _walk_runtime_handoff(value: Any) -> Iterable[Mapping[str, Any]]:
     if isinstance(value, Mapping):
         yield value
@@ -270,11 +420,16 @@ def superseded_runtime_episode_ids(
         write_set = set(runtime_episode_write_set(episode))
         task_brief_ids = set(runtime_episode_task_brief_ids(episode))
         state = str(episode.get("state") or "").strip().lower()
+        current_handoff, _delivery_diagnostic = resolve_runtime_episode_current_handoff(
+            episode,
+            handoffs_by_episode.get(episode_id, []),
+        )
         if (
             episode_id
             and state in {"completed", "merged"}
+            and current_handoff is not None
             and runtime_handoffs_have_verified_write_delivery(
-                handoffs_by_episode.get(episode_id, []),
+                [current_handoff],
                 write_set=write_set,
             )
         ):
@@ -634,6 +789,8 @@ def build_handoff_ref(
     artifact_id = str((extra or {}).get("artifactId") or f"artifact_{uuid.uuid4().hex[:12]}")
     handoff_id = f"handoff_{uuid.uuid4().hex[:12]}"
     ref = {
+        "schemaVersion": RUNTIME_HANDOFF_SCHEMA_VERSION,
+        "handoffId": handoff_id,
         "handoffRefId": handoff_id,
         "artifactId": artifact_id,
         "producerEpisodeId": str(producer_episode_id or ""),
@@ -651,16 +808,65 @@ def build_handoff_ref(
     if consumer_hint:
         ref["consumerHint"] = str(consumer_hint)
     if extra:
-        ref.update({k: v for k, v in dict(extra).items() if v is not None and k != "artifactId"})
+        extension = {k: v for k, v in dict(extra).items() if v is not None and k != "artifactId"}
+        immutable_identity_fields = {
+            "schemaVersion",
+            "handoffId",
+            "handoffRefId",
+            "id",
+            "producerEpisodeId",
+            "kind",
+            "createdAt",
+        }
+        canonical_content_fields = {
+            "status",
+            "compactSummary",
+            "confidence",
+            "rawRef",
+            "detailTool",
+            "consumerHint",
+        }
+        conflicting = sorted(
+            key
+            for key, value in extension.items()
+            if (
+                key in immutable_identity_fields
+                or (key in canonical_content_fields and key in ref)
+            )
+            and value != ref.get(key)
+        )
+        if conflicting:
+            raise ValueError(
+                "runtime handoff extra cannot override canonical fields: "
+                + ", ".join(conflicting)
+            )
+        ref.update(
+            {
+                key: value
+                for key, value in extension.items()
+                if key not in immutable_identity_fields
+            }
+        )
     return ref
 
 
 def append_handoff_ref(route_context: dict[str, Any] | None, handoff_ref: dict[str, Any]) -> dict[str, Any]:
     context = deepcopy(dict(route_context or {}))
-    refs = [dict(item) for item in list(context.get("handoffRefs") or []) if isinstance(item, dict)]
+    producer_id = str(handoff_ref.get("producerEpisodeId") or "").strip()
+    next_identities = runtime_handoff_identities(handoff_ref)
+    refs = []
+    for raw_item in list(context.get("handoffRefs") or []):
+        if not isinstance(raw_item, dict):
+            continue
+        item = dict(raw_item)
+        item_producer_id = str(item.get("producerEpisodeId") or "").strip()
+        if producer_id and item_producer_id == producer_id:
+            continue
+        if next_identities and next_identities.intersection(runtime_handoff_identities(item)):
+            continue
+        refs.append(item)
     refs.append(dict(handoff_ref))
     context["handoffRefs"] = refs[-100:]
-    producer_id = str(handoff_ref.get("producerEpisodeId") or "").strip()
     if producer_id:
         handoff_status = str(handoff_ref.get("status") or "").strip().lower()
         # A handoff can explicitly pause for one missing, user/Supervisor
@@ -671,6 +877,10 @@ def append_handoff_ref(route_context: dict[str, Any] | None, handoff_ref: dict[s
             next_state = "waiting_input"
         elif handoff_status in {"running", "waiting", "pending"}:
             next_state = "waiting"
+        elif handoff_status == "degraded":
+            next_state = "degraded"
+        elif handoff_status in {"cancelled", "canceled"}:
+            next_state = "cancelled"
         else:
             next_state = "failed" if handoff_status == "failed" else "completed"
         context, episode = transition_runtime_episode(
@@ -682,11 +892,8 @@ def append_handoff_ref(route_context: dict[str, Any] | None, handoff_ref: dict[s
         episodes = [dict(item) for item in list(context.get("capabilityEpisodes") or []) if isinstance(item, dict)]
         for index, item in enumerate(episodes):
             if str(item.get("episodeId") or item.get("needId") or "").strip() == producer_id:
-                existing_refs = [str(ref) for ref in list(item.get("handoffRefs") or []) if str(ref).strip()]
                 next_ref = str(handoff_ref.get("handoffRefId") or "").strip()
-                if next_ref and next_ref not in existing_refs:
-                    existing_refs.append(next_ref)
-                item["handoffRefs"] = existing_refs
+                item["handoffRefs"] = [next_ref] if next_ref else []
                 episodes[index] = item
                 break
         context["capabilityEpisodes"] = episodes[-50:]
@@ -711,7 +918,7 @@ def persist_handoff_ref(
             session_id=session_id,
             run_id=run_id,
         )
-    except RuntimeEpisodeDurabilityError:
+    except (RuntimeEpisodeDurabilityError, RuntimeEpisodeHandoffConflict):
         raise
     except Exception as exc:
         raise RuntimeEpisodeDurabilityError(

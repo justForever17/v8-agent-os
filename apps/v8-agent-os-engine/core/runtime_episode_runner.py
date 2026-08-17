@@ -21,7 +21,12 @@ from core.runtime_continuation import (
     RuntimeContinuationContractError,
     normalize_runtime_continuation_request,
 )
-from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
+from core.runtime_episodes import (
+    ACTIVE_EPISODE_STATES,
+    build_handoff_ref,
+    build_runtime_episode,
+    resolve_runtime_episode_current_handoff,
+)
 from core.time_truth import utc_now_iso
 
 
@@ -1067,6 +1072,95 @@ class RuntimeEpisodeRunner:
         if active_tasks:
             await asyncio.gather(*active_tasks, return_exceptions=True)
 
+    def _complete_corrupted_episode_contract(
+        self,
+        episode: dict[str, Any],
+        *,
+        episode_id: str,
+        kind: str,
+        session_id: str | None,
+        run_id: str | None,
+    ) -> None:
+        decode_errors = [
+            dict(item)
+            for item in list(episode.get("contractDecodeErrors") or [])
+            if isinstance(item, dict)
+        ]
+        affected_fields = [
+            str(item.get("sourceField") or "").strip()
+            for item in decode_errors
+            if str(item.get("sourceField") or "").strip()
+        ]
+        field_summary = ", ".join(affected_fields[:8]) or "persisted contract fields"
+        handoff = build_handoff_ref(
+            producer_episode_id=episode_id,
+            kind=f"{kind}_contract_diagnostic",
+            compact_summary=(
+                f"Runtime episode execution did not start because {field_summary} could not be decoded safely."
+            ),
+            status="failed",
+            confidence="high",
+            consumer_hint=(
+                "Restore the recorded contract from its authoritative source or recreate the episode; "
+                "do not infer missing instructions from empty fallback values."
+            ),
+            extra={
+                "errorCode": "runtime_episode_contract_corrupted",
+                "contractStatus": "corrupted_persisted_json",
+                "contractDecodeErrors": decode_errors,
+                "recoverable": False,
+                "recoveryAction": "restore_or_recreate_runtime_episode_contract",
+            },
+        )
+        delivery = self._require_claim_write(
+            episode_id,
+            db.commit_runtime_episode_delivery(
+                episode_id,
+                handoff=handoff,
+                state="failed",
+                session_id=session_id,
+                run_id=run_id,
+                error_code="runtime_episode_contract_corrupted",
+                error_message=(
+                    f"Persisted runtime episode contract is corrupted in: {field_summary}."
+                ),
+                metadata={
+                    "contractIntegrity": {
+                        "status": "corrupted_persisted_json",
+                        "decodeErrors": decode_errors,
+                        "recoverable": False,
+                        "recoveryAction": "restore_or_recreate_runtime_episode_contract",
+                    }
+                },
+                **self._claim_fence_kwargs(episode_id),
+            ),
+            action="committing corrupted contract diagnostics",
+        )
+        persisted_handoff = dict(delivery["handoff"])
+        failed = dict(delivery["episode"])
+        self._emit(
+            "handoff.ref.created",
+            episode=failed,
+            handoff=persisted_handoff,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        self._emit(
+            "runtime.episode.failed",
+            episode=failed,
+            handoff=persisted_handoff,
+            error={
+                "code": "runtime_episode_contract_corrupted",
+                "recoverable": False,
+                "affectedFields": affected_fields,
+            },
+            session_id=session_id,
+            run_id=run_id,
+        )
+        self._resume_cross_episode_dependents(failed)
+        self._maybe_schedule_chat_handoff_resume(failed)
+        self._maybe_resume_parent_episode(failed, session_id=session_id, run_id=run_id)
+
     async def _execute_episode(self, episode: dict[str, Any]) -> None:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
         kind = str(episode.get("kind") or "unknown").strip()
@@ -1089,6 +1183,15 @@ class RuntimeEpisodeRunner:
         self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
             self._heartbeat(episode_id, "executor starting")
+            if bool(episode.get("contractCorrupted")):
+                self._complete_corrupted_episode_contract(
+                    episode,
+                    episode_id=episode_id,
+                    kind=kind,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                return
             episode, dependency_gate = self._prepare_cross_episode_dependencies(episode)
             if dependency_gate and dependency_gate.get("state") == "waiting_dependency":
                 waiting = self._require_claim_write(
@@ -1149,25 +1252,43 @@ class RuntimeEpisodeRunner:
                 handoff = self._generic_handoff(episode, status="failed", summary=f"No executor registered for {kind}.")
 
             self._raise_if_episode_cancelled(episode_id, run_id=run_id)
-            persisted_handoff = self._require_claim_write(
-                episode_id,
-                db.add_runtime_episode_handoff(
-                    episode_id=episode_id,
-                    handoff=handoff,
+            handoff_status = str(handoff.get("status") or "ready").strip().lower()
+            will_retry = (
+                handoff_status in {"failed", "blocked"}
+                and handoff.get("recoverable") is not False
+                and self._can_retry(episode)
+            )
+            separately_persisted = (
+                handoff_status in {
+                    "waiting_input",
+                    "awaiting_input",
+                    "needs_input",
+                    "running",
+                    "waiting",
+                    "pending",
+                }
+                or will_retry
+            )
+            persisted_handoff: dict[str, Any] | None = None
+            if separately_persisted:
+                persisted_handoff = self._require_claim_write(
+                    episode_id,
+                    db.add_runtime_episode_handoff(
+                        episode_id=episode_id,
+                        handoff=handoff,
+                        session_id=session_id,
+                        run_id=run_id,
+                        **self._claim_fence_kwargs(episode_id),
+                    ),
+                    action="publishing the runtime handoff",
+                )
+                self._emit(
+                    "handoff.ref.created",
+                    episode=episode,
+                    handoff=persisted_handoff,
                     session_id=session_id,
                     run_id=run_id,
-                    **self._claim_fence_kwargs(episode_id),
-                ),
-                action="publishing the runtime handoff",
-            )
-            self._emit(
-                "handoff.ref.created",
-                episode=episode,
-                handoff=persisted_handoff,
-                session_id=session_id,
-                run_id=run_id,
-            )
-            handoff_status = str(handoff.get("status") or "ready").strip().lower()
+                )
             if handoff_status in {"waiting_input", "awaiting_input", "needs_input"}:
                 waiting = self._require_claim_write(
                     episode_id,
@@ -1213,11 +1334,7 @@ class RuntimeEpisodeRunner:
                     run_id=run_id,
                 )
                 return
-            if (
-                handoff_status in {"failed", "blocked"}
-                and handoff.get("recoverable") is not False
-                and self._can_retry(episode)
-            ):
+            if will_retry:
                 retry_episode = self._require_claim_write(
                     episode_id,
                     db.retry_runtime_episode(
@@ -1243,18 +1360,29 @@ class RuntimeEpisodeRunner:
             else:
                 final_state = "completed" if handoff_status not in {"failed", "blocked"} else "failed"
             recovery = self._build_recovery_bundle(episode, handoff, final_state=final_state)
-            completed = self._require_claim_write(
+            delivery = self._require_claim_write(
                 episode_id,
-                db.complete_runtime_episode(
+                db.commit_runtime_episode_delivery(
                     episode_id,
+                    handoff=handoff,
                     state=final_state,
-                    result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                    session_id=session_id,
+                    run_id=run_id,
                     error_code=str(handoff.get("errorCode") or "") or None,
                     error_message=str(handoff.get("errorMessage") or "") or None,
-                    metadata={"handoff": persisted_handoff, "recovery": recovery},
+                    metadata={"recovery": recovery},
                     **self._claim_fence_kwargs(episode_id),
                 ),
-                action="completing the runtime episode",
+                action="committing the runtime episode delivery",
+            )
+            completed = dict(delivery["episode"])
+            persisted_handoff = dict(delivery["handoff"])
+            self._emit(
+                "handoff.ref.created",
+                episode=completed,
+                handoff=persisted_handoff,
+                session_id=session_id,
+                run_id=run_id,
             )
             event_type = "runtime.episode.completed"
             if final_state == "failed":
@@ -1699,6 +1827,52 @@ class RuntimeEpisodeRunner:
         state = str(payload.get("delegationState") or payload.get("engineeringState") or "").strip().lower()
         return status == "degraded" or kind.endswith("_degraded") or state.endswith("_degraded")
 
+    @staticmethod
+    def _resolve_child_current_handoff(
+        child: dict[str, Any],
+        handoffs: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        selected, shared_diagnostic = resolve_runtime_episode_current_handoff(
+            child,
+            handoffs,
+        )
+        diagnostic = {
+            **shared_diagnostic,
+            "childEpisodeId": shared_diagnostic.get("episodeId"),
+            "childState": shared_diagnostic.get("episodeState"),
+        }
+        diagnostic.pop("episodeId", None)
+        diagnostic.pop("episodeState", None)
+        return selected, diagnostic
+
+    @staticmethod
+    def _missing_child_delivery_evidence(
+        child: dict[str, Any],
+        diagnostic: dict[str, Any],
+    ) -> dict[str, Any]:
+        child_id = str(child.get("episodeId") or child.get("id") or "").strip()
+        result_ref = str(child.get("resultRef") or child.get("result_ref") or "").strip()
+        resolution = str(diagnostic.get("resolution") or "missing_handoff")
+        return {
+            "schemaVersion": "v8.runtime_handoff.v1",
+            "kind": "runtime_delivery_missing",
+            "status": "degraded",
+            "producerEpisodeId": child_id,
+            "compactSummary": (
+                f"Child episode {child_id} reached {child.get('state') or 'terminal'} without a resolvable "
+                f"current delivery ({resolution})."
+            ),
+            "deliveryState": "missing",
+            "expectedResultRef": result_ref or None,
+            "childEpisodeState": str(child.get("state") or "").strip(),
+            "errorCode": "child_delivery_missing",
+            "errorMessage": str(child.get("errorMessage") or child.get("error_message") or "").strip() or None,
+            "recoverable": True,
+            "consumerHint": (
+                "Use the delivery diagnostics to recover the exact child result; do not infer success from the terminal state alone."
+            ),
+        }
+
     def _should_dispatch_child_needs(self, episode: dict[str, Any]) -> bool:
         metadata = dict(episode.get("metadata") or {})
         if metadata.get("childNeedsDispatched"):
@@ -1780,28 +1954,139 @@ class RuntimeEpisodeRunner:
         completed_children = [child for child in children if str(child.get("state") or "") in {"completed", "merged"}]
         failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled", "degraded"}]
         child_handoffs: list[dict[str, Any]] = []
-        for child in [*completed_children, *failed_children]:
+        child_delivery_by_id: dict[str, dict[str, Any]] = {}
+        delivered_child_ids: list[str] = []
+        missing_child_ids: list[str] = []
+        delivery_diagnostics: list[dict[str, Any]] = []
+        ordered_children = [*completed_children, *failed_children]
+        for child in ordered_children:
+            child_id = str(child.get("episodeId") or child.get("id") or "").strip()
             handoffs = db.list_runtime_episode_handoffs(
-                str(child.get("episodeId") or child.get("id") or "")
+                child_id
             )
-            final_payload = next(
-                (
-                    dict(handoff.get("payload") or {})
-                    for handoff in reversed(handoffs)
-                    if isinstance(handoff.get("payload"), dict) and handoff.get("payload")
-                ),
-                {},
-            )
-            if final_payload:
-                child_handoffs.append(final_payload)
+            current_payload, diagnostic = self._resolve_child_current_handoff(child, handoffs)
+            if current_payload is None:
+                current_payload = self._missing_child_delivery_evidence(child, diagnostic)
+                missing_child_ids.append(child_id)
+            else:
+                delivered_child_ids.append(child_id)
+            delivery_diagnostics.append(diagnostic)
+            child_delivery_by_id[child_id] = current_payload
+            child_handoffs.append(current_payload)
+        actual_handoff_ids = [
+            item.get("handoffId") or item.get("handoffRefId")
+            for child_id, item in child_delivery_by_id.items()
+            if child_id not in missing_child_ids
+            and str(item.get("handoffId") or item.get("handoffRefId") or "").strip()
+        ]
         resume_token = {
             "resumedFrom": "child_handoffs",
             "childEpisodeIds": [child.get("episodeId") for child in children],
-            "handoffIds": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs],
+            "expectedChildEpisodeIds": [
+                str(child.get("episodeId") or child.get("id") or "").strip()
+                for child in ordered_children
+            ],
+            "deliveredChildEpisodeIds": delivered_child_ids,
+            "missingChildEpisodeIds": missing_child_ids,
+            "childDeliveryDiagnostics": delivery_diagnostics,
+            "handoffIds": actual_handoff_ids,
             "childHandoffs": child_handoffs,
             "handoffBundle": child_handoffs,
             "failedChildCount": len(failed_children),
+            "deliveryMissingChildCount": len(missing_child_ids),
         }
+
+        def _complete_parent_with_join_failure(
+            *,
+            error_code: str,
+            error_message: str,
+        ) -> dict[str, Any] | None:
+            parent_state = str(parent.get("state") or "waiting_child")
+            failure_handoff = build_handoff_ref(
+                producer_episode_id=parent_id,
+                kind=str(parent.get("kind") or "runtime_result"),
+                compact_summary=error_message,
+                status="failed",
+                confidence="high",
+                consumer_hint=(
+                    "Use childDeliveryDiagnostics to recover the exact missing or failed child delivery before retrying."
+                ),
+                extra={
+                    "errorCode": error_code,
+                    "errorMessage": error_message,
+                    "recoverable": True,
+                    "childHandoffs": child_handoffs,
+                    "resumeToken": resume_token,
+                    "childDeliveryDiagnostics": delivery_diagnostics,
+                },
+            )
+            delivery = db.commit_runtime_episode_delivery(
+                episode_id=parent_id,
+                handoff=failure_handoff,
+                state="failed",
+                session_id=session_id,
+                run_id=run_id,
+                error_code=error_code,
+                error_message=error_message,
+                metadata={
+                    "resumeToken": resume_token,
+                    "childHandoffs": child_handoffs,
+                    "recoverable": True,
+                    "missingChildEpisodeIds": missing_child_ids,
+                },
+                expected_state=parent_state,
+            )
+            if not delivery:
+                return None
+            updated_parent = dict(delivery.get("episode") or {})
+            persisted_failure = dict(delivery.get("handoff") or {})
+            self._emit(
+                "handoff.ref.created",
+                episode=updated_parent,
+                handoff=persisted_failure,
+                session_id=session_id,
+                run_id=run_id,
+            )
+            return updated_parent
+
+        child_by_id = {
+            str(child.get("episodeId") or child.get("id") or "").strip(): child
+            for child in ordered_children
+        }
+        required_missing_child_ids = [
+            child_id
+            for child_id in missing_child_ids
+            if not self._is_optional_episode(child_by_id.get(child_id) or {})
+        ]
+        if required_missing_child_ids:
+            updated = _complete_parent_with_join_failure(
+                error_code="child_delivery_missing",
+                error_message=(
+                    f"{len(required_missing_child_ids)} required child episode(s) reached a terminal state "
+                    "without a resolvable current delivery."
+                ),
+            )
+            if updated is None:
+                latest = db.get_runtime_episode(parent_id) or parent
+                self._emit(
+                    "runtime.episode.transition_rejected",
+                    episode=latest,
+                    session_id=session_id,
+                    run_id=run_id,
+                    transition="complete",
+                    expectedState=str(parent.get("state") or "waiting_child"),
+                    reason="stale_episode_cas",
+                )
+                return
+            self._emit(
+                "runtime.episode.failed",
+                episode=updated,
+                session_id=session_id,
+                run_id=run_id,
+                resumeToken=resume_token,
+            )
+            self._maybe_resume_parent_episode(updated, session_id=session_id, run_id=run_id)
+            return
         if failed_children:
             def _is_budget_boundary_handoff(payload: dict[str, Any]) -> bool:
                 if not isinstance(payload, dict):
@@ -1818,22 +2103,37 @@ class RuntimeEpisodeRunner:
                     if isinstance(item, dict)
                 )
 
-            budget_boundary_only = bool(child_handoffs) and all(
+            failed_child_ids = [
+                str(child.get("episodeId") or child.get("id") or "").strip()
+                for child in failed_children
+            ]
+            failed_child_handoffs = [
+                child_delivery_by_id[child_id]
+                for child_id in failed_child_ids
+                if child_id in child_delivery_by_id
+            ]
+            missing_failed_child_ids = [
+                child_id for child_id in failed_child_ids if child_id in missing_child_ids
+            ]
+            budget_boundary_only = not missing_failed_child_ids and bool(failed_child_handoffs) and all(
                 _is_budget_boundary_handoff(item)
-                for item in child_handoffs
+                for item in failed_child_handoffs
                 if isinstance(item, dict)
             )
             optional_or_degraded_only = bool(failed_children) and all(
                 self._is_optional_episode(child)
                 for child in failed_children
             )
-            degraded_handoff_only = bool(child_handoffs) and all(
+            degraded_handoff_only = bool(failed_child_handoffs) and all(
                 self._is_degraded_handoff(item) or _is_budget_boundary_handoff(item)
-                for item in child_handoffs
+                for item in failed_child_handoffs
                 if isinstance(item, dict)
             )
             if budget_boundary_only or optional_or_degraded_only or degraded_handoff_only:
-                resume_token["failedChildCount"] = 0
+                if missing_failed_child_ids:
+                    resume_token["unresolvedFailedChildCount"] = len(missing_failed_child_ids)
+                else:
+                    resume_token["failedChildCount"] = 0
                 if budget_boundary_only:
                     resume_token["budgetBoundaryChildCount"] = len(failed_children)
                 if optional_or_degraded_only or degraded_handoff_only:
@@ -1872,13 +2172,9 @@ class RuntimeEpisodeRunner:
                     },
                 )
                 return
-            updated = db.complete_runtime_episode(
-                parent_id,
-                state="failed",
+            updated = _complete_parent_with_join_failure(
                 error_code="child_episode_failed",
                 error_message=f"{len(failed_children)} child episode(s) failed.",
-                metadata={"resumeToken": resume_token, "childHandoffs": child_handoffs, "recoverable": True},
-                expected_state=str(parent.get("state") or "waiting_child"),
             )
             if updated is None:
                 latest = db.get_runtime_episode(parent_id) or parent
@@ -1951,16 +2247,21 @@ class RuntimeEpisodeRunner:
             child_id = str(raw_child_id or "").strip()
             if not child_id:
                 continue
-            for handoff in db.list_runtime_episode_handoffs(child_id):
-                payload = dict(handoff.get("payload") or {})
-                if not payload:
-                    continue
-                handoff_id = str(payload.get("handoffId") or payload.get("handoffRefId") or handoff.get("handoffId") or "")
-                dedupe_key = handoff_id or f"{child_id}:{len(child_handoffs)}"
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                child_handoffs.append(payload)
+            child = db.get_runtime_episode(child_id)
+            if not child:
+                continue
+            payload, _diagnostic = resolve_runtime_episode_current_handoff(
+                child,
+                db.list_runtime_episode_handoffs(child_id),
+            )
+            if not payload:
+                continue
+            handoff_id = str(payload.get("handoffId") or payload.get("handoffRefId") or "")
+            dedupe_key = handoff_id or f"{child_id}:{len(child_handoffs)}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            child_handoffs.append(payload)
         return child_handoffs
 
     async def _execute_research(self, episode: dict[str, Any]) -> dict[str, Any]:
@@ -6802,9 +7103,10 @@ class RuntimeEpisodeRunner:
                     ],
                     "results": [
                         build_delegation_result_contract(item)
-                        for item in results[:8]
+                        for item in results
                         if isinstance(item, dict)
                     ],
+                    "resultCount": len(results),
                     **(
                         {
                             "requiredInputs": list((continuation_request or {}).get("requiredInputs") or []),
@@ -7281,14 +7583,45 @@ class RuntimeEpisodeRunner:
                     ),
                 },
             )
-            persisted_handoff = db.add_runtime_episode_handoff(
+            delivery = db.commit_runtime_episode_delivery(
                 episode_id=delegation_id,
                 handoff=handoff,
+                state=final_state,
                 session_id=session_id,
                 run_id=run_id,
+                error_code=(
+                    "runtime_input_required"
+                    if final_state == "waiting_input"
+                    else str(summary.get("errorCode") or "delegation_worker_failed")
+                    if final_state == "failed"
+                    else None
+                ),
+                error_message=(
+                    str(summary.get("error") or compact_summary)
+                    if final_state == "failed"
+                    else None
+                ),
+                metadata={
+                    "childEpisodeIds": children,
+                    "executionSource": "runtime_episode_runner.local_delegation",
+                    **(
+                        {
+                            "workspaceDependencyState": {
+                                "workspaceDependencyChain": list(
+                                    summary.get("workspaceDependencyChain") or []
+                                ),
+                                "workspaceDependencyTaskIds": list(
+                                    summary.get("workspaceDependencyTaskIds") or []
+                                ),
+                            }
+                        }
+                        if summary.get("workspaceDependencyChain")
+                        else {}
+                    ),
+                },
                 expected_state=str(direct_episode.get("state") or "active"),
             )
-            if persisted_handoff is None:
+            if delivery is None:
                 summary.update(
                     {
                         "status": "waiting",
@@ -7307,92 +7640,15 @@ class RuntimeEpisodeRunner:
                     reason="stale_episode_fence",
                 )
                 return
+            persisted_handoff = dict(delivery.get("handoff") or {})
+            updated = dict(delivery.get("episode") or {})
             self._emit(
                 "handoff.ref.created",
-                episode=direct_episode,
+                episode=updated,
                 handoff=persisted_handoff,
                 session_id=session_id,
                 run_id=run_id,
             )
-            current_direct_episode = db.get_runtime_episode(delegation_id)
-            if current_direct_episode is None:
-                summary.update(
-                    {
-                        "status": "waiting",
-                        "error": "direct_episode_claim_lost",
-                        "dispatchStatus": "direct_episode_claim_lost",
-                        "summary": "委派 episode 已不存在，停止伪造终态并等待上层恢复。",
-                    }
-                )
-                return
-            if str(
-                current_direct_episode.get("worker_id")
-                or current_direct_episode.get("workerId")
-                or ""
-            ).strip():
-                summary.update(
-                    {
-                        "status": "waiting",
-                        "error": "direct_episode_claim_lost",
-                        "dispatchStatus": "direct_episode_claim_lost",
-                        "summary": "委派 episode 已由其他 worker 接管，本分支停止伪造终态。",
-                    }
-                )
-                return
-            updated = db.complete_runtime_episode(
-                delegation_id,
-                state=final_state,
-                result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
-                error_code=(
-                    "runtime_input_required"
-                    if final_state == "waiting_input"
-                    else str(summary.get("errorCode") or "delegation_worker_failed")
-                    if final_state == "failed"
-                    else None
-                ),
-                error_message=(str(summary.get("error") or compact_summary) if final_state == "failed" else None),
-                metadata={
-                    "handoff": persisted_handoff,
-                    "childEpisodeIds": children,
-                    "executionSource": "runtime_episode_runner.local_delegation",
-                    **(
-                        {
-                            "workspaceDependencyState": {
-                                "workspaceDependencyChain": list(
-                                    summary.get("workspaceDependencyChain") or []
-                                ),
-                                "workspaceDependencyTaskIds": list(
-                                    summary.get("workspaceDependencyTaskIds") or []
-                                ),
-                            }
-                        }
-                        if summary.get("workspaceDependencyChain")
-                        else {}
-                    ),
-                },
-                expected_state=str(current_direct_episode.get("state") or ""),
-            )
-            if updated is None:
-                summary.update(
-                    {
-                        "status": "waiting",
-                        "error": "direct_episode_claim_lost",
-                        "dispatchStatus": "direct_episode_claim_lost",
-                        "summary": "委派 episode 租约已变化，停止伪造终态并等待当前 worker。",
-                    }
-                )
-                latest = db.get_runtime_episode(delegation_id) or current_direct_episode
-                self._emit(
-                    "runtime.episode.transition_rejected",
-                    episode=latest,
-                    handoff=persisted_handoff,
-                    session_id=session_id,
-                    run_id=run_id,
-                    transition="complete",
-                    expectedState=str(current_direct_episode.get("state") or ""),
-                    reason="stale_episode_cas",
-                )
-                return
             self._emit(
                 event_topic,
                 episode=updated,

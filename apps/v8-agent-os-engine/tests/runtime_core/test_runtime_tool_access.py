@@ -1048,6 +1048,106 @@ def test_runtime_broker_accepts_canonical_plural_dependencies_and_keeps_internal
     assert task_briefs[1]["dependency"] == ["step-1"]
 
 
+def test_runtime_broker_preserves_complete_task_brief_contract_and_prompt_projection():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "source": "supervisor",
+            "reason": "preserve the complete read-only review contract",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "schemaVersion": "v8.task_brief.v2",
+                        "taskBriefId": "complete-contract",
+                        "goal": "Review the approved implementation evidence.",
+                        "writeRequired": True,
+                        "readOnly": False,
+                        "readSet": ["src/feature.py"],
+                        "writeSet": ["reports/review.json"],
+                        "expectedOutputs": ["review result"],
+                        "expectedArtifacts": ["reports/review.json"],
+                        "constraints": ["Only write reports/review.json."],
+                        "evidenceRefs": ["research://episode_evidence/result"],
+                        "detailRefs": ["detail://review-context"],
+                        "specRefs": {"specId": "SPEC-1", "taskId": "TASK-2"},
+                        "toolPolicy": {"mode": "default", "selectionReason": "worker judgment"},
+                        "sideEffectPolicy": {"mode": "bounded_workspace_write"},
+                        "budget": {"maxTokens": 2400},
+                        "failurePolicy": {"onError": "return_blocker"},
+                        "futureEvidencePolicy": {
+                            "claims": [{"claimId": "claim-1", "required": True}]
+                        },
+                        "dependencies": ["step-1"],
+                        "acceptanceContract": ["The review cites the requested evidence."],
+                        "acceptanceTiers": {
+                            "must": ["The review cites the requested evidence."],
+                            "should": ["Name residual uncertainty."],
+                            "nice": [],
+                        },
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-complete-contract",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    brief = command.update["current_route_context"]["capabilityEpisodes"][-1]["inputs"]["taskBriefs"][0]
+    assert brief["schemaVersion"] == "v8.task_brief.v2"
+    assert brief["readSet"] == ["src/feature.py"]
+    assert brief["expectedArtifacts"] == ["reports/review.json"]
+    assert brief["constraints"] == ["Only write reports/review.json."]
+    assert brief["specRefs"] == {"specId": "SPEC-1", "taskId": "TASK-2"}
+    assert brief["toolPolicy"]["selectionReason"] == "worker judgment"
+    assert brief["sideEffectPolicy"] == {"mode": "bounded_workspace_write"}
+    assert brief["budget"] == {"maxTokens": 2400}
+    assert brief["failurePolicy"] == {"onError": "return_blocker"}
+    assert brief["dependencies"] == brief["dependency"] == ["step-1"]
+    assert brief["acceptanceContract"] == ["The review cites the requested evidence."]
+    assert brief["extensions"] == {
+        "futureEvidencePolicy": {
+            "claims": [{"claimId": "claim-1", "required": True}]
+        }
+    }
+    assert brief["unsupportedFields"] == ["futureEvidencePolicy"]
+
+    renormalized = normalize_task_brief(brief)
+    assert renormalized["extensions"] == brief["extensions"]
+    assert renormalized["unsupportedFields"] == brief["unsupportedFields"]
+
+    rendered = _format_delegated_task_contract(brief)
+    for expected in (
+        "Schema Version: v8.task_brief.v2",
+        "Expected Artifacts",
+        "Constraints: Only write reports/review.json.",
+        "Spec Refs",
+        "Side Effect Policy",
+        "Execution Budget",
+        "Failure Policy",
+        "Dependencies: step-1",
+        "Acceptance Tiers",
+        "Unsupported Fields: futureEvidencePolicy",
+    ):
+        assert expected in rendered
+    assert '"claimId": "claim-1"' in rendered
+    assert "'claimId'" not in rendered
+
+    nested_contract = _format_delegated_task_contract(
+        {
+            "taskBriefId": "nested-contract",
+            "goal": "Render structured acceptance without Python repr.",
+            "acceptanceContract": [
+                {"check": "claim is supported", "evidenceRefs": [{"id": "proof-1"}]}
+            ],
+        }
+    )
+    assert '"evidenceRefs": [{"id": "proof-1"}]' in nested_contract
+    assert "'evidenceRefs'" not in nested_contract
+
+
 def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need():
     command = runtime_broker.func(
         mode="route",
@@ -1077,6 +1177,58 @@ def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need(
     assert payload["error"] == "typed_need_invalid"
     assert payload["routeBriefQuality"]["validationErrors"][0]["field"].endswith("writeSet")
     assert payload["parameterGuidance"]["canonicalTaskArray"] == "taskBriefs"
+
+
+def test_runtime_broker_rejects_duplicate_task_ids_with_dependency_lineage() -> None:
+    command = runtime_broker.func(
+        mode="route",
+        routeKind="engineering",
+        routeReason="verify task identity before execution",
+        taskBriefs=[
+            {
+                "taskBriefId": "shared-id",
+                "goal": "Implement surface A.",
+            },
+            {
+                "task_brief_id": "shared-id",
+                "goal": "Implement surface B.",
+            },
+            {
+                "taskBriefId": "verification",
+                "goal": "Verify the intended upstream task.",
+                "dependencies": ["shared-id"],
+            },
+        ],
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-duplicate-task-id",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["error"] == "duplicate_task_brief_ids"
+    assert command.update["runtime_dispatch_status"] == {
+        "mode": "runtime_broker_route",
+        "dispatched": False,
+        "blocked": True,
+        "reason": "duplicate_task_brief_ids",
+        "episodeCount": 0,
+        "nextAction": "repair_task_identity",
+    }
+    duplicate = payload["routeBriefQuality"]["taskBriefDiagnostics"][
+        "duplicateTaskBriefIds"
+    ][0]
+    assert duplicate == {
+        "taskBriefId": "shared-id",
+        "indexes": [0, 1],
+        "dependentIndexes": [2],
+        "dependentTaskBriefIds": ["verification"],
+    }
+    assert payload["routeBriefQuality"]["preserveAllOtherFields"] is True
+    assert payload["routeBriefQuality"]["repairFields"] == [
+        "taskBriefs.0.taskBriefId",
+        "taskBriefs.1.taskBriefId",
+        "taskBriefs.2.dependencies",
+    ]
+    assert command.update["current_route_context"] == {}
 
 
 def test_runtime_broker_advertises_provider_safe_research_arrays_and_typed_task_array():
@@ -2575,6 +2727,46 @@ def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     assert payload["exampleTasks"]
 
 
+def test_delegation_broker_rejects_duplicate_task_ids_before_dispatch() -> None:
+    command = delegation_broker.func(
+        mode="dispatch",
+        tasks=[
+            {"taskBriefId": "shared-id", "goal": "Review surface A."},
+            {"task_brief_id": "shared-id", "goal": "Review surface B."},
+            {
+                "taskBriefId": "join",
+                "goal": "Compare the intended upstream result.",
+                "dependency": ["shared-id"],
+            },
+        ],
+        state={"current_route_context": {}},
+        tool_call_id="call-delegation-duplicate-task-id",
+    )
+    payload = _tool_message_payload(command)
+
+    assert command.goto == "supervisor"
+    assert payload["error"] == "duplicate_task_brief_ids"
+    assert payload["dispatchStatus"] == "task_contract_invalid"
+    assert payload["recommendedNextAction"] == (
+        "retry_dispatch_after_task_identity_repair"
+    )
+    assert payload["duplicateTaskBriefIds"] == [
+        {
+            "taskBriefId": "shared-id",
+            "indexes": [0, 1],
+            "dependentIndexes": [2],
+            "dependentTaskBriefIds": ["join"],
+        }
+    ]
+    assert payload["repairFields"] == [
+        "tasks.0.taskBriefId",
+        "tasks.1.taskBriefId",
+        "tasks.2.dependencies",
+    ]
+    assert payload["preserveAllOtherFields"] is True
+    assert "capabilityEpisodes" not in command.update
+
+
 def test_supervisor_manual_local_dispatch_requires_exact_registered_name():
     with bind_runtime_context(runtime_kind="chat", actor_role="supervisor", agent_id="supervisor"):
         command = delegation_broker.func(
@@ -3120,7 +3312,42 @@ def test_handoff_only_readonly_delegation_receives_no_workspace_tools():
 
     assert tasks[0]["toolPolicy"] == {"mode": "none", "allowedTools": [], "forbiddenTools": []}
     assert tasks[0]["allowedTools"] == []
-    assert "no readSet" in tasks[0]["context"]["handoffConsumptionDiscipline"]
+    assert "No readable recovery" in tasks[0]["context"]["handoffConsumptionDiscipline"]
+
+
+def test_handoff_only_readonly_delegation_keeps_exact_tool_observation_recovery_channel():
+    tasks = native_delegation._apply_delegation_tool_defaults(
+        [
+            {
+                "taskBriefId": "handoff-recovery",
+                "goal": "Recover the omitted handoff evidence before reviewing it.",
+                "context": {
+                    "readOnly": True,
+                    "upstreamHandoffs": [
+                        {
+                            "status": "ready",
+                            "summary": "Evidence is truncated.",
+                            "rawRef": "toolobs://handoff/recovery-1",
+                            "detailTool": "tool_observation_detail(rawRef)",
+                        }
+                    ],
+                },
+                "readSet": [],
+                "writeSet": [],
+                "toolPolicy": {"mode": "default"},
+            }
+        ]
+    )
+
+    assert tasks[0]["toolPolicy"]["mode"] == "allowlist"
+    assert tasks[0]["allowedTools"] == ["tool_observation_detail"]
+    requirements = tasks[0]["context"]["handoffRecoveryRequirements"]
+    assert requirements == {
+        "recoveryAvailable": True,
+        "refs": ["toolobs://handoff/recovery-1"],
+        "toolNames": ["tool_observation_detail"],
+    }
+    assert "exact listed toolobs:// ref" in tasks[0]["context"]["handoffConsumptionDiscipline"]
 
 
 def test_handoff_review_with_explicit_read_set_keeps_declared_tool_policy():

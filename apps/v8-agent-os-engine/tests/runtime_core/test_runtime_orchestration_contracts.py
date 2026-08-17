@@ -4,12 +4,15 @@ import json
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
+from pydantic import ValidationError
 
 import core.runtime_episode_runner as runner_module
 import core.tools.native.command as command_module
 import runtimes.chat.supervisor_completion_gate as completion_gate_module
+from core.delegation_broker import normalize_task_brief
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import ACTIVE_EPISODE_STATES
 from core.tools.native.delegation import _inject_inherited_handoffs_into_tasks
@@ -117,6 +120,77 @@ def test_runtime_route_task_brief_normalizes_explicit_expected_output_map() -> N
 
     assert brief.writeSet == []
     assert brief.expectedOutputs == ["item: limitations", "reuseDecision", "detailRef"]
+
+
+def test_runtime_route_task_brief_preserves_supported_snake_case_contract() -> None:
+    typed = RuntimeRouteTaskBrief.model_validate(
+        {
+            "task_brief_id": "snake-contract",
+            "goal": "Preserve the complete route contract.",
+            "read_only": True,
+            "write_required": False,
+            "read_set": ["README.md"],
+            "tool_policy": {"mode": "allowlist", "allowedTools": ["read_native_file"]},
+            "side_effect_policy": {"mode": "none"},
+            "execution_budget": {"maxTokens": 1200},
+            "failure_policy": {"onError": "return_diagnostic"},
+            "acceptance_tiers": {"must": ["cite README.md"]},
+            "critical_files": ["README.md"],
+            "verification_matrix": ["inspect README.md"],
+            "proof_expectations": ["line reference"],
+            "delegation_policy": {
+                "allow_child_delegation": False,
+                "selectionRationale": "Keep the review local.",
+            },
+        }
+    )
+
+    normalized = normalize_task_brief(typed.model_dump(exclude_none=True))
+
+    assert normalized["taskBriefId"] == "snake-contract"
+    assert normalized["readOnly"] is True
+    assert normalized["writeRequired"] is False
+    assert normalized["readSet"] == ["README.md"]
+    assert normalized["toolPolicy"]["mode"] == "allowlist"
+    assert normalized["toolPolicy"]["allowedTools"] == ["read_native_file"]
+    assert normalized["sideEffectPolicy"] == {"mode": "none"}
+    assert normalized["budget"] == {"maxTokens": 1200}
+    assert normalized["failurePolicy"] == {"onError": "return_diagnostic"}
+    assert normalized["criticalFiles"] == ["README.md"]
+    assert normalized["verificationMatrix"] == ["inspect README.md"]
+    assert normalized["proofExpectations"] == ["line reference"]
+    assert normalized["delegationPolicy"]["allowChildDelegation"] is False
+    assert normalized["extensions"]["delegationPolicy.selectionRationale"] == (
+        "Keep the review local."
+    )
+    assert "delegationPolicy.selectionRationale" in normalized["unsupportedFields"]
+    assert normalized["acceptanceTiers"] == {
+        "must": ["cite README.md"],
+        "should": [],
+        "nice": [],
+    }
+
+
+def test_runtime_route_task_brief_rejects_conflicting_aliases_with_typed_diagnostic() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        RuntimeRouteTaskBrief.model_validate(
+            {
+                "taskBriefId": "canonical-id",
+                "task_brief_id": "snake-id",
+                "goal": "Reject ambiguous identity before routing.",
+                "criticalFiles": ["canonical.py"],
+                "critical_files": ["snake.py"],
+            }
+        )
+
+    error = exc_info.value.errors(include_url=False, include_input=False)[0]
+    assert error["type"] == "task_brief_alias_conflict"
+    assert set(str(error["ctx"]["fields"]).split(", ")) == {
+        "taskBriefId",
+        "criticalFiles",
+    }
+    conflicts = json.loads(error["ctx"]["aliasConflicts"])
+    assert all("values" not in item for item in conflicts)
 
 
 def test_command_list_runtime_route_enters_runtime_episode() -> None:
@@ -375,6 +449,166 @@ def test_direct_delegation_injects_upstream_handoff_content_instead_of_fake_file
     assert "rawReasoning" not in serialized
     assert "rawToolPayload" not in serialized
     assert "must-not-cross" not in serialized
+
+
+def test_direct_delegation_keeps_unresolved_explicit_evidence_without_unrelated_fallback() -> None:
+    injected = _inject_inherited_handoffs_into_tasks(
+        [
+            {
+                "taskBriefId": "missing-evidence",
+                "goal": "Review the specifically requested evidence.",
+                "evidenceRefs": ["research://episode_missing/evidence"],
+            }
+        ],
+        {
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-unrelated",
+                    "producerEpisodeId": "episode_unrelated",
+                    "status": "ready",
+                    "compactSummary": "This belongs to another task.",
+                }
+            ]
+        },
+    )[0]
+
+    context = injected["context"]
+    assert "upstreamHandoffs" not in context
+    assert context["requestedEvidenceRefs"] == ["research://episode_missing/evidence"]
+    assert context["unresolvedEvidenceRefs"] == ["research://episode_missing/evidence", "episode_missing"]
+    assert context["evidenceResolutionDiagnostics"]["mode"] == "explicit_refs"
+    assert context["evidenceResolutionDiagnostics"]["fallbackUsed"] is False
+    assert "episode_unrelated" not in json.dumps(injected, ensure_ascii=False)
+
+
+def test_direct_delegation_uses_exact_reference_tokens_without_prefix_collision() -> None:
+    injected = _inject_inherited_handoffs_into_tasks(
+        [
+            {
+                "taskBriefId": "exact-evidence",
+                "goal": "Review episode 10 only.",
+                "evidenceRefs": ["research://episode_10_branch/evidence"],
+            }
+        ],
+        {
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-episode-1",
+                    "producerEpisodeId": "episode_1",
+                    "status": "ready",
+                    "compactSummary": "Wrong prefix match.",
+                },
+                {
+                    "handoffRefId": "handoff-episode-10",
+                    "producerEpisodeId": "episode_10_branch",
+                    "status": "ready",
+                    "compactSummary": "Exact requested evidence.",
+                },
+            ]
+        },
+    )[0]
+
+    handoffs = injected["context"]["upstreamHandoffs"]
+    assert [item["producerEpisodeId"] for item in handoffs] == ["episode_10_branch"]
+    assert injected["context"].get("unresolvedEvidenceRefs") in (None, [])
+    assert "Wrong prefix match" not in json.dumps(injected, ensure_ascii=False)
+
+
+def test_direct_delegation_does_not_match_generic_uri_segments_as_evidence_identity() -> None:
+    injected = _inject_inherited_handoffs_into_tasks(
+        [
+            {
+                "taskBriefId": "generic-segment-collision",
+                "goal": "Review the requested episode only.",
+                "evidenceRefs": ["research://episode_target/evidence"],
+            }
+        ],
+        {
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-wrong",
+                    "producerEpisodeId": "episode_wrong",
+                    "status": "ready",
+                    "compactSummary": "Unrelated evidence with a generic ref segment.",
+                    "refs": ["evidence"],
+                }
+            ]
+        },
+    )[0]
+
+    context = injected["context"]
+    assert "upstreamHandoffs" not in context
+    assert context["unresolvedEvidenceRefs"] == [
+        "research://episode_target/evidence",
+        "episode_target",
+    ]
+    assert "episode_wrong" not in json.dumps(injected, ensure_ascii=False)
+
+
+def test_direct_delegation_resolves_handoff_reference_aliases_and_evidence_refs() -> None:
+    inherited = {
+        "handoffRefs": [
+            {
+                "handoffId": "handoff-current",
+                "handoffRefId": "handoff-current",
+                "identityAliases": ["handoff-legacy"],
+                "producerEpisodeId": "episode_reference_bundle",
+                "status": "ready",
+                "compactSummary": "Requested evidence bundle.",
+                "detailRef": "detail://bundle-42",
+                "refs": ["research://source-42"],
+                "proofRefs": ["proof://claim-42"],
+            }
+        ]
+    }
+
+    for requested_ref in (
+        "handoff://handoff-legacy/result",
+        "detail://bundle-42",
+        "research://source-42",
+        "proof://claim-42",
+    ):
+        injected = _inject_inherited_handoffs_into_tasks(
+            [
+                {
+                    "taskBriefId": f"resolve-{requested_ref}",
+                    "goal": "Review the exact referenced evidence.",
+                    "evidenceRefs": [requested_ref],
+                }
+            ],
+            inherited,
+        )[0]
+
+        context = injected["context"]
+        assert context["upstreamHandoffs"][0]["summary"] == "Requested evidence bundle."
+        assert context.get("unresolvedEvidenceRefs") in (None, [])
+        assert context["evidenceResolutionDiagnostics"]["fallbackUsed"] is False
+
+
+def test_direct_delegation_marks_latest_handoff_fallback_when_no_refs_are_supplied() -> None:
+    injected = _inject_inherited_handoffs_into_tasks(
+        [{"taskBriefId": "context-only", "goal": "Review the current upstream result."}],
+        {
+            "handoffRefs": [
+                {
+                    "handoffRefId": "handoff-latest",
+                    "producerEpisodeId": "episode_latest",
+                    "status": "ready",
+                    "compactSummary": "Latest available context.",
+                }
+            ]
+        },
+    )[0]
+
+    context = injected["context"]
+    assert context["upstreamHandoffs"][0]["producerEpisodeId"] == "episode_latest"
+    assert context["evidenceResolutionDiagnostics"] == {
+        "mode": "latest_available_fallback",
+        "fallbackUsed": True,
+        "reason": "no_explicit_evidence_refs",
+        "selectedHandoffRefIds": ["handoff-latest"],
+    }
+    assert "latest-available context" in context["handoffUsage"]
 
 
 def test_runtime_handoff_file_hunting_uses_one_semantic_repeat_signature() -> None:

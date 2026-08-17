@@ -4,7 +4,7 @@ import hashlib
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Iterator
@@ -27,6 +27,29 @@ class RuntimeEpisodeIdempotencyConflict(ValueError):
     """The same episode idempotency key was reused for a different payload."""
 
 
+class RuntimeEpisodeHandoffConflict(ValueError):
+    """A durable handoff identity was reused for different delivery evidence."""
+
+    code = "runtime_episode_handoff_conflict"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        handoff_id: str,
+        episode_id: str,
+        existing_episode_id: str | None = None,
+        existing_digest: str | None = None,
+        incoming_digest: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.handoff_id = handoff_id
+        self.episode_id = episode_id
+        self.existing_episode_id = existing_episode_id
+        self.existing_digest = existing_digest
+        self.incoming_digest = incoming_digest
+
+
 def _runtime_episode_payload_fingerprint(payload: Dict[str, Any]) -> str:
     canonical = json.dumps(
         to_jsonable(payload),
@@ -35,6 +58,170 @@ def _runtime_episode_payload_fingerprint(payload: Dict[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+RUNTIME_HANDOFF_SCHEMA_VERSION = "v8.runtime_handoff.v1"
+RUNTIME_HANDOFF_PERSISTED_SCHEMA_VERSION = "v8.runtime_handoff.v2"
+RUNTIME_HANDOFF_ENVELOPE_SCHEMA_VERSION = "v8.runtime_handoff.envelope.v1"
+
+
+def _runtime_handoff_identity_aliases(payload: Dict[str, Any]) -> set[str]:
+    aliases = {
+        str(payload.get(key) or "").strip()
+        for key in ("handoffId", "handoffRefId", "id")
+        if str(payload.get(key) or "").strip()
+    }
+    raw_identity_aliases = payload.get("identityAliases") or []
+    identity_aliases = (
+        list(raw_identity_aliases)
+        if isinstance(raw_identity_aliases, (list, tuple, set))
+        else [raw_identity_aliases]
+    )
+    aliases.update(
+        str(value or "").strip()
+        for value in identity_aliases
+        if str(value or "").strip()
+    )
+    return aliases
+
+
+def _runtime_handoff_payload_fingerprint(payload: Dict[str, Any]) -> str:
+    logical_payload = dict(to_jsonable(payload) or {})
+    for key in (
+        "handoffId",
+        "handoffRefId",
+        "id",
+        "identityAliases",
+        "payloadDigest",
+        "envelopeDigest",
+        "deliveryIntegrity",
+        "createdAt",
+    ):
+        logical_payload.pop(key, None)
+    return _runtime_episode_payload_fingerprint(logical_payload)
+
+
+def _runtime_handoff_canonical_aliases(
+    payload: Dict[str, Any],
+    *,
+    handoff_id: str,
+) -> list[str]:
+    return sorted(
+        alias
+        for alias in _runtime_handoff_identity_aliases(payload)
+        if alias and alias != handoff_id
+    )
+
+
+def _runtime_handoff_envelope_fingerprint(
+    *,
+    payload_digest: str,
+    handoff_id: str,
+    episode_id: str,
+    identity_aliases: list[str],
+) -> str:
+    return _runtime_episode_payload_fingerprint(
+        {
+            "schemaVersion": RUNTIME_HANDOFF_ENVELOPE_SCHEMA_VERSION,
+            "payloadDigest": str(payload_digest or "").strip(),
+            "handoffId": str(handoff_id or "").strip(),
+            "episodeId": str(episode_id or "").strip(),
+            "identityAliases": sorted(
+                {
+                    str(alias or "").strip()
+                    for alias in identity_aliases
+                    if str(alias or "").strip()
+                }
+            ),
+        }
+    )
+
+
+def _canonical_runtime_handoff_payload(
+    payload: Dict[str, Any],
+    *,
+    episode_id: str,
+    handoff_id: str,
+    created_at: str | None = None,
+    identity_aliases: set[str] | None = None,
+) -> Dict[str, Any]:
+    canonical = dict(to_jsonable(payload) or {})
+    aliases = _runtime_handoff_identity_aliases(canonical)
+    aliases.update(identity_aliases or set())
+    canonical.pop("id", None)
+    canonical.pop("deliveryIntegrity", None)
+    canonical.pop("envelopeDigest", None)
+    canonical["schemaVersion"] = RUNTIME_HANDOFF_PERSISTED_SCHEMA_VERSION
+    canonical["handoffId"] = handoff_id
+    canonical["handoffRefId"] = handoff_id
+    canonical["producerEpisodeId"] = episode_id
+    legacy_aliases = sorted(alias for alias in aliases if alias != handoff_id)
+    if legacy_aliases:
+        canonical["identityAliases"] = legacy_aliases
+    else:
+        canonical.pop("identityAliases", None)
+    if created_at and not str(canonical.get("createdAt") or "").strip():
+        canonical["createdAt"] = created_at
+    canonical["payloadDigest"] = _runtime_handoff_payload_fingerprint(canonical)
+    canonical["envelopeDigest"] = _runtime_handoff_envelope_fingerprint(
+        payload_digest=str(canonical["payloadDigest"]),
+        handoff_id=handoff_id,
+        episode_id=episode_id,
+        identity_aliases=legacy_aliases,
+    )
+    return canonical
+
+
+def _merge_runtime_handoff_refs(*groups: Any) -> list[Dict[str, Any]]:
+    merged: list[Dict[str, Any]] = []
+    for group in groups:
+        for raw_item in list(group or []):
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(to_jsonable(raw_item) or {})
+            aliases = _runtime_handoff_identity_aliases(item)
+            matching = [
+                index
+                for index, existing in enumerate(merged)
+                if aliases and aliases.intersection(_runtime_handoff_identity_aliases(existing))
+            ]
+            if not matching:
+                if item not in merged:
+                    merged.append(item)
+                continue
+            first = matching[0]
+            merged[first] = item
+            for index in reversed(matching[1:]):
+                del merged[index]
+    return merged
+
+
+def _runtime_json_integrity_diagnostic(
+    raw_value: Any,
+    *,
+    reason: str,
+    error_type: str,
+    expected_type: str = "dict",
+    stored_digest: str | None = None,
+    computed_digest: str | None = None,
+) -> Dict[str, Any]:
+    raw_bytes = (
+        bytes(raw_value)
+        if isinstance(raw_value, (bytes, bytearray))
+        else str(raw_value or "").encode("utf-8", errors="replace")
+    )
+    diagnostic: Dict[str, Any] = {
+        "reason": reason,
+        "errorType": error_type,
+        "expectedType": expected_type,
+        "rawSha256": hashlib.sha256(raw_bytes).hexdigest(),
+        "rawByteLength": len(raw_bytes),
+    }
+    if stored_digest:
+        diagnostic["storedDigest"] = stored_digest
+    if computed_digest:
+        diagnostic["computedDigest"] = computed_digest
+    return diagnostic
 
 
 def _runtime_episode_ledger_key(
@@ -2063,6 +2250,65 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_runtime_side_effect_receipts_state "
             "ON runtime_side_effect_receipts (state, lease_expires_at)"
         )
+        runtime_sequence_table_existed = bool(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'runtime_event_sequence_heads'"
+            ).fetchone()
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_event_sequence_heads (
+                session_id TEXT PRIMARY KEY,
+                last_seq INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        existing_tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if not runtime_sequence_table_existed and "runtime_events" in existing_tables:
+            snapshot_union = (
+                "UNION ALL "
+                "SELECT session_id, MAX(latest_seq) AS last_seq "
+                "FROM runtime_snapshots GROUP BY session_id"
+                if "runtime_snapshots" in existing_tables
+                else ""
+            )
+            sequence_rows = conn.execute(
+                f"""
+                SELECT session_id, MAX(last_seq) AS last_seq
+                FROM (
+                    SELECT session_id, MAX(seq) AS last_seq
+                    FROM runtime_events
+                    GROUP BY session_id
+                    {snapshot_union}
+                )
+                WHERE COALESCE(session_id, '') <> ''
+                GROUP BY session_id
+                """
+            ).fetchall()
+            now_iso = utc_now_iso()
+            for row in sequence_rows:
+                conn.execute(
+                    """
+                    INSERT INTO runtime_event_sequence_heads (session_id, last_seq, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        last_seq = MAX(runtime_event_sequence_heads.last_seq, excluded.last_seq),
+                        updated_at = CASE
+                            WHEN excluded.last_seq > runtime_event_sequence_heads.last_seq
+                            THEN excluded.updated_at
+                            ELSE runtime_event_sequence_heads.updated_at
+                        END
+                    """,
+                    (str(row["session_id"]), int(row["last_seq"] or 0), now_iso),
+                )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS creative_canvas_graph_run_event_outbox (
@@ -3759,19 +4005,51 @@ class DatabaseManager:
 
         return self._run_write_with_retry(_write)
 
+    @staticmethod
+    def _runtime_event_sequence_floor(conn: sqlite3.Connection, session_id: str) -> int:
+        row = conn.execute(
+            """
+            SELECT MAX(value) AS latest_seq
+            FROM (
+                SELECT COALESCE(last_seq, 0) AS value
+                FROM runtime_event_sequence_heads
+                WHERE session_id = ?
+                UNION ALL
+                SELECT COALESCE(MAX(seq), 0) AS value
+                FROM runtime_events
+                WHERE session_id = ?
+                UNION ALL
+                SELECT COALESCE(MAX(latest_seq), 0) AS value
+                FROM runtime_snapshots
+                WHERE session_id = ?
+            )
+            """,
+            (session_id, session_id, session_id),
+        ).fetchone()
+        return int(row["latest_seq"] or 0) if row else 0
+
+    @classmethod
+    def _allocate_runtime_event_seq(cls, conn: sqlite3.Connection, session_id: str) -> int:
+        next_seq = cls._runtime_event_sequence_floor(conn, session_id) + 1
+        conn.execute(
+            """
+            INSERT INTO runtime_event_sequence_heads (session_id, last_seq, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                last_seq = excluded.last_seq,
+                updated_at = excluded.updated_at
+            """,
+            (session_id, next_seq, utc_now_iso()),
+        )
+        return next_seq
+
     def get_next_runtime_seq(self, session_id: str) -> int:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?', (session_id,))
-            row = cursor.fetchone()
-            return int(row["next_seq"]) if row else 1
+            return self._runtime_event_sequence_floor(conn, session_id) + 1
 
     def get_latest_runtime_seq(self, session_id: str) -> int:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COALESCE(MAX(seq), 0) AS latest_seq FROM runtime_events WHERE session_id = ?', (session_id,))
-            row = cursor.fetchone()
-            return int(row["latest_seq"]) if row else 0
+            return self._runtime_event_sequence_floor(conn, session_id)
 
     def get_side_effect_receipt(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
         normalized_key = str(idempotency_key or "").strip()
@@ -4308,13 +4586,13 @@ class DatabaseManager:
         event: Dict[str, Any],
         *,
         outbox_id: str,
-    ) -> bool:
+    ) -> Optional[int]:
         """Idempotently append one durable Canvas outbox intent to runtime_events."""
         normalized_id = str(outbox_id or "").strip()
         source_payload = to_jsonable(event.get("source") or {})
         event_payload = to_jsonable(event.get("payload") or {})
 
-        def _write() -> tuple[bool, bool]:
+        def _write() -> tuple[Optional[int], bool]:
             with self.get_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 outbox = conn.execute(
@@ -4323,7 +4601,7 @@ class DatabaseManager:
                 ).fetchone()
                 if not outbox:
                     conn.rollback()
-                    return False, False
+                    return None, False
                 session_id = str(outbox["session_id"] or "")
                 event_id = str(outbox["event_id"] or "")
                 expected_status = str(outbox["expected_status"] or "")
@@ -4359,10 +4637,10 @@ class DatabaseManager:
                     ).fetchone()
                     if earlier_pending:
                         conn.rollback()
-                        return False, False
+                        return None, False
 
                 existing = conn.execute(
-                    "SELECT session_id, run_id, kind, topic, event_ts, source_json, payload_json FROM runtime_events WHERE id = ? LIMIT 1",
+                    "SELECT session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json FROM runtime_events WHERE id = ? LIMIT 1",
                     (event_id,),
                 ).fetchone()
                 if existing:
@@ -4395,13 +4673,9 @@ class DatabaseManager:
                         (event_id, utc_now_iso(), normalized_id),
                     )
                     conn.commit()
-                    return True, False
+                    return int(existing["seq"]), False
 
-                next_seq_row = conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                seq = int(next_seq_row["next_seq"]) if next_seq_row else 1
+                seq = self._allocate_runtime_event_seq(conn, session_id)
                 conn.execute(
                     """
                     INSERT INTO runtime_events
@@ -4429,11 +4703,13 @@ class DatabaseManager:
                     (event_id, utc_now_iso(), normalized_id),
                 )
                 conn.commit()
-                return True, True
+                return seq, True
 
-        projected, inserted = self._run_write_with_retry(_write)
-        if not projected or not inserted:
-            return bool(projected)
+        durable_seq, inserted = self._run_write_with_retry(_write)
+        if durable_seq is not None:
+            event["seq"] = durable_seq
+        if durable_seq is None or not inserted:
+            return durable_seq
         session_id = str(event.get("session_id") or "").strip()
         try:
             from core.session_activity import is_session_activity_topic, session_activity_broker
@@ -4448,61 +4724,49 @@ class DatabaseManager:
                 )
         except Exception:
             pass
-        return True
+        return durable_seq
 
-    def add_runtime_event(self, event: Dict[str, Any]):
+    def add_runtime_event(self, event: Dict[str, Any]) -> int:
         def _write():
             source_payload = to_jsonable(event.get("source") or {})
             event_payload = to_jsonable(event.get("payload") or {})
             with self.get_connection() as conn:
                 session_id = event.get("session_id")
-                seq = event.get("seq")
-                for attempt in range(5):
-                    if session_id:
-                        row = conn.execute(
-                            'SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM runtime_events WHERE session_id = ?',
-                            (session_id,),
-                        ).fetchone()
-                        seq = int(row["next_seq"]) if row else 1
-                    try:
-                        conn.execute(
-                            '''
-                            INSERT INTO runtime_events
-                            (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''',
-                            (
-                                event["event_id"],
-                                session_id,
-                                event.get("run_id"),
-                                seq,
-                                event.get("kind", "event"),
-                                event.get("topic"),
-                                event.get("ts"),
-                                json.dumps(source_payload, ensure_ascii=False),
-                                json.dumps(event_payload, ensure_ascii=False),
-                            ),
-                        )
-                        conn.commit()
-                        return
-                    except sqlite3.IntegrityError as exc:
-                        if "runtime_events.session_id, runtime_events.seq" not in str(exc):
-                            raise
-                        if attempt >= 4:
-                            raise
-                        time.sleep(0.01 * (attempt + 1))
+                conn.execute("BEGIN IMMEDIATE")
+                seq = self._allocate_runtime_event_seq(conn, str(session_id or ""))
+                conn.execute(
+                    '''
+                    INSERT INTO runtime_events
+                    (id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        event["event_id"],
+                        session_id,
+                        event.get("run_id"),
+                        seq,
+                        event.get("kind", "event"),
+                        event.get("topic"),
+                        event.get("ts"),
+                        json.dumps(source_payload, ensure_ascii=False),
+                        json.dumps(event_payload, ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+                return seq
 
-        self._run_write_with_retry(_write)
+        durable_seq = int(self._run_write_with_retry(_write))
+        event["seq"] = durable_seq
 
         session_id = str(event.get("session_id") or "").strip()
         topic = str(event.get("topic") or "").strip()
         if not session_id:
-            return
+            return durable_seq
         try:
             from core.session_activity import is_session_activity_topic, session_activity_broker
 
             if not is_session_activity_topic(topic):
-                return
+                return durable_seq
             session = self.get_session(session_id) or {}
             session_activity_broker.publish(
                 owner_id=str(session.get("user_id") or session.get("userId") or ""),
@@ -4512,7 +4776,17 @@ class DatabaseManager:
         except Exception:
             # The durable runtime event is authoritative. A transient client
             # wakeup failure must never roll back or falsify runtime progress.
-            return
+            return durable_seq
+        return durable_seq
+
+    @staticmethod
+    def _hydrate_runtime_event_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["event_id"] = str(data.get("event_id") or data.get("id") or "")
+        data["ts"] = data.get("ts") or data.get("event_ts")
+        data["source"] = json.loads(data["source_json"]) if data.get("source_json") else {}
+        data["payload"] = json.loads(data["payload_json"]) if data.get("payload_json") else {}
+        return data
 
     def get_runtime_events(self, session_id: str, after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -4529,10 +4803,7 @@ class DatabaseManager:
                 )
             rows = []
             for row in cursor.fetchall():
-                data = dict(row)
-                data["source"] = json.loads(data["source_json"]) if data.get("source_json") else {}
-                data["payload"] = json.loads(data["payload_json"]) if data.get("payload_json") else {}
-                rows.append(data)
+                rows.append(self._hydrate_runtime_event_row(dict(row)))
             return rows
 
     def get_runtime_events_for_run(
@@ -4565,10 +4836,7 @@ class DatabaseManager:
             cursor.execute(query, params)
             rows: List[Dict[str, Any]] = []
             for row in cursor.fetchall():
-                data = dict(row)
-                data["source"] = json.loads(data["source_json"]) if data.get("source_json") else {}
-                data["payload"] = json.loads(data["payload_json"]) if data.get("payload_json") else {}
-                rows.append(data)
+                rows.append(self._hydrate_runtime_event_row(dict(row)))
             return rows
 
     def add_runtime_snapshot(
@@ -4632,9 +4900,225 @@ class DatabaseManager:
 
     # --- Runtime Episode Queue Operations ---
 
+    def _hydrate_runtime_handoff_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        raw_payload = data.pop("payload_json", None)
+        payload: Dict[str, Any] | None = None
+        integrity_error: Dict[str, Any] | None = None
+        delivery_integrity: Dict[str, Any] | None = None
+        try:
+            if raw_payload is None:
+                raise ValueError("missing persisted handoff payload")
+            if not str(raw_payload).strip():
+                raise json.JSONDecodeError("empty persisted handoff payload", str(raw_payload), 0)
+            decoded = json.loads(raw_payload)
+            if not isinstance(decoded, dict):
+                raise TypeError(f"expected dict, got {type(decoded).__name__}")
+
+            row_handoff_id = str(data.get("id") or "").strip()
+            row_episode_id = str(data.get("episode_id") or "").strip()
+            schema_version = str(decoded.get("schemaVersion") or "").strip()
+            stored_digest = str(decoded.get("payloadDigest") or "").strip()
+            computed_digest = _runtime_handoff_payload_fingerprint(decoded)
+            stored_envelope_digest = str(decoded.get("envelopeDigest") or "").strip()
+            canonical_aliases = _runtime_handoff_canonical_aliases(
+                decoded,
+                handoff_id=row_handoff_id,
+            )
+            raw_aliases = decoded.get("identityAliases")
+            normalized_raw_aliases = (
+                [str(alias or "").strip() for alias in raw_aliases]
+                if isinstance(raw_aliases, list)
+                else []
+            )
+            aliases_are_canonical = (
+                raw_aliases is None
+                or (
+                    isinstance(raw_aliases, list)
+                    and all(normalized_raw_aliases)
+                    and normalized_raw_aliases == sorted(set(normalized_raw_aliases))
+                    and row_handoff_id not in normalized_raw_aliases
+                )
+            )
+            expected_envelope_digest = _runtime_handoff_envelope_fingerprint(
+                payload_digest=stored_digest,
+                handoff_id=row_handoff_id,
+                episode_id=row_episode_id,
+                identity_aliases=canonical_aliases,
+            )
+
+            integrity_reason = ""
+            integrity_error_type = "RuntimeHandoffIntegrityError"
+            if schema_version == RUNTIME_HANDOFF_PERSISTED_SCHEMA_VERSION:
+                if str(decoded.get("handoffId") or "").strip() != row_handoff_id:
+                    integrity_reason = "handoff_id_row_mismatch"
+                elif str(decoded.get("handoffRefId") or "").strip() != row_handoff_id:
+                    integrity_reason = "handoff_ref_id_row_mismatch"
+                elif "id" in decoded:
+                    integrity_reason = "payload_identity_not_canonical"
+                elif str(decoded.get("producerEpisodeId") or "").strip() != row_episode_id:
+                    integrity_reason = "producer_episode_row_mismatch"
+                elif not aliases_are_canonical:
+                    integrity_reason = "identity_aliases_not_canonical"
+                elif not stored_digest:
+                    integrity_reason = "missing_payload_digest"
+                elif stored_digest != computed_digest:
+                    integrity_reason = "payload_digest_mismatch"
+                    integrity_error_type = "PayloadDigestMismatch"
+                elif not stored_envelope_digest:
+                    integrity_reason = "missing_envelope_digest"
+                elif stored_envelope_digest != expected_envelope_digest:
+                    integrity_reason = "envelope_digest_mismatch"
+                    integrity_error_type = "EnvelopeDigestMismatch"
+
+                if integrity_reason:
+                    integrity_error = _runtime_json_integrity_diagnostic(
+                        raw_payload,
+                        reason=integrity_reason,
+                        error_type=integrity_error_type,
+                        stored_digest=(
+                            stored_envelope_digest
+                            if "envelope" in integrity_reason
+                            else stored_digest
+                        ),
+                        computed_digest=(
+                            expected_envelope_digest
+                            if "envelope" in integrity_reason
+                            else computed_digest
+                        ),
+                    )
+                else:
+                    payload = decoded
+                    delivery_integrity = {
+                        "status": "verified",
+                        "schemaVersion": schema_version,
+                        "envelopeSchemaVersion": RUNTIME_HANDOFF_ENVELOPE_SCHEMA_VERSION,
+                        "payloadDigest": stored_digest,
+                        "envelopeDigest": stored_envelope_digest,
+                        "identityAliases": canonical_aliases,
+                    }
+            elif stored_digest and stored_digest != computed_digest:
+                integrity_error = _runtime_json_integrity_diagnostic(
+                    raw_payload,
+                    reason="payload_digest_mismatch",
+                    error_type="PayloadDigestMismatch",
+                    stored_digest=stored_digest,
+                    computed_digest=computed_digest,
+                )
+            elif schema_version in {"", RUNTIME_HANDOFF_SCHEMA_VERSION}:
+                payload = decoded
+                delivery_integrity = {
+                    "status": "legacy_unverified",
+                    "schemaVersion": schema_version or None,
+                    "reason": (
+                        "legacy_schema"
+                        if schema_version == RUNTIME_HANDOFF_SCHEMA_VERSION
+                        else "missing_schema_version"
+                    ),
+                    "recoverable": True,
+                    "recoveryAction": "replay_authoritative_handoff_or_reexecute_episode",
+                    "consumerHint": (
+                        "Keep this historical row for diagnosis, but do not consume it as a "
+                        "verified current delivery until an authoritative replay upgrades it."
+                    ),
+                }
+            else:
+                payload = decoded
+                delivery_integrity = {
+                    "status": "unsupported_schema",
+                    "schemaVersion": schema_version,
+                    "reason": "unsupported_handoff_schema",
+                    "recoverable": True,
+                    "recoveryAction": "upgrade_runtime_or_replay_supported_handoff",
+                }
+        except Exception as exc:
+            integrity_error = _runtime_json_integrity_diagnostic(
+                raw_payload,
+                reason=(
+                    "missing_json"
+                    if raw_payload is None
+                    else "unexpected_json_type"
+                    if isinstance(exc, TypeError)
+                    else "invalid_json"
+                ),
+                error_type=type(exc).__name__,
+            )
+
+        if integrity_error is not None:
+            handoff_id = str(data.get("id") or "").strip()
+            episode_id = str(data.get("episode_id") or "").strip()
+            payload = {
+                "schemaVersion": RUNTIME_HANDOFF_PERSISTED_SCHEMA_VERSION,
+                "handoffId": handoff_id,
+                "handoffRefId": handoff_id,
+                "producerEpisodeId": episode_id,
+                "kind": "runtime_handoff_payload_diagnostic",
+                "status": "failed",
+                "compactSummary": (
+                    "Persisted runtime handoff payload could not be decoded or verified safely."
+                ),
+                "deliveryState": "corrupted",
+                "errorCode": "runtime_handoff_payload_corrupted",
+                "recoverable": True,
+                "recoveryAction": "restore_authoritative_payload_or_reexecute_episode",
+                "consumerHint": (
+                    "Restore the exact durable handoff payload from its authoritative source; "
+                    "do not infer delivery from duplicated storage columns."
+                ),
+                "payloadCorrupted": True,
+                "payloadIntegrity": integrity_error,
+            }
+            data["payloadCorrupted"] = True
+            data["payloadStatus"] = "corrupted_persisted_json"
+            data["payloadDecodeErrors"] = [integrity_error]
+            data["deliverySupported"] = False
+            delivery_integrity = {
+                "status": "corrupted",
+                "reason": str(integrity_error.get("reason") or "integrity_check_failed"),
+                "recoverable": True,
+                "recoveryAction": "restore_authoritative_payload_or_reexecute_episode",
+                "diagnostic": integrity_error,
+            }
+        elif str((delivery_integrity or {}).get("status") or "") != "verified":
+            data["payloadStatus"] = str(
+                (delivery_integrity or {}).get("status") or "unverified"
+            )
+            data["deliverySupported"] = False
+        else:
+            data["deliverySupported"] = True
+        data["deliveryIntegrity"] = delivery_integrity or {
+            "status": "corrupted",
+            "reason": "missing_delivery_integrity_projection",
+            "recoverable": True,
+            "recoveryAction": "restore_authoritative_payload_or_reexecute_episode",
+        }
+        data["payload"] = payload or {}
+        return data
+
+    def _runtime_episode_handoff_projection(
+        self,
+        episode_id: str,
+    ) -> tuple[list[Dict[str, Any]], int]:
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM runtime_episode_handoffs
+                WHERE episode_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (episode_id,),
+            ).fetchall()
+        hydrated = [self._hydrate_runtime_handoff_row(dict(row)) for row in rows]
+        return (
+            [dict(item.get("payload") or {}) for item in hydrated if item.get("payload")],
+            sum(1 for item in hydrated if bool(item.get("payloadCorrupted"))),
+        )
+
     def _hydrate_runtime_episode_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(row)
-        for source, target, default in (
+        contract_decode_errors: list[Dict[str, Any]] = []
+        projection_decode_errors: list[Dict[str, Any]] = []
+        json_contract_fields = (
             ("need_json", "need", {}),
             ("inputs_json", "inputs", {}),
             ("required_runtime_access_json", "requiredRuntimeAccess", []),
@@ -4645,15 +5129,90 @@ class DatabaseManager:
             ("resume_token_json", "resumeToken", {}),
             ("compensation_plan_json", "compensationPlan", {}),
             ("metadata_json", "metadata", {}),
-        ):
+        )
+        for source, target, default in json_contract_fields:
             raw_value = data.get(source)
-            if raw_value:
+            if raw_value is not None:
                 try:
-                    data[target] = json.loads(raw_value)
-                except Exception:
-                    data[target] = default
+                    if not str(raw_value).strip():
+                        raise json.JSONDecodeError(
+                            f"empty persisted runtime episode field {source}",
+                            str(raw_value),
+                            0,
+                        )
+                    decoded = json.loads(raw_value)
+                    expected_type = type(default)
+                    if not isinstance(decoded, expected_type):
+                        raise TypeError(
+                            f"expected {expected_type.__name__}, got {type(decoded).__name__}"
+                        )
+                    data[target] = decoded
+                except Exception as exc:
+                    diagnostic = {
+                        "sourceField": source,
+                        "targetField": target,
+                        **_runtime_json_integrity_diagnostic(
+                            raw_value,
+                            reason=(
+                                "unexpected_json_type"
+                                if isinstance(exc, TypeError)
+                                else "invalid_json"
+                            ),
+                            error_type=type(exc).__name__,
+                            expected_type=type(default).__name__,
+                        ),
+                    }
+                    if source == "handoff_refs_json":
+                        recovered, corrupted_count = self._runtime_episode_handoff_projection(
+                            str(data.get("id") or "").strip()
+                        )
+                        data[target] = recovered
+                        diagnostic.update(
+                            {
+                                "recovered": True,
+                                "recoverySource": "runtime_episode_handoffs",
+                                "recoveredHandoffCount": len(recovered),
+                                "corruptedCanonicalHandoffCount": corrupted_count,
+                            }
+                        )
+                        projection_decode_errors.append(diagnostic)
+                    else:
+                        data[target] = default
+                        contract_decode_errors.append(diagnostic)
             else:
                 data[target] = default
+        # Storage columns are not part of the runtime episode contract. Keeping
+        # them in the hydrated projection duplicates every message and can leak
+        # malformed raw payloads through events or diagnostics.
+        for source, _, _ in json_contract_fields:
+            data.pop(source, None)
+        if contract_decode_errors:
+            integrity_diagnostic = {
+                "status": "corrupted_persisted_json",
+                "decodeErrors": contract_decode_errors,
+                "recoverable": False,
+                "recoveryAction": "restore_or_recreate_runtime_episode_contract",
+            }
+            data["contractCorrupted"] = True
+            data["contractStatus"] = "corrupted_persisted_json"
+            data["contractDecodeErrors"] = contract_decode_errors
+            data["executionSupported"] = False
+            metadata = dict(data.get("metadata") or {}) if isinstance(data.get("metadata"), dict) else {}
+            metadata["contractIntegrity"] = integrity_diagnostic
+            data["metadata"] = metadata
+        if projection_decode_errors:
+            projection_diagnostic = {
+                "status": "recovered_from_canonical_handoffs",
+                "decodeErrors": projection_decode_errors,
+                "recoverable": True,
+                "recoverySource": "runtime_episode_handoffs",
+            }
+            data["projectionRecovered"] = True
+            data["projectionStatus"] = "recovered_from_canonical_handoffs"
+            data["projectionDecodeErrors"] = projection_decode_errors
+            metadata = dict(data.get("metadata") or {}) if isinstance(data.get("metadata"), dict) else {}
+            metadata["projectionIntegrity"] = projection_diagnostic
+            data["metadata"] = metadata
         data["episodeId"] = data.get("id")
         data["parentEpisodeId"] = data.get("parent_episode_id")
         data["rootEpisodeId"] = data.get("root_episode_id")
@@ -4958,6 +5517,30 @@ class DatabaseManager:
                     if parent_root and str(parent_root["root_episode_id"] or "").strip():
                         root_episode_id = str(parent_root["root_episode_id"]).strip()
                 root_episode_id = root_episode_id or parent_episode_id or episode_id
+                existing_handoff_refs: list[Any] = []
+                existing_episode_row = conn.execute(
+                    "SELECT handoff_refs_json FROM runtime_episodes WHERE id = ?",
+                    (episode_id,),
+                ).fetchone()
+                if existing_episode_row and existing_episode_row["handoff_refs_json"]:
+                    try:
+                        existing_handoff_refs = json.loads(existing_episode_row["handoff_refs_json"])
+                    except Exception:
+                        existing_handoff_refs = []
+                canonical_handoff_refs: list[Dict[str, Any]] = []
+                for handoff_row in conn.execute(
+                    "SELECT * FROM runtime_episode_handoffs WHERE episode_id = ? ORDER BY created_at ASC, id ASC",
+                    (episode_id,),
+                ).fetchall():
+                    hydrated_handoff = self._hydrate_runtime_handoff_row(dict(handoff_row))
+                    handoff_payload = dict(hydrated_handoff.get("payload") or {})
+                    if isinstance(handoff_payload, dict) and handoff_payload:
+                        canonical_handoff_refs.append(handoff_payload)
+                durable_handoff_refs = _merge_runtime_handoff_refs(
+                    existing_handoff_refs,
+                    handoff_refs,
+                    canonical_handoff_refs,
+                )
                 conn.execute(
                     '''
                     INSERT INTO runtime_episodes (
@@ -5010,7 +5593,7 @@ class DatabaseManager:
                         json.dumps(to_jsonable(need or {}), ensure_ascii=False),
                         json.dumps(to_jsonable(inputs or {}), ensure_ascii=False),
                         json.dumps(to_jsonable(required_runtime_access or []), ensure_ascii=False),
-                        json.dumps(to_jsonable(handoff_refs or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(durable_handoff_refs), ensure_ascii=False),
                         json.dumps(to_jsonable(continuation_token or {}), ensure_ascii=False),
                         json.dumps(to_jsonable(retry_policy or {}), ensure_ascii=False),
                         json.dumps(to_jsonable(cancel_policy or {}), ensure_ascii=False),
@@ -5398,6 +5981,133 @@ class DatabaseManager:
 
         return bool(self._run_write_with_retry(_write))
 
+    @staticmethod
+    def _complete_runtime_episode_in_transaction(
+        conn: sqlite3.Connection,
+        episode_id: str,
+        *,
+        state: str,
+        now_iso: str,
+        result_ref: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
+        expected_state: Optional[str] = None,
+    ) -> bool:
+        terminal = state in {"completed", "failed", "cancelled", "merged"}
+        release_lease = state != "active"
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
+        episode_where = "id = ?"
+        episode_params: list[Any] = [
+            state,
+            result_ref,
+            error_code,
+            error_message,
+            json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
+            1 if release_lease else 0,
+            1 if release_lease else 0,
+            1 if terminal else 0,
+            now_iso,
+            now_iso,
+            episode_id,
+        ]
+        if fenced:
+            episode_where += (
+                " AND state = 'active' AND worker_id = ?"
+                " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
+            )
+            episode_params.extend((worker_id, int(lease_generation), now_iso))
+        elif expected_state:
+            normalized_expected_state = str(expected_state or "").strip()
+            episode_where += " AND state = ?"
+            episode_params.append(normalized_expected_state)
+            if normalized_expected_state in {
+                "leased",
+                "active",
+                "waiting",
+                "waiting_dependency",
+                "waiting_child",
+                "waiting_external",
+                "waiting_approval",
+                "waiting_input",
+            }:
+                episode_where += (
+                    " AND (COALESCE(worker_id, '') = ''"
+                    " OR (lease_expires_at IS NOT NULL AND lease_expires_at <= ?))"
+                )
+                episode_params.append(now_iso)
+        else:
+            # An episode with a live worker lease can only be finalized
+            # by that worker's fence. Parent/admin cancellation uses the
+            # run-scoped CAS below, never a bare episode id.
+            episode_where += (
+                " AND state NOT IN ("
+                "'leased','active','waiting','waiting_dependency','waiting_child',"
+                "'waiting_external','waiting_approval','waiting_input'"
+                ")"
+            )
+        completed = conn.execute(
+            f'''
+            UPDATE runtime_episodes
+            SET state = ?,
+                result_ref = COALESCE(?, result_ref),
+                error_code = COALESCE(?, error_code),
+                error_message = COALESCE(?, error_message),
+                metadata_json = COALESCE(?, metadata_json),
+                worker_id = CASE WHEN ? THEN NULL ELSE worker_id END,
+                lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
+                completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
+                updated_at = ?
+            WHERE {episode_where}
+            ''',
+            episode_params,
+        )
+        if completed.rowcount != 1:
+            return False
+        queue_where = "episode_id = ?"
+        queue_params: list[Any] = [
+            "completed" if state in {"completed", "merged"} else state,
+            error_message,
+            1 if release_lease else 0,
+            1 if release_lease else 0,
+            now_iso,
+            episode_id,
+        ]
+        if fenced:
+            queue_where += " AND state = 'leased' AND locked_by = ?"
+            queue_params.append(worker_id)
+        conn.execute(
+            f'''
+            UPDATE runtime_episode_queue
+            SET state = ?,
+                last_error = COALESCE(?, last_error),
+                locked_by = CASE WHEN ? THEN NULL ELSE locked_by END,
+                lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
+                updated_at = ?
+            WHERE {queue_where}
+            ''',
+            queue_params,
+        )
+        lease_where = "episode_id = ? AND state = 'active'"
+        lease_params: list[Any] = [state, now_iso, episode_id]
+        if fenced:
+            lease_where += " AND worker_id = ?"
+            lease_params.append(worker_id)
+        conn.execute(
+            f'''
+            UPDATE runtime_episode_leases
+            SET state = ?,
+                released_at = COALESCE(released_at, ?)
+            WHERE {lease_where}
+            ''',
+            lease_params,
+        )
+        return True
+
     def complete_runtime_episode(
         self,
         episode_id: str,
@@ -5411,121 +6121,25 @@ class DatabaseManager:
         lease_generation: Optional[int] = None,
         expected_state: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        now_iso = utc_now_iso()
-        terminal = state in {"completed", "failed", "cancelled", "merged"}
-        release_lease = state != "active"
-        fenced = worker_id is not None or lease_generation is not None
-        if fenced and (not worker_id or lease_generation is None):
-            raise ValueError("worker_id and lease_generation must be supplied together")
-
         def _write():
             with self.get_connection() as conn:
-                episode_where = "id = ?"
-                episode_params: list[Any] = [
-                    state,
-                    result_ref,
-                    error_code,
-                    error_message,
-                    json.dumps(to_jsonable(metadata), ensure_ascii=False) if metadata is not None else None,
-                    1 if release_lease else 0,
-                    1 if release_lease else 0,
-                    1 if terminal else 0,
-                    now_iso,
-                    now_iso,
+                now_iso = utc_now_iso()
+                accepted = self._complete_runtime_episode_in_transaction(
+                    conn,
                     episode_id,
-                ]
-                if fenced:
-                    episode_where += (
-                        " AND state = 'active' AND worker_id = ?"
-                        " AND lease_generation = ? AND COALESCE(lease_expires_at, '') > ?"
-                    )
-                    episode_params.extend((worker_id, int(lease_generation), now_iso))
-                elif expected_state:
-                    normalized_expected_state = str(expected_state or "").strip()
-                    episode_where += " AND state = ?"
-                    episode_params.append(normalized_expected_state)
-                    if normalized_expected_state in {
-                        "leased",
-                        "active",
-                        "waiting",
-                        "waiting_dependency",
-                        "waiting_child",
-                        "waiting_external",
-                        "waiting_approval",
-                        "waiting_input",
-                    }:
-                        episode_where += (
-                            " AND (COALESCE(worker_id, '') = ''"
-                            " OR (lease_expires_at IS NOT NULL AND lease_expires_at <= ?))"
-                        )
-                        episode_params.append(now_iso)
-                else:
-                    # An episode with a live worker lease can only be finalized
-                    # by that worker's fence. Parent/admin cancellation uses the
-                    # run-scoped CAS below, never a bare episode id.
-                    episode_where += (
-                        " AND state NOT IN ("
-                        "'leased','active','waiting','waiting_dependency','waiting_child',"
-                        "'waiting_external','waiting_approval','waiting_input'"
-                        ")"
-                    )
-                completed = conn.execute(
-                    f'''
-                    UPDATE runtime_episodes
-                    SET state = ?,
-                        result_ref = COALESCE(?, result_ref),
-                        error_code = COALESCE(?, error_code),
-                        error_message = COALESCE(?, error_message),
-                        metadata_json = COALESCE(?, metadata_json),
-                        worker_id = CASE WHEN ? THEN NULL ELSE worker_id END,
-                        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
-                        completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
-                        updated_at = ?
-                    WHERE {episode_where}
-                    ''',
-                    episode_params,
+                    state=state,
+                    now_iso=now_iso,
+                    result_ref=result_ref,
+                    error_code=error_code,
+                    error_message=error_message,
+                    metadata=metadata,
+                    worker_id=worker_id,
+                    lease_generation=lease_generation,
+                    expected_state=expected_state,
                 )
-                if completed.rowcount != 1:
+                if not accepted:
                     conn.rollback()
                     return False
-                queue_where = "episode_id = ?"
-                queue_params: list[Any] = [
-                    "completed" if state in {"completed", "merged"} else state,
-                    error_message,
-                    1 if release_lease else 0,
-                    1 if release_lease else 0,
-                    now_iso,
-                    episode_id,
-                ]
-                if fenced:
-                    queue_where += " AND state = 'leased' AND locked_by = ?"
-                    queue_params.append(worker_id)
-                conn.execute(
-                    f'''
-                    UPDATE runtime_episode_queue
-                    SET state = ?,
-                        last_error = COALESCE(?, last_error),
-                        locked_by = CASE WHEN ? THEN NULL ELSE locked_by END,
-                        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
-                        updated_at = ?
-                    WHERE {queue_where}
-                    ''',
-                    queue_params,
-                )
-                lease_where = "episode_id = ? AND state = 'active'"
-                lease_params: list[Any] = [state, now_iso, episode_id]
-                if fenced:
-                    lease_where += " AND worker_id = ?"
-                    lease_params.append(worker_id)
-                conn.execute(
-                    f'''
-                    UPDATE runtime_episode_leases
-                    SET state = ?,
-                        released_at = COALESCE(released_at, ?)
-                    WHERE {lease_where}
-                    ''',
-                    lease_params,
-                )
                 conn.commit()
                 return True
 
@@ -5893,15 +6507,44 @@ class DatabaseManager:
         worker_id: Optional[str] = None,
         lease_generation: Optional[int] = None,
         expected_state: Optional[str] = None,
+        _connection: Optional[sqlite3.Connection] = None,
+        _commit: bool = True,
+        _now_iso: Optional[str] = None,
+        _authoritative_replay: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        handoff_id = str(handoff.get("handoffId") or handoff.get("id") or f"handoff:{episode_id}:{uuid.uuid4().hex[:10]}")
-        now_iso = utc_now_iso()
+        if not _commit and _connection is None:
+            raise ValueError("a shared connection is required when handoff commit is deferred")
+        raw_handoff = dict(to_jsonable(handoff) or {})
+        requested_aliases = _runtime_handoff_identity_aliases(raw_handoff)
+        handoff_id = str(
+            raw_handoff.get("handoffId")
+            or raw_handoff.get("handoffRefId")
+            or raw_handoff.get("id")
+            or f"handoff:{episode_id}:{uuid.uuid4().hex[:10]}"
+        ).strip()
+        requested_aliases.add(handoff_id)
+        producer_episode_id = str(raw_handoff.get("producerEpisodeId") or "").strip()
+        if producer_episode_id and producer_episode_id != episode_id:
+            raise RuntimeEpisodeHandoffConflict(
+                f"runtime handoff {handoff_id!r} declares producer {producer_episode_id!r}, "
+                f"but was submitted for episode {episode_id!r}",
+                handoff_id=handoff_id,
+                episode_id=episode_id,
+                existing_episode_id=producer_episode_id,
+            )
         fenced = worker_id is not None or lease_generation is not None
         if fenced and (not worker_id or lease_generation is None):
             raise ValueError("worker_id and lease_generation must be supplied together")
-
         def _write():
-            with self.get_connection() as conn:
+            now_iso = _now_iso or utc_now_iso()
+            connection_scope = (
+                nullcontext(_connection)
+                if _connection is not None
+                else self.get_connection()
+            )
+            with connection_scope as conn:
+                if _connection is None:
+                    conn.execute("BEGIN IMMEDIATE")
                 if fenced:
                     current_claim = conn.execute(
                         '''
@@ -5951,58 +6594,407 @@ class DatabaseManager:
                     if not current_claim:
                         conn.rollback()
                         return False
-                conn.execute(
-                    '''
-                    INSERT OR REPLACE INTO runtime_episode_handoffs (
-                        id, episode_id, session_id, run_id, kind, status, confidence,
-                        compact_summary, refs_json, raw_ref, detail_tool, consumer_hint, payload_json, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        handoff_id,
-                        episode_id,
-                        session_id,
-                        run_id,
-                        handoff.get("kind"),
-                        handoff.get("status"),
-                        handoff.get("confidence"),
-                        handoff.get("compactSummary") or handoff.get("summary"),
-                        json.dumps(to_jsonable(handoff.get("refs") or []), ensure_ascii=False),
-                        handoff.get("rawRef"),
-                        handoff.get("detailTool"),
-                        handoff.get("consumerHint"),
-                        json.dumps(to_jsonable({**handoff, "handoffId": handoff_id}), ensure_ascii=False),
-                        now_iso,
-                    ),
-                )
-                cursor = conn.cursor()
-                cursor.execute('SELECT handoff_refs_json FROM runtime_episodes WHERE id = ?', (episode_id,))
-                row = cursor.fetchone()
-                refs: list[Any] = []
-                if row and row["handoff_refs_json"]:
+
+                candidate_rows: dict[str, sqlite3.Row] = {}
+                if requested_aliases:
+                    placeholders = ", ".join("?" for _ in requested_aliases)
+                    for row in conn.execute(
+                        f"SELECT * FROM runtime_episode_handoffs WHERE id IN ({placeholders})",
+                        tuple(sorted(requested_aliases)),
+                    ).fetchall():
+                        candidate_rows[str(row["id"])] = row
+                # Legacy builds could persist a stable handoffRefId only inside
+                # payload_json while using a different generated row id. Alias
+                # ownership is global, so scan every durable payload before a
+                # new identity is admitted; restricting this lookup to the
+                # target episode would permit the same alias in two lineages.
+                for row in conn.execute("SELECT * FROM runtime_episode_handoffs").fetchall():
+                    row_id = str(row["id"] or "").strip()
+                    if row_id in candidate_rows:
+                        continue
                     try:
-                        refs = json.loads(row["handoff_refs_json"])
+                        payload = json.loads(row["payload_json"] or "{}")
+                    except Exception:
+                        payload = {}
+                    aliases = _runtime_handoff_identity_aliases(payload)
+                    aliases.add(row_id)
+                    if requested_aliases.intersection(aliases):
+                        candidate_rows[row_id] = row
+
+                for row in candidate_rows.values():
+                    existing_episode_id = str(row["episode_id"] or "").strip()
+                    if existing_episode_id != episode_id:
+                        conn.rollback()
+                        raise RuntimeEpisodeHandoffConflict(
+                            f"runtime handoff identity {row['id']!r} is already bound to episode "
+                            f"{existing_episode_id!r}",
+                            handoff_id=str(row["id"]),
+                            episode_id=episode_id,
+                            existing_episode_id=existing_episode_id,
+                        )
+
+                if len(candidate_rows) > 1:
+                    conn.rollback()
+                    raise RuntimeEpisodeHandoffConflict(
+                        f"runtime handoff aliases {sorted(requested_aliases)!r} resolve to multiple durable rows",
+                        handoff_id=handoff_id,
+                        episode_id=episode_id,
+                    )
+
+                existing_row = next(iter(candidate_rows.values()), None)
+                canonical_handoff_id = str(existing_row["id"] if existing_row is not None else handoff_id)
+
+                if existing_row is not None:
+                    hydrated_existing = self._hydrate_runtime_handoff_row(dict(existing_row))
+                    existing_integrity = dict(
+                        hydrated_existing.get("deliveryIntegrity") or {}
+                    )
+                    existing_integrity_status = str(
+                        existing_integrity.get("status") or ""
+                    ).strip()
+                    if existing_integrity_status not in {"verified", "legacy_unverified"}:
+                        conn.rollback()
+                        raise RuntimeEpisodeHandoffConflict(
+                            f"runtime handoff identity {canonical_handoff_id!r} cannot be replayed "
+                            f"because its durable envelope is {existing_integrity_status or 'invalid'}",
+                            handoff_id=canonical_handoff_id,
+                            episode_id=episode_id,
+                            existing_episode_id=str(existing_row["episode_id"] or ""),
+                            existing_digest=str(existing_integrity.get("envelopeDigest") or "") or None,
+                        )
+                    legacy_upgrade_authorized = fenced or bool(
+                        _authoritative_replay and expected_state
+                    )
+                    if (
+                        existing_integrity_status == "legacy_unverified"
+                        and not legacy_upgrade_authorized
+                    ):
+                        conn.rollback()
+                        return {
+                            "schemaVersion": RUNTIME_HANDOFF_SCHEMA_VERSION,
+                            "handoffId": canonical_handoff_id,
+                            "handoffRefId": canonical_handoff_id,
+                            "producerEpisodeId": episode_id,
+                            "kind": "runtime_handoff_replay_diagnostic",
+                            "status": "waiting",
+                            "compactSummary": (
+                                "Legacy handoff remains available for diagnosis but was not "
+                                "re-sealed without current producer authority."
+                            ),
+                            "deliveryState": "legacy_unverified",
+                            "deliverySupported": False,
+                            "deliveryIntegrity": existing_integrity,
+                            "recoverable": True,
+                            "recoveryAction": (
+                                "replay_from_active_producer_or_commit_episode_delivery"
+                            ),
+                        }
+                    existing_raw_payload = dict(hydrated_existing.get("payload") or {})
+                    existing_aliases = _runtime_handoff_identity_aliases(existing_raw_payload)
+                    existing_aliases.add(canonical_handoff_id)
+                    unexpected_aliases = requested_aliases.difference(existing_aliases)
+                    if unexpected_aliases:
+                        conn.rollback()
+                        raise RuntimeEpisodeHandoffConflict(
+                            f"runtime handoff identity {canonical_handoff_id!r} was replayed with "
+                            f"unbound aliases {sorted(unexpected_aliases)!r}",
+                            handoff_id=canonical_handoff_id,
+                            episode_id=episode_id,
+                            existing_episode_id=str(existing_row["episode_id"] or ""),
+                        )
+                    incoming_payload = _canonical_runtime_handoff_payload(
+                        raw_handoff,
+                        episode_id=episode_id,
+                        handoff_id=canonical_handoff_id,
+                        created_at=str(existing_row["created_at"] or now_iso),
+                        identity_aliases=existing_aliases,
+                    )
+                    incoming_digest = str(incoming_payload["payloadDigest"])
+                    existing_payload = _canonical_runtime_handoff_payload(
+                        existing_raw_payload,
+                        episode_id=episode_id,
+                        handoff_id=canonical_handoff_id,
+                        created_at=str(existing_row["created_at"] or now_iso),
+                        identity_aliases=existing_aliases,
+                    )
+                    existing_digest = str(existing_payload["payloadDigest"])
+                    if existing_digest != incoming_digest:
+                        conn.rollback()
+                        raise RuntimeEpisodeHandoffConflict(
+                            f"runtime handoff identity {canonical_handoff_id!r} was replayed with different evidence",
+                            handoff_id=canonical_handoff_id,
+                            episode_id=episode_id,
+                            existing_episode_id=str(existing_row["episode_id"] or ""),
+                            existing_digest=existing_digest,
+                            incoming_digest=incoming_digest,
+                        )
+                    canonical_payload = existing_payload
+                    serialized_payload = json.dumps(to_jsonable(canonical_payload), ensure_ascii=False)
+                    if serialized_payload != str(existing_row["payload_json"] or ""):
+                        conn.execute(
+                            '''
+                            UPDATE runtime_episode_handoffs
+                            SET kind = ?, status = ?, confidence = ?, compact_summary = ?,
+                                refs_json = ?, raw_ref = ?, detail_tool = ?, consumer_hint = ?, payload_json = ?
+                            WHERE id = ? AND episode_id = ?
+                            ''',
+                            (
+                                canonical_payload.get("kind"),
+                                canonical_payload.get("status"),
+                                canonical_payload.get("confidence"),
+                                canonical_payload.get("compactSummary") or canonical_payload.get("summary"),
+                                json.dumps(to_jsonable(canonical_payload.get("refs") or []), ensure_ascii=False),
+                                canonical_payload.get("rawRef"),
+                                canonical_payload.get("detailTool"),
+                                canonical_payload.get("consumerHint"),
+                                serialized_payload,
+                                canonical_handoff_id,
+                                episode_id,
+                            ),
+                        )
+                else:
+                    incoming_payload = _canonical_runtime_handoff_payload(
+                        raw_handoff,
+                        episode_id=episode_id,
+                        handoff_id=canonical_handoff_id,
+                        created_at=now_iso,
+                        identity_aliases=requested_aliases,
+                    )
+                    canonical_payload = incoming_payload
+                    conn.execute(
+                        '''
+                        INSERT INTO runtime_episode_handoffs (
+                            id, episode_id, session_id, run_id, kind, status, confidence,
+                            compact_summary, refs_json, raw_ref, detail_tool, consumer_hint, payload_json, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            canonical_handoff_id,
+                            episode_id,
+                            session_id,
+                            run_id,
+                            canonical_payload.get("kind"),
+                            canonical_payload.get("status"),
+                            canonical_payload.get("confidence"),
+                            canonical_payload.get("compactSummary") or canonical_payload.get("summary"),
+                            json.dumps(to_jsonable(canonical_payload.get("refs") or []), ensure_ascii=False),
+                            canonical_payload.get("rawRef"),
+                            canonical_payload.get("detailTool"),
+                            canonical_payload.get("consumerHint"),
+                            json.dumps(to_jsonable(canonical_payload), ensure_ascii=False),
+                            now_iso,
+                        ),
+                    )
+
+                episode_row = conn.execute(
+                    "SELECT handoff_refs_json FROM runtime_episodes WHERE id = ?",
+                    (episode_id,),
+                ).fetchone()
+                refs: list[Any] = []
+                if episode_row and episode_row["handoff_refs_json"]:
+                    try:
+                        refs = json.loads(episode_row["handoff_refs_json"])
                     except Exception:
                         refs = []
-                compact_handoff = {**handoff, "handoffId": handoff_id}
-                if not any(str(item.get("handoffId") or item.get("id") or "") == handoff_id for item in refs if isinstance(item, dict)):
-                    refs.append(compact_handoff)
-                conn.execute(
-                    '''
-                    UPDATE runtime_episodes
-                    SET handoff_refs_json = ?, updated_at = ?
-                    WHERE id = ?
-                    ''',
-                    (json.dumps(to_jsonable(refs), ensure_ascii=False), now_iso, episode_id),
-                )
-                conn.commit()
-                return True
+                merged_refs = _merge_runtime_handoff_refs(refs, [canonical_payload])
+                serialized_refs = json.dumps(to_jsonable(merged_refs), ensure_ascii=False)
+                if not episode_row or serialized_refs != str(episode_row["handoff_refs_json"] or ""):
+                    conn.execute(
+                        '''
+                        UPDATE runtime_episodes
+                        SET handoff_refs_json = ?, updated_at = ?
+                        WHERE id = ?
+                        ''',
+                        (serialized_refs, now_iso, episode_id),
+                    )
+                if _commit:
+                    conn.commit()
+                return canonical_payload
 
-        accepted = bool(self._run_write_with_retry(_write))
-        if not accepted:
+        persisted = (
+            _write()
+            if _connection is not None
+            else self._run_write_with_retry(_write)
+        )
+        if not persisted:
             return None
-        return {**handoff, "handoffId": handoff_id}
+        return dict(persisted)
+
+    def _runtime_episode_delivery_failpoint(self, stage: str) -> None:
+        """Test hook for proving that a partially assembled delivery rolls back."""
+
+    def _assert_runtime_episode_delivery_consistency(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        episode_id: str,
+        state: str,
+        handoff: Dict[str, Any],
+        worker_id: Optional[str],
+    ) -> None:
+        handoff_id = str(handoff.get("handoffId") or handoff.get("handoffRefId") or "").strip()
+        episode_row = conn.execute(
+            """
+            SELECT state, result_ref, handoff_refs_json, worker_id, lease_expires_at
+            FROM runtime_episodes
+            WHERE id = ?
+            """,
+            (episode_id,),
+        ).fetchone()
+        if not episode_row:
+            raise RuntimeError(f"runtime episode {episode_id!r} disappeared during delivery commit")
+        if str(episode_row["state"] or "") != state or str(episode_row["result_ref"] or "") != handoff_id:
+            raise RuntimeError(f"runtime episode {episode_id!r} did not project its committed delivery")
+        if episode_row["worker_id"] is not None or episode_row["lease_expires_at"] is not None:
+            raise RuntimeError(f"runtime episode {episode_id!r} retained ownership after delivery commit")
+        try:
+            embedded_refs = json.loads(episode_row["handoff_refs_json"] or "[]")
+        except Exception as exc:
+            raise RuntimeError(
+                f"runtime episode {episode_id!r} has an unreadable handoff projection"
+            ) from exc
+        embedded = next(
+            (
+                item
+                for item in list(embedded_refs or [])
+                if isinstance(item, dict)
+                and handoff_id in _runtime_handoff_identity_aliases(item)
+            ),
+            None,
+        )
+        if (
+            not embedded
+            or str(embedded.get("payloadDigest") or "")
+            != str(handoff.get("payloadDigest") or "")
+            or str(embedded.get("envelopeDigest") or "")
+            != str(handoff.get("envelopeDigest") or "")
+        ):
+            raise RuntimeError(f"runtime episode {episode_id!r} lost its embedded handoff projection")
+        durable_handoff = conn.execute(
+            "SELECT * FROM runtime_episode_handoffs WHERE id = ? AND episode_id = ?",
+            (handoff_id, episode_id),
+        ).fetchone()
+        if not durable_handoff:
+            raise RuntimeError(f"runtime episode {episode_id!r} lost its canonical handoff row")
+        hydrated_handoff = self._hydrate_runtime_handoff_row(dict(durable_handoff))
+        durable_payload = dict(hydrated_handoff.get("payload") or {})
+        if (
+            hydrated_handoff.get("deliverySupported") is not True
+            or str(durable_payload.get("payloadDigest") or "")
+            != str(handoff.get("payloadDigest") or "")
+            or str(durable_payload.get("envelopeDigest") or "")
+            != str(handoff.get("envelopeDigest") or "")
+        ):
+            raise RuntimeError(
+                f"runtime episode {episode_id!r} retained an unverified canonical handoff"
+            )
+        queue_row = conn.execute(
+            "SELECT state, locked_by, lease_expires_at FROM runtime_episode_queue WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if worker_id and not queue_row:
+            raise RuntimeError(f"runtime episode {episode_id!r} lost its claimed queue row")
+        expected_queue_state = "completed" if state in {"completed", "merged"} else state
+        if queue_row and (
+            str(queue_row["state"] or "") != expected_queue_state
+            or queue_row["locked_by"] is not None
+            or queue_row["lease_expires_at"] is not None
+        ):
+            raise RuntimeError(f"runtime episode {episode_id!r} retained queue ownership after delivery commit")
+        active_lease = conn.execute(
+            "SELECT 1 FROM runtime_episode_leases WHERE episode_id = ? AND state = 'active' LIMIT 1",
+            (episode_id,),
+        ).fetchone()
+        if active_lease:
+            raise RuntimeError(f"runtime episode {episode_id!r} retained an active lease after delivery commit")
+
+    def commit_runtime_episode_delivery(
+        self,
+        episode_id: str,
+        *,
+        handoff: Dict[str, Any],
+        state: str,
+        session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        worker_id: Optional[str] = None,
+        lease_generation: Optional[int] = None,
+        expected_state: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically bind a canonical handoff to an episode state transition."""
+        fenced = worker_id is not None or lease_generation is not None
+        if fenced and (not worker_id or lease_generation is None):
+            raise ValueError("worker_id and lease_generation must be supplied together")
+
+        def _write():
+            with self.get_connection() as conn:
+                now_iso = utc_now_iso()
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    persisted_handoff = self.add_runtime_episode_handoff(
+                        episode_id=episode_id,
+                        handoff=handoff,
+                        session_id=session_id,
+                        run_id=run_id,
+                        worker_id=worker_id,
+                        lease_generation=lease_generation,
+                        expected_state=expected_state,
+                        _connection=conn,
+                        _commit=False,
+                        _now_iso=now_iso,
+                        _authoritative_replay=True,
+                    )
+                    if not persisted_handoff:
+                        conn.rollback()
+                        return None
+                    self._runtime_episode_delivery_failpoint("after_handoff")
+                    delivery_metadata = dict(to_jsonable(metadata) or {})
+                    delivery_metadata["handoff"] = persisted_handoff
+                    accepted = self._complete_runtime_episode_in_transaction(
+                        conn,
+                        episode_id,
+                        state=state,
+                        now_iso=now_iso,
+                        result_ref=str(
+                            persisted_handoff.get("handoffId")
+                            or persisted_handoff.get("handoffRefId")
+                            or ""
+                        ),
+                        error_code=error_code,
+                        error_message=error_message,
+                        metadata=delivery_metadata,
+                        worker_id=worker_id,
+                        lease_generation=lease_generation,
+                        expected_state=expected_state,
+                    )
+                    if not accepted:
+                        conn.rollback()
+                        return None
+                    self._runtime_episode_delivery_failpoint("after_episode_transition")
+                    self._assert_runtime_episode_delivery_consistency(
+                        conn,
+                        episode_id=episode_id,
+                        state=state,
+                        handoff=persisted_handoff,
+                        worker_id=worker_id,
+                    )
+                    self._runtime_episode_delivery_failpoint("before_commit")
+                    conn.commit()
+                    return dict(persisted_handoff)
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+        persisted = self._run_write_with_retry(_write)
+        if not persisted:
+            return None
+        episode = self.get_runtime_episode(episode_id)
+        if not episode:
+            raise RuntimeError(f"committed runtime episode {episode_id!r} could not be reloaded")
+        return {"episode": episode, "handoff": dict(persisted)}
 
     def list_runtime_episode_handoffs(self, episode_id: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -6016,15 +7008,7 @@ class DatabaseManager:
                 (episode_id,),
             )
             rows = cursor.fetchall()
-            items: list[dict[str, Any]] = []
-            for row in rows:
-                data = dict(row)
-                try:
-                    payload = json.loads(data.get("payload_json") or "{}")
-                except Exception:
-                    payload = {}
-                items.append({**data, "payload": payload})
-            return items
+            return [self._hydrate_runtime_handoff_row(dict(row)) for row in rows]
 
     def list_runtime_episode_queue(
         self,

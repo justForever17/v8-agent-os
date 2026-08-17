@@ -1494,7 +1494,26 @@ def test_restart_repairs_unprojected_canvas_events_once_in_commit_order(
     assert [int(row["attempt_count"]) for row in attempts] == [1, 0, 0]
     assert attempts[0]["next_attempt_at"]
 
-    monkeypatch.setattr(database, "project_canvas_graph_run_event_outbox", original_project)
+    projected_sequences: list[tuple[int, int]] = []
+
+    def project_after_interleaved_runtime_event(event, *, outbox_id):
+        candidate_seq = int(event["seq"])
+        if not projected_sequences:
+            database.add_runtime_event({
+                "event_id": "event-before-canvas-repair",
+                "session_id": "session-a",
+                "run_id": None,
+                "seq": candidate_seq,
+                "topic": "run.started",
+                "ts": "2026-08-17T00:00:00Z",
+                "payload": {},
+            })
+        durable_seq = original_project(event, outbox_id=outbox_id)
+        assert durable_seq is not None
+        projected_sequences.append((candidate_seq, durable_seq))
+        return durable_seq
+
+    monkeypatch.setattr(database, "project_canvas_graph_run_event_outbox", project_after_interleaved_runtime_event)
     with database.get_connection() as conn:
         conn.execute(
             "UPDATE creative_canvas_graph_run_event_outbox SET next_attempt_at = NULL WHERE projected_at IS NULL"
@@ -1508,7 +1527,8 @@ def test_restart_repairs_unprojected_canvas_events_once_in_commit_order(
     assert first_repair == {"projectedEvents": 3, "failedEvents": 0, "pendingEvents": 0}
     assert second_repair == {"projectedEvents": 0, "failedEvents": 0, "pendingEvents": 0}
     assert [event["payload"]["status"] for event in events] == ["queued", "running", "completed"]
-    assert [event["seq"] for event in events] == [1, 2, 3]
+    assert projected_sequences == [(1, 2), (3, 3), (4, 4)]
+    assert [event["seq"] for event in events] == [2, 3, 4]
     assert len({event["id"] for event in events}) == 3
 
 

@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,8 @@ def _agent_state_fields() -> set[str]:
     from graph.supervisor import AgentState
 
     return set(AgentState.__annotations__)
+
+
 _FORBIDDEN_STATE_PATCH_KEYS = {
     "session_id",
     "sessionId",
@@ -68,6 +71,139 @@ _FORBIDDEN_STATE_PATCH_KEYS = {
     "contextSessionRefs",
     "session_coordination",
     "sessionCoordination",
+}
+
+_ROUTE_CONTEXT_OPERATIONS_KEY = "$operations"
+_ROUTE_CONTEXT_AUTHORITY_KEYS = {
+    "session_id",
+    "sessionId",
+    "run_id",
+    "runId",
+    "user_id",
+    "userId",
+    "workspace_id",
+    "workspaceId",
+    "workspace_path",
+    "workspacePath",
+    "workspaceBinding",
+    "project_id",
+    "projectId",
+    "resolved_scope",
+    "resolvedScope",
+    "repository_root",
+    "repositoryRoot",
+    "original_workspace_path",
+    "originalWorkspacePath",
+    "worktree_root",
+    "worktreeRoot",
+    "worktree_id",
+    "worktreeId",
+    "sandbox_lease_id",
+    "sandboxLeaseId",
+    "sandbox_policy",
+    "sandboxPolicy",
+    "sandbox_policy_digest",
+    "sandboxPolicyDigest",
+    "delegation_id",
+    "delegationId",
+    "parent_delegation_id",
+    "parentDelegationId",
+    "root_delegation_id",
+    "rootDelegationId",
+    "delegation_depth",
+    "delegationDepth",
+    "agent_id",
+    "agentId",
+    "actor_role",
+    "actorRole",
+    "runtime_kind",
+    "runtimeKind",
+    "root_episode_id",
+    "rootEpisodeId",
+    "root_run_id",
+    "rootRunId",
+    "safety_approval_mode",
+    "safetyApprovalMode",
+    "plugin_authorizations",
+    "pluginAuthorizations",
+    "context_session_refs",
+    "contextSessionRefs",
+    "session_coordination",
+    "sessionCoordination",
+    "runtimeAccess",
+    "runtimeAllowed",
+    "runtimeExecutionAllowed",
+}
+_ROUTE_CONTEXT_NESTED_AUTHORITY_KEYS = {
+    "schemaVersion",
+    "schema_version",
+    "engineeringTaskCapsule",
+    "engineering_task_capsule",
+    "toolPolicy",
+    "tool_policy",
+    "allowedTools",
+    "allowed_tools",
+    "forbiddenTools",
+    "forbidden_tools",
+    "noTools",
+    "no_tools",
+    "runtimeAccess",
+    "runtime_access",
+    "pluginReferences",
+    "plugin_references",
+    "pluginAuthorizations",
+    "plugin_authorizations",
+    "grantGroups",
+    "grant_groups",
+    "sideEffectPolicy",
+    "side_effect_policy",
+    "delegationPolicy",
+    "delegation_policy",
+    "allowChildDelegation",
+    "allow_child_delegation",
+    "childDelegationBudget",
+    "child_delegation_budget",
+    "writeSet",
+    "write_set",
+    "readSet",
+    "read_set",
+    "writeRequired",
+    "write_required",
+    "readOnly",
+    "read_only",
+    "writeSetPartitions",
+    "write_set_partitions",
+    "requiredCapabilities",
+    "required_capabilities",
+    "constraints",
+    "behaviorScope",
+    "behavior_scope",
+    "budget",
+    "executionBudget",
+    "execution_budget",
+    "targetAgentName",
+    "target_agent_name",
+    "preferredAgentId",
+    "preferred_agent_id",
+    "selectedBaselineTools",
+    "selectedRuntimeTools",
+    "resolvedToolNames",
+}
+_ROUTE_CONTEXT_COLLABORATION_COLLECTION_KEYS = {
+    "capabilityEpisodes",
+    "handoffRefs",
+    "effectiveHandoffRefs",
+    "runtimeDeliveryDiagnostics",
+}
+_ROUTE_CONTEXT_TASK_COLLECTION_KEYS = {"taskBriefs", "workerBriefs"}
+_ROUTE_CONTEXT_TASK_OBJECT_KEYS = {"taskBrief", "routeBrief", "workerBrief"}
+_ROUTE_CONTEXT_POLICY_SUBTREE_KEYS = {
+    "engineeringTaskCapsule",
+    "engineering_task_capsule",
+    "toolPolicy",
+    "tool_policy",
+    "delegationPolicy",
+    "delegation_policy",
 }
 
 
@@ -220,7 +356,39 @@ class CheckpointGovernanceService:
         forbidden = set(patch) & _FORBIDDEN_STATE_PATCH_KEYS
         if forbidden:
             raise CheckpointGovernanceError(f"statePatch 不得修改权限或身份字段: {', '.join(sorted(forbidden))}")
-        return dict(patch)
+        normalized = dict(patch)
+        if "current_route_context" not in normalized:
+            return normalized
+        route_patch = normalized.get("current_route_context")
+        if not isinstance(route_patch, dict):
+            raise CheckpointGovernanceError("statePatch.current_route_context 必须是结构化对象。")
+        normalized_route_patch = dict(route_patch)
+        raw_operations = normalized_route_patch.get(_ROUTE_CONTEXT_OPERATIONS_KEY, [])
+        if not isinstance(raw_operations, list):
+            raise CheckpointGovernanceError("current_route_context.$operations 必须是操作列表。")
+        operations: list[dict[str, Any]] = []
+        for index, raw_operation in enumerate(raw_operations):
+            if not isinstance(raw_operation, dict):
+                raise CheckpointGovernanceError(f"route context 操作 {index} 必须是结构化对象。")
+            if set(raw_operation) != {"op", "path"} or str(raw_operation.get("op") or "").strip() != "clear":
+                raise CheckpointGovernanceError(f"route context 操作 {index} 只支持 typed clear(op/path)。")
+            raw_path = raw_operation.get("path")
+            if isinstance(raw_path, str):
+                path = [raw_path]
+            elif isinstance(raw_path, list):
+                path = list(raw_path)
+            else:
+                path = []
+            if not path or any(not isinstance(segment, str) or not segment.strip() for segment in path):
+                raise CheckpointGovernanceError(f"route context 操作 {index} 的 path 必须是非空字符串路径。")
+            normalized_path = [segment.strip() for segment in path]
+            if _ROUTE_CONTEXT_OPERATIONS_KEY in normalized_path:
+                raise CheckpointGovernanceError(f"route context 操作 {index} 不得修改操作信封。")
+            operations.append({"op": "clear", "path": normalized_path})
+        if raw_operations or _ROUTE_CONTEXT_OPERATIONS_KEY in normalized_route_patch:
+            normalized_route_patch[_ROUTE_CONTEXT_OPERATIONS_KEY] = operations
+        normalized["current_route_context"] = normalized_route_patch
+        return normalized
 
     @staticmethod
     def _infer_as_node(snapshot: Any, requested: str = "", graph: Any = None) -> str:
@@ -442,15 +610,421 @@ class CheckpointGovernanceService:
             conn.commit()
 
     @staticmethod
-    def _identity_patch(values: dict[str, Any], *, session_id: str, run_id: str) -> dict[str, Any]:
+    def _route_context_authority(
+        values: dict[str, Any],
+        *,
+        session_id: str,
+        run_id: str,
+        user_id: str = "",
+        scope_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source_route = dict(values.get("current_route_context") or {})
+        authority = {
+            key: source_route[key]
+            for key in _ROUTE_CONTEXT_AUTHORITY_KEYS
+            if key in source_route
+        }
+        for key in _ROUTE_CONTEXT_AUTHORITY_KEYS:
+            if key not in authority and key in values:
+                authority[key] = values[key]
+
+        def bind(aliases: tuple[str, ...], value: Any) -> None:
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return
+            for alias in aliases:
+                authority[alias] = value
+
+        def bind_existing(aliases: tuple[str, ...]) -> None:
+            for alias in aliases:
+                if alias in authority:
+                    bind(aliases, authority[alias])
+                    return
+
+        binding = dict(scope_binding or {})
+        for aliases in (
+            ("delegation_id", "delegationId"),
+            ("parent_delegation_id", "parentDelegationId"),
+            ("root_delegation_id", "rootDelegationId"),
+            ("delegation_depth", "delegationDepth"),
+            ("agent_id", "agentId"),
+            ("actor_role", "actorRole"),
+            ("runtime_kind", "runtimeKind"),
+            ("root_episode_id", "rootEpisodeId"),
+            ("root_run_id", "rootRunId"),
+        ):
+            bind_existing(aliases)
+        bind(("session_id", "sessionId"), session_id)
+        bind(("run_id", "runId"), run_id)
+        bind(("user_id", "userId"), user_id or binding.get("user_id") or binding.get("userId"))
+        bind(
+            ("workspace_id", "workspaceId"),
+            binding.get("workspace_id") or binding.get("workspaceId"),
+        )
+        bind(
+            ("workspace_path", "workspacePath"),
+            binding.get("workspace_path") or binding.get("workspacePath"),
+        )
+        bind(("project_id", "projectId"), binding.get("project_id") or binding.get("projectId"))
+        bind(
+            ("resolved_scope", "resolvedScope"),
+            binding.get("resolved_scope") or binding.get("resolvedScope"),
+        )
+        if isinstance(source_route.get("workspaceBinding"), dict):
+            workspace_binding = dict(source_route["workspaceBinding"])
+            workspace_binding.update(
+                {
+                    "workspaceId": binding.get("workspace_id") or binding.get("workspaceId"),
+                    "projectId": binding.get("project_id") or binding.get("projectId"),
+                    "activeWorkspaceRoot": binding.get("workspace_path") or binding.get("workspacePath"),
+                }
+            )
+            authority["workspaceBinding"] = {
+                key: value
+                for key, value in workspace_binding.items()
+                if value is not None and value != ""
+            }
+        authority.update(
+            {
+                "plugin_authorizations": [],
+                "pluginAuthorizations": [],
+                "context_session_refs": [],
+                "contextSessionRefs": [],
+                "session_coordination": {},
+                "sessionCoordination": {},
+            }
+        )
+        return authority
+
+    @staticmethod
+    def _merge_route_context_patch(
+        base: dict[str, Any],
+        patch: dict[str, Any] | None,
+        authority: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        merged = deepcopy(base)
+        diagnostics: list[dict[str, Any]] = []
+        normalized_patch = dict(patch or {})
+        operations = list(normalized_patch.pop(_ROUTE_CONTEXT_OPERATIONS_KEY, []) or [])
+
+        if patch == {}:
+            diagnostics.append(
+                {
+                    "type": "checkpoint_route_context_empty_patch_preserved",
+                    "operation": "merge",
+                    "path": "current_route_context",
+                    "resolution": "source_context_preserved",
+                }
+            )
+
+        def authority_conflict(key: str, operation: str) -> None:
+            diagnostics.append(
+                {
+                    "type": "checkpoint_route_context_authority_conflict",
+                    "operation": operation,
+                    "path": f"current_route_context.{key}",
+                    "resolution": "engine_authoritative_value_preserved",
+                    "authoritativeValuePresent": key in authority,
+                }
+            )
+
+        def protected_path(path: list[str]) -> bool:
+            if not path:
+                return False
+            if len(path) == 1:
+                return path[0] in _ROUTE_CONTEXT_AUTHORITY_KEYS
+
+            def task_object(candidate: list[str]) -> bool:
+                if not candidate:
+                    return False
+                return candidate[-1] in _ROUTE_CONTEXT_TASK_OBJECT_KEYS or (
+                    candidate[-1].startswith("item-")
+                    and any(
+                        segment in _ROUTE_CONTEXT_TASK_COLLECTION_KEYS
+                        for segment in candidate[:-1]
+                    )
+                )
+
+            if any(
+                segment in _ROUTE_CONTEXT_AUTHORITY_KEYS
+                for segment in path[1:]
+            ) and any(
+                segment in _ROUTE_CONTEXT_TASK_OBJECT_KEYS
+                or segment in _ROUTE_CONTEXT_TASK_COLLECTION_KEYS
+                for segment in path[:-1]
+            ):
+                return True
+            if task_object(path[:-1]) and path[-1] in _ROUTE_CONTEXT_NESTED_AUTHORITY_KEYS:
+                return True
+            for index, segment in enumerate(path):
+                if (
+                    segment in _ROUTE_CONTEXT_POLICY_SUBTREE_KEYS
+                    and task_object(path[:index])
+                ):
+                    return True
+            return False
+
+        def nested_authority_conflict(path: list[str], operation: str) -> None:
+            diagnostics.append(
+                {
+                    "type": "checkpoint_route_context_authority_conflict",
+                    "operation": operation,
+                    "path": ".".join(["current_route_context", *path]),
+                    "resolution": "source_execution_authority_preserved",
+                    "authoritativeValuePresent": True,
+                }
+            )
+
+        def collaboration_identity(key: str, value: Any) -> str:
+            if not isinstance(value, dict):
+                return ""
+            if key == "capabilityEpisodes":
+                identity = str(
+                    value.get("episodeId")
+                    or value.get("episode_id")
+                    or value.get("needId")
+                    or value.get("need_id")
+                    or value.get("id")
+                    or ""
+                ).strip()
+                return f"episode:{identity}" if identity else ""
+            if key in {"handoffRefs", "effectiveHandoffRefs"}:
+                identity = str(
+                    value.get("handoffId")
+                    or value.get("handoffRefId")
+                    or value.get("id")
+                    or ""
+                ).strip()
+                return f"handoff:{identity}" if identity else ""
+            key_groups = {
+                "runtimeDeliveryDiagnostics": (
+                    "diagnosticId",
+                    "id",
+                    "resultRef",
+                    "episodeId",
+                ),
+            }
+            for identity_key in key_groups.get(key, ("id",)):
+                identity = str(value.get(identity_key) or "").strip()
+                if identity:
+                    return f"diagnostic:{identity}"
+            return ""
+
+        def empty_overwrite_operation(value: Any) -> str:
+            if isinstance(value, str) and not value.strip():
+                return "set_empty_string"
+            if isinstance(value, dict) and not value:
+                return "set_empty_object"
+            if isinstance(value, (list, tuple, set)) and not value:
+                return "set_empty_list"
+            return ""
+
+        def carries_information(value: Any) -> bool:
+            if value is None:
+                return False
+            return not bool(empty_overwrite_operation(value))
+
+        def merge_mapping(target: dict[str, Any], overlay: dict[str, Any], path: list[str]) -> None:
+            for key, value in overlay.items():
+                if not path and key in _ROUTE_CONTEXT_AUTHORITY_KEYS:
+                    if key not in authority or value != authority.get(key):
+                        authority_conflict(key, "set")
+                    continue
+                item_path = [*path, key]
+                path_text = ".".join(["current_route_context", *item_path])
+                if path and protected_path(item_path):
+                    nested_authority_conflict(item_path, "set")
+                    continue
+                if value is None:
+                    diagnostics.append(
+                        {
+                            "type": "checkpoint_route_context_implicit_clear_ignored",
+                            "operation": "set_null",
+                            "path": path_text,
+                            "resolution": "explicit_clear_required",
+                        }
+                    )
+                    continue
+                empty_operation = empty_overwrite_operation(value)
+                if (
+                    empty_operation
+                    and key in target
+                    and carries_information(target.get(key))
+                ):
+                    diagnostics.append(
+                        {
+                            "type": "checkpoint_route_context_implicit_clear_ignored",
+                            "operation": empty_operation,
+                            "path": path_text,
+                            "resolution": "explicit_clear_required",
+                        }
+                    )
+                    continue
+                current = target.get(key)
+                if (
+                    key in _ROUTE_CONTEXT_COLLABORATION_COLLECTION_KEYS
+                    and isinstance(value, list)
+                    and isinstance(current, list)
+                    and value
+                ):
+                    merged_items = deepcopy(current)
+                    indexes_by_identity = {
+                        identity: index
+                        for index, item in enumerate(merged_items)
+                        if (identity := collaboration_identity(key, item))
+                    }
+                    source_count = len(merged_items)
+                    for incoming in value:
+                        identity = collaboration_identity(key, incoming)
+                        existing_index = indexes_by_identity.get(identity) if identity else None
+                        if existing_index is not None and isinstance(incoming, dict):
+                            existing = merged_items[existing_index]
+                            if isinstance(existing, dict):
+                                updated = deepcopy(existing)
+                                merge_mapping(
+                                    updated,
+                                    incoming,
+                                    [*item_path, f"item-{existing_index}"],
+                                )
+                                merged_items[existing_index] = updated
+                                continue
+                        if incoming not in merged_items:
+                            merged_items.append(deepcopy(incoming))
+                            if identity:
+                                indexes_by_identity[identity] = len(merged_items) - 1
+                    target[key] = merged_items
+                    diagnostics.append(
+                        {
+                            "type": "checkpoint_route_context_collection_merged",
+                            "operation": "merge_by_identity",
+                            "path": path_text,
+                            "sourceCount": source_count,
+                            "patchCount": len(value),
+                            "resultCount": len(merged_items),
+                            "resolution": "source_items_preserved",
+                        }
+                    )
+                    continue
+                if key in _ROUTE_CONTEXT_TASK_COLLECTION_KEYS and isinstance(value, list):
+                    current_items = list(current) if isinstance(current, list) else []
+                    merged_items = deepcopy(current_items)
+
+                    def task_identity(item: Any) -> str:
+                        if not isinstance(item, dict):
+                            return ""
+                        return str(
+                            item.get("taskBriefId")
+                            or item.get("task_brief_id")
+                            or item.get("id")
+                            or ""
+                        ).strip()
+
+                    indexes_by_identity = {
+                        identity: index
+                        for index, item in enumerate(merged_items)
+                        if (identity := task_identity(item))
+                    }
+                    for incoming in value:
+                        identity = task_identity(incoming)
+                        existing_index = indexes_by_identity.get(identity) if identity else None
+                        if isinstance(incoming, dict):
+                            if existing_index is not None and isinstance(
+                                merged_items[existing_index], dict
+                            ):
+                                candidate = deepcopy(merged_items[existing_index])
+                                candidate_index = existing_index
+                            else:
+                                candidate = {}
+                                candidate_index = len(merged_items)
+                            merge_mapping(
+                                candidate,
+                                incoming,
+                                [*item_path, f"item-{candidate_index}"],
+                            )
+                            if existing_index is not None:
+                                merged_items[existing_index] = candidate
+                            elif candidate:
+                                merged_items.append(candidate)
+                                if identity:
+                                    indexes_by_identity[identity] = len(merged_items) - 1
+                        elif incoming not in merged_items:
+                            merged_items.append(deepcopy(incoming))
+                    target[key] = merged_items
+                    diagnostics.append(
+                        {
+                            "type": "checkpoint_route_context_collection_merged",
+                            "operation": "merge_task_contracts_by_identity",
+                            "path": path_text,
+                            "sourceCount": len(current_items),
+                            "patchCount": len(value),
+                            "resultCount": len(merged_items),
+                            "resolution": "cognition_merged_execution_authority_preserved",
+                        }
+                    )
+                    continue
+                if isinstance(value, dict):
+                    nested = dict(current) if isinstance(current, dict) else {}
+                    merge_mapping(nested, value, item_path)
+                    if value or key not in target:
+                        target[key] = nested
+                    continue
+                target[key] = value
+
+        merge_mapping(merged, normalized_patch, [])
+
+        for operation in operations:
+            path = list(operation.get("path") or [])
+            root_key = str(path[0])
+            if root_key in _ROUTE_CONTEXT_AUTHORITY_KEYS:
+                authority_conflict(root_key, "clear")
+                continue
+            if protected_path(path):
+                nested_authority_conflict(path, "clear")
+                continue
+            cursor = merged
+            traversable = True
+            for segment in path[:-1]:
+                child = cursor.get(segment)
+                if not isinstance(child, dict):
+                    traversable = False
+                    break
+                cursor = child
+            applied = traversable and path[-1] in cursor
+            if applied:
+                cursor.pop(path[-1], None)
+            diagnostics.append(
+                {
+                    "type": "checkpoint_route_context_clear",
+                    "operation": "clear",
+                    "path": ".".join(["current_route_context", *path]),
+                    "applied": applied,
+                    "resolution": "removed" if applied else "already_absent",
+                }
+            )
+
+        merged.update(authority)
+        return merged, diagnostics
+
+    @classmethod
+    def _identity_patch(
+        cls,
+        values: dict[str, Any],
+        *,
+        session_id: str,
+        run_id: str,
+        user_id: str = "",
+        scope_binding: dict[str, Any] | None = None,
+        route_context_authority: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         route_context = dict(values.get("current_route_context") or {})
         route_context.update(
-            {
-                "session_id": session_id,
-                "sessionId": session_id,
-                "run_id": run_id,
-                "runId": run_id,
-            }
+            route_context_authority
+            or cls._route_context_authority(
+                values,
+                session_id=session_id,
+                run_id=run_id,
+                user_id=user_id,
+                scope_binding=scope_binding,
+            )
         )
         return {
             "session_id": session_id,
@@ -531,15 +1105,38 @@ class CheckpointGovernanceService:
             snapshot = await graph.aget_state(source_config)
             source_values = dict(getattr(snapshot, "values", None) or {})
             target_session_id = str(operation["target_session_id"])
+            source_session = db.get_session(str(operation["source_session_id"])) or {}
+            scope_binding = db.get_session_scope_binding(str(operation["source_session_id"])) or {}
+            route_context_authority = self._route_context_authority(
+                source_values,
+                session_id=target_session_id,
+                run_id=str(operation["run_id"]),
+                user_id=str(source_session.get("user_id") or scope_binding.get("user_id") or ""),
+                scope_binding=scope_binding,
+            )
             identity_patch = self._identity_patch(
                 source_values,
                 session_id=target_session_id,
                 run_id=str(operation["run_id"]),
+                user_id=str(source_session.get("user_id") or scope_binding.get("user_id") or ""),
+                scope_binding=scope_binding,
+                route_context_authority=route_context_authority,
             )
+            state_patch = dict(operation["state_patch"])
+            route_patch = (
+                state_patch.pop("current_route_context")
+                if "current_route_context" in state_patch
+                else None
+            )
+            route_context, state_patch_diagnostics = self._merge_route_context_patch(
+                dict(source_values.get("current_route_context") or {}),
+                route_patch,
+                route_context_authority,
+            )
+            identity_patch["current_route_context"] = route_context
             if operation["mode"] == "fork":
-                source_session = db.get_session(str(operation["source_session_id"])) or {}
                 self._create_fork_session(operation, source_session)
-                next_values = {**source_values, **identity_patch, **dict(operation["state_patch"])}
+                next_values = {**source_values, **state_patch, **identity_patch}
                 update_options = (
                     {"as_node": str(operation["as_node"])} if str(operation["as_node"]).strip() else {}
                 )
@@ -582,6 +1179,7 @@ class CheckpointGovernanceService:
                 ),
                 "nextNodes": next_nodes,
                 "reexecuted": True,
+                "statePatchDiagnostics": state_patch_diagnostics,
             }
             self._update_operation(operation_id, state=state, result=result)
             db.update_run_record(str(operation["run_id"]), status=state)

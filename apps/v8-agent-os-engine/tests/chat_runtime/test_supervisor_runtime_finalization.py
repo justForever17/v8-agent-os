@@ -1279,7 +1279,26 @@ def test_artifact_creative_media_handoff_is_terminal():
 
 def test_completion_gate_reports_forward_only_text_as_advisory():
     decision = evaluate_supervisor_completion(
-        episodes=[{"episodeId": "episode_creative", "state": "completed", "kind": "creative_media"}],
+        episodes=[
+            {
+                "episodeId": "episode_creative",
+                "state": "completed",
+                "kind": "creative_media",
+                "resultRef": "handoff_creative",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_creative": [
+                {
+                    "handoffRefId": "handoff_creative",
+                    "kind": "asset_bundle",
+                    "status": "ready",
+                    "artifactRefs": ["artifact://creative"],
+                    "proofRefs": ["proof://creative"],
+                    "verificationResults": [{"status": "verified"}],
+                }
+            ]
+        },
         final_text="我已经读完技能。现在让我创建任务并生成真实素材。",
     )
 
@@ -1755,6 +1774,291 @@ def test_completion_gate_blocks_research_plan_claimed_as_ready_evidence():
 
     assert decision.action == "fail"
     assert decision.reason == "research_plan_only_claimed_evidence_ready"
+
+
+def test_completion_gate_uses_episode_result_ref_instead_of_failed_handoff_history():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_research_retry",
+                "state": "completed",
+                "kind": "research",
+                "resultRef": "handoff_ready",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_research_retry": [
+                {
+                    "handoffRefId": "handoff_failed",
+                    "kind": "research_evidence_bundle",
+                    "status": "failed",
+                },
+                {
+                    "handoffRefId": "handoff_ready",
+                    "kind": "research_evidence_bundle",
+                    "status": "ready",
+                    "runMode": "run",
+                },
+            ]
+        },
+        final_text="调研结果和限制已经交付。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
+def test_completion_gate_blocks_omitted_required_failure_in_current_delegation_result_ref():
+    results = [
+        {
+            "taskBriefId": f"brief-{index}",
+            "delegationId": f"delegation-{index}",
+            "status": "ready",
+        }
+        for index in range(1, 9)
+    ]
+    results.append(
+        {
+            "taskBriefId": "brief-9",
+            "delegationId": "delegation-9",
+            "status": "failed",
+            "errorCode": "required_review_failed",
+            "error": "The ninth required review failed.",
+        }
+    )
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_delegation_current_failure",
+                "state": "completed",
+                "kind": "delegation",
+                "resultRef": "handoff_delegation_current_failure",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_delegation_current_failure": [
+                {
+                    "handoffRefId": "handoff_delegation_current_failure",
+                    "producerEpisodeId": "episode_delegation_current_failure",
+                    "kind": "delegation",
+                    "status": "ready",
+                    "delegationHandoff": {"status": "ready", "results": results},
+                }
+            ]
+        },
+        final_text="验收决定：ACCEPT\n依据：其余结果看起来正常。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_delegation_result_failed"
+    assert decision.details["handoffRefId"] == "handoff_delegation_current_failure"
+    assert decision.details["failedResultCount"] == 1
+    assert decision.details["failedTaskBriefIds"] == ["brief-9"]
+    assert decision.details["failures"][0]["errorCode"] == "required_review_failed"
+
+
+def test_completion_gate_uses_current_delegation_result_ref_for_nested_failures():
+    ready_results = [
+        {"taskBriefId": f"brief-{index}", "status": "ready"}
+        for index in range(1, 10)
+    ]
+    stale_results = [dict(item) for item in ready_results]
+    stale_results[-1] = {
+        "taskBriefId": "brief-9",
+        "status": "failed",
+        "errorCode": "stale_attempt_failed",
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_delegation_retry",
+                "state": "completed",
+                "kind": "delegation",
+                "resultRef": "handoff_delegation_ready",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_delegation_retry": [
+                {
+                    "handoffRefId": "handoff_delegation_stale",
+                    "producerEpisodeId": "episode_delegation_retry",
+                    "kind": "delegation",
+                    "status": "ready",
+                    "delegationHandoff": {"results": stale_results},
+                },
+                {
+                    "handoffRefId": "handoff_delegation_ready",
+                    "producerEpisodeId": "episode_delegation_retry",
+                    "kind": "delegation",
+                    "status": "ready",
+                    "delegationHandoff": {"results": ready_results},
+                },
+            ]
+        },
+        final_text="验收决定：ACCEPT\n依据：当前重试结果全部完成。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
+def test_completion_gate_allows_explicitly_optional_nested_delegation_failure():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_delegation_optional_failure",
+                "state": "completed",
+                "kind": "delegation",
+                "resultRef": "handoff_delegation_optional_failure",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_delegation_optional_failure": [
+                {
+                    "handoffRefId": "handoff_delegation_optional_failure",
+                    "producerEpisodeId": "episode_delegation_optional_failure",
+                    "kind": "delegation",
+                    "status": "ready",
+                    "delegationHandoff": {
+                        "results": [
+                            {"taskBriefId": "required", "status": "ready"},
+                            {
+                                "taskBriefId": "optional-review",
+                                "status": "failed",
+                                "errorCode": "optional_review_failed",
+                                "dependencyMode": "optional",
+                            },
+                        ]
+                    },
+                }
+            ]
+        },
+        final_text="验收决定：ACCEPT\n依据：必需结果完整，可选复核失败已明确披露。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
+
+
+def test_completion_gate_reports_missing_terminal_runtime_delivery():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_research_missing",
+                "state": "completed",
+                "kind": "research",
+            }
+        ],
+        handoffs_by_episode={},
+        final_text="调研已完成。",
+    )
+
+    assert decision.action == "waiting_runtime"
+    assert decision.reason == "required_runtime_handoff_missing"
+    assert decision.details["episodeId"] == "episode_research_missing"
+    assert decision.details["availableHandoffIds"] == []
+    assert decision.details["recoverable"] is True
+
+
+def test_completion_gate_reports_result_ref_that_has_no_canonical_delivery():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_research_stale_ref",
+                "state": "completed",
+                "kind": "research",
+                "resultRef": "handoff_expected",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_research_stale_ref": [
+                {
+                    "handoffRefId": "handoff_other",
+                    "kind": "research_evidence_bundle",
+                    "status": "ready",
+                }
+            ]
+        },
+        final_text="调研已完成。",
+    )
+
+    assert decision.action == "waiting_runtime"
+    assert decision.reason == "runtime_result_handoff_missing"
+    assert decision.details["expectedResultRef"] == "handoff_expected"
+    assert decision.details["availableHandoffIds"] == ["handoff_other"]
+
+
+def test_completion_gate_rejects_corrupted_current_handoff_payload():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_research_corrupted_delivery",
+                "state": "completed",
+                "kind": "research",
+                "resultRef": "handoff_corrupted_delivery",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_research_corrupted_delivery": [
+                {
+                    "id": "handoff_corrupted_delivery",
+                    "payloadCorrupted": True,
+                    "deliverySupported": False,
+                    "payload": {
+                        "handoffId": "handoff_corrupted_delivery",
+                        "handoffRefId": "handoff_corrupted_delivery",
+                        "producerEpisodeId": "episode_research_corrupted_delivery",
+                        "kind": "runtime_handoff_payload_diagnostic",
+                        "status": "failed",
+                        "deliveryState": "corrupted",
+                        "errorCode": "runtime_handoff_payload_corrupted",
+                        "payloadCorrupted": True,
+                        "payloadIntegrity": {
+                            "reason": "invalid_json",
+                            "rawSha256": "a" * 64,
+                            "rawByteLength": 37,
+                        },
+                    },
+                }
+            ]
+        },
+        final_text="调研已经完成。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "runtime_handoff_payload_corrupted"
+    assert decision.details["expectedResultRef"] == "handoff_corrupted_delivery"
+    assert decision.details["payloadIntegrity"]["reason"] == "invalid_json"
+    assert decision.details["recoverable"] is False
+
+
+def test_completion_gate_resolves_legacy_result_ref_from_canonical_identity_aliases():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_research_legacy_ref",
+                "state": "completed",
+                "kind": "research",
+                "resultRef": "handoff_legacy",
+            }
+        ],
+        handoffs_by_episode={
+            "episode_research_legacy_ref": [
+                {
+                    "handoffId": "handoff_canonical",
+                    "handoffRefId": "handoff_canonical",
+                    "identityAliases": ["handoff_legacy"],
+                    "kind": "research_evidence_bundle",
+                    "status": "ready",
+                    "runMode": "run",
+                }
+            ]
+        },
+        final_text="调研结果和限制已经交付。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "eligible"
 
 
 def test_completion_gate_blocks_failed_required_write_episode_with_degraded_handoff():
@@ -2405,7 +2709,7 @@ def test_finalize_success_does_not_arm_resume_for_terminal_spec_handoff_pending(
     result = ChatRuntime().finalize_success_run(chat_run)
 
     assert result["status"] == "running"
-    assert result["reason"] == "spec_runtime_execution_handoff_pending"
+    assert result["reason"] == "required_runtime_handoff_missing"
     assert metadata_updates == []
     assert scheduled == []
     run_handle.complete.assert_not_called()

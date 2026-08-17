@@ -15,6 +15,7 @@ from core.runtime_episodes import (
     TERMINAL_EPISODE_STATES,
     append_handoff_ref,
     emit_runtime_episode_event,
+    resolve_runtime_episode_current_handoff,
     runtime_episode_parent_id,
     superseded_runtime_episode_ids,
     transition_runtime_episode,
@@ -243,33 +244,80 @@ def build_runtime_episode_wait_node():
 
     def _merge_handoffs(route_context: dict, episodes: list[dict]) -> tuple[dict, list[dict]]:
         updated = dict(route_context or {})
-        existing_ids = {
-            str(item.get("handoffRefId") or item.get("handoffId") or item.get("artifactId") or "").strip()
-            for item in list(updated.get("handoffRefs") or [])
-            if isinstance(item, dict)
-        }
         available: list[dict] = []
         available_ids: set[str] = set()
+        delivery_diagnostics = {
+            str(item.get("episodeId") or "").strip(): dict(item)
+            for item in list(updated.get("runtimeDeliveryDiagnostics") or [])
+            if isinstance(item, dict) and str(item.get("episodeId") or "").strip()
+        }
         for episode in episodes:
             episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
             if not episode_id:
                 continue
             try:
-                handoffs = db.list_runtime_episode_handoffs(episode_id)
+                handoff_rows = db.list_runtime_episode_handoffs(episode_id)
             except Exception:
-                handoffs = []
-            for row in handoffs:
-                payload = dict(row.get("payload") or row.get("handoff") or row)
-                handoff_id = _string_value(payload.get("handoffRefId"), payload.get("handoffId"), payload.get("artifactId"))
+                handoff_rows = []
+            payload, diagnostic = resolve_runtime_episode_current_handoff(
+                episode,
+                handoff_rows,
+            )
+            if payload is not None:
+                delivery_diagnostics.pop(episode_id, None)
+                handoff_id = _string_value(
+                    payload.get("handoffRefId"),
+                    payload.get("handoffId"),
+                    payload.get("artifactId"),
+                )
                 if not handoff_id or handoff_id not in available_ids:
                     available.append(payload)
                     if handoff_id:
                         available_ids.add(handoff_id)
-                if handoff_id and handoff_id in existing_ids:
-                    continue
+                # Re-appending the selected delivery intentionally replaces any
+                # historical handoff for this producer in route_context.
                 updated = append_handoff_ref(updated, payload)
                 if handoff_id:
-                    existing_ids.add(handoff_id)
+                    available_ids.add(handoff_id)
+                continue
+
+            resolution = str(diagnostic.get("resolution") or "missing_handoff")
+            state = str(episode.get("state") or "").strip().lower()
+            should_surface = bool(handoff_rows) or state in TERMINAL_EPISODE_STATES
+            if not should_surface:
+                continue
+            error_code = (
+                "runtime_handoff_payload_corrupted"
+                if resolution == "current_handoff_payload_corrupted"
+                else "runtime_result_handoff_missing"
+                if resolution in {"missing_handoff", "result_ref_not_found"}
+                else "runtime_result_handoff_invalid"
+            )
+            typed_diagnostic = {
+                **diagnostic,
+                "producerEpisodeId": episode_id,
+                "kind": "runtime_delivery_diagnostic",
+                "status": "failed",
+                "optional": _is_optional_episode(episode),
+                "errorCode": error_code,
+                "compactSummary": (
+                    f"Runtime episode {episode_id} has no safely resolvable current delivery "
+                    f"({resolution})."
+                ),
+                "recoverable": resolution != "current_handoff_payload_corrupted",
+            }
+            delivery_diagnostics[episode_id] = typed_diagnostic
+            available.append(typed_diagnostic)
+            updated["handoffRefs"] = [
+                dict(item)
+                for item in list(updated.get("handoffRefs") or [])
+                if isinstance(item, dict)
+                and str(item.get("producerEpisodeId") or "").strip() != episode_id
+            ]
+        if delivery_diagnostics:
+            updated["runtimeDeliveryDiagnostics"] = list(delivery_diagnostics.values())[-50:]
+        else:
+            updated.pop("runtimeDeliveryDiagnostics", None)
         return updated, available
 
     def _compact_handoff_projection(handoff: dict) -> dict:
@@ -317,12 +365,60 @@ def build_runtime_episode_wait_node():
                     collected.extend(_collect_results(child, depth=depth + 1))
             return collected
 
+        def _result_is_optional(item: dict) -> bool:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if item.get("required") is False or metadata.get("required") is False:
+                return True
+            return any(
+                bool(source.get("optional") or source.get("optionalLane") or source.get("degradedOk"))
+                or str(source.get("dependencyMode") or "").strip().lower()
+                in {"optional", "degraded_ok"}
+                for source in (item, metadata)
+            )
+
+        def _result_block_reason(item: dict) -> str:
+            status = _string_value(item.get("status"), item.get("workerStatus")).strip().lower()
+            accepted_research_result = _is_accepted_research_result(item)
+            if status in {
+                "error",
+                "failed",
+                "blocked",
+                "dependency_failed",
+                "cancelled",
+                "canceled",
+                "recoverable_failed",
+            }:
+                return f"status:{status}"
+            if status == "degraded" and not accepted_research_result:
+                return "status:degraded"
+            if _is_research_result(item) and not accepted_research_result:
+                return "research_result_not_accepted"
+            error = _string_value(item.get("error"), item.get("errorCode"), item.get("errorMessage"))
+            if error:
+                return "typed_error"
+            sandbox = item.get("sandboxEvidence") if isinstance(item.get("sandboxEvidence"), dict) else {}
+            sandbox_state = _string_value(sandbox.get("state")).strip().lower()
+            if sandbox_state in {"failed", "merge_failed"}:
+                return f"sandbox:{sandbox_state}"
+            if item.get("artifactRefsAccepted") is False:
+                return "artifact_refs_rejected"
+            if "acceptancePassed" in item and item.get("acceptancePassed") is False:
+                return "acceptance_failed"
+            return ""
+
         results: list[dict] = []
         result_keys: set[tuple[str, str, str]] = set()
         for item in _collect_results(handoff):
+            delegation_identity = _string_value(item.get("delegationId"), item.get("invocationId"))
+            task_identity = _string_value(item.get("taskBriefId"), item.get("taskId"))
+            if not delegation_identity and not task_identity:
+                # Anonymous results have no stable identity that makes
+                # equality safe to infer. Preserve each one in arrival order.
+                results.append(item)
+                continue
             key = (
-                _string_value(item.get("delegationId"), item.get("invocationId")),
-                _string_value(item.get("taskBriefId"), item.get("taskId")),
+                delegation_identity,
+                task_identity,
                 _string_value(item.get("status")),
             )
             if key in result_keys:
@@ -333,9 +429,66 @@ def build_runtime_episode_wait_node():
             _string_value(handoff.get("kind")).strip().lower() == "research"
             or any(_is_research_result(item) for item in results)
         )
+        handoff_kind = _string_value(handoff.get("kind")).strip().lower()
+        delegation_handoff = bool(
+            "delegation" in handoff_kind
+            or isinstance(handoff.get("delegationHandoff"), dict)
+            or list(handoff.get("childHandoffs") or [])
+        )
         projected_result_limit = 24 if research_handoff else 8
         projected_results = results[:projected_result_limit]
         omitted_result_count = max(0, len(results) - len(projected_results))
+        omitted_results = results[len(projected_results) :]
+        delegation_result_failures = [
+            (item, _result_block_reason(item))
+            for item in results
+            if delegation_handoff and _result_block_reason(item)
+        ]
+        required_delegation_failures = [
+            (item, reason)
+            for item, reason in delegation_result_failures
+            if not _result_is_optional(item)
+        ]
+        optional_delegation_failures = [
+            (item, reason)
+            for item, reason in delegation_result_failures
+            if _result_is_optional(item)
+        ]
+        omitted_required_delegation_failures = [
+            (item, _result_block_reason(item))
+            for item in omitted_results
+            if delegation_handoff
+            and _result_block_reason(item)
+            and not _result_is_optional(item)
+        ]
+        omitted_result_identities = {id(item) for item in omitted_results}
+        def _compact_failure_detail(item: dict, reason: str) -> dict:
+            sandbox = item.get("sandboxEvidence") if isinstance(item.get("sandboxEvidence"), dict) else {}
+            return {
+                "taskBriefId": _string_value(item.get("taskBriefId"), item.get("taskId")),
+                "delegationId": _string_value(item.get("delegationId"), item.get("invocationId")),
+                "status": _string_value(item.get("status"), item.get("workerStatus"), "failed"),
+                "reason": reason,
+                "error": _string_value(item.get("error"), item.get("errorMessage"))[:900],
+                "errorCode": _string_value(
+                    item.get("errorCode"),
+                    sandbox.get("errorCode"),
+                ),
+                "repairAction": _string_value(
+                    item.get("repairAction"),
+                    sandbox.get("repairAction"),
+                )[:900],
+                "omittedFromProjection": id(item) in omitted_result_identities,
+            }
+
+        blocking_result_details = [
+            _compact_failure_detail(item, reason)
+            for item, reason in required_delegation_failures[:24]
+        ]
+        optional_failure_details = [
+            _compact_failure_detail(item, reason)
+            for item, reason in optional_delegation_failures[:24]
+        ]
         accepted_research_result_count = sum(
             1 for item in results if _is_accepted_research_result(item)
         )
@@ -378,7 +531,9 @@ def build_runtime_episode_wait_node():
                 or item.get("error")
                 or str(sandbox_evidence.get("state") or "").strip().lower() in {"failed", "merge_failed"}
                 or item.get("artifactRefsAccepted") is False
+                or (delegation_handoff and _result_block_reason(item))
             )
+            optional_result = _result_is_optional(item)
             artifact_refs: list[dict | str] = []
             for ref in raw_artifact_refs:
                 if not blocking_result:
@@ -490,6 +645,9 @@ def build_runtime_episode_wait_node():
                     "delegationDepth": item.get("delegationDepth"),
                     "targetLabel": _string_value(item.get("targetLabel"), item.get("agentName"), item.get("agentId")),
                     "status": status,
+                    "optional": optional_result,
+                    "requiredBlocking": bool(blocking_result and not optional_result),
+                    "blockingReason": _result_block_reason(item) if blocking_result else "",
                     "result": result_text,
                     "artifactRefs": artifact_refs,
                     "artifactRefsAccepted": (
@@ -582,14 +740,13 @@ def build_runtime_episode_wait_node():
             accepted_research_result_count - visible_research_answer_count,
         )
         projection_limited = bool(omitted_result_count or omitted_research_answer_count)
-        blocking_results_present = any(
-            str(item.get("status") or "").strip().lower()
-            in {"error", "failed", "blocked", "dependency_failed", "cancelled", "degraded"}
-            or bool(item.get("error"))
-            or item.get("artifactRefsAccepted") is False
-            or str((item.get("sandboxEvidence") or {}).get("state") or "").strip().lower()
-            in {"failed", "merge_failed"}
-            for item in compact_results
+        projected_blocking_results_present = any(
+            item.get("requiredBlocking") is True for item in compact_results
+        )
+        blocking_results_present = bool(
+            required_delegation_failures
+            if delegation_handoff
+            else projected_blocking_results_present
         )
         nested_handoff = handoff.get("delegationHandoff")
         nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
@@ -605,13 +762,62 @@ def build_runtime_episode_wait_node():
             if "deliveryComplete" in handoff
             else evidence_coverage_complete
         )
+        raw_detail_ref = _string_value(handoff.get("detailRef"), handoff.get("rawRef"))
+        projected_detail_ref = raw_detail_ref if raw_detail_ref.startswith("toolobs://") else ""
+        projected_detail_tool = _string_value(handoff.get("detailTool"))
+        omitted_research_results = [
+            item
+            for item in results
+            if _is_accepted_research_result(item)
+            and (
+                visible_research_result_index is None
+                or item is not projected_results[visible_research_result_index]
+            )
+        ]
+        research_projection_recovery_available = bool(
+            omitted_research_results
+            and all(_research_detail_tool(item) for item in omitted_research_results)
+        )
+        delegation_projection_recovery_available = bool(
+            projected_detail_ref and projected_detail_tool
+        )
+        projection_kind = (
+            "delegation"
+            if delegation_handoff
+            else "research"
+            if research_handoff
+            else "runtime"
+        )
+        projection_recovery_available = bool(
+            projection_limited
+            and (
+                delegation_projection_recovery_available
+                if delegation_handoff
+                else research_projection_recovery_available
+                if research_handoff
+                else projected_detail_ref and projected_detail_tool
+            )
+        )
         projected_coverage_complete = bool(
-            evidence_coverage_complete and not (research_handoff and projection_limited)
+            evidence_coverage_complete
+            and not blocking_results_present
+            and not (research_handoff and projection_limited)
+            and not (
+                delegation_handoff
+                and projection_limited
+                and not projection_recovery_available
+            )
         )
         projected_delivery_complete = bool(
             declared_delivery_complete
+            and not blocking_results_present
             and not (research_handoff and projection_limited)
             and (not research_handoff or evidence_coverage_complete)
+            and not (
+                delegation_handoff
+                and projection_limited
+                and not projection_recovery_available
+            )
         )
         return {
             "handoffRefId": _string_value(handoff.get("handoffRefId"), handoff.get("handoffId")),
@@ -619,19 +825,18 @@ def build_runtime_episode_wait_node():
             # tool_observation_detail.  Research evidence identities use
             # `researchRefs` and an explicit research_broker(get_evidence)
             # detailTool instead; never project research:// as rawRef.
-            "detailRef": (
-                _string_value(handoff.get("detailRef"), handoff.get("rawRef"))
-                if _string_value(handoff.get("detailRef"), handoff.get("rawRef")).startswith("toolobs://")
-                else ""
-            ),
-            "detailTool": _string_value(handoff.get("detailTool")),
+            "detailRef": projected_detail_ref,
+            "detailTool": projected_detail_tool,
             "producerEpisodeId": _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId")),
             "kind": _string_value(handoff.get("kind"), "runtime_handoff"),
             "status": _string_value(handoff.get("status")),
             "runtimeOnlyRefValues": runtime_only_ref_values,
             "summary": (
-                "Delegated execution was not accepted. Its candidate workspace is quarantined and unmerged; "
-                "repair the typed task contract and route only the affected briefs once."
+                "Delegated execution contains required child result failures. Review the typed blocking results "
+                "and repair or retry only the affected briefs; failed child evidence remains unaccepted."
+                if blocking_results_present and delegation_handoff
+                else "Runtime execution contains required result failures. Review the typed blocking results "
+                "before accepting delivery."
                 if blocking_results_present
                 else "Governed Creative Media execution evidence is available for Supervisor acceptance."
                 if runtime_only_ref_values
@@ -644,9 +849,30 @@ def build_runtime_episode_wait_node():
             "resultCount": len(results),
             "projectedResultCount": len(compact_results),
             "omittedResultCount": omitted_result_count,
+            "blockingResultCount": len(required_delegation_failures),
+            "omittedBlockingResultCount": len(omitted_required_delegation_failures),
+            "optionalFailedResultCount": len(optional_delegation_failures),
+            "omittedOptionalFailedResultCount": sum(
+                1
+                for item, _reason in optional_delegation_failures
+                if id(item) in omitted_result_identities
+            ),
+            "hasBlockingResults": bool(required_delegation_failures),
+            "hasBlockingOmittedResults": bool(omitted_required_delegation_failures),
+            "blockingTaskBriefIds": list(
+                dict.fromkeys(
+                    _string_value(item.get("taskBriefId"), item.get("taskId"))
+                    for item, _reason in required_delegation_failures
+                    if _string_value(item.get("taskBriefId"), item.get("taskId"))
+                )
+            )[:24],
+            "blockingResults": blocking_result_details,
+            "optionalFailureResults": optional_failure_details,
             "visibleResearchAnswerCount": visible_research_answer_count,
             "omittedResearchAnswerCount": omitted_research_answer_count,
             "projectionLimited": projection_limited,
+            "projectionKind": projection_kind,
+            "projectionRecoveryAvailable": projection_recovery_available,
             "consumerHint": _string_value(handoff.get("consumerHint"), handoff.get("recommendedNextAction"))[:600],
             "recommendedNextAction": _string_value(handoff.get("recommendedNextAction"))[:160],
             "taskBriefIds": [
@@ -806,15 +1032,106 @@ def build_runtime_episode_wait_node():
                             f"complete={bool(handoff.get('coverageComplete'))}"
                         )
                 if handoff.get("projectionLimited"):
+                    projection_kind = _string_value(handoff.get("projectionKind"), "runtime").lower()
+                    recovery_available = bool(handoff.get("projectionRecoveryAvailable"))
+                    if projection_kind == "research":
+                        projection_line = (
+                            "  bounded Research delivery projection: "
+                            f"results={handoff.get('projectedResultCount', 0)}/{handoff.get('resultCount', 0)}; "
+                            f"visibleAnswers={handoff.get('visibleResearchAnswerCount', 0)}; "
+                            f"omittedAnswers={handoff.get('omittedResearchAnswerCount', 0)}; "
+                            f"deliveryComplete={bool(handoff.get('deliveryComplete'))}; "
+                            f"coverageComplete={bool(handoff.get('coverageComplete'))}."
+                        )
+                        if recovery_available:
+                            projection_line += (
+                                " Omitted answer bodies remain available only through each brief's governed detail call."
+                            )
+                        else:
+                            projection_line += (
+                                " No governed detail reference is present for the omitted answer bodies; "
+                                "do not infer or claim review of them."
+                            )
+                    elif projection_kind == "delegation":
+                        projection_line = (
+                            "  bounded Delegation result projection: "
+                            f"results={handoff.get('projectedResultCount', 0)}/{handoff.get('resultCount', 0)}; "
+                            f"requiredFailures={handoff.get('blockingResultCount', 0)}; "
+                            f"omittedRequiredFailures={handoff.get('omittedBlockingResultCount', 0)}; "
+                            f"optionalFailures={handoff.get('optionalFailedResultCount', 0)}; "
+                            f"omittedOptionalFailures={handoff.get('omittedOptionalFailedResultCount', 0)}; "
+                            f"deliveryComplete={bool(handoff.get('deliveryComplete'))}."
+                        )
+                        if recovery_available:
+                            projection_line += (
+                                " Omitted child result bodies are recoverable only through the exact governed "
+                                "detailRef and detailTool in the Runtime Surface."
+                            )
+                        else:
+                            projection_line += (
+                                " No governed detailRef/detailTool pair is present for omitted child result bodies; "
+                                "do not infer them or claim full review."
+                            )
+                    else:
+                        projection_line = (
+                            "  bounded Runtime result projection: "
+                            f"results={handoff.get('projectedResultCount', 0)}/{handoff.get('resultCount', 0)}; "
+                            f"deliveryComplete={bool(handoff.get('deliveryComplete'))}."
+                        )
+                        if not recovery_available:
+                            projection_line += (
+                                " No governed detailRef/detailTool pair is present for omitted result bodies; "
+                                "do not infer them or claim full review."
+                            )
+                    lines.append(projection_line)
+                blocking_result_details = [
+                    item
+                    for item in list(handoff.get("blockingResults") or [])
+                    if isinstance(item, dict)
+                ]
+                if blocking_result_details:
                     lines.append(
-                        "  bounded Research delivery projection: "
-                        f"results={handoff.get('projectedResultCount', 0)}/{handoff.get('resultCount', 0)}; "
-                        f"visibleAnswers={handoff.get('visibleResearchAnswerCount', 0)}; "
-                        f"omittedAnswers={handoff.get('omittedResearchAnswerCount', 0)}; "
-                        f"deliveryComplete={bool(handoff.get('deliveryComplete'))}; "
-                        f"coverageComplete={bool(handoff.get('coverageComplete'))}. "
-                        "Omitted answer bodies remain available only through each brief's governed detail call."
+                        "  required child failures from the full canonical result set "
+                        f"({handoff.get('blockingResultCount', len(blocking_result_details))} total):"
                     )
+                    for item in blocking_result_details[:12]:
+                        details = [
+                            f"brief={_string_value(item.get('taskBriefId'), 'unknown')}",
+                            f"status={_string_value(item.get('status'), 'failed')}",
+                            f"reason={_string_value(item.get('reason'), 'delegated_task_failed')}",
+                            f"omittedFromProjection={bool(item.get('omittedFromProjection'))}",
+                        ]
+                        error_code = _string_value(item.get("errorCode"))
+                        error = _string_value(item.get("error"))
+                        if error_code:
+                            details.append(f"errorCode={error_code}")
+                        if error:
+                            details.append(f"error={error[:500]}")
+                        lines.append("    - " + "; ".join(details))
+                optional_failure_details = [
+                    item
+                    for item in list(handoff.get("optionalFailureResults") or [])
+                    if isinstance(item, dict)
+                ]
+                if optional_failure_details:
+                    lines.append(
+                        "  optional child failures from the full canonical result set "
+                        f"({handoff.get('optionalFailedResultCount', len(optional_failure_details))} total; non-blocking):"
+                    )
+                    for item in optional_failure_details[:12]:
+                        details = [
+                            f"brief={_string_value(item.get('taskBriefId'), 'unknown')}",
+                            f"status={_string_value(item.get('status'), 'failed')}",
+                            f"reason={_string_value(item.get('reason'), 'delegated_task_failed')}",
+                            f"omittedFromProjection={bool(item.get('omittedFromProjection'))}",
+                        ]
+                        error_code = _string_value(item.get("errorCode"))
+                        error = _string_value(item.get("error"))
+                        if error_code:
+                            details.append(f"errorCode={error_code}")
+                        if error:
+                            details.append(f"error={error[:500]}")
+                        lines.append("    - " + "; ".join(details))
                 if missing_ids:
                     lines.append(
                         "  next action: retry only the missing brief IDs once through a new managed Research episode; "
@@ -1068,6 +1385,61 @@ def build_runtime_episode_wait_node():
             route_context, handoffs = _merge_handoffs(route_context, episodes)
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
+            delivery_integrity_failures = [
+                handoff
+                for handoff in handoffs
+                if str(handoff.get("kind") or "").strip() == "runtime_delivery_diagnostic"
+                and str(handoff.get("status") or "").strip().lower() == "failed"
+                and not bool(handoff.get("optional"))
+            ]
+            if delivery_integrity_failures:
+                failure_reason = _string_value(
+                    delivery_integrity_failures[0].get("errorCode"),
+                    "runtime_result_handoff_invalid",
+                )
+                failure_key = _failure_summary_key(
+                    episodes=episodes,
+                    handoffs=delivery_integrity_failures,
+                    reason=failure_reason,
+                )
+                notified_keys = {
+                    str(item).strip()
+                    for item in list(route_context.get("runtimeFailureSummaryKeys") or [])
+                    if str(item).strip()
+                }
+                first_notification = failure_key not in notified_keys
+                route_context["runtimeFailureSummaryKeys"] = list(
+                    dict.fromkeys([*notified_keys, failure_key])
+                )[-50:]
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "current_route_context": route_context,
+                        **identity_update,
+                        "runtime_dispatch_status": {
+                            "mode": "runtime_episode",
+                            "nextAction": "recoverable_failure",
+                            "state": "delivery_integrity_failed",
+                            "episodeCount": len(episodes),
+                            "handoffCount": 0,
+                            "failedHandoffCount": len(delivery_integrity_failures),
+                            "reason": failure_reason,
+                            "failureSummaryInjected": first_notification,
+                        },
+                        "messages": (
+                            [
+                                _summary_message(
+                                    episodes=episodes,
+                                    handoffs=delivery_integrity_failures,
+                                    status="Delivery Integrity Failure",
+                                    reason=failure_reason,
+                                )
+                            ]
+                            if first_notification
+                            else []
+                        ),
+                    },
+                )
             waiting_input_episodes = [
                 episode
                 for episode in active

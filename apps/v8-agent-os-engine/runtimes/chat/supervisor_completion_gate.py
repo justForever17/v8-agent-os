@@ -10,6 +10,7 @@ from core.database import db
 from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.runtime_episodes import (
     ACTIVE_EPISODE_STATES,
+    resolve_runtime_episode_current_handoff,
     runtime_episode_parent_id,
     superseded_runtime_episode_ids,
 )
@@ -315,6 +316,221 @@ def _required_write_episode(episode: Mapping[str, Any]) -> bool:
 def _handoff_payload(handoff: Mapping[str, Any]) -> dict[str, Any]:
     payload = handoff.get("payload") if isinstance(handoff.get("payload"), Mapping) else {}
     return {**dict(handoff), **dict(payload)}
+
+
+def _delegation_result_is_optional(result: Mapping[str, Any]) -> bool:
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), Mapping) else {}
+    if result.get("required") is False or metadata.get("required") is False:
+        return True
+    return any(
+        bool(source.get("optional") or source.get("optionalLane") or source.get("degradedOk"))
+        or str(source.get("dependencyMode") or "").strip().lower()
+        in {"optional", "degraded_ok"}
+        for source in (result, metadata)
+    )
+
+
+def _delegation_result_block_reason(result: Mapping[str, Any]) -> str:
+    status = str(result.get("status") or result.get("workerStatus") or "").strip().lower()
+    if status in {
+        "error",
+        "failed",
+        "blocked",
+        "dependency_failed",
+        "cancelled",
+        "canceled",
+        "recoverable_failed",
+    }:
+        return f"status:{status}"
+    is_research_result = bool(
+        result.get("answer")
+        or result.get("researchRef")
+        or result.get("evidenceBundleId")
+        or result.get("sourceUrls")
+    )
+    accepted_research_result = bool(
+        is_research_result
+        and result.get("acceptancePassed") is True
+        and str(result.get("qualityTier") or "").strip() == "high_quality"
+        and str(result.get("answer") or "").strip()
+    )
+    if status == "degraded" and not accepted_research_result:
+        return "status:degraded"
+    if is_research_result and not accepted_research_result:
+        return "research_result_not_accepted"
+    if str(result.get("error") or result.get("errorCode") or result.get("errorMessage") or "").strip():
+        return "typed_error"
+    sandbox = result.get("sandboxEvidence") if isinstance(result.get("sandboxEvidence"), Mapping) else {}
+    sandbox_state = str(sandbox.get("state") or "").strip().lower()
+    if sandbox_state in {"failed", "merge_failed"}:
+        return f"sandbox:{sandbox_state}"
+    if result.get("artifactRefsAccepted") is False:
+        return "artifact_refs_rejected"
+    if "acceptancePassed" in result and result.get("acceptancePassed") is False:
+        return "acceptance_failed"
+    return ""
+
+
+def _required_nested_delegation_failures(
+    handoff: Mapping[str, Any],
+    *,
+    episode_kind: str,
+) -> list[dict[str, Any]]:
+    payload = _handoff_payload(handoff)
+    handoff_kind = str(payload.get("kind") or "").strip().lower()
+    has_delegation_surface = bool(
+        episode_kind == "delegation"
+        or "delegation" in handoff_kind
+        or isinstance(payload.get("delegationHandoff"), Mapping)
+        or list(payload.get("childHandoffs") or [])
+    )
+    if not has_delegation_surface:
+        return []
+
+    results: list[dict[str, Any]] = []
+    visited: set[int] = set()
+
+    def _collect(value: Any, *, depth: int = 0) -> None:
+        if depth > 8 or not isinstance(value, Mapping) or id(value) in visited:
+            return
+        visited.add(id(value))
+        for key in ("results", "taskBriefResults"):
+            for item in list(value.get(key) or []):
+                if not isinstance(item, Mapping):
+                    continue
+                results.append(dict(item))
+                _collect(item, depth=depth + 1)
+        nested = value.get("delegationHandoff")
+        if isinstance(nested, Mapping):
+            _collect(nested, depth=depth + 1)
+        for child in list(value.get("childHandoffs") or []):
+            if isinstance(child, Mapping):
+                _collect(child, depth=depth + 1)
+        nested_payload = value.get("payload")
+        if isinstance(nested_payload, Mapping):
+            _collect(nested_payload, depth=depth + 1)
+
+    _collect(payload)
+    failures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for result in results:
+        reason = _delegation_result_block_reason(result)
+        if not reason or _delegation_result_is_optional(result):
+            continue
+        task_brief_id = str(result.get("taskBriefId") or result.get("taskId") or "").strip()
+        delegation_id = str(result.get("delegationId") or result.get("invocationId") or "").strip()
+        status = str(result.get("status") or result.get("workerStatus") or "failed").strip()
+        error = str(result.get("error") or result.get("errorMessage") or "").strip()
+        key = (task_brief_id, delegation_id, status, error or reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        sandbox = result.get("sandboxEvidence") if isinstance(result.get("sandboxEvidence"), Mapping) else {}
+        failures.append(
+            {
+                "taskBriefId": task_brief_id,
+                "delegationId": delegation_id,
+                "status": status,
+                "reason": reason,
+                "error": error[:900],
+                "errorCode": str(result.get("errorCode") or sandbox.get("errorCode") or "").strip(),
+                "repairAction": str(result.get("repairAction") or sandbox.get("repairAction") or "").strip()[:900],
+            }
+        )
+    return failures
+
+
+def _current_runtime_handoffs(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
+    """Project one current delivery per required terminal episode.
+
+    Older attempts remain durable history, but they must not override the
+    episode's result_ref during Supervisor acceptance. A single legacy handoff
+    remains readable when no result_ref was recorded; multiple unreferenced
+    deliveries are ambiguous and are surfaced instead of guessed.
+    """
+
+    current: dict[str, list[dict[str, Any]]] = {}
+    terminal_states = {"completed", "merged", "degraded", "failed", "cancelled"}
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        state = str(episode.get("state") or "").strip().lower()
+        if not episode_id or state not in terminal_states:
+            continue
+        handoffs = [
+            dict(item)
+            for item in list(handoffs_by_episode.get(episode_id, []) or [])
+            if isinstance(item, Mapping)
+        ]
+        selected, diagnostic = resolve_runtime_episode_current_handoff(
+            episode,
+            handoffs,
+        )
+        if selected is not None:
+            current[episode_id] = [selected]
+            continue
+        resolution = str(diagnostic.get("resolution") or "missing_handoff")
+        if resolution == "current_handoff_payload_corrupted":
+            return current, {
+                "reason": "runtime_handoff_payload_corrupted",
+                "episodeId": episode_id,
+                "state": state,
+                "expectedResultRef": diagnostic.get("resultRef") or "",
+                "availableHandoffIds": list(diagnostic.get("availableHandoffIds") or [])[:12],
+                "payloadIntegrity": dict(diagnostic.get("payloadIntegrity") or {}),
+                "recoverable": False,
+                "nextAction": "restore_the_exact_durable_runtime_delivery",
+            }
+        if resolution == "missing_handoff":
+            return current, {
+                "reason": (
+                    "required_runtime_episode_failed_without_handoff"
+                    if state in {"failed", "cancelled"}
+                    else "required_runtime_handoff_missing"
+                ),
+                "episodeId": episode_id,
+                "state": state,
+                "expectedResultRef": "",
+                "availableHandoffIds": [],
+                "recoverable": True,
+                "nextAction": "recover_or_retry_the_missing_runtime_delivery",
+            }
+        if resolution == "result_ref_not_found":
+            return current, {
+                "reason": "runtime_result_handoff_missing",
+                "episodeId": episode_id,
+                "state": state,
+                "expectedResultRef": diagnostic.get("resultRef") or "",
+                "availableHandoffIds": list(diagnostic.get("availableHandoffIds") or [])[:12],
+                "matchingHandoffCount": 0,
+                "recoverable": True,
+                "nextAction": "reload_or_retry_the_exact_runtime_delivery",
+            }
+        if resolution == "producer_mismatch":
+            return current, {
+                "reason": "runtime_result_handoff_producer_mismatch",
+                "episodeId": episode_id,
+                "state": state,
+                "expectedResultRef": diagnostic.get("resultRef") or "",
+                "availableHandoffIds": list(diagnostic.get("availableHandoffIds") or [])[:12],
+                "recoverable": False,
+                "nextAction": "restore_the_delivery_with_its_original_lineage",
+            }
+        return current, {
+            "reason": "runtime_result_handoff_ambiguous",
+            "episodeId": episode_id,
+            "state": state,
+            "expectedResultRef": diagnostic.get("resultRef") or "",
+            "availableHandoffIds": list(diagnostic.get("availableHandoffIds") or [])[:12],
+            "matchingHandoffCount": len(handoffs),
+            "recoverable": True,
+            "nextAction": "bind_the_episode_result_ref_to_one_delivery",
+        }
+    return current, None
 
 
 def _collect_named_values(value: Any, keys: set[str], *, limit: int = 64) -> list[Any]:
@@ -1176,12 +1392,33 @@ def evaluate_supervisor_completion(
         not in superseded_ids
     ]
 
+    current_handoffs, delivery_integrity_failure = _current_runtime_handoffs(
+        effective_episodes,
+        normalized_handoffs,
+    )
+    if delivery_integrity_failure:
+        reason = str(delivery_integrity_failure.get("reason") or "runtime_result_handoff_missing")
+        return SupervisorCompletionDecision(
+            action=(
+                "waiting_runtime"
+                if reason in {"required_runtime_handoff_missing", "runtime_result_handoff_missing"}
+                else "fail"
+            ),
+            reason=reason,
+            details={
+                key: value
+                for key, value in delivery_integrity_failure.items()
+                if key != "reason"
+            },
+        )
+
     for episode in effective_episodes:
         if _is_optional_episode(episode):
             continue
         episode_id = str(episode.get("episodeId") or episode.get("id") or "")
+        episode_kind = str(episode.get("kind") or "").strip().lower()
         state = str(episode.get("state") or "").strip().lower()
-        handoffs = normalized_handoffs.get(episode_id, [])
+        handoffs = current_handoffs.get(episode_id, [])
         if state in {"failed", "cancelled"} and not any(
             str(_handoff_payload(item).get("status") or "").strip().lower() in {"ready", "degraded"}
             for item in handoffs
@@ -1212,13 +1449,36 @@ def evaluate_supervisor_completion(
                         "status": status,
                     },
                 )
+            nested_failures = _required_nested_delegation_failures(
+                handoff,
+                episode_kind=episode_kind,
+            )
+            if nested_failures:
+                return SupervisorCompletionDecision(
+                    action="fail",
+                    reason="required_delegation_result_failed",
+                    details={
+                        "episodeId": episode_id,
+                        "handoffRefId": handoff.get("handoffRefId") or handoff.get("handoffId"),
+                        "failedResultCount": len(nested_failures),
+                        "failedTaskBriefIds": list(
+                            dict.fromkeys(
+                                str(item.get("taskBriefId") or "").strip()
+                                for item in nested_failures
+                                if str(item.get("taskBriefId") or "").strip()
+                            )
+                        )[:24],
+                        "failures": nested_failures[:24],
+                        "nextAction": "repair_or_retry_only_the_required_failed_delegation_results",
+                    },
+                )
 
-    research_gaps = _unresolved_research_evidence_gaps(effective_episodes, normalized_handoffs)
+    research_gaps = _unresolved_research_evidence_gaps(effective_episodes, current_handoffs)
     research_gap_continuation = None
     if research_gaps:
         research_gap_continuation = _completed_downstream_carrying_research_gaps(
             effective_episodes,
-            normalized_handoffs,
+            current_handoffs,
             research_gaps,
         )
         if research_gap_continuation is None:
@@ -1234,7 +1494,7 @@ def evaluate_supervisor_completion(
 
     missing_delegation_acceptance = _delegation_acceptance_missing(
         effective_episodes,
-        normalized_handoffs,
+        current_handoffs,
         final_text=final_text,
     )
     if missing_delegation_acceptance:
@@ -1248,7 +1508,7 @@ def evaluate_supervisor_completion(
         )
 
     if not spec_mode:
-        write_delivery_failure = _non_spec_write_delivery_failure(effective_episodes, normalized_handoffs)
+        write_delivery_failure = _non_spec_write_delivery_failure(effective_episodes, current_handoffs)
         if write_delivery_failure:
             return SupervisorCompletionDecision(
                 action="fail",
@@ -1301,7 +1561,7 @@ def evaluate_supervisor_completion(
             )
         if bool(pipeline.get("runtimeExecutionAllowed")) and not _has_ready_runtime_handoff(
             effective_episodes,
-            normalized_handoffs,
+            current_handoffs,
         ):
             if not effective_episodes:
                 return SupervisorCompletionDecision(
@@ -1323,7 +1583,7 @@ def evaluate_supervisor_completion(
                 },
             )
         if bool(pipeline.get("runtimeExecutionAllowed")):
-            degraded_handoffs = _required_runtime_degraded_handoffs(effective_episodes, normalized_handoffs)
+            degraded_handoffs = _required_runtime_degraded_handoffs(effective_episodes, current_handoffs)
             if degraded_handoffs:
                 return SupervisorCompletionDecision(
                     action="fail",
@@ -1334,7 +1594,7 @@ def evaluate_supervisor_completion(
                         "handoffs": degraded_handoffs[:8],
                     },
                 )
-            missing_proof = _missing_spec_proof_handoffs(brief, effective_episodes, normalized_handoffs)
+            missing_proof = _missing_spec_proof_handoffs(brief, effective_episodes, current_handoffs)
             if missing_proof:
                 return SupervisorCompletionDecision(
                     action="fail",

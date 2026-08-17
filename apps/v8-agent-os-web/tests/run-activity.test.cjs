@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+const { evaluateSessionRuntimeEvent } = require("@v8/session-realtime");
 
 const root = path.resolve(__dirname, "..");
 const sourcePath = path.join(root, "src", "lib", "chat", "run-activity.ts");
@@ -14,6 +15,14 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, "utf8"), {
 }).outputText;
 const testModule = { exports: {} };
 new Function("require", "module", "exports", compiled)(require, testModule, testModule.exports);
+const identityLedgerSourcePath = path.join(root, "src", "lib", "runtime-event-identity-ledger.ts");
+const identityLedgerCompiled = ts.transpileModule(fs.readFileSync(identityLedgerSourcePath, "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  fileName: identityLedgerSourcePath,
+}).outputText;
+const identityLedgerModule = { exports: {} };
+new Function("require", "module", "exports", identityLedgerCompiled)(require, identityLedgerModule, identityLedgerModule.exports);
+const { BoundedRuntimeEventIdentityLedger } = identityLedgerModule.exports;
 const {
   deriveComposerRunActivity,
   deriveInterruptibleRunId,
@@ -102,4 +111,92 @@ test("Web starts chat work through the durable submit route and consumes progres
   assert.match(chatClientSource, /streamingTransportRef\.current === "stream"/);
   assert.match(chatClientSource, /streamingConversationIdRef\.current = submittingConversationId/);
   assert.match(chatClientSource, /streamingTransportRef\.current = "submit"/);
+});
+
+test("Web accepts a durable realtime event before any event-driven side effect", () => {
+  const start = chatClientSource.indexOf("const applyRemoteRuntimeEvent = useCallback");
+  const end = chatClientSource.indexOf("\n    useEffect(() =>", start);
+  const handler = chatClientSource.slice(start, end > start ? end : undefined);
+  const acceptance = handler.indexOf("const acceptance = evaluateSessionRuntimeEvent");
+
+  assert.ok(acceptance > 0);
+  for (const sideEffect of [
+    "ingestWorkbenchRuntimeEvent(rawEvent)",
+    "const terminalRunStatus = terminalRunStatusFromTopic",
+    "applyAskUserPendingApproval({",
+    "upsertGovernanceApproval({",
+    "void loadRuns(conversationId)",
+  ]) {
+    assert.ok(acceptance < handler.indexOf(sideEffect), `${sideEffect} must run after shared event acceptance`);
+  }
+});
+
+test("Web prunes only realtime identities covered by an advancing snapshot", () => {
+  assert.match(
+    chatClientSource,
+    /const snapshotWatermarkAdvanced = latestSeq > snapshotCoveredRealtimeSeqRef\.current;[\s\S]*?if \(snapshotWatermarkAdvanced\) \{\s*seenRealtimeEventIdentitiesRef\.current\.pruneSnapshotCovered\(latestSeq\);\s*\}/,
+  );
+  assert.match(
+    chatClientSource,
+    /if \(latestSeq > snapshotCoveredRealtimeSeqRef\.current\) \{\s*snapshotCoveredRealtimeSeqRef\.current = latestSeq;\s*seenRealtimeEventIdentitiesRef\.current\.pruneSnapshotCovered\(latestSeq\);\s*\}/,
+  );
+});
+
+test("Web keeps a gap event identity beyond a partial snapshot watermark", () => {
+  const ledger = new BoundedRuntimeEventIdentityLedger(8);
+  const liveEvent = {
+    type: "custom_event",
+    topic: "subagent.tool.finished",
+    seq: 15,
+    event_id: "evt-web-15",
+  };
+  let sideEffects = 0;
+  const first = evaluateSessionRuntimeEvent(liveEvent, {
+    snapshotCoveredSeq: 10,
+    contiguousSeq: 10,
+    seenEventIdentities: ledger.seenIdentities,
+  });
+  assert.equal(first.accept, true);
+  assert.deepEqual(first.gap, {
+    expectedSeq: 11,
+    observedSeq: 15,
+    missingFromSeq: 11,
+    missingToSeq: 14,
+  });
+  if (first.accept) {
+    ledger.remember(first.identity, liveEvent.seq);
+    sideEffects += 1;
+  }
+
+  ledger.pruneSnapshotCovered(12);
+  const duplicate = evaluateSessionRuntimeEvent(liveEvent, {
+    snapshotCoveredSeq: 12,
+    seenEventIdentities: ledger.seenIdentities,
+  });
+  if (duplicate.accept) sideEffects += 1;
+
+  assert.equal(duplicate.reason, "duplicate");
+  assert.equal(sideEffects, 1);
+  assert.equal(ledger.has(first.identity), true);
+});
+
+test("Web realtime identity retention stays bounded without guessing legacy snapshot coverage", () => {
+  const ledger = new BoundedRuntimeEventIdentityLedger(2);
+  ledger.remember("legacy-without-sequence", 0);
+  ledger.pruneSnapshotCovered(99);
+  assert.equal(ledger.has("legacy-without-sequence"), true);
+
+  ledger.remember("event:100", 100);
+  ledger.remember("event:101", 101);
+  assert.equal(ledger.size, 2);
+  assert.equal(ledger.has("legacy-without-sequence"), false);
+  assert.equal(ledger.has("event:100"), true);
+  assert.equal(ledger.has("event:101"), true);
+});
+
+test("Web scopes realtime sequence state to the active conversation", () => {
+  assert.match(
+    chatClientSource,
+    /if \(previousConversationId === activeConversationId\) \{\s*return;\s*\}\s*latestRealtimeSeqRef\.current = 0;\s*snapshotCoveredRealtimeSeqRef\.current = 0;\s*seenRealtimeEventIdentitiesRef\.current\.clear\(\);/,
+  );
 });

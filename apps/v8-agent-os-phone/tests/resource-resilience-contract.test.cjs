@@ -4,6 +4,7 @@ const Module = require("node:module");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
+const { evaluateSessionRuntimeEvent } = require("@v8/session-realtime");
 
 const phoneRoot = path.resolve(__dirname, "..");
 
@@ -209,4 +210,67 @@ test("resource recovery labels remain bilingual", () => {
   assert.equal(en["src.components.chat.sessionoverviewpanel.retry"], "Retry");
   assert.match(zh["src.screens.artifactsscreen.text_preview_stream_unavailable"], /安全/);
   assert.match(en["src.screens.artifactsscreen.text_preview_stream_unavailable"], /safely stream/);
+});
+
+test("Phone prunes only realtime identities covered by an advancing snapshot", () => {
+  const screen = read("src/screens/ChatScreen.tsx");
+
+  assert.match(
+    screen,
+    /const snapshotWatermarkAdvanced = snapshotSeq > lastAppliedSnapshotSeqRef\.current;[\s\S]*?if \(snapshotWatermarkAdvanced\) \{\s*seenRealtimeEventKeysRef\.current\.pruneSnapshotCovered\(snapshotSeq\);\s*\}/,
+  );
+});
+
+test("Phone keeps a gap event identity beyond a partial snapshot watermark", () => {
+  const { BoundedRuntimeEventIdentityLedger } = loadTsModule("src/lib/runtime-event-identity-ledger.ts");
+  const ledger = new BoundedRuntimeEventIdentityLedger(8);
+  const liveEvent = {
+    type: "custom_event",
+    topic: "subagent.tool.finished",
+    seq: 15,
+    event_id: "evt-phone-15",
+  };
+  let sideEffects = 0;
+  const first = evaluateSessionRuntimeEvent(liveEvent, {
+    snapshotCoveredSeq: 10,
+    contiguousSeq: 10,
+    seenEventIdentities: ledger.seenIdentities,
+  });
+  assert.equal(first.accept, true);
+  assert.deepEqual(first.gap, {
+    expectedSeq: 11,
+    observedSeq: 15,
+    missingFromSeq: 11,
+    missingToSeq: 14,
+  });
+  if (first.accept) {
+    ledger.remember(first.identity, liveEvent.seq);
+    sideEffects += 1;
+  }
+
+  ledger.pruneSnapshotCovered(12);
+  const duplicate = evaluateSessionRuntimeEvent(liveEvent, {
+    snapshotCoveredSeq: 12,
+    seenEventIdentities: ledger.seenIdentities,
+  });
+  if (duplicate.accept) sideEffects += 1;
+
+  assert.equal(duplicate.reason, "duplicate");
+  assert.equal(sideEffects, 1);
+  assert.equal(ledger.has(first.identity), true);
+});
+
+test("Phone realtime identity retention stays bounded without guessing legacy snapshot coverage", () => {
+  const { BoundedRuntimeEventIdentityLedger } = loadTsModule("src/lib/runtime-event-identity-ledger.ts");
+  const ledger = new BoundedRuntimeEventIdentityLedger(2);
+  ledger.remember("legacy-without-sequence", 0);
+  ledger.pruneSnapshotCovered(99);
+  assert.equal(ledger.has("legacy-without-sequence"), true);
+
+  ledger.remember("event:100", 100);
+  ledger.remember("event:101", 101);
+  assert.equal(ledger.size, 2);
+  assert.equal(ledger.has("legacy-without-sequence"), false);
+  assert.equal(ledger.has("event:100"), true);
+  assert.equal(ledger.has("event:101"), true);
 });

@@ -1,6 +1,7 @@
 import json
 import logging
 import platform
+import re
 import uuid
 from typing import Any, Callable
 
@@ -568,22 +569,225 @@ def _resolved_workspace_binding_for_state(state) -> dict:
     return build_workspace_binding(context).as_dict()
 
 
+def _stable_prompt_json_value(value):
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_prompt_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_prompt_json_value(item) for item in value]
+    if isinstance(value, set):
+        normalized = [_stable_prompt_json_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+        )
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def _compact_prompt_value(value) -> str:
     if isinstance(value, dict):
-        try:
-            return json.dumps(value, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            return str(value)
+        return json.dumps(
+            _stable_prompt_json_value(value),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
     if isinstance(value, (list, tuple, set)):
-        return ", ".join(str(item).strip() for item in list(value) if str(item).strip())
+        items = sorted(value, key=str) if isinstance(value, set) else list(value)
+        if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+            return json.dumps(
+                _stable_prompt_json_value(items),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        return ", ".join(str(item).strip() for item in items if str(item).strip())
     return str(value or "").strip()
 
 
-def _compact_prompt_text(value, *, limit: int = 1600) -> str:
+_AGENT_SURFACE_SECRET_KEY_PARTS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "password",
+        "passphrase",
+        "secret",
+        "token",
+    }
+)
+_AGENT_SURFACE_SECRET_EXACT_KEYS = frozenset(
+    {
+        "auth",
+        "authentication",
+        "bearer",
+        "apikey",
+        "apitoken",
+        "accesstoken",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "cookiejar",
+        "idtoken",
+        "privatekey",
+        "refreshtoken",
+        "sessiontoken",
+        "secretkey",
+        "authorizationheader",
+    }
+)
+
+
+def _agent_surface_key_parts(value: Any) -> list[str]:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(value or ""))
+    return [part.lower() for part in re.findall(r"[A-Za-z0-9]+", separated)]
+
+
+def _agent_surface_secret_key(value: Any) -> bool:
+    parts = _agent_surface_key_parts(value)
+    normalized = "".join(parts)
+    if normalized in _AGENT_SURFACE_SECRET_EXACT_KEYS:
+        return True
+    if normalized.endswith(
+        (
+            "apikey",
+            "accesstoken",
+            "refreshtoken",
+            "privatekey",
+            "clientsecret",
+            "secretkey",
+        )
+    ):
+        return True
+    return bool(parts and parts[-1] in _AGENT_SURFACE_SECRET_KEY_PARTS)
+
+
+def _redact_agent_surface_value(
+    value: Any,
+    *,
+    root_path: str,
+) -> tuple[Any, list[str]]:
+    redacted_paths: list[str] = []
+
+    def redact(item: Any, *, path: str) -> Any:
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, nested in item.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if path else key_text
+                if _agent_surface_secret_key(key_text):
+                    result[key_text] = "<redacted>"
+                    redacted_paths.append(child_path)
+                else:
+                    result[key_text] = redact(nested, path=child_path)
+            return result
+        if isinstance(item, (list, tuple)):
+            return [
+                redact(nested, path=f"{path}[{index}]")
+                for index, nested in enumerate(item)
+            ]
+        if isinstance(item, set):
+            return [
+                redact(nested, path=f"{path}[{index}]")
+                for index, nested in enumerate(sorted(item, key=str))
+            ]
+        return item
+
+    return redact(value, path=root_path), redacted_paths
+
+
+def _redact_agent_surface_extensions(value: Any) -> tuple[Any, list[str]]:
+    return _redact_agent_surface_value(value, root_path="extensions")
+
+
+def _prompt_recovery_metadata(value: Any, *, fallback: Any = None) -> dict[str, Any]:
+    detail_refs: list[str] = []
+    raw_refs: list[str] = []
+    recovery_tools: list[str] = []
+
+    def append_unique(target: list[str], nested: Any) -> None:
+        if isinstance(nested, dict):
+            for child in nested.values():
+                append_unique(target, child)
+            return
+        if isinstance(nested, (list, tuple, set)):
+            for child in nested:
+                append_unique(target, child)
+            return
+        text = str(nested or "").strip()
+        if text and text not in target:
+            target.append(text)
+
+    def collect(nested: Any) -> None:
+        if isinstance(nested, dict):
+            for key, child in nested.items():
+                normalized_key = "".join(_agent_surface_key_parts(key))
+                if normalized_key in {"detailref", "detailrefs", "taskdetailref", "taskdetailrefs"}:
+                    append_unique(detail_refs, child)
+                elif normalized_key in {"rawref", "rawrefs"}:
+                    append_unique(raw_refs, child)
+                elif normalized_key in {"detailtool", "detailtools", "recoverytool", "recoverytools"}:
+                    append_unique(recovery_tools, child)
+                else:
+                    collect(child)
+            return
+        if isinstance(nested, (list, tuple, set)):
+            for child in nested:
+                collect(child)
+
+    collect(value)
+    collect(fallback)
+    if any(ref.startswith("toolobs://") for ref in raw_refs):
+        append_unique(recovery_tools, "tool_observation_detail(rawRef)")
+    bounded_detail_refs = [ref[:360] for ref in detail_refs[:8]]
+    bounded_raw_refs = [ref[:360] for ref in raw_refs[:8]]
+    bounded_tools = [tool[:360] for tool in recovery_tools[:6]]
+    metadata: dict[str, Any] = {
+        "recoveryRefAvailable": bool(bounded_detail_refs or bounded_raw_refs),
+        "recoveryAvailable": bool(
+            any(ref.startswith("toolobs://") for ref in bounded_raw_refs)
+            or ((bounded_detail_refs or bounded_raw_refs) and bounded_tools)
+        ),
+    }
+    if bounded_detail_refs:
+        metadata["detailRef"] = bounded_detail_refs[0]
+        if len(bounded_detail_refs) > 1:
+            metadata["detailRefs"] = bounded_detail_refs
+    if bounded_raw_refs:
+        metadata["rawRef"] = bounded_raw_refs[0]
+        if len(bounded_raw_refs) > 1:
+            metadata["rawRefs"] = bounded_raw_refs
+    if bounded_tools:
+        metadata["recoveryTools"] = bounded_tools
+    metadata["recoveryGuidance"] = (
+        "Use only the exact listed ref with its granted authoritative detail tool; never treat a ref as a filesystem path."
+        if metadata["recoveryAvailable"]
+        else "No independently readable recovery ref/tool pair is present on this Agent Surface. Do not infer omitted content; identify the truncated field to the parent if it affects acceptance."
+    )
+    return metadata
+
+
+def _compact_prompt_text(value, *, limit: int = 1600, recovery_source: Any = None) -> str:
     text = _compact_prompt_value(value)
     if len(text) <= limit:
         return text
-    return f"{text[:limit].rstrip()} ... [truncated; use detailRef/read_section if needed]"
+    metadata = _prompt_recovery_metadata(value, fallback=recovery_source)
+    metadata.update(
+        {
+            "truncated": True,
+            "omittedCount": len(text) - limit,
+            "omittedUnit": "characters",
+        }
+    )
+    rendered_metadata = json.dumps(
+        _stable_prompt_json_value(metadata),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return f"{text[:limit].rstrip()} ... [truncation: {rendered_metadata}]"
 
 
 _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
@@ -606,9 +810,14 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Expected Output", "expectedOutput", 800),
     ("Expected Outputs", "expectedOutputs", 900),
     ("Upstream Dependency Results", "dependencyResults", 7200),
+    ("Shared Context", "sharedContext", 3600),
+    ("Worker Context", "workerContext", 2600),
     ("Task Context", "notes", 1800),
     ("Upstream Handoffs", "upstreamHandoffs", 7200),
     ("Handoff Usage", "handoffUsage", 900),
+    ("Requested Evidence Refs", "requestedEvidenceRefs", 1200),
+    ("Unresolved Evidence Refs", "unresolvedEvidenceRefs", 1200),
+    ("Evidence Resolution", "evidenceResolutionDiagnostics", 1800),
     ("Shell Dialect", "shellDialect", 120),
     ("Workspace Path", "workspacePath", 260),
     ("Terminal Delegation Role", "terminalDelegationRole", 800),
@@ -629,7 +838,6 @@ _RUNTIME_ONLY_CONTEXT_KEYS = {
     "assignedTaskDetails",
     "assignedTaskSummaries",
     "parentContext",
-    "workerContext",
 }
 
 
@@ -638,12 +846,42 @@ def _agent_visible_context_lines(context: dict | None) -> list[str]:
         return []
     lines = ["", "Agent-Visible Context:"]
     emitted = False
+    shared_recovery_source = {
+        key: context.get(key)
+        for key in (
+            "detailRef",
+            "detailRefs",
+            "taskDetailRef",
+            "taskDetailRefs",
+            "rawRef",
+            "rawRefs",
+            "detailTool",
+            "detailTools",
+            "recoveryTool",
+            "recoveryTools",
+        )
+        if context.get(key) not in (None, "", [], {})
+    }
     for label, key, limit in _AGENT_VISIBLE_CONTEXT_KEYS:
         if key not in context:
             continue
-        rendered = _compact_prompt_text(context.get(key), limit=limit)
+        surface_value, redacted_paths = _redact_agent_surface_value(
+            context.get(key),
+            root_path=key,
+        )
+        rendered = _compact_prompt_text(
+            surface_value,
+            limit=limit,
+            recovery_source=shared_recovery_source,
+        )
         if rendered:
             lines.append(f"- {label}: {rendered}")
+            emitted = True
+        if redacted_paths:
+            lines.append(
+                f"- {label} redactions: "
+                + json.dumps(sorted(redacted_paths), ensure_ascii=False)
+            )
             emitted = True
     omitted = [key for key in _RUNTIME_ONLY_CONTEXT_KEYS if key in context]
     if omitted:
@@ -782,29 +1020,64 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         "If the task is to configure MCP servers, use the supervisor-provided MCP config route/tool; do not call Admin login-only APIs or edit V8OS config files directly.",
     ]
     if isinstance(task_brief, dict) and task_brief:
+        agent_surface_extensions, redacted_extension_paths = _redact_agent_surface_extensions(
+            task_brief.get("extensions")
+        )
         lines.append("")
         lines.append("Assigned Task Brief:")
         for label, key in (
+            ("Schema Version", "schemaVersion"),
             ("Task Brief ID", "taskBriefId"),
             ("Goal", "goal"),
             ("Read Set", "readSet"),
             ("Write Set", "writeSet"),
             ("Expected Outputs", "expectedOutputs"),
+            ("Expected Artifacts", "expectedArtifacts"),
+            ("Constraints", "constraints"),
             ("Behavior Scope", "behaviorScope"),
             ("Evidence Refs", "evidenceRefs"),
             ("Detail Refs", "detailRefs"),
+            ("Spec Refs", "specRefs"),
             ("Proof Expectations", "proofExpectations"),
             ("Required Capabilities", "requiredCapabilities"),
             ("Runtime Access", "runtimeAccess"),
             ("Tool Policy", "toolPolicy"),
-            ("Dependency", "dependency"),
+            ("Side Effect Policy", "sideEffectPolicy"),
+            ("Execution Budget", "budget"),
+            ("Failure Policy", "failurePolicy"),
+            ("Dependencies", "dependencies"),
+            ("Extensions", "extensions"),
+            ("Unsupported Fields", "unsupportedFields"),
             ("Parallel Group", "parallelGroup"),
             ("Execution Lane Hint", "executionLaneHint"),
             ("Acceptance Contract", "acceptanceContract"),
+            ("Acceptance Tiers", "acceptanceTiers"),
         ):
-            rendered = _compact_prompt_value(task_brief.get(key))
+            value = task_brief.get(key)
+            if key == "dependencies" and value in (None, "", []):
+                value = task_brief.get("dependency")
+            elif key == "extensions":
+                value = agent_surface_extensions
+            rendered = _compact_prompt_value(value)
             if rendered:
                 lines.append(f"- {label}: {rendered}")
+        if redacted_extension_paths:
+            lines.append(
+                "- Extensions redaction: sensitive values were replaced with `<redacted>` on the Agent Surface; "
+                "their canonical runtime values were not modified. Redacted paths: "
+                + ", ".join(redacted_extension_paths[:24])
+                + (
+                    f"; {len(redacted_extension_paths) - 24} additional path(s) redacted"
+                    if len(redacted_extension_paths) > 24
+                    else ""
+                )
+                + "."
+            )
+        if task_brief.get("unsupportedFields"):
+            lines.append(
+                "- Extension discipline: unsupported fields are preserved for context and diagnostics only; "
+                "they do not grant tools, side effects, workspace writes, or routing authority."
+            )
         tool_policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
         tool_policy_mode = str(tool_policy.get("mode") or "default").strip().lower()
         if tool_policy_mode == "none":

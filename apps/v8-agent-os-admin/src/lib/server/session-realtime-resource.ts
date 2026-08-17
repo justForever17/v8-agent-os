@@ -6,6 +6,7 @@ import {
     type AdminResourceRef,
 } from "@v8/session-realtime";
 import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resource";
+import { buildRuntimeEventDedupeKey } from "@/lib/server/runtime-event-delivery";
 
 type JsonRecord = Record<string, unknown>;
 type SurfaceNormalizationOptions = {
@@ -272,52 +273,6 @@ function readString(...values: unknown[]) {
         if (typeof value === "number" && Number.isFinite(value)) {
             return String(value);
         }
-    }
-    return "";
-}
-
-function readNestedString(record: JsonRecord, path: string) {
-    let current: unknown = record;
-    for (const part of path.split(".")) {
-        current = asRecord(current)[part];
-    }
-    return readString(current);
-}
-
-function buildRuntimeEventDedupeKey(record: JsonRecord, data: JsonRecord, payload: JsonRecord) {
-    const topic = readString(record.topic, data.topic, payload.topic, record.name).toLowerCase();
-    const runId = readString(record.run_id, record.runId, data.run_id, data.runId, payload.run_id, payload.runId, "run");
-    const runtimeId = readString(record.runtimeId, record.runtime_id, data.runtimeId, data.runtime_id, payload.runtimeId, payload.runtime_id, "runtime");
-    const status = readString(record.status, data.status, payload.status, "state");
-    const explicit = readString(record.dedupeKey, data.dedupeKey, data.dedupe_key, payload.dedupeKey, payload.dedupe_key);
-    if (explicit) {
-        return explicit;
-    }
-    if (topic.startsWith("runtime.episode.")) {
-        const episodeId = readString(
-            readNestedString(data, "episode.episodeId"),
-            readNestedString(data, "episode.episode_id"),
-            readNestedString(data, "episode.id"),
-            readNestedString(payload, "episode.episodeId"),
-            readNestedString(payload, "episode.episode_id"),
-            readNestedString(payload, "episode.id"),
-            data.episodeId,
-            data.episode_id,
-            payload.episodeId,
-            payload.episode_id,
-            record.event_id,
-        );
-        return `runtime-episode:${runId}:${episodeId || topic}:${topic}:${status}`;
-    }
-    if (topic.startsWith("delegation.") || topic.startsWith("subagent.")) {
-        const dispatchGroup = readString(data.dispatchGroup, data.dispatch_group, payload.dispatchGroup, payload.dispatch_group, data.episodeId, payload.episodeId);
-        const summary = readString(data.summary, data.message, payload.summary, payload.message, record.content);
-        if (dispatchGroup || /missing|未形成|未确认/i.test(summary)) {
-            return `delegation:${runId}:${dispatchGroup || topic}:${topic}:${status}`;
-        }
-    }
-    if (topic.endsWith(".delta") || topic === "run.text.delta" || topic === "run.reasoning.delta") {
-        return `stream:${runId}:${runtimeId}:${topic}`;
     }
     return "";
 }

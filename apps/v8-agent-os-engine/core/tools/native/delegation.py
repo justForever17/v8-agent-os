@@ -6,6 +6,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote, urlsplit
 
 from typing_extensions import Required, TypedDict
 
@@ -35,6 +36,7 @@ from core.delegation_broker import (
     render_external_worker_command,
     reveal_subagent_family,
     task_brief_query_text,
+    task_brief_contract_diagnostics,
     task_brief_summary,
 )
 from core.database import db
@@ -62,7 +64,7 @@ from erc.runtime_context import bind_runtime_context, get_runtime_context
 
 storage = StorageManager()
 
-_EPISODE_REF_RE = re.compile(r"(?:episode_[A-Za-z0-9]+|subagent::[A-Za-z0-9:_-]+)")
+_EPISODE_REF_RE = re.compile(r"(?:episode_[A-Za-z0-9_-]+|subagent::[A-Za-z0-9:_-]+)")
 
 _VERIFICATION_TASK_SIGNALS = (
     "risk review",
@@ -288,6 +290,65 @@ def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[
     return normalized
 
 
+def _handoff_recovery_requirements(context: dict[str, Any]) -> dict[str, Any]:
+    refs: list[str] = []
+    tool_names: list[str] = []
+
+    def append_unique(target: list[str], value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in target:
+            target.append(text)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            raw_ref = str(value.get("rawRef") or "").strip()
+            detail_refs = _unique_handoff_values(
+                value.get("detailRef"),
+                value.get("detailRefs"),
+            )
+            truncation = value.get("truncation") if isinstance(value.get("truncation"), dict) else {}
+            recovery_refs = (
+                truncation.get("recoveryRefs")
+                if isinstance(truncation.get("recoveryRefs"), dict)
+                else {}
+            )
+            append_unique(refs, raw_ref)
+            for item in detail_refs:
+                append_unique(refs, item)
+            append_unique(refs, recovery_refs.get("rawRef"))
+            append_unique(refs, recovery_refs.get("detailRef"))
+            for item in list(recovery_refs.get("detailRefs") or []):
+                append_unique(refs, item)
+
+            detail_tools = _unique_handoff_values(
+                value.get("detailTool"),
+                truncation.get("recoveryTools"),
+            )
+            if raw_ref.startswith("toolobs://") or any(
+                str(item or "").strip().startswith("toolobs://") for item in refs
+            ):
+                append_unique(tool_names, "tool_observation_detail")
+            for item in detail_tools:
+                match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)", str(item or "").strip())
+                if match:
+                    append_unique(tool_names, match.group(1))
+            for child in value.values():
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child)
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for key in ("upstreamHandoffs", "dependencyResults"):
+        visit(context.get(key))
+    return {
+        "recoveryAvailable": bool(refs and tool_names),
+        "refs": refs[:8],
+        "toolNames": tool_names[:6],
+    }
+
+
 def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep injected-handoff review work out of unrelated workspace tools."""
 
@@ -307,6 +368,7 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             or context.get("handoffUsage")
         )
         read_only = bool(context.get("readOnly") or context.get("noSideEffect") or item.get("readOnly"))
+        recovery_requirements = _handoff_recovery_requirements(context)
         if (
             handoff_evidence
             and read_only
@@ -315,60 +377,244 @@ def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[st
             and not allowed_tools
             and tool_mode in {"", "default", "none"}
         ):
-            item["toolPolicy"] = {"mode": "none", "allowedTools": [], "forbiddenTools": []}
-            item["allowedTools"] = []
-            context.setdefault(
-                "handoffConsumptionDiscipline",
-                "Review the injected upstreamHandoffs/dependencyResults directly. No filesystem lookup is authorized because this task declares no readSet.",
+            forbidden_tools = _unique_handoff_values(
+                tool_policy.get("forbiddenTools"),
+                item.get("forbiddenTools"),
             )
+            recoverable_tools = [
+                name
+                for name in recovery_requirements["toolNames"]
+                if name == "tool_observation_detail" and name not in forbidden_tools
+            ]
+            context["handoffRecoveryRequirements"] = recovery_requirements
+            if recoverable_tools:
+                item["toolPolicy"] = {
+                    **tool_policy,
+                    "mode": "allowlist",
+                    "allowedTools": recoverable_tools,
+                    "forbiddenTools": forbidden_tools,
+                }
+                item["allowedTools"] = recoverable_tools
+                context.setdefault(
+                    "handoffConsumptionDiscipline",
+                    "Review injected evidence first. If omitted material affects acceptance, use only the exact listed toolobs:// ref with tool_observation_detail; do not search the workspace.",
+                )
+            elif recovery_requirements["recoveryAvailable"]:
+                context.setdefault(
+                    "handoffConsumptionDiscipline",
+                    "Review injected evidence first. A detail ref/tool pair is available; use it only if that named tool is present on the resolved worker surface. Do not search the workspace or infer omitted content.",
+                )
+            else:
+                item["toolPolicy"] = {
+                    **tool_policy,
+                    "mode": "none",
+                    "allowedTools": [],
+                    "forbiddenTools": forbidden_tools,
+                }
+                item["allowedTools"] = []
+                context.setdefault(
+                    "handoffConsumptionDiscipline",
+                    "Review the injected upstreamHandoffs/dependencyResults directly. No readable recovery ref/tool pair or readSet is present; report missing evidence instead of searching or inferring it.",
+                )
             item["context"] = context
         normalized.append(item)
     return normalized
 
 
-def _compact_handoff_values(value: Any, *, limit: int = 8) -> list[Any]:
-    values = value if isinstance(value, list) else [value] if value not in (None, "") else []
+def _unique_handoff_values(*values: Any) -> list[Any]:
+    candidates: list[Any] = []
+    for value in values:
+        if isinstance(value, set):
+            candidates.extend(sorted(value, key=str))
+        elif isinstance(value, (list, tuple)):
+            candidates.extend(list(value))
+        elif value not in (None, ""):
+            candidates.append(value)
     result: list[Any] = []
-    for item in values:
-        if item in result:
-            continue
-        result.append(item)
-        if len(result) >= limit:
-            break
+    for item in candidates:
+        if item not in result:
+            result.append(item)
     return result
+
+
+def _bounded_handoff_text(value: Any, *, limit: int) -> tuple[str, int]:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text, 0
+    marker = " ... [truncated] ... "
+    content_limit = max(0, limit - len(marker))
+    head_limit = max(1, (content_limit * 2) // 3)
+    tail_limit = max(1, content_limit - head_limit)
+    compact = f"{text[:head_limit].rstrip()}{marker}{text[-tail_limit:].lstrip()}"
+    return compact[:limit], max(0, len(text) - head_limit - tail_limit)
+
+
+def _handoff_recovery_metadata(
+    payload: dict[str, Any],
+    *,
+    omitted_by_field: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    raw_ref = str(payload.get("rawRef") or "").strip()
+    detail_refs = _unique_handoff_values(
+        payload.get("detailRef"),
+        payload.get("detailRefs"),
+    )
+    if not raw_ref:
+        raw_ref = next(
+            (
+                str(item).strip()
+                for item in _unique_handoff_values(
+                    payload.get("refs"),
+                    payload.get("researchRefs"),
+                    payload.get("proofRefs"),
+                    payload.get("verificationRefs"),
+                )
+                if str(item or "").strip().startswith("toolobs://")
+            ),
+            "",
+        )
+    detail_tool = str(payload.get("detailTool") or "").strip()
+    recovery_refs: dict[str, Any] = {}
+    if detail_refs:
+        recovery_refs["detailRef"] = str(detail_refs[0]).strip()
+        if len(detail_refs) > 1:
+            recovery_refs["detailRefs"] = [str(item).strip() for item in detail_refs[:8]]
+    if raw_ref:
+        recovery_refs["rawRef"] = raw_ref
+    recovery_tools = _unique_handoff_values(
+        detail_tool,
+        "tool_observation_detail(rawRef)" if raw_ref.startswith("toolobs://") else "",
+    )
+    recovery_available = bool(
+        raw_ref.startswith("toolobs://")
+        or ((detail_refs or raw_ref) and detail_tool)
+    )
+    metadata: dict[str, Any] = {
+        "truncated": True,
+        "omittedCount": len(omitted_by_field),
+        "omittedUnit": "fields",
+        "omittedByField": omitted_by_field,
+        "recoveryAvailable": recovery_available,
+    }
+    if recovery_refs:
+        metadata["recoveryRefs"] = recovery_refs
+    if recovery_tools:
+        metadata["recoveryTools"] = recovery_tools
+    handoff_ref_id = str(payload.get("handoffRefId") or payload.get("handoffId") or "").strip()
+    if handoff_ref_id:
+        metadata["parentRecoveryRef"] = handoff_ref_id
+    if recovery_available:
+        metadata["recoveryGuidance"] = (
+            "Use the exact rawRef with tool_observation_detail, or the exact detailRef/rawRef with the listed detailTool. "
+            "Do not treat evidence refs as filesystem paths."
+        )
+    elif handoff_ref_id:
+        metadata["recoveryGuidance"] = (
+            "This Agent Surface has no independently readable detailRef/rawRef for the omitted material. "
+            "Do not infer it; return parentRecoveryRef to the parent as an identity for governed re-delivery, not as a child-readable URI."
+        )
+    else:
+        metadata["recoveryGuidance"] = (
+            "This Agent Surface has no independently readable detailRef/rawRef for the omitted material. "
+            "Do not infer it; report the affected field names to the parent if the omission matters."
+        )
+    return metadata
 
 
 def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, Any]:
     payload = dict(handoff or {})
+    summary, summary_omitted = _bounded_handoff_text(
+        payload.get("compactSummary") or payload.get("summary"),
+        limit=6000,
+    )
+    consumer_hint, consumer_hint_omitted = _bounded_handoff_text(
+        payload.get("consumerHint"),
+        limit=800,
+    )
+    identity_aliases = _unique_handoff_values(payload.get("identityAliases"))
+    refs = _unique_handoff_values(payload.get("refs"), payload.get("researchRefs"))
+    proof_refs = _unique_handoff_values(payload.get("proofRefs"), payload.get("verificationRefs"))
+    artifact_refs = _unique_handoff_values(payload.get("artifactRefs"), payload.get("changedFiles"))
+    limitations = _unique_handoff_values(payload.get("limitations"))
+    detail_refs = _unique_handoff_values(payload.get("detailRef"), payload.get("detailRefs"))
+    raw_ref = str(payload.get("rawRef") or "").strip()
+    if not raw_ref:
+        raw_ref = next(
+            (str(item).strip() for item in refs if str(item or "").strip().startswith("toolobs://")),
+            "",
+        )
     compact: dict[str, Any] = {
         "producerEpisodeId": str(payload.get("producerEpisodeId") or payload.get("episodeId") or "").strip(),
         "handoffRefId": str(payload.get("handoffRefId") or payload.get("handoffId") or "").strip(),
+        "identityAliases": identity_aliases[:8],
         "kind": str(payload.get("kind") or "runtime_handoff").strip(),
         "status": str(payload.get("status") or "unknown").strip(),
-        "summary": str(payload.get("compactSummary") or payload.get("summary") or "").strip()[:6000],
+        "summary": summary,
         "confidence": str(payload.get("confidence") or "").strip(),
-        "refs": _compact_handoff_values(payload.get("refs") or payload.get("researchRefs")),
-        "proofRefs": _compact_handoff_values(payload.get("proofRefs") or payload.get("verificationRefs")),
-        "artifactRefs": _compact_handoff_values(payload.get("artifactRefs") or payload.get("changedFiles")),
-        "limitations": _compact_handoff_values(payload.get("limitations"), limit=6),
-        "consumerHint": str(payload.get("consumerHint") or "").strip()[:800],
-        "detailRef": str(payload.get("detailRef") or "").strip(),
+        "refs": refs[:8],
+        "proofRefs": proof_refs[:8],
+        "artifactRefs": artifact_refs[:8],
+        "limitations": limitations[:6],
+        "consumerHint": consumer_hint,
+        "detailRef": str(detail_refs[0]).strip() if detail_refs else "",
+        "detailRefs": [str(item).strip() for item in detail_refs[:8]],
+        "rawRef": raw_ref,
+        "detailTool": str(payload.get("detailTool") or "").strip(),
     }
-    child_handoffs = [
-        _compact_upstream_handoff_for_agent(dict(item))
+    raw_child_handoffs = [
+        dict(item)
         for item in list(payload.get("childHandoffs") or [])
         if isinstance(item, dict)
-    ][:6]
+    ]
     delegation_handoff = payload.get("delegationHandoff")
     if isinstance(delegation_handoff, dict):
-        nested_children = [
-            _compact_upstream_handoff_for_agent(dict(item))
+        raw_child_handoffs.extend(
+            dict(item)
             for item in list(delegation_handoff.get("childHandoffs") or [])
             if isinstance(item, dict)
-        ][:6]
-        child_handoffs.extend(item for item in nested_children if item not in child_handoffs)
+        )
+    unique_child_handoffs: list[dict[str, Any]] = []
+    seen_child_identities: set[str] = set()
+    for child in raw_child_handoffs:
+        identity = str(
+            child.get("handoffRefId")
+            or child.get("handoffId")
+            or child.get("producerEpisodeId")
+            or child.get("episodeId")
+            or ""
+        ).strip()
+        if identity and identity in seen_child_identities:
+            continue
+        if identity:
+            seen_child_identities.add(identity)
+        elif child in unique_child_handoffs:
+            continue
+        unique_child_handoffs.append(child)
+    child_handoffs = [
+        _compact_upstream_handoff_for_agent(child)
+        for child in unique_child_handoffs[:6]
+    ]
     if child_handoffs:
-        compact["childResults"] = child_handoffs[:6]
+        compact["childResults"] = child_handoffs
+    omitted_by_field: dict[str, dict[str, Any]] = {}
+    for field, omitted_count, unit in (
+        ("summary", summary_omitted, "characters"),
+        ("consumerHint", consumer_hint_omitted, "characters"),
+        ("identityAliases", max(0, len(identity_aliases) - 8), "items"),
+        ("refs", max(0, len(refs) - 8), "items"),
+        ("proofRefs", max(0, len(proof_refs) - 8), "items"),
+        ("artifactRefs", max(0, len(artifact_refs) - 8), "items"),
+        ("limitations", max(0, len(limitations) - 6), "items"),
+        ("detailRefs", max(0, len(detail_refs) - 8), "items"),
+        ("childResults", max(0, len(unique_child_handoffs) - 6), "items"),
+    ):
+        if omitted_count:
+            omitted_by_field[field] = {"omittedCount": omitted_count, "unit": unit}
+    if omitted_by_field:
+        compact["truncation"] = _handoff_recovery_metadata(
+            payload,
+            omitted_by_field=omitted_by_field,
+        )
     return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
@@ -377,12 +623,134 @@ def _episode_ids_from_task_brief(task_brief: dict[str, Any]) -> set[str]:
         task_brief.get("evidenceRefs"),
         task_brief.get("detailRefs"),
         task_brief.get("researchRefs"),
+        task_brief.get("dependencies"),
         task_brief.get("dependency"),
         task_brief.get("goal"),
         task_brief.get("context"),
     ]
     serialized = json.dumps(candidates, ensure_ascii=False, default=str)
     return set(_EPISODE_REF_RE.findall(serialized))
+
+
+def _explicit_evidence_reference_values(task_brief: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                collect(nested)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for nested in value:
+                collect(nested)
+            return
+        text = str(value or "").strip()
+        if text and text not in values:
+            values.append(text)
+
+    for key in ("evidenceRefs", "detailRefs", "researchRefs"):
+        collect(task_brief.get(key))
+    return values
+
+
+def _handoff_identifiers(handoff: dict[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                collect(nested)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for nested in value:
+                collect(nested)
+            return
+        text = str(value or "").strip()
+        if text:
+            identifiers.add(text)
+
+    for key in (
+        "producerEpisodeId",
+        "episodeId",
+        "id",
+        "handoffId",
+        "handoffRefId",
+        "identityAliases",
+        "detailRef",
+        "refs",
+        "researchRefs",
+        "proofRefs",
+        "verificationRefs",
+        "artifactRefs",
+        "changedFiles",
+    ):
+        collect(handoff.get(key))
+    return identifiers
+
+
+def _reference_match_tokens(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    # Opaque evidence/detail refs only match in full. URI path fragments such
+    # as "evidence", "bundle", or a numeric segment are not identities and
+    # must never select another producer's handoff. Stable episode/subagent
+    # identities remain discoverable inside a larger explicit reference.
+    return {text, *_EPISODE_REF_RE.findall(text)}
+
+
+def _handoff_delivery_identities(handoff: dict[str, Any]) -> set[str]:
+    identities: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, (list, tuple, set)):
+            for nested in value:
+                collect(nested)
+            return
+        text = str(value or "").strip()
+        if text:
+            identities.add(text)
+
+    for key in (
+        "producerEpisodeId",
+        "episodeId",
+        "id",
+        "handoffId",
+        "handoffRefId",
+        "identityAliases",
+    ):
+        collect(handoff.get(key))
+    return identities
+
+
+def _reference_identity_candidates(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    candidates = set(_EPISODE_REF_RE.findall(text))
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.scheme:
+        if parsed.netloc:
+            candidates.add(unquote(parsed.netloc).strip())
+        candidates.update(
+            unquote(segment).strip()
+            for segment in str(parsed.path or "").split("/")
+            if unquote(segment).strip()
+        )
+    return {candidate for candidate in candidates if candidate}
+
+
+def _reference_matches_handoff(value: Any, handoff: dict[str, Any]) -> bool:
+    if _reference_match_tokens(value).intersection(_handoff_identifiers(handoff)):
+        return True
+    return bool(
+        _reference_identity_candidates(value).intersection(
+            _handoff_delivery_identities(handoff)
+        )
+    )
 
 
 def _inject_inherited_handoffs_into_tasks(
@@ -394,7 +762,10 @@ def _inject_inherited_handoffs_into_tasks(
         for item in list((inherited_context or {}).get("handoffRefs") or [])
         if isinstance(item, dict)
     ]
-    compact_handoffs = [_compact_upstream_handoff_for_agent(item) for item in handoffs]
+    handoff_pairs = [
+        (handoff, _compact_upstream_handoff_for_agent(handoff))
+        for handoff in handoffs
+    ]
     result: list[dict[str, Any]] = []
     for task in tasks:
         item = dict(task)
@@ -403,19 +774,75 @@ def _inject_inherited_handoffs_into_tasks(
         if isinstance(context_value, str) and context_value.strip():
             context.setdefault("notes", context_value.strip())
         requested_episode_ids = _episode_ids_from_task_brief(item)
-        matched = [
-            handoff
-            for handoff in compact_handoffs
-            if not requested_episode_ids
-            or str(handoff.get("producerEpisodeId") or "") in requested_episode_ids
+        requested_refs = _explicit_evidence_reference_values(item)
+        has_explicit_selector = bool(requested_refs or requested_episode_ids)
+        matched_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        if has_explicit_selector:
+            for source_handoff, compact_handoff in handoff_pairs:
+                if requested_episode_ids.intersection(
+                    _handoff_delivery_identities(source_handoff)
+                ) or any(
+                    _reference_matches_handoff(requested_ref, source_handoff)
+                    for requested_ref in requested_refs
+                ):
+                    matched_pairs.append((source_handoff, compact_handoff))
+        else:
+            matched_pairs = handoff_pairs[-4:]
+
+        matched = [compact for _source, compact in matched_pairs]
+
+        matched_delivery_identities = {
+            identifier
+            for source_handoff, _compact in matched_pairs
+            for identifier in _handoff_delivery_identities(source_handoff)
+        }
+        unresolved_refs = [
+            requested_ref
+            for requested_ref in requested_refs
+            if not any(
+                _reference_matches_handoff(requested_ref, source_handoff)
+                for source_handoff, _compact in matched_pairs
+            )
         ]
-        if requested_episode_ids and not matched:
-            matched = compact_handoffs[-4:]
+        for episode_id in sorted(requested_episode_ids):
+            if episode_id not in matched_delivery_identities and episode_id not in unresolved_refs:
+                unresolved_refs.append(episode_id)
+        if has_explicit_selector:
+            context["requestedEvidenceRefs"] = requested_refs or sorted(requested_episode_ids)
+            if unresolved_refs:
+                context["unresolvedEvidenceRefs"] = unresolved_refs
+            context["evidenceResolutionDiagnostics"] = {
+                "mode": "explicit_refs",
+                "fallbackUsed": False,
+                "requestedCount": len(requested_refs or requested_episode_ids),
+                "matchedProducerEpisodeIds": [
+                    str(handoff.get("producerEpisodeId") or "")
+                    for handoff in matched
+                    if str(handoff.get("producerEpisodeId") or "").strip()
+                ],
+                "unresolvedRefs": list(unresolved_refs),
+            }
+        elif matched:
+            context["evidenceResolutionDiagnostics"] = {
+                "mode": "latest_available_fallback",
+                "fallbackUsed": True,
+                "reason": "no_explicit_evidence_refs",
+                "selectedHandoffRefIds": [
+                    str(handoff.get("handoffRefId") or "")
+                    for handoff in matched
+                    if str(handoff.get("handoffRefId") or "").strip()
+                ],
+            }
         if matched:
             context["upstreamHandoffs"] = matched[-6:]
             context["handoffUsage"] = (
                 "These handoffs are injected evidence, not filesystem paths. Read their summary/childResults directly; "
-                "do not search the workspace for research://, engineering://, episode IDs, or invented bundle filenames."
+                "do not search the workspace for research://, engineering://, episode IDs, or invented bundle filenames. "
+                + (
+                    "They were selected by explicit task references."
+                    if has_explicit_selector
+                    else "No explicit evidence ref was supplied, so these are clearly marked latest-available context rather than requested evidence."
+                )
             )
             item["upstreamHandoffRefs"] = [
                 str(handoff.get("handoffRefId") or "")
@@ -436,12 +863,16 @@ class DelegationToolPolicyInput(TypedDict, total=False):
 
 
 class DelegationTaskInput(TypedDict, total=False):
+    schemaVersion: str
+    extensions: dict[str, Any]
+    unsupportedFields: list[str]
     taskBriefId: Required[str]
     title: str
     goal: Required[str]
     context: Any
     expectedOutput: str
     expectedOutputs: Required[list[str]]
+    expectedArtifacts: list[str]
     acceptanceContract: Required[str | dict[str, Any] | list[Any]]
     acceptanceTiers: Any
     constraints: list[str] | str
@@ -454,9 +885,12 @@ class DelegationTaskInput(TypedDict, total=False):
     runtimeAccess: list[str] | str
     readSet: list[str] | str
     writeSet: list[str] | str
+    criticalFiles: list[str] | str
+    verificationMatrix: list[str] | str
     proofExpectations: list[str] | str
     evidenceRefs: list[str] | str
     detailRefs: list[str] | str
+    specRefs: dict[str, Any] | list[str] | str
     researchRefs: list[str] | str
     pluginReferences: list[dict[str, Any]]
     executionLaneHint: str
@@ -464,7 +898,12 @@ class DelegationTaskInput(TypedDict, total=False):
     targetAgentName: str
     preferredAgentId: str
     preferredWorkerType: str
+    dependencies: list[str] | str
     dependency: list[str] | str
+    sideEffectPolicy: dict[str, Any]
+    budget: dict[str, Any]
+    failurePolicy: dict[str, Any]
+    delegationPolicy: dict[str, Any]
     allowChildDelegation: bool
     requireChildDelegation: bool
     childDelegationBudget: dict[str, Any]
@@ -831,6 +1270,7 @@ def _terminalize_grandchild_task_brief(
     task_brief: dict[str, Any],
     *,
     parent_task_brief: dict[str, Any] | None = None,
+    parent_resolved_tools: Any = None,
 ) -> dict[str, Any]:
     """Make the depth-two boundary explicit and project every delegated scope."""
 
@@ -870,6 +1310,7 @@ def _terminalize_grandchild_task_brief(
         or parent_tool_policy.get("allowedTools")
         or parent_tool_policy.get("allowed_tools")
     )
+    resolved_parent_tools = _scope_text_values(parent_resolved_tools)
     parent_forbidden_tools = _scope_text_values(
         _task_scope_value(parent_task_brief, "forbiddenTools", "forbidden_tools")
         or parent_tool_policy.get("forbiddenTools")
@@ -895,20 +1336,32 @@ def _terminalize_grandchild_task_brief(
     forbidden_tools = _scope_text_values(
         [*parent_forbidden_tools, *child_forbidden_tools, "delegation_broker"]
     )
+    parent_mode = str(parent_tool_policy.get("mode") or "default").strip().lower()
+    child_mode = str(tool_policy.get("mode") or "default").strip().lower()
+    parent_tool_ceiling = set(parent_allowed_tools or resolved_parent_tools)
     allowed_tools = [
         item
         for item in child_allowed_tools
-        if item in set(parent_allowed_tools) and item not in set(forbidden_tools)
+        if item in parent_tool_ceiling and item not in set(forbidden_tools)
     ]
-    parent_mode = str(parent_tool_policy.get("mode") or "default").strip().lower()
-    child_mode = str(tool_policy.get("mode") or "default").strip().lower()
     if parent_mode == "none" or child_mode == "none":
         allowed_tools = []
+        projected_tool_mode = "none"
+    elif child_allowed_tools:
+        projected_tool_mode = "allowlist" if allowed_tools else "none"
+    elif parent_mode == "default" and child_mode == "default":
+        # An absent parent allowlist is not evidence that the parent had no
+        # baseline tools. Keep the terminal verifier on the ordinary resolved
+        # read surface; runtime/plugin/capsule filters below still enforce the
+        # actual subset and delegation_broker remains explicitly forbidden.
+        projected_tool_mode = "default"
+    else:
+        projected_tool_mode = "none"
     terminal["allowedTools"] = allowed_tools
     terminal["forbiddenTools"] = forbidden_tools
     terminal.pop("allowed_tools", None)
     terminal.pop("forbidden_tools", None)
-    tool_policy["mode"] = "allowlist" if allowed_tools else "none"
+    tool_policy["mode"] = projected_tool_mode
     tool_policy["allowedTools"] = allowed_tools
     tool_policy["forbiddenTools"] = forbidden_tools
     tool_policy.pop("allowed_tools", None)
@@ -1447,6 +1900,110 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
     )
 
 
+def _delegation_task_contract_diagnostic_command(
+    *,
+    diagnostics: dict[str, Any],
+    tool_call_id: str,
+    retry_node: str,
+) -> Command:
+    duplicates = list(diagnostics.get("duplicateTaskBriefIds") or [])
+    conflicts = list(diagnostics.get("aliasConflicts") or [])
+    error = "duplicate_task_brief_ids" if duplicates else "task_brief_alias_conflict"
+    repair_fields = sorted(
+        {
+            *(
+                f"tasks.{index}.taskBriefId"
+                for duplicate in duplicates
+                for index in list(duplicate.get("indexes") or [])
+            ),
+            *(
+                f"tasks.{index}.dependencies"
+                for duplicate in duplicates
+                for index in list(duplicate.get("dependentIndexes") or [])
+            ),
+            *(
+                (
+                    f"tasks.{int(conflict.get('parentIndex'))}.workerBriefs."
+                    f"{int(conflict.get('workerIndex'))}.{str(conflict.get('field') or '')}"
+                    if conflict.get("parentIndex") is not None
+                    and conflict.get("workerIndex") is not None
+                    else f"tasks.{int(conflict.get('index') or 0)}."
+                    f"{str(conflict.get('field') or '')}"
+                )
+                for conflict in conflicts
+            ),
+        }
+    )
+    return Command(
+        goto=retry_node or "supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="dispatch",
+                        ok=False,
+                        summary=(
+                            "delegation_broker rejected duplicate taskBriefId values before dispatch."
+                            if duplicates
+                            else "delegation_broker rejected conflicting task aliases before dispatch."
+                        ),
+                        recommended_next_action=(
+                            "retry_dispatch_after_task_identity_repair"
+                            if duplicates
+                            else "retry_dispatch_after_alias_repair"
+                        ),
+                        error=error,
+                        dispatchStatus="task_contract_invalid",
+                        diagnosticKey=error,
+                        taskBriefDiagnostics=diagnostics,
+                        duplicateTaskBriefIds=duplicates,
+                        aliasConflicts=conflicts,
+                        repairFields=repair_fields,
+                        preserveAllOtherFields=True,
+                        repairInstruction=(
+                            "Assign a unique taskBriefId to each listed index and update only dependent ID references; preserve every goal, context, policy, and proof contract."
+                            if duplicates
+                            else "Remove the conflicting alias spelling and retain one value for each listed field; preserve the rest of every task."
+                        ),
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        },
+    )
+
+
+def _apply_legacy_dispatch_target_count(
+    tasks: list[dict[str, Any]],
+    target_count: int | None,
+) -> list[dict[str, Any]]:
+    """Project the legacy total worker count onto the canonical macro fanout.
+
+    Cloning the last task here duplicates its taskBriefId and makes dependency
+    lineage ambiguous. The canonical expander already gives every branch a
+    stable child identity while retaining the original task as parent lineage.
+    """
+
+    projected = [dict(task) for task in tasks]
+    if not projected or target_count is None:
+        return projected
+    requested_total = max(0, min(int(target_count), 1000))
+    if requested_total <= len(projected):
+        return projected
+    seed = dict(projected[-1])
+    seed_count = 1 + requested_total - len(projected)
+    try:
+        existing_count = int(
+            seed.get("targetCount", seed.get("target_count", 1)) or 1
+        )
+    except (TypeError, ValueError):
+        existing_count = 1
+    existing_count = max(1, min(existing_count, 1000))
+    seed["targetCount"] = max(existing_count, seed_count)
+    projected[-1] = seed
+    return projected
+
+
 def _grandchild_write_contract_block_payload(
     *,
     task_brief_ids: list[str],
@@ -1717,12 +2274,27 @@ def delegation_broker(
         )
 
     if normalized_mode == "dispatch":
-        requested_tasks = _filter_meaningful_delegation_tasks(list(tasks_list or worker_briefs_list or []))
+        raw_requested_tasks = list(tasks_list or worker_briefs_list or [])
+        retry_node = (
+            caller.agent_id
+            if caller.is_direct_subagent and caller.agent_id
+            else "supervisor"
+        )
+        task_contract_diagnostics = task_brief_contract_diagnostics(
+            raw_requested_tasks
+        )
+        if any(task_contract_diagnostics.values()):
+            return _delegation_task_contract_diagnostic_command(
+                diagnostics=task_contract_diagnostics,
+                tool_call_id=tool_call_id,
+                retry_node=retry_node,
+            )
+        requested_tasks = _filter_meaningful_delegation_tasks(raw_requested_tasks)
         dispatch_task_source = "explicit"
-        if target_count and target_count > len(requested_tasks) and requested_tasks:
-            seed = dict(requested_tasks[-1])
-            for index in range(len(requested_tasks), int(target_count)):
-                requested_tasks.append({**seed, "title": f"{seed.get('title') or 'Delegated task'} #{index + 1}"})
+        requested_tasks = _apply_legacy_dispatch_target_count(
+            requested_tasks,
+            target_count,
+        )
         macro_tasks = normalize_task_briefs(requested_tasks)
         normalized_tasks = expand_delegation_task_briefs(requested_tasks)
         normalized_tasks = _apply_delegation_target_defaults(normalized_tasks)
@@ -1731,6 +2303,15 @@ def delegation_broker(
             inherited_context,
         )
         normalized_tasks = _apply_delegation_tool_defaults(normalized_tasks)
+        expanded_contract_diagnostics = task_brief_contract_diagnostics(
+            normalized_tasks
+        )
+        if any(expanded_contract_diagnostics.values()):
+            return _delegation_task_contract_diagnostic_command(
+                diagnostics=expanded_contract_diagnostics,
+                tool_call_id=tool_call_id,
+                retry_node=retry_node,
+            )
         if allow_child_delegation or child_delegation_budget or write_set_partitions_list:
             for task in normalized_tasks:
                 task["allowChildDelegation"] = bool(allow_child_delegation)
@@ -2111,6 +2692,10 @@ def delegation_broker(
                     branch_task_brief = _terminalize_grandchild_task_brief(
                         branch_task_brief,
                         parent_task_brief=parent_task_brief,
+                        parent_resolved_tools=[
+                            *list(inherited_context.get("selectedBaselineTools") or []),
+                            *list(inherited_context.get("selectedMcpTools") or []),
+                        ],
                     )
                 active_collaborators = _active_collaborator_summaries(
                     normalized_tasks,

@@ -104,12 +104,615 @@ def _first_present(payload: dict[str, Any], keys: Iterable[str]) -> Any:
     return None
 
 
+_TASK_BRIEF_WORKER_OVERRIDE_ALIASES: dict[str, tuple[str, ...]] = {
+    "schemaVersion": ("schemaVersion", "schema_version"),
+    "routeQuery": ("routeQuery", "route_query", "extensionsRouteQuery", "extensions_route_query"),
+    "writeSet": ("writeSet", "write_set"),
+    "readSet": ("readSet", "read_set"),
+    "criticalFiles": ("criticalFiles", "critical_files"),
+    "expectedOutputs": ("expectedOutputs", "expected_outputs", "expectedOutput", "expected_output"),
+    "expectedArtifacts": ("expectedArtifacts", "expected_artifacts"),
+    "constraints": ("constraints", "constraint", "boundaries", "boundary"),
+    "behaviorScope": ("behaviorScope", "behavior_scope"),
+    "requiredCapabilities": ("requiredCapabilities", "required_capabilities"),
+    "runtimeAccess": ("runtimeAccess", "runtime_access"),
+    "toolPolicy": ("toolPolicy", "tool_policy"),
+    "allowedTools": ("allowedTools", "allowed_tools"),
+    "forbiddenTools": ("forbiddenTools", "forbidden_tools"),
+    "noTools": ("noTools", "no_tools"),
+    "pluginReferences": ("pluginReferences", "plugin_references"),
+    "evidenceRefs": ("evidenceRefs", "evidence_refs"),
+    "detailRefs": ("detailRefs", "detail_refs"),
+    "specRefs": ("specRefs", "spec_refs"),
+    "acceptanceContract": ("acceptanceContract", "acceptance_contract", "acceptance"),
+    "acceptanceTiers": ("acceptanceTiers", "acceptance_tiers"),
+    "dependencies": ("dependencies", "dependency"),
+    "sideEffectPolicy": ("sideEffectPolicy", "side_effect_policy"),
+    "budget": ("budget", "executionBudget", "execution_budget"),
+    "failurePolicy": ("failurePolicy", "failure_policy"),
+    "parallelGroup": ("parallelGroup", "parallel_group"),
+    "executionLaneHint": ("executionLaneHint", "execution_lane_hint"),
+    "familyHint": ("familyHint", "family_hint", "specialistFamily"),
+    "targetAgentName": ("targetAgentName", "target_agent_name"),
+    "preferredAgentId": ("preferredAgentId", "preferred_agent_id"),
+    "preferredWorkerType": ("preferredWorkerType", "preferred_worker_type"),
+    "researchRefs": ("researchRefs", "research_refs"),
+    "verificationMatrix": ("verificationMatrix", "verification_matrix"),
+    "proofExpectations": ("proofExpectations", "proof_expectations"),
+    "engineeringTaskCapsule": ("engineeringTaskCapsule", "engineering_task_capsule"),
+    "deliverableKind": ("deliverableKind", "deliverable_kind"),
+    "writeRequired": ("writeRequired", "write_required"),
+    "readOnly": ("readOnly", "read_only"),
+    "delegationDepth": ("delegationDepth", "delegation_depth"),
+    "verificationEvidenceContract": (
+        "verificationEvidenceContract",
+        "verification_evidence_contract",
+    ),
+    "validateSkillArtifact": ("validateSkillArtifact", "validate_skill_artifact"),
+    "requiredSkillContracts": ("requiredSkillContracts", "required_skill_contracts"),
+    "delegationPolicy": ("delegationPolicy", "delegation_policy"),
+    "allowChildDelegation": (
+        "allowChildDelegation",
+        "allow_child_delegation",
+        "allowNestedDelegation",
+        "allow_nested_delegation",
+    ),
+    "requireChildDelegation": (
+        "requireChildDelegation",
+        "require_child_delegation",
+        "childDelegationRequired",
+        "child_delegation_required",
+    ),
+    "childDelegationBudget": (
+        "childDelegationBudget",
+        "child_delegation_budget",
+        "childBudget",
+        "child_budget",
+    ),
+    "writeSetPartitions": (
+        "writeSetPartitions",
+        "write_set_partitions",
+        "writePartitions",
+        "write_partitions",
+    ),
+    "parentTaskBriefId": ("parentTaskBriefId", "parent_task_brief_id"),
+    "siblingIndex": ("siblingIndex", "sibling_index"),
+    "siblingCount": ("siblingCount", "sibling_count"),
+}
+
+_TASK_BRIEF_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    **_TASK_BRIEF_WORKER_OVERRIDE_ALIASES,
+    "taskBriefId": ("taskBriefId", "task_brief_id"),
+    "goal": ("goal",),
+    "context": ("context",),
+    "targetCount": (
+        "targetCount",
+        "target_count",
+        "parallelism",
+        "parallelismCount",
+        "parallelism_count",
+        "workerCount",
+        "worker_count",
+        "agentCount",
+        "agent_count",
+        "fanout",
+        "fanoutCount",
+        "fanout_count",
+    ),
+    "workerBriefs": (
+        "workerBriefs",
+        "worker_briefs",
+        "workers",
+        "branches",
+        "parallelBranches",
+        "parallel_branches",
+    ),
+    "fanoutReason": (
+        "fanoutReason",
+        "fanout_reason",
+        "parallelismReason",
+        "parallelism_reason",
+    ),
+    "childDelegationPolicyExplicit": ("childDelegationPolicyExplicit",),
+    "unsupportedFields": ("unsupportedFields", "unsupported_fields"),
+}
+
+_DELEGATION_POLICY_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "allowChildDelegation": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["allowChildDelegation"],
+    "requireChildDelegation": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["requireChildDelegation"],
+    "childDelegationBudget": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["childDelegationBudget"],
+    "writeSetPartitions": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["writeSetPartitions"],
+}
+_TOOL_POLICY_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "allowedTools": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["allowedTools"],
+    "forbiddenTools": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["forbiddenTools"],
+    "noTools": _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["noTools"],
+}
+_ENGINEERING_CAPSULE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "taskId": ("taskId", "task_id"),
+    "workspacePath": ("workspacePath", "workspace_path"),
+    "executionMode": ("executionMode", "execution_mode"),
+    "writeRequired": ("writeRequired", "write_required"),
+    "readOnly": ("readOnly", "read_only"),
+    "writeSet": ("writeSet", "write_set"),
+    "readSet": ("readSet", "read_set"),
+    "allowedTools": ("allowedTools", "allowed_tools"),
+    "forbiddenTools": ("forbiddenTools", "forbidden_tools"),
+    "expectedArtifacts": ("expectedArtifacts", "expected_artifacts"),
+    "verificationContract": ("verificationContract", "verification_contract"),
+    "proofExpectations": ("proofExpectations", "proof_expectations"),
+}
+_ENGINEERING_CAPSULE_CROSS_LAYER_AUTHORITY_FIELDS = frozenset(
+    {
+        "executionMode",
+        "writeRequired",
+        "readOnly",
+        "writeSet",
+        "readSet",
+        "allowedTools",
+        "forbiddenTools",
+    }
+)
+_DELEGATION_POLICY_INPUT_FIELDS = frozenset(
+    alias
+    for aliases in _DELEGATION_POLICY_FIELD_ALIASES.values()
+    for alias in aliases
+)
+
+
+def _task_brief_first_present(payload: dict[str, Any], field: str) -> Any:
+    return _first_present(payload, _TASK_BRIEF_FIELD_ALIASES.get(field, (field,)))
+
+
+def _alias_conflict_diagnostics(
+    payload: dict[str, Any],
+    *,
+    index: int,
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for field, aliases in _TASK_BRIEF_FIELD_ALIASES.items():
+        present = [alias for alias in aliases if alias in payload]
+        if len(present) < 2:
+            continue
+        first_value = payload.get(present[0])
+        if all(payload.get(alias) == first_value for alias in present[1:]):
+            continue
+        diagnostics.append(
+            {
+                "code": "task_brief_alias_conflict",
+                "index": index,
+                "taskBriefId": str(
+                    _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                    or ""
+                ).strip(),
+                "field": field,
+                "aliases": present,
+            }
+        )
+
+    raw_policy = _task_brief_first_present(payload, "delegationPolicy")
+    policy = dict(raw_policy) if isinstance(raw_policy, dict) else {}
+    for field, aliases in _DELEGATION_POLICY_FIELD_ALIASES.items():
+        present = [alias for alias in aliases if alias in policy]
+        if len(present) < 2:
+            continue
+        first_value = policy.get(present[0])
+        if all(policy.get(alias) == first_value for alias in present[1:]):
+            continue
+        diagnostics.append(
+            {
+                "code": "task_brief_alias_conflict",
+                "index": index,
+                "taskBriefId": str(
+                    _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                    or ""
+                ).strip(),
+                "field": f"delegationPolicy.{field}",
+                "aliases": [f"delegationPolicy.{alias}" for alias in present],
+            }
+        )
+
+    for field, aliases in _DELEGATION_POLICY_FIELD_ALIASES.items():
+        top_present = [alias for alias in aliases if alias in payload]
+        nested_present = [alias for alias in aliases if alias in policy]
+        if not top_present or not nested_present:
+            continue
+        top_value = payload.get(top_present[0])
+        nested_value = policy.get(nested_present[0])
+        if top_value == nested_value:
+            continue
+        diagnostics.append(
+            {
+                "code": "task_brief_alias_conflict",
+                "index": index,
+                "taskBriefId": str(
+                    _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                    or ""
+                ).strip(),
+                "field": f"delegationPolicy.{field}",
+                "aliases": [top_present[0], f"delegationPolicy.{nested_present[0]}"],
+            }
+        )
+
+    raw_tool_policy = _task_brief_first_present(payload, "toolPolicy")
+    tool_policy = dict(raw_tool_policy) if isinstance(raw_tool_policy, dict) else {}
+    for field, aliases in _TOOL_POLICY_FIELD_ALIASES.items():
+        nested_present = [alias for alias in aliases if alias in tool_policy]
+        if len(nested_present) > 1:
+            first_value = tool_policy.get(nested_present[0])
+            if any(tool_policy.get(alias) != first_value for alias in nested_present[1:]):
+                diagnostics.append(
+                    {
+                        "code": "task_brief_alias_conflict",
+                        "index": index,
+                        "taskBriefId": str(
+                            _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                            or ""
+                        ).strip(),
+                        "field": f"toolPolicy.{field}",
+                        "aliases": [f"toolPolicy.{alias}" for alias in nested_present],
+                    }
+                )
+        top_present = [alias for alias in aliases if alias in payload]
+        if top_present and nested_present:
+            top_value = payload.get(top_present[0])
+            nested_value = tool_policy.get(nested_present[0])
+            if top_value != nested_value:
+                diagnostics.append(
+                    {
+                        "code": "task_brief_alias_conflict",
+                        "index": index,
+                        "taskBriefId": str(
+                            _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                            or ""
+                        ).strip(),
+                        "field": f"toolPolicy.{field}",
+                        "aliases": [top_present[0], f"toolPolicy.{nested_present[0]}"],
+                    }
+                )
+    raw_capsule = _task_brief_first_present(payload, "engineeringTaskCapsule")
+    capsule = dict(raw_capsule) if isinstance(raw_capsule, dict) else {}
+    for field, aliases in _ENGINEERING_CAPSULE_FIELD_ALIASES.items():
+        nested_present = [alias for alias in aliases if alias in capsule]
+        if len(nested_present) > 1:
+            first_value = capsule.get(nested_present[0])
+            if any(capsule.get(alias) != first_value for alias in nested_present[1:]):
+                diagnostics.append(
+                    {
+                        "code": "task_brief_alias_conflict",
+                        "index": index,
+                        "taskBriefId": str(
+                            _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                            or ""
+                        ).strip(),
+                        "field": f"engineeringTaskCapsule.{field}",
+                        "aliases": [
+                            f"engineeringTaskCapsule.{alias}" for alias in nested_present
+                        ],
+                    }
+                )
+        if field not in _ENGINEERING_CAPSULE_CROSS_LAYER_AUTHORITY_FIELDS:
+            continue
+        top_aliases = _TASK_BRIEF_FIELD_ALIASES.get(field, ())
+        top_present = [alias for alias in top_aliases if alias in payload]
+        if top_present and nested_present:
+            if payload.get(top_present[0]) != capsule.get(nested_present[0]):
+                diagnostics.append(
+                    {
+                        "code": "task_brief_alias_conflict",
+                        "index": index,
+                        "taskBriefId": str(
+                            _first_present(payload, _TASK_BRIEF_FIELD_ALIASES["taskBriefId"])
+                            or ""
+                        ).strip(),
+                        "field": f"engineeringTaskCapsule.{field}",
+                        "aliases": [
+                            top_present[0],
+                            f"engineeringTaskCapsule.{nested_present[0]}",
+                        ],
+                    }
+                )
+    return diagnostics
+
+
+def task_brief_contract_diagnostics(values: Iterable[Any] | None) -> dict[str, Any]:
+    """Describe identity/alias defects without rewriting or dropping a brief."""
+
+    tasks = list(values or [])
+    alias_conflicts: list[dict[str, Any]] = []
+    indexes_by_id: dict[str, list[int]] = {}
+    task_ids_by_index: dict[int, str] = {}
+    dependency_refs_by_index: dict[int, list[str]] = {}
+    for index, value in enumerate(tasks):
+        if not isinstance(value, dict):
+            continue
+        alias_conflicts.extend(_alias_conflict_diagnostics(value, index=index))
+        task_id = str(_task_brief_first_present(value, "taskBriefId") or "").strip()
+        if task_id:
+            indexes_by_id.setdefault(task_id, []).append(index)
+            task_ids_by_index[index] = task_id
+        dependency_refs_by_index[index] = _normalize_scope_values(
+            _task_brief_first_present(value, "dependencies")
+        )
+        raw_workers = _task_brief_first_present(value, "workerBriefs")
+        if isinstance(raw_workers, list):
+            for worker_index, worker in enumerate(raw_workers):
+                if not isinstance(worker, dict):
+                    continue
+                for diagnostic in _alias_conflict_diagnostics(
+                    worker,
+                    index=worker_index,
+                ):
+                    alias_conflicts.append(
+                        {
+                            **diagnostic,
+                            "parentIndex": index,
+                            "parentTaskBriefId": task_id,
+                            "workerIndex": worker_index,
+                        }
+                    )
+
+    duplicates: list[dict[str, Any]] = []
+    for task_id, indexes in indexes_by_id.items():
+        if len(indexes) < 2:
+            continue
+        dependent_indexes = [
+            index
+            for index, dependencies in dependency_refs_by_index.items()
+            if task_id in dependencies
+        ]
+        duplicates.append(
+            {
+                "taskBriefId": task_id,
+                "indexes": indexes,
+                "dependentIndexes": dependent_indexes,
+                "dependentTaskBriefIds": [
+                    task_ids_by_index.get(index, "")
+                    for index in dependent_indexes
+                ],
+            }
+        )
+    return {
+        "aliasConflicts": alias_conflicts,
+        "duplicateTaskBriefIds": duplicates,
+    }
+
+_TASK_BRIEF_COMPAT_INPUT_FIELDS = frozenset(
+    {
+        alias
+        for aliases in _TASK_BRIEF_WORKER_OVERRIDE_ALIASES.values()
+        for alias in aliases
+    }
+    | {
+        "task_brief_id",
+        "extensionsRouteQuery",
+        "extensions_route_query",
+        "acceptance",
+        "tieredAcceptance",
+        "tiered_acceptance",
+        "boundaries",
+        "boundary",
+        "specialistFamily",
+        "target_count",
+        "parallelism",
+        "parallelismCount",
+        "parallelism_count",
+        "workerCount",
+        "worker_count",
+        "agentCount",
+        "agent_count",
+        "fanout",
+        "fanoutCount",
+        "fanout_count",
+        "worker_briefs",
+        "workers",
+        "branches",
+        "parallelBranches",
+        "parallel_branches",
+        "fanout_reason",
+        "parallelismReason",
+        "parallelism_reason",
+        "delegationPolicy",
+        "delegation_policy",
+        "allow_child_delegation",
+        "allowNestedDelegation",
+        "allow_nested_delegation",
+        "require_child_delegation",
+        "childDelegationRequired",
+        "child_delegation_required",
+        "child_delegation_budget",
+        "childBudget",
+        "child_budget",
+        "write_set_partitions",
+        "writePartitions",
+        "write_partitions",
+        "deliverable_kind",
+        "write_required",
+        "read_only",
+        "delegation_depth",
+        "verification_evidence_contract",
+        "validate_skill_artifact",
+        "required_skill_contracts",
+        "extensions",
+        "unsupportedFields",
+        "unsupported_fields",
+        "contractDiagnostics",
+    }
+)
+
+
+def _task_brief_extensions(
+    payload: dict[str, Any],
+    *,
+    canonical_fields: Iterable[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Preserve forward fields without granting them canonical semantics."""
+
+    existing = payload.get("extensions")
+    extensions = deepcopy(existing) if isinstance(existing, dict) else {}
+    known_fields = set(canonical_fields) | set(_TASK_BRIEF_COMPAT_INPUT_FIELDS)
+    unsupported = set(
+        _normalize_scope_values(
+            _task_brief_first_present(payload, "unsupportedFields")
+        )
+    )
+    unsupported.update(str(key) for key in extensions)
+    for key, value in payload.items():
+        if key in known_fields:
+            continue
+        extensions[key] = deepcopy(value)
+        unsupported.add(str(key))
+    return extensions, sorted(unsupported)
+
+
+_SHARED_CONTEXT_AUTHORITY_KEYS = frozenset(
+    {
+        "engineeringexecutioncontract",
+        "engineeringtaskcapsule",
+        "inheritedengineeringcontract",
+        "handoffcontract",
+        "creativemediaexecutioncontract",
+        "canvasexecutioncontract",
+        "specexecutionbundle",
+        "stagecontent",
+        "assignedtaskdetails",
+        "assignedtasksummaries",
+        "parentcontext",
+        "workercontext",
+        "ephemeralmirror",
+        "toolpolicy",
+        "allowedtools",
+        "forbiddentools",
+        "notools",
+        "runtimeaccess",
+        "pluginreferences",
+        "plugingrants",
+        "plugincomponentgrants",
+        "extensiontoolpolicy",
+        "readset",
+        "writeset",
+        "criticalfiles",
+        "writesetpartitions",
+        "sideeffectpolicy",
+        "delegationpolicy",
+        "allowchilddelegation",
+        "requirechilddelegation",
+        "childdelegationbudget",
+        "workspacepath",
+        "originalworkspacepath",
+        "shelldialect",
+        "workspacelease",
+        "sandboxlease",
+        "capabilitygrants",
+        "sessionid",
+        "runid",
+        "userid",
+        "rawref",
+        "rawreasoning",
+        "rawtoolpayload",
+        "providerpayload",
+    }
+)
+_SHARED_CONTEXT_SENSITIVE_EXACT_KEYS = frozenset(
+    {
+        "auth",
+        "authentication",
+        "authorization",
+        "authorizationheader",
+        "bearer",
+        "cookie",
+        "credential",
+        "credentials",
+        "password",
+        "passphrase",
+        "privatekey",
+        "secret",
+        "token",
+        "apikey",
+        "accesstoken",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "idtoken",
+        "refreshtoken",
+        "secretkey",
+        "sessiontoken",
+    }
+)
+_SHARED_CONTEXT_SENSITIVE_SUFFIXES = (
+    "apikey",
+    "accesstoken",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "credential",
+    "credentials",
+    "idtoken",
+    "password",
+    "passphrase",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+    "secretkey",
+    "sessiontoken",
+    "token",
+)
+
+
+def _shared_context_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _shared_context_sensitive_key(value: str) -> bool:
+    return value in _SHARED_CONTEXT_SENSITIVE_EXACT_KEYS or any(
+        value.endswith(suffix) for suffix in _SHARED_CONTEXT_SENSITIVE_SUFFIXES
+    )
+
+
+def _filtered_shared_context(value: Any) -> Any:
+    """Keep shared facts visible without projecting authority or private runtime state."""
+
+    if isinstance(value, dict):
+        filtered: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = _shared_context_key(key)
+            if normalized_key in _SHARED_CONTEXT_AUTHORITY_KEYS:
+                continue
+            if _shared_context_sensitive_key(normalized_key):
+                filtered[str(key)] = "<redacted>"
+                continue
+            next_value = _filtered_shared_context(item)
+            if next_value not in (None, "", [], {}):
+                filtered[str(key)] = next_value
+        return filtered
+    if isinstance(value, (list, tuple)):
+        filtered_items = [_filtered_shared_context(item) for item in value]
+        return [item for item in filtered_items if item not in (None, "", [], {})]
+    if isinstance(value, set):
+        filtered_items = [_filtered_shared_context(item) for item in value]
+        return sorted(
+            (item for item in filtered_items if item not in (None, "", [], {})),
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+        )
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 def _safe_target_count(value: Any, *, default: int = 1, maximum: int = 1000) -> int:
     try:
         count = int(value)
     except Exception:
         count = default
     return max(1, min(count, maximum))
+
+
+def _safe_nonnegative_int(value: Any, *, default: int = 0, maximum: int = 1000) -> int:
+    try:
+        count = int(value)
+    except Exception:
+        count = default
+    return max(0, min(count, maximum))
 
 
 def _safe_bool(value: Any) -> bool:
@@ -231,12 +834,16 @@ def task_brief_requires_child_delegation(task_brief: dict[str, Any] | None) -> b
 
 def _default_task_brief(index: int = 0) -> dict[str, Any]:
     return {
+        "schemaVersion": "",
         "taskBriefId": f"task-{index + 1}",
         "goal": "",
         "context": "",
         "routeQuery": "",
+        "readSet": [],
         "writeSet": [],
         "expectedOutputs": [],
+        "expectedArtifacts": [],
+        "constraints": [],
         "behaviorScope": [],
         "requiredCapabilities": [],
         "runtimeAccess": [],
@@ -246,9 +853,14 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "pluginReferences": [],
         "evidenceRefs": [],
         "detailRefs": [],
+        "specRefs": [],
         "acceptanceContract": "",
         "acceptanceTiers": {"must": [], "should": [], "nice": []},
+        "dependencies": [],
         "dependency": [],
+        "sideEffectPolicy": {},
+        "budget": {},
+        "failurePolicy": {},
         "parallelGroup": "",
         "executionLaneHint": "auto",
         "familyHint": "",
@@ -264,6 +876,9 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "childDelegationPolicyExplicit": False,
         "childDelegationBudget": {},
         "writeSetPartitions": [],
+        "parentTaskBriefId": "",
+        "siblingIndex": 0,
+        "siblingCount": 0,
     }
 
 
@@ -271,30 +886,14 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     payload = dict(value or {}) if isinstance(value, dict) else {}
     defaults = _default_task_brief(index)
     worker_briefs = _normalize_worker_briefs(
-        _first_present(payload, ("workerBriefs", "worker_briefs", "workers", "branches", "parallelBranches", "parallel_branches"))
+        _task_brief_first_present(payload, "workerBriefs")
     )
     target_count = _safe_target_count(
-        _first_present(
-            payload,
-            (
-                "targetCount",
-                "target_count",
-                "parallelism",
-                "parallelismCount",
-                "parallelism_count",
-                "workerCount",
-                "worker_count",
-                "agentCount",
-                "agent_count",
-                "fanout",
-                "fanoutCount",
-                "fanout_count",
-            ),
-        )
+        _task_brief_first_present(payload, "targetCount")
     )
     if worker_briefs:
         target_count = max(target_count, len(worker_briefs))
-    raw_delegation_policy = payload.get("delegationPolicy") or payload.get("delegation_policy")
+    raw_delegation_policy = _task_brief_first_present(payload, "delegationPolicy")
     delegation_policy = dict(raw_delegation_policy or {}) if isinstance(raw_delegation_policy, dict) else {}
     child_policy_keys = (
         "allowChildDelegation",
@@ -303,7 +902,9 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "allow_nested_delegation",
     )
     if "childDelegationPolicyExplicit" in payload:
-        child_policy_explicit = _safe_bool(payload.get("childDelegationPolicyExplicit"))
+        child_policy_explicit = _safe_bool(
+            _task_brief_first_present(payload, "childDelegationPolicyExplicit")
+        )
     else:
         child_policy_explicit = any(key in payload for key in child_policy_keys) or any(
             key in delegation_policy for key in child_policy_keys
@@ -311,15 +912,23 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     child_policy_value = _first_present(payload, child_policy_keys)
     if child_policy_value is None:
         child_policy_value = _first_present(delegation_policy, child_policy_keys)
-    child_delegation_budget = _first_present(payload, ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"))
+    child_delegation_budget = _task_brief_first_present(payload, "childDelegationBudget")
     if child_delegation_budget is None:
         child_delegation_budget = _first_present(
             delegation_policy,
             ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"),
         )
-    write_set_partitions = _first_present(payload, ("writeSetPartitions", "write_set_partitions", "writePartitions", "write_partitions"))
-    acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract", "acceptance"))
-    acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
+    write_set_partitions = _task_brief_first_present(payload, "writeSetPartitions")
+    if write_set_partitions is None:
+        write_set_partitions = _first_present(
+            delegation_policy,
+            _DELEGATION_POLICY_FIELD_ALIASES["writeSetPartitions"],
+        )
+    acceptance_contract = _task_brief_first_present(payload, "acceptanceContract")
+    acceptance_tiers = _first_present(
+        payload,
+        ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"),
+    )
     normalized_acceptance_tiers = _normalize_acceptance_tiers(acceptance_tiers if acceptance_tiers is not None else acceptance_contract)
     child_requirement_value = _first_present(
         payload,
@@ -330,6 +939,11 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
             "child_delegation_required",
         ),
     )
+    if child_requirement_value is None:
+        child_requirement_value = _first_present(
+            delegation_policy,
+            _DELEGATION_POLICY_FIELD_ALIASES["requireChildDelegation"],
+        )
     child_delegation_required = (
         _safe_bool(child_requirement_value)
         if child_requirement_value is not None
@@ -346,49 +960,46 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         child_delegation_allowed = True
         if not isinstance(child_delegation_budget, dict) or not child_delegation_budget:
             child_delegation_budget = {"maxChildren": 1, "maxDepth": 1}
-    raw_tool_policy = _first_present(payload, ("toolPolicy", "tool_policy"))
+    raw_tool_policy = _task_brief_first_present(payload, "toolPolicy")
     tool_policy = dict(raw_tool_policy or {}) if isinstance(raw_tool_policy, dict) else {}
     allowed_tools_present = any(key in payload for key in ("allowedTools", "allowed_tools")) or any(
         key in tool_policy for key in ("allowedTools", "allowed_tools")
     )
     allowed_tools = _normalize_scope_values(
-        _first_present(payload, ("allowedTools", "allowed_tools"))
+        _task_brief_first_present(payload, "allowedTools")
         if any(key in payload for key in ("allowedTools", "allowed_tools"))
         else _first_present(tool_policy, ("allowedTools", "allowed_tools"))
     )
     forbidden_tools = _normalize_scope_values(
-        _first_present(payload, ("forbiddenTools", "forbidden_tools"))
-        or _first_present(tool_policy, ("forbiddenTools", "forbidden_tools"))
+        _task_brief_first_present(payload, "forbiddenTools")
+        if any(key in payload for key in ("forbiddenTools", "forbidden_tools"))
+        else _first_present(tool_policy, ("forbiddenTools", "forbidden_tools"))
     )
     no_tools = _safe_bool(
-        _first_present(payload, ("noTools", "no_tools"))
-        or _first_present(tool_policy, ("noTools", "no_tools"))
+        _task_brief_first_present(payload, "noTools")
+        if any(key in payload for key in ("noTools", "no_tools"))
+        else _first_present(tool_policy, ("noTools", "no_tools"))
     )
     tool_policy_mode = str(tool_policy.get("mode") or "").strip().lower()
-    if no_tools:
+    if no_tools or tool_policy_mode == "none":
         tool_policy_mode = "none"
         allowed_tools = []
     elif tool_policy_mode not in {"default", "allowlist", "none"}:
         tool_policy_mode = "allowlist" if allowed_tools_present else "default"
-    behavior_scope = _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope"))
-    for boundary in _normalize_scope_values(
-        _first_present(payload, ("constraints", "constraint", "boundaries", "boundary"))
-    ):
+    constraints = _normalize_scope_values(
+        _task_brief_first_present(payload, "constraints")
+    )
+    behavior_scope = _normalize_scope_values(
+        _task_brief_first_present(payload, "behaviorScope")
+    )
+    for boundary in constraints:
         if boundary not in behavior_scope:
             behavior_scope.append(boundary)
     expected_artifacts = _normalize_scope_values(
-        _first_present(payload, ("expectedArtifacts", "expected_artifacts"))
+        _task_brief_first_present(payload, "expectedArtifacts")
     )
     expected_outputs = _normalize_scope_values(
-        _first_present(
-            payload,
-            (
-                "expectedOutputs",
-                "expected_outputs",
-                "expectedOutput",
-                "expected_output",
-            ),
-        )
+        _task_brief_first_present(payload, "expectedOutputs")
     )
     if not expected_outputs and expected_artifacts:
         # Historical callers used expectedArtifacts as the only output field.
@@ -396,99 +1007,216 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         # expectedOutputs describes acceptance-facing results, while
         # expectedArtifacts contains concrete artifact paths only.
         expected_outputs = list(expected_artifacts)
-    normalized = {
-        "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
-        "goal": str(payload.get("goal") or "").strip(),
-        "context": payload.get("context") if isinstance(payload.get("context"), dict) else str(payload.get("context") or "").strip(),
-        "routeQuery": str(payload.get("routeQuery") or payload.get("route_query") or payload.get("extensionsRouteQuery") or payload.get("extensions_route_query") or "").strip(),
-        "writeSet": _normalize_scope_values(payload.get("writeSet") or payload.get("write_set")),
-        "expectedOutputs": expected_outputs,
-        "expectedArtifacts": expected_artifacts,
-        "behaviorScope": behavior_scope,
-        "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
-        "runtimeAccess": _normalize_scope_values(payload.get("runtimeAccess") or payload.get("runtime_access")),
-        "toolPolicy": {
+    dependencies = _normalize_scope_values(
+        _task_brief_first_present(payload, "dependencies")
+    )
+    spec_refs_value = _task_brief_first_present(payload, "specRefs")
+    spec_refs = (
+        deepcopy(spec_refs_value)
+        if isinstance(spec_refs_value, dict)
+        else _normalize_scope_values(spec_refs_value)
+    )
+    side_effect_policy_value = _task_brief_first_present(payload, "sideEffectPolicy")
+    budget_value = _task_brief_first_present(payload, "budget")
+    failure_policy_value = _task_brief_first_present(payload, "failurePolicy")
+    normalized_tool_policy = deepcopy(tool_policy)
+    normalized_tool_policy.update(
+        {
             "mode": tool_policy_mode,
             "allowedTools": allowed_tools,
             "forbiddenTools": forbidden_tools,
-        },
-        "allowedTools": allowed_tools,
-        "forbiddenTools": forbidden_tools,
-        "pluginReferences": _normalize_plugin_references(
-            payload.get("pluginReferences") or payload.get("plugin_references")
-        ),
-        "evidenceRefs": _normalize_scope_values(payload.get("evidenceRefs") or payload.get("evidence_refs")),
-        "detailRefs": _normalize_scope_values(payload.get("detailRefs") or payload.get("detail_refs")),
-        "acceptanceContract": acceptance_contract if isinstance(acceptance_contract, dict) else str(acceptance_contract or "").strip(),
-        "acceptanceTiers": normalized_acceptance_tiers,
-        "dependency": _normalize_scope_values(payload.get("dependency")),
-        "parallelGroup": str(payload.get("parallelGroup") or payload.get("parallel_group") or "").strip(),
-        "executionLaneHint": str(payload.get("executionLaneHint") or payload.get("execution_lane_hint") or "auto").strip().lower() or "auto",
-        "familyHint": str(payload.get("familyHint") or payload.get("family_hint") or payload.get("specialistFamily") or "").strip(),
-        "targetAgentName": str(payload.get("targetAgentName") or payload.get("target_agent_name") or "").strip(),
-        "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
-        "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
-        "researchRefs": _normalize_scope_values(payload.get("researchRefs") or payload.get("research_refs")),
-        "targetCount": target_count,
-        "workerBriefs": worker_briefs,
-        "fanoutReason": str(payload.get("fanoutReason") or payload.get("fanout_reason") or payload.get("parallelismReason") or payload.get("parallelism_reason") or "").strip(),
-        "allowChildDelegation": child_delegation_allowed,
-        "requireChildDelegation": child_delegation_required,
-        "childDelegationPolicyExplicit": child_policy_explicit,
-        "childDelegationBudget": (
-            dict(child_delegation_budget or {})
-            if isinstance(child_delegation_budget, dict)
-            else {}
-        ),
-        "writeSetPartitions": [
+        }
+    )
+    normalized_child_budget = (
+        dict(child_delegation_budget or {})
+        if isinstance(child_delegation_budget, dict)
+        else {}
+    )
+    normalized_write_set_partitions = (
+        [
             dict(item) if isinstance(item, dict) else item
             for item in list(write_set_partitions or [])
         ]
         if isinstance(write_set_partitions, list)
-        else [],
+        else []
+    )
+    normalized_delegation_policy = {
+        "allowChildDelegation": child_delegation_allowed,
+        "requireChildDelegation": child_delegation_required,
+        "childDelegationBudget": normalized_child_budget,
+        "writeSetPartitions": normalized_write_set_partitions,
     }
-    for key in ("criticalFiles", "readSet", "verificationMatrix", "proofExpectations"):
-        normalized[key] = _normalize_scope_values(payload.get(key) or payload.get(key[0].lower() + key[1:]))
-    if isinstance(payload.get("engineeringTaskCapsule"), dict):
-        normalized["engineeringTaskCapsule"] = dict(payload.get("engineeringTaskCapsule") or {})
-    elif isinstance(payload.get("engineering_task_capsule"), dict):
-        normalized["engineeringTaskCapsule"] = dict(payload.get("engineering_task_capsule") or {})
+    policy_extensions = {
+        f"delegationPolicy.{key}": deepcopy(item)
+        for key, item in delegation_policy.items()
+        if key not in _DELEGATION_POLICY_INPUT_FIELDS
+    }
+    contract_diagnostics = [
+        dict(item)
+        for item in list(payload.get("contractDiagnostics") or [])
+        if isinstance(item, dict)
+    ]
+    for diagnostic in _alias_conflict_diagnostics(payload, index=index):
+        if diagnostic not in contract_diagnostics:
+            contract_diagnostics.append(diagnostic)
+    normalized = {
+        "schemaVersion": str(
+            _task_brief_first_present(payload, "schemaVersion")
+            or defaults["schemaVersion"]
+        ).strip(),
+        "taskBriefId": str(
+            _task_brief_first_present(payload, "taskBriefId")
+            or defaults["taskBriefId"]
+        ).strip(),
+        "goal": str(_task_brief_first_present(payload, "goal") or "").strip(),
+        "context": (
+            _task_brief_first_present(payload, "context")
+            if isinstance(_task_brief_first_present(payload, "context"), dict)
+            else str(_task_brief_first_present(payload, "context") or "").strip()
+        ),
+        "routeQuery": str(_task_brief_first_present(payload, "routeQuery") or "").strip(),
+        "readSet": _normalize_scope_values(_task_brief_first_present(payload, "readSet")),
+        "writeSet": _normalize_scope_values(_task_brief_first_present(payload, "writeSet")),
+        "expectedOutputs": expected_outputs,
+        "expectedArtifacts": expected_artifacts,
+        "constraints": constraints,
+        "behaviorScope": behavior_scope,
+        "requiredCapabilities": _normalize_scope_values(
+            _task_brief_first_present(payload, "requiredCapabilities")
+        ),
+        "runtimeAccess": _normalize_scope_values(
+            _task_brief_first_present(payload, "runtimeAccess")
+        ),
+        "toolPolicy": normalized_tool_policy,
+        "allowedTools": allowed_tools,
+        "forbiddenTools": forbidden_tools,
+        "pluginReferences": _normalize_plugin_references(
+            _task_brief_first_present(payload, "pluginReferences")
+        ),
+        "evidenceRefs": _normalize_scope_values(
+            _task_brief_first_present(payload, "evidenceRefs")
+        ),
+        "detailRefs": _normalize_scope_values(
+            _task_brief_first_present(payload, "detailRefs")
+        ),
+        "specRefs": spec_refs,
+        "acceptanceContract": (
+            deepcopy(acceptance_contract)
+            if isinstance(acceptance_contract, (dict, list))
+            else str(acceptance_contract or "").strip()
+        ),
+        "acceptanceTiers": normalized_acceptance_tiers,
+        "dependencies": list(dependencies),
+        # Keep the internal singular spelling until all persisted/runtime readers
+        # have migrated. Both keys always carry the same canonical ordering.
+        "dependency": list(dependencies),
+        "sideEffectPolicy": (
+            deepcopy(side_effect_policy_value)
+            if isinstance(side_effect_policy_value, dict)
+            else {}
+        ),
+        "budget": deepcopy(budget_value) if isinstance(budget_value, dict) else {},
+        "failurePolicy": (
+            deepcopy(failure_policy_value)
+            if isinstance(failure_policy_value, dict)
+            else {}
+        ),
+        "parallelGroup": str(_task_brief_first_present(payload, "parallelGroup") or "").strip(),
+        "executionLaneHint": str(
+            _task_brief_first_present(payload, "executionLaneHint") or "auto"
+        ).strip().lower() or "auto",
+        "familyHint": str(_task_brief_first_present(payload, "familyHint") or "").strip(),
+        "targetAgentName": str(
+            _task_brief_first_present(payload, "targetAgentName") or ""
+        ).strip(),
+        "preferredAgentId": str(
+            _task_brief_first_present(payload, "preferredAgentId") or ""
+        ).strip(),
+        "preferredWorkerType": str(
+            _task_brief_first_present(payload, "preferredWorkerType") or ""
+        ).strip(),
+        "researchRefs": _normalize_scope_values(
+            _task_brief_first_present(payload, "researchRefs")
+        ),
+        "targetCount": target_count,
+        "workerBriefs": worker_briefs,
+        "fanoutReason": str(
+            _task_brief_first_present(payload, "fanoutReason") or ""
+        ).strip(),
+        "allowChildDelegation": child_delegation_allowed,
+        "requireChildDelegation": child_delegation_required,
+        "childDelegationPolicyExplicit": child_policy_explicit,
+        "childDelegationBudget": normalized_child_budget,
+        "writeSetPartitions": normalized_write_set_partitions,
+        "parentTaskBriefId": str(
+            _task_brief_first_present(payload, "parentTaskBriefId")
+            or defaults["parentTaskBriefId"]
+        ).strip(),
+        "siblingIndex": _safe_nonnegative_int(
+            _task_brief_first_present(payload, "siblingIndex"),
+        ),
+        "siblingCount": _safe_nonnegative_int(
+            _task_brief_first_present(payload, "siblingCount"),
+        ),
+    }
+    if isinstance(raw_delegation_policy, dict) or child_policy_explicit or child_delegation_required or normalized_child_budget or normalized_write_set_partitions:
+        normalized["delegationPolicy"] = normalized_delegation_policy
+    if contract_diagnostics:
+        normalized["contractDiagnostics"] = contract_diagnostics
+    for key in ("criticalFiles", "verificationMatrix", "proofExpectations"):
+        normalized[key] = _normalize_scope_values(_task_brief_first_present(payload, key))
+    engineering_capsule_value = _task_brief_first_present(
+        payload,
+        "engineeringTaskCapsule",
+    )
+    if isinstance(engineering_capsule_value, dict):
+        normalized["engineeringTaskCapsule"] = dict(engineering_capsule_value)
     if "deliverableKind" in payload or "deliverable_kind" in payload:
         normalized["deliverableKind"] = str(
             _first_present(payload, ("deliverableKind", "deliverable_kind")) or ""
         ).strip()
     if "writeRequired" in payload or "write_required" in payload:
         normalized["writeRequired"] = _safe_bool(
-            _first_present(payload, ("writeRequired", "write_required"))
+            _task_brief_first_present(payload, "writeRequired")
         )
     if "readOnly" in payload or "read_only" in payload:
         normalized["readOnly"] = _safe_bool(
-            _first_present(payload, ("readOnly", "read_only"))
+            _task_brief_first_present(payload, "readOnly")
         )
     if "delegationDepth" in payload or "delegation_depth" in payload:
         try:
             normalized["delegationDepth"] = max(
                 0,
-                int(_first_present(payload, ("delegationDepth", "delegation_depth")) or 0),
+                int(_task_brief_first_present(payload, "delegationDepth") or 0),
             )
         except (TypeError, ValueError):
             pass
-    if isinstance(payload.get("verificationEvidenceContract"), dict):
+    verification_evidence_contract = _task_brief_first_present(
+        payload,
+        "verificationEvidenceContract",
+    )
+    if isinstance(verification_evidence_contract, dict):
         normalized["verificationEvidenceContract"] = dict(
-            payload.get("verificationEvidenceContract") or {}
-        )
-    elif isinstance(payload.get("verification_evidence_contract"), dict):
-        normalized["verificationEvidenceContract"] = dict(
-            payload.get("verification_evidence_contract") or {}
+            verification_evidence_contract
         )
     if "validateSkillArtifact" in payload or "validate_skill_artifact" in payload:
         normalized["validateSkillArtifact"] = _safe_bool(
-            _first_present(payload, ("validateSkillArtifact", "validate_skill_artifact"))
+            _task_brief_first_present(payload, "validateSkillArtifact")
         )
     if "requiredSkillContracts" in payload or "required_skill_contracts" in payload:
         normalized["requiredSkillContracts"] = _normalize_scope_values(
-            payload.get("requiredSkillContracts") or payload.get("required_skill_contracts")
+            _task_brief_first_present(payload, "requiredSkillContracts")
         )
+    extensions, unsupported_fields = _task_brief_extensions(
+        payload,
+        canonical_fields=normalized.keys(),
+    )
+    extensions.update(policy_extensions)
+    unsupported_fields = sorted({*unsupported_fields, *policy_extensions})
+    if extensions:
+        normalized["extensions"] = extensions
+    if unsupported_fields:
+        normalized["unsupportedFields"] = unsupported_fields
     if normalized["executionLaneHint"] not in {"subagent", "external_worker", "engineering", "auto"}:
         normalized["executionLaneHint"] = "auto"
     if not normalized["taskBriefId"]:
@@ -504,25 +1232,177 @@ def normalize_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
 
 
 def _merge_worker_context(parent_context: Any, worker_context: Any, *, parent_goal: str, index: int, count: int) -> Any:
-    if not worker_context:
-        return {
-            "parentContext": parent_context,
-            "parentGoal": parent_goal,
-            "parallelWorker": {"index": index + 1, "count": count},
-        }
-    if isinstance(parent_context, dict) or isinstance(worker_context, dict):
-        return {
-            "parentContext": parent_context,
-            "workerContext": worker_context,
-            "parentGoal": parent_goal,
-            "parallelWorker": {"index": index + 1, "count": count},
-        }
-    return (
-        f"{str(parent_context or '').strip()}\n\n"
-        f"[Parallel worker {index + 1}/{count}]\n"
-        f"Parent goal: {parent_goal}\n"
-        f"Worker context: {str(worker_context or '').strip()}"
-    ).strip()
+    context: dict[str, Any] = {
+        "parentGoal": parent_goal,
+        "parallelWorker": {"index": index + 1, "count": count},
+    }
+    if parent_context not in (None, "", [], {}):
+        # Preserve the complete parent payload for runtime recovery while only
+        # exposing its non-authority facts to the delegated model.
+        context["parentContext"] = deepcopy(parent_context)
+        shared_context = _filtered_shared_context(parent_context)
+        if shared_context not in (None, "", [], {}):
+            context["sharedContext"] = shared_context
+    if worker_context not in (None, "", [], {}):
+        context["workerContext"] = deepcopy(worker_context)
+    return context
+
+
+_CAPSULE_OVERRIDE_KEYS: dict[str, tuple[str, ...]] = {
+    "readSet": ("readSet", "read_set", "mustRead"),
+    "writeSet": ("writeSet", "write_set", "allowedWorkset"),
+    "criticalFiles": ("criticalFiles", "critical_files"),
+    "expectedOutputs": ("expectedOutputs", "expected_outputs"),
+    "expectedArtifacts": ("expectedArtifacts", "expected_artifacts"),
+    "verificationMatrix": (
+        "verificationContract",
+        "verification_contract",
+        "verificationMatrix",
+        "verification_matrix",
+    ),
+    "proofExpectations": ("proofExpectations", "proof_expectations"),
+    "acceptanceContract": ("acceptance", "acceptanceContract", "acceptance_contract"),
+    "writeRequired": ("writeRequired", "write_required", "executionMode", "execution_mode"),
+    "readOnly": (
+        "writeSet",
+        "write_set",
+        "allowedWorkset",
+        "expectedArtifacts",
+        "expected_artifacts",
+        "writeRequired",
+        "write_required",
+        "executionMode",
+        "execution_mode",
+    ),
+}
+
+
+def _remove_aliases(payload: dict[str, Any], aliases: Iterable[str]) -> None:
+    for alias in aliases:
+        payload.pop(alias, None)
+
+
+def _worker_override_keys(worker: dict[str, Any]) -> set[str]:
+    return {
+        canonical_key
+        for canonical_key, aliases in _TASK_BRIEF_WORKER_OVERRIDE_ALIASES.items()
+        if any(alias in worker for alias in aliases)
+    }
+
+
+def _apply_worker_task_brief_overrides(
+    branch_payload: dict[str, Any],
+    worker: dict[str, Any],
+) -> set[str]:
+    """Apply one worker slice without letting normalized parent duplicates win."""
+
+    override_keys = _worker_override_keys(worker)
+
+    if "toolPolicy" in override_keys:
+        for key in ("allowedTools", "forbiddenTools", "noTools"):
+            _remove_aliases(branch_payload, _TASK_BRIEF_WORKER_OVERRIDE_ALIASES[key])
+    else:
+        inherited_policy = (
+            deepcopy(branch_payload.get("toolPolicy"))
+            if isinstance(branch_payload.get("toolPolicy"), dict)
+            else {}
+        )
+        for key in ("allowedTools", "forbiddenTools", "noTools"):
+            if key in override_keys:
+                _remove_aliases(inherited_policy, _TASK_BRIEF_WORKER_OVERRIDE_ALIASES[key])
+        if inherited_policy:
+            branch_payload["toolPolicy"] = inherited_policy
+
+    if "delegationPolicy" in override_keys:
+        for key in ("allowChildDelegation", "requireChildDelegation", "childDelegationBudget"):
+            _remove_aliases(branch_payload, _TASK_BRIEF_WORKER_OVERRIDE_ALIASES[key])
+        branch_payload.pop("childDelegationPolicyExplicit", None)
+    else:
+        inherited_delegation_policy = (
+            deepcopy(branch_payload.get("delegationPolicy"))
+            if isinstance(branch_payload.get("delegationPolicy"), dict)
+            else {}
+        )
+        for key in ("allowChildDelegation", "requireChildDelegation", "childDelegationBudget"):
+            if key in override_keys:
+                _remove_aliases(
+                    inherited_delegation_policy,
+                    _TASK_BRIEF_WORKER_OVERRIDE_ALIASES[key],
+                )
+        if inherited_delegation_policy:
+            branch_payload["delegationPolicy"] = inherited_delegation_policy
+
+    if "engineeringTaskCapsule" in override_keys:
+        for key in _CAPSULE_OVERRIDE_KEYS:
+            if key not in override_keys:
+                _remove_aliases(
+                    branch_payload,
+                    _TASK_BRIEF_WORKER_OVERRIDE_ALIASES.get(key, (key,)),
+                )
+    else:
+        inherited_capsule = (
+            deepcopy(branch_payload.get("engineeringTaskCapsule"))
+            if isinstance(branch_payload.get("engineeringTaskCapsule"), dict)
+            else {}
+        )
+        if inherited_capsule:
+            inherited_capsule.pop("capsuleId", None)
+            inherited_capsule.pop("taskId", None)
+            for key in override_keys:
+                _remove_aliases(inherited_capsule, _CAPSULE_OVERRIDE_KEYS.get(key, ()))
+            if "writeSet" in override_keys and "expectedArtifacts" not in override_keys:
+                _remove_aliases(inherited_capsule, _CAPSULE_OVERRIDE_KEYS["expectedArtifacts"])
+            if "writeSet" in override_keys:
+                _remove_aliases(inherited_capsule, _CAPSULE_OVERRIDE_KEYS["writeRequired"])
+            if (
+                "writeRequired" in override_keys
+                and not _safe_bool(
+                    _first_present(
+                        worker,
+                        _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["writeRequired"],
+                    )
+                )
+            ):
+                _remove_aliases(inherited_capsule, _CAPSULE_OVERRIDE_KEYS["readOnly"])
+            branch_payload["engineeringTaskCapsule"] = inherited_capsule
+
+    for canonical_key, aliases in _TASK_BRIEF_WORKER_OVERRIDE_ALIASES.items():
+        if canonical_key not in override_keys:
+            continue
+        _remove_aliases(branch_payload, aliases)
+        branch_payload[canonical_key] = _first_present(worker, aliases)
+
+    if "writeSet" in override_keys:
+        worker_write_set = _normalize_scope_values(branch_payload.get("writeSet"))
+        if "expectedArtifacts" not in override_keys:
+            branch_payload["expectedArtifacts"] = list(worker_write_set)
+        if "writeRequired" not in override_keys:
+            branch_payload["writeRequired"] = bool(worker_write_set)
+
+    read_only_override = (
+        "readOnly" in override_keys
+        and _safe_bool(branch_payload.get("readOnly"))
+    )
+    write_disabled_override = (
+        "writeRequired" in override_keys
+        and not _safe_bool(branch_payload.get("writeRequired"))
+    )
+    if read_only_override or write_disabled_override:
+        branch_payload["writeSet"] = []
+        branch_payload["expectedArtifacts"] = []
+        branch_payload["writeRequired"] = False
+
+    worker_delegation_policy = (
+        branch_payload.get("delegationPolicy")
+        if isinstance(branch_payload.get("delegationPolicy"), dict)
+        else {}
+    )
+    if "allowChildDelegation" in override_keys or any(
+        alias in worker_delegation_policy
+        for alias in _TASK_BRIEF_WORKER_OVERRIDE_ALIASES["allowChildDelegation"]
+    ):
+        branch_payload["childDelegationPolicyExplicit"] = True
+    return override_keys
 
 
 def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
@@ -569,55 +1449,32 @@ def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str
                 index=worker_index,
                 count=count,
             )
-            for key in (
-                "routeQuery",
-                "route_query",
-                "writeSet",
-                "write_set",
-                "readSet",
-                "read_set",
-                "criticalFiles",
-                "critical_files",
-                "behaviorScope",
-                "behavior_scope",
-                "requiredCapabilities",
-                "required_capabilities",
-                "runtimeAccess",
-                "runtime_access",
-                "toolPolicy",
-                "tool_policy",
-                "allowedTools",
-                "allowed_tools",
-                "forbiddenTools",
-                "forbidden_tools",
-                "noTools",
-                "no_tools",
-                "pluginReferences",
-                "plugin_references",
-                "acceptanceContract",
-                "acceptance_contract",
-                "dependency",
-                "parallelGroup",
-                "parallel_group",
-                "executionLaneHint",
-                "execution_lane_hint",
-                "familyHint",
-                "family_hint",
-                "preferredAgentId",
-                "preferred_agent_id",
-                "preferredWorkerType",
-                "preferred_worker_type",
-                "researchRefs",
-                "research_refs",
-                "verificationMatrix",
-                "verification_matrix",
-                "proofExpectations",
-                "proof_expectations",
-                "engineeringTaskCapsule",
-                "engineering_task_capsule",
-            ):
-                if key in worker:
-                    branch_payload[key] = worker.get(key)
+            # A normalized macro already contains canonical keys. Canonicalize
+            # each worker override as a group so a legacy alias cannot be
+            # shadowed by the parent's inherited canonical value or derived
+            # Engineering Task Capsule/tool-policy projections.
+            _apply_worker_task_brief_overrides(branch_payload, worker)
+            worker_extensions, worker_unsupported_fields = _task_brief_extensions(
+                worker,
+                canonical_fields=branch_payload.keys(),
+            )
+            if worker_extensions:
+                inherited_extensions = (
+                    dict(branch_payload.get("extensions") or {})
+                    if isinstance(branch_payload.get("extensions"), dict)
+                    else {}
+                )
+                branch_payload["extensions"] = {
+                    **inherited_extensions,
+                    **worker_extensions,
+                }
+            if worker_unsupported_fields:
+                branch_payload["unsupportedFields"] = sorted(
+                    {
+                        *_normalize_scope_values(branch_payload.get("unsupportedFields")),
+                        *worker_unsupported_fields,
+                    }
+                )
             branch_payload["targetCount"] = 1
             branch_payload["workerBriefs"] = []
             branch = normalize_task_brief(branch_payload, index=len(expanded))
@@ -684,6 +1541,7 @@ _TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS = {
     "assignedTaskSummaries",
     "parentContext",
     "workerContext",
+    "sharedContext",
     # These fields are rendered by the delegated system contract with explicit
     # authority labels.  Dumping them into the user-like task query makes a
     # sibling goal look like additional work and makes an upstream handoff look
@@ -697,11 +1555,12 @@ _TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS = {
 def _task_query_context(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    return {
+    visible = {
         key: item
         for key, item in value.items()
         if key not in _TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS
     }
+    return _filtered_shared_context(visible)
 
 
 def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
@@ -714,6 +1573,16 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     context_text = _stringify_context(_task_query_context(task_brief.get("context")))
     if context_text:
         parts.append(f"Context: {context_text}")
+    execution_workspace = str(
+        task_brief.get("workspacePath")
+        or task_brief.get("workspace_path")
+        or ""
+    ).strip()
+    if execution_workspace:
+        # Render the governed active workspace as an explicit execution fact.
+        # Generic context projection deliberately hides workspace authority
+        # fields, while the worker still needs the selected child checkout.
+        parts.append(f"Execution workspace: {execution_workspace}")
     capabilities = [str(item).strip() for item in list(task_brief.get("requiredCapabilities") or []) if str(item).strip()]
     if capabilities:
         parts.append(f"Required capabilities: {', '.join(capabilities)}")

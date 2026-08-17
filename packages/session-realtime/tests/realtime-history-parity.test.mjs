@@ -6,6 +6,7 @@ import {
   evaluateSessionRuntimeEvent,
   mergeTimelineNodesByIdentity,
   normalizeSessionRuntimeEvent,
+  SessionRuntimeEventContiguousCursor,
   shouldAuthoritativelyRefreshOnRuntimeEvent,
 } from "../dist/index.js";
 
@@ -16,6 +17,7 @@ test("snapshot watermark only rejects events already covered by the snapshot", (
     { snapshotCoveredSeq: 10, seenEventIdentities: seen },
   );
   assert.equal(lateButUncovered.accept, true);
+  assert.equal(lateButUncovered.gap, undefined);
   seen.add(lateButUncovered.identity);
 
   const outOfOrderUncovered = evaluateSessionRuntimeEvent(
@@ -39,6 +41,73 @@ test("snapshot watermark only rejects events already covered by the snapshot", (
     { snapshotCoveredSeq: 10, seenEventIdentities: seen },
   );
   assert.equal(duplicate.reason, "duplicate");
+});
+
+test("sequence evaluation reports a recoverable gap without rejecting the event", () => {
+  const acceptance = evaluateSessionRuntimeEvent(
+    { type: "custom_event", topic: "runtime.episode.progress", seq: 14, event_id: "evt-14" },
+    { snapshotCoveredSeq: 10, contiguousSeq: 10 },
+  );
+
+  assert.deepEqual(acceptance, {
+    accept: true,
+    identity: "event:evt-14",
+    gap: {
+      expectedSeq: 11,
+      observedSeq: 14,
+      missingFromSeq: 11,
+      missingToSeq: 13,
+    },
+  });
+});
+
+test("contiguous cursor never advances polling beyond an observed gap", () => {
+  const cursor = new SessionRuntimeEventContiguousCursor(10);
+
+  assert.deepEqual(cursor.observe(13), {
+    seq: 13,
+    contiguousSeq: 10,
+    highestObservedSeq: 13,
+    acceptEvent: true,
+    gap: {
+      expectedSeq: 11,
+      observedSeq: 13,
+      missingFromSeq: 11,
+      missingToSeq: 12,
+    },
+  });
+  assert.equal(cursor.observe(11).contiguousSeq, 11);
+  assert.equal(cursor.observe(12).contiguousSeq, 13);
+  assert.equal(cursor.observe(13).contiguousSeq, 13);
+
+  const snapshotRace = new SessionRuntimeEventContiguousCursor();
+  snapshotRace.observe(12);
+  assert.equal(snapshotRace.coverThrough(10).contiguousSeq, 10);
+  assert.equal(snapshotRace.observe(11).contiguousSeq, 12);
+});
+
+test("contiguous cursor distinguishes pending duplicates from snapshot coverage", () => {
+  const cursor = new SessionRuntimeEventContiguousCursor(10);
+
+  assert.equal(cursor.observe(13).acceptEvent, true);
+  assert.deepEqual(cursor.observe(13), {
+    seq: 13,
+    contiguousSeq: 10,
+    highestObservedSeq: 13,
+    acceptEvent: false,
+    observationReason: "pending_duplicate",
+    gap: {
+      expectedSeq: 11,
+      observedSeq: 13,
+      missingFromSeq: 11,
+      missingToSeq: 12,
+    },
+  });
+
+  cursor.coverThrough(12);
+  assert.equal(cursor.observe(13).observationReason, "contiguous_duplicate");
+  cursor.coverThrough(13);
+  assert.equal(cursor.observe(13).observationReason, "snapshot_covered");
 });
 
 test("timeline nodes with durable eventSeq render in canonical event order", () => {

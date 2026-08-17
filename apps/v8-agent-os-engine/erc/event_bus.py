@@ -16,6 +16,10 @@ _LOCK_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.35)
 _EMIT_LOCK = threading.Lock()
 
 
+def _is_runtime_sequence_conflict(exc: sqlite3.IntegrityError) -> bool:
+    return "runtime_events.session_id, runtime_events.seq" in str(exc)
+
+
 def _next_seq_with_retry(session_id: str, current_seq: int) -> int:
     next_seq = current_seq
     for delay in (0.0, *_LOCK_RETRY_DELAYS):
@@ -48,11 +52,10 @@ class SessionEventEmitter:
         event_id: Optional[str] = None,
         event_ts: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        def append(candidate: Dict[str, Any]) -> bool:
+        def append(candidate: Dict[str, Any]) -> Optional[int]:
             if canvas_outbox_id:
                 return db.project_canvas_graph_run_event_outbox(candidate, outbox_id=canvas_outbox_id)
-            db.add_runtime_event(candidate)
-            return True
+            return db.add_runtime_event(candidate)
 
         if canvas_outbox_id:
             event = build_runtime_event(
@@ -67,9 +70,11 @@ class SessionEventEmitter:
                 event_id=event_id,
                 ts=event_ts,
             )
-            if not append(event):
+            durable_seq = append(event)
+            if not durable_seq:
                 return None
-            self._seq += 1
+            event["seq"] = int(durable_seq)
+            self._seq = int(durable_seq) + 1
             return event
 
         with _EMIT_LOCK:
@@ -87,11 +92,15 @@ class SessionEventEmitter:
                     ts=event_ts,
                 )
                 try:
-                    if not append(event):
+                    durable_seq = append(event)
+                    if not durable_seq:
                         return None
-                    self._seq += 1
+                    event["seq"] = int(durable_seq)
+                    self._seq = int(durable_seq) + 1
                     return event
-                except sqlite3.IntegrityError:
+                except sqlite3.IntegrityError as exc:
+                    if not _is_runtime_sequence_conflict(exc):
+                        raise
                     self._seq = _next_seq_with_retry(self.session_id, self._seq)
                 except sqlite3.OperationalError as exc:
                     if "database is locked" not in str(exc).lower():
@@ -113,12 +122,16 @@ class SessionEventEmitter:
                             ts=event_ts,
                         )
                         try:
-                            if not append(event):
+                            durable_seq = append(event)
+                            if not durable_seq:
                                 return None
-                            self._seq += 1
+                            event["seq"] = int(durable_seq)
+                            self._seq = int(durable_seq) + 1
                             recovered = True
                             return event
-                        except sqlite3.IntegrityError:
+                        except sqlite3.IntegrityError as exc:
+                            if not _is_runtime_sequence_conflict(exc):
+                                raise
                             self._seq = _next_seq_with_retry(self.session_id, self._seq)
                             continue
                         except sqlite3.OperationalError as retry_exc:

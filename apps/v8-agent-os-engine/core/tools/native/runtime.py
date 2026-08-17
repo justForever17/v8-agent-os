@@ -12,9 +12,14 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
+from pydantic_core import PydanticCustomError
 
 from core.database import db
-from core.delegation_broker import normalize_task_brief, normalize_task_briefs
+from core.delegation_broker import (
+    normalize_task_brief,
+    normalize_task_briefs,
+    task_brief_contract_diagnostics,
+)
 from core.runtime_episodes import (
     build_runtime_episode,
     emit_runtime_episode_event,
@@ -48,8 +53,24 @@ class RuntimeRouteTaskBrief(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    schemaVersion: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("schemaVersion", "schema_version"),
+        description="Task-brief schema version supplied by the Supervisor. Preserve unknown future versions for diagnostics.",
+    )
+    extensions: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Forward-compatible, non-authoritative task fields preserved without granting runtime or tool authority.",
+    )
+    unsupportedFields: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("unsupportedFields", "unsupported_fields"),
+        description="Engine diagnostics naming task fields preserved in extensions but not understood canonically.",
+    )
+
     taskBriefId: str = Field(
         min_length=1,
+        validation_alias=AliasChoices("taskBriefId", "task_brief_id"),
         description="Stable Supervisor-owned task ID, unique within this route call.",
     )
     goal: str = Field(
@@ -67,14 +88,17 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     writeRequired: bool = Field(
         default=False,
+        validation_alias=AliasChoices("writeRequired", "write_required"),
         description="True only when this brief must mutate the bound workspace.",
     )
     readOnly: bool = Field(
         default=False,
+        validation_alias=AliasChoices("readOnly", "read_only"),
         description="True for evidence/review work that must not mutate the workspace.",
     )
     writeSet: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices("writeSet", "write_set"),
         description=(
             "Exhaustive array of bounded paths relative to the original bound workspace that the task or its commands "
             "may create or modify, including temporary/cache/report files. Never copy an absolute managed-worktree "
@@ -82,8 +106,19 @@ class RuntimeRouteTaskBrief(BaseModel):
             "output directory. Use [] for read-only work; never pass a string."
         ),
     )
+    readSet: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("readSet", "read_set"),
+        description="Bounded workspace paths the worker should inspect. This is context, never write authority.",
+    )
+    criticalFiles: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("criticalFiles", "critical_files"),
+        description="High-risk files whose current contents and invariants the worker must keep in view.",
+    )
     expectedArtifacts: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices("expectedArtifacts", "expected_artifacts"),
         description=(
             "Final deliverable paths only. Every final artifact must also be covered by writeSet; "
             "do not use this field as a broader write grant."
@@ -91,6 +126,12 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     expectedOutputs: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices(
+            "expectedOutputs",
+            "expected_outputs",
+            "expectedOutput",
+            "expected_output",
+        ),
         description=(
             "Short array of the essential deliverable classes (normally 1-3), not one entry per sub-question."
         ),
@@ -101,15 +142,76 @@ class RuntimeRouteTaskBrief(BaseModel):
     )
     acceptanceContract: dict[str, Any] | list[Any] | str | None = Field(
         default=None,
+        validation_alias=AliasChoices("acceptanceContract", "acceptance_contract"),
         description="One to three concise checks that prove this brief is complete.",
     )
     constraints: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices(
+            "constraints",
+            "constraint",
+            "boundaries",
+            "boundary",
+        ),
         description="Array of scope, safety, or implementation boundaries. Use [] or omit when empty.",
+    )
+    verificationMatrix: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("verificationMatrix", "verification_matrix"),
+        description="Focused checks required for this task, preserved separately from acceptance outcomes.",
+    )
+    proofExpectations: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("proofExpectations", "proof_expectations"),
+        description="Durable evidence the task handoff must return, such as commands, refs, or artifact proofs.",
+    )
+    evidenceRefs: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("evidenceRefs", "evidence_refs"),
+        description="Explicit evidence or handoff references required by this task. Unresolved refs must remain visible.",
     )
     detailRefs: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices("detailRefs", "detail_refs"),
         description="Highest-value durable detail/spec/evidence references only (normally at most 3). Use [] or omit when empty.",
+    )
+    specRefs: dict[str, Any] | list[str] | str = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("specRefs", "spec_refs"),
+        description="Approved Spec lineage as either its structured ref object or a compact list of IDs.",
+    )
+    toolPolicy: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("toolPolicy", "tool_policy"),
+        description="Task-local tool selection policy. Preserve policy metadata in addition to the canonical mode and lists.",
+    )
+    delegationPolicy: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("delegationPolicy", "delegation_policy"),
+        description=(
+            "Task-local child-delegation intent. Only canonical child authority fields are executable; "
+            "unknown strategy metadata remains non-authoritative diagnostics after normalization."
+        ),
+    )
+    sideEffectPolicy: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("sideEffectPolicy", "side_effect_policy"),
+        description="Task-local side-effect expectations and approval semantics; this augments, never bypasses, runtime safety.",
+    )
+    budget: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("budget", "executionBudget", "execution_budget"),
+        description="Task-local execution budget contract projected to the worker; runtime budget services remain authoritative.",
+    )
+    failurePolicy: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("failurePolicy", "failure_policy"),
+        description="Task-local retry, degrade, blocker, and handoff behavior on failure.",
+    )
+    acceptanceTiers: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("acceptanceTiers", "acceptance_tiers"),
+        description="Tiered must/should/nice acceptance projection when supplied.",
     )
     dependency: list[str] = Field(
         default_factory=list,
@@ -121,8 +223,48 @@ class RuntimeRouteTaskBrief(BaseModel):
             "The singular dependency spelling is a read-only legacy alias."
         ),
     )
+    contractDiagnostics: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Typed non-secret diagnostics retained when a persisted brief required contract repair.",
+    )
 
-    @field_validator("writeSet", "constraints", "detailRefs", "dependency", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_conflicting_aliases(cls, value: Any) -> Any:
+        diagnostics = task_brief_contract_diagnostics(
+            [value] if isinstance(value, dict) else []
+        )
+        conflicts = list(diagnostics.get("aliasConflicts") or [])
+        if conflicts:
+            raise PydanticCustomError(
+                "task_brief_alias_conflict",
+                "TaskBrief aliases conflict for fields: {fields}",
+                {
+                    "fields": ", ".join(
+                        str(item.get("field") or "") for item in conflicts
+                    ),
+                    "aliasConflicts": json.dumps(
+                        conflicts,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+        return value
+
+    @field_validator(
+        "writeSet",
+        "readSet",
+        "criticalFiles",
+        "constraints",
+        "verificationMatrix",
+        "proofExpectations",
+        "evidenceRefs",
+        "detailRefs",
+        "unsupportedFields",
+        "dependency",
+        mode="before",
+    )
     @classmethod
     def _normalize_explicit_empty_list(cls, value: Any) -> Any:
         """Accept only a provider's common explicit-empty spelling for list fields.
@@ -610,6 +752,20 @@ def _public_route_validation_field(location: Any) -> str:
     elif parts and parts[0] in {"researchBriefs", "researchBriefContexts"}:
         return "researchBriefIds/researchBriefGoals"
     return ".".join(parts) if parts else "route"
+
+
+def _route_task_brief_contract_diagnostics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"aliasConflicts": [], "duplicateTaskBriefIds": []}
+    inputs = value.get("inputs") if isinstance(value.get("inputs"), dict) else {}
+    raw_tasks: Any = []
+    for key in ("taskBriefs", "workerBriefs", "worker_briefs", "tasks"):
+        if key in inputs:
+            raw_tasks = inputs.get(key)
+            break
+    return task_brief_contract_diagnostics(
+        raw_tasks if isinstance(raw_tasks, list) else []
+    )
 
 
 def _runtime_broker_payload(
@@ -3025,12 +3181,13 @@ def _enrich_route_need_for_episode(
                 kind=kind,
                 workspace_path=_workspace_path_from_route(inputs, state),
             )
-        if task_filter_applied or not inputs.get("workerBriefs"):
-            inputs["workerBriefs"] = route_tasks
-        if task_filter_applied or not inputs.get("tasks"):
-            inputs["tasks"] = route_tasks
-        if task_filter_applied or not inputs.get("taskBriefs"):
-            inputs["taskBriefs"] = route_tasks
+        # All three read-compatible array names must project the same canonical
+        # brief objects. Keeping the provider payload in one alias while the
+        # normalized contract lives in another makes recovery and prompts see
+        # different fields.
+        inputs["workerBriefs"] = route_tasks
+        inputs["tasks"] = route_tasks
+        inputs["taskBriefs"] = route_tasks
         if kind == "engineering":
             inputs.setdefault(
                 "proofExpectations",
@@ -3857,6 +4014,95 @@ def runtime_broker(
                         "reason": "typed_need_required",
                         "episodeCount": 0,
                         "nextAction": "repair_task_contract",
+                    },
+                },
+            )
+        task_contract_diagnostics = _route_task_brief_contract_diagnostics(
+            need_payload_for_intent
+        )
+        duplicate_task_ids = list(
+            task_contract_diagnostics.get("duplicateTaskBriefIds") or []
+        )
+        alias_conflicts = list(task_contract_diagnostics.get("aliasConflicts") or [])
+        if duplicate_task_ids or alias_conflicts:
+            error = (
+                "duplicate_task_brief_ids"
+                if duplicate_task_ids
+                else "task_brief_alias_conflict"
+            )
+            repair_fields = sorted(
+                {
+                    *(
+                        f"taskBriefs.{index}.taskBriefId"
+                        for duplicate in duplicate_task_ids
+                        for index in list(duplicate.get("indexes") or [])
+                    ),
+                    *(
+                        f"taskBriefs.{index}.dependencies"
+                        for duplicate in duplicate_task_ids
+                        for index in list(duplicate.get("dependentIndexes") or [])
+                    ),
+                    *(
+                        (
+                            f"taskBriefs.{int(conflict.get('parentIndex'))}.workerBriefs."
+                            f"{int(conflict.get('workerIndex'))}."
+                            f"{str(conflict.get('field') or '')}"
+                            if conflict.get("parentIndex") is not None
+                            and conflict.get("workerIndex") is not None
+                            else f"taskBriefs.{int(conflict.get('index') or 0)}."
+                            f"{str(conflict.get('field') or '')}"
+                        )
+                        for conflict in alias_conflicts
+                    ),
+                }
+            )
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=(
+                                    "runtime_broker rejected duplicate taskBriefId values before route execution."
+                                    if duplicate_task_ids
+                                    else "runtime_broker rejected conflicting aliases before route execution."
+                                ),
+                                error=error,
+                                detail_level=detail_level,
+                                next_action=(
+                                    "Assign a unique taskBriefId to each listed index and update only the listed dependency references; preserve every goal, context, policy, and proof contract."
+                                    if duplicate_task_ids
+                                    else "Keep the task contract unchanged, remove the conflicting alias spelling, and retry with one value for each listed field."
+                                ),
+                                route_brief_quality={
+                                    "status": "blocked",
+                                    "reason": error,
+                                    "blocking": True,
+                                    "taskBriefDiagnostics": task_contract_diagnostics,
+                                    "repairFields": repair_fields,
+                                    "preserveAllOtherFields": True,
+                                },
+                                parameter_guidance=runtime_route_parameter_guidance(
+                                    str(
+                                        need_payload_for_intent.get("kind")
+                                        or runtime_kind
+                                        or "engineering"
+                                    )
+                                ),
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "runtime_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": error,
+                        "episodeCount": 0,
+                        "nextAction": "repair_task_identity",
                     },
                 },
             )

@@ -271,6 +271,54 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.failed")
 
 
+def test_runtime_runner_reports_corrupted_contract_without_calling_executor(tmp_path, monkeypatch):
+    manager = DatabaseManager(tmp_path / "corrupted-contract-runner.db")
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "corrupted contract"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    with manager.get_connection() as conn:
+        conn.execute(
+            "UPDATE runtime_episodes SET inputs_json = ? WHERE id = ?",
+            ('{"query":"private-payload"', episode["episodeId"]),
+        )
+        conn.commit()
+
+    runner = RuntimeEpisodeRunner()
+    executor_called = False
+
+    async def unexpected_executor(_episode):
+        nonlocal executor_called
+        executor_called = True
+        raise AssertionError("corrupted episode contract reached the research executor")
+
+    monkeypatch.setattr(runner, "_execute_research", unexpected_executor)
+    claimed = manager.claim_runtime_episode(
+        worker_id=runner.worker_id,
+        lease_seconds=30,
+        kinds=["research"],
+    )
+    assert claimed is not None
+    assert claimed["contractCorrupted"] is True
+
+    asyncio.run(runner._execute_episode(claimed))
+
+    stored = manager.get_runtime_episode(episode["episodeId"])
+    handoffs = manager.list_runtime_episode_handoffs(episode["episodeId"])
+    assert executor_called is False
+    assert stored is not None
+    assert stored["state"] == "failed"
+    assert stored["errorCode"] == "runtime_episode_contract_corrupted"
+    assert stored["resultRef"] == handoffs[0]["payload"]["handoffRefId"]
+    assert handoffs[0]["payload"]["status"] == "failed"
+    assert handoffs[0]["payload"]["recoverable"] is False
+    assert "private-payload" not in json.dumps(handoffs, ensure_ascii=False)
+
+
 def test_runtime_episode_fenced_writes_reject_stale_lease_generation(tmp_path):
     manager = DatabaseManager(tmp_path / "episode-generation-fence.db")
     episode = build_runtime_episode(
@@ -741,6 +789,8 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     )
     manager.upsert_runtime_episode_record(direct, session_id="session-direct", run_id="run-direct", enqueue=False)
     monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    atomic_stages: list[str] = []
+    monkeypatch.setattr(manager, "_runtime_episode_delivery_failpoint", atomic_stages.append)
     monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"code-review-architect": {"id": "code-review-architect"}})
 
     async def _fake_branch(_arg, _agent_data, progress_callback=None):
@@ -827,6 +877,7 @@ def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_pat
     assert "handoff.ref.created" in topics
     assert topics.index("handoff.ref.created") < topics.index("runtime.episode.completed")
     assert topics[-1] == "runtime.episode.completed"
+    assert atomic_stages == ["after_handoff", "after_episode_transition", "before_commit"]
 
 
 def test_local_delegation_blocks_task_when_dependency_failed(monkeypatch):
@@ -1677,7 +1728,7 @@ def test_child_episode_completion_does_not_schedule_chat_handoff_resume(monkeypa
 
 def test_cancelled_handoff_persists_cancelled_episode_and_resumes_chat(monkeypatch):
     runner = RuntimeEpisodeRunner()
-    completed_calls = []
+    delivery_calls = []
     scheduled = []
 
     async def _cancelled_research(_episode):
@@ -1696,22 +1747,29 @@ def test_cancelled_handoff_persists_cancelled_episode_and_resumes_chat(monkeypat
         "_maybe_schedule_chat_handoff_resume",
         lambda episode: scheduled.append(dict(episode)),
     )
-    monkeypatch.setattr(
-        "core.runtime_episode_runner.db.add_runtime_episode_handoff",
-        lambda **kwargs: {**dict(kwargs["handoff"]), "handoffId": "handoff_cancelled"},
-    )
-
-    def _complete(episode_id, **kwargs):
-        completed_calls.append({"episode_id": episode_id, **kwargs})
+    def _commit_delivery(episode_id, **kwargs):
+        delivery_calls.append({"episode_id": episode_id, **kwargs})
+        persisted_handoff = {
+            **dict(kwargs["handoff"]),
+            "handoffId": "handoff_cancelled",
+            "handoffRefId": "handoff_cancelled",
+        }
         return {
-            "episodeId": episode_id,
-            "kind": "research",
-            "state": kwargs["state"],
-            "sessionId": "session_cancelled",
-            "runId": "run_cancelled",
+            "episode": {
+                "episodeId": episode_id,
+                "kind": "research",
+                "state": kwargs["state"],
+                "sessionId": "session_cancelled",
+                "runId": "run_cancelled",
+                "resultRef": "handoff_cancelled",
+            },
+            "handoff": persisted_handoff,
         }
 
-    monkeypatch.setattr("core.runtime_episode_runner.db.complete_runtime_episode", _complete)
+    monkeypatch.setattr(
+        "core.runtime_episode_runner.db.commit_runtime_episode_delivery",
+        _commit_delivery,
+    )
 
     asyncio.run(
         runner._execute_episode(
@@ -1725,8 +1783,9 @@ def test_cancelled_handoff_persists_cancelled_episode_and_resumes_chat(monkeypat
         )
     )
 
-    assert completed_calls[0]["state"] == "cancelled"
-    assert completed_calls[0]["metadata"]["recovery"]["nextAction"] == "report_cancelled"
+    assert delivery_calls[0]["state"] == "cancelled"
+    assert delivery_calls[0]["handoff"]["status"] == "cancelled"
+    assert delivery_calls[0]["metadata"]["recovery"]["nextAction"] == "report_cancelled"
     assert scheduled and scheduled[0]["state"] == "cancelled"
 
 
@@ -4417,6 +4476,69 @@ def test_delegation_episode_returns_degraded_handoff_after_failure_threshold(mon
     assert "direct" not in " ".join(handoff["recoveryHints"]).lower()
 
 
+def test_delegation_episode_preserves_results_beyond_agent_surface_limit(monkeypatch):
+    episode = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "nine independent reviews"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": f"brief-{index}",
+                        "goal": f"Review area {index}.",
+                    }
+                    for index in range(9)
+                ],
+                "targetCount": 9,
+            }
+        },
+    )
+
+    from core.native_tools import delegation_broker
+    from langgraph.types import Command
+
+    results = [
+        {
+            "status": "ok",
+            "taskBriefId": f"brief-{index}",
+            "delegationId": f"delegation-{index}",
+            "targetId": f"worker-{index}",
+            "targetLabel": f"Worker {index}",
+            "localSelfCheck": f"Review {index} completed.",
+            "acceptanceHint": "Supervisor should inspect this result.",
+        }
+        for index in range(8)
+    ]
+    results.append(
+        {
+            "status": "failed",
+            "taskBriefId": "brief-8",
+            "delegationId": "delegation-8",
+            "targetId": "worker-8",
+            "targetLabel": "Worker 8",
+            "error": "ninth_review_failed",
+            "localSelfCheck": "The ninth review found a blocking failure.",
+            "acceptanceHint": "Supervisor must not accept the aggregate yet.",
+        }
+    )
+
+    monkeypatch.setattr(
+        delegation_broker,
+        "func",
+        lambda **_kwargs: Command(update={"parallel_results": results}),
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["resultCount"] == 9
+    assert len(handoff["results"]) == 9
+    assert handoff["results"][8]["taskBriefId"] == "brief-8"
+    assert handoff["results"][8]["status"] == "failed"
+    assert handoff["results"][8]["error"] == "ninth_review_failed"
+
+
 def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "parent subagent task"},
@@ -5502,7 +5624,7 @@ def test_completed_child_delegation_projects_only_its_final_handoff():
             extra={"delegationState": "waiting_child", "error": "delegation_child_requested"},
         ),
     )
-    db.add_runtime_episode_handoff(
+    ready_handoff = db.add_runtime_episode_handoff(
         episode_id=child["episodeId"],
         handoff=build_handoff_ref(
             producer_episode_id=child["episodeId"],
@@ -5511,6 +5633,23 @@ def test_completed_child_delegation_projects_only_its_final_handoff():
             status="ready",
             confidence="high",
             extra={"delegationState": "handoff_ready", "proofRefs": ["proof://grandchild"]},
+        ),
+    )
+    assert ready_handoff is not None
+    db.complete_runtime_episode(
+        child["episodeId"],
+        state="completed",
+        result_ref=ready_handoff["handoffId"],
+        expected_state="completed",
+    )
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="late stale delivery must not replace current result",
+            status="waiting",
+            confidence="low",
         ),
     )
 
@@ -5522,6 +5661,153 @@ def test_completed_child_delegation_projects_only_its_final_handoff():
     assert len(handoffs) == 1
     assert handoffs[0]["compactSummary"] == "grandchild verification completed"
     assert handoffs[0]["proofRefs"] == ["proof://grandchild"]
+    assert resumed_parent["resumeToken"]["childDeliveryDiagnostics"][0]["resolution"] == "result_ref"
+
+
+def test_parent_join_preserves_missing_delivery_diagnostics_across_mixed_failures(monkeypatch):
+    atomic_stages: list[str] = []
+    monkeypatch.setattr(db, "_runtime_episode_delivery_failpoint", atomic_stages.append)
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "parent needs complete child evidence"},
+        kind="engineering",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    missing_child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "child failed without delivery",
+            "parentEpisodeId": parent["episodeId"],
+        },
+        kind="delegation",
+        state="failed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    delivered_child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "child returned degraded evidence",
+            "parentEpisodeId": parent["episodeId"],
+        },
+        kind="delegation",
+        state="failed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(missing_child, enqueue=False)
+    db.upsert_runtime_episode_record(delivered_child, enqueue=False)
+    delivered_handoff = db.add_runtime_episode_handoff(
+        episode_id=delivered_child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=delivered_child["episodeId"],
+            kind="delegation_degraded",
+            compact_summary="degraded child evidence",
+            status="degraded",
+            confidence="high",
+        ),
+    )
+    assert delivered_handoff is not None
+    db.complete_runtime_episode(
+        delivered_child["episodeId"],
+        state="failed",
+        result_ref=delivered_handoff["handoffId"],
+        expected_state="failed",
+    )
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(
+        delivered_child,
+        session_id=None,
+        run_id=None,
+    )
+
+    failed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert failed_parent is not None
+    assert failed_parent["state"] == "failed"
+    assert failed_parent["error_code"] == "child_delivery_missing"
+    resume = failed_parent["metadata"]["resumeToken"]
+    assert resume["failedChildCount"] == 2
+    assert resume["deliveryMissingChildCount"] == 1
+    assert resume["missingChildEpisodeIds"] == [missing_child["episodeId"]]
+    assert set(resume["deliveredChildEpisodeIds"]) == {delivered_child["episodeId"]}
+    assert set(resume["expectedChildEpisodeIds"]) == {
+        missing_child["episodeId"],
+        delivered_child["episodeId"],
+    }
+    missing_evidence = next(
+        item for item in resume["childHandoffs"] if item.get("deliveryState") == "missing"
+    )
+    assert missing_evidence["kind"] == "runtime_delivery_missing"
+    assert missing_evidence["errorCode"] == "child_delivery_missing"
+    parent_handoffs = db.list_runtime_episode_handoffs(parent["episodeId"])
+    assert failed_parent["resultRef"] == parent_handoffs[-1]["id"]
+    assert parent_handoffs[-1]["payload"]["errorCode"] == "child_delivery_missing"
+    assert atomic_stages == ["after_handoff", "after_episode_transition", "before_commit"]
+
+
+def test_parent_join_rejects_corrupted_child_current_handoff_payload():
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "parent needs intact child evidence"},
+        kind="engineering",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "child delivery becomes corrupted",
+            "parentEpisodeId": parent["episodeId"],
+        },
+        kind="delegation",
+        state="completed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    delivered = db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="child evidence before storage corruption",
+            status="ready",
+            confidence="high",
+        ),
+    )
+    assert delivered is not None
+    child = db.complete_runtime_episode(
+        child["episodeId"],
+        state="completed",
+        result_ref=delivered["handoffId"],
+        expected_state="completed",
+    )
+    assert child is not None
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE runtime_episode_handoffs SET payload_json = ? WHERE id = ?",
+            ('{"secret":"child-delivery-must-not-leak"', delivered["handoffId"]),
+        )
+        conn.commit()
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(
+        child,
+        session_id=None,
+        run_id=None,
+    )
+
+    failed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert failed_parent is not None
+    assert failed_parent["state"] == "failed"
+    assert failed_parent["errorCode"] == "child_delivery_missing"
+    diagnostics = failed_parent["metadata"]["resumeToken"]["childDeliveryDiagnostics"]
+    assert diagnostics[0]["resolution"] == "current_handoff_payload_corrupted"
+    assert diagnostics[0]["errorCode"] == "runtime_handoff_payload_corrupted"
+    assert "child-delivery-must-not-leak" not in json.dumps(failed_parent, ensure_ascii=False)
 
 
 def test_delegation_resume_merges_child_handoffs_without_redispatching(monkeypatch):

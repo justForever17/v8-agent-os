@@ -72,6 +72,23 @@ async def _seed_governed_graph(path: Path, side_effects: list[str]):
                 "session_id": "source-session",
                 "run_id": "source-run",
                 "workspace_path": "E:/workspace",
+                "workspaceBinding": {
+                    "workspaceId": "workspace-1",
+                    "projectId": "project-1",
+                    "activeWorkspaceRoot": "E:/workspace",
+                    "source": "test",
+                },
+                "delegationId": "delegation-1",
+                "delegationDepth": 0,
+                "actorRole": "supervisor",
+                "query": "source question",
+                "capabilityEpisodes": [{"episodeId": "episode-1", "state": "completed"}],
+                "handoffRefs": [{"handoffId": "handoff-1", "state": "completed"}],
+                "taskBrief": {
+                    "taskBriefId": "brief-1",
+                    "objective": "source objective",
+                    "acceptanceContract": {"must": ["preserve evidence"]},
+                },
             },
             "plugin_authorizations": [{"pluginId": "figma", "grantId": "grant-old"}],
             "pluginAuthorizations": [{"pluginId": "figma", "grantId": "grant-old"}],
@@ -131,6 +148,19 @@ def _seed_database(path: Path, *, status: str = "completed") -> DatabaseManager:
         }
     )
     return database
+
+
+async def _approve_and_execute(
+    database: DatabaseManager,
+    service: CheckpointGovernanceService,
+    operation: dict,
+) -> dict:
+    database.update_pending_approval(
+        operation["approvalId"],
+        status="approved",
+        response={"confirmed": True},
+    )
+    return await service.execute_approved(operation["operationId"])
 
 
 def test_replay_requires_approval_and_reexecutes_only_after_gate(
@@ -216,6 +246,403 @@ def test_fork_creates_isolated_session_copies_scope_and_drops_plugin_grants(
         source_snapshot = await graph.aget_state({"configurable": {"thread_id": "source-session"}})
         assert source_snapshot.values["plugin_authorizations"][0]["grantId"] == "grant-old"
         assert side_effects[-1] == target_session_id
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_route_context_identity_conflicts_resolve_to_engine_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-identity.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-identity-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "sessionId": "foreign-session",
+                    "run_id": "foreign-run",
+                    "userId": "intruder",
+                    "workspacePath": "X:/foreign-workspace",
+                    "workspaceBinding": {"activeWorkspaceRoot": "X:/foreign-workspace"},
+                    "delegationId": "foreign-delegation",
+                    "pluginAuthorizations": [{"pluginId": "unapproved"}],
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_session_id = completed["targetSessionId"]
+        target_snapshot = await graph.aget_state({"configurable": {"thread_id": target_session_id}})
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert route_context["session_id"] == target_session_id
+        assert route_context["sessionId"] == target_session_id
+        assert route_context["run_id"] == completed["runId"]
+        assert route_context["runId"] == completed["runId"]
+        assert route_context["user_id"] == "owner"
+        assert route_context["userId"] == "owner"
+        assert route_context["workspace_path"] == "E:/workspace"
+        assert route_context["workspacePath"] == "E:/workspace"
+        assert route_context["workspaceBinding"]["activeWorkspaceRoot"] == "E:/workspace"
+        assert route_context["delegation_id"] == "delegation-1"
+        assert route_context["delegationId"] == "delegation-1"
+        assert route_context["pluginAuthorizations"] == []
+        conflict_paths = {
+            item["path"]
+            for item in completed["result"]["statePatchDiagnostics"]
+            if item["type"] == "checkpoint_route_context_authority_conflict"
+        }
+        assert conflict_paths == {
+            "current_route_context.sessionId",
+            "current_route_context.run_id",
+            "current_route_context.userId",
+            "current_route_context.workspacePath",
+            "current_route_context.workspaceBinding",
+            "current_route_context.delegationId",
+            "current_route_context.pluginAuthorizations",
+        }
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_route_context_deep_merges_cognitive_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-cognition.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-cognition-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "query": "refined question",
+                    "taskBrief": {
+                        "objective": "fork objective",
+                        "acceptanceContract": {"should": ["retain lineage"]},
+                    },
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert route_context["query"] == "refined question"
+        assert route_context["taskBrief"] == {
+            "taskBriefId": "brief-1",
+            "objective": "fork objective",
+            "acceptanceContract": {
+                "must": ["preserve evidence"],
+                "should": ["retain lineage"],
+            },
+        }
+        assert completed["result"]["statePatchDiagnostics"] == []
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_empty_route_context_patch_preserves_collaboration_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-empty.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-empty-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={"current_route_context": {}},
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert route_context["capabilityEpisodes"] == [{"episodeId": "episode-1", "state": "completed"}]
+        assert route_context["handoffRefs"] == [{"handoffId": "handoff-1", "state": "completed"}]
+        assert route_context["taskBrief"]["taskBriefId"] == "brief-1"
+        assert completed["result"]["statePatchDiagnostics"] == [
+            {
+                "type": "checkpoint_route_context_empty_patch_preserved",
+                "operation": "merge",
+                "path": "current_route_context",
+                "resolution": "source_context_preserved",
+            }
+        ]
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_empty_values_cannot_implicitly_erase_collaboration_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-empty-values.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-empty-values-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "capabilityEpisodes": [],
+                    "handoffRefs": [],
+                    "taskBrief": {},
+                    "query": "",
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert route_context["capabilityEpisodes"] == [
+            {"episodeId": "episode-1", "state": "completed"}
+        ]
+        assert route_context["handoffRefs"] == [
+            {"handoffId": "handoff-1", "state": "completed"}
+        ]
+        assert route_context["taskBrief"]["taskBriefId"] == "brief-1"
+        assert route_context["query"] == "source question"
+        diagnostics = completed["result"]["statePatchDiagnostics"]
+        assert {
+            (item["path"], item["operation"])
+            for item in diagnostics
+            if item["type"] == "checkpoint_route_context_implicit_clear_ignored"
+        } == {
+            ("current_route_context.capabilityEpisodes", "set_empty_list"),
+            ("current_route_context.handoffRefs", "set_empty_list"),
+            ("current_route_context.taskBrief", "set_empty_object"),
+            ("current_route_context.query", "set_empty_string"),
+        }
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_merges_collaboration_lists_without_dropping_existing_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-collection-merge.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-collection-merge-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "capabilityEpisodes": [
+                        {"needId": "episode-1", "summary": "updated current episode"},
+                        {"episodeId": "episode-2", "state": "waiting"}
+                    ],
+                    "handoffRefs": [
+                        {"handoffRefId": "handoff-1", "summary": "updated current delivery"},
+                        {"handoffId": "handoff-2", "state": "ready"},
+                    ],
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert [item["episodeId"] for item in route_context["capabilityEpisodes"]] == [
+            "episode-1",
+            "episode-2",
+        ]
+        assert route_context["capabilityEpisodes"][0]["summary"] == "updated current episode"
+        assert [item["handoffId"] for item in route_context["handoffRefs"]] == [
+            "handoff-1",
+            "handoff-2",
+        ]
+        assert route_context["handoffRefs"][0]["summary"] == "updated current delivery"
+        merge_paths = {
+            item["path"]
+            for item in completed["result"]["statePatchDiagnostics"]
+            if item["type"] == "checkpoint_route_context_collection_merged"
+        }
+        assert merge_paths == {
+            "current_route_context.capabilityEpisodes",
+            "current_route_context.handoffRefs",
+        }
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_cognitive_patch_cannot_expand_nested_execution_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-nested-authority.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-nested-authority-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "taskBrief": {
+                        "objective": "refined cognitive objective",
+                        "context": {
+                            "newFact": "verified by the fork",
+                            "constraints": ["observed cognitive constraint"],
+                        },
+                        "engineeringTaskCapsule": {"writeSet": ["src/**"]},
+                        "toolPolicy": {
+                            "mode": "default",
+                            "allowedTools": ["run_system_command"],
+                        },
+                        "runtimeAccess": ["engineering.core"],
+                        "workerBriefs": [
+                            {
+                                "taskBriefId": "worker-new",
+                                "goal": "Retain the worker's cognitive objective.",
+                                "engineeringTaskCapsule": {"writeSet": ["src/**"]},
+                                "toolPolicy": {
+                                    "allowedTools": ["run_system_command"]
+                                },
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        task_brief = target_snapshot.values["current_route_context"]["taskBrief"]
+
+        assert task_brief["objective"] == "refined cognitive objective"
+        assert task_brief["context"]["newFact"] == "verified by the fork"
+        assert task_brief["context"]["constraints"] == ["observed cognitive constraint"]
+        assert "engineeringTaskCapsule" not in task_brief
+        assert "toolPolicy" not in task_brief
+        assert "runtimeAccess" not in task_brief
+        assert task_brief["workerBriefs"] == [
+            {
+                "taskBriefId": "worker-new",
+                "goal": "Retain the worker's cognitive objective.",
+            }
+        ]
+        conflict_paths = {
+            item["path"]
+            for item in completed["result"]["statePatchDiagnostics"]
+            if item["type"] == "checkpoint_route_context_authority_conflict"
+        }
+        assert conflict_paths == {
+            "current_route_context.taskBrief.engineeringTaskCapsule",
+            "current_route_context.taskBrief.toolPolicy",
+            "current_route_context.taskBrief.runtimeAccess",
+            "current_route_context.taskBrief.workerBriefs.item-0.engineeringTaskCapsule",
+            "current_route_context.taskBrief.workerBriefs.item-0.toolPolicy",
+        }
+        await store.close()
+
+    asyncio.run(run())
+
+
+def test_fork_route_context_clear_is_explicit_and_audited(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "route-context-clear.db"
+
+    async def run() -> None:
+        store, graph, checkpoint_id = await _seed_governed_graph(checkpoint_path, [])
+        database = _seed_database(tmp_path / "route-context-clear-state.db")
+        _patch_governance(monkeypatch, database=database, graph=graph)
+        service = CheckpointGovernanceService(checkpoint_path)
+        operation = await service.plan(
+            mode="fork",
+            source_session_id="source-session",
+            source_checkpoint_id=checkpoint_id,
+            user_id="owner",
+            state_patch={
+                "current_route_context": {
+                    "$operations": [{"op": "clear", "path": ["query"]}],
+                }
+            },
+        )
+
+        completed = await _approve_and_execute(database, service, operation)
+        target_snapshot = await graph.aget_state(
+            {"configurable": {"thread_id": completed["targetSessionId"]}}
+        )
+        route_context = target_snapshot.values["current_route_context"]
+
+        assert "query" not in route_context
+        assert route_context["capabilityEpisodes"][0]["episodeId"] == "episode-1"
+        assert route_context["handoffRefs"][0]["handoffId"] == "handoff-1"
+        assert route_context["taskBrief"]["taskBriefId"] == "brief-1"
+        assert completed["result"]["statePatchDiagnostics"] == [
+            {
+                "type": "checkpoint_route_context_clear",
+                "operation": "clear",
+                "path": "current_route_context.query",
+                "applied": True,
+                "resolution": "removed",
+            }
+        ]
         await store.close()
 
     asyncio.run(run())

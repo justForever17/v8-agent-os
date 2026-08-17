@@ -12,6 +12,7 @@ import {
     WEB_STREAM_LIFECYCLE_OPTIONS,
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
+import { BoundedRuntimeEventIdentityLedger } from "@/lib/runtime-event-identity-ledger";
 import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
     deriveComposerRunActivity,
@@ -1439,7 +1440,7 @@ export default function ChatClient() {
     );
     const latestRealtimeSeqRef = useRef<number>(0);
     const snapshotCoveredRealtimeSeqRef = useRef<number>(0);
-    const seenRealtimeEventIdentitiesRef = useRef(new Set<string>());
+    const seenRealtimeEventIdentitiesRef = useRef(new BoundedRuntimeEventIdentityLedger());
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const turnBeforeCursorRef = useRef<string | null>(null);
@@ -2074,6 +2075,9 @@ export default function ChatClient() {
         if (previousConversationId === activeConversationId) {
             return;
         }
+        latestRealtimeSeqRef.current = 0;
+        snapshotCoveredRealtimeSeqRef.current = 0;
+        seenRealtimeEventIdentitiesRef.current.clear();
         if (previousConversationId && messagesRef.current.length > 0) {
             messageCacheRef.current.set(previousConversationId, cloneMessages(messagesRef.current));
         }
@@ -2274,9 +2278,12 @@ export default function ChatClient() {
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
         if (latestSeq > 0) {
+            const snapshotWatermarkAdvanced = latestSeq > snapshotCoveredRealtimeSeqRef.current;
             snapshotCoveredRealtimeSeqRef.current = Math.max(snapshotCoveredRealtimeSeqRef.current, latestSeq);
             latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, latestSeq);
-            seenRealtimeEventIdentitiesRef.current.clear();
+            if (snapshotWatermarkAdvanced) {
+                seenRealtimeEventIdentitiesRef.current.pruneSnapshotCovered(latestSeq);
+            }
         }
         messagesRef.current = normalizeMessagesForState(normalized);
         setMessages(normalizeMessagesForState(normalized));
@@ -2361,9 +2368,11 @@ export default function ChatClient() {
         isLoadingOlderTurnsRef.current = false;
         setIsLoadingOlderTurns(false);
         setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
-        latestRealtimeSeqRef.current = latestSeq;
-        snapshotCoveredRealtimeSeqRef.current = latestSeq;
-        seenRealtimeEventIdentitiesRef.current.clear();
+        latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, latestSeq);
+        if (latestSeq > snapshotCoveredRealtimeSeqRef.current) {
+            snapshotCoveredRealtimeSeqRef.current = latestSeq;
+            seenRealtimeEventIdentitiesRef.current.pruneSnapshotCovered(latestSeq);
+        }
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
@@ -3012,14 +3021,31 @@ export default function ChatClient() {
             return;
         }
 
-        const workbenchEventHandled = ingestWorkbenchRuntimeEvent(rawEvent);
         const normalizedEvent = normalizeRealtimeEvent(rawEvent);
         if (!normalizedEvent) {
-            if (workbenchEventHandled) {
-                return;
-            }
             return;
         }
+        const rawSeq = typeof rawEvent === "object" && rawEvent !== null
+            ? Number((rawEvent as Record<string, unknown>).seq || 0)
+            : 0;
+        const normalizedSeq = Number((normalizedEvent as Record<string, unknown>).seq || 0);
+        const eventSeq = rawSeq || normalizedSeq;
+        const acceptance = evaluateSessionRuntimeEvent(
+            { ...normalizedEvent, seq: eventSeq || normalizedEvent.seq },
+            {
+                snapshotCoveredSeq: snapshotCoveredRealtimeSeqRef.current,
+                seenEventIdentities: seenRealtimeEventIdentitiesRef.current.seenIdentities,
+            },
+        );
+        if (!acceptance.accept) {
+            return;
+        }
+        seenRealtimeEventIdentitiesRef.current.remember(acceptance.identity, eventSeq);
+        if (eventSeq) {
+            latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, eventSeq);
+        }
+
+        ingestWorkbenchRuntimeEvent(rawEvent);
         if (normalizedEvent.topic === "session.reasoning_effort.updated") {
             const payload = normalizedEvent.data && typeof normalizedEvent.data === "object"
                 ? normalizedEvent.data as SupervisorReasoningEffortControl
@@ -3165,31 +3191,6 @@ export default function ChatClient() {
         ]);
         if (normalizedEvent.topic && trackedTopics.has(String(normalizedEvent.topic))) {
             void loadRuns(conversationId);
-        }
-
-        const rawSeq = typeof rawEvent === "object" && rawEvent !== null
-            ? Number((rawEvent as Record<string, unknown>).seq || 0)
-            : 0;
-        const normalizedSeq = Number((normalizedEvent as Record<string, unknown>).seq || 0);
-        const eventSeq = rawSeq || normalizedSeq;
-        const acceptance = evaluateSessionRuntimeEvent(
-            { ...normalizedEvent, seq: eventSeq || normalizedEvent.seq },
-            {
-                snapshotCoveredSeq: snapshotCoveredRealtimeSeqRef.current,
-                seenEventIdentities: seenRealtimeEventIdentitiesRef.current,
-            },
-        );
-        if (!acceptance.accept) {
-            return;
-        }
-        seenRealtimeEventIdentitiesRef.current.add(acceptance.identity);
-        if (seenRealtimeEventIdentitiesRef.current.size > 2048) {
-            const oldest = seenRealtimeEventIdentitiesRef.current.values().next();
-            if (!oldest.done) seenRealtimeEventIdentitiesRef.current.delete(oldest.value);
-        }
-
-        if (eventSeq) {
-            latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, eventSeq);
         }
 
         if (runtimeTimelineEntry) {

@@ -20,6 +20,12 @@ def _install_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DatabaseMana
     return test_db
 
 
+def _install_chat_runtime(monkeypatch: pytest.MonkeyPatch, **members) -> SimpleNamespace:
+    runtime = SimpleNamespace(**members)
+    monkeypatch.setattr(routes, "_get_chat_runtime", lambda: runtime)
+    return runtime
+
+
 def _create_active_chat_run(test_db: DatabaseManager, *, session_id: str, run_id: str, status: str = "streaming") -> None:
     test_db.create_or_update_session(session_id, "Queue Session")
     test_db.create_run_record(run_id=run_id, session_id=session_id, run_type="chat", status=status)
@@ -57,10 +63,11 @@ def _chat_request(
 
 def test_chat_submit_requires_workspace_binding_for_user_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_db(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        routes.chat_runtime,
-        "prepare_run_context",
-        lambda *_args, **_kwargs: pytest.fail("chat runtime should not prepare without workspace binding"),
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=lambda *_args, **_kwargs: pytest.fail(
+            "chat runtime should not prepare without workspace binding"
+        ),
     )
 
     request = _chat_request(session_id="session-no-binding", include_workspace=False)
@@ -85,8 +92,11 @@ def test_chat_submit_allows_existing_session_workspace_binding(monkeypatch: pyte
             workspace_path="E:\\Projects\\bound-workspace",
         ),
     )
-    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
-    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-bound", "role": "user"})
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=lambda *_args, **_kwargs: fake_chat_run,
+        record_request_inputs=lambda _chat_run: {"id": "msg-bound", "role": "user"},
+    )
     monkeypatch.setattr(routes, "_schedule_chat_run", lambda *_args, **_kwargs: None)
 
     response = asyncio.run(routes.chat_submit(_chat_request(session_id="session-bound", include_workspace=False)))
@@ -117,6 +127,13 @@ def test_chat_submit_queues_against_data_conversation_id_and_is_idempotent(monke
     assert items[0]["state"] == "pending"
 
 
+def test_interrupted_lane_is_not_reported_as_an_active_chat_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    _create_active_chat_run(test_db, session_id="session-interrupted", run_id="run-interrupted", status="interrupted")
+
+    assert routes._find_active_chat_run("session-interrupted") is None
+
+
 def test_chat_submit_defers_engineering_context_pack_until_background_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_db(monkeypatch, tmp_path)
     calls: list[dict] = []
@@ -127,8 +144,11 @@ def test_chat_submit_defers_engineering_context_pack_until_background_run(monkey
         calls.append(dict(kwargs))
         return fake_chat_run
 
-    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", fake_prepare)
-    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-light", "role": "user"})
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=fake_prepare,
+        record_request_inputs=lambda _chat_run: {"id": "msg-light", "role": "user"},
+    )
     monkeypatch.setattr(routes, "_schedule_chat_run", lambda request, *, transport, run_id=None: scheduled.append((request, transport, run_id)) or run_id)
 
     response = asyncio.run(routes.chat_submit(_chat_request(session_id="session-light", client_message_id="client-light", content="开始完整实现")))
@@ -145,8 +165,11 @@ def test_chat_submit_defers_graph_thread_until_acceptance_response_is_sent(monke
     fake_chat_run = SimpleNamespace(session_id="session-background", active_run_id="run-background")
     background_tasks = BackgroundTasks()
 
-    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
-    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-background", "role": "user"})
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=lambda *_args, **_kwargs: fake_chat_run,
+        record_request_inputs=lambda _chat_run: {"id": "msg-background", "role": "user"},
+    )
     monkeypatch.setattr(
         routes,
         "_schedule_chat_run",
@@ -182,9 +205,12 @@ def test_chat_submit_preannounces_attachment_before_background_graph(monkeypatch
         }
     ]
 
-    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
-    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-attachment", "role": "user"})
-    monkeypatch.setattr(routes.chat_runtime, "preannounce_attachment_preflight", lambda _chat_run: order.append("preannounce") or [])
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=lambda *_args, **_kwargs: fake_chat_run,
+        record_request_inputs=lambda _chat_run: {"id": "msg-attachment", "role": "user"},
+        preannounce_attachment_preflight=lambda _chat_run: order.append("preannounce") or [],
+    )
     monkeypatch.setattr(
         routes,
         "_schedule_chat_run",
@@ -226,9 +252,12 @@ def test_chat_submit_canvas_direct_starts_background_graph_without_vision_preann
         }
     ]
 
-    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
-    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-canvas", "role": "user"})
-    monkeypatch.setattr(routes.chat_runtime, "preannounce_attachment_preflight", lambda _chat_run: order.append("preannounce") or [])
+    _install_chat_runtime(
+        monkeypatch,
+        prepare_run_context=lambda *_args, **_kwargs: fake_chat_run,
+        record_request_inputs=lambda _chat_run: {"id": "msg-canvas", "role": "user"},
+        preannounce_attachment_preflight=lambda _chat_run: order.append("preannounce") or [],
+    )
     monkeypatch.setattr(
         routes,
         "_schedule_chat_run",

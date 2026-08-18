@@ -47,6 +47,7 @@ from core.engine_config_resolver import resolve_engine_config_for_model_ref, res
 from core.graph_stream_watchdog import (
     GraphStreamDownstreamTimeoutError,
     GraphStreamIdleTimeoutError,
+    GraphStreamNativeFailureError,
     GraphStreamWatchdogState,
     normalize_stream_iterator_exception,
 )
@@ -6849,7 +6850,9 @@ class ChatRuntime:
         stream_state.pending_stream_event_task = None
         try:
             event = next_event_task.result()
-        except Exception as exc:
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
             normalized_exc = normalize_stream_iterator_exception(
                 exc,
                 session_id=chat_run.session_id,
@@ -7407,6 +7410,7 @@ class ChatRuntime:
         raw_ref = cls._command_surface_raw_ref(candidate)
         waiting_input = bool(candidate.get("awaitingInput")) or state == "awaiting_input"
         still_running = state in {"running", "render_stalled", "recoverable_stalled"} and not waiting_input
+        terminal_states = {"completed", "failed", "timed_out", "terminated"}
         exit_code = candidate.get("returnCode")
 
         stdout_candidates = (
@@ -7416,7 +7420,7 @@ class ChatRuntime:
                 candidate.get("deltaText"),
                 candidate.get("outputPreview"),
             )
-            if state in {"completed", "failed"}
+            if state in terminal_states
             else (
                 candidate.get("deltaText"),
                 candidate.get("keyOutput"),
@@ -7426,15 +7430,17 @@ class ChatRuntime:
         )
         stdout = next((item for item in stdout_candidates if item not in (None, "")), "")
         control_lines: list[str] = []
-        if session_id and state not in {"completed", "failed"}:
+        if session_id and state not in terminal_states:
             control_lines.append(f"[session: {session_id}]")
         if state == "recoverable_stalled":
             control_lines.append("[command appears stalled; observe later or terminate]")
         elif state == "render_stalled":
             control_lines.append("[terminal screen is still settling]")
-        if candidate.get("terminated"):
+        if state == "timed_out" or candidate.get("timedOut"):
+            control_lines.append("[deadline exceeded; process tree terminated]")
+        elif state == "terminated" or candidate.get("terminated"):
             control_lines.append("[terminated]")
-        error = str(candidate.get("error") or "").strip()
+        error = str(candidate.get("error") or candidate.get("failureMessage") or "").strip()
         stderr = error if error else ""
         return cls._render_command_terminal_surface(
             command=command,
@@ -7445,7 +7451,7 @@ class ChatRuntime:
             state=state,
             waiting_input=waiting_input,
             still_running=still_running,
-            no_output_text="[no new output]" if state not in {"completed", "failed"} else "[completed with no output]",
+            no_output_text="[no new output]" if state not in terminal_states else "[command ended with no output]",
             raw_ref=raw_ref,
             stdout_truncated=bool(
                 candidate.get("deltaTruncated")
@@ -7480,7 +7486,20 @@ class ChatRuntime:
                 continue
             if candidate.get(key) is True:
                 compact[key] = candidate.get(key)
-        for key in ("profile", "reason", "returnCode", "runId", "linkedProcess", "error"):
+        for key in (
+            "profile",
+            "reason",
+            "returnCode",
+            "runId",
+            "linkedProcess",
+            "backend",
+            "timeoutSeconds",
+            "deadlineAt",
+            "failureKind",
+            "failureMessage",
+            "terminationReason",
+            "error",
+        ):
             if candidate.get(key) not in (None, "", [], {}):
                 compact[key] = candidate.get(key)
         for key in ("initialPreview", "deltaText", "acceptedInputPreview", "keyOutput", "screenAfterInput", "outputPreview", "finalPreview"):
@@ -9034,17 +9053,27 @@ class ChatRuntime:
         self._emit_text_stream_diagnostics(chat_run, stream_state)
         return emitted_events
 
-    def persist_final_assistant_message(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
+    def persist_final_assistant_message(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        state: str = "completed",
+        terminal_metadata: dict[str, Any] | None = None,
+    ) -> None:
         assistant_message_id = stream_state.assistant_message_id
         if not assistant_message_id:
             return
-        self._ensure_workspace_media_artifacts_for_message(chat_run, stream_state, assistant_message_id)
+        normalized_state = str(state or "completed").strip().lower() or "completed"
+        if normalized_state == "completed":
+            self._ensure_workspace_media_artifacts_for_message(chat_run, stream_state, assistant_message_id)
         canonical_transcript_builder.set_message_state(
             assistant_message_id,
-            state="completed",
+            state=normalized_state,
             metadata_updates={
                 "timestamp": self._now_timestamp_ms(),
                 "agentId": stream_state.current_agent,
+                **dict(terminal_metadata or {}),
                 **(
                     {
                         PRIVATE_PROVIDER_CONTINUATION_KEY: seal_provider_continuation(
@@ -9851,6 +9880,112 @@ class ChatRuntime:
                 node="subagent_swarm",
             )
 
+    def _close_active_tool_calls_for_terminal(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState | None,
+        *,
+        status: str,
+        reason: str,
+    ) -> list[dict[str, Any]]:
+        if stream_state is None:
+            return []
+        active_ids = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in [
+                    *list(stream_state.watchdog.active_tool_call_ids or []),
+                    *list(stream_state.active_tool_call_ids or []),
+                ]
+                if str(item or "").strip()
+            )
+        )
+        calls_by_id = {
+            str((item or {}).get("id") or "").strip(): dict(item or {})
+            for item in list(stream_state.tool_calls_buffer or [])
+            if str((item or {}).get("id") or "").strip()
+        }
+        emitted: list[dict[str, Any]] = []
+        for tool_call_id in active_ids:
+            call = calls_by_id.get(tool_call_id) or {}
+            tool_name = str(call.get("name") or "unknown_tool").strip() or "unknown_tool"
+            display_args = dict(call.get("args") or {}) if isinstance(call.get("args"), dict) else {}
+            result_text = (
+                "工具调用因本轮执行失败而终止。"
+                if status == "failed"
+                else "工具调用已随本轮停止请求一并终止。"
+            )
+            provider_shadow = dict(stream_state.tool_call_shadow_by_tool_call_id.get(tool_call_id) or {})
+            owner = dict(
+                stream_state.tool_owner_by_tool_call_id.get(tool_call_id)
+                or self._resolve_event_owner(stream_state, tool_name=tool_name)
+            )
+            owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
+            profile = self._get_agent_profile(str(owner.get("ownerAgentId") or stream_state.current_agent))
+            topic = (
+                "tool.finished"
+                if bool(owner.get("displayInMessage"))
+                else f"{self._runtime_topic_prefix(owner_runtime_id)}.tool.finished"
+            )
+            event = {
+                "type": "tool_result",
+                "tool": {
+                    "toolCallId": tool_call_id,
+                    "toolInvocationId": tool_call_id,
+                    "toolName": tool_name,
+                    "args": display_args,
+                    "status": status,
+                    "result": result_text,
+                    "terminalReason": reason,
+                    **provider_shadow,
+                },
+                "timestamp": self._now_timestamp_ms(),
+            }
+            node = {
+                "id": (
+                    f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:tool_result:{tool_call_id}"
+                    if bool(owner.get("displayInMessage"))
+                    else f"runtime:{chat_run.active_run_id}:tool_result:{tool_call_id}"
+                ),
+                "kind": "execution",
+                "executionType": "tool_result",
+                "toolCallId": tool_call_id,
+                "toolInvocationId": tool_call_id,
+                "toolName": tool_name,
+                "args": display_args,
+                "result": result_text,
+                "status": status,
+                "terminalReason": reason,
+                "timestamp": self._now_timestamp_ms(),
+                "agentName": profile["name"],
+                "agentAvatar": profile["avatar"],
+                "agentRoleLabel": profile["roleLabel"],
+                **provider_shadow,
+            }
+            runtime_event = self._emit_owner_scoped_runtime_event(
+                chat_run,
+                stream_state,
+                topic=topic,
+                payload=event,
+                owner=owner,
+                event_kind="tool_result",
+                stream_key=f"{owner_runtime_id}:{str(owner.get('ownerAgentId') or stream_state.current_agent)}:tool:{tool_call_id}",
+                node=node,
+            )
+            payload = runtime_event.get("payload") if isinstance(runtime_event, dict) else None
+            if isinstance(payload, dict):
+                event["message_id"] = payload.get("message_id")
+                event["node_id"] = payload.get("node_id")
+                event["transcript_version"] = payload.get("transcript_version")
+            emitted.append(event)
+            stream_state.watchdog.note_tool_end(tool_call_id)
+            stream_state.active_tool_call_ids.discard(tool_call_id)
+            stream_state.tool_owner_by_tool_call_id.pop(tool_call_id, None)
+            stream_state.tool_call_shadow_by_tool_call_id.pop(tool_call_id, None)
+        stream_state.watchdog.active_tool_call_ids.clear()
+        stream_state.active_tool_call_ids.clear()
+        return emitted
+
     def finalize_interrupted_run(
         self,
         chat_run: ChatRunContext,
@@ -9886,22 +10021,51 @@ class ChatRuntime:
                     "payload": dict(interrupted_signal.get("payload") or {}),
                 }
             ]
-        if interrupted_signal.get("command") in {"cancel", "interrupt"}:
+        command = str(interrupted_signal.get("command") or "").strip().lower()
+        terminal_status = "interrupted" if command == "interrupt" else "cancelled" if command == "cancel" else ""
+        if terminal_status:
             try:
                 from core.system_tools.native import _terminate_run_background_commands
 
-                _terminate_run_background_commands(chat_run.active_run_id, interactive_only=True)
+                _terminate_run_background_commands(chat_run.active_run_id, interactive_only=False)
             except Exception:
                 logging.getLogger("v8chat.chat_runtime").exception(
-                    "Failed to clean up interactive background commands for interrupted run '%s'",
+                    "Failed to clean up background commands for terminal run '%s'",
                     chat_run.active_run_id,
                 )
+        emitted: list[dict[str, Any]] = []
+        if terminal_status:
+            emitted.extend(
+                self._close_active_tool_calls_for_terminal(
+                    chat_run,
+                    stream_state,
+                    status="cancelled",
+                    reason=terminal_status,
+                )
+            )
+            if stream_state is not None:
+                try:
+                    self.persist_final_assistant_message(
+                        chat_run,
+                        stream_state,
+                        state=terminal_status,
+                        terminal_metadata={"terminalReason": terminal_status},
+                    )
+                except Exception:
+                    logging.getLogger("v8chat.chat_runtime").exception(
+                        "Failed to finalize canonical assistant message for terminal run '%s'",
+                        chat_run.active_run_id,
+                    )
         chat_run.run_handle.refresh_chat_snapshot()
-        status = "paused" if interrupted_signal.get("command") in {"pause", "interrupt"} else "cancelled"
+        status = "paused" if command == "pause" else terminal_status or "cancelled"
         if status == "cancelled":
             self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_cancelled")
             self._abort_engineering_workspaces(chat_run, error_code="run_cancelled")
+        elif status == "interrupted":
+            self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_interrupted")
+            self._abort_engineering_workspaces(chat_run, error_code="run_interrupted")
         return [
+            *emitted,
             self.build_legacy_control_event(interrupted_signal),
             {"type": "done", "status": status, "run_id": chat_run.active_run_id},
         ]
@@ -10251,15 +10415,20 @@ class ChatRuntime:
         self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_completed")
         return {"type": "done", "status": "finished", "run_id": chat_run.active_run_id}
 
-    def finalize_failed_run(self, chat_run: ChatRunContext | None, exc: Exception) -> list[dict[str, Any]]:
+    def finalize_failed_run(
+        self,
+        chat_run: ChatRunContext | None,
+        exc: BaseException,
+        stream_state: ChatStreamState | None = None,
+    ) -> list[dict[str, Any]]:
         run_id = chat_run.active_run_id if chat_run else None
         if chat_run and isinstance(exc, ModelGovernanceInterventionRequired):
             request_payload = exc.to_request_payload()
             if self._is_ask_user_request(request_payload):
                 assistant_message_id = None
                 try:
-                    stream_state = ChatStreamState()
-                    assistant_message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+                    intervention_state = stream_state or ChatStreamState()
+                    assistant_message_id = self._ensure_assistant_canonical_message(chat_run, intervention_state)
                 except Exception:
                     assistant_message_id = None
                 interaction = chat_run.run_handle.request_ask_user_interaction(
@@ -10303,6 +10472,14 @@ class ChatRuntime:
                 if failure_class == "episode_stalled"
                 else "模型流长时间没有新事件。可以重试本轮，或先检查 provider streaming / 后台命令状态。"
             )
+        if isinstance(exc, GraphStreamNativeFailureError):
+            normalized["message"] = str(exc)
+            normalized["failureClass"] = exc.failure_class
+            normalized["code"] = exc.failure_class
+            normalized["retryable"] = False
+            normalized["recoverable"] = False
+            normalized["causeType"] = exc.cause_type
+            normalized["userAction"] = "命令或流式执行后端异常，当前运行已失败并完成清理；请修复后端后重新发起任务。"
         if isinstance(exc, GraphRecursionContinuationBudgetExceeded):
             normalized["message"] = str(exc)
             normalized["failureClass"] = "graph_recursion_continuation_budget"
@@ -10361,6 +10538,7 @@ class ChatRuntime:
                     "Failed to emit context governance overflow event for run '%s'",
                     chat_run.active_run_id,
                 )
+        terminal_events: list[dict[str, Any]] = []
         if chat_run:
             try:
                 preserve_background_commands = bool(normalized.get("recoverable")) and str(normalized.get("failureClass") or "") in {
@@ -10371,10 +10549,10 @@ class ChatRuntime:
                 if not preserve_background_commands:
                     from core.system_tools.native import _terminate_run_background_commands
 
-                    _terminate_run_background_commands(chat_run.active_run_id, interactive_only=True)
+                    _terminate_run_background_commands(chat_run.active_run_id, interactive_only=False)
             except Exception:
                 logging.getLogger("v8chat.chat_runtime").exception(
-                    "Failed to clean up interactive background commands for failed run '%s'",
+                    "Failed to clean up background commands for failed run '%s'",
                     chat_run.active_run_id,
                 )
             try:
@@ -10421,10 +10599,36 @@ class ChatRuntime:
                         "Fallback run_service.transition_run also failed for run '%s'",
                         chat_run.active_run_id,
                     )
+            terminal_events.extend(
+                self._close_active_tool_calls_for_terminal(
+                    chat_run,
+                    stream_state,
+                    status="failed",
+                    reason=str(normalized.get("failureClass") or normalized.get("code") or "run_failed"),
+                )
+            )
+            if stream_state is not None:
+                try:
+                    self.persist_final_assistant_message(
+                        chat_run,
+                        stream_state,
+                        state="failed",
+                        terminal_metadata={
+                            "terminalReason": str(
+                                normalized.get("failureClass") or normalized.get("code") or "run_failed"
+                            )
+                        },
+                    )
+                except Exception:
+                    logging.getLogger("v8chat.chat_runtime").exception(
+                        "Failed to finalize canonical assistant message for failed run '%s'",
+                        chat_run.active_run_id,
+                    )
             self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_failed")
             if not bool(normalized.get("recoverable")):
                 self._abort_engineering_workspaces(chat_run, error_code="run_failed")
         return [
+            *terminal_events,
             {
                 "type": "error",
                 "error": normalized["message"],
@@ -10482,7 +10686,7 @@ class ChatRuntime:
 
     def build_legacy_control_event(self, signal: dict) -> dict:
         command = signal.get("command")
-        status = "paused" if command in {"pause", "interrupt"} else "cancelled"
+        status = "paused" if command == "pause" else "interrupted" if command == "interrupt" else "cancelled"
         return {
             "type": "custom_event",
             "name": "run_controlled",
@@ -10567,6 +10771,7 @@ class ChatRuntime:
         run_id: str | None = None,
     ):
         chat_run = self.prepare_run_context(request, transport=transport, run_id=run_id)
+        stream_state: ChatStreamState | None = None
         for connected_event in self.emit_stream_connected_events(chat_run):
             yield connected_event
         lane_policy = runtime_stability_service.session_lane_policy()
@@ -11167,13 +11372,24 @@ class ChatRuntime:
                 stream_state.interrupted_signal = interrupted_signal
             for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
                 yield final_event
-        except Exception as exc:
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            normalized_exc: BaseException = exc
+            if not isinstance(exc, Exception):
+                normalized_exc = GraphStreamNativeFailureError(
+                    run_id=chat_run.active_run_id,
+                    session_id=chat_run.session_id,
+                    phase="stream_execution",
+                    last_event=(stream_state.watchdog.last_observed_event if stream_state is not None else None),
+                    cause=exc,
+                )
             logging.getLogger("v8chat.chat_runtime").exception(
                 "Chat run '%s' failed during stream execution",
                 chat_run.active_run_id if chat_run else "<unknown>",
             )
             self._emit_delegation_claim_diagnostic(chat_run, stream_state)
-            for failed_event in self.finalize_failed_run(chat_run, exc):
+            for failed_event in self.finalize_failed_run(chat_run, normalized_exc, stream_state):
                 yield failed_event
         finally:
             if canvas_attachment_preflight_task is not None and not canvas_attachment_preflight_task.done():

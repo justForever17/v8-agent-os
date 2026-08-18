@@ -262,7 +262,7 @@ class CommandService:
         transition = run_service.transition_run_if_status(
             run_id,
             expected_statuses=INTERRUPTIBLE_RUN_STATUSES,
-            status="paused",
+            status="interrupted",
             metadata={"interrupt_reason": reason} if reason else None,
         )
         if not transition.get("updated"):

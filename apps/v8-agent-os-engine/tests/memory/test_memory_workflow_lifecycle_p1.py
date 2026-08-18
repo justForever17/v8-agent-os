@@ -178,6 +178,32 @@ def test_nightly_reconciliation_finalizes_guides_for_already_terminal_runs(monke
     assert row["finalized_at"]
 
 
+def test_nightly_reconciliation_finalizes_guides_for_interrupted_runs(monkeypatch, tmp_path: Path) -> None:
+    database, service = _prepare(monkeypatch, tmp_path)
+    database.create_or_update_session("session-interrupted", "demo", user_id="user")
+    database.create_run_record("run-interrupted", "session-interrupted", run_type="chat", status="interrupted")
+    candidate = _add_candidate(service, "interrupted", session_id="session-interrupted", run_id="run-interrupted")
+    service.record_guide_state(
+        candidate_id=candidate["id"],
+        query="interrupted query",
+        session_id="session-interrupted",
+        run_id="run-interrupted",
+        state="matched",
+    )
+
+    result = service.reconcile_terminal_guides()
+
+    assert result["runCount"] == 1
+    assert result["finalizedCount"] == 1
+    with database.get_connection() as conn:
+        row = conn.execute(
+            "SELECT state, outcome, finalized_at FROM memory_workflow_guide_states WHERE run_id = 'run-interrupted'"
+        ).fetchone()
+    assert row["state"] == "ignored"
+    assert row["outcome"] == "ignored"
+    assert row["finalized_at"]
+
+
 def test_candidate_delete_and_merge_remove_derived_exports(monkeypatch, tmp_path: Path) -> None:
     _, service = _prepare(monkeypatch, tmp_path)
     target = _add_candidate(service, "target")

@@ -2470,7 +2470,7 @@ class WorkflowMemoryService:
                 JOIN run_records run ON run.id = guide.run_id
                 WHERE guide.is_current = 1
                   AND guide.finalized_at IS NULL
-                  AND run.status IN ('completed', 'failed', 'cancelled', 'abandoned')
+                  AND run.status IN ('completed', 'failed', 'cancelled', 'interrupted', 'abandoned')
                 ORDER BY guide.updated_at ASC, guide.run_id ASC
                 LIMIT ?
                 """,

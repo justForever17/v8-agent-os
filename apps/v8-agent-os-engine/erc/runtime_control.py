@@ -34,8 +34,10 @@ def consume_stop_signal(run_id: str | None) -> Optional[Dict[str, Any]]:
 
 def control_status(signal: Dict[str, Any] | None) -> str:
     command = str((signal or {}).get("command") or "").strip().lower()
-    if command in {"pause", "interrupt", "approval_rejected"}:
+    if command in {"pause", "approval_rejected"}:
         return "paused"
+    if command == "interrupt":
+        return "interrupted"
     return "cancelled"
 
 

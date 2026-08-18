@@ -110,7 +110,7 @@ class RunLedgerService:
                 "refs": {"runId": run_id, "sessionId": session_id},
             }
         )
-        if run.get("finished_at") or str(run.get("status") or "") in {"completed", "failed", "cancelled"}:
+        if run.get("finished_at") or str(run.get("status") or "") in {"completed", "failed", "cancelled", "interrupted"}:
             status = str(run.get("status") or "unknown")
             timeline.append(
                 {

@@ -602,6 +602,42 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(missing[0]["status"], "missing_result")
         self.assertIn("未确认实际派发", missing[0]["summary"])
 
+    def test_run_interrupted_closes_unfinished_tool_projection_as_missing_result(self):
+        events = [
+            {
+                "event_id": "evt_tool_started",
+                "run_id": "run_interrupted",
+                "seq": 1,
+                "topic": "tool.started",
+                "payload": {
+                    "tool": {
+                        "toolCallId": "call_interrupted",
+                        "toolName": "run_system_command",
+                        "args": {"command": "python long_task.py"},
+                    }
+                },
+                "event_ts": "2026-08-18T00:00:00Z",
+                "source": {},
+            },
+            {
+                "event_id": "evt_run_interrupted",
+                "run_id": "run_interrupted",
+                "seq": 2,
+                "topic": "run.interrupted",
+                "payload": {"run_id": "run_interrupted", "reason": "user_interrupt"},
+                "event_ts": "2026-08-18T00:00:01Z",
+                "source": {},
+            },
+        ]
+
+        timeline = project_runtime_timeline_from_events(events)
+        unfinished = [entry for entry in timeline if entry.get("metadata", {}).get("missingResult")]
+
+        self.assertEqual(len(unfinished), 1)
+        self.assertEqual(unfinished[0]["status"], "missing_result")
+        self.assertEqual(unfinished[0]["metadata"]["terminalSeq"], 2)
+        self.assertTrue(any(entry.get("topic") == "run.interrupted" for entry in timeline))
+
     def test_creative_media_tool_projection_keeps_actor_but_not_raw_result(self):
         events = [
             {

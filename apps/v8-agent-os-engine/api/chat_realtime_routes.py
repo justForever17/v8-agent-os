@@ -160,7 +160,16 @@ _ACTIVE_CHAT_STATUSES = {
     "waiting_external",
     "paused",
 }
-_TERMINAL_CHAT_STATUSES = {"completed", "finished", "failed", "cancelled", "canceled", "blocked", "error"}
+_TERMINAL_CHAT_STATUSES = {
+    "completed",
+    "finished",
+    "failed",
+    "cancelled",
+    "canceled",
+    "interrupted",
+    "blocked",
+    "error",
+}
 _FALLBACK_ACTIVE_CHAT_STATUSES = _ACTIVE_CHAT_STATUSES - {"paused"}
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 
@@ -266,7 +275,7 @@ def _find_active_chat_run(session_id: str) -> dict | None:
         if record and str(record.get("status") or "").strip().lower() in _ACTIVE_CHAT_STATUSES:
             return record
         lane_state = str(lane.get("state") or "").strip().lower()
-        if lane_state and lane_state not in {"idle", "released", "completed", "failed", "cancelled", "canceled"}:
+        if lane_state and lane_state not in {"idle", "released", *_TERMINAL_CHAT_STATUSES}:
             return {
                 "id": lane_run_id,
                 "session_id": session_id,
@@ -559,7 +568,9 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
         )
         async for _ in event_iter:
             pass
-    except Exception as exc:
+    except BaseException as exc:
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
         _emit_background_chat_run_event(
             "run.resume.worker.failed",
             request,
@@ -597,6 +608,14 @@ async def _drain_chat_run(request: ChatRequest, *, transport: str, run_id: str |
                     active_run_id,
                 )
             return
+        if active_run_id:
+            run_service.transition_run_if_status(
+                active_run_id,
+                expected_statuses=_FALLBACK_ACTIVE_CHAT_STATUSES,
+                status="failed",
+                error_message=f"{type(exc).__name__}: {exc}",
+                metadata={"background_worker_failure": True, "transport": transport},
+            )
         raise
     finally:
         if event_iter is not None:

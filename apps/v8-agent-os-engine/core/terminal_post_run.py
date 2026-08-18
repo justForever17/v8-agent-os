@@ -31,7 +31,7 @@ class TerminalPostRunService:
         run_record = db.get_run_record(run_id)
         if not run_record:
             return False
-        if run_record.get("status") not in {"completed", "failed", "cancelled"}:
+        if run_record.get("status") not in {"completed", "failed", "cancelled", "interrupted"}:
             return False
 
         dispatch_key = f"{session_id}:{run_id}"

@@ -436,7 +436,7 @@ class ExecutionRuntimeCore:
             "run.state.changed",
             {
                 "from_status": transition.get("previousStatus") or run_record.get("status"),
-                "to_status": "paused",
+                "to_status": "interrupted",
                 "reason": reason,
             },
         )

@@ -66,6 +66,26 @@ class GraphStreamDownstreamTimeoutError(TimeoutError):
         )
 
 
+class GraphStreamNativeFailureError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        phase: str,
+        last_event: str | None,
+        cause: BaseException,
+    ) -> None:
+        self.failure_class = "graph_stream_native_failure"
+        self.cause_type = type(cause).__name__
+        last_event_hint = f", last_event={last_event}" if last_event else ""
+        super().__init__(
+            "Native stream backend failed while waiting in "
+            f"phase={phase} (session={session_id}, run={run_id}{last_event_hint}): "
+            f"{self.cause_type}: {cause}"
+        )
+
+
 @dataclass(slots=True)
 class GraphStreamWatchdogState:
     active_tool_call_ids: set[str] = field(default_factory=set)
@@ -150,7 +170,7 @@ async def _cancel_task_safely(task: asyncio.Task[Any]) -> None:
 
 
 def normalize_stream_iterator_exception(
-    exc: Exception,
+    exc: BaseException,
     *,
     session_id: str,
     run_id: str,
@@ -167,7 +187,15 @@ def normalize_stream_iterator_exception(
             last_event=last_event,
             message=str(exc),
         )
-    return exc
+    if isinstance(exc, Exception):
+        return exc
+    return GraphStreamNativeFailureError(
+        run_id=run_id,
+        session_id=session_id,
+        phase=phase,
+        last_event=last_event,
+        cause=exc,
+    )
 
 
 async def next_graph_stream_event(
@@ -203,7 +231,9 @@ async def next_graph_stream_event(
         )
     try:
         event = next_event_task.result()
-    except Exception as exc:
+    except BaseException as exc:
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
         raise normalize_stream_iterator_exception(
             exc,
             session_id=session_id,

@@ -30,7 +30,7 @@ class MemoryExtractionService:
     @staticmethod
     def _latest_terminal_run_id(session_id: str) -> str | None:
         for run in db.list_run_records(session_id=session_id, limit=20):
-            if str(run.get("status") or "").strip().lower() in {"completed", "failed", "cancelled"}:
+            if str(run.get("status") or "").strip().lower() in {"completed", "failed", "cancelled", "interrupted"}:
                 return str(run.get("id") or "").strip() or None
         return None
 

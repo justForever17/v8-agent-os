@@ -531,6 +531,80 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.stream_state.active_tool_call_ids, set())
 
+    async def test_terminal_failure_closes_active_tool_and_assistant_message(self):
+        self.chat_run.active_run_id = f"run_test_{uuid.uuid4().hex}"
+        chat_runtime_module.db.create_run_record(
+            self.chat_run.active_run_id,
+            self.chat_run.session_id,
+            run_type="chat",
+            status="running",
+        )
+        await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_tool_start",
+                "run_id": "command_tool_run",
+                "name": "run_system_command",
+                "data": {"input": {"command": "pip install python-docx"}},
+            },
+        )
+
+        emitted = self.runtime._close_active_tool_calls_for_terminal(
+            self.chat_run,
+            self.stream_state,
+            status="failed",
+            reason="graph_stream_native_failure",
+        )
+        self.runtime.persist_final_assistant_message(
+            self.chat_run,
+            self.stream_state,
+            state="failed",
+            terminal_metadata={"terminalReason": "graph_stream_native_failure"},
+        )
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["tool"]["status"], "failed")
+        self.assertEqual(self.stream_state.active_tool_call_ids, set())
+        self.assertEqual(self.stream_state.watchdog.active_tool_call_ids, set())
+        row = chat_runtime_module.db.get_chat_canonical_message(self.stream_state.assistant_message_id)
+        self.assertEqual(row["state"], "failed")
+        tool_results = [
+            node
+            for node in row["nodes"]
+            if node.get("kind") == "execution" and node.get("executionType") == "tool_result"
+        ]
+        self.assertEqual(len(tool_results), 1)
+        self.assertEqual(tool_results[0]["status"], "failed")
+        self.assertEqual(row["metadata"]["terminalReason"], "graph_stream_native_failure")
+
+    def test_interrupt_still_emits_terminal_event_when_message_finalization_fails(self):
+        self.chat_run.active_run_id = f"run_test_{uuid.uuid4().hex}"
+        with mock.patch.object(
+            self.runtime,
+            "_close_active_tool_calls_for_terminal",
+            return_value=[],
+        ), mock.patch.object(
+            self.runtime,
+            "persist_final_assistant_message",
+            side_effect=OSError("storage unavailable"),
+        ), mock.patch.object(
+            self.runtime,
+            "_expire_plugin_task_grants",
+        ), mock.patch.object(
+            self.runtime,
+            "_abort_engineering_workspaces",
+        ):
+            events = self.runtime.finalize_interrupted_run(
+                self.chat_run,
+                {"command": "interrupt", "reason": "web_composer_interrupt"},
+                self.stream_state,
+            )
+
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["status"], "interrupted")
+        self.assertEqual(events[-1]["run_id"], self.chat_run.active_run_id)
+
     def test_persist_prefers_authoritative_final_text(self):
         self.stream_state.assistant_message_id = "assistant-canonical-test"
         canonical_row = {

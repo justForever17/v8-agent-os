@@ -727,6 +727,33 @@ def test_engine_restart_closes_orphaned_injected_request(coordination_harness, m
     assert updated["metadata"]["orphanedRunStatus"] == "running"
 
 
+def test_engine_restart_reconciles_interrupted_injected_request_as_terminal(coordination_harness, monkeypatch):
+    db, service = coordination_harness
+    row = _add_queued_message(db, message_id="coord-restart-interrupted-001")
+    db.create_run_record(
+        "run-target-interrupted",
+        TARGET_SESSION_ID,
+        user_id=USER_ID,
+        run_type="chat",
+        status="running",
+    )
+    db.update_run_record("run-target-interrupted", status="interrupted")
+    db.update_session_coordination_message(
+        row["id"],
+        state="injected",
+        target_run_id="run-target-interrupted",
+    )
+    monkeypatch.setattr(service, "dispatch_for_session", lambda _session_id: None)
+
+    result = service.recover_pending()
+
+    assert result["recovered"] == 1
+    updated = db.get_session_coordination_message(row["id"])
+    assert updated["state"] == "failed"
+    assert updated["errorCode"] == "reply_contract_not_satisfied"
+    assert updated["metadata"]["terminalRunStatus"] == "interrupted"
+
+
 def test_engine_restart_reconciles_completed_reply_delivery(coordination_harness, monkeypatch):
     db, service = coordination_harness
     db.create_run_record(

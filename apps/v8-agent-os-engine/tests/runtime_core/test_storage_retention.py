@@ -539,6 +539,43 @@ def test_terminal_run_transition_cancels_only_its_pending_human_actions():
         assert db.get_ask_user_interaction("ask-other")["status"] == "pending"
 
 
+def test_interrupted_run_transition_is_terminal_and_closes_pending_human_actions():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = DatabaseManager(Path(temp_dir) / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+        db.create_run_record("run-interrupted", "s1", run_type="chat", status="running")
+        db.add_pending_approval(
+            "approval-interrupted",
+            "s1",
+            "run-interrupted",
+            "spec_stage_approval",
+            "pending",
+            {"stage": "requirements"},
+        )
+        db.add_ask_user_interaction(
+            interaction_id="ask-interrupted",
+            session_id="s1",
+            run_id="run-interrupted",
+            question="需要确认",
+            status="pending",
+        )
+
+        result = db.update_run_record_if_status(
+            "run-interrupted",
+            expected_statuses={"running"},
+            status="interrupted",
+            error_message="manual_interrupt",
+        )
+
+        assert result["updated"] is True
+        interrupted = db.get_run_record("run-interrupted")
+        assert interrupted["status"] == "interrupted"
+        assert interrupted["error_message"] == "manual_interrupt"
+        assert interrupted["finished_at"]
+        assert db.get_pending_approval("approval-interrupted")["status"] == "cancelled"
+        assert db.get_ask_user_interaction("ask-interrupted")["status"] == "cancelled"
+
+
 def test_completed_run_transition_does_not_erase_pending_governance():
     with tempfile.TemporaryDirectory() as temp_dir:
         db = DatabaseManager(Path(temp_dir) / "state.db")

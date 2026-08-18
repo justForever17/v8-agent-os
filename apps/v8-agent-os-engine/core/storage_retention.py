@@ -27,9 +27,9 @@ from core.v8_agent_os_paths import (
 
 
 RUNNING_RUN_STATUSES = {"queued", "running"}
-RECOVERABLE_RUN_STATUSES = {"waiting_approval", "waiting_input", "waiting_external_tool", "paused", "interrupted"}
+RECOVERABLE_RUN_STATUSES = {"waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 ACTIVE_RUN_STATUSES = RUNNING_RUN_STATUSES | RECOVERABLE_RUN_STATUSES
-TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 # These compact events carry collaboration decisions that the current
 # snapshot/history materializers cannot reproduce losslessly from episode and
 # handoff rows: the canonical ledgers do not retain the original event seq,
@@ -1165,7 +1165,7 @@ class StorageRetentionService:
                 SELECT re.id
                 FROM runtime_events re
                 JOIN run_records rr ON rr.id = re.run_id
-                WHERE rr.status IN ('completed', 'failed', 'cancelled')
+                WHERE rr.status IN ('completed', 'failed', 'cancelled', 'interrupted')
                   AND EXISTS (
                     SELECT 1 FROM chat_canonical_messages ccm
                     WHERE ccm.session_id = re.session_id

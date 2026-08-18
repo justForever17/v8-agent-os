@@ -846,7 +846,7 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
         if topic == "approval.rejected":
             continue
 
-        if topic in {"run.completed", "run.failed", "run.cancelled"}:
+        if topic in {"run.completed", "run.failed", "run.cancelled", "run.interrupted"}:
             current_assistant = None
             current_assistant_run_id = None
 
@@ -1664,7 +1664,7 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
             tool_id = _runtime_tool_call_id(payload)
             if tool_id:
                 tool_results.add(tool_id)
-        elif topic in {"run.completed", "run.failed", "run.cancelled"}:
+        elif topic in {"run.completed", "run.failed", "run.cancelled", "run.interrupted"}:
             run_id = str(event.get("run_id") or "").strip()
             if run_id:
                 terminal_event_by_run[run_id] = event

@@ -1047,7 +1047,7 @@ class SessionCoordinationService:
                 target_session_id = str(row.get("targetSessionId") or row.get("target_session_id") or "").strip()
                 run = db.get_run_record(target_run_id) if target_run_id else None
                 run_status = str((run or {}).get("status") or "").strip().lower()
-                if run_status in {"completed", "failed", "cancelled"}:
+                if run_status in {"completed", "failed", "cancelled", "interrupted"}:
                     self.on_run_terminal(target_session_id, target_run_id, status=run_status)
                 else:
                     self.mark_failed(

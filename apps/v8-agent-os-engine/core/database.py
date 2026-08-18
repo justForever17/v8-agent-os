@@ -3737,7 +3737,7 @@ class DatabaseManager:
         metadata: Optional[dict] = None,
     ):
         meta_str = json.dumps(metadata) if metadata else None
-        terminal = status in {"completed", "failed", "cancelled"}
+        terminal = status in {"completed", "failed", "cancelled", "interrupted"}
         finished_at = utc_now_iso() if terminal else None
         def _write():
             with self.get_connection() as conn:
@@ -3746,12 +3746,12 @@ class DatabaseManager:
                     UPDATE run_records
                     SET status = ?,
                         error_message = CASE
-                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, error_message)
+                            WHEN ? IN ('completed', 'failed', 'cancelled', 'interrupted') THEN COALESCE(?, error_message)
                             ELSE ?
                         END,
                         metadata = COALESCE(?, metadata),
                         finished_at = CASE
-                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, finished_at)
+                            WHEN ? IN ('completed', 'failed', 'cancelled', 'interrupted') THEN COALESCE(?, finished_at)
                             ELSE NULL
                         END
                     WHERE id = ?
@@ -3767,7 +3767,7 @@ class DatabaseManager:
                         run_id,
                     ),
                 )
-                if status in {"failed", "cancelled"}:
+                if status in {"failed", "cancelled", "interrupted"}:
                     self._cancel_pending_human_actions_for_run(conn, run_id)
                 conn.commit()
 
@@ -3784,7 +3784,7 @@ class DatabaseManager:
     ) -> Dict[str, Any]:
         normalized_expected = {str(item or "").strip() for item in set(expected_statuses or set()) if str(item or "").strip()}
         meta_str = json.dumps(metadata) if metadata else None
-        terminal = status in {"completed", "failed", "cancelled"}
+        terminal = status in {"completed", "failed", "cancelled", "interrupted"}
         finished_at = utc_now_iso() if terminal else None
 
         def _write():
@@ -3809,12 +3809,12 @@ class DatabaseManager:
                     UPDATE run_records
                     SET status = ?,
                         error_message = CASE
-                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, error_message)
+                            WHEN ? IN ('completed', 'failed', 'cancelled', 'interrupted') THEN COALESCE(?, error_message)
                             ELSE ?
                         END,
                         metadata = COALESCE(?, metadata),
                         finished_at = CASE
-                            WHEN ? IN ('completed', 'failed', 'cancelled') THEN COALESCE(?, finished_at)
+                            WHEN ? IN ('completed', 'failed', 'cancelled', 'interrupted') THEN COALESCE(?, finished_at)
                             ELSE NULL
                         END
                     WHERE id = ?
@@ -3830,7 +3830,7 @@ class DatabaseManager:
                         run_id,
                     ),
                 )
-                if status in {"failed", "cancelled"}:
+                if status in {"failed", "cancelled", "interrupted"}:
                     self._cancel_pending_human_actions_for_run(conn, run_id)
                 conn.commit()
                 refreshed = dict(conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone() or {})

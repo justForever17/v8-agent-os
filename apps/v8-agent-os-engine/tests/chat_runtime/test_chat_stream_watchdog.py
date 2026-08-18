@@ -14,6 +14,7 @@ from agents.runners.supervisor_runner import SupervisorExecutionBundle
 from core.graph_stream_watchdog import (
     GraphStreamDownstreamTimeoutError,
     GraphStreamIdleTimeoutError,
+    GraphStreamNativeFailureError,
     GraphStreamWatchdogState,
     next_graph_stream_event,
 )
@@ -28,6 +29,19 @@ class DownstreamTimeoutIterator:
     async def __anext__(self):
         await asyncio.sleep(0)
         raise asyncio.TimeoutError("provider timeout")
+
+
+class NativePanic(BaseException):
+    pass
+
+
+class NativePanicIterator:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(0)
+        raise NativePanic("conpty path not found")
 
 
 class NeverYieldIterator:
@@ -307,6 +321,21 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(timeout_payloads, [])
+
+    async def test_shared_watchdog_normalizes_native_backend_panic(self):
+        state = GraphStreamWatchdogState(has_productive_stream_activity=True)
+
+        with self.assertRaises(GraphStreamNativeFailureError) as caught:
+            await next_graph_stream_event(
+                NativePanicIterator(),
+                state=state,
+                session_id="session_test",
+                run_id="run_test",
+            )
+
+        self.assertEqual(caught.exception.failure_class, "graph_stream_native_failure")
+        self.assertEqual(caught.exception.cause_type, "NativePanic")
+        self.assertIn("conpty path not found", str(caught.exception))
 
     async def test_shared_watchdog_only_fires_for_real_idle(self):
         state = GraphStreamWatchdogState(has_productive_stream_activity=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.terminal_post_run import TerminalPostRunService
 from erc.kernel import ExecutionRuntimeCore
 
 
@@ -66,7 +67,7 @@ def test_interrupt_emits_events_only_after_atomic_transition(monkeypatch):
         lambda _run_id, reason=None: {
             "updated": True,
             "previousStatus": "running",
-            "run_record": {**run_record, "status": "paused"},
+            "run_record": {**run_record, "status": "interrupted"},
         },
     )
     monkeypatch.setattr(
@@ -92,8 +93,41 @@ def test_interrupt_emits_events_only_after_atomic_transition(monkeypatch):
     assert emitted == [
         (
             "run.state.changed",
-            {"from_status": "running", "to_status": "paused", "reason": "manual_interrupt"},
+            {"from_status": "running", "to_status": "interrupted", "reason": "manual_interrupt"},
         ),
         ("run.interrupted", {"run_id": "run_live", "reason": "manual_interrupt"}),
     ]
     assert synced == [("run_live", "interrupted")]
+
+
+def test_interrupted_run_executes_terminal_post_run_cleanup(monkeypatch):
+    service = TerminalPostRunService()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "core.terminal_post_run.db.get_run_record",
+        lambda _run_id: {
+            "id": "run_interrupted",
+            "session_id": "session_interrupted",
+            "status": "interrupted",
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(
+        "core.terminal_post_run.run_service.update_metadata",
+        lambda *_args, **_kwargs: calls.append("metadata"),
+    )
+    monkeypatch.setattr(service, "_finalize_workflow_guides", lambda **_kwargs: calls.append("guides"))
+    monkeypatch.setattr(
+        service,
+        "_schedule_engineering_proof_if_needed",
+        lambda **_kwargs: calls.append("proof") or False,
+    )
+    monkeypatch.setattr(service, "_schedule_memory_extraction", lambda **_kwargs: calls.append("memory"))
+    monkeypatch.setattr(service, "_run_non_memory_hooks", lambda **_kwargs: calls.append("hooks"))
+
+    assert service.dispatch(
+        session_id="session_interrupted",
+        run_id="run_interrupted",
+        source_component="test",
+    ) is True
+    assert calls == ["guides", "proof", "metadata", "memory", "hooks"]

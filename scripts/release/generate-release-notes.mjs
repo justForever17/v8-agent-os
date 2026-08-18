@@ -113,6 +113,30 @@ function releaseTitle(product, version, channel) {
   return `${name} ${suffix} v${version}`;
 }
 
+const RELEASE_HIGHLIGHTS = Object.freeze({
+  "2026.08.18.1": Object.freeze({
+    all: Object.freeze([
+      "文档读取依赖已迁入显著的“文档读取能力包”；安装会按界面语言选择官方 PyPI 或可信中文镜像，未安装时明确提示，不再让 `read_native_file` 静默失败。",
+      "命令工具现在严格区分普通管道与真实交互终端；非零退出、超时、进程树清理和 WinPTY 输入往返都会产生可终止、可诊断的结果。",
+      "Web 与 Phone 的发送/停止按钮改由共享的权威运行状态驱动；成功、失败或中断后会结束转圈，旧运行的迟到终态不会误清理新运行。",
+    ]),
+    desktop: Object.freeze([
+      "文档读取依赖已迁入显著的“文档读取能力包”；安装会按界面语言选择官方 PyPI 或可信中文镜像，未安装时明确提示，不再让 `read_native_file` 静默失败。",
+      "命令工具现在严格区分普通管道与真实交互终端；非零退出、超时、进程树清理和 WinPTY 输入往返都会产生可终止、可诊断的结果。",
+      "Web 的发送/停止按钮改由共享的权威运行状态驱动；成功、失败或中断后会结束转圈，旧运行的迟到终态不会误清理新运行。",
+    ]),
+    phone: Object.freeze([
+      "Phone 的发送/停止按钮改由共享的权威运行状态驱动；成功、失败或中断后会结束转圈，旧运行的迟到终态不会误清理新运行。",
+    ]),
+  }),
+});
+
+function releaseHighlights(release) {
+  const items = RELEASE_HIGHLIGHTS[release.version]?.[release.product] || [];
+  if (!items.length) return "";
+  return `\n## 本次修复\n\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
+
 function assetSection(product, version, channel) {
   if (product === "all") {
     const desktopVersion = channel === "stable" ? version : `preview-${version}`;
@@ -226,6 +250,7 @@ ${assetSection(release.product, release.version, release.channel)}
 - 发布对象：${release.product === "all" ? "Desktop 与 Phone" : release.product === "phone" ? "Phone 远程端" : "桌面版"}
 - 发布通道：${release.channel}
 - 标签：\`${release.tag}\`
+${releaseHighlights(release)}
 
 ## 安装 / 更新
 

@@ -165,6 +165,9 @@ GitHub Release 正文必须是结构化产品说明，而不是只有自动 chan
 8. `SHA256SUMS.txt` 与发布资产同批生成。
 9. 每个平台的 `RUNTIME_PROBE-<platform>.json` 必须证明 Engine Python、Admin/Web 生产构建、Shell resources、桌宠构建产物和平台适配依赖存在；`PACKAGE_LAYOUT-<platform>.json` 必须证明安装包内资源布局完整。Git 与 FFmpeg/FFprobe 7.0+ 等未内置依赖必须明确标为 degraded，低于 7.0 或二者缺失任一项均不算满足 V8OS 媒体基线。Linux 的 `xdotool`、`wmctrl` 与 `xclip/xsel` 是 X11 桌面操作的宿主依赖：DEB 必须声明，AppImage 必须在探针中明确提示宿主缺失，不能伪装成已随包提供。
 10. Windows 必须由 NSIS 静默安装到一次性目录后启动安装树应用，验证 Engine/Admin/Web/Shell、桌宠存活与受鉴权控制连接以及退出清理；该证据仍不替代用户真机的安装器交互与系统安全提示。Linux x64/arm64 必须把 DEB 安装到 root-owned `/opt/V8 Agent OS`，再以普通 runner 用户在独立 D-Bus、Secret Service 与 Xvfb 会话中启动；同一构建还必须解包 AppImage、把整个包树改成只读。Linux 两种格式都必须证明 Engine/Admin/Web 在 90 秒内就绪、Shell 持续存活，并证明桌宠启动被非零退出码拒绝，启动与状态响应均为结构化 `unavailable`、携带 `linux_desktop_pet_input_passthrough_unreliable`，且没有桌宠 PID、存活进程或运行时 descriptor。macOS 必须以只读方式挂载 DMG，在挂载树内完成 Keychain round-trip，并验证 Engine/Admin/Web/Shell、桌宠存活与受鉴权控制连接以及退出清理。上述 hosted runner 结果只能记为 `CI package smoke`；TCC/辅助功能、真实 X11/Wayland、托盘、窗口管理器及安装器交互必须在同平台实体主机另行验收，不能据此标记为 `physical host verified`。
+11. 文档读取依赖必须通过显著的 `document_ingestion` 能力包安装，中文界面按清华、中科大、阿里云、官方 PyPI 的顺序尝试，其他语言先用官方 PyPI；只允许网络或镜像故障切换来源，解析/版本冲突必须立即失败。未安装时 `read_native_file` 返回稳定的 `document_ingestion_dependencies_missing`，不得临时执行 pip 或把纯文本 fallback 冒充文档解析；安装态必须以隔离目录、模块来源和 DOCX/XLSX/PPTX/PDF 真实解析共同验收。
+12. 命令工具必须把执行生命周期 `sync/session` 与终端后端 `auto/pipe/pty` 分开。普通非交互命令走 pipe，真实交互命令走平台 PTY；非零退出、backend 异常、EOF 无退出码、用户中断和 deadline 都必须产生唯一终态，并清理完整进程树。安装包 smoke 至少验证普通成功、普通非零退出、超时树清理、真实 PTY 输入往返和 PTY 非零退出，禁止以 fallback 成功代替目标后端。
+13. Web 与 Phone 的发送、停止和 busy 状态必须消费共享的权威 run 状态，而不是根据流是否仍打开、最后一条消息或本地计时猜测。成功、失败、中断和 native backend failure 都必须释放 composer；迟到的旧 run 终态不得清理当前新 run，Phone 的 HTTP 提交 busy 还必须在 `finally` 中独立释放。
 
 ### Linux DEB 非 root 启动门禁与跨平台凭据合同
 

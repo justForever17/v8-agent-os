@@ -73,6 +73,7 @@ extraResources:
     to: v8os/apps/v8-agent-os-shell/scripts
     filter:
       - electron-launcher.mjs
+      - command_runtime_probe.py
       - feature_pack_runtime_probe.py
       - launch-desktop-pet.mjs
       - launch-shell.mjs

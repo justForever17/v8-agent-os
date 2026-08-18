@@ -430,6 +430,7 @@ test('desktop release scripts build native installers for every supported deskto
   assert.match(config, /to: v8os\/apps\/v8-agent-os-web/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-shell\/scripts/);
   assert.match(config, /electron-launcher\.mjs/);
+  assert.match(config, /command_runtime_probe\.py/);
   assert.match(config, /feature_pack_runtime_probe\.py/);
   assert.match(config, /launch-desktop-pet\.mjs/);
   assert.match(config, /launch-shell\.mjs/);
@@ -1371,6 +1372,7 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(packageLayoutProbe, /server\.js/);
   assert.match(packageLayoutProbe, /standaloneAppRoot, "public"/);
   assert.match(packageLayoutProbe, /release-manifest\.json/);
+  assert.match(packageLayoutProbe, /command_runtime_probe\.py/);
   assert.match(packageLayoutProbe, /feature_pack_runtime_probe\.py/);
   assert.match(packageLayoutProbe, /rpa-automation-cp311-/);
   assert.match(packageLayoutProbe, /creative-media-image-analysis-cp311-/);
@@ -1398,6 +1400,8 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(installSmoke, /featurePackApi/);
   assert.match(installSmoke, /featurePackEngineStatus/);
   assert.match(installSmoke, /featurePackRuntime/);
+  assert.match(installSmoke, /commandRuntime/);
+  assert.match(installSmoke, /command_runtime_probe\.py/);
   assert.match(installSmoke, /feature_pack_runtime_probe\.py/);
   assert.match(
     installSmoke,
@@ -1405,13 +1409,18 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   );
   assert.match(
     installSmoke,
-    /"v8-agent-os-shell",[\s\S]*?"scripts",[\s\S]*?"feature_pack_runtime_probe\.py"/,
+    /runPackagedPythonProbe\([\s\S]{0,240}?"feature_pack_runtime_probe\.py"/,
+  );
+  assert.match(
+    installSmoke,
+    /runPackagedPythonProbe\([\s\S]{0,240}?"command_runtime_probe\.py"/,
   );
   assert.match(installSmoke, /v1\/runtime-feature-packs\/status/);
   assert.doesNotMatch(installSmoke, /127\.0\.0\.1:9530\/health/);
   assert.match(installSmoke, /timeoutMs: 3_000/);
   assert.match(installSmoke, /--feature-pack-smoke/);
   assert.match(installSmoke, /--feature-pack-probe-timeout-ms/);
+  assert.match(installSmoke, /--command-probe-timeout-ms/);
   assert.match(installSmoke, /Math\.min\(120_000/);
   assert.match(installSmoke, /\["-I", "-B", probePath\]/);
   assert.match(installSmoke, /PYTHONPATH/);
@@ -1426,11 +1435,23 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   );
   assert.match(installSmoke, /!rpa\.failClosed && rpa\.available/);
   assert.match(installSmoke, /!image\.failClosed[\s\S]*?image\.assetResolved/);
+  assert.match(
+    installSmoke,
+    /documents\.available && documents\.isolated[\s\S]*?documents\.moduleOriginsVerified && documents\.parsersVerified/,
+  );
+  assert.match(installSmoke, /ordinary\.backend === "pipe"/);
+  assert.match(installSmoke, /failure\.failureClassified === true/);
+  assert.match(installSmoke, /timeout\.deadlineClassified === true/);
+  assert.match(installSmoke, /interactive\.roundTrip === true/);
   assert.match(installSmoke, /seenIds/);
   assert.match(installSmoke, /hasFeaturePackPayloadSchema/);
   assert.match(installSmoke, /Array\.isArray\(payload\?\.packs\)/);
   assert.match(installSmoke, /requiredAdminPackIds/);
-  assert.match(installSmoke, /"rpa_automation", "creative_media_image_analysis"/);
+  assert.match(installSmoke, /"rpa_automation", "creative_media_image_analysis", "document_ingestion"/);
+  assert.match(featurePackProbe, /DOCUMENT_PACK_ID = "document_ingestion"/);
+  assert.match(featurePackProbe, /_exercise_document_parsers/);
+  assert.match(featurePackProbe, /moduleOriginsVerified/);
+  assert.match(featurePackProbe, /parsersVerified/);
   assert.match(installSmoke, /typeof pack\.installable !== "boolean"/);
   assert.match(installSmoke, /featurePackApiMatchesEngine/);
   assert.match(installSmoke, /adminPack\.status !== enginePack\.status/);

@@ -548,7 +548,13 @@ function runtimeProbeSummary(payload) {
     "moduleOriginsVerified",
     "modelShaVerified",
   ]);
-  if (!rpa || !image || typeof payload.ok !== "boolean") {
+  const documents = summarize(payload.documents, [
+    "available",
+    "isolated",
+    "moduleOriginsVerified",
+    "parsersVerified",
+  ]);
+  if (!rpa || !image || !documents || typeof payload.ok !== "boolean") {
     return { ok: false, error: "feature_pack_probe_invalid_response" };
   }
   const rpaOk = rpa.checked && !rpa.error && (
@@ -561,7 +567,13 @@ function runtimeProbeSummary(payload) {
       && image.assetResolved && image.cpuSessionLoaded && image.isolated
       && image.moduleOriginsVerified && image.modelShaVerified)
   );
-  const derivedOk = Boolean(rpaOk && imageOk);
+  const documentsOk = documents.checked && !documents.error && (
+    (documents.state === "not_installed" && documents.failClosed)
+    || (documents.state === "installed" && !documents.failClosed
+      && documents.available && documents.isolated
+      && documents.moduleOriginsVerified && documents.parsersVerified)
+  );
+  const derivedOk = Boolean(rpaOk && imageOk && documentsOk);
   if (payload.ok !== derivedOk) {
     return { ok: false, error: "feature_pack_probe_invalid_response" };
   }
@@ -570,21 +582,50 @@ function runtimeProbeSummary(payload) {
     mode: "offline_runtime_probe",
     rpa,
     image,
+    documents,
     error: payload.error ? safeErrorCode(payload.error, "feature_pack_probe_invalid_response") : null,
   };
 }
 
 async function runFeaturePackRuntimeProbe(resourceRoot, engineStatus, timeoutMs) {
+  const execution = await runPackagedPythonProbe(
+    resourceRoot,
+    "feature_pack_runtime_probe.py",
+    { engineStatus },
+    timeoutMs,
+    "feature_pack_probe",
+  );
+  if (!execution.ok) return execution;
+  const summary = runtimeProbeSummary(execution.payload);
+  return {
+    ...summary,
+    ok: execution.exitCode === 0 && summary.ok,
+    durationMs: execution.durationMs,
+    error: execution.exitCode === 2
+      ? "feature_pack_probe_input_invalid"
+      : execution.exitCode !== 0 && !summary.error
+        ? "feature_pack_runtime_unhealthy"
+        : summary.error,
+  };
+}
+
+async function runPackagedPythonProbe(
+  resourceRoot,
+  probeFile,
+  inputPayload,
+  timeoutMs,
+  errorPrefix,
+) {
   const python = packagedPython(resourceRoot);
   const probePath = path.join(
     resourceRoot,
     "apps",
     "v8-agent-os-shell",
     "scripts",
-    "feature_pack_runtime_probe.py",
+    probeFile,
   );
   if (!python) return { ok: false, error: "packaged_python_missing" };
-  if (!fs.existsSync(probePath)) return { ok: false, error: "feature_pack_probe_missing" };
+  if (!fs.existsSync(probePath)) return { ok: false, error: `${errorPrefix}_missing` };
 
   const startedAt = Date.now();
   const child = spawn(python, ["-I", "-B", probePath], {
@@ -628,7 +669,7 @@ async function runFeaturePackRuntimeProbe(resourceRoot, engineStatus, timeoutMs)
   });
   child.stderr.resume();
   child.stdin.on("error", () => {});
-  child.stdin.end(`${JSON.stringify({ engineStatus })}\n`);
+  child.stdin.end(`${JSON.stringify(inputPayload || {})}\n`);
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -638,27 +679,124 @@ async function runFeaturePackRuntimeProbe(resourceRoot, engineStatus, timeoutMs)
   clearTimeout(timeout);
   if (terminationFallback) clearTimeout(terminationFallback);
   const durationMs = Date.now() - startedAt;
-  if (timedOut) return { ok: false, durationMs, error: "feature_pack_probe_timeout" };
-  if (outputOverflow) return { ok: false, durationMs, error: "feature_pack_probe_output_limit" };
-  if (result.error) return { ok: false, durationMs, error: "feature_pack_probe_spawn_failed" };
+  if (timedOut) return { ok: false, durationMs, error: `${errorPrefix}_timeout` };
+  if (outputOverflow) return { ok: false, durationMs, error: `${errorPrefix}_output_limit` };
+  if (result.error) return { ok: false, durationMs, error: `${errorPrefix}_spawn_failed` };
   let parsed;
   try {
     const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
     if (lines.length !== 1) throw new Error("invalid probe output");
     parsed = JSON.parse(lines[0]);
   } catch {
-    return { ok: false, durationMs, error: "feature_pack_probe_invalid_response" };
+    return { ok: false, durationMs, error: `${errorPrefix}_invalid_response` };
   }
-  const summary = runtimeProbeSummary(parsed);
+  return {
+    ok: true,
+    payload: parsed,
+    exitCode: result.code,
+    durationMs,
+  };
+}
+
+function commandRuntimeProbeSummary(payload) {
+  if (!payload || typeof payload !== "object" || payload.mode !== "packaged_command_runtime_probe") {
+    return { ok: false, error: "command_runtime_probe_invalid_response" };
+  }
+  const ordinary = payload.ordinary;
+  const failure = payload.failure;
+  const timeout = payload.timeout;
+  const interactive = payload.interactive;
+  const interactiveExit = payload.interactiveExit;
+  if (![ordinary, failure, timeout, interactive, interactiveExit].every((item) => item && typeof item === "object")) {
+    return { ok: false, error: "command_runtime_probe_invalid_response" };
+  }
+  const derivedOk = Boolean(
+    ordinary.backend === "pipe"
+    && ordinary.completed === true
+    && ordinary.exitCodeObserved === true
+    && ordinary.outputObserved === true
+    && failure.backend === "pipe"
+    && failure.completed === true
+    && failure.exitCodeObserved === true
+    && failure.failureClassified === true
+    && timeout.backend === "pipe"
+    && timeout.completed === true
+    && timeout.timedOut === true
+    && timeout.deadlineClassified === true
+    && timeout.processTreeStopped === true
+    && ["winpty", "posix_pty"].includes(interactive.backend)
+    && interactive.backendExpected === true
+    && interactive.usesTty === true
+    && interactive.roundTrip === true
+    && interactive.processTreeStopped === true
+    && interactiveExit.backend === interactive.backend
+    && interactiveExit.backendExpected === true
+    && interactiveExit.completed === true
+    && interactiveExit.exitCodeObserved === true
+    && interactiveExit.failureClassified === true
+    && interactiveExit.timedOut === false
+  );
+  if (typeof payload.ok !== "boolean" || payload.ok !== derivedOk) {
+    return { ok: false, error: "command_runtime_probe_invalid_response" };
+  }
+  return {
+    ok: derivedOk,
+    mode: "packaged_command_runtime_probe",
+    ordinary: {
+      backend: ordinary.backend,
+      completed: ordinary.completed,
+      exitCodeObserved: ordinary.exitCodeObserved,
+      outputObserved: ordinary.outputObserved,
+    },
+    failure: {
+      backend: failure.backend,
+      completed: failure.completed,
+      exitCodeObserved: failure.exitCodeObserved,
+      failureClassified: failure.failureClassified,
+    },
+    timeout: {
+      backend: timeout.backend,
+      completed: timeout.completed,
+      timedOut: timeout.timedOut,
+      deadlineClassified: timeout.deadlineClassified,
+      processTreeStopped: timeout.processTreeStopped,
+    },
+    interactive: {
+      backend: interactive.backend,
+      backendExpected: interactive.backendExpected,
+      usesTty: interactive.usesTty,
+      roundTrip: interactive.roundTrip,
+      processTreeStopped: interactive.processTreeStopped,
+    },
+    interactiveExit: {
+      backend: interactiveExit.backend,
+      backendExpected: interactiveExit.backendExpected,
+      completed: interactiveExit.completed,
+      exitCodeObserved: interactiveExit.exitCodeObserved,
+      failureClassified: interactiveExit.failureClassified,
+      timedOut: interactiveExit.timedOut,
+    },
+    error: payload.error ? safeErrorCode(payload.error, "command_runtime_unhealthy") : null,
+  };
+}
+
+async function runCommandRuntimeProbe(resourceRoot, timeoutMs) {
+  const execution = await runPackagedPythonProbe(
+    resourceRoot,
+    "command_runtime_probe.py",
+    {},
+    timeoutMs,
+    "command_runtime_probe",
+  );
+  if (!execution.ok) return execution;
+  const summary = commandRuntimeProbeSummary(execution.payload);
   return {
     ...summary,
-    ok: result.code === 0 && summary.ok,
-    durationMs,
-    error: result.code === 2
-      ? "feature_pack_probe_input_invalid"
-      : result.code !== 0 && !summary.error
-        ? "feature_pack_runtime_unhealthy"
-        : summary.error,
+    ok: execution.exitCode === 0 && summary.ok,
+    durationMs: execution.durationMs,
+    error: execution.exitCode !== 0 && !summary.error
+      ? "command_runtime_unhealthy"
+      : summary.error,
   };
 }
 
@@ -707,7 +845,7 @@ function summarizeFeaturePacks(payload) {
 function hasEngineFeaturePackStatusSchema(payload) {
   if (!payload || !Number.isFinite(Date.parse(String(payload.sampledAt || "")))) return false;
   if (!Array.isArray(payload.featurePacks)) return false;
-  const requiredIds = new Set(["rpa_automation", "creative_media_image_analysis"]);
+  const requiredIds = new Set(["rpa_automation", "creative_media_image_analysis", "document_ingestion"]);
   const seenIds = new Set();
   const allowedStatuses = new Set(["installed", "not_installed", "installing", "failed"]);
   for (const pack of payload.featurePacks) {
@@ -736,6 +874,7 @@ function engineFeaturePackStatusSummary(payload) {
   return {
     rpa: summary("rpa_automation"),
     image: summary("creative_media_image_analysis"),
+    documents: summary("document_ingestion"),
   };
 }
 
@@ -750,7 +889,7 @@ function hasFeaturePackPayloadSchema(payload) {
     return false;
   }
 
-  const requiredAdminPackIds = new Set(["rpa_automation", "creative_media_image_analysis"]);
+  const requiredAdminPackIds = new Set(["rpa_automation", "creative_media_image_analysis", "document_ingestion"]);
   const seenIds = new Set();
   const allowedStatuses = new Set(["installed", "not_installed", "installing", "failed"]);
   for (const pack of payload.packs) {
@@ -772,7 +911,7 @@ function hasFeaturePackPayloadSchema(payload) {
 function featurePackApiMatchesEngine(adminPayload, enginePayload) {
   const adminById = new Map((adminPayload?.packs || []).map((pack) => [String(pack?.id || ""), pack]));
   const engineById = new Map((enginePayload?.featurePacks || []).map((pack) => [String(pack?.id || ""), pack]));
-  for (const id of ["rpa_automation", "creative_media_image_analysis"]) {
+  for (const id of ["rpa_automation", "creative_media_image_analysis", "document_ingestion"]) {
     const adminPack = adminById.get(id);
     const enginePack = engineById.get(id);
     if (!adminPack || !enginePack) return false;
@@ -809,6 +948,7 @@ const stabilityWindowMs = positiveIntegerArg("--stability-window-ms", 15_000);
 const featurePackSmokeEnabled = booleanArg("--feature-pack-smoke", true);
 const occupyDefaultWebPort = booleanArg("--occupy-default-web-port", false);
 const featurePackProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--feature-pack-probe-timeout-ms", 30_000));
+const commandProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--command-probe-timeout-ms", 45_000));
 const stateRoot = path.resolve(
   process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os"),
 );
@@ -1114,6 +1254,9 @@ const featurePackRuntime = !featurePackSmokeEnabled
   : featurePackEngineStatus.ok
     ? await runFeaturePackRuntimeProbe(resourceRoot, rawFeaturePackEngineStatus.payload, featurePackProbeTimeoutMs)
     : { ok: false, error: "feature_pack_engine_status_unavailable" };
+const commandRuntime = packagedRuntimeLayout.ok
+  ? await runCommandRuntimeProbe(resourceRoot, commandProbeTimeoutMs)
+  : { ok: false, error: "packaged_runtime_layout_unavailable" };
 const shellProcessBeforeCleanup = isPidAlive(child.pid || 0);
 const managedPids = [child.pid, desktopPet.pid, desktopPet.serverPid]
   .map(Number)
@@ -1196,6 +1339,7 @@ const checks = {
   featurePackEngineStatus,
   featurePackRuntime,
   featurePackApi,
+  commandRuntime,
   packagedCleanup,
 };
 
@@ -1213,7 +1357,7 @@ const payload = {
   checks,
   failureStage: firstFailureStage(checks),
   passed: Object.values(checks).every((item) => item.ok),
-  note: "Automated packaged startup, product-surface, existing-Owner login, Windows/macOS desktop-pet process/health, or governed Linux desktop-pet unavailability/no-process proof. Tray interaction and physical display behavior still require a matching host.",
+  note: "Automated packaged startup, product-surface, existing-Owner login, fixed ordinary/interactive command backend probes, Windows/macOS desktop-pet process/health, or governed Linux desktop-pet unavailability/no-process proof. Tray interaction and physical display behavior still require a matching host.",
 };
 
 const output = reportPath();

@@ -232,6 +232,7 @@ try {
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "launch-shell.mjs"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "spawn-detached-electron.mjs"),
+    path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "command_runtime_probe.py"),
     path.join(resourceRoot, "apps", "v8-agent-os-shell", "scripts", "feature_pack_runtime_probe.py"),
     path.join(featurePackRequirements, "rpa-automation.txt"),
     path.join(featurePackRequirements, "creative-media-image-analysis.manifest.json"),

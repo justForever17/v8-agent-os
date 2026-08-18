@@ -44,12 +44,12 @@ test("stable notes match the production Android asset contract", () => {
   assert.doesNotMatch(notes, /android-preview\.apk/);
 });
 
-test("2026.08.18.1 notes describe the governed document, command, and run-state fixes only for that release", () => {
+test("2026.08.18.2 notes describe the governed document, bounded command, and run-state fixes only for that release", () => {
   const current = execFileSync(process.execPath, [
     GENERATOR,
     "--product", "all",
-    "--version", "2026.08.18.1",
-    "--tag", "v8-os-v2026.08.18.1",
+    "--version", "2026.08.18.2",
+    "--tag", "v8-os-v2026.08.18.2",
     "--channel", "preview",
   ], { cwd: ROOT, encoding: "utf8" });
   const historical = execFileSync(process.execPath, [
@@ -62,7 +62,7 @@ test("2026.08.18.1 notes describe the governed document, command, and run-state 
 
   assert.match(current, /## 本次修复/);
   assert.match(current, /文档读取能力包/);
-  assert.match(current, /普通管道与真实交互终端/);
+  assert.match(current, /诊断探测移出启动关键路径/);
   assert.match(current, /Web 与 Phone 的发送\/停止按钮.*权威运行状态/);
   assert.doesNotMatch(historical, /## 本次修复/);
 });

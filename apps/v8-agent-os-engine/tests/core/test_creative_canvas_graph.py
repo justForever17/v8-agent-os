@@ -19,6 +19,7 @@ from core.creative_canvas_graph import (
     CreativeCanvasGraphError,
     CreativeCanvasGraphService,
 )
+from core.creative_media_resource_authority import CreativeMediaResourceAuthorityService
 from core.runtime_projection import project_runtime_timeline_from_events
 
 
@@ -143,12 +144,19 @@ def canvas_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(graph_module, "db", database)
     monkeypatch.setattr(event_bus_module, "db", database)
-    monkeypatch.setattr(
-        graph_module.workspace_authority_service,
-        "resolve",
-        lambda **kwargs: _authority(tmp_path / "other-workspace")
+    resolver = lambda **kwargs: (
+        _authority(tmp_path / "other-workspace")
         if kwargs.get("session_id") == "session-c"
-        else _authority(workspace),
+        else _authority(workspace)
+    )
+    monkeypatch.setattr(graph_module.workspace_authority_service, "resolve", resolver)
+    monkeypatch.setattr(
+        graph_module,
+        "creative_media_resource_authority",
+        CreativeMediaResourceAuthorityService(
+            database=database,
+            authority_service=SimpleNamespace(resolve=resolver),
+        ),
     )
     return CreativeCanvasGraphService(), database
 
@@ -468,6 +476,11 @@ class _FakeCreativeRuntime:
         self.counter += 1
         self.requests.append(dict(request))
         artifact_id = f"artifact-{self.counter}"
+        workspace_root = Path(str(request["workspacePath"])).resolve(strict=False)
+        relative_path = Path(".v8") / "outputs" / f"result-{self.counter}.png"
+        source_path = workspace_root / relative_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(f"result-{self.counter}".encode("ascii"))
         self.database.add_runtime_artifact(
             artifact_id,
             "image",
@@ -475,8 +488,18 @@ class _FakeCreativeRuntime:
             session_id=request["sessionId"],
             run_id=request.get("runId") or None,
             title=f"result-{self.counter}.png",
+            source_path=str(source_path),
+            workspace_path=relative_path.as_posix(),
             preview_url=f"/preview/{artifact_id}",
-            metadata={"canvasOperationId": request["canvasOperationId"]},
+            metadata={
+                "canvasOperationId": request["canvasOperationId"],
+                "workspaceId": request.get("workspaceId"),
+                "projectId": request.get("projectId"),
+                "workspaceRoot": str(workspace_root),
+                "workspaceRelativePath": relative_path.as_posix(),
+                "storageClass": "workspace",
+                "pathPlane": "workspace_artifact",
+            },
         )
         return {
             "jobId": f"inner-{self.counter}",
@@ -633,6 +656,11 @@ class _PollFailureRuntime(_FakeCreativeRuntime):
             self.jobs[job_id] = job
             return dict(job)
         artifact_id = f"artifact-retry-{self.counter}"
+        workspace_root = Path(str(request["workspacePath"])).resolve(strict=False)
+        relative_path = Path(".v8") / "outputs" / f"{artifact_id}.png"
+        source_path = workspace_root / relative_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(artifact_id.encode("ascii"))
         self.database.add_runtime_artifact(
             artifact_id,
             "image",
@@ -640,8 +668,18 @@ class _PollFailureRuntime(_FakeCreativeRuntime):
             session_id=request["sessionId"],
             run_id=request.get("runId") or None,
             title=f"{artifact_id}.png",
+            source_path=str(source_path),
+            workspace_path=relative_path.as_posix(),
             preview_url=f"/preview/{artifact_id}",
-            metadata={"canvasOperationId": request["canvasOperationId"]},
+            metadata={
+                "canvasOperationId": request["canvasOperationId"],
+                "workspaceId": request.get("workspaceId"),
+                "projectId": request.get("projectId"),
+                "workspaceRoot": str(workspace_root),
+                "workspaceRelativePath": relative_path.as_posix(),
+                "storageClass": "workspace",
+                "pathPlane": "workspace_artifact",
+            },
         )
         job = {
             "jobId": job_id,
@@ -715,7 +753,7 @@ def test_execution_updates_persistent_result_slot_and_keeps_versions(canvas_serv
                 "canvasOperationId": operation_id,
                 "targetNodeIds": ["result-node"],
             }))
-        assert job["status"] == "succeeded"
+        assert job["status"] == "succeeded", job
 
     recovered = service.get_graph(session_id="session-a")
     versions = recovered["runtime"]["outputs"]["result-node"]
@@ -2020,6 +2058,14 @@ def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
                 "projectedRun": {"graphRunId": kwargs["graph_run_id"], "status": "running"},
             }
 
+        def review_output(self, **kwargs):
+            self.calls.append(("review-output", kwargs))
+            return {"decision": kwargs["decision"], "revision": 4}
+
+        def create_delivery_manifest(self, **kwargs):
+            self.calls.append(("delivery", kwargs))
+            return {"status": "ready", "dryRun": kwargs["dry_run"]}
+
     route_service = RouteService()
     monkeypatch.setattr(creative_canvas_routes, "creative_canvas_graph_service", route_service)
 
@@ -2039,13 +2085,39 @@ def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
         },
     ))
     retried = asyncio.run(creative_canvas_routes.retry_canvas_graph_failed_branch("session-a", "run-a"))
+    reviewed = asyncio.run(creative_canvas_routes.review_canvas_graph_output(
+        "session-a",
+        "canvas-output-a",
+        {
+            "decision": "approved",
+            "note": "Ship this version",
+            "selectedForDelivery": True,
+            "expectedRevision": 3,
+        },
+    ))
+    delivery = asyncio.run(creative_canvas_routes.deliver_canvas_graph_output(
+        "session-a",
+        "canvas-output-a",
+        {"expectedRevision": 4, "dryRun": True},
+    ))
 
     assert fetched["session_id"] == "session-a"
     assert cancelled["status"] == "cancelled"
     assert started["accepted"] is True
     assert started["status"] == "queued"
     assert retried["accepted"] is True
-    assert [call[0] for call in route_service.calls] == ["get", "cancel", "prepare-direct", "execute-direct", "claim-retry", "retry"]
+    assert reviewed == {"decision": "approved", "revision": 4}
+    assert delivery == {"status": "ready", "dryRun": True}
+    assert [call[0] for call in route_service.calls] == [
+        "get",
+        "cancel",
+        "prepare-direct",
+        "execute-direct",
+        "claim-retry",
+        "retry",
+        "review-output",
+        "delivery",
+    ]
     assert route_service.calls[1][1] is runtime
     assert route_service.calls[1][2] == {
         "session_id": "session-a",
@@ -2069,6 +2141,20 @@ def test_canvas_graph_lifecycle_routes_bridge_session_scoped_service(
     assert route_service.calls[5][2]["session_id"] == "session-a"
     assert route_service.calls[5][2]["graph_run_id"] == "run-a"
     assert route_service.calls[5][2]["claim"]["projectedRun"]["status"] == "running"
+    assert route_service.calls[6][1] == {
+        "session_id": "session-a",
+        "output_version_id": "canvas-output-a",
+        "decision": "approved",
+        "note": "Ship this version",
+        "selected_for_delivery": True,
+        "expected_revision": 3,
+    }
+    assert route_service.calls[7][1] == {
+        "session_id": "session-a",
+        "output_version_id": "canvas-output-a",
+        "expected_review_revision": 4,
+        "dry_run": True,
+    }
 
 
 def test_workspace_template_removes_session_resources_and_requires_rebinding(canvas_service) -> None:

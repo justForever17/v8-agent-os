@@ -176,6 +176,7 @@ class ArtifactStore:
         self,
         *,
         file_path: str | Path,
+        artifact_id: Optional[str] = None,
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
         message_id: Optional[str] = None,
@@ -191,7 +192,7 @@ class ArtifactStore:
     ) -> Dict[str, Any]:
         session_id = str(session_id or "").strip() or None
         path = Path(file_path)
-        artifact_id = f"art_{uuid.uuid4().hex}"
+        artifact_id = str(artifact_id or "").strip() or f"art_{uuid.uuid4().hex}"
         local_content_url = self._build_content_url(artifact_id, session_id)
         descriptor = build_artifact_descriptor(
             artifact_id=artifact_id,

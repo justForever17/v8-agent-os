@@ -24,6 +24,11 @@ import httpx
 
 from core.artifact_store import artifact_store
 from core.audio.tts_provider import TTSManager
+from core.creative_media_resource_authority import (
+    AuthorizedCreativeMediaResource,
+    CreativeMediaResourceAuthorityError,
+    creative_media_resource_authority,
+)
 from core.database import db
 from core.model_control_plane import model_control_plane
 from core.model_endpoint_binding import build_model_endpoint_binding
@@ -75,9 +80,18 @@ from .model_routing import (
     evaluate_candidate_readiness,
     suggested_adapter_for_model,
 )
+from .provider_adapter import ProviderHttpError, normalize_async_status, normalize_remote_status
+from .store import (
+    CreativeMediaJobRecord,
+    CreativeMediaLegacyFormatError,
+    CreativeMediaStateRegression,
+    CreativeMediaStore,
+    CreativeMediaStoreConflict,
+)
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
+SESSION_DELETION_TOMBSTONE_FILE = "creative_media/session_deletion_tombstones.json"
 WORK_ORDER_STORE_FILE = "creative_media/work_orders.json"
 EDIT_PLAN_STORE_FILE = "creative_media/edit_plans.json"
 RENDER_JOB_STORE_FILE = "creative_media/render_jobs.json"
@@ -85,6 +99,7 @@ MODEL_PREFERENCES_STORE_FILE = "creative_media/model_preferences.json"
 QUALITY_JOB_STORE_FILE = "creative_media/quality_jobs.json"
 COST_LEDGER_STORE_FILE = "creative_media/cost_ledger.json"
 SAFETY_EVENTS_STORE_FILE = "creative_media/safety_events.json"
+_GOVERNANCE_SAFE_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
 SUPPORTED_MODALITIES = {"image", "video", "voice", "music", "model3d"}
 MODEL_PREFERENCE_CONFIG_SOURCES = {"model_control_plane", "runtime_builtin"}
 # Only providers with a concrete adapter become executable. Other music/model3d catalog entries stay catalog-only.
@@ -110,9 +125,82 @@ DEFAULT_OPERATION_KINDS = {
     "model3d": ["model3d.generate"],
 }
 
+
+def _governance_token(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 128 or any(char not in _GOVERNANCE_SAFE_TOKEN_CHARS for char in raw):
+        return ""
+    return raw
+
+
+def _governance_text(value: Any, *, limit: int = 160) -> str:
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw:
+        return ""
+    lower = raw.lower()
+    if (
+        "http://" in lower
+        or "https://" in lower
+        or "file://" in lower
+        or re.match(r"^[a-zA-Z]:[\\/]", raw)
+        or raw.startswith(("/", "\\\\"))
+    ):
+        return ""
+    return raw[:limit]
+
+
+def _governance_refs(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        token = _governance_token(item)
+        if token and token not in result:
+            result.append(token)
+        if len(result) >= 64:
+            break
+    return result
+
+
+def _governance_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _governance_related_value(record: dict[str, Any], key: str) -> Any:
+    for candidate in (
+        record,
+        record.get("request"),
+        record.get("lineage"),
+    ):
+        if isinstance(candidate, dict) and candidate.get(key):
+            return candidate.get(key)
+    return ""
+
+
+def _governance_related_refs(record: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    for candidate in (
+        record,
+        record.get("request"),
+        record.get("lineage"),
+    ):
+        if isinstance(candidate, dict):
+            values.extend(list(candidate.get("sourceRefs") or []))
+    return _governance_refs(values)
+
 _PROVIDER_CREDENTIAL_OVERRIDES: ContextVar[dict[str, str]] = ContextVar(
     "creative_media_provider_credential_overrides",
     default={},
+)
+_CREATIVE_MEDIA_RESOURCE_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "creative_media_authorized_resource_context",
+    default=None,
+)
+_CREATIVE_MEDIA_AUTHORITY_FENCE: ContextVar[dict[str, str] | None] = ContextVar(
+    "creative_media_authority_fence",
+    default=None,
 )
 _ASYNC_REMOTE_JOB_ADAPTERS = {
     "agnes_video",
@@ -126,8 +214,18 @@ _ASYNC_REMOTE_JOB_ADAPTERS = {
 _REMOTE_RECONCILE_SCHEMA = "v8.creative_media_remote_reconcile.v1"
 _REMOTE_TERMINAL_PROOF_SCHEMA = "v8.creative_media_remote_terminal_proof.v1"
 _LOCAL_TERMINAL_PROOF_SCHEMA = "v8.creative_media_local_terminal_proof.v1"
+_SESSION_DELETION_SCHEMA = "v8.creative_media_session_deletion.v1"
+_SESSION_JOB_DISPOSITION_SCHEMA = "v8.creative_media_session_job_disposition.v1"
+_REMOTE_PROJECTION_DISPOSITIONS = {
+    "transient",
+    "owner_deleted",
+    "authority_changed",
+    "lineage_missing",
+    "applied",
+}
 _REMOTE_RECONCILE_BASE_DELAY_SECONDS = 15
 _REMOTE_RECONCILE_MAX_DELAY_SECONDS = 15 * 60
+_LIFECYCLE_HISTORY_LIMIT = 32
 
 
 class _RemoteReconcileUnsupported(RuntimeError):
@@ -835,12 +933,77 @@ class CreativeMediaRuntime:
         # per-job mutation lock so a stale cancel/reconcile snapshot cannot
         # overwrite a sibling phase during its read/modify/write transaction.
         self._job_mutation_locks: dict[str, asyncio.Lock] = {}
+        # Job creation and owner deletion share one per-Session gate. Holding
+        # this lock across create prevents a preflight that started just before
+        # deletion from publishing a job after cleanup has scanned the owner.
+        self._session_lifecycle_locks: dict[str, asyncio.Lock] = {}
         # jobs.json is one aggregate document. Its entire read/merge/write
         # transaction must be serialized even when two different jobs mutate.
         self._jobs_store_lock = threading.RLock()
+        # SQLite is the operational source of truth.  A lightweight JSON
+        # compatibility mode remains available for deterministic unit-test
+        # doubles and for an explicitly replaced storage backend, but never
+        # for the normal Engine storage manager.
+        self._creative_media_store = CreativeMediaStore(db)
+        self._creative_media_store_initialized = False
+        self._creative_media_store_migration: Any | None = None
+        self._creative_media_store_migrations: dict[str, Any] = {}
+        self._creative_media_json_compat = not self._storage_backend_is_durable()
         self._remote_reconciler_task: asyncio.Task[Any] | None = None
         self._remote_reconciler_stop: asyncio.Event | None = None
         self._remote_reconciler_last_cycle: dict[str, Any] = {}
+        if self._store_is_active():
+            self._ensure_creative_media_store()
+
+    @staticmethod
+    def _storage_backend_is_durable() -> bool:
+        base_dir = getattr(storage, "base_dir", None)
+        # Test doubles intentionally expose the same two methods, but are not
+        # the Engine StorageManager and must never share the process database.
+        return storage.__class__.__name__ == "StorageManager" and isinstance(
+            base_dir, (str, os.PathLike)
+        ) and callable(
+            getattr(storage, "read_json", None)
+        ) and callable(getattr(storage, "write_json", None))
+
+    def _store_is_active(self) -> bool:
+        # Instance-level monkeypatches are used by legacy lifecycle harnesses;
+        # honoring them keeps those tests hermetic without weakening production
+        # authority or persistence behavior.
+        if self._creative_media_json_compat or not self._storage_backend_is_durable():
+            return False
+        if "_read_jobs" in self.__dict__ or "_write_jobs" in self.__dict__:
+            return False
+        return True
+
+    def _legacy_jobs_path(self) -> Path:
+        return Path(str(storage.base_dir)) / JOB_STORE_FILE
+
+    def _legacy_store_path(self, filename: str) -> Path:
+        return Path(str(storage.base_dir)) / filename
+
+    def _ensure_creative_media_store(self) -> CreativeMediaStore:
+        if not self._store_is_active():
+            return self._creative_media_store
+        if not self._creative_media_store_initialized:
+            try:
+                self._creative_media_store_migrations = (
+                    self._creative_media_store.migrate_legacy_v1_sources(
+                        jobs_path=self._legacy_jobs_path(),
+                        work_orders_path=self._legacy_store_path(WORK_ORDER_STORE_FILE),
+                        cost_entries_path=self._legacy_store_path(COST_LEDGER_STORE_FILE),
+                        quality_jobs_path=self._legacy_store_path(QUALITY_JOB_STORE_FILE),
+                        safety_events_path=self._legacy_store_path(SAFETY_EVENTS_STORE_FILE),
+                    )
+                )
+                self._creative_media_store_migration = self._creative_media_store_migrations.get("jobs")
+            except CreativeMediaLegacyFormatError:
+                # A malformed legacy source is not silently treated as an
+                # empty store: callers receive the migration error and can
+                # repair/rollback the source explicitly.
+                raise
+            self._creative_media_store_initialized = True
+        return self._creative_media_store
 
     def runtime_descriptor(self) -> dict[str, Any]:
         try:
@@ -853,6 +1016,16 @@ class CreativeMediaRuntime:
             ]
         except Exception:
             plugin_items = []
+        migration_status = {
+            name: {
+                "sourceFound": bool(result.source_found),
+                "alreadyApplied": bool(result.already_applied),
+                "imported": int(result.imported_count),
+                "skipped": int(result.skipped_count),
+                "skipReasons": dict(result.skip_reason_counts),
+            }
+            for name, result in self._creative_media_store_migrations.items()
+        }
         return {
             "kind": self.kind,
             "displayName": "多媒体创作",
@@ -896,7 +1069,205 @@ class CreativeMediaRuntime:
                 ],
                 "baseOperationKinds": sorted(EXECUTABLE_OPERATION_KINDS),
                 "optionalPluginCapabilities": plugin_items,
+                "legacyMigration": migration_status,
                 "artifactRange": ["image", "video", "audio", "music", "3D", "PSD", "motion", "rig profile", "recipe", "QA"],
+            },
+        }
+
+    def governance_snapshot(self) -> dict[str, Any]:
+        """Return a fixed, non-transport Admin projection without provider refresh."""
+
+        if self._store_is_active():
+            store = self._ensure_creative_media_store()
+            work_orders = [
+                dict(payload)
+                for payload, _revision in store.list_work_orders(include_archived=False)
+            ]
+            quality_jobs = store.list_quality_jobs()
+            cost_entries = store.list_cost_entries()
+            safety_events = store.list_safety_events()
+        else:
+            work_orders = self.list_work_orders()
+            quality_jobs = self.list_quality_jobs()
+            cost_entries = self.list_cost_ledger()
+            safety_events = self.list_safety_events()
+        edit_plans = list(
+            (self._read_versioned_store(EDIT_PLAN_STORE_FILE, "editPlans").get("editPlans") or {}).values()
+        )
+        renders = list(
+            (self._read_versioned_store(RENDER_JOB_STORE_FILE, "renderJobs").get("renderJobs") or {}).values()
+        )
+        edit_plans.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        renders.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        recipes = creative_recipe_compiler.list_recipes()
+        assets = creative_recipe_compiler.list_assets()
+        jobs = self.list_jobs()
+        character_bibles = creative_recipe_compiler.list_character_bibles()
+        keyframes = creative_recipe_compiler.list_keyframes()
+
+        return {
+            "workOrders": {
+                "workOrders": [
+                    {
+                        "workOrderId": _governance_token(item.get("workOrderId")),
+                        "status": _governance_token(item.get("status")),
+                        "workOrderKind": _governance_token(item.get("workOrderKind")),
+                        "intent": _governance_text(item.get("intent")),
+                        "title": _governance_text(item.get("title")),
+                        "recipeId": _governance_token(item.get("recipeId")),
+                        "recipeIds": _governance_refs(item.get("recipeIds")),
+                        "recipeRefs": _governance_refs(item.get("recipeRefs")),
+                        "workspaceId": _governance_token(item.get("workspaceId")),
+                        "projectId": _governance_token(item.get("projectId")),
+                        "createdAt": _governance_text(item.get("createdAt"), limit=48),
+                        "updatedAt": _governance_text(item.get("updatedAt"), limit=48),
+                    }
+                    for item in work_orders
+                    if isinstance(item, dict)
+                ]
+            },
+            "recipes": {
+                "recipes": [
+                    {
+                        "recipeId": _governance_token(item.get("recipeId")),
+                        "modality": _governance_token(item.get("modality")),
+                        "recipeKind": _governance_token(item.get("recipeKind")),
+                        "musicKind": _governance_token(item.get("musicKind")),
+                        "executionStatus": _governance_token(item.get("executionStatus")),
+                        "updatedAt": _governance_text(item.get("updatedAt"), limit=48),
+                    }
+                    for item in recipes
+                    if isinstance(item, dict)
+                ]
+            },
+            "assets": {
+                "assets": [
+                    {
+                        "assetId": _governance_token(item.get("assetId")),
+                        "role": _governance_token(item.get("role")),
+                        "modality": _governance_token(item.get("modality")),
+                        "version": _governance_count(item.get("version")),
+                        "recipeId": _governance_token(_governance_related_value(item, "recipeId")),
+                        "workOrderId": _governance_token(_governance_related_value(item, "workOrderId")),
+                        "sourceRefs": _governance_related_refs(item),
+                    }
+                    for item in assets
+                    if isinstance(item, dict)
+                ]
+            },
+            "jobs": {
+                "jobs": [
+                    {
+                        "jobId": _governance_token(item.get("jobId")),
+                        "status": _governance_token(item.get("status")),
+                        "modality": _governance_token(item.get("modality")),
+                        "operationKind": _governance_token(item.get("operationKind")),
+                        "adapter": _governance_token(item.get("adapter")),
+                        "recipeId": _governance_token(_governance_related_value(item, "recipeId")),
+                        "workOrderId": _governance_token(_governance_related_value(item, "workOrderId")),
+                        "sourceRefs": _governance_related_refs(item),
+                        "createdAt": _governance_text(item.get("createdAt"), limit=48),
+                        "updatedAt": _governance_text(item.get("updatedAt"), limit=48),
+                    }
+                    for item in jobs
+                    if isinstance(item, dict)
+                ]
+            },
+            "characterBibles": {
+                "characterBibles": [
+                    {
+                        "characterBibleId": _governance_token(item.get("characterBibleId")),
+                        "name": _governance_text(item.get("name")),
+                        "version": _governance_count(item.get("version")),
+                    }
+                    for item in character_bibles
+                    if isinstance(item, dict)
+                ]
+            },
+            "keyframes": {
+                "keyframes": [
+                    {
+                        "keyframeId": _governance_token(item.get("keyframeId")),
+                        "role": _governance_token(item.get("role")),
+                        "recipeId": _governance_token(item.get("recipeId")),
+                    }
+                    for item in keyframes
+                    if isinstance(item, dict)
+                ]
+            },
+            "editPlans": {
+                "editPlans": [
+                    {
+                        "planId": _governance_token(item.get("planId")),
+                        "recipeId": _governance_token(item.get("recipeId")),
+                        "workOrderId": _governance_token(_governance_related_value(item, "workOrderId")),
+                        "sourceRefs": _governance_related_refs(item),
+                        "status": _governance_token(item.get("status")),
+                        "updatedAt": _governance_text(item.get("updatedAt"), limit=48),
+                    }
+                    for item in edit_plans
+                    if isinstance(item, dict)
+                ]
+            },
+            "renders": {
+                "renders": [
+                    {
+                        "renderJobId": _governance_token(item.get("renderJobId")),
+                        "planId": _governance_token(item.get("planId")),
+                        "status": _governance_token(item.get("status")),
+                        "updatedAt": _governance_text(item.get("updatedAt"), limit=48),
+                        "artifactCount": len(item.get("artifacts") or []),
+                    }
+                    for item in renders
+                    if isinstance(item, dict)
+                ]
+            },
+            "qualityJobs": {
+                "qualityJobs": [
+                    {
+                        "qualityJobId": _governance_token(item.get("qualityJobId")),
+                        "qualityProfile": _governance_token(item.get("qualityProfile")),
+                        "status": _governance_token(item.get("status")),
+                        "summary": _governance_text(item.get("summary"), limit=240),
+                        "repairCount": len(item.get("repairAttempts") or []),
+                        "requiredFeaturePackId": _governance_token(item.get("requiredFeaturePackId")),
+                    }
+                    for item in quality_jobs
+                    if isinstance(item, dict)
+                ]
+            },
+            "costLedger": {
+                "entries": [
+                    {
+                        "entryId": _governance_token(item.get("entryId")),
+                        "operationKind": _governance_token(item.get("operationKind")),
+                        "provider": _governance_token(item.get("provider")),
+                        "artifactCount": _governance_count(item.get("artifactCount")),
+                    }
+                    for item in cost_entries
+                    if isinstance(item, dict)
+                ]
+            },
+            "safetyEvents": {
+                "events": [
+                    {
+                        "eventId": _governance_token(item.get("eventId")),
+                        "eventKind": _governance_token(
+                            next(
+                                (
+                                    event.get("kind")
+                                    for event in list(item.get("events") or [])
+                                    if isinstance(event, dict) and event.get("kind")
+                                ),
+                                "",
+                            )
+                        ),
+                        "modality": _governance_token(item.get("modality")),
+                        "createdAt": _governance_text(item.get("createdAt"), limit=48),
+                    }
+                    for item in safety_events
+                    if isinstance(item, dict)
+                ]
             },
         }
 
@@ -1822,13 +2193,55 @@ class CreativeMediaRuntime:
         return "video.text_to_video"
 
     def _save_work_order(self, work_order: dict[str, Any]) -> dict[str, Any]:
+        if self._store_is_active():
+            store = self._ensure_creative_media_store()
+            work_order_id = str(work_order.get("workOrderId") or "").strip()
+            existing = store.get_work_order(work_order_id)
+            if existing is None:
+                persisted, _revision = store.create_work_order(work_order)
+            else:
+                current, revision = existing
+                persisted, _revision = store.compare_and_swap_work_order(
+                    work_order_id,
+                    expected_revision=revision,
+                    expected_status=str(current.get("status") or ""),
+                    expected_updated_at=str(current.get("updatedAt") or ""),
+                    payload=work_order,
+                )
+            return dict(persisted)
         store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
         values = dict(store.get("workOrders") or {})
         values[str(work_order["workOrderId"])] = dict(work_order)
         self._write_versioned_store(WORK_ORDER_STORE_FILE, "workOrders", values)
         return dict(work_order)
 
-    def list_work_orders(self, *, status: str | None = None, requesting_runtime: str | None = None) -> list[dict[str, Any]]:
+    def list_work_orders(
+        self,
+        *,
+        status: str | None = None,
+        requesting_runtime: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return [
+                dict(item[0])
+                for item in self._ensure_creative_media_store().list_work_orders(
+                    session_id=scope["sessionId"],
+                    status=status,
+                    requesting_runtime=requesting_runtime,
+                    include_archived=bool(status),
+                )
+                if self._record_matches_owner_scope(item[0], scope)
+            ]
         store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
         items = list(dict(store.get("workOrders") or {}).values())
         if status:
@@ -1850,15 +2263,68 @@ class CreativeMediaRuntime:
         items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         return items
 
-    def get_work_order(self, work_order_id: str) -> dict[str, Any] | None:
+    def get_work_order(
+        self,
+        work_order_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        if self._store_is_active():
+            item = self._ensure_creative_media_store().get_work_order(work_order_id)
+            if not item:
+                return None
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return dict(item[0]) if self._record_matches_owner_scope(item[0], scope) else None
         store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
         item = dict((store.get("workOrders") or {}).get(str(work_order_id)) or {})
         return item or None
 
-    def archive_work_order(self, work_order_id: str) -> dict[str, Any]:
+    def archive_work_order(
+        self,
+        work_order_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any]:
+        if session_id is not None:
+            if not self.get_work_order(
+                work_order_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                workspace_path=workspace_path,
+            ):
+                raise PermissionError("Creative Media work order is unavailable in the current session")
         return self._update_work_order_lifecycle(work_order_id, action="archive")
 
-    def delete_work_order(self, work_order_id: str) -> dict[str, Any]:
+    def delete_work_order(
+        self,
+        work_order_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any]:
+        if session_id is not None:
+            if not self.get_work_order(
+                work_order_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                workspace_path=workspace_path,
+            ):
+                raise PermissionError("Creative Media work order is unavailable in the current session")
         return self._update_work_order_lifecycle(work_order_id, action="delete")
 
     def _work_order_recipe_ids(self, work_order: dict[str, Any]) -> list[str]:
@@ -1876,11 +2342,20 @@ class CreativeMediaRuntime:
         normalized_action = str(action or "").strip().lower()
         if normalized_action not in {"archive", "delete"}:
             raise ValueError("creative media work order lifecycle action must be archive or delete")
-        store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
-        values = dict(store.get("workOrders") or {})
-        work_order = dict(values.get(str(work_order_id)) or {})
+        if self._store_is_active():
+            stored_work_order = self._ensure_creative_media_store().get_work_order(work_order_id)
+            work_order = dict(stored_work_order[0]) if stored_work_order else {}
+            work_order_revision = int(stored_work_order[1]) if stored_work_order else 0
+            values: dict[str, Any] = {}
+        else:
+            store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
+            values = dict(store.get("workOrders") or {})
+            work_order = dict(values.get(str(work_order_id)) or {})
+            work_order_revision = 0
         if not work_order:
             raise ValueError("creative media work order not found")
+        expected_work_order_status = str(work_order.get("status") or "")
+        expected_work_order_updated_at = str(work_order.get("updatedAt") or "")
         now = utc_now_iso()
         if normalized_action == "archive":
             work_order["archivedAt"] = work_order.get("archivedAt") or now
@@ -1915,8 +2390,20 @@ class CreativeMediaRuntime:
             "assetCount": len(related_assets),
             "jobCount": len(related_jobs),
         }
-        values[str(work_order_id)] = work_order
-        self._write_versioned_store(WORK_ORDER_STORE_FILE, "workOrders", values)
+        if self._store_is_active():
+            if work_order_revision < 1:
+                raise ValueError("creative media work order not found")
+            persisted, _revision = self._ensure_creative_media_store().compare_and_swap_work_order(
+                str(work_order_id),
+                expected_revision=work_order_revision,
+                expected_status=expected_work_order_status,
+                expected_updated_at=expected_work_order_updated_at,
+                payload=work_order,
+            )
+            work_order = dict(persisted)
+        else:
+            values[str(work_order_id)] = work_order
+            self._write_versioned_store(WORK_ORDER_STORE_FILE, "workOrders", values)
         return dict(work_order)
 
     def _mark_related_jobs_lifecycle(
@@ -1958,13 +2445,23 @@ class CreativeMediaRuntime:
             jobs[str(job_id)] = job
             changed.append(dict(job))
         if changed:
-            payload["jobs"] = jobs
-            self._write_jobs(payload)
+            if self._store_is_active():
+                store = self._ensure_creative_media_store()
+                for changed_job in changed:
+                    self._store_upsert_job(changed_job, store=store)
+            else:
+                payload["jobs"] = jobs
+                self._write_jobs(payload)
         return changed
 
     def compile_work_order(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         payload.update(self._scope_fields(payload))
+        payload.update(self._canonical_owner_scope(payload, require_write=True))
+        # Work-order compilation can derive provider plans and recipe lineage
+        # from reference assets.  Prove those resources before any planning
+        # helper is allowed to observe or persist them.
+        self._authorize_request_resources(payload)
         work_order_kind = self._work_order_kind_for_request(payload)
         if work_order_kind == "storyboard_to_video":
             return self._compile_storyboard_work_order(payload)
@@ -1993,6 +2490,7 @@ class CreativeMediaRuntime:
         work_order = {
             "version": 1,
             "workOrderId": f"cmwo_{uuid.uuid4().hex[:16]}",
+            **self._scope_fields(payload),
             "status": "planned",
             "workOrderKind": "simple_asset",
             "intent": str(payload.get("intent") or "simple_asset"),
@@ -2063,6 +2561,7 @@ class CreativeMediaRuntime:
         work_order = {
             "version": 1,
             "workOrderId": f"cmwo_{uuid.uuid4().hex[:16]}",
+            **self._scope_fields(payload),
             "status": "planned",
             "workOrderKind": "storyboard_to_video",
             "intent": str(payload.get("intent") or "storyboard_to_video"),
@@ -2112,6 +2611,7 @@ class CreativeMediaRuntime:
     def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         payload.update(self._scope_fields(payload))
+        payload.update(self._canonical_owner_scope(payload, require_write=True))
         recipe = creative_recipe_compiler.compile_recipe(payload)
         self._record_safety_event(
             source="recipe_compile",
@@ -2120,38 +2620,150 @@ class CreativeMediaRuntime:
         )
         return recipe
 
-    def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
-        return creative_recipe_compiler.get_recipe(recipe_id)
+    def get_recipe(
+        self,
+        recipe_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        recipe = creative_recipe_compiler.get_recipe(recipe_id)
+        if not recipe or session_id is None:
+            return recipe
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return recipe if self._record_matches_owner_scope(recipe, scope) else None
 
-    def list_recipes(self, *, modality: str | None = None, recipe_kind: str | None = None) -> list[dict[str, Any]]:
-        return creative_recipe_compiler.list_recipes(modality=modality, recipe_kind=recipe_kind)
+    def list_recipes(
+        self,
+        *,
+        modality: str | None = None,
+        recipe_kind: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        recipes = creative_recipe_compiler.list_recipes(modality=modality, recipe_kind=recipe_kind)
+        if session_id is None:
+            return recipes
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return [item for item in recipes if self._record_matches_owner_scope(item, scope)]
 
     def register_asset(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         payload.update(self._scope_fields(payload))
+        payload.update(self._canonical_owner_scope(payload, require_write=True))
+        self._authorize_request_resources(payload)
         return creative_recipe_compiler.register_asset(payload)
 
-    def list_assets(self, *, modality: str | None = None, role: str | None = None) -> list[dict[str, Any]]:
-        return creative_recipe_compiler.list_assets(modality=modality, role=role)
+    def list_assets(
+        self,
+        *,
+        modality: str | None = None,
+        role: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        items = creative_recipe_compiler.list_assets(modality=modality, role=role)
+        if not self._store_is_active():
+            return items
+        scope = self._canonical_owner_scope(
+            {
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            }
+        )
+        return [dict(item) for item in items if self._record_matches_owner_scope(item, scope)]
 
     def create_character_bible(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         payload.update(self._scope_fields(payload))
+        payload.update(self._canonical_owner_scope(payload, require_write=True))
         return creative_recipe_compiler.create_character_bible(payload)
 
-    def get_character_bible(self, bible_id: str) -> dict[str, Any] | None:
-        return creative_recipe_compiler.get_character_bible(bible_id)
+    def get_character_bible(
+        self,
+        bible_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        bible = creative_recipe_compiler.get_character_bible(bible_id)
+        if not bible or session_id is None:
+            return bible
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return bible if self._record_matches_owner_scope(bible, scope) else None
 
-    def list_character_bibles(self) -> list[dict[str, Any]]:
-        return creative_recipe_compiler.list_character_bibles()
+    def list_character_bibles(
+        self,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        bibles = creative_recipe_compiler.list_character_bibles()
+        if session_id is None:
+            return bibles
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return [item for item in bibles if self._record_matches_owner_scope(item, scope)]
 
     def register_keyframe(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         payload.update(self._scope_fields(payload))
+        payload.update(self._canonical_owner_scope(payload, require_write=True))
+        self._authorize_request_resources(payload)
         return creative_recipe_compiler.register_keyframe(payload)
 
-    def get_keyframe(self, keyframe_id: str) -> dict[str, Any] | None:
-        return creative_recipe_compiler.get_keyframe(keyframe_id)
+    def get_keyframe(
+        self,
+        keyframe_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        item = creative_recipe_compiler.get_keyframe(keyframe_id)
+        if not item or not self._store_is_active():
+            return item
+        scope = self._canonical_owner_scope(
+            {
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            }
+        )
+        return dict(item) if self._record_matches_owner_scope(item, scope) else None
 
     def list_keyframes(
         self,
@@ -2159,12 +2771,27 @@ class CreativeMediaRuntime:
         recipe_id: str | None = None,
         role: str | None = None,
         character_bible_id: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
     ) -> list[dict[str, Any]]:
-        return creative_recipe_compiler.list_keyframes(
+        items = creative_recipe_compiler.list_keyframes(
             recipe_id=recipe_id,
             role=role,
             character_bible_id=character_bible_id,
         )
+        if not self._store_is_active():
+            return items
+        scope = self._canonical_owner_scope(
+            {
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            }
+        )
+        return [dict(item) for item in items if self._record_matches_owner_scope(item, scope)]
 
     def _read_versioned_store(self, filename: str, key: str) -> dict[str, Any]:
         payload = storage.read_json(filename)
@@ -2176,26 +2803,188 @@ class CreativeMediaRuntime:
     def _write_versioned_store(self, filename: str, key: str, values: dict[str, Any]) -> None:
         storage.write_json(filename, {"version": 1, key: dict(values or {})})
 
-    def _artifact_source_path(self, artifact_id: str) -> str:
+    def _resource_context(self, explicit: dict[str, Any] | None = None) -> dict[str, Any]:
+        if explicit is not None:
+            return dict(explicit)
+        return dict(_CREATIVE_MEDIA_RESOURCE_CONTEXT.get() or {})
+
+    def _authorize_request_resources(
+        self,
+        request: dict[str, Any],
+        *,
+        require_local: bool = False,
+    ) -> list[AuthorizedCreativeMediaResource]:
+        payload = dict(request or {})
+        # Legacy JSON-only harnesses are isolated from the durable Engine
+        # path. Every real StorageManager request remains fail-closed below.
+        if not self._store_is_active():
+            return []
+        authority_payload = dict(payload)
+        path_aliases = [
+            str(payload.get(key) or "").strip()
+            for key in ("imagePath", "image_path", "maskPath", "mask_path")
+            if str(payload.get(key) or "").strip()
+        ]
+        if path_aliases:
+            authority_payload["runtimePathInputs"] = [
+                {"sourcePath": value}
+                for value in path_aliases
+            ]
+        try:
+            resources = list(
+                creative_media_resource_authority.authorize_request_resources(authority_payload)
+            )
+            for item in list(payload.get("canvasInputs") or []):
+                if not isinstance(item, dict):
+                    continue
+                resources.append(
+                    self._authorized_canvas_resource(
+                        item,
+                        context=payload,
+                        require_local=require_local,
+                    )
+                )
+        except CreativeMediaResourceAuthorityError:
+            raise
+        if require_local:
+            for resource in resources:
+                if resource.path is None or not resource.path.is_file():
+                    raise CreativeMediaResourceAuthorityError(
+                        reason_code="local_media_resource_unavailable"
+                    )
+        return resources
+
+    def _authorized_canvas_resource(
+        self,
+        item: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        require_local: bool = False,
+    ) -> AuthorizedCreativeMediaResource:
+        payload = self._resource_context(context)
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        origin = str(item.get("origin") or "").strip().lower()
+        resource_id = str(item.get("id") or "").strip()
+        if not session_id or not origin or not resource_id:
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="canvas_resource_authority_unavailable"
+            )
+        common = {
+            "session_id": session_id,
+            "workspace_id": payload.get("workspaceId") or payload.get("workspace_id"),
+            "project_id": payload.get("projectId") or payload.get("project_id"),
+            "workspace_path": payload.get("workspacePath") or payload.get("workspace_path"),
+        }
+        if origin == "artifact":
+            return creative_media_resource_authority.resolve_artifact(
+                artifact_id=resource_id,
+                require_local=require_local,
+                **common,
+            )
+        if origin == "source":
+            return creative_media_resource_authority.resolve_source(
+                source_id=resource_id,
+                require_local=require_local,
+                **common,
+            )
+        if origin == "workspace_asset":
+            return creative_media_resource_authority.resolve_workspace_asset(
+                asset_id=resource_id,
+                **common,
+            )
+        raise CreativeMediaResourceAuthorityError(reason_code="canvas_resource_origin_invalid")
+
+    def _authorized_artifact_resource(
+        self,
+        artifact_id: str,
+        *,
+        context: dict[str, Any] | None = None,
+        require_local: bool = False,
+    ) -> AuthorizedCreativeMediaResource:
+        normalized = str(artifact_id or "").strip()
+        if not normalized:
+            raise CreativeMediaResourceAuthorityError(reason_code="artifact_id_required")
+        payload = self._resource_context(context)
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        if not session_id:
+            raise CreativeMediaResourceAuthorityError(reason_code="session_authority_unavailable")
+        return creative_media_resource_authority.resolve_artifact(
+            session_id=session_id,
+            artifact_id=normalized,
+            workspace_id=payload.get("workspaceId") or payload.get("workspace_id"),
+            project_id=payload.get("projectId") or payload.get("project_id"),
+            workspace_path=payload.get("workspacePath") or payload.get("workspace_path"),
+            require_local=require_local,
+        )
+
+    def _artifact_source_path(
+        self,
+        artifact_id: str,
+        *,
+        context: dict[str, Any] | None = None,
+        require_local: bool = True,
+    ) -> str:
         normalized = str(artifact_id or "").strip()
         if not normalized:
             return ""
-        record = db.get_runtime_artifact(normalized)
-        if not record:
-            return ""
-        return str(record.get("source_path") or record.get("sourcePath") or "").strip()
+        context_payload = self._resource_context(context)
+        if (
+            not str(context_payload.get("sessionId") or context_payload.get("session_id") or "").strip()
+            and not self._store_is_active()
+        ):
+            # Isolated legacy test doubles may still provide an artifact
+            # lookup, but this branch is unreachable for the production
+            # StorageManager and therefore cannot bypass Session authority.
+            record = db.get_runtime_artifact(normalized) or {}
+            path = str(record.get("source_path") or record.get("sourcePath") or "").strip()
+            if require_local and path and not Path(path).is_file():
+                return ""
+            return path
+        resource = self._authorized_artifact_resource(
+            normalized,
+            context=context_payload,
+            require_local=require_local,
+        )
+        return str(resource.path) if resource.path is not None else ""
 
-    def _resolve_media_path(self, ref: dict[str, Any]) -> tuple[str, bool]:
+    def _resolve_media_path(
+        self,
+        ref: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[str, bool]:
+        context_payload = self._resource_context(context)
+        artifact_id = str(ref.get("artifactId") or ref.get("artifact_id") or "").strip()
+        artifact_path = ""
+        if artifact_id:
+            try:
+                artifact_path = self._artifact_source_path(
+                    artifact_id,
+                    context=context_payload,
+                    require_local=True,
+                )
+            except CreativeMediaResourceAuthorityError:
+                return "", False
         raw_path = (
             str(ref.get("sourcePath") or ref.get("source_path") or "").strip()
-            or self._artifact_source_path(str(ref.get("artifactId") or ref.get("artifact_id") or ""))
+            or artifact_path
             or str(ref.get("workspacePath") or ref.get("workspace_path") or "").strip()
         )
         if not raw_path:
             return "", False
         path = Path(raw_path).expanduser()
+        workspace_root = str(
+            context_payload.get("workspacePath")
+            or context_payload.get("workspace_path")
+            or ""
+        ).strip()
         if not path.is_absolute():
-            path = storage.base_dir / "workspace" / raw_path
+            path = Path(workspace_root or str(storage.base_dir / "workspace")) / raw_path
+        if workspace_root:
+            try:
+                path.resolve().relative_to(Path(workspace_root).expanduser().resolve())
+            except ValueError:
+                return "", False
         return str(path), path.exists() and path.is_file()
 
     def _probe_duration_seconds(self, path: str) -> float | None:
@@ -2227,12 +3016,38 @@ class CreativeMediaRuntime:
         except Exception:
             return None
 
-    def _asset_refs_by_ids(self, asset_ids: list[str]) -> list[dict[str, Any]]:
+    def _asset_refs_by_ids(
+        self,
+        asset_ids: list[str],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         if not asset_ids:
             return []
-        assets = self.list_assets()
+        context_payload = self._resource_context(context)
+        scope = self._canonical_owner_scope(context_payload)
+        assets = self.list_assets(
+            session_id=scope.get("sessionId"),
+            workspace_id=scope.get("workspaceId"),
+            project_id=scope.get("projectId"),
+            workspace_path=scope.get("workspacePath"),
+        )
         by_id = {str(item.get("assetId") or ""): dict(item) for item in assets}
-        return [by_id[item] for item in asset_ids if item in by_id]
+        result: list[dict[str, Any]] = []
+        for item_id in asset_ids:
+            asset = by_id.get(item_id)
+            if not asset:
+                raise CreativeMediaResourceAuthorityError(
+                    reason_code="creative_media_asset_unavailable"
+                )
+            if self._store_is_active():
+                # Ledger metadata never gets to replace the caller's owner
+                # claims. This is the critical same-workspace/cross-session
+                # boundary before a path can reach file or provider code.
+                manifest = {**asset, **context_payload, **scope}
+                self._authorize_request_resources(manifest, require_local=True)
+            result.append(asset)
+        return result
 
     def _select_edit_plan_assets(self, request: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         explicit_asset_ids = _list_of_strings(request.get("assetIds") or request.get("asset_ids"))
@@ -2243,17 +3058,46 @@ class CreativeMediaRuntime:
             or request.get("voiceAssetIds")
             or request.get("musicAssetIds")
         )
-        explicit_assets = self._asset_refs_by_ids([*explicit_asset_ids, *explicit_video_ids, *explicit_audio_ids])
+        explicit_assets = self._asset_refs_by_ids(
+            [*explicit_asset_ids, *explicit_video_ids, *explicit_audio_ids],
+            context=request,
+        )
         inline_assets = [dict(item) for item in list(request.get("assets") or []) if isinstance(item, dict)]
-        candidates = [*explicit_assets, *inline_assets]
+        inline_asset_ids = _list_of_strings(
+            [item.get("assetId") for item in inline_assets if item.get("assetId")]
+        )
+        inline_ledger_assets = self._asset_refs_by_ids(inline_asset_ids, context=request)
+        inline_transports = [item for item in inline_assets if not item.get("assetId")]
+        candidates = [*explicit_assets, *inline_ledger_assets, *inline_transports]
         if not candidates:
-            candidates = self.list_assets()
+            scope = self._canonical_owner_scope(request)
+            candidates = self.list_assets(
+                session_id=scope.get("sessionId"),
+                workspace_id=scope.get("workspaceId"),
+                project_id=scope.get("projectId"),
+                workspace_path=scope.get("workspacePath"),
+            )
+
+        # Inline assets can carry artifact/source/path references even when no
+        # asset id was declared. Validate those manifests before probing media.
+        if str(request.get("sessionId") or request.get("session_id") or "").strip():
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    candidate_scope = (
+                        self._assert_record_owner_scope(candidate, request)
+                        if candidate.get("assetId")
+                        else self._canonical_owner_scope(request)
+                    )
+                    self._authorize_request_resources(
+                        {**candidate, **request, **candidate_scope},
+                        require_local=True,
+                    )
 
         video_refs: list[dict[str, Any]] = []
         audio_refs: list[dict[str, Any]] = []
         for asset in candidates:
             modality = str(asset.get("modality") or "").strip().lower()
-            path, exists = self._resolve_media_path(asset)
+            path, exists = self._resolve_media_path(asset, context=request)
             suffix = Path(path).suffix.lower() if path else ""
             enriched = {**asset, "resolvedPath": path, "pathExists": exists}
             if modality == "video" or suffix in VIDEO_EXTENSIONS:
@@ -2318,8 +3162,12 @@ class CreativeMediaRuntime:
         plan_id = str(payload.get("planId") or payload.get("editPlanId") or payload.get("id") or f"cm_edit_{uuid.uuid4().hex}").strip()
         recipe_id = str(payload.get("recipeId") or payload.get("recipe_id") or "").strip()
         recipe = self.get_recipe(recipe_id) if recipe_id else None
-        scope = self._scope_fields(payload, recipe or {})
-        video_refs, audio_refs = self._select_edit_plan_assets(payload)
+        scope = self._canonical_owner_scope(
+            {**self._scope_fields(payload, recipe or {}), **payload},
+            require_write=True,
+        )
+        scoped_payload = {**payload, **scope}
+        video_refs, audio_refs = self._select_edit_plan_assets(scoped_payload)
         if not video_refs:
             raise ValueError("creative media edit plan requires at least one video asset")
 
@@ -2411,13 +3259,46 @@ class CreativeMediaRuntime:
         self._write_versioned_store(EDIT_PLAN_STORE_FILE, "editPlans", plans)
         return plan
 
-    def get_edit_plan(self, plan_id: str) -> dict[str, Any] | None:
-        return dict((self._read_versioned_store(EDIT_PLAN_STORE_FILE, "editPlans").get("editPlans") or {}).get(str(plan_id)) or {}) or None
+    def get_edit_plan(
+        self,
+        plan_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        item = dict((self._read_versioned_store(EDIT_PLAN_STORE_FILE, "editPlans").get("editPlans") or {}).get(str(plan_id)) or {}) or None
+        if not item or not self._store_is_active():
+            return item
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return item if self._record_matches_owner_scope(item, scope) else None
 
-    def list_edit_plans(self, *, recipe_id: str | None = None) -> list[dict[str, Any]]:
+    def list_edit_plans(
+        self,
+        *,
+        recipe_id: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
         plans = list((self._read_versioned_store(EDIT_PLAN_STORE_FILE, "editPlans").get("editPlans") or {}).values())
         normalized_recipe_id = str(recipe_id or "").strip()
         result = [dict(item) for item in plans if not normalized_recipe_id or str(item.get("recipeId") or "") == normalized_recipe_id]
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            result = [item for item in result if self._record_matches_owner_scope(item, scope)]
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
 
@@ -2429,10 +3310,36 @@ class CreativeMediaRuntime:
         self._write_versioned_store(RENDER_JOB_STORE_FILE, "renderJobs", jobs)
         return job
 
-    def get_render(self, render_job_id: str) -> dict[str, Any] | None:
-        return dict((self._read_versioned_store(RENDER_JOB_STORE_FILE, "renderJobs").get("renderJobs") or {}).get(str(render_job_id)) or {}) or None
+    def get_render(
+        self,
+        render_job_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        item = dict((self._read_versioned_store(RENDER_JOB_STORE_FILE, "renderJobs").get("renderJobs") or {}).get(str(render_job_id)) or {}) or None
+        if not item or not self._store_is_active():
+            return item
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        return item if self._record_matches_owner_scope(item, scope) else None
 
-    def list_renders(self, *, plan_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    def list_renders(
+        self,
+        *,
+        plan_id: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
         jobs = list((self._read_versioned_store(RENDER_JOB_STORE_FILE, "renderJobs").get("renderJobs") or {}).values())
         normalized_plan_id = str(plan_id or "").strip()
         normalized_status = str(status or "").strip().lower()
@@ -2442,6 +3349,14 @@ class CreativeMediaRuntime:
             if (not normalized_plan_id or str(item.get("planId") or "") == normalized_plan_id)
             and (not normalized_status or str(item.get("status") or "").lower() == normalized_status)
         ]
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            result = [item for item in result if self._record_matches_owner_scope(item, scope)]
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
 
@@ -2557,16 +3472,29 @@ class CreativeMediaRuntime:
     def render_edit_plan(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
         plan_id = str(payload.get("planId") or payload.get("editPlanId") or payload.get("id") or "").strip()
-        plan = self.get_edit_plan(plan_id) if plan_id else None
+        scope = self._canonical_owner_scope(payload, require_write=True)
+        plan = self.get_edit_plan(
+            plan_id,
+            session_id=scope.get("sessionId"),
+            workspace_id=scope.get("workspaceId"),
+            project_id=scope.get("projectId"),
+            workspace_path=scope.get("workspacePath"),
+        ) if plan_id else None
         if not plan:
             if payload.get("plan") and isinstance(payload.get("plan"), dict):
                 plan = dict(payload["plan"])
+                self._assert_record_owner_scope(plan, scope, require_write=True)
                 plan_id = str(plan.get("planId") or f"cm_edit_{uuid.uuid4().hex}")
             else:
-                raise ValueError("creative media render requires planId or plan")
+                raise CreativeMediaResourceAuthorityError(
+                    reason_code="creative_media_edit_plan_unavailable"
+                )
         render_job_id = str(payload.get("renderJobId") or f"cm_render_{uuid.uuid4().hex}").strip()
         now = utc_now_iso()
-        scope = self._scope_fields(payload, plan)
+        self._authorize_request_resources(
+            {**plan, **payload, **scope},
+            require_local=True,
+        )
         job = {
             "renderJobId": render_job_id,
             **scope,
@@ -2663,30 +3591,125 @@ class CreativeMediaRuntime:
             job["completedAt"] = utc_now_iso()
             return self._save_render_job(job)
 
-    def _record_terminal_job_observations(self, job: dict[str, Any]) -> None:
-        self._append_cost_entry(job)
+    def _record_terminal_job_observations(
+        self,
+        job: dict[str, Any],
+        marker: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        marker = dict(
+            marker
+            or {
+                "costEntryId": f"cm_cost_{uuid.uuid4().hex}",
+                "qualityJobId": f"cm_quality_{uuid.uuid4().hex}",
+                "createdAt": utc_now_iso(),
+            }
+        )
+        cost_entry = self._append_cost_entry(
+            job,
+            entry_id=str(marker.get("costEntryId") or ""),
+            created_at=str(marker.get("createdAt") or "") or None,
+        )
+        result: dict[str, Any] = {
+            "costEntryId": cost_entry.get("entryId"),
+            "qualityStatus": "not_run",
+            "qualityJobIds": [],
+        }
         if job.get("status") == "succeeded" and job.get("artifacts"):
-            quality = self.create_quality_job({"jobId": job.get("jobId"), "artifacts": list(job.get("artifacts") or []), "auto": True})
-            job["qualityStatus"] = quality.get("status") or "not_run"
-            job["qualityJobIds"] = [quality.get("qualityJobId")] if quality.get("qualityJobId") else []
-        elif job.get("status") == "failed":
-            job["qualityStatus"] = "not_run"
+            quality_job_id = str(marker.get("qualityJobId") or "").strip()
+            quality = (
+                self._ensure_creative_media_store().get_quality_job(quality_job_id)
+                if self._store_is_active()
+                else None
+            )
+            if quality is None:
+                quality = self.create_quality_job(
+                    {
+                        **(
+                            self._canonical_owner_scope(job)
+                            if self._store_is_active()
+                            else self._scope_fields(job)
+                        ),
+                        "qualityJobId": quality_job_id,
+                        "jobId": job.get("jobId"),
+                        "artifacts": list(job.get("artifacts") or []),
+                        "auto": True,
+                    }
+                )
+            result["qualityStatus"] = quality.get("status") or "not_run"
+            result["qualityJobIds"] = [quality_job_id] if quality_job_id else []
+        job["qualityStatus"] = result["qualityStatus"]
+        job["qualityJobIds"] = list(result["qualityJobIds"])
+        return result
 
-    def _append_cost_entry(self, job: dict[str, Any]) -> dict[str, Any]:
-        store = self._read_versioned_store(COST_LEDGER_STORE_FILE, "entries")
-        entries = dict(store.get("entries") or {})
+    def repair_terminal_observation_outbox(
+        self,
+        *,
+        job_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        if not self._store_is_active():
+            return {"processed": 0, "completed": 0, "failed": 0}
+        store = self._ensure_creative_media_store()
+        pending = store.list_pending_terminal_observations(job_id=job_id, limit=limit)
+        completed = 0
+        failed = 0
+        for marker in pending:
+            current_job_id = str(marker.get("jobId") or "").strip()
+            try:
+                job = dict(marker.get("job") or {})
+                observations = self._record_terminal_job_observations(job, marker)
+                job["qualityStatus"] = observations.get("qualityStatus") or "not_run"
+                job["qualityJobIds"] = list(observations.get("qualityJobIds") or [])
+                job["terminalObservation"] = {
+                    "schema": str(marker.get("schema") or ""),
+                    "state": "completed",
+                    "costEntryId": observations.get("costEntryId"),
+                    "qualityJobIds": list(observations.get("qualityJobIds") or []),
+                }
+                job["p4RecordedAt"] = utc_now_iso()
+                job["updatedAt"] = job["p4RecordedAt"]
+                store.compare_and_swap_job(
+                    current_job_id,
+                    expected_revision=int(marker.get("jobRevision") or 0),
+                    expected_status=str(marker.get("jobStatus") or ""),
+                    expected_updated_at=str(marker.get("jobUpdatedAt") or ""),
+                    payload=job,
+                    complete_terminal_observation=True,
+                )
+                completed += 1
+            except Exception as exc:
+                failed += 1
+                store.mark_terminal_observation_failed(
+                    current_job_id,
+                    self._redact_lifecycle_error(_exception_summary(exc)),
+                )
+        return {
+            "processed": len(pending),
+            "completed": completed,
+            "failed": failed,
+        }
+
+    def _append_cost_entry(
+        self,
+        job: dict[str, Any],
+        *,
+        entry_id: str | None = None,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
         response = dict(job.get("providerResponse") or {})
         request = dict(job.get("request") or {})
-        entry_id = f"cm_cost_{uuid.uuid4().hex}"
+        normalized_entry_id = str(entry_id or f"cm_cost_{uuid.uuid4().hex}").strip()
+        scope = self._canonical_owner_scope(job) if self._store_is_active() else self._scope_fields(job)
         artifacts = list(job.get("artifacts") or [])
         output_bytes = 0
         for artifact in artifacts:
             path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
             if path and Path(path).exists():
                 output_bytes += Path(path).stat().st_size
-        entries[entry_id] = {
-            "entryId": entry_id,
+        entry = {
+            "entryId": normalized_entry_id,
             "jobId": job.get("jobId"),
+            **scope,
             "status": job.get("status"),
             "provider": response.get("providerId") or request.get("providerId") or job.get("adapter"),
             "model": response.get("model") or request.get("model") or request.get("modelId"),
@@ -2699,12 +3722,39 @@ class CreativeMediaRuntime:
             "estimatedCost": None,
             "outputBytes": output_bytes,
             "artifactCount": len(artifacts),
-            "createdAt": utc_now_iso(),
+            "createdAt": created_at or utc_now_iso(),
         }
+        if self._store_is_active():
+            self._ensure_creative_media_store().put_cost_entry(entry)
+            return entry
+        store = self._read_versioned_store(COST_LEDGER_STORE_FILE, "entries")
+        entries = dict(store.get("entries") or {})
+        entries[normalized_entry_id] = entry
         self._write_versioned_store(COST_LEDGER_STORE_FILE, "entries", entries)
-        return entries[entry_id]
+        return entry
 
-    def list_cost_ledger(self) -> list[dict[str, Any]]:
+    def list_cost_ledger(
+        self,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return [
+                item
+                for item in self._ensure_creative_media_store().list_cost_entries(
+                    session_id=scope["sessionId"]
+                )
+                if self._record_matches_owner_scope(item, scope)
+            ]
         entries = list((self._read_versioned_store(COST_LEDGER_STORE_FILE, "entries").get("entries") or {}).values())
         entries.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         return [dict(item) for item in entries]
@@ -2714,6 +3764,12 @@ class CreativeMediaRuntime:
         quality_job_id = str(payload.get("qualityJobId") or payload.get("id") or f"cm_quality_{uuid.uuid4().hex}").strip()
         job_id = str(payload.get("jobId") or payload.get("job_id") or "").strip()
         job = self.get_job(job_id, refresh=False) if job_id else None
+        if self._store_is_active():
+            if job:
+                scope = self._assert_record_owner_scope(job, payload, require_write=True)
+            else:
+                scope = self._canonical_owner_scope(payload, require_write=True)
+            payload.update(scope)
         artifact_refs = list(payload.get("artifacts") or ((job or {}).get("artifacts") or []))
         if not artifact_refs and payload.get("artifactId"):
             artifact_refs = [{"artifactId": payload.get("artifactId"), "sourcePath": payload.get("sourcePath")}]
@@ -2724,6 +3780,12 @@ class CreativeMediaRuntime:
                 if str(artifact_id or "").strip()
             ]
         owner = dict(job or payload)
+        # Quality must prove every input before opening files, invoking
+        # ffprobe/FFmpeg, creating a repair derivative, or writing its ledger.
+        self._authorize_request_resources(
+            {**owner, **payload, "artifacts": artifact_refs},
+            require_local=True,
+        )
         request_payload = dict(owner.get("request") or owner)
         quality_profile = str(
             payload.get("qualityProfile")
@@ -2909,17 +3971,20 @@ class CreativeMediaRuntime:
             "retryRecommendation": self._retry_recommendation(status=status, failures=failures, warnings=warnings, job=job or payload),
             "createdAt": utc_now_iso(),
         }
-        store = self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs")
-        values = dict(store.get("qualityJobs") or {})
-        values[quality_job_id] = quality_job
-        self._write_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs", values)
+        if self._store_is_active():
+            self._ensure_creative_media_store().save_quality_job(quality_job)
+        else:
+            store = self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs")
+            values = dict(store.get("qualityJobs") or {})
+            values[quality_job_id] = quality_job
+            self._write_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs", values)
         return quality_job
 
     def _quality_reference_report(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         artifact_id = str(payload.get("referenceArtifactId") or payload.get("reference_artifact_id") or "").strip()
         if not artifact_id:
             return None
-        path = self._artifact_source_path(artifact_id)
+        path = self._artifact_source_path(artifact_id, context=payload, require_local=True)
         if not path or not Path(path).is_file():
             return {
                 "status": "review_required",
@@ -2952,7 +4017,11 @@ class CreativeMediaRuntime:
         for artifact in artifacts:
             path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
             if not path and artifact.get("artifactId"):
-                path = self._artifact_source_path(str(artifact.get("artifactId") or ""))
+                path = self._artifact_source_path(
+                    str(artifact.get("artifactId") or ""),
+                    context=owner,
+                    require_local=True,
+                )
             source = Path(path).expanduser() if path else None
             if source is None or not source.is_file() or source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".psd"}:
                 return []
@@ -3007,10 +4076,52 @@ class CreativeMediaRuntime:
         reasons = [*failures, *warnings]
         return f"质量门禁未通过：{', '.join(reasons[:4]) or '需要人工复核'}。"
 
-    def get_quality_job(self, quality_job_id: str) -> dict[str, Any] | None:
+    def get_quality_job(
+        self,
+        quality_job_id: str,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        if self._store_is_active():
+            item = self._ensure_creative_media_store().get_quality_job(quality_job_id)
+            if not item:
+                return None
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return item if self._record_matches_owner_scope(item, scope) else None
         return dict((self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs").get("qualityJobs") or {}).get(str(quality_job_id)) or {}) or None
 
-    def list_quality_jobs(self, *, status: str | None = None) -> list[dict[str, Any]]:
+    def list_quality_jobs(
+        self,
+        *,
+        status: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return [
+                item
+                for item in self._ensure_creative_media_store().list_quality_jobs(
+                    session_id=scope["sessionId"],
+                    status=status,
+                )
+                if self._record_matches_owner_scope(item, scope)
+            ]
         jobs = list((self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs").get("qualityJobs") or {}).values())
         normalized_status = str(status or "").strip().lower()
         result = [dict(item) for item in jobs if not normalized_status or str(item.get("status") or "").lower() == normalized_status]
@@ -3031,7 +4142,11 @@ class CreativeMediaRuntime:
         checks: list[dict[str, Any]] = []
         path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
         if not path and artifact.get("artifactId"):
-            path = self._artifact_source_path(str(artifact.get("artifactId") or ""))
+            path = self._artifact_source_path(
+                str(artifact.get("artifactId") or ""),
+                context=owner,
+                require_local=True,
+            )
         exists = bool(path and Path(path).exists() and Path(path).is_file())
         checks.append({"name": "artifact_openable", "ok": exists, "path": path})
         if not exists:
@@ -3197,14 +4312,202 @@ class CreativeMediaRuntime:
         return {"action": "manual_review" if status == "warning" else "retry_same_operation", "reason": ",".join([*failures, *warnings])}
 
     def _read_jobs(self) -> dict[str, Any]:
+        if self._store_is_active():
+            store = self._ensure_creative_media_store()
+            jobs = {
+                str(record.payload.get("jobId") or ""): self._job_with_store_token(record)
+                for record in store.iter_jobs()
+                if str(record.payload.get("jobId") or "").strip()
+            }
+            return {
+                "version": 1,
+                "jobs": jobs,
+                "sessionDeletionTombstones": self._read_session_deletion_tombstones(),
+            }
         payload = storage.read_json(JOB_STORE_FILE)
         if not isinstance(payload, dict) or payload.get("version") != 1:
-            return {"version": 1, "jobs": {}}
+            return {"version": 1, "jobs": {}, "sessionDeletionTombstones": {}}
         payload.setdefault("jobs", {})
+        payload.setdefault("sessionDeletionTombstones", {})
         return payload
 
+    @staticmethod
+    def _read_session_deletion_tombstones() -> dict[str, Any]:
+        tombstones: dict[str, Any] = {}
+        # Session deletion evidence is independent from job rows. Read the
+        # legacy envelope only as a rollback-compatible input, then let the
+        # dedicated sidecar override it.
+        try:
+            legacy = storage.read_json(JOB_STORE_FILE)
+            if isinstance(legacy, dict):
+                tombstones.update(dict(legacy.get("sessionDeletionTombstones") or {}))
+        except Exception:
+            pass
+        try:
+            sidecar = storage.read_json(SESSION_DELETION_TOMBSTONE_FILE)
+            if isinstance(sidecar, dict):
+                tombstones.update(dict(sidecar.get("tombstones") or {}))
+        except Exception:
+            pass
+        return tombstones
+
+    def _write_session_deletion_tombstones(self, incoming: dict[str, Any]) -> None:
+        if not incoming:
+            return
+        # A single runtime-wide RLock protects cross-Session sidecar RMW. The
+        # updatedAt comparison prevents a stale sibling lifecycle write from
+        # replacing newer evidence for the same Session.
+        with self._jobs_store_lock:
+            merged = self._read_session_deletion_tombstones()
+            for session_id, raw_tombstone in incoming.items():
+                tombstone = dict(raw_tombstone or {})
+                current = dict(merged.get(str(session_id)) or {})
+                if str(current.get("updatedAt") or "") > str(tombstone.get("updatedAt") or ""):
+                    continue
+                merged[str(session_id)] = tombstone
+            storage.write_json(
+                SESSION_DELETION_TOMBSTONE_FILE,
+                {"version": 1, "tombstones": merged},
+            )
+
     def _write_jobs(self, payload: dict[str, Any]) -> None:
-        storage.write_json(JOB_STORE_FILE, {"version": 1, "jobs": dict(payload.get("jobs") or {})})
+        if self._store_is_active():
+            store = self._ensure_creative_media_store()
+            for raw_job in dict(payload.get("jobs") or {}).values():
+                if isinstance(raw_job, dict) and str(raw_job.get("jobId") or "").strip():
+                    self._store_upsert_job(dict(raw_job), store=store)
+            # Do not rewrite the legacy jobs aggregate after migration.  Only
+            # the minimal owner-deletion tombstone is mutable and it lives in
+            # an independent sidecar so a rollback can still consume the
+            # original jobs.json byte-for-byte.
+            tombstones = dict(payload.get("sessionDeletionTombstones") or {})
+            if tombstones:
+                self._write_session_deletion_tombstones(tombstones)
+            return
+        storage.write_json(
+            JOB_STORE_FILE,
+            {
+                "version": 1,
+                "jobs": dict(payload.get("jobs") or {}),
+                "sessionDeletionTombstones": dict(payload.get("sessionDeletionTombstones") or {}),
+            },
+        )
+
+    def _store_upsert_job(
+        self,
+        job: dict[str, Any],
+        *,
+        store: CreativeMediaStore | None = None,
+    ) -> dict[str, Any]:
+        """Persist one job through the SQLite revision boundary.
+
+        The retry is deliberately narrow: a concurrent writer is reread and
+        merged by the caller on the next lifecycle turn rather than allowing a
+        stale snapshot to overwrite a newer terminal state.
+        """
+
+        durable = store or self._ensure_creative_media_store()
+        job_id = str(job.get("jobId") or "").strip()
+        if not job_id:
+            raise ValueError("Creative Media job persistence requires jobId")
+        current = durable.get_job(job_id)
+        if current is None:
+            try:
+                return self._job_with_store_token(durable.create_job(job))
+            except CreativeMediaStoreConflict:
+                current = durable.get_job(job_id)
+        if current is None:
+            raise CreativeMediaStoreConflict(f"Creative Media job could not be created: {job_id}")
+        expected_revision = int(job.get("_storeRevision") or 0)
+        expected_status = str(job.get("_storeState") or "").strip().lower()
+        expected_updated_at = str(job.get("_storeUpdatedAt") or "").strip()
+        if expected_revision < 1 or not expected_status or not expected_updated_at:
+            raise CreativeMediaStoreConflict(
+                f"Creative Media job update requires snapshot token: {job_id}"
+            )
+        return self._job_with_store_token(
+            durable.compare_and_swap_job(
+                job_id,
+                expected_revision=expected_revision,
+                expected_status=expected_status,
+                expected_updated_at=expected_updated_at,
+                payload=job,
+            )
+        )
+
+    @staticmethod
+    def _job_with_store_token(record: CreativeMediaJobRecord) -> dict[str, Any]:
+        payload = dict(record.payload)
+        payload["_storeRevision"] = int(record.revision)
+        payload["_storeState"] = str(payload.get("status") or "").strip().lower()
+        payload["_storeUpdatedAt"] = str(payload.get("updatedAt") or "").strip()
+        return payload
+
+    @classmethod
+    def _terminal_report_for_job(cls, job: dict[str, Any]) -> dict[str, Any]:
+        lifecycle = dict(job.get("lifecycle") or {})
+        for phase in ("remoteReconcile", "cancel"):
+            report = dict(lifecycle.get(phase) or {})
+            if cls._valid_remote_terminal_proof(report, job):
+                return report
+        return {}
+
+    @classmethod
+    def _remote_uncertain_for_job(cls, job: dict[str, Any]) -> bool:
+        provider_handle = dict(job.get("providerHandle") or cls._provider_handle_for_job(job))
+        return bool(provider_handle) and not bool(cls._terminal_report_for_job(job))
+
+    def _sync_session_deletion_tombstone_job(
+        self,
+        payload: dict[str, Any],
+        job: dict[str, Any],
+    ) -> None:
+        session_id = str(job.get("sessionId") or "").strip()
+        job_id = str(job.get("jobId") or "").strip()
+        session_disposition = dict((job.get("lifecycle") or {}).get("sessionDeletion") or {})
+        if not session_id or not job_id or not session_disposition:
+            return
+        tombstones = dict(payload.get("sessionDeletionTombstones") or {})
+        tombstone = dict(tombstones.get(session_id) or {})
+        if tombstone.get("schema") != _SESSION_DELETION_SCHEMA:
+            return
+        dispositions = [
+            dict(item)
+            for item in list(tombstone.get("jobs") or [])
+            if isinstance(item, dict)
+        ]
+        terminal_report = self._terminal_report_for_job(job)
+        terminal_proof = dict(terminal_report.get("terminalProof") or {})
+        entry = {
+            "schema": _SESSION_JOB_DISPOSITION_SCHEMA,
+            "jobId": job_id,
+            "disposition": "owner_deleted",
+            "localStatus": str(job.get("status") or "unknown"),
+            "cancelStatus": str(session_disposition.get("cancelStatus") or "not_required"),
+            "cleanupStatus": str(session_disposition.get("cleanupStatus") or "not_active"),
+            "remoteTaskMayContinue": self._remote_uncertain_for_job(job),
+            "updatedAt": utc_now_iso(),
+        }
+        if terminal_proof:
+            entry["remoteTerminalStatus"] = str(terminal_proof.get("providerStatus") or "")
+            entry["remoteTerminalObservedAt"] = str(terminal_proof.get("observedAt") or "")
+        replaced = False
+        for index, existing in enumerate(dispositions):
+            if str(existing.get("jobId") or "") == job_id:
+                dispositions[index] = entry
+                replaced = True
+                break
+        if not replaced:
+            dispositions.append(entry)
+        dispositions.sort(key=lambda item: str(item.get("jobId") or ""))
+        tombstone["jobs"] = dispositions
+        tombstone["remoteUncertainJobs"] = sum(
+            bool(item.get("remoteTaskMayContinue"))
+            for item in dispositions
+        )
+        tombstone["updatedAt"] = entry["updatedAt"]
+        tombstones[session_id] = tombstone
+        payload["sessionDeletionTombstones"] = tombstones
 
     @staticmethod
     def _provider_handle_for_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -3274,17 +4577,36 @@ class CreativeMediaRuntime:
             self._job_mutation_locks[normalized_job_id] = lock
         return lock
 
+    def _session_lifecycle_lock(self, session_id: str) -> asyncio.Lock:
+        normalized_session_id = str(session_id or "").strip()
+        lock = self._session_lifecycle_locks.get(normalized_session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_lifecycle_locks[normalized_session_id] = lock
+        return lock
+
     def _save_job(self, job: dict[str, Any], *, track_task: bool = True) -> dict[str, Any]:
         job_id = str(job.get("jobId") or "").strip()
         if not job_id:
             raise ValueError("Creative Media job persistence requires jobId")
+        self._assert_active_authority_fence(job)
         # Keep read/merge/write atomic for both event-loop and worker-thread
         # callers. The async lifecycle lock below prevents stale snapshots
         # from reaching this boundary in the first place.
         with self._job_storage_lock(job_id):
-            payload = self._read_jobs()
-            jobs = dict(payload.get("jobs") or {})
-            stored = dict(jobs.get(job_id) or {})
+            if self._store_is_active():
+                record = self._ensure_creative_media_store().get_job(job_id)
+                stored = dict(record.payload) if record else {}
+                payload = {
+                    "version": 1,
+                    "jobs": {},
+                    "sessionDeletionTombstones": self._read_session_deletion_tombstones(),
+                }
+                jobs: dict[str, Any] = {}
+            else:
+                payload = self._read_jobs()
+                jobs = dict(payload.get("jobs") or {})
+                stored = dict(jobs.get(job_id) or {})
             stored_lifecycle = dict(stored.get("lifecycle") or {})
             incoming_lifecycle = dict(job.get("lifecycle") or {})
             if stored_lifecycle or incoming_lifecycle:
@@ -3309,9 +4631,20 @@ class CreativeMediaRuntime:
             provider_handle = self._provider_handle_for_job(job)
             if provider_handle:
                 job["providerHandle"] = provider_handle
-            if job.get("status") in {"succeeded", "failed", "cancelled"} and not job.get("p4RecordedAt"):
+            if (
+                not self._store_is_active()
+                and job.get("status") in {"succeeded", "failed", "cancelled"}
+                and not job.get("p4RecordedAt")
+            ):
                 try:
-                    self._record_terminal_job_observations(job)
+                    marker = {
+                        "costEntryId": f"cm_cost_{uuid.uuid4().hex}",
+                        "qualityJobId": f"cm_quality_{uuid.uuid4().hex}",
+                        "createdAt": utc_now_iso(),
+                    }
+                    observations = self._record_terminal_job_observations(job, marker)
+                    job["qualityStatus"] = observations.get("qualityStatus") or "not_run"
+                    job["qualityJobIds"] = list(observations.get("qualityJobIds") or [])
                 except Exception as exc:
                     job["p4ObservationError"] = self._redact_lifecycle_error(_exception_summary(exc))
                 job["p4RecordedAt"] = utc_now_iso()
@@ -3322,7 +4655,26 @@ class CreativeMediaRuntime:
             job["updatedAt"] = utc_now_iso()
             jobs[job_id] = job
             payload["jobs"] = jobs
-            self._write_jobs(payload)
+            self._sync_session_deletion_tombstone_job(payload, job)
+            if self._store_is_active():
+                persisted = self._store_upsert_job(job)
+                job.clear()
+                job.update(persisted)
+                # Only owner-deletion evidence is mutable outside SQLite.
+                self._write_jobs(
+                    {
+                        "jobs": {},
+                        "sessionDeletionTombstones": payload.get("sessionDeletionTombstones") or {},
+                    }
+                )
+            else:
+                self._write_jobs(payload)
+        if self._store_is_active() and job.get("status") in {"succeeded", "failed", "cancelled"}:
+            self.repair_terminal_observation_outbox(job_id=job_id, limit=1)
+            latest = self.get_job(job_id, refresh=False)
+            if latest:
+                job.clear()
+                job.update(latest)
         if track_task:
             self._track_current_job_task(job)
         return job
@@ -3337,6 +4689,148 @@ class CreativeMediaRuntime:
             "workspacePath": str(request.get("workspacePath") or request.get("workspace_path") or fallback.get("workspacePath") or "").strip(),
         }
         return self._ensure_project_workspace_registered(scope)
+
+    def _canonical_owner_scope(
+        self,
+        context: dict[str, Any] | None,
+        *,
+        require_write: bool = False,
+    ) -> dict[str, str]:
+        payload = dict(context or {})
+        raw_scope = {
+            "sessionId": str(payload.get("sessionId") or payload.get("session_id") or "").strip(),
+            "workspaceId": str(payload.get("workspaceId") or payload.get("workspace_id") or "").strip(),
+            "projectId": str(payload.get("projectId") or payload.get("project_id") or "").strip(),
+            "workspacePath": str(payload.get("workspacePath") or payload.get("workspace_path") or "").strip(),
+        }
+        if not self._store_is_active():
+            return raw_scope
+        session_id = raw_scope["sessionId"]
+        if not session_id:
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_unavailable"
+            )
+        try:
+            authority = self._job_workspace_authority(
+                session_id,
+                require_write=require_write,
+            )
+        except PermissionError as exc:
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_unavailable"
+            ) from exc
+        authority_workspace_id = str(authority.workspace_id or "").strip()
+        authority_workspace_path = str(authority.workspace_root or "").strip()
+        authority_project_id = str(authority.project_id or "").strip()
+        if raw_scope["workspaceId"] and raw_scope["workspaceId"] != authority_workspace_id:
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_workspace_authority_mismatch"
+            )
+        if (
+            raw_scope["workspacePath"]
+            and workspace_path_key(raw_scope["workspacePath"])
+            != workspace_path_key(authority_workspace_path)
+        ):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_workspace_authority_mismatch"
+            )
+        if (
+            raw_scope["projectId"]
+            and authority_project_id
+            and raw_scope["projectId"] != authority_project_id
+        ):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_project_authority_mismatch"
+            )
+        return {
+            "sessionId": session_id,
+            "workspaceId": authority_workspace_id,
+            "projectId": authority_project_id,
+            "workspacePath": authority_workspace_path,
+        }
+
+    @staticmethod
+    def _record_matches_owner_scope(
+        record: dict[str, Any],
+        scope: dict[str, str],
+    ) -> bool:
+        record_session_id = str(record.get("sessionId") or record.get("session_id") or "").strip()
+        record_workspace_id = str(record.get("workspaceId") or record.get("workspace_id") or "").strip()
+        record_workspace_path = str(record.get("workspacePath") or record.get("workspace_path") or "").strip()
+        if (
+            not record_session_id
+            or record_session_id != str(scope.get("sessionId") or "")
+            or not record_workspace_id
+            or record_workspace_id != str(scope.get("workspaceId") or "")
+            or not workspace_path_key(record_workspace_path)
+            or workspace_path_key(record_workspace_path)
+            != workspace_path_key(scope.get("workspacePath") or "")
+        ):
+            return False
+        record_project_id = str(record.get("projectId") or record.get("project_id") or "").strip()
+        scope_project_id = str(scope.get("projectId") or "").strip()
+        return not record_project_id or not scope_project_id or record_project_id == scope_project_id
+
+    @staticmethod
+    def _owner_scopes_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        return (
+            str(left.get("sessionId") or "").strip()
+            == str(right.get("sessionId") or "").strip()
+            and str(left.get("workspaceId") or "").strip()
+            == str(right.get("workspaceId") or "").strip()
+            and str(left.get("projectId") or "").strip()
+            == str(right.get("projectId") or "").strip()
+            and workspace_path_key(str(left.get("workspacePath") or ""))
+            == workspace_path_key(str(right.get("workspacePath") or ""))
+        )
+
+    def _assert_active_authority_fence(
+        self,
+        job: dict[str, Any] | None = None,
+    ) -> None:
+        fence = dict(_CREATIVE_MEDIA_AUTHORITY_FENCE.get() or {})
+        if not fence:
+            return
+        try:
+            current_scope = self._canonical_owner_scope(fence, require_write=True)
+        except (CreativeMediaResourceAuthorityError, PermissionError) as exc:
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_changed"
+            ) from exc
+        if not self._owner_scopes_match(fence, current_scope):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_changed"
+            )
+        job_id = str(fence.get("jobId") or "").strip()
+        current_job = self.get_job(job_id, refresh=False) if job_id else None
+        if (
+            not current_job
+            or not self._record_matches_owner_scope(current_job, fence)
+            or (
+                job is not None
+                and (
+                    str(job.get("jobId") or "").strip() != job_id
+                    or not self._record_matches_owner_scope(job, fence)
+                )
+            )
+        ):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_changed"
+            )
+
+    def _assert_record_owner_scope(
+        self,
+        record: dict[str, Any],
+        context: dict[str, Any] | None,
+        *,
+        require_write: bool = False,
+    ) -> dict[str, str]:
+        scope = self._canonical_owner_scope(context, require_write=require_write)
+        if self._store_is_active() and not self._record_matches_owner_scope(record, scope):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_owner_scope_mismatch"
+            )
+        return scope
 
     def _resolve_current_session_source_path(
         self,
@@ -3475,12 +4969,13 @@ class CreativeMediaRuntime:
         events = list(transform.get("events") or [])
         if not events:
             return
-        store = self._read_versioned_store(SAFETY_EVENTS_STORE_FILE, "events")
-        values = dict(store.get("events") or {})
         now = utc_now_iso()
         event_id = f"cm_safety_{uuid.uuid4().hex}"
-        values[event_id] = {
+        owner = dict(job or recipe or {})
+        scope = self._canonical_owner_scope(owner) if self._store_is_active() else self._scope_fields(owner)
+        event = {
             "eventId": event_id,
+            **scope,
             "source": source,
             "jobId": (job or {}).get("jobId"),
             "recipeId": (recipe or {}).get("recipeId"),
@@ -3492,9 +4987,36 @@ class CreativeMediaRuntime:
             "events": events,
             "createdAt": now,
         }
+        if self._store_is_active():
+            self._ensure_creative_media_store().put_safety_event(event)
+            return
+        store = self._read_versioned_store(SAFETY_EVENTS_STORE_FILE, "events")
+        values = dict(store.get("events") or {})
+        values[event_id] = event
         self._write_versioned_store(SAFETY_EVENTS_STORE_FILE, "events", values)
 
-    def list_safety_events(self) -> list[dict[str, Any]]:
+    def list_safety_events(
+        self,
+        *,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._store_is_active():
+            scope = self._canonical_owner_scope({
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            })
+            return [
+                item
+                for item in self._ensure_creative_media_store().list_safety_events(
+                    session_id=scope["sessionId"]
+                )
+                if self._record_matches_owner_scope(item, scope)
+            ]
         events = list((self._read_versioned_store(SAFETY_EVENTS_STORE_FILE, "events").get("events") or {}).values())
         events.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         return [dict(item) for item in events]
@@ -3581,6 +5103,9 @@ class CreativeMediaRuntime:
         }
 
     def get_job(self, job_id: str, *, refresh: bool = True) -> dict[str, Any] | None:
+        if self._store_is_active():
+            record = self._ensure_creative_media_store().get_job(str(job_id))
+            return self._job_with_store_token(record) if record else None
         job = (self._read_jobs().get("jobs") or {}).get(str(job_id))
         if not job:
             return None
@@ -3636,40 +5161,64 @@ class CreativeMediaRuntime:
         job_id: str,
         *,
         session_id: str,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
         require_write: bool = False,
     ) -> dict[str, Any] | None:
-        normalized_session_id = str(session_id or "").strip()
-        authority = self._job_workspace_authority(
-            normalized_session_id,
+        scope = self._canonical_owner_scope(
+            {
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "projectId": project_id,
+                "workspacePath": workspace_path,
+            },
             require_write=require_write,
         )
         job = self.get_job(job_id, refresh=False)
         if not job:
             return None
-        self._assert_job_workspace_authority(
-            job,
-            session_id=normalized_session_id,
-            authority=authority,
-        )
+        if not self._record_matches_owner_scope(job, scope):
+            raise PermissionError("Creative Media job is unavailable in the current session")
         return job
 
-    async def refresh_authorized_job(self, job_id: str, *, session_id: str) -> dict[str, Any] | None:
-        normalized_session_id = str(session_id or "").strip()
-        authority = self._job_workspace_authority(normalized_session_id, require_write=True)
+    async def refresh_authorized_job(
+        self,
+        job_id: str,
+        *,
+        session_id: str,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        owner_context = {
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        }
+        scope = self._canonical_owner_scope(owner_context, require_write=True)
         job = self.get_job(job_id, refresh=False)
         if not job:
             return None
-        self._assert_job_workspace_authority(
-            job,
-            session_id=normalized_session_id,
-            authority=authority,
-        )
-        refreshed = await self.refresh_job(job_id)
+        if not self._record_matches_owner_scope(job, scope):
+            raise PermissionError("Creative Media job is unavailable in the current session")
+        fence = {**scope, "jobId": str(job_id or "").strip()}
+        token = _CREATIVE_MEDIA_AUTHORITY_FENCE.set(fence)
+        try:
+            self._assert_active_authority_fence(job)
+            refreshed = await self.refresh_job(job_id)
+            self._assert_active_authority_fence(refreshed or job)
+        finally:
+            _CREATIVE_MEDIA_AUTHORITY_FENCE.reset(token)
         if refreshed:
-            self._assert_job_workspace_authority(
-                refreshed,
-                session_id=normalized_session_id,
-                authority=authority,
+            self.get_authorized_job(
+                job_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                workspace_path=workspace_path,
+                require_write=True,
             )
         return refreshed
 
@@ -3777,18 +5326,7 @@ class CreativeMediaRuntime:
 
     @staticmethod
     def _canonical_remote_provider_status(value: Any) -> str:
-        normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-        if normalized in {"cancelled", "canceled", "stopped", "terminated", "aborted"}:
-            return "cancelled"
-        if normalized in {"-1", "_1", "3", "4", "failed", "fail", "failure", "error", "errored", "rejected"}:
-            return "failed"
-        if normalized in {"2", "200", "succeeded", "success", "completed", "complete", "done", "finished", "finish"}:
-            return "succeeded"
-        if normalized in {"queued", "queueing", "pending", "created", "submitted", "ordered", "waiting"}:
-            return "queued"
-        if normalized in {"running", "processing", "in_progress", "started", "preparing"}:
-            return "running"
-        return "unknown"
+        return normalize_remote_status(value)
 
     @classmethod
     def _remote_provider_status_result(cls, raw_status: Any, *, source: str) -> dict[str, Any]:
@@ -3823,6 +5361,50 @@ class CreativeMediaRuntime:
         if provider_failure:
             text = text[: provider_failure.end()] + ": <redacted-provider-response>"
         return text[:500]
+
+    @classmethod
+    def classify_remote_projection_failure(
+        cls,
+        error: Any,
+        *,
+        job: dict[str, Any] | None = None,
+        disposition: str = "",
+    ) -> str:
+        requested = str(disposition or "").strip().lower()
+        if requested:
+            if requested not in _REMOTE_PROJECTION_DISPOSITIONS - {"applied"}:
+                raise ValueError(f"Unsupported Creative Media projection disposition: {requested}")
+            return requested
+        lifecycle = dict((job or {}).get("lifecycle") or {})
+        session_deletion = dict(lifecycle.get("sessionDeletion") or {})
+        if str(session_deletion.get("disposition") or "") == "owner_deleted":
+            return "owner_deleted"
+        normalized = str(error or "").strip().lower()
+        if "current session is unavailable" in normalized or "session_not_found" in normalized:
+            return "owner_deleted"
+        if any(
+            marker in normalized
+            for marker in (
+                "workspace authority changed",
+                "workspace does not match",
+                "workspace binding changed",
+                "permissionerror",
+            )
+        ):
+            return "authority_changed"
+        if any(
+            marker in normalized
+            for marker in (
+                "not bound to the current canvas run",
+                "not bound to the current canvas node",
+                "does not match the current canvas node job",
+                "not awaiting remote terminal reconciliation",
+                "canvas node is not awaiting",
+                "lineage",
+            )
+        ):
+            return "lineage_missing"
+        return "transient"
 
     @staticmethod
     def _provider_handles_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -3898,6 +5480,12 @@ class CreativeMediaRuntime:
             normalized_terminal_proof
             and normalized_terminal_proof == dict(existing.get("terminalProof") or {})
         )
+        session_deletion = dict(lifecycle.get("sessionDeletion") or {})
+        owner_deleted = str(session_deletion.get("disposition") or "") == "owner_deleted"
+        has_graph_lineage = all(
+            str(job.get(key) or "").strip()
+            for key in ("sessionId", "canvasGraphRunId", "canvasGraphNodeId")
+        )
         report: dict[str, Any] = {
             "schema": _REMOTE_RECONCILE_SCHEMA,
             "phase": "remote_reconcile",
@@ -3921,6 +5509,8 @@ class CreativeMediaRuntime:
             "projectionAttempts": int(existing.get("projectionAttempts") or 0) if same_proof else 0,
             "lastProjectionError": existing.get("lastProjectionError") if same_proof else None,
             "nextProjectionAt": existing.get("nextProjectionAt") if same_proof else None,
+            "projectionDisposition": existing.get("projectionDisposition") if same_proof else None,
+            "projectionResolvedAt": existing.get("projectionResolvedAt") if same_proof else None,
         }
         if dict(job.get("providerHandle") or {}) and not self._valid_remote_terminal_proof(report, job):
             report["remoteTaskMayContinue"] = True
@@ -3928,9 +5518,21 @@ class CreativeMediaRuntime:
                 report["detailCode"] = "remote_terminal_proof_invalid"
                 report["terminalProof"] = None
         elif normalized_terminal_proof and not report["remoteTaskMayContinue"]:
-            report["projectionPending"] = not bool(report.get("projectedAt"))
-            if report["projectionPending"]:
-                report["nextProjectionAt"] = reconciled_at or utc_now_iso()
+            if owner_deleted:
+                report["projectionPending"] = False
+                report["projectionDisposition"] = "owner_deleted"
+                report["projectionResolvedAt"] = reconciled_at or utc_now_iso()
+                report["nextProjectionAt"] = None
+            elif not has_graph_lineage:
+                report["projectionPending"] = False
+                report["projectionDisposition"] = "lineage_missing"
+                report["projectionResolvedAt"] = reconciled_at or utc_now_iso()
+                report["nextProjectionAt"] = None
+            else:
+                report["projectionPending"] = not bool(report.get("projectedAt"))
+                if report["projectionPending"]:
+                    report["projectionDisposition"] = "transient"
+                    report["nextProjectionAt"] = reconciled_at or utc_now_iso()
         if error:
             report["error"] = self._redact_lifecycle_error(error)
         lifecycle["remoteReconcile"] = report
@@ -4577,18 +6179,6 @@ class CreativeMediaRuntime:
                 detail_code="legacy_remote_terminal_proof_missing",
             )
             self._save_job(job, track_task=False)
-        if not str(job.get("canvasGraphRunId") or "").strip():
-            return self._record_remote_reconcile(
-                job,
-                status="unsupported",
-                detail_code="remote_reconcile_requires_canvas_graph_lineage",
-                provider_status=str(existing.get("providerStatus") or "unknown"),
-                provider_status_raw=str(existing.get("providerStatusRaw") or ""),
-                remote_task_may_continue=True,
-                attempt=int(existing.get("attempt") or 0),
-                reconciled_at=utc_now_iso(),
-                next_reconcile_at=None,
-            )
         if not force and existing and not self._remote_reconcile_is_due(existing):
             return existing
 
@@ -4710,7 +6300,13 @@ class CreativeMediaRuntime:
         stop_event: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         bounded_limit = max(1, min(int(limit), 100))
-        jobs = list((self._read_jobs().get("jobs") or {}).values())
+        if self._store_is_active():
+            jobs = [
+                dict(record.payload)
+                for record in self._ensure_creative_media_store().iter_jobs()
+            ]
+        else:
+            jobs = list((self._read_jobs().get("jobs") or {}).values())
         candidates: list[dict[str, Any]] = []
         recovered_orphans = 0
         stopped = False
@@ -4738,8 +6334,6 @@ class CreativeMediaRuntime:
                 stopped = True
                 break
             job = dict(raw_job or {})
-            if not str(job.get("canvasGraphRunId") or "").strip():
-                continue
             lifecycle = dict(job.get("lifecycle") or {})
             cancellation = dict(lifecycle.get("cancel") or {})
             reconcile = dict(lifecycle.get("remoteReconcile") or {})
@@ -4874,11 +6468,15 @@ class CreativeMediaRuntime:
         should_recover_orphans = bool(recovery_candidates)
         while not stop_event.is_set():
             try:
+                observation_repair = self.repair_terminal_observation_outbox(
+                    limit=batch_limit
+                )
                 summary = await self.reconcile_remote_jobs(
                     limit=batch_limit,
                     recovery_candidates=recovery_candidates if should_recover_orphans else None,
                     stop_event=stop_event,
                 )
+                summary["terminalObservationRepair"] = observation_repair
                 should_recover_orphans = False
                 if callable(on_cycle):
                     try:
@@ -4970,9 +6568,45 @@ class CreativeMediaRuntime:
 
     def remote_reconciler_status(self) -> dict[str, Any]:
         task = self._remote_reconciler_task
+        if self._store_is_active():
+            jobs = [
+                dict(record.payload)
+                for record in self._ensure_creative_media_store().iter_jobs()
+            ]
+        else:
+            jobs = list((self._read_jobs().get("jobs") or {}).values())
+        uncertain = 0
+        projection_pending = 0
+        oldest: str | None = None
+        adapter_counts: dict[str, int] = {}
+        detail_code_counts: dict[str, int] = {}
+        quarantine = 0
+        for job in jobs:
+            report = dict(((job or {}).get("lifecycle") or {}).get("remoteReconcile") or {})
+            if not report:
+                continue
+            if self._effective_remote_task_may_continue(report, dict(job)):
+                uncertain += 1
+            if bool(report.get("projectionPending")):
+                projection_pending += 1
+            observed = str(report.get("reconciledAt") or report.get("completedAt") or "").strip()
+            if observed and (oldest is None or observed < oldest):
+                oldest = observed
+            adapter = str(job.get("adapter") or report.get("adapter") or "unknown").strip() or "unknown"
+            adapter_counts[adapter] = adapter_counts.get(adapter, 0) + 1
+            detail = str(report.get("detailCode") or "unknown").strip() or "unknown"
+            detail_code_counts[detail] = detail_code_counts.get(detail, 0) + 1
+            if str(report.get("projectionDisposition") or "").strip().lower() == "quarantine":
+                quarantine += 1
         return {
             "running": bool(task is not None and not task.done()),
             "lastCycle": dict(self._remote_reconciler_last_cycle or {}),
+            "uncertainCount": uncertain,
+            "projectionPendingCount": projection_pending,
+            "oldestReconcileAt": oldest,
+            "adapterCounts": adapter_counts,
+            "detailCodeCounts": detail_code_counts,
+            "quarantineCount": quarantine,
         }
 
     def list_remote_reconcile_reports(
@@ -4982,14 +6616,31 @@ class CreativeMediaRuntime:
         projection_pending: bool | None = None,
     ) -> list[dict[str, Any]]:
         reports: list[dict[str, Any]] = []
-        for job in (self._read_jobs().get("jobs") or {}).values():
+        if self._store_is_active():
+            job_values = [
+                dict(record.payload)
+                for record in self._ensure_creative_media_store().iter_jobs()
+            ]
+        else:
+            job_values = list((self._read_jobs().get("jobs") or {}).values())
+        for job in job_values:
             report = dict(((job or {}).get("lifecycle") or {}).get("remoteReconcile") or {})
             if not report:
                 continue
-            projection_is_pending = bool(report.get("projectionPending")) or bool(
-                report.get("terminalProof")
-                and not report.get("projectedAt")
-                and self._valid_remote_terminal_proof(report, dict(job))
+            projection_disposition = str(report.get("projectionDisposition") or "").strip().lower()
+            projection_is_terminal = projection_disposition in {
+                "owner_deleted",
+                "authority_changed",
+                "lineage_missing",
+                "applied",
+            }
+            projection_is_pending = not projection_is_terminal and (
+                bool(report.get("projectionPending"))
+                or bool(
+                    report.get("terminalProof")
+                    and not report.get("projectedAt")
+                    and self._valid_remote_terminal_proof(report, dict(job))
+                )
             )
             if (
                 remote_task_may_continue is not None
@@ -5013,6 +6664,7 @@ class CreativeMediaRuntime:
         *,
         projected_at: str | None = None,
         projection_error: str = "",
+        projection_disposition: str = "",
     ) -> dict[str, Any]:
         normalized_job_id = str(job_id or "").strip()
         with self._job_storage_lock(normalized_job_id):
@@ -5034,16 +6686,31 @@ class CreativeMediaRuntime:
             attempts = int(report.get("projectionAttempts") or 0)
             report["projectionAttempts"] = attempts + 1
             if projection_error:
-                report["projectionPending"] = True
-                report["projectedAt"] = None
-                report["lastProjectionError"] = self._redact_lifecycle_error(projection_error)
-                report["nextProjectionAt"] = self._next_remote_reconcile_at(
-                    attempt=attempts + 1,
-                    now=utc_now_iso(),
+                disposition = self.classify_remote_projection_failure(
+                    projection_error,
+                    job=job,
+                    disposition=projection_disposition,
                 )
+                report["lastProjectionError"] = self._redact_lifecycle_error(projection_error)
+                report["projectionDisposition"] = disposition
+                if disposition == "transient":
+                    report["projectionPending"] = True
+                    report["projectedAt"] = None
+                    report["projectionResolvedAt"] = None
+                    report["nextProjectionAt"] = self._next_remote_reconcile_at(
+                        attempt=attempts + 1,
+                        now=utc_now_iso(),
+                    )
+                else:
+                    report["projectionPending"] = False
+                    report["projectedAt"] = None
+                    report["projectionResolvedAt"] = utc_now_iso()
+                    report["nextProjectionAt"] = None
             else:
                 report["projectionPending"] = False
                 report["projectedAt"] = projected_at or utc_now_iso()
+                report["projectionDisposition"] = "applied"
+                report["projectionResolvedAt"] = report["projectedAt"]
                 report["lastProjectionError"] = None
                 report["nextProjectionAt"] = None
             lifecycle["remoteReconcile"] = report
@@ -5175,7 +6842,7 @@ class CreativeMediaRuntime:
             # A durable provider handle is uncertain until a canonical terminal
             # proof is attached, even when a legacy adapter returned false.
             report["remoteTaskMayContinue"] = True
-        if remote_task_may_continue and str(job.get("canvasGraphRunId") or "").strip():
+        if remote_task_may_continue and dict(job.get("providerHandle") or self._provider_handle_for_job(job)):
             self._schedule_remote_reconcile(job)
         job["status"] = "cancelled"
         job["cancellationReason"] = "runtime_cancel_requested"
@@ -5224,19 +6891,84 @@ class CreativeMediaRuntime:
                 return {"status": "failed", "action": f"{method_name}:{_exception_summary(exc)}"}
         return {"status": "failed", "action": "missing_release_method"}
 
-    async def _cleanup_job_once(self, job_id: str) -> dict[str, Any]:
+    def _discard_job_resource(self, job_id: str, kind: str, resource: Any) -> None:
+        stores = {
+            "task": self._job_tasks,
+            "process": self._job_processes,
+            "lease": self._job_leases,
+        }
+        store = stores[kind]
+        tracked = store.get(str(job_id))
+        if not tracked or tracked.get(id(resource)) is not resource:
+            return
+        tracked.pop(id(resource), None)
+        if not tracked:
+            store.pop(str(job_id), None)
+
+    def _record_cleanup_lifecycle(
+        self,
+        job: dict[str, Any],
+        *,
+        status: str,
+        detail_code: str,
+        resources: dict[str, Any],
+    ) -> dict[str, Any]:
+        lifecycle = dict(job.get("lifecycle") or {})
+        previous = dict(lifecycle.get("cleanup") or {})
+        history = [dict(item) for item in list(previous.get("history") or []) if isinstance(item, dict)]
+        history_count = max(int(previous.get("historyCount") or 0), len(history))
+        if previous and history_count == 0:
+            history_count = max(1, int(previous.get("attempt") or 1))
+            history.append({
+                "attempt": history_count,
+                "status": str(previous.get("status") or "unknown"),
+                "detailCode": str(previous.get("detailCode") or "legacy_cleanup_report"),
+                "completedAt": str(previous.get("completedAt") or ""),
+            })
+        attempt = history_count + 1
+        report = self._record_job_lifecycle(
+            job,
+            phase="cleanup",
+            status=status,
+            detail_code=detail_code,
+            resources=resources,
+        )
+        entry = {
+            "attempt": attempt,
+            "status": status,
+            "detailCode": detail_code,
+            "completedAt": str(report.get("completedAt") or ""),
+            "resources": resources,
+        }
+        report["attempt"] = attempt
+        report["historyCount"] = history_count + 1
+        report["history"] = [*history, entry][-_LIFECYCLE_HISTORY_LIMIT:]
+        return report
+
+    async def _cleanup_job_once(
+        self,
+        job_id: str,
+        *,
+        preserve_graph_owner: bool = True,
+    ) -> dict[str, Any]:
         job = self.get_job(job_id, refresh=False)
         if not job:
             return self._missing_job_lifecycle_report(job_id, "cleanup")
 
-        process_results = [
-            await self._terminate_registered_process(process)
-            for process in self._job_processes.pop(str(job_id), {}).values()
-        ]
-        lease_results = [
-            await self._release_registered_lease(lease)
-            for lease in self._job_leases.pop(str(job_id), {}).values()
-        ]
+        process_results: list[dict[str, str]] = []
+        for process in list(self._job_processes.get(str(job_id), {}).values()):
+            result = await self._terminate_registered_process(process)
+            process_results.append(result)
+            if result.get("status") != "failed":
+                self._discard_job_resource(job_id, "process", process)
+
+        lease_results: list[dict[str, str]] = []
+        for lease in list(self._job_leases.get(str(job_id), {}).values()):
+            result = await self._release_registered_lease(lease)
+            lease_results.append(result)
+            if result.get("status") != "failed":
+                self._discard_job_resource(job_id, "lease", lease)
+
         task_results: list[dict[str, str]] = []
         current_task = asyncio.current_task()
         # Cancellation may commit while process/lease cleanup is yielding;
@@ -5246,13 +6978,17 @@ class CreativeMediaRuntime:
         # Canvas owns the parent execution task.  Provider failure is just as
         # terminal as explicit cancellation: cleanup must release child
         # resources without cancelling the Graph task that records failed.
-        preserve_graph_owner = bool(latest_for_owner.get("canvasGraphRunId"))
-        for task in self._job_tasks.pop(str(job_id), {}).values():
+        should_preserve_graph_owner = bool(
+            preserve_graph_owner and latest_for_owner.get("canvasGraphRunId")
+        )
+        for task in list(self._job_tasks.get(str(job_id), {}).values()):
             if task is current_task or task.done():
                 action = "current_task" if task is current_task else "already_completed"
                 task_results.append({"status": "not_active", "action": action})
+                if task.done():
+                    self._discard_job_resource(job_id, "task", task)
                 continue
-            if preserve_graph_owner:
+            if should_preserve_graph_owner:
                 # The explicit Canvas cancel route owns the graph task.  It
                 # cancels that task after this lifecycle phase has committed;
                 # cleanup must not cancel its owner while writing the report.
@@ -5264,20 +7000,25 @@ class CreativeMediaRuntime:
             except (asyncio.CancelledError, Exception):
                 pass
             task_results.append({"status": "completed", "action": "cancelled"})
+            self._discard_job_resource(job_id, "task", task)
 
         resources = {"tasks": task_results, "processes": process_results, "leases": lease_results}
         results = [*task_results, *process_results, *lease_results]
+        previous_cleanup = dict((job.get("lifecycle") or {}).get("cleanup") or {})
         if any(item.get("status") == "failed" for item in results):
             status, detail_code = "failed", "local_resource_cleanup_failed"
         elif any(item.get("status") == "completed" for item in results):
             status, detail_code = "completed", "local_resources_released"
+        elif not results and str(previous_cleanup.get("status") or "") == "failed":
+            status, detail_code = "failed", "local_resource_cleanup_retry_state_missing"
+        elif not results and previous_cleanup:
+            status, detail_code = "not_active", "local_resources_already_released"
         else:
             status, detail_code = "not_active", "no_local_resources_registered"
 
         latest = self.get_job(job_id, refresh=False) or job
-        report = self._record_job_lifecycle(
+        report = self._record_cleanup_lifecycle(
             latest,
-            phase="cleanup",
             status=status,
             detail_code=detail_code,
             resources=resources,
@@ -5285,15 +7026,282 @@ class CreativeMediaRuntime:
         self._save_job(latest, track_task=False)
         return report
 
-    async def cleanup_job(self, job_id: str) -> dict[str, Any]:
-        return await self._run_lifecycle_singleflight("cleanup", job_id, lambda: self._cleanup_job_once(job_id))
+    async def cleanup_job(
+        self,
+        job_id: str,
+        *,
+        preserve_graph_owner: bool = True,
+    ) -> dict[str, Any]:
+        phase = "cleanup" if preserve_graph_owner else "session_deletion_cleanup"
+        return await self._run_lifecycle_singleflight(
+            phase,
+            job_id,
+            lambda: self._cleanup_job_once(
+                job_id,
+                preserve_graph_owner=preserve_graph_owner,
+            ),
+        )
+
+    def get_session_deletion_tombstone(self, session_id: str) -> dict[str, Any] | None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        with self._job_storage_lock(f"session:{normalized_session_id}"):
+            tombstones = (
+                self._read_session_deletion_tombstones()
+                if self._store_is_active()
+                else dict(self._read_jobs().get("sessionDeletionTombstones") or {})
+            )
+            tombstone = dict(tombstones.get(normalized_session_id) or {})
+        return tombstone or None
+
+    def _assert_session_accepting_creative_media_jobs(self, session_id: str) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+        tombstone = self.get_session_deletion_tombstone(normalized_session_id) or {}
+        status = str(tombstone.get("status") or "").strip().lower()
+        if (
+            bool(tombstone.get("readyForDeletion"))
+            or tombstone.get("acceptingNewJobs") is False
+            or status in {"preparing", "blocked", "prepared", "closing", "failed"}
+        ):
+            raise CreativeMediaResourceAuthorityError(
+                reason_code="creative_media_session_closing"
+            )
+
+    def _persist_session_deletion_tombstone(self, tombstone: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(tombstone.get("sessionId") or "").strip()
+        if not session_id:
+            raise ValueError("Creative Media session deletion tombstone requires sessionId")
+        with self._job_storage_lock(f"session:{session_id}"):
+            if self._store_is_active():
+                payload = {"version": 1, "jobs": {}}
+                tombstones = self._read_session_deletion_tombstones()
+            else:
+                payload = self._read_jobs()
+                tombstones = dict(payload.get("sessionDeletionTombstones") or {})
+            tombstones[session_id] = dict(tombstone)
+            payload["sessionDeletionTombstones"] = tombstones
+            self._write_jobs(payload)
+        return dict(tombstone)
+
+    @staticmethod
+    def _session_job_disposition(job: dict[str, Any]) -> dict[str, Any]:
+        lifecycle = dict(job.get("lifecycle") or {})
+        session_deletion = dict(lifecycle.get("sessionDeletion") or {})
+        terminal_report = CreativeMediaRuntime._terminal_report_for_job(job)
+        terminal_proof = dict(terminal_report.get("terminalProof") or {})
+        disposition = {
+            "schema": _SESSION_JOB_DISPOSITION_SCHEMA,
+            "jobId": str(job.get("jobId") or ""),
+            "disposition": "owner_deleted",
+            "localStatus": str(job.get("status") or "unknown"),
+            "cancelStatus": str(session_deletion.get("cancelStatus") or "not_required"),
+            "cleanupStatus": str(session_deletion.get("cleanupStatus") or "not_active"),
+            "remoteTaskMayContinue": CreativeMediaRuntime._remote_uncertain_for_job(job),
+            "updatedAt": str(session_deletion.get("completedAt") or job.get("updatedAt") or utc_now_iso()),
+        }
+        if terminal_proof:
+            disposition["remoteTerminalStatus"] = str(terminal_proof.get("providerStatus") or "")
+            disposition["remoteTerminalObservedAt"] = str(terminal_proof.get("observedAt") or "")
+        return disposition
+
+    async def _prepare_session_deletion_once(self, session_id: str) -> dict[str, Any]:
+        existing = self.get_session_deletion_tombstone(session_id) or {}
+        attempt = max(0, int(existing.get("attempt") or 0)) + 1
+        started_at = utc_now_iso()
+        if not bool(existing.get("readyForDeletion")):
+            self._persist_session_deletion_tombstone(
+                {
+                    **existing,
+                    "schema": _SESSION_DELETION_SCHEMA,
+                    "sessionId": session_id,
+                    "status": "preparing",
+                    "detailCode": "session_deletion_preparing",
+                    "readyForDeletion": False,
+                    "acceptingNewJobs": False,
+                    "gateState": "closing",
+                    "attempt": attempt,
+                    "startedAt": started_at,
+                    "updatedAt": started_at,
+                }
+            )
+        with self._job_storage_lock(f"session:{session_id}"):
+            if self._store_is_active():
+                job_values = [
+                    self._job_with_store_token(record)
+                    for record in self._ensure_creative_media_store().iter_jobs(
+                        session_id=session_id
+                    )
+                ]
+            else:
+                job_values = list((self._read_jobs().get("jobs") or {}).values())
+            jobs = [
+                dict(job)
+                for job in job_values
+                if str((job or {}).get("sessionId") or "").strip() == session_id
+            ]
+        jobs.sort(key=lambda item: str(item.get("jobId") or ""))
+        if bool(existing.get("readyForDeletion")):
+            known_job_ids = {
+                str(item.get("jobId") or "").strip()
+                for item in list(existing.get("jobs") or [])
+                if isinstance(item, dict)
+            }
+            current_job_ids = {
+                str(item.get("jobId") or "").strip()
+                for item in jobs
+                if str(item.get("jobId") or "").strip()
+            }
+            if current_job_ids.issubset(known_job_ids):
+                return existing
+
+        cleanup_failures = 0
+        dispositions: list[dict[str, Any]] = []
+        for snapshot in jobs:
+            job_id = str(snapshot.get("jobId") or "").strip()
+            if not job_id:
+                continue
+            provider_handle = dict(snapshot.get("providerHandle") or self._provider_handle_for_job(snapshot))
+            local_status = str(snapshot.get("status") or "").strip().lower()
+            cancel_report = dict((snapshot.get("lifecycle") or {}).get("cancel") or {})
+            if provider_handle or local_status not in {"succeeded", "failed", "cancelled", "archived", "deleted"}:
+                try:
+                    cancel_report = await self.cancel_job(job_id)
+                except Exception as exc:
+                    cancel_report = {
+                        "status": "failed",
+                        "detailCode": "session_deletion_cancel_failed",
+                        "remoteTaskMayContinue": bool(provider_handle),
+                        "error": self._redact_lifecycle_error(_exception_summary(exc)),
+                    }
+            try:
+                cleanup_report = await self.cleanup_job(
+                    job_id,
+                    preserve_graph_owner=False,
+                )
+            except Exception as exc:
+                cleanup_report = {
+                    "status": "failed",
+                    "detailCode": "session_deletion_cleanup_failed",
+                    "error": self._redact_lifecycle_error(_exception_summary(exc)),
+                }
+            cleanup_failed = str(cleanup_report.get("status") or "") == "failed"
+            cleanup_failures += int(cleanup_failed)
+
+            async with self._job_mutation_lock(job_id):
+                job = self.get_job(job_id, refresh=False) or snapshot
+                provider_handle = dict(job.get("providerHandle") or self._provider_handle_for_job(job))
+                if provider_handle and self._remote_uncertain_for_job(job):
+                    lifecycle = dict(job.get("lifecycle") or {})
+                    if not dict(lifecycle.get("remoteReconcile") or {}):
+                        self._schedule_remote_reconcile(
+                            job,
+                            detail_code="session_owner_deleted_terminal_proof_required",
+                        )
+                report = self._record_job_lifecycle(
+                    job,
+                    phase="sessionDeletion",
+                    status="blocked" if cleanup_failed else "prepared",
+                    detail_code=(
+                        "local_resource_cleanup_failed"
+                        if cleanup_failed
+                        else "session_job_lifecycle_closed"
+                    ),
+                    remote_task_may_continue=self._remote_uncertain_for_job(job),
+                )
+                report.update({
+                    "disposition": "owner_deleted",
+                    "readyForDeletion": not cleanup_failed,
+                    "cancelStatus": str(cancel_report.get("status") or "not_required"),
+                    "cleanupStatus": str(cleanup_report.get("status") or "not_active"),
+                    "attempt": attempt,
+                })
+                self._save_job(job, track_task=False)
+                dispositions.append(self._session_job_disposition(job))
+
+        completed_at = utc_now_iso()
+        ready_for_deletion = cleanup_failures == 0
+        previous_history = [
+            dict(item)
+            for item in list(existing.get("history") or [])
+            if isinstance(item, dict)
+        ]
+        history_count = max(int(existing.get("historyCount") or 0), len(previous_history)) + 1
+        history_entry = {
+            "attempt": attempt,
+            "status": "prepared" if ready_for_deletion else "blocked",
+            "readyForDeletion": ready_for_deletion,
+            "acceptingNewJobs": False,
+            "gateState": "closing",
+            "jobCount": len(dispositions),
+            "localCleanupFailures": cleanup_failures,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+        }
+        tombstone = {
+            "schema": _SESSION_DELETION_SCHEMA,
+            "sessionId": session_id,
+            "status": history_entry["status"],
+            "detailCode": (
+                "session_jobs_closed"
+                if ready_for_deletion
+                else "local_resource_cleanup_requires_retry"
+            ),
+            "readyForDeletion": ready_for_deletion,
+            "acceptingNewJobs": False,
+            "gateState": "closing",
+            "attempt": attempt,
+            "historyCount": history_count,
+            "history": [*previous_history, history_entry][-_LIFECYCLE_HISTORY_LIMIT:],
+            "jobs": dispositions,
+            "jobCount": len(dispositions),
+            "localCleanupFailures": cleanup_failures,
+            "remoteUncertainJobs": sum(
+                bool(item.get("remoteTaskMayContinue"))
+                for item in dispositions
+            ),
+            "startedAt": started_at,
+            "completedAt": completed_at,
+            "updatedAt": completed_at,
+        }
+        return self._persist_session_deletion_tombstone(tombstone)
+
+    async def prepare_session_deletion(self, session_id: str) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("Creative Media session deletion requires sessionId")
+        async def prepare_with_creation_gate() -> dict[str, Any]:
+            async with self._session_lifecycle_lock(normalized_session_id):
+                return await self._prepare_session_deletion_once(normalized_session_id)
+
+        return await self._run_lifecycle_singleflight(
+            "session_deletion",
+            f"session:{normalized_session_id}",
+            prepare_with_creation_gate,
+        )
 
     def job_artifacts(self, job_id: str) -> list[dict[str, Any]]:
         job = self.get_job(job_id, refresh=False) or {}
         return [dict(item) for item in list(job.get("artifacts") or []) if isinstance(item, dict)]
 
-    def authorized_job_artifacts(self, job_id: str, *, session_id: str) -> list[dict[str, Any]]:
-        job = self.get_authorized_job(job_id, session_id=session_id)
+    def authorized_job_artifacts(
+        self,
+        job_id: str,
+        *,
+        session_id: str,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        job = self.get_authorized_job(
+            job_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         if not job:
             return []
         return [dict(item) for item in list(job.get("artifacts") or []) if isinstance(item, dict)]
@@ -5389,6 +7397,12 @@ class CreativeMediaRuntime:
             "projectionAttempts",
             "lastProjectionError",
             "nextProjectionAt",
+            "projectionDisposition",
+            "projectionResolvedAt",
+            "disposition",
+            "readyForDeletion",
+            "cancelStatus",
+            "cleanupStatus",
             "completedAt",
         }
         lifecycle = {
@@ -5404,6 +7418,13 @@ class CreativeMediaRuntime:
         return projected
 
     def list_jobs(self, *, modality: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        if self._store_is_active():
+            records = self._ensure_creative_media_store().list_jobs(
+                modality=modality,
+                status=status,
+                limit=10_000,
+            )
+            return [self._job_with_store_token(record) for record in records]
         jobs = list((self._read_jobs().get("jobs") or {}).values())
         normalized_modality = str(modality or "").strip().lower()
         normalized_status = str(status or "").strip().lower()
@@ -5421,25 +7442,82 @@ class CreativeMediaRuntime:
         self,
         *,
         session_id: str,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
         modality: str | None = None,
         status: str | None = None,
     ) -> list[dict[str, Any]]:
-        normalized_session_id = str(session_id or "").strip()
-        authority = self._job_workspace_authority(normalized_session_id)
+        scope = self._canonical_owner_scope({
+            "sessionId": session_id,
+            "workspaceId": workspace_id,
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+        normalized_session_id = scope["sessionId"]
         result: list[dict[str, Any]] = []
-        for job in self.list_jobs(modality=modality, status=status):
-            try:
-                self._assert_job_workspace_authority(
-                    job,
+        if self._store_is_active():
+            candidates = [
+                self._job_with_store_token(record)
+                for record in self._ensure_creative_media_store().iter_jobs(
                     session_id=normalized_session_id,
-                    authority=authority,
+                    modality=modality,
+                    status=status,
                 )
-            except PermissionError:
+            ]
+        else:
+            candidates = self.list_jobs(modality=modality, status=status)
+        for job in candidates:
+            if not self._record_matches_owner_scope(job, scope):
                 continue
             result.append(job)
         return result
 
     async def create_job(
+        self,
+        request: dict[str, Any],
+        *,
+        reserved_job_id: str = "",
+    ) -> dict[str, Any]:
+        """Create a job after a side-effect-free media authority preflight."""
+
+        normalized_request = {
+            key: value
+            for key, value in dict(request or {}).items()
+            if key != "_reservedJobId"
+        }
+        if reserved_job_id:
+            normalized_request["_reservedJobId"] = reserved_job_id
+        if self._store_is_active():
+            normalized_request.update(
+                self._canonical_owner_scope(normalized_request, require_write=True)
+            )
+        session_id = str(
+            normalized_request.get("sessionId")
+            or normalized_request.get("session_id")
+            or ""
+        ).strip()
+
+        async def create_with_owner_gate() -> dict[str, Any]:
+            self._assert_session_accepting_creative_media_jobs(session_id)
+            # This must happen before model routing, provider calls, local
+            # probes, cost accounting, or artifact registration.
+            self._authorize_request_resources(normalized_request)
+            token = _CREATIVE_MEDIA_RESOURCE_CONTEXT.set(dict(normalized_request))
+            try:
+                return await self._create_job_impl(
+                    normalized_request,
+                    reserved_job_id=reserved_job_id,
+                )
+            finally:
+                _CREATIVE_MEDIA_RESOURCE_CONTEXT.reset(token)
+
+        if session_id:
+            async with self._session_lifecycle_lock(session_id):
+                return await create_with_owner_gate()
+        return await create_with_owner_gate()
+
+    async def _create_job_impl(
         self,
         request: dict[str, Any],
         *,
@@ -5894,12 +7972,30 @@ class CreativeMediaRuntime:
                     pass
         return self._save_job(job)
 
-    @staticmethod
-    def _canvas_input_path(*, session_id: str, item: dict[str, Any]) -> Path:
+    def _canvas_input_path(self, *, session_id: str, item: dict[str, Any]) -> Path:
         origin = str(item.get("origin") or "").strip()
         resource_id = str(item.get("id") or "").strip()
         if not session_id or not origin or not resource_id:
             raise ValueError("Canvas input is missing its session-bound resource reference")
+        context = self._resource_context()
+        context_session_id = str(
+            context.get("sessionId") or context.get("session_id") or ""
+        ).strip()
+        if self._store_is_active() and context_session_id:
+            if context_session_id != session_id:
+                raise CreativeMediaResourceAuthorityError(
+                    reason_code="canvas_resource_session_mismatch"
+                )
+            resource = self._authorized_canvas_resource(
+                item,
+                context=context,
+                require_local=True,
+            )
+            if resource.path is None:
+                raise CreativeMediaResourceAuthorityError(
+                    reason_code="local_media_resource_unavailable"
+                )
+            return resource.path
         if origin == "source":
             return workspace_media_library.resolve_source_path(session_id=session_id, source_id=resource_id)
         if origin == "artifact":
@@ -6053,11 +8149,17 @@ class CreativeMediaRuntime:
         job_id: str,
         *,
         session_id: str,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        workspace_path: str | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         original = self.get_authorized_job(
             job_id,
             session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
             require_write=True,
         )
         if not original:
@@ -6710,9 +8812,17 @@ class CreativeMediaRuntime:
             headers=self._bearer_headers(api_key),
             timeout=60,
         )
-        status = self._normalize_async_status(response.get("status") or response.get("state") or response.get("task_status") or response.get("code"))
+        raw_status = response.get("status") or response.get("state") or response.get("task_status")
+        # ``code`` is an HTTP/business acknowledgement in Mureka responses,
+        # not a task lifecycle field. A code-only response remains running and
+        # can never manufacture terminal proof.
+        status = self._normalize_async_status(raw_status)
         job["status"] = status
-        job["providerResponse"] = {**dict(job.get("providerResponse") or {}), "lastStatus": response.get("status") or response.get("state"), "taskId": task_id}
+        job["providerResponse"] = {
+            **dict(job.get("providerResponse") or {}),
+            "lastStatus": raw_status,
+            "taskId": task_id,
+        }
         if status == "succeeded":
             result_url = self._find_first_url(response, preferred_extensions=AUDIO_EXTENSIONS)
             if not result_url:
@@ -6879,15 +8989,24 @@ class CreativeMediaRuntime:
         normalized = str(artifact_id or "").strip()
         if not normalized:
             return ""
+        context_payload = self._resource_context()
+        if (
+            not str(context_payload.get("sessionId") or context_payload.get("session_id") or "").strip()
+            and not self._store_is_active()
+        ):
+            record = db.get_runtime_artifact(normalized) or {}
+            external_url = str(record.get("external_url") or record.get("externalUrl") or "").strip()
+            return self._public_url_or_error(external_url, field_name="artifact externalUrl") if external_url else ""
+        # Validate the artifact before consulting the in-process URL cache. A
+        # cache hit is not an authority proof because artifact ids are global.
+        resource = self._authorized_artifact_resource(normalized, require_local=False)
+        transport = resource.as_transport()
         transient = str(self._provider_transport_urls.get(normalized) or "").strip()
-        if transient:
-            return transient
-        record = db.get_runtime_artifact(normalized) or {}
-        external_url = str(record.get("external_url") or record.get("externalUrl") or "").strip()
+        external_url = str(transport.get("externalUrl") or transient or "").strip()
         return self._public_url_or_error(external_url, field_name="artifact externalUrl") if external_url else ""
 
     def _local_image_data_url(self, artifact_id: str) -> str:
-        source_path = self._artifact_source_path(artifact_id)
+        source_path = self._artifact_source_path(artifact_id, require_local=True)
         if not source_path:
             raise ValueError(f"Image artifact {artifact_id} has no local source file")
         path = Path(source_path).expanduser()
@@ -7428,7 +9547,11 @@ class CreativeMediaRuntime:
         image_path = str(request.get("imagePath") or request.get("image_path") or request.get("sourcePath") or request.get("source_path") or "").strip()
         mask_path = str(request.get("maskPath") or request.get("mask_path") or "").strip()
         if not image_path and request.get("artifactId"):
-            image_path = self._artifact_source_path(str(request.get("artifactId") or ""))
+            image_path = self._artifact_source_path(
+                str(request.get("artifactId") or ""),
+                context=request,
+                require_local=True,
+            )
         if not prompt:
             raise ValueError("image edit job requires prompt")
         if not image_path or not Path(image_path).exists():
@@ -8443,22 +10566,35 @@ class CreativeMediaRuntime:
         raise RuntimeError("Image response contained neither url nor b64_json")
 
     def _artifact_from_b64(self, payload: str, *, job: dict[str, Any], kind: str, provider: str, mime_type: str, extension: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        self._assert_active_authority_fence(job)
         raw = payload.split(",", 1)[1] if payload.startswith("data:") and "," in payload else payload
         data = base64.b64decode(raw)
         path = self._output_path(job, kind, extension)
-        path.write_bytes(data)
-        return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
+        try:
+            path.write_bytes(data)
+            self._assert_active_authority_fence(job)
+            return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
+        except CreativeMediaResourceAuthorityError:
+            path.unlink(missing_ok=True)
+            raise
 
     def _artifact_from_hex(self, payload: str, *, job: dict[str, Any], kind: str, provider: str, mime_type: str, extension: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        self._assert_active_authority_fence(job)
         raw = re.sub(r"\s+", "", str(payload or ""))
         if not raw:
             raise RuntimeError("Provider returned empty hex payload")
         data = bytes.fromhex(raw)
         path = self._output_path(job, kind, extension)
-        path.write_bytes(data)
-        return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
+        try:
+            path.write_bytes(data)
+            self._assert_active_authority_fence(job)
+            return self._record_local_artifact(file_path=path, job=job, kind=kind, mime_type=mime_type, metadata={"provider": provider, "origin": "provider_result", **dict(metadata or {})})
+        except CreativeMediaResourceAuthorityError:
+            path.unlink(missing_ok=True)
+            raise
 
     async def _artifact_from_url(self, url: str, *, job: dict[str, Any], kind: str, provider: str, mime_hint: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        self._assert_active_authority_fence(job)
         headers = {
             "User-Agent": "V8-Agent-OS-CreativeMedia/1.0",
             "Accept-Encoding": "identity",
@@ -8472,6 +10608,7 @@ class CreativeMediaRuntime:
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                     async with client.stream("GET", url, headers=headers) as response:
                         response.raise_for_status()
+                        self._assert_active_authority_fence(job)
                         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or mime_hint
                         if path is None:
                             extension = self._extension_for_url(url, content_type, kind)
@@ -8479,9 +10616,14 @@ class CreativeMediaRuntime:
                         with open(path, "wb") as file:
                             async for chunk in response.aiter_bytes():
                                 if chunk:
+                                    self._assert_active_authority_fence(job)
                                     file.write(chunk)
                 last_error = None
                 break
+            except CreativeMediaResourceAuthorityError:
+                if path and path.exists():
+                    path.unlink()
+                raise
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as exc:
                 last_error = exc
                 if path and path.exists():
@@ -8492,6 +10634,7 @@ class CreativeMediaRuntime:
             raise last_error
         if path is None or not path.is_file() or path.stat().st_size <= 0:
             raise RuntimeError("Provider artifact download completed without a local file")
+        self._assert_active_authority_fence(job)
         parsed = urlparse(url)
         artifact = self._record_local_artifact(
             file_path=path,
@@ -8525,6 +10668,7 @@ class CreativeMediaRuntime:
         metadata: dict[str, Any],
         external_url: str | None = None,
     ) -> dict[str, Any]:
+        self._assert_active_authority_fence(job)
         workspace_root = Path(str(job.get("workspacePath") or "")).expanduser()
         try:
             workspace_relative_path = file_path.resolve().relative_to(workspace_root.resolve()).as_posix() if str(job.get("workspacePath") or "").strip() else ""
@@ -8580,6 +10724,8 @@ class CreativeMediaRuntime:
         return artifact
 
     def _output_path(self, owner: dict[str, Any] | str, kind: str, extension: str) -> Path:
+        if isinstance(owner, dict):
+            self._assert_active_authority_fence(owner)
         if isinstance(owner, dict):
             owner_id = str(owner.get("jobId") or owner.get("renderJobId") or owner.get("planId") or "job")
             workspace_path = str(owner.get("workspacePath") or "").strip()
@@ -8659,12 +10805,7 @@ class CreativeMediaRuntime:
 
     @staticmethod
     def _normalize_async_status(value: Any) -> str:
-        text = str(value or "").strip().lower()
-        if text in {"2", "200", "success", "succeeded", "completed", "complete", "finished", "done", "finish"}:
-            return "succeeded"
-        if text in {"-1", "3", "4", "failed", "failure", "error", "cancelled", "canceled"}:
-            return "failed"
-        return "running"
+        return normalize_async_status(value)
 
     @staticmethod
     def _compact_provider_response(payload: Any) -> str:
@@ -8713,10 +10854,17 @@ class CreativeMediaRuntime:
         )
 
     async def _request_json(self, method: str, url: str, *, headers: Optional[dict[str, str]] = None, json: Optional[dict[str, Any]] = None, timeout: float = 120.0) -> dict[str, Any]:
+        self._assert_active_authority_fence()
         async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
             response = await client.request(method, url, headers=headers, json=json)
+            self._assert_active_authority_fence()
             if response.status_code >= 400:
-                raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
+                raise ProviderHttpError(
+                    method=method,
+                    url=url,
+                    status_code=response.status_code,
+                    response_excerpt=response.text[:500],
+                )
             if response.status_code == 204 or not response.content:
                 return {}
             return response.json()
@@ -8731,10 +10879,17 @@ class CreativeMediaRuntime:
         files: Optional[dict[str, Any]] = None,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
+        self._assert_active_authority_fence()
         async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
             response = await client.request(method, url, headers=headers, data=data, files=files)
+            self._assert_active_authority_fence()
             if response.status_code >= 400:
-                raise RuntimeError(f"Provider request failed ({response.status_code}) at {url}: {response.text[:500]}")
+                raise ProviderHttpError(
+                    method=method,
+                    url=url,
+                    status_code=response.status_code,
+                    response_excerpt=response.text[:500],
+                )
             return response.json()
 
     async def _download_provider_file(
@@ -8745,21 +10900,31 @@ class CreativeMediaRuntime:
         headers: Optional[dict[str, str]] = None,
         timeout: float = 600.0,
     ) -> str:
+        self._assert_active_authority_fence()
         destination.parent.mkdir(parents=True, exist_ok=True)
         content_type = ""
         try:
             async with httpx.AsyncClient(timeout=self._provider_http_timeout(timeout)) as client:
                 async with client.stream("GET", url, headers=headers) as response:
+                    self._assert_active_authority_fence()
                     if response.status_code >= 400:
                         body = (await response.aread()).decode("utf-8", errors="replace")
-                        raise RuntimeError(f"Provider download failed ({response.status_code}) at {url}: {body[:500]}")
+                        raise ProviderHttpError(
+                            method="GET",
+                            url=url,
+                            status_code=response.status_code,
+                            detail_code="provider_download_error",
+                            response_excerpt=body[:500],
+                        )
                     content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
                     with destination.open("wb") as output:
                         async for chunk in response.aiter_bytes():
                             if chunk:
+                                self._assert_active_authority_fence()
                                 output.write(chunk)
             if not destination.is_file() or destination.stat().st_size <= 0:
                 raise RuntimeError("Provider download completed without a local file")
+            self._assert_active_authority_fence()
             return content_type
         except Exception:
             destination.unlink(missing_ok=True)

@@ -32,6 +32,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { LocaleProvider } from "@fixture-locale";
 import { CanvasInspectorReviewPanel } from "@fixture-inspector";
+import { createCanvasSessionRequestCoordinator, isCurrentCanvasRuntimeEpoch } from "@fixture-request-owner";
 
 const resultNode = {
   nodeId: "fixture-result",
@@ -65,6 +66,40 @@ const versions = [
   { identity: "version-a", resultNodeId: "fixture-result", version: { outputVersionId: "version-a", version: 2 }, resource: imageA },
   { identity: "version-b", resultNodeId: "fixture-result", version: { outputVersionId: "version-b", version: 1 }, resource: imageB },
 ];
+const reviewEvents = [];
+window.__canvasReviewEvents = reviewEvents;
+window.__runCanvasSelectionRace = async () => {
+  const coordinator = createCanvasSessionRequestCoordinator("session-review");
+  const ownerV1 = { sessionId: "session-review", token: "owner-v1" };
+  const ownerV2 = { sessionId: "session-review", token: "owner-v2" };
+  coordinator.acquire(ownerV1);
+  const secondBlocked = coordinator.acquire(ownerV2) === null;
+  coordinator.release(ownerV1);
+  coordinator.acquire(ownerV2);
+  let epoch = 0;
+  let outputs = [
+    { outputVersionId: "version-a", review: { selectedForDelivery: false } },
+    { outputVersionId: "version-b", review: { selectedForDelivery: false } },
+  ];
+  const applyAfter = (delay, capturedEpoch, snapshot) => new Promise((resolve) => setTimeout(() => {
+    const accepted = coordinator.isActive(ownerV2) && isCurrentCanvasRuntimeEpoch(capturedEpoch, epoch);
+    if (accepted) outputs = snapshot;
+    resolve(accepted);
+  }, delay));
+  const v1Epoch = ++epoch;
+  const staleV1 = applyAfter(35, v1Epoch, [
+    { outputVersionId: "version-a", review: { selectedForDelivery: true } },
+    { outputVersionId: "version-b", review: { selectedForDelivery: true } },
+  ]);
+  const v2Epoch = ++epoch;
+  const currentV2 = applyAfter(5, v2Epoch, [
+    { outputVersionId: "version-a", review: { selectedForDelivery: false } },
+    { outputVersionId: "version-b", review: { selectedForDelivery: true } },
+  ]);
+  const [staleApplied, currentApplied] = await Promise.all([staleV1, currentV2]);
+  coordinator.release(ownerV2);
+  return { secondBlocked, staleApplied, currentApplied, outputs };
+};
 const action = {
   label: "生成品牌主视觉",
   definition: {
@@ -91,6 +126,22 @@ const runtime = {
 function Fixture() {
   const initialMode = new URLSearchParams(location.search).get("mode") === "review" ? "review" : "details";
   const [mode, setMode] = useState(initialMode);
+  const [review, setReview] = useState({ decision: "pending", revision: 0, note: "", selectedForDelivery: false });
+  const [delivery, setDelivery] = useState(null);
+  const selectedVersion = { ...versions[0], version: { ...versions[0].version, review } };
+  const onReviewChange = (version, decision, note, selectedForDelivery) => {
+    reviewEvents.push({ type: "review", decision, note, selectedForDelivery, expectedRevision: review.revision });
+    setReview({ ...review, decision, note, selectedForDelivery, revision: review.revision + 1 });
+    setDelivery(null);
+  };
+  const onDryRunDelivery = (version) => {
+    reviewEvents.push({ type: "delivery", dryRun: true, expectedRevision: review.revision });
+    setDelivery({ status: "ready", dryRun: true });
+  };
+  const onConfirmDelivery = (version) => {
+    reviewEvents.push({ type: "delivery", dryRun: false, expectedRevision: review.revision });
+    setDelivery({ status: "delivered", dryRun: false });
+  };
   return <LocaleProvider initialLocale="zh-CN">
     <main className="relative overflow-hidden" style={{ height: "100vh", background: "#f4f4f5" }}>
       <div className="absolute inset-0 opacity-60" style={{ backgroundImage: "linear-gradient(#d4d4d8 1px,transparent 1px),linear-gradient(90deg,#d4d4d8 1px,transparent 1px)", backgroundSize: "24px 24px" }} />
@@ -98,6 +149,7 @@ function Fixture() {
         node={resultNode}
         resource={imageA}
         versions={versions}
+        selectedVersion={selectedVersion}
         mode={mode}
         action={action}
         inputs={[{ label: "产品正面参考.png", mediaType: "image" }, { label: "品牌色板.png", mediaType: "image" }]}
@@ -105,6 +157,11 @@ function Fixture() {
         graphRuntime={runtime}
         renderPreview={(resource) => <img src={resource.url} alt={resource.name} className="h-full w-full object-contain" />}
         onModeChange={setMode}
+        reviewBusy={false}
+        deliveryState={delivery}
+        onReviewChange={onReviewChange}
+        onDryRunDelivery={onDryRunDelivery}
+        onConfirmDelivery={onConfirmDelivery}
         onRetry={() => undefined}
         onClose={() => undefined}
       />
@@ -127,6 +184,7 @@ createRoot(document.getElementById("root")!).render(<Fixture />);
         "@": path.join(webRoot, "src"),
         "@fixture-inspector": path.join(webRoot, "src/components/workbench/creative-canvas/inspector-review.tsx"),
         "@fixture-locale": path.join(webRoot, "src/components/providers/LocaleProvider.tsx"),
+        "@fixture-request-owner": path.join(webRoot, "src/components/workbench/creative-canvas/request-owner.ts"),
       },
     },
     module: {
@@ -239,9 +297,41 @@ async function assertLayout(page, viewport, mode) {
 }
 
 async function capture(page, baseUrl, mode, viewport, name) {
+  let interactionEvidence = null;
   await page.setViewportSize(viewport);
   await page.goto(`${baseUrl}/?mode=${mode}`, { waitUntil: "networkidle" });
   await page.locator("[data-canvas-inspector]").waitFor({ state: "visible" });
+  if (mode === "details") {
+    await page.locator("[data-canvas-review-note]").fill("视觉验收通过");
+    await page.locator('[data-canvas-review-action="approve"]').click();
+    const selection = page.locator("[data-canvas-review-selected]");
+    await selection.waitFor({ state: "visible" });
+    await selection.check();
+    await page.locator('[data-canvas-delivery-action="dry-run"]').click();
+    await page.locator('[data-canvas-delivery-action="confirm"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-canvas-delivery]')?.textContent?.includes("已交付"));
+    const events = await page.evaluate(() => window.__canvasReviewEvents || []);
+    const sequence = events.map((event) => `${event.type}:${event.dryRun === undefined ? event.decision : event.dryRun ? "dry-run" : "confirm"}`);
+    if (sequence.join(",") !== "review:approved,review:approved,delivery:dry-run,delivery:confirm") {
+      throw new Error(`Unexpected review/delivery sequence: ${JSON.stringify(events)}`);
+    }
+    if (events[0].expectedRevision !== 0 || events[1].expectedRevision !== 1 || events[2].expectedRevision !== 2 || events[3].expectedRevision !== 2) {
+      throw new Error(`Review revision did not advance monotonically: ${JSON.stringify(events)}`);
+    }
+    const race = await page.evaluate(() => window.__runCanvasSelectionRace());
+    const selected = race.outputs.filter((version) => version.review.selectedForDelivery);
+    if (!race.secondBlocked || race.staleApplied || !race.currentApplied || selected.length !== 1 || selected[0].outputVersionId !== "version-b") {
+      throw new Error(`V1/V2 selection race did not converge: ${JSON.stringify(race)}`);
+    }
+    interactionEvidence = {
+      sequence,
+      revisions: events.map((event) => event.expectedRevision),
+      ownerBlockedOverlap: race.secondBlocked,
+      staleResponseApplied: race.staleApplied,
+      selectedOutput: selected[0].outputVersionId,
+    };
+    await page.locator("[data-canvas-inspector] .custom-scrollbar").first().evaluate((element) => { element.scrollTop = 0; });
+  }
   if (mode === "review") {
     await page.getByRole("button", { name: "擦除对比" }).click();
     const slider = page.getByRole("slider", { name: "擦除位置" });
@@ -253,10 +343,10 @@ async function capture(page, baseUrl, mode, viewport, name) {
     await page.locator("[data-canvas-ab-review]").waitFor({ state: "visible" });
   }
   const layout = await assertLayout(page, viewport, mode);
-  console.log(JSON.stringify({ name, layout }));
+  console.log(JSON.stringify({ name, layout, interactionEvidence }));
   const screenshot = path.join(reportDir, `${name}.png`);
   await page.screenshot({ path: screenshot, fullPage: false });
-  return { screenshot, layout, pixels: await pixelEvidence(screenshot) };
+  return { screenshot, layout, interactionEvidence, pixels: await pixelEvidence(screenshot) };
 }
 
 async function main() {

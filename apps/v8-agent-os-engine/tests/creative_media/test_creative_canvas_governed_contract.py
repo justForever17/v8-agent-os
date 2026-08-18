@@ -455,8 +455,24 @@ def test_canvas_mask_upload_kind_remains_internal_instead_of_falling_back() -> N
     assert _normalize_upload_source_kind("unknown") == "client_upload"
 
 
-def test_creative_jobs_facade_accepts_typed_source_lineage_and_overrides_canvas_id_from_context() -> None:
+def test_creative_jobs_facade_accepts_typed_source_lineage_and_overrides_canvas_id_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     spec = facade.CREATIVE_MEDIA_ACTION_REGISTRY["jobs"]["create"]
+    authorized_requests: list[dict] = []
+
+    def authorize_request_resources(request: dict) -> list[dict]:
+        authorized_requests.append(dict(request))
+        assert request["sessionId"] == "session-1"
+        assert request["sourceId"] == "source-image"
+        assert request["maskSourceId"] == "source-mask"
+        return []
+
+    monkeypatch.setattr(
+        facade.creative_media_resource_authority,
+        "authorize_request_resources",
+        authorize_request_resources,
+    )
     with bind_runtime_context(
         session_id="session-1",
         run_id="run-1",
@@ -480,6 +496,7 @@ def test_creative_jobs_facade_accepts_typed_source_lineage_and_overrides_canvas_
     assert payload["sourceId"] == "source-image"
     assert payload["maskSourceId"] == "source-mask"
     assert payload["sessionId"] == "session-1"
+    assert len(authorized_requests) == 1
 
 
 def test_source_and_mask_resolve_only_from_current_session_ledger(tmp_path, monkeypatch) -> None:
@@ -719,6 +736,16 @@ def test_explicit_provider_model_cannot_bypass_disabled_exact_operation(monkeypa
         creative_media_runtime,
         "_all_model_candidates_for_operation",
         lambda _operation_kind: [candidate],
+    )
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_canonical_owner_scope",
+        lambda request, require_write=False: {
+            "sessionId": str(request.get("sessionId") or ""),
+            "workspaceId": str(request.get("workspaceId") or ""),
+            "projectId": str(request.get("projectId") or ""),
+            "workspacePath": str(request.get("workspacePath") or ""),
+        },
     )
     monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
 

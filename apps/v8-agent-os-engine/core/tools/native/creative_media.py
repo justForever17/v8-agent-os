@@ -724,12 +724,27 @@ def creative_media_compile_work_order(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_list_work_orders(status: Optional[str] = None, requesting_runtime: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_work_orders(
+    status: Optional[str] = None,
+    requesting_runtime: Optional[str] = None,
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia work orders produced for upstream runtimes."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        work_orders = creative_media_runtime.list_work_orders(status=status, requesting_runtime=requesting_runtime)
+        work_orders = creative_media_runtime.list_work_orders(
+            status=status,
+            requesting_runtime=requesting_runtime,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 50))
         return json.dumps(
             {
@@ -794,12 +809,27 @@ def creative_media_register_asset(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_list_assets(modality: Optional[str] = None, role: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_assets(
+    modality: Optional[str] = None,
+    role: Optional[str] = None,
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia asset ledger entries, optionally filtered by modality and role."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        assets = creative_media_runtime.list_assets(modality=modality, role=role)
+        assets = creative_media_runtime.list_assets(
+            modality=modality,
+            role=role,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 5))
         return json.dumps(
             {
@@ -879,12 +909,24 @@ def creative_media_register_keyframe(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_get_keyframe(keyframe_id: str) -> str:
+def creative_media_get_keyframe(
+    keyframe_id: str,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Read a CreativeMedia keyframe by id."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        keyframe = creative_media_runtime.get_keyframe(keyframe_id)
+        keyframe = creative_media_runtime.get_keyframe(
+            keyframe_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         if not keyframe:
             return f"Error: CreativeMedia keyframe not found: {keyframe_id}"
         return json.dumps({"keyframe": _creative_media_asset_summary(keyframe)}, ensure_ascii=False, indent=2)
@@ -898,6 +940,10 @@ def creative_media_list_keyframes(
     role: Optional[str] = None,
     character_bible_id: Optional[str] = None,
     limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
 ) -> str:
     """List CreativeMedia keyframes with optional recipe, role, or character bible filters."""
     try:
@@ -907,6 +953,10 @@ def creative_media_list_keyframes(
             recipe_id=recipe_id,
             role=role,
             character_bible_id=character_bible_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
         )
         effective_limit = max(1, min(int(limit or 20), 50))
         return json.dumps(
@@ -936,12 +986,24 @@ def creative_media_create_edit_plan(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_get_edit_plan(plan_id: str) -> str:
+def creative_media_get_edit_plan(
+    plan_id: str,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Read a CreativeMedia edit plan by id."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        plan = creative_media_runtime.get_edit_plan(plan_id)
+        plan = creative_media_runtime.get_edit_plan(
+            plan_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         if not plan:
             return f"Error: CreativeMedia edit plan not found: {plan_id}"
         return json.dumps({"editPlan": _creative_media_edit_plan_summary(plan, detail=True)}, ensure_ascii=False, indent=2)
@@ -950,12 +1012,25 @@ def creative_media_get_edit_plan(plan_id: str) -> str:
 
 
 @tool
-def creative_media_list_edit_plans(recipe_id: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_edit_plans(
+    recipe_id: Optional[str] = None,
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia edit plans, optionally filtered by recipe id."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        plans = creative_media_runtime.list_edit_plans(recipe_id=recipe_id)
+        plans = creative_media_runtime.list_edit_plans(
+            recipe_id=recipe_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 5))
         status_counts: dict[str, int] = {}
         for item in plans:
@@ -992,12 +1067,24 @@ def creative_media_render_edit_plan(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_get_render(render_job_id: str) -> str:
+def creative_media_get_render(
+    render_job_id: str,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Read a CreativeMedia render job by id."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        render = creative_media_runtime.get_render(render_job_id)
+        render = creative_media_runtime.get_render(
+            render_job_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         if not render:
             return f"Error: CreativeMedia render job not found: {render_job_id}"
         return json.dumps({"render": _creative_media_render_summary(render, detail=True)}, ensure_ascii=False, indent=2)
@@ -1006,12 +1093,28 @@ def creative_media_get_render(render_job_id: str) -> str:
 
 
 @tool
-def creative_media_list_renders(plan_id: Optional[str] = None, status: Optional[str] = None, limit: int = 20, detail_level: str = "summary") -> str:
+def creative_media_list_renders(
+    plan_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 20,
+    detail_level: str = "summary",
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia render jobs, optionally filtered by edit plan or status."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        renders = creative_media_runtime.list_renders(plan_id=plan_id, status=status)
+        renders = creative_media_runtime.list_renders(
+            plan_id=plan_id,
+            status=status,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         normalized_detail = str(detail_level or "summary").strip().lower()
         effective_limit = max(1, min(int(limit or 20), 50))
         if normalized_detail == "summary":
@@ -1051,12 +1154,25 @@ def creative_media_create_quality_job(request: dict[str, Any]) -> str:
 
 
 @tool
-def creative_media_list_quality_jobs(status: Optional[str] = None, limit: int = 20) -> str:
+def creative_media_list_quality_jobs(
+    status: Optional[str] = None,
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia quality jobs, optionally filtered by status."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        jobs = creative_media_runtime.list_quality_jobs(status=status)
+        jobs = creative_media_runtime.list_quality_jobs(
+            status=status,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 50))
         return json.dumps(
             {
@@ -1073,12 +1189,24 @@ def creative_media_list_quality_jobs(status: Optional[str] = None, limit: int = 
 
 
 @tool
-def creative_media_get_quality_job(quality_job_id: str) -> str:
+def creative_media_get_quality_job(
+    quality_job_id: str,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Read a CreativeMedia quality job by id."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        quality_job = creative_media_runtime.get_quality_job(quality_job_id)
+        quality_job = creative_media_runtime.get_quality_job(
+            quality_job_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         if not quality_job:
             return f"Error: CreativeMedia quality job not found: {quality_job_id}"
         return json.dumps({"qualityJob": _creative_media_quality_job_summary(quality_job)}, ensure_ascii=False, indent=2)
@@ -1107,12 +1235,23 @@ async def creative_media_retry_job(
 
 
 @tool
-def creative_media_cost_ledger(limit: int = 20) -> str:
+def creative_media_cost_ledger(
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia provider cost and usage ledger entries."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        entries = creative_media_runtime.list_cost_ledger()
+        entries = creative_media_runtime.list_cost_ledger(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 50))
         return json.dumps(
             {
@@ -1129,12 +1268,23 @@ def creative_media_cost_ledger(limit: int = 20) -> str:
 
 
 @tool
-def creative_media_safety_events(limit: int = 20) -> str:
+def creative_media_safety_events(
+    limit: int = 20,
+    session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_path: Optional[str] = None,
+) -> str:
     """List CreativeMedia prompt safety rewrite and provider policy events."""
     try:
         from runtimes.creative_media.runtime import creative_media_runtime
 
-        events = creative_media_runtime.list_safety_events()
+        events = creative_media_runtime.list_safety_events(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            workspace_path=workspace_path,
+        )
         effective_limit = max(1, min(int(limit or 20), 50))
         return json.dumps(
             {

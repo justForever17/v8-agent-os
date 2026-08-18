@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import pytest
 
+from core.creative_media_resource_authority import CreativeMediaResourceAuthorityError
 from runtimes.creative_media import runtime as runtime_module
 from runtimes.creative_media.runtime import JOB_STORE_FILE, CreativeMediaRuntime
 
@@ -26,7 +27,7 @@ def lifecycle_runtime(monkeypatch: pytest.MonkeyPatch) -> tuple[CreativeMediaRun
     fake_storage = FakeJsonStorage()
     monkeypatch.setattr(runtime_module, "storage", fake_storage)
     runtime = CreativeMediaRuntime()
-    monkeypatch.setattr(runtime, "_record_terminal_job_observations", lambda _job: None)
+    monkeypatch.setattr(runtime, "_record_terminal_job_observations", lambda _job, _marker: {})
     return runtime, fake_storage
 
 
@@ -246,6 +247,26 @@ def test_reserved_job_id_is_internal_and_reusable_for_one_fallback_chain(lifecyc
     )
     assert fallback["jobId"] == reserved_job_id
     assert fallback["adapter"] == "agnes_video"
+
+
+def test_create_job_preserves_public_reserved_job_id_without_request_leak(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    reserved_job_id = "cm_33333333333333333333333333333333"
+
+    job = asyncio.run(
+        runtime.create_job(
+            {
+                "modality": "image",
+                "operationKind": "image.generate",
+                "adapter": "unbound-fixture",
+            },
+            reserved_job_id=reserved_job_id,
+        )
+    )
+
+    assert job["jobId"] == reserved_job_id
+    assert "_reservedJobId" not in job["request"]
+    assert runtime.get_job(reserved_job_id, refresh=False)["jobId"] == reserved_job_id
 
 
 def test_volcengine_cancel_calls_bound_delete_route(lifecycle_runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1122,11 +1143,11 @@ def test_remote_reconcile_rejects_provider_identity_drift_before_network_call(
     ("provider_status", "expected"),
     [
         ("ordered", "queued"),
-        ("2", "succeeded"),
-        ("200", "succeeded"),
-        ("-1", "failed"),
-        ("3", "failed"),
-        ("4", "failed"),
+        ("2", "unknown"),
+        ("200", "unknown"),
+        ("-1", "unknown"),
+        ("3", "unknown"),
+        ("4", "unknown"),
     ],
 )
 def test_remote_reconcile_status_parser_covers_provider_contract_values(
@@ -1408,6 +1429,39 @@ def test_mureka_business_code_without_task_status_cannot_become_terminal_proof(
     assert report["terminalProof"] is None
 
 
+def test_mureka_explicit_task_status_can_create_terminal_proof(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="mureka_music", task_id="mureka-explicit-status")
+    job["sessionId"] = "session-mureka-status"
+    job["canvasGraphRunId"] = "canvas-run-mureka-status"
+    job["canvasGraphNodeId"] = "action-mureka-status"
+    runtime._schedule_remote_reconcile(job)
+    runtime._save_job(job, track_task=False)
+    monkeypatch.setattr(
+        runtime,
+        "_configured_provider_for_model",
+        lambda *_args, **_kwargs: (
+            "provider-a",
+            {"base_url": "https://mureka.example", "api_key": "secret"},
+            "auto",
+        ),
+    )
+
+    async def explicit_status(*_args, **_kwargs) -> dict:
+        return {"code": 200, "task_status": "completed"}
+
+    monkeypatch.setattr(runtime, "_request_json", explicit_status)
+    report = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+
+    assert report["status"] == "resolved"
+    assert report["providerStatus"] == "succeeded"
+    assert report["remoteTaskMayContinue"] is False
+    assert report["terminalProof"]["providerStatus"] == "succeeded"
+
+
 def test_cancel_and_remote_reconcile_are_serialized_per_job_without_lost_phase(
     lifecycle_runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -1462,3 +1516,335 @@ def test_cancel_and_remote_reconcile_are_serialized_per_job_without_lost_phase(
     assert stored["lifecycle"]["cancel"]["terminalProof"] == reconcile_report["terminalProof"]
     assert stored["lifecycle"]["remoteReconcile"]["projectionPending"] is True
     assert runtime._lifecycle_tasks == {}
+
+
+def test_cleanup_retries_failed_handles_and_preserves_monotonic_history(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="cleanup-retry")
+
+    class FlakyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.attempts = 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.attempts += 1
+            if self.attempts < 3:
+                raise RuntimeError("process release failed")
+            self.returncode = 0
+
+        def wait(self, *, timeout: float):
+            assert timeout == 3.0
+            return self.returncode
+
+    class FlakyLease:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def release(self) -> None:
+            self.attempts += 1
+            if self.attempts < 3:
+                raise RuntimeError("lease release failed")
+
+    process = FlakyProcess()
+    lease = FlakyLease()
+    runtime._register_job_resource(job["jobId"], "process", process)
+    runtime._register_job_resource(job["jobId"], "lease", lease)
+
+    first = asyncio.run(runtime.cleanup_job(job["jobId"]))
+    second = asyncio.run(runtime.cleanup_job(job["jobId"]))
+
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    assert second["detailCode"] == "local_resource_cleanup_failed"
+    assert second["attempt"] == 2
+    assert second["historyCount"] == 2
+    assert [item["status"] for item in second["history"]] == ["failed", "failed"]
+    assert id(process) in runtime._job_processes[job["jobId"]]
+    assert id(lease) in runtime._job_leases[job["jobId"]]
+
+    third = asyncio.run(runtime.cleanup_job(job["jobId"]))
+    fourth = asyncio.run(runtime.cleanup_job(job["jobId"]))
+
+    assert third["status"] == "completed"
+    assert third["attempt"] == 3
+    assert [item["status"] for item in third["history"]] == ["failed", "failed", "completed"]
+    assert job["jobId"] not in runtime._job_processes
+    assert job["jobId"] not in runtime._job_leases
+    assert fourth["status"] == "not_active"
+    assert fourth["detailCode"] == "local_resources_already_released"
+    assert fourth["attempt"] == 4
+    assert fourth["historyCount"] == 4
+
+
+def test_cleanup_is_singleflight_while_release_is_in_flight(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="cleanup-singleflight")
+
+    async def scenario() -> tuple[dict, dict, int]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        class SlowLease:
+            async def release(self) -> None:
+                nonlocal calls
+                calls += 1
+                started.set()
+                await release.wait()
+
+        runtime._register_job_resource(job["jobId"], "lease", SlowLease())
+        first = asyncio.create_task(runtime.cleanup_job(job["jobId"]))
+        await started.wait()
+        second = asyncio.create_task(runtime.cleanup_job(job["jobId"]))
+        await asyncio.sleep(0)
+        release.set()
+        first_report, second_report = await asyncio.gather(first, second)
+        return first_report, second_report, calls
+
+    first, second, calls = asyncio.run(scenario())
+
+    assert calls == 1
+    assert first == second
+    assert first["status"] == "completed"
+    assert first["attempt"] == 1
+    assert job["jobId"] not in runtime._job_leases
+
+
+def test_prepare_session_deletion_is_singleflight_and_keeps_remote_accepted_uncertain(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="delete-session-accepted")
+    job["sessionId"] = "session-delete"
+    job["canvasGraphRunId"] = "canvas-delete-run"
+    job["canvasGraphNodeId"] = "canvas-delete-node"
+    runtime._save_job(job, track_task=False)
+    cancel_calls = 0
+
+    async def accepted_cancel(_job: dict) -> dict:
+        nonlocal cancel_calls
+        cancel_calls += 1
+        await asyncio.sleep(0)
+        return {
+            "status": "completed",
+            "detailCode": "provider_cancel_request_accepted",
+            "remoteTaskMayContinue": True,
+        }
+
+    monkeypatch.setattr(runtime, "_cancel_provider_job", accepted_cancel)
+
+    async def scenario() -> tuple[dict, dict, bool]:
+        owner_started = asyncio.Event()
+
+        async def graph_owner() -> None:
+            owner_started.set()
+            await asyncio.Event().wait()
+
+        owner = asyncio.create_task(graph_owner())
+        await owner_started.wait()
+        runtime._register_job_resource(job["jobId"], "task", owner)
+        first, second = await asyncio.gather(
+            runtime.prepare_session_deletion("session-delete"),
+            runtime.prepare_session_deletion("session-delete"),
+        )
+        return first, second, owner.cancelled()
+
+    first, second, owner_cancelled = asyncio.run(scenario())
+
+    assert first == second
+    assert first["status"] == "prepared"
+    assert first["readyForDeletion"] is True
+    assert first["attempt"] == 1
+    assert first["remoteUncertainJobs"] == 1
+    assert first["jobs"][0]["disposition"] == "owner_deleted"
+    assert first["jobs"][0]["remoteTaskMayContinue"] is True
+    assert set(first["jobs"][0]) == {
+        "schema",
+        "jobId",
+        "disposition",
+        "localStatus",
+        "cancelStatus",
+        "cleanupStatus",
+        "remoteTaskMayContinue",
+        "updatedAt",
+    }
+    assert owner_cancelled is True
+    assert cancel_calls == 1
+    assert runtime.get_session_deletion_tombstone("session-delete") == first
+    assert fake_storage.payloads[JOB_STORE_FILE]["sessionDeletionTombstones"]["session-delete"] == first
+    stored = runtime.get_job(job["jobId"], refresh=False)
+    assert stored["lifecycle"]["sessionDeletion"]["disposition"] == "owner_deleted"
+    assert stored["lifecycle"]["remoteReconcile"]["remoteTaskMayContinue"] is True
+    assert stored["lifecycle"]["remoteReconcile"]["terminalProof"] is None
+    assert asyncio.run(runtime.prepare_session_deletion("session-delete")) == first
+    assert cancel_calls == 1
+
+
+def test_prepare_session_deletion_blocks_then_retries_local_cleanup(lifecycle_runtime) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = runtime._new_job(
+        modality="video",
+        adapter="governed_local",
+        request={"operationKind": "video.trim_exact", "sessionId": "session-cleanup-retry"},
+    )
+    job["status"] = "failed"
+    runtime._save_job(job, track_task=False)
+
+    class FailOnceLease:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def release(self) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("first cleanup fails")
+
+    lease = FailOnceLease()
+    runtime._register_job_resource(job["jobId"], "lease", lease)
+
+    first = asyncio.run(runtime.prepare_session_deletion("session-cleanup-retry"))
+    second = asyncio.run(runtime.prepare_session_deletion("session-cleanup-retry"))
+
+    assert first["status"] == "blocked"
+    assert first["readyForDeletion"] is False
+    assert first["localCleanupFailures"] == 1
+    assert first["attempt"] == 1
+    assert second["status"] == "prepared"
+    assert second["readyForDeletion"] is True
+    assert second["localCleanupFailures"] == 0
+    assert second["attempt"] == 2
+    assert second["historyCount"] == 2
+    assert [item["status"] for item in second["history"]] == ["blocked", "prepared"]
+    assert lease.attempts == 2
+    cleanup = runtime.get_job(job["jobId"], refresh=False)["lifecycle"]["cleanup"]
+    assert cleanup["attempt"] == 2
+    assert [item["status"] for item in cleanup["history"]] == ["failed", "completed"]
+
+
+def test_session_deletion_ready_gate_blocks_create_during_route_delete_barrier_and_retry(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, fake_storage = lifecycle_runtime
+    create_calls = 0
+
+    async def unexpected_create(*_args, **_kwargs) -> dict:
+        nonlocal create_calls
+        create_calls += 1
+        raise AssertionError("create implementation must not run after deletion preparation")
+
+    monkeypatch.setattr(runtime, "_create_job_impl", unexpected_create)
+
+    async def scenario() -> tuple[dict, dict]:
+        # This is the route's deterministic barrier: Creative Media cleanup is
+        # complete, but the Session row has not yet been deleted. A concurrent
+        # create must still observe the durable ready tombstone and fail closed.
+        prepared = await runtime.prepare_session_deletion("session-delete-barrier")
+        with pytest.raises(CreativeMediaResourceAuthorityError) as exc_info:
+            await runtime.create_job(
+                {
+                    "sessionId": "session-delete-barrier",
+                    "modality": "image",
+                    "operationKind": "image.generate",
+                }
+            )
+        assert exc_info.value.reason_code == "creative_media_session_closing"
+        # Simulate the route's DB-delete failure: the tombstone remains ready,
+        # and a retry rescans rather than reopening creation.
+        retried = await runtime.prepare_session_deletion("session-delete-barrier")
+        return prepared, retried
+
+    first, second = asyncio.run(scenario())
+
+    assert first["status"] == "prepared"
+    assert first["acceptingNewJobs"] is False
+    assert first["gateState"] == "closing"
+    assert second == first
+    assert create_calls == 0
+    assert fake_storage.payloads[JOB_STORE_FILE].get("jobs") == {}
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "pending"),
+    [
+        ("RuntimeError: temporary sqlite busy", "transient", True),
+        ("CreativeCanvasGraphError: Current session is unavailable", "owner_deleted", False),
+        ("CreativeCanvasGraphConflict: Canvas graph workspace authority changed before reconciliation", "authority_changed", False),
+        ("CreativeCanvasGraphConflict: Remote terminal proof is not bound to the current Canvas run", "lineage_missing", False),
+    ],
+)
+def test_projection_failure_disposition_only_retries_transient_errors(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    error: str,
+    expected: str,
+    pending: bool,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _cancelled_uncertain_canvas_job(runtime, task_id=f"projection-{expected}")
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "source": "projection_disposition_test",
+        }
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    resolved = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    report = runtime.mark_remote_reconcile_projected(
+        job["jobId"],
+        resolved["terminalProof"],
+        projection_error=error,
+    )
+
+    assert report["projectionDisposition"] == expected
+    assert report["projectionPending"] is pending
+    assert bool(report.get("nextProjectionAt")) is pending
+    assert bool(report.get("projectionResolvedAt")) is (not pending)
+
+
+def test_session_deletion_late_terminal_proof_updates_tombstone_without_graph_projection_retry(
+    lifecycle_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _fake_storage = lifecycle_runtime
+    job = _provider_job(runtime, adapter="minimax_video", task_id="owner-deleted-late-proof")
+    job["sessionId"] = "session-late-proof"
+    runtime._save_job(job, track_task=False)
+
+    async def accepted_cancel(_job: dict) -> dict:
+        return {
+            "status": "completed",
+            "detailCode": "provider_cancel_request_accepted",
+            "remoteTaskMayContinue": True,
+        }
+
+    async def terminal_probe(_job: dict) -> dict:
+        return {
+            "providerStatus": "cancelled",
+            "providerStatusRaw": "CANCELED",
+            "source": "late_owner_deleted_probe",
+        }
+
+    monkeypatch.setattr(runtime, "_cancel_provider_job", accepted_cancel)
+    prepared = asyncio.run(runtime.prepare_session_deletion("session-late-proof"))
+    assert prepared["remoteUncertainJobs"] == 1
+    assert prepared["jobs"][0]["remoteTaskMayContinue"] is True
+
+    monkeypatch.setattr(runtime, "_probe_provider_remote_status", terminal_probe)
+    reconciled = asyncio.run(runtime.reconcile_remote_job(job["jobId"], force=True))
+    tombstone = runtime.get_session_deletion_tombstone("session-late-proof")
+
+    assert reconciled["remoteTaskMayContinue"] is False
+    assert reconciled["projectionPending"] is False
+    assert reconciled["projectionDisposition"] == "owner_deleted"
+    assert runtime.list_remote_reconcile_reports(projection_pending=True) == []
+    assert tombstone["remoteUncertainJobs"] == 0
+    assert tombstone["jobs"][0]["remoteTaskMayContinue"] is False
+    assert tombstone["jobs"][0]["remoteTerminalStatus"] == "cancelled"

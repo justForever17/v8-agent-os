@@ -2514,7 +2514,7 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
             submitted_payload.update(json)
             assert json["model"] == "mureka-o1"
             return {"task_id": "task_1", "status": "queued"}
-        return {"status": "completed", "data": {"audio_url": "https://cdn.example.test/song.mp3"}}
+        return {"task_status": "completed", "data": {"audio_url": "https://cdn.example.test/song.mp3"}}
 
     async def fake_artifact_from_url(url, *, job, kind, provider, mime_hint, metadata=None):
         return {"artifactId": "artifact_song", "kind": kind, "sourceUrl": url, "metadata": metadata or {}}
@@ -2550,6 +2550,40 @@ def test_mureka_music_job_polls_and_downloads_audio(monkeypatch, tmp_path: Path)
         ("GET", "https://api.mureka.ai/v1/song/query/task_1"),
     ]
     assert submitted_payload == {"model": "mureka-o1", "prompt": "short cheerful loop"}
+
+
+def test_mureka_code_only_poll_response_is_not_terminal(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    runtime = type(creative_media_runtime)()
+    monkeypatch.setattr(
+        runtime,
+        "_configured_provider_for_model",
+        lambda *_args, **_kwargs: (
+            "mureka_music",
+            {"base_url": "https://api.mureka.ai", "api_key": "sk-test"},
+            "auto",
+        ),
+    )
+
+    async def business_code_only(*_args, **_kwargs):
+        return {"code": 200, "message": "request accepted"}
+
+    monkeypatch.setattr(runtime, "_request_json", business_code_only)
+    job = runtime._new_job(
+        modality="music",
+        adapter="mureka_music",
+        request={"operationKind": "music.generate", "prompt": "fixture"},
+    )
+    job["providerTaskId"] = "task-code-only"
+    job["status"] = "running"
+
+    result = asyncio.run(runtime._poll_mureka_music_job(job))
+
+    assert result["status"] == "running"
+    assert result["providerResponse"]["lastStatus"] is None
+    assert result["artifacts"] == []
+    assert result["completedAt"] is None
 
 
 def test_tencent_hunyuan_3d_uses_tokenhub_and_downloads_model(monkeypatch, tmp_path: Path):
@@ -2708,11 +2742,11 @@ def test_creative_media_runtime_can_record_fake_result(monkeypatch, tmp_path: Pa
     assert captured["external_url"] == "https://provider.example.com/fake.png"
 
     creative_media_runtime._provider_transport_urls.pop("art_fake", None)
-    monkeypatch.setattr(
-        "runtimes.creative_media.runtime.db.get_runtime_artifact",
-        lambda artifact_id: {"external_url": captured["external_url"]} if artifact_id == "art_fake" else None,
-    )
-    assert creative_media_runtime._artifact_provider_transport_url("art_fake") == captured["external_url"]
+    # Artifact transport is now Session/Workspace-authorized; a private
+    # helper call without runtime scope must fail closed instead of consulting
+    # the global Artifact table.
+    with pytest.raises(PermissionError, match="session"):
+        creative_media_runtime._artifact_provider_transport_url("art_fake")
 
 
 def test_provider_download_passes_external_url_to_artifact_store(monkeypatch, tmp_path: Path):

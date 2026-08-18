@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -81,6 +82,7 @@ type RemoteLinkConfig = {
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
 const DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api";
 const DEFAULT_DESKTOP_LIVE_BRIDGE_BASE_URL = "http://127.0.0.1:8011/v1";
+const CREATIVE_MEDIA_GOVERNANCE_SECRET_FILE = "creative-media-admin-governance-secret";
 const NON_ROUTABLE_CLIENT_HOSTS = new Set([
     "0.0.0.0",
     "127.0.0.1",
@@ -647,6 +649,39 @@ export function resolvePairingAdminBaseUrlFromRequest(
 
 export function resolveInternalSecret() {
     return String(getBridge().internalSecret || "").trim();
+}
+
+export function resolveCreativeMediaGovernanceSecret() {
+    const stateRoot = path.resolve(
+        String(process.env.V8_AGENT_OS_HOME || "").trim()
+        || path.join(os.homedir(), ".v8-agent-os"),
+    );
+    const secretsDir = path.join(stateRoot, "secrets");
+    const secretFile = path.join(secretsDir, CREATIVE_MEDIA_GOVERNANCE_SECRET_FILE);
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+
+    let secret = fs.existsSync(secretFile) ? fs.readFileSync(secretFile, "utf8").trim() : "";
+    if (!secret) {
+        const candidate = crypto.randomBytes(48).toString("base64url");
+        try {
+            fs.writeFileSync(secretFile, `${candidate}\n`, {
+                encoding: "utf8",
+                flag: "wx",
+                mode: 0o600,
+            });
+            secret = candidate;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            secret = fs.readFileSync(secretFile, "utf8").trim();
+        }
+    }
+    if (secret.length < 32) {
+        throw new Error("Creative Media Admin governance capability is unavailable");
+    }
+    if (process.platform !== "win32") {
+        fs.chmodSync(secretFile, 0o600);
+    }
+    return secret;
 }
 
 export function resolveEnginePythonPath() {

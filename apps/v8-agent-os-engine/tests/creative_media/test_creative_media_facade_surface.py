@@ -139,6 +139,11 @@ def test_every_facade_action_dispatches_through_the_registry(monkeypatch) -> Non
 
     monkeypatch.setattr(facade, "_resolve_handler", lambda _spec: FakeHandler())
     monkeypatch.setattr(facade, "get_runtime_context", lambda: {"session_id": "session-fixture"})
+    monkeypatch.setattr(
+        facade.creative_media_resource_authority,
+        "authorize_request_resources",
+        lambda _request: [],
+    )
     monkeypatch.setattr(facade, "_record_internal_detail", lambda _spec, _raw: "toolobs://registry-dispatch")
     monkeypatch.setattr(
         facade,
@@ -253,6 +258,43 @@ def test_job_facade_fails_closed_without_runtime_session(monkeypatch) -> None:
         assert json.loads(error or "{}")["error"]["code"] == "runtime_scope_unavailable"
 
 
+def test_owner_scoped_facades_pass_canonical_session_and_workspace_claims(monkeypatch) -> None:
+    monkeypatch.setattr(
+        facade,
+        "get_runtime_context",
+        lambda: {
+            "session_id": "session-canonical",
+            "workspace_id": "workspace-canonical",
+            "project_id": "project-canonical",
+            "workspace_path": "/workspace/canonical",
+        },
+    )
+    requests = {
+        ("plan", "list_work_orders"): {},
+        ("assets", "list_assets"): {},
+        ("assets", "get_keyframe"): {"keyframeId": "keyframe-a"},
+        ("assets", "list_keyframes"): {},
+        ("edit", "get_plan"): {"planId": "plan-a"},
+        ("edit", "list_plans"): {},
+        ("edit", "get_render"): {"renderJobId": "render-a"},
+        ("edit", "list_renders"): {},
+        ("quality", "get_job"): {"qualityJobId": "quality-a"},
+        ("quality", "list_jobs"): {},
+        ("quality", "cost_ledger"): {},
+        ("quality", "safety_events"): {},
+    }
+
+    for (facade_name, action), request in requests.items():
+        spec = CREATIVE_MEDIA_ACTION_REGISTRY[facade_name][action]
+        payload, error = facade._validate_request(spec, request)
+        assert error is None, (facade_name, action, error)
+        arguments = facade._handler_arguments(spec, payload or {})
+        assert arguments["session_id"] == "session-canonical"
+        assert arguments["workspace_id"] == "workspace-canonical"
+        assert arguments["project_id"] == "project-canonical"
+        assert arguments["workspace_path"] == "/workspace/canonical"
+
+
 def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_surface(monkeypatch) -> None:
     class FakeHandler:
         async def ainvoke(self, _payload):
@@ -269,6 +311,7 @@ def test_facade_normalizes_internal_output_and_keeps_raw_detail_out_of_agent_sur
             )
 
     monkeypatch.setattr(facade, "_resolve_handler", lambda _spec: FakeHandler())
+    monkeypatch.setattr(facade, "get_runtime_context", lambda: {"session_id": "session-fixture"})
     monkeypatch.setattr(facade, "_record_internal_detail", lambda _spec, _raw: "toolobs://internal-creative")
 
     result = json.loads(
@@ -354,6 +397,7 @@ def test_supplier_adapter_never_falls_back_without_plugin_grant(monkeypatch) -> 
         raise AssertionError("supplier adapter must not fall back to the base provider tool")
 
     monkeypatch.setattr(facade, "_resolve_handler", _unexpected_native_handler)
+    monkeypatch.setattr(facade, "get_runtime_context", lambda: {"session_id": "session-fixture"})
     monkeypatch.setattr(facade, "_resolve_code_owned_provider_adapter", lambda _adapter_id: None)
 
     result = json.loads(

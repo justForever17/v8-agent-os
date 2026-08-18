@@ -20,6 +20,11 @@ from core.context_governance import (
 from core.database import db
 from core.storage import storage
 from core.artifact_store import artifact_store
+from core.creative_media_resource_authority import (
+    CreativeMediaAuthorityScope,
+    CreativeMediaResourceAuthorityError,
+    creative_media_resource_authority,
+)
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
 from core.workbench_files import workbench_file_service
@@ -86,6 +91,26 @@ def _raise_media_library_http(error: Exception) -> None:
     if isinstance(error, (WorkspaceMediaLibraryError, GovernedMediaError)):
         raise HTTPException(status_code=400, detail=str(error)) from error
     raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+async def _prepare_creative_media_session_deletion(session_id: str) -> dict:
+    # Import lazily: this router is imported during Engine bootstrap while the
+    # runtime registry is still being assembled.
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    return await creative_media_runtime.prepare_session_deletion(session_id)
+
+
+def _creative_media_deletion_projection(payload: dict) -> dict:
+    return {
+        "status": str(payload.get("status") or "unknown"),
+        "detailCode": str(payload.get("detailCode") or ""),
+        "readyForDeletion": bool(payload.get("readyForDeletion")),
+        "attempt": int(payload.get("attempt") or 0),
+        "jobCount": int(payload.get("jobCount") or 0),
+        "localCleanupFailures": int(payload.get("localCleanupFailures") or 0),
+        "remoteUncertainJobs": int(payload.get("remoteUncertainJobs") or 0),
+    }
 
 
 def _now_perf_ms() -> float:
@@ -206,45 +231,28 @@ def _artifact_not_found() -> NoReturn:
 
 
 def _artifact_authority(session_id: str) -> tuple[str, WorkspaceAuthorityDescriptor, Path]:
-    normalized_session_id = str(session_id or "").strip()
-    if not normalized_session_id or db.get_session(normalized_session_id) is None:
+    try:
+        scope = creative_media_resource_authority.resolve_scope(
+            session_id=session_id,
+            runtime_kind="chat",
+            session_lookup=db.get_session,
+            authority_resolver=workspace_authority_service.resolve,
+        )
+    except CreativeMediaResourceAuthorityError:
         _artifact_not_found()
-    authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=normalized_session_id)
-    workspace_root = str(authority.workspace_root or "").strip()
-    if not workspace_root:
-        _artifact_not_found()
-    resolved_workspace_root = _artifact_resolved_path(workspace_root)
-    if resolved_workspace_root is None:
-        _artifact_not_found()
-    return normalized_session_id, authority, resolved_workspace_root
+    return scope.session_id, scope.authority, scope.workspace_root
 
 
 def _artifact_resolved_path(value: str, *, workspace_root: Path | None = None) -> Path | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        path = Path(raw).expanduser()
-        if workspace_root is not None and not path.is_absolute():
-            path = workspace_root / path
-        return path.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
-        return None
+    return creative_media_resource_authority.resolve_path_value(value, workspace_root=workspace_root)
 
 
 def _artifact_path_is_absolute(value: str) -> bool:
-    try:
-        return Path(str(value or "")).expanduser().is_absolute()
-    except (OSError, RuntimeError, ValueError):
-        return False
+    return creative_media_resource_authority.path_is_absolute(value)
 
 
 def _artifact_path_is_within(path: Path, workspace_root: Path) -> bool:
-    try:
-        path.relative_to(workspace_root)
-        return True
-    except ValueError:
-        return False
+    return creative_media_resource_authority.path_is_within(path, workspace_root)
 
 
 def _artifact_matches_authority(
@@ -254,76 +262,14 @@ def _artifact_matches_authority(
     authority: WorkspaceAuthorityDescriptor,
     workspace_root: Path,
 ) -> bool:
-    normalized = normalize_artifact_record(artifact)
-    if str(normalized.get("sessionId") or "").strip() != session_id:
-        return False
-
-    metadata = normalized.get("metadata") if isinstance(normalized.get("metadata"), dict) else {}
-    authority_workspace_id = str(authority.workspace_id or "").strip()
-    authority_project_id = str(authority.project_id or "").strip()
-    artifact_workspace_id = str(normalized.get("workspaceId") or "").strip()
-    artifact_project_id = str(normalized.get("projectId") or "").strip()
-    if artifact_workspace_id and artifact_workspace_id != authority_workspace_id:
-        return False
-    if artifact_project_id and artifact_project_id != authority_project_id:
-        return False
-
-    has_workspace_evidence = bool(
-        (artifact_workspace_id and artifact_workspace_id == authority_workspace_id)
-        or (artifact_project_id and artifact_project_id == authority_project_id)
+    scope = CreativeMediaAuthorityScope(
+        session_id=session_id,
+        workspace_id=str(authority.workspace_id or "").strip(),
+        project_id=str(authority.project_id or "").strip(),
+        workspace_root=workspace_root,
+        authority=authority,
     )
-
-    declared_root = str(normalized.get("workspaceRoot") or "").strip()
-    if declared_root:
-        resolved_root = _artifact_resolved_path(declared_root)
-        if resolved_root != workspace_root:
-            return False
-        has_workspace_evidence = True
-
-    metadata_workspace_path = str(metadata.get("workspacePath") or metadata.get("workspace_path") or "").strip()
-    if metadata_workspace_path:
-        resolved_metadata_workspace = _artifact_resolved_path(metadata_workspace_path)
-        if resolved_metadata_workspace != workspace_root:
-            return False
-        has_workspace_evidence = True
-
-    source_value = str(normalized.get("sourcePath") or "").strip()
-    source_path = _artifact_resolved_path(source_value, workspace_root=workspace_root)
-    if source_value and source_path is None:
-        return False
-    source_is_within_workspace = bool(source_path and _artifact_path_is_within(source_path, workspace_root))
-    if source_path and not _artifact_path_is_absolute(source_value) and not source_is_within_workspace:
-        return False
-    has_workspace_evidence = has_workspace_evidence or source_is_within_workspace
-
-    workspace_value = str(normalized.get("workspacePath") or "").strip()
-    workspace_path = _artifact_resolved_path(workspace_value, workspace_root=workspace_root)
-    if workspace_value and workspace_path is None:
-        return False
-    if workspace_path:
-        if not _artifact_path_is_within(workspace_path, workspace_root):
-            return False
-        if source_path and workspace_path != workspace_root and workspace_path != source_path:
-            return False
-        has_workspace_evidence = True
-
-    relative_value = str(normalized.get("workspaceRelativePath") or "").strip()
-    relative_path = _artifact_resolved_path(relative_value, workspace_root=workspace_root)
-    if relative_value and relative_path is None:
-        return False
-    if relative_path:
-        if _artifact_path_is_absolute(relative_value) or not _artifact_path_is_within(relative_path, workspace_root):
-            return False
-        if source_path and source_path != relative_path:
-            return False
-        has_workspace_evidence = True
-
-    storage_class = str(normalized.get("storageClass") or "").strip().lower()
-    path_plane = str(normalized.get("pathPlane") or "").strip().lower()
-    is_workspace_artifact = storage_class == "workspace" or path_plane.startswith("workspace_")
-    if is_workspace_artifact and not source_is_within_workspace:
-        return False
-    return has_workspace_evidence
+    return creative_media_resource_authority.artifact_matches_scope(artifact, scope=scope)
 
 
 def _authorized_runtime_artifact(artifact_id: str, session_id: str) -> tuple[dict, Path]:
@@ -890,6 +836,18 @@ async def patch_session_presentation(session_id: str, data: dict = Body(...)):
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     try:
+        creative_media_cleanup = await _prepare_creative_media_session_deletion(session_id)
+        cleanup_projection = _creative_media_deletion_projection(creative_media_cleanup)
+        if not cleanup_projection["readyForDeletion"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "creative_media_cleanup_incomplete",
+                    "summary": "Creative Media local resources could not be released; retry Session deletion.",
+                    "cleanup": cleanup_projection,
+                },
+            )
+
         # Session-scoped plugin authority must terminate with the owning session.
         # Keep this before the session row is removed so owner checks and audit
         # events can still resolve the original session truth.
@@ -909,7 +867,13 @@ async def delete_session(session_id: str):
             session_id=session_id,
             topic="session.deleted",
         )
-        return {"status": "success", "checkpointCleanup": checkpoint_cleanup}
+        return {
+            "status": "success",
+            "checkpointCleanup": checkpoint_cleanup,
+            "creativeMediaCleanup": cleanup_projection,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

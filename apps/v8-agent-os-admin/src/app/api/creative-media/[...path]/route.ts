@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireAdminIdentity } from "@/lib/server/engine-proxy";
-import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import {
+    resolveCreativeMediaGovernanceSecret,
+    resolveEngineBaseUrl,
+    resolveInternalSecret,
+} from "@/lib/server/runtime-config";
 
 type RouteContext = {
     params: Promise<{ path?: string[] }>;
@@ -26,6 +30,12 @@ async function proxy(req: NextRequest, context: RouteContext, method: "GET" | "P
             throw new Error("Internal service secret is unavailable");
         }
         const headers = new Headers({ "x-v8-agent-os-secret": internalSecret });
+        if (path?.[0] === "governance") {
+            headers.set(
+                "x-v8-agent-os-admin-governance-secret",
+                resolveCreativeMediaGovernanceSecret(),
+            );
+        }
         const init: RequestInit = { method, cache: "no-store", headers };
         if (method !== "GET") {
             const payload = await req.json().catch(() => ({}));

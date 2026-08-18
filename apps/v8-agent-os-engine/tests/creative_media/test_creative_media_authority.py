@@ -9,8 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.creative_media_resource_authority import CreativeMediaResourceAuthorityError
+from core.database import DatabaseManager
 import runtimes.creative_media.runtime as runtime_module
 from runtimes.creative_media.runtime import CreativeMediaRuntime
+from runtimes.creative_media.store import CreativeMediaStore
 
 
 def _job(
@@ -85,7 +88,10 @@ def authorized_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ),
     }
     runtime = CreativeMediaRuntime()
-    monkeypatch.setattr(runtime, "_read_jobs", lambda: {"schemaVersion": 1, "jobs": copy.deepcopy(jobs)})
+    runtime._creative_media_store = CreativeMediaStore(DatabaseManager(tmp_path / "state.db"))
+    runtime._creative_media_store_initialized = True
+    for job in jobs.values():
+        runtime._creative_media_store.create_job(copy.deepcopy(job))
     monkeypatch.setattr(
         runtime_module.db,
         "get_session",
@@ -110,10 +116,11 @@ def test_job_reads_and_lists_are_scoped_to_current_session_and_workspace(authori
 
     with pytest.raises(PermissionError, match="current session"):
         runtime.get_authorized_job("job-b", session_id="session-a")
-    with pytest.raises(PermissionError, match="current workspace"):
+    with pytest.raises(PermissionError, match="current session"):
         runtime.get_authorized_job("job-wrong-workspace", session_id="session-a")
-    with pytest.raises(PermissionError, match="Current session is unavailable"):
+    with pytest.raises(CreativeMediaResourceAuthorityError) as exc_info:
         runtime.get_authorized_job("job-a", session_id="")
+    assert exc_info.value.reason_code == "creative_media_owner_scope_unavailable"
 
 
 def test_refresh_checks_authority_before_provider_poll(authorized_runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,6 +137,97 @@ def test_refresh_checks_authority_before_provider_poll(authorized_runtime, monke
     with pytest.raises(PermissionError, match="current session"):
         asyncio.run(runtime.refresh_authorized_job("job-b", session_id="session-a"))
     assert refreshed == ["job-a"]
+
+
+def test_refresh_authority_fence_rejects_rebind_before_provider_side_effects(
+    authorized_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, jobs, authorities = authorized_runtime
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    effects = {"provider": 0, "file": 0, "artifact": 0, "cost": 0}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        async def request(self, *_args, **_kwargs):
+            effects["provider"] += 1
+            raise AssertionError("provider request must remain behind the authority fence")
+
+    async def fenced_refresh(_job_id: str):
+        entered.set()
+        await release.wait()
+        await runtime._request_json("GET", "https://provider.example.test/task")
+        effects["file"] += 1
+        effects["artifact"] += 1
+        effects["cost"] += 1
+        return copy.deepcopy(jobs["job-a"])
+
+    monkeypatch.setattr(runtime_module.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(runtime, "refresh_job", fenced_refresh)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            runtime.refresh_authorized_job("job-a", session_id="session-a")
+        )
+        await entered.wait()
+        authorities["session-a"] = authorities["session-b"]
+        release.set()
+        with pytest.raises(CreativeMediaResourceAuthorityError) as exc_info:
+            await task
+        assert exc_info.value.reason_code == "creative_media_owner_scope_changed"
+
+    asyncio.run(scenario())
+    assert effects == {"provider": 0, "file": 0, "artifact": 0, "cost": 0}
+
+
+def test_refresh_authority_fence_blocks_materialization_when_rebound_during_poll(
+    authorized_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, jobs, authorities = authorized_runtime
+    effects = {"provider": 0, "file": 0, "artifact": 0, "cost": 0}
+
+    class FakeResponse:
+        status_code = 200
+        content = b'{}'
+        text = "{}"
+
+        @staticmethod
+        def json():
+            return {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        async def request(self, *_args, **_kwargs):
+            effects["provider"] += 1
+            authorities["session-a"] = authorities["session-b"]
+            return FakeResponse()
+
+    async def fenced_refresh(_job_id: str):
+        await runtime._request_json("GET", "https://provider.example.test/task")
+        effects["file"] += 1
+        effects["artifact"] += 1
+        effects["cost"] += 1
+        return copy.deepcopy(jobs["job-a"])
+
+    monkeypatch.setattr(runtime_module.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(runtime, "refresh_job", fenced_refresh)
+
+    with pytest.raises(CreativeMediaResourceAuthorityError) as exc_info:
+        asyncio.run(runtime.refresh_authorized_job("job-a", session_id="session-a"))
+    assert exc_info.value.reason_code == "creative_media_owner_scope_changed"
+    assert effects == {"provider": 1, "file": 0, "artifact": 0, "cost": 0}
 
 
 def test_retry_preserves_original_authority_and_rejects_restricted_workspace(
@@ -165,8 +263,9 @@ def test_retry_preserves_original_authority_and_rejects_restricted_workspace(
     assert captured[0]["prompt"] == "retry prompt"
 
     authorities["session-a"].side_effects_allowed = False
-    with pytest.raises(PermissionError, match="does not allow Creative Media writes"):
+    with pytest.raises(CreativeMediaResourceAuthorityError) as exc_info:
         asyncio.run(runtime.retry_authorized_job("job-a", session_id="session-a", request={}))
+    assert exc_info.value.reason_code == "creative_media_owner_scope_unavailable"
     assert len(captured) == 1
 
 

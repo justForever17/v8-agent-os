@@ -9,7 +9,10 @@ from langchain_core.tools import tool
 from PIL import Image, ImageColor
 
 from core.artifact_store import artifact_store
-from core.database import db
+from core.creative_media_resource_authority import (
+    CreativeMediaResourceAuthorityError,
+    creative_media_resource_authority,
+)
 from core.workspace_capability import build_workspace_binding, resolve_workspace_tool_path
 from erc.runtime_context import get_runtime_context
 from runtimes.creative_media.image_analysis import analyze_image, compare_images, evaluate_quality_profile
@@ -48,17 +51,6 @@ def _compact_error(title: str, summary: str, *, next_action: str | None = None) 
     return "\n".join(lines)
 
 
-def _artifact_source_path(artifact_id: str) -> str | None:
-    artifact = db.get_runtime_artifact(str(artifact_id or "").strip())
-    if not artifact:
-        return None
-    for key in ("source_path", "sourcePath"):
-        value = artifact.get(key)
-        if value:
-            return str(value)
-    return None
-
-
 def _workspace_label(path: Path, binding: Any | None = None) -> str:
     roots: list[Path] = []
     if binding is not None:
@@ -83,21 +75,28 @@ def _resolve_input_path(
 ) -> tuple[Path | None, str | None, str | None, Any | None]:
     context = runtime_context or _runtime_context()
     binding = build_workspace_binding(context, runtime_kind="creative_media")
+    scope = {
+        "session_id": str(context.get("session_id") or context.get("sessionId") or "").strip(),
+        "workspace_id": str(context.get("workspace_id") or context.get("workspaceId") or "").strip(),
+        "project_id": str(context.get("project_id") or context.get("projectId") or "").strip(),
+        "workspace_path": str(context.get("workspace_path") or context.get("workspacePath") or "").strip(),
+    }
     artifact = str(artifact_id or "").strip()
-    if artifact:
-        source = _artifact_source_path(artifact)
-        if not source:
-            return None, None, f"Artifact `{artifact}` was not found or has no local source path.", binding
-        resolved = Path(source).expanduser().resolve(strict=False)
-        return resolved, f"artifact `{artifact}`", None, binding
     raw_path = str(path or "").strip()
-    if not raw_path:
+    if not artifact and not raw_path:
         return None, None, "Provide `path` or `artifact_id`.", binding
-    preflight = resolve_workspace_tool_path(raw_path, runtime_context=context, runtime_kind="creative_media")
-    if not preflight.get("ok"):
-        return None, None, str(preflight.get("summary") or preflight.get("error") or "Path is outside the active workspace."), binding
-    resolved = Path(str(preflight.get("resolvedPath") or "")).expanduser().resolve(strict=False)
-    return resolved, _workspace_label(resolved, binding), None, binding
+    try:
+        if artifact:
+            authorized = creative_media_resource_authority.resolve_artifact(
+                artifact_id=artifact,
+                require_local=True,
+                **scope,
+            )
+            return authorized.path, f"artifact `{artifact}`", None, binding
+        authorized = creative_media_resource_authority.resolve_path(path=raw_path, **scope)
+        return authorized.path, _workspace_label(authorized.path, binding), None, binding
+    except CreativeMediaResourceAuthorityError:
+        return None, None, "Media resource is not available in the current session scope.", binding
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -630,6 +629,36 @@ def creative_media_psd_compose_template(request: dict[str, Any]) -> str:
     if not layers:
         return _compact_error("Creative Media PSD Compose Template", "The layer manifest is empty.", next_action="Provide at least one layer with path/artifactId, name, x, and y.")
 
+    scope = {
+        "session_id": str(context.get("session_id") or context.get("sessionId") or "").strip(),
+        "workspace_id": str(context.get("workspace_id") or context.get("workspaceId") or "").strip(),
+        "project_id": str(context.get("project_id") or context.get("projectId") or "").strip(),
+        "workspace_path": str(context.get("workspace_path") or context.get("workspacePath") or "").strip(),
+    }
+    output_path = str(payload.get("outputPath") or payload.get("output_path") or "").strip()
+    preview_path = str(payload.get("previewPath") or payload.get("preview_path") or "").strip()
+    requested_psd = (
+        Path(output_path)
+        if output_path
+        else _default_output_path(binding, str(payload.get("name") or "layered-asset"), ".psd")
+    )
+    requested_preview = Path(preview_path) if preview_path else requested_psd.with_suffix(".png")
+    try:
+        psd_target = creative_media_resource_authority.resolve_output_path(
+            path=str(requested_psd),
+            **scope,
+        ).path
+        png_target = creative_media_resource_authority.resolve_output_path(
+            path=str(requested_preview),
+            **scope,
+        ).path
+    except CreativeMediaResourceAuthorityError:
+        return _compact_error(
+            "Creative Media PSD Compose Template",
+            "Output paths are not available in the current session scope.",
+            next_action="Choose PSD and preview paths inside the current workspace.",
+        )
+
     planned_layers: list[str] = []
     resolved_layers: list[dict[str, Any]] = []
     for index, raw_layer in enumerate(layers[:60]):
@@ -660,15 +689,6 @@ def creative_media_psd_compose_template(request: dict[str, Any]) -> str:
             "opacityPercent": raw_layer.get("opacityPercent", raw_layer.get("opacity", 100)),
             "visible": bool(raw_layer.get("visible", True)),
         })
-
-    output_path = str(payload.get("outputPath") or payload.get("output_path") or "").strip()
-    preview_path = str(payload.get("previewPath") or payload.get("preview_path") or "").strip()
-    psd_target = Path(output_path) if output_path else _default_output_path(binding, str(payload.get("name") or "layered-asset"), ".psd")
-    if not psd_target.is_absolute():
-        psd_target = Path(getattr(binding, "active_workspace_root", Path.cwd())) / psd_target
-    png_target = Path(preview_path) if preview_path else psd_target.with_suffix(".png")
-    if not png_target.is_absolute():
-        png_target = Path(getattr(binding, "active_workspace_root", Path.cwd())) / png_target
 
     if dry_run:
         return _markdown_kv(

@@ -9,10 +9,18 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
+from core.artifact_store import artifact_store
+from core.creative_media_resource_authority import (
+    CreativeMediaAuthorityScope,
+    CreativeMediaResourceAuthorityError,
+    creative_media_resource_authority,
+)
 from core.database import db
+from core.multimodal_payload_adapter import normalize_artifact_record
 from core.workspace_authority import WorkspaceAuthorityDescriptor, workspace_authority_service
 from core.workspace_identity import workspace_path_key
 from core.workspace_media_library import workspace_media_library
@@ -43,6 +51,14 @@ GRAPH_RUN_PUBLIC_STATUS_BY_INTERNAL = {
     "interrupted": "interrupted",
     "succeeded": "completed",
 }
+OUTPUT_PROOF_SCHEMA = "v8.creative_canvas_output_proof.v1"
+DELIVERY_MANIFEST_SCHEMA = "v8.creative_canvas_delivery_manifest.v1"
+OUTPUT_REVIEW_DECISIONS = {"pending", "approved", "rejected"}
+OUTPUT_REVIEW_STATE_TOPIC = "canvas.graph.output.review.state"
+OUTPUT_REVIEW_STATE_SCHEMA = "v8.creative_canvas_output_review_state.v1"
+OUTPUT_DELIVERY_STATE_TOPIC = "canvas.graph.output.delivery.state"
+OUTPUT_DELIVERY_STATE_SCHEMA = "v8.creative_canvas_output_delivery_state.v1"
+DELIVERY_LEASE_SECONDS = 120
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +102,50 @@ def _clean_id(value: Any, *, label: str) -> str:
 
 def _clean_text(value: Any, *, limit: int) -> str:
     return str(value or "").replace("\x00", "").strip()[:limit]
+
+
+def _elapsed_ms(start_value: Any, end_value: Any) -> int | None:
+    try:
+        start = datetime.fromisoformat(str(start_value or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(end_value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    elapsed = int((end - start).total_seconds() * 1000)
+    return max(0, elapsed)
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _strict_nonnegative_int(value: Any, *, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise CreativeCanvasGraphError(f"{label} is invalid")
+    return value
+
+
+def _safe_proof_identity(value: Any, *, limit: int) -> str:
+    normalized = _clean_text(value, limit=limit)
+    lowered = normalized.lower()
+    if not normalized:
+        return ""
+    if (
+        "://" in normalized
+        or normalized.startswith(("/", "\\", "~"))
+        or re.match(r"^[A-Za-z]:[\\/]", normalized)
+        or lowered.startswith(("file:", "data:"))
+        or re.search(r"(?:api[_-]?key|token|secret|password|authorization|bearer)\s*[:=]", lowered)
+        or re.search(r"\bsk-[A-Za-z0-9_-]{12,}\b", normalized)
+        or re.fullmatch(r"[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}", normalized)
+    ):
+        return ""
+    return normalized
 
 
 def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float, label: str) -> float:
@@ -652,6 +712,262 @@ class CreativeCanvasGraphService:
             }
             for definition in ACTION_DEFINITIONS.values()
         ]
+
+    @staticmethod
+    def _safe_assessment(value: Any) -> dict[str, Any]:
+        assessment = _record(value)
+        projected: dict[str, Any] = {}
+        for key in ("status", "profile", "passed"):
+            if key in assessment and isinstance(assessment[key], (str, bool)):
+                projected[key] = assessment[key]
+        for key in ("score", "issueCount", "jobCount"):
+            number = _finite_number(assessment.get(key))
+            if number is not None:
+                projected[key] = int(number) if number.is_integer() else number
+        return projected
+
+    @classmethod
+    def _sanitize_output_proof(cls, value: Any) -> dict[str, Any]:
+        proof = _record(value)
+        if str(proof.get("schema") or "") != OUTPUT_PROOF_SCHEMA:
+            return {
+                "schema": OUTPUT_PROOF_SCHEMA,
+                "available": False,
+                "unavailableReason": "legacy_output_proof_unavailable",
+            }
+        projected: dict[str, Any] = {
+            "schema": OUTPUT_PROOF_SCHEMA,
+            "available": bool(proof.get("available", True)),
+        }
+        for key, limit in (
+            ("unavailableReason", 120),
+            ("status", 40),
+            ("currency", 16),
+        ):
+            normalized = _clean_text(proof.get(key), limit=limit)
+            if normalized:
+                projected[key] = normalized
+        for key, limit in (
+            ("provider", 120),
+            ("model", 160),
+            ("recipeId", 160),
+            ("operationKind", 160),
+        ):
+            normalized = _safe_proof_identity(proof.get(key), limit=limit)
+            if normalized:
+                projected[key] = normalized
+        elapsed_ms = _finite_number(proof.get("elapsedMs"))
+        if elapsed_ms is not None:
+            projected["elapsedMs"] = max(0, int(elapsed_ms))
+        cost = _finite_number(proof.get("cost"))
+        if cost is not None:
+            projected["cost"] = cost
+        quality = cls._safe_assessment(proof.get("quality"))
+        if quality:
+            projected["quality"] = quality
+        qa = cls._safe_assessment(proof.get("qa"))
+        if qa:
+            projected["qa"] = qa
+        return projected
+
+    @classmethod
+    def _build_output_proof(cls, *, entry: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+        request = _record(job.get("request"))
+        response = _record(job.get("providerResponse"))
+        cost = next(
+            (
+                number
+                for number in (
+                    _finite_number(job.get("estimatedCost")),
+                    _finite_number(response.get("estimatedCost")),
+                    _finite_number(request.get("estimatedCost")),
+                )
+                if number is not None
+            ),
+            None,
+        )
+        quality_status = _clean_text(job.get("qualityStatus") or "not_run", limit=40)
+        quality_job_count = len([item for item in _list(job.get("qualityJobIds")) if str(item or "").strip()])
+        proof: dict[str, Any] = {
+            "schema": OUTPUT_PROOF_SCHEMA,
+            "available": True,
+            "status": _clean_text(job.get("status") or "succeeded", limit=40),
+            "provider": _clean_text(
+                response.get("providerId")
+                or request.get("providerId")
+                or request.get("provider_id")
+                or job.get("adapter"),
+                limit=120,
+            ),
+            "model": _clean_text(
+                response.get("model")
+                or request.get("model")
+                or request.get("modelId")
+                or request.get("model_id"),
+                limit=160,
+            ),
+            "recipeId": _clean_text(
+                job.get("recipeId") or request.get("recipeId") or request.get("recipe_id"),
+                limit=160,
+            ),
+            "operationKind": _clean_text(
+                job.get("operationKind")
+                or request.get("operationKind")
+                or entry.get("capability")
+                or entry.get("actionDefinitionId"),
+                limit=160,
+            ),
+            "elapsedMs": _elapsed_ms(job.get("createdAt"), job.get("completedAt")),
+            "cost": cost,
+            "currency": _clean_text(
+                job.get("currency") or response.get("currency") or request.get("currency"),
+                limit=16,
+            ),
+            "quality": {
+                "status": quality_status,
+                "profile": _clean_text(request.get("qualityProfile") or request.get("quality_profile"), limit=80),
+                "jobCount": quality_job_count,
+            },
+            "qa": {
+                "status": _clean_text(job.get("qaStatus") or quality_status, limit=40),
+                "passed": quality_status == "passed",
+            },
+        }
+        return cls._sanitize_output_proof(proof)
+
+    @staticmethod
+    def _review_projection(row: dict[str, Any]) -> dict[str, Any]:
+        decision = str(row.get("review_decision") or row.get("decision") or "pending").strip().lower()
+        if decision not in OUTPUT_REVIEW_DECISIONS:
+            decision = "pending"
+        delivery_status = str(
+            row.get("review_delivery_status") or row.get("delivery_status") or "idle"
+        ).strip().lower()
+        if delivery_status not in {"idle", "pending", "failed", "delivered"}:
+            delivery_status = "idle"
+        delivery_manifest_artifact_id = (
+            row.get("review_delivery_manifest_artifact_id")
+            or row.get("delivery_manifest_artifact_id")
+        )
+        delivered_at = row.get("review_delivered_at") or row.get("delivered_at")
+        delivery = {
+            "status": delivery_status,
+            "attempt": int(row.get("review_delivery_attempt") or row.get("delivery_attempt") or 0),
+            "errorDetailCode": (
+                _clean_text(
+                    row.get("review_delivery_error_detail_code")
+                    or row.get("delivery_error_detail_code"),
+                    limit=120,
+                )
+                or None
+            ),
+            "manifestArtifactId": delivery_manifest_artifact_id or None,
+            "deliveredAt": delivered_at,
+        }
+        return {
+            "decision": decision,
+            "revision": int(
+                row.get("review_selection_revision")
+                if row.get("review_selection_revision") is not None
+                else row.get("review_revision") or row.get("revision") or 0
+            ),
+            "note": _clean_text(row.get("review_note") or row.get("note"), limit=1000),
+            "selectedForDelivery": bool(
+                row.get("review_selected_for_delivery")
+                if row.get("review_selected_for_delivery") is not None
+                else row.get("selected_for_delivery")
+            ),
+            "reviewedAt": row.get("review_reviewed_at") or row.get("reviewed_at"),
+            "deliveryManifestArtifactId": (
+                delivery_manifest_artifact_id if delivery_status == "delivered" else None
+            ),
+            "deliveredAt": delivered_at,
+            "delivery": delivery,
+        }
+
+    @staticmethod
+    def _media_scope(session_id: str) -> CreativeMediaAuthorityScope | None:
+        try:
+            return creative_media_resource_authority.resolve_scope(session_id=session_id)
+        except CreativeMediaResourceAuthorityError:
+            return None
+
+    @staticmethod
+    def _output_resource_projection(
+        *,
+        session_id: str,
+        artifact_id: str,
+        media_type: str,
+        scope: CreativeMediaAuthorityScope | None,
+    ) -> dict[str, Any]:
+        unavailable = {
+            "id": artifact_id,
+            "origin": "artifact",
+            "sessionId": session_id,
+            "mediaType": media_type or "unknown",
+            "availability": "unavailable",
+            "unavailableReason": "output_resource_not_authorized",
+        }
+        if not artifact_id or scope is None:
+            return unavailable
+        artifact = db.get_runtime_artifact(artifact_id)
+        if not artifact or not creative_media_resource_authority.artifact_matches_scope(
+            dict(artifact),
+            scope=scope,
+        ):
+            return unavailable
+        normalized = normalize_artifact_record(dict(artifact))
+        display_name = _clean_text(normalized.get("title") or "Canvas output", limit=240)
+        if (
+            "://" in display_name
+            or display_name.startswith(("/", "\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", display_name)
+        ):
+            display_name = "Canvas output"
+        return {
+            "id": artifact_id,
+            "origin": "artifact",
+            "sessionId": session_id,
+            "name": display_name,
+            "mimeType": _clean_text(normalized.get("mimeType"), limit=120),
+            "mediaType": media_type or _clean_text(normalized.get("kind"), limit=40) or "unknown",
+            "availability": "available",
+            "resourceRef": {
+                "kind": "artifact_content",
+                "artifactId": artifact_id,
+                "sessionId": session_id,
+            },
+        }
+
+    @classmethod
+    def _output_version_projection(
+        cls,
+        row: dict[str, Any],
+        *,
+        scope: CreativeMediaAuthorityScope | None,
+    ) -> dict[str, Any]:
+        metadata = _record(_json(row.get("metadata_json"), {}))
+        artifact_id = str(row.get("artifact_id") or "").strip()
+        media_type = str(row.get("media_type") or "unknown").strip().lower()
+        proof = cls._sanitize_output_proof(metadata.get("proof"))
+        return {
+            "outputVersionId": row.get("output_version_id"),
+            "version": int(row.get("version_index") or 0),
+            "artifactId": artifact_id or None,
+            "mediaType": media_type,
+            "outputSlot": row.get("output_slot"),
+            "configDigest": row.get("config_digest"),
+            "resource": cls._output_resource_projection(
+                session_id=str(row.get("session_id") or ""),
+                artifact_id=artifact_id,
+                media_type=media_type,
+                scope=scope,
+            ),
+            "proof": proof,
+            "status": proof.get("status") or None,
+            "review": cls._review_projection(row),
+            "createdAt": row.get("created_at"),
+        }
 
     def _normalize_graph(self, graph: dict[str, Any], *, graph_id: str = "") -> dict[str, Any]:
         raw = _record(graph)
@@ -1393,7 +1709,8 @@ class CreativeCanvasGraphService:
         return command_id
 
     def get_graph(self, *, session_id: str) -> dict[str, Any]:
-        self._authority(session_id)
+        authority = self._authority(session_id)
+        media_scope = self._media_scope(session_id)
         row = self._graph_row(session_id=session_id)
         if not row:
             return {
@@ -1402,6 +1719,8 @@ class CreativeCanvasGraphService:
                 "history": {"canUndo": False, "canRedo": False, "undoDepth": 0, "redoDepth": 0, "lastCommand": None},
                 "runtime": {"status": "idle", "nodeStates": {}, "outputs": {}},
             }
+        if str(row.get("workspace_key") or "") != self._workspace_key(authority):
+            raise CreativeCanvasGraphError("Canvas graph is unavailable in the current workspace")
         graph = _record(_json(row.get("graph_json"), {}))
         with db.get_connection() as conn:
             run = conn.execute(
@@ -1410,8 +1729,26 @@ class CreativeCanvasGraphService:
             ).fetchone()
             outputs = conn.execute(
                 """
-                SELECT * FROM creative_canvas_node_outputs
-                WHERE graph_id = ? ORDER BY result_node_id, version_index DESC
+                SELECT outputs.*,
+                       reviews.decision AS review_decision,
+                       reviews.revision AS review_revision,
+                       reviews.note AS review_note,
+                       reviews.selected_for_delivery AS review_selected_for_delivery,
+                       reviews.reviewed_at AS review_reviewed_at,
+                       reviews.delivery_manifest_artifact_id AS review_delivery_manifest_artifact_id,
+                       reviews.delivered_at AS review_delivered_at,
+                       reviews.delivery_status AS review_delivery_status,
+                       reviews.delivery_attempt AS review_delivery_attempt,
+                       reviews.delivery_error_detail_code AS review_delivery_error_detail_code,
+                       review_heads.revision AS review_selection_revision
+                FROM creative_canvas_node_outputs AS outputs
+                LEFT JOIN creative_canvas_output_reviews AS reviews
+                  ON reviews.output_version_id = outputs.output_version_id
+                LEFT JOIN creative_canvas_output_review_heads AS review_heads
+                  ON review_heads.graph_id = outputs.graph_id
+                 AND review_heads.result_node_id = outputs.result_node_id
+                WHERE outputs.graph_id = ?
+                ORDER BY outputs.result_node_id, outputs.version_index DESC
                 """,
                 (row["graph_id"],),
             ).fetchall()
@@ -1419,17 +1756,9 @@ class CreativeCanvasGraphService:
         output_map: dict[str, list[dict[str, Any]]] = {}
         for output in outputs:
             item = dict(output)
-            output_map.setdefault(str(item["result_node_id"]), []).append({
-                "outputVersionId": item["output_version_id"],
-                "version": item["version_index"],
-                "artifactId": item.get("artifact_id"),
-                "jobId": item.get("job_id"),
-                "mediaType": item.get("media_type"),
-                "outputSlot": item.get("output_slot"),
-                "configDigest": item.get("config_digest"),
-                "metadata": _record(_json(item.get("metadata_json"), {})),
-                "createdAt": item.get("created_at"),
-            })
+            output_map.setdefault(str(item["result_node_id"]), []).append(
+                self._output_version_projection(item, scope=media_scope)
+            )
         run_data = dict(run) if run else {}
         run_projection = self._project_run(run_data) if run_data else None
         return {
@@ -1458,6 +1787,906 @@ class CreativeCanvasGraphService:
                 "outputs": output_map,
                 "updatedAt": run_data.get("updated_at") or row.get("updated_at"),
             },
+        }
+
+    @staticmethod
+    def _select_output_row(conn: Any, *, session_id: str, output_version_id: str) -> dict[str, Any] | None:
+        row = conn.execute(
+            """
+            SELECT outputs.*,
+                   graphs.workspace_key AS graph_workspace_key,
+                   runs.chat_run_id AS chat_run_id,
+                   reviews.decision AS review_decision,
+                   reviews.revision AS review_revision,
+                   reviews.note AS review_note,
+                   reviews.selected_for_delivery AS review_selected_for_delivery,
+                   reviews.reviewed_at AS review_reviewed_at,
+                   reviews.delivery_manifest_artifact_id AS review_delivery_manifest_artifact_id,
+                   reviews.delivered_at AS review_delivered_at,
+                   reviews.delivery_status AS review_delivery_status,
+                   reviews.delivery_attempt AS review_delivery_attempt,
+                   reviews.delivery_lease_id AS review_delivery_lease_id,
+                   reviews.delivery_lease_expires_at AS review_delivery_lease_expires_at,
+                   reviews.delivery_error_detail_code AS review_delivery_error_detail_code,
+                   reviews.delivery_manifest_digest AS review_delivery_manifest_digest,
+                   reviews.delivery_manifest_bytes_digest AS review_delivery_manifest_bytes_digest,
+                   reviews.delivery_manifest_relative_path AS review_delivery_manifest_relative_path,
+                   review_heads.revision AS review_selection_revision,
+                   review_heads.selected_output_version_id AS review_selected_output_version_id
+            FROM creative_canvas_node_outputs AS outputs
+            JOIN creative_canvas_graphs AS graphs ON graphs.graph_id = outputs.graph_id
+            JOIN creative_canvas_graph_runs AS runs ON runs.graph_run_id = outputs.graph_run_id
+            LEFT JOIN creative_canvas_output_reviews AS reviews
+              ON reviews.output_version_id = outputs.output_version_id
+            LEFT JOIN creative_canvas_output_review_heads AS review_heads
+              ON review_heads.graph_id = outputs.graph_id
+             AND review_heads.result_node_id = outputs.result_node_id
+            WHERE outputs.output_version_id = ? AND outputs.session_id = ?
+            LIMIT 1
+            """,
+            (output_version_id, session_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _output_row_for_authority(
+        self,
+        *,
+        session_id: str,
+        output_version_id: str,
+        require_write: bool,
+    ) -> tuple[WorkspaceAuthorityDescriptor, dict[str, Any]]:
+        authority = self._authority(session_id, require_write=require_write)
+        normalized_output_id = _clean_id(output_version_id, label="Canvas output version id")
+        with db.get_connection() as conn:
+            row = self._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=normalized_output_id,
+            )
+        if not row or str(row.get("graph_workspace_key") or "") != self._workspace_key(authority):
+            raise CreativeCanvasGraphError("Canvas output version is unavailable in the current session")
+        return authority, row
+
+    @staticmethod
+    def _append_output_state_event(
+        conn: Any,
+        *,
+        row: dict[str, Any],
+        topic: str,
+        payload: dict[str, Any],
+        event_ts: str,
+    ) -> None:
+        if not conn.in_transaction:
+            raise CreativeCanvasGraphError("Canvas output event must join its state transaction")
+        session_id = str(row.get("session_id") or "").strip()
+        if not session_id or topic not in {OUTPUT_REVIEW_STATE_TOPIC, OUTPUT_DELIVERY_STATE_TOPIC}:
+            raise CreativeCanvasGraphError("Canvas output event identity is invalid")
+        seq = db._allocate_runtime_event_seq(conn, session_id)
+        conn.execute(
+            """
+            INSERT INTO runtime_events(
+                id, session_id, run_id, seq, kind, topic, event_ts, source_json, payload_json
+            ) VALUES (?, ?, ?, ?, 'event', ?, ?, ?, ?)
+            """,
+            (
+                f"evt_canvas_output_{uuid.uuid4().hex}",
+                session_id,
+                str(row.get("chat_run_id") or "").strip() or None,
+                seq,
+                topic,
+                event_ts,
+                json.dumps(
+                    {
+                        "plane": "engine",
+                        "component": "creative_canvas_graph",
+                        "node": "output_review_delivery",
+                        "agent_id": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+
+    @staticmethod
+    def _publish_output_state_activity(*, session_id: str, topic: str) -> None:
+        try:
+            from core.session_activity import is_session_activity_topic, session_activity_broker
+
+            if not is_session_activity_topic(topic):
+                return
+            session = db.get_session(session_id) or {}
+            session_activity_broker.publish(
+                owner_id=str(session.get("user_id") or session.get("userId") or ""),
+                session_id=session_id,
+                topic=topic,
+            )
+        except Exception:
+            # SQLite state and runtime_events are authoritative. Client wakeup is repairable by polling.
+            pass
+
+    @staticmethod
+    def _event_review_projection(review: dict[str, Any]) -> dict[str, Any]:
+        delivery = _record(review.get("delivery"))
+        return {
+            "decision": review.get("decision"),
+            "revision": int(review.get("revision") or 0),
+            "selectedForDelivery": bool(review.get("selectedForDelivery")),
+            "reviewedAt": review.get("reviewedAt"),
+            "delivery": {
+                "status": delivery.get("status") or "idle",
+                "attempt": int(delivery.get("attempt") or 0),
+                "errorDetailCode": delivery.get("errorDetailCode"),
+                "manifestArtifactId": (
+                    delivery.get("manifestArtifactId")
+                    if delivery.get("status") == "delivered"
+                    else None
+                ),
+                "deliveredAt": delivery.get("deliveredAt"),
+            },
+        }
+
+    @classmethod
+    def _review_response(
+        cls,
+        *,
+        target_output_version_id: str,
+        affected: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        projected = [
+            {
+                "outputVersionId": str(row.get("output_version_id") or ""),
+                "review": cls._review_projection(row),
+            }
+            for row in affected
+        ]
+        target = next(
+            (item["review"] for item in projected if item["outputVersionId"] == target_output_version_id),
+            cls._review_projection({}),
+        )
+        return {
+            "review": target,
+            "affectedReviews": projected,
+            "selectionRevision": int(target.get("revision") or 0),
+        }
+
+    @staticmethod
+    def _delivery_lease_active(row: dict[str, Any], *, now: datetime | None = None) -> bool:
+        if str(row.get("review_delivery_status") or row.get("delivery_status") or "") != "pending":
+            return False
+        expires_at = str(
+            row.get("review_delivery_lease_expires_at")
+            or row.get("delivery_lease_expires_at")
+            or ""
+        ).strip()
+        if not expires_at:
+            return False
+        try:
+            expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return expires > (now or datetime.now(timezone.utc))
+
+    @classmethod
+    def _select_review_rows(
+        cls,
+        conn: Any,
+        *,
+        session_id: str,
+        output_version_ids: Iterable[str],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for output_version_id in dict.fromkeys(str(item) for item in output_version_ids if str(item)):
+            row = cls._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=output_version_id,
+            )
+            if row:
+                rows.append(row)
+        return rows
+
+    def review_output(
+        self,
+        *,
+        session_id: str,
+        output_version_id: str,
+        decision: str,
+        note: str,
+        selected_for_delivery: bool,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        authority = self._authority(session_id, require_write=True)
+        normalized_output_id = _clean_id(output_version_id, label="Canvas output version id")
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in OUTPUT_REVIEW_DECISIONS:
+            raise CreativeCanvasGraphError("Canvas output review decision is invalid")
+        if not isinstance(selected_for_delivery, bool):
+            raise CreativeCanvasGraphError("Canvas output delivery selection must be a boolean")
+        if selected_for_delivery and normalized_decision != "approved":
+            raise CreativeCanvasGraphError("Only an approved Canvas output can be selected for delivery")
+        expected = _strict_nonnegative_int(
+            expected_revision,
+            label="Canvas output review revision",
+        )
+        normalized_note = _clean_text(note, limit=1000)
+        now = _utc_now()
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=normalized_output_id,
+            )
+            if not row or str(row.get("graph_workspace_key") or "") != self._workspace_key(authority):
+                conn.rollback()
+                raise CreativeCanvasGraphError("Canvas output version is unavailable in the current session")
+            current = self._review_projection(row)
+            if int(current["revision"]) != expected:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas result review changed before this update")
+            requested_selection = bool(selected_for_delivery)
+            unchanged = (
+                current["decision"] == normalized_decision
+                and current["note"] == normalized_note
+                and bool(current["selectedForDelivery"]) == requested_selection
+            )
+            if unchanged:
+                response = self._review_response(
+                    target_output_version_id=normalized_output_id,
+                    affected=[row],
+                )
+                conn.commit()
+                return response
+            delivery_status = str(_record(current.get("delivery")).get("status") or "idle")
+            if delivery_status == "delivered":
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Delivered Canvas output review is immutable")
+            if self._delivery_lease_active(row):
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas output delivery is currently in progress")
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO creative_canvas_output_review_heads(
+                    graph_id, result_node_id, revision, selected_output_version_id, updated_at
+                ) VALUES (?, ?, 0, NULL, ?)
+                """,
+                (row["graph_id"], row["result_node_id"], now),
+            )
+            head = conn.execute(
+                """
+                SELECT * FROM creative_canvas_output_review_heads
+                WHERE graph_id = ? AND result_node_id = ? LIMIT 1
+                """,
+                (row["graph_id"], row["result_node_id"]),
+            ).fetchone()
+            if not head or int(head["revision"] or 0) != expected:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas result review changed before this update")
+            prior_selected_id = str(head["selected_output_version_id"] or "").strip()
+            prior_selected = None
+            if requested_selection:
+                prior_selected = conn.execute(
+                    """
+                    SELECT output_version_id, delivery_status, delivery_lease_expires_at
+                    FROM creative_canvas_output_reviews
+                    WHERE graph_id = ? AND result_node_id = ? AND output_version_id <> ?
+                      AND selected_for_delivery = 1
+                    LIMIT 1
+                    """,
+                    (row["graph_id"], row["result_node_id"], normalized_output_id),
+                ).fetchone()
+                if prior_selected and str(prior_selected["delivery_status"] or "") == "delivered":
+                    conn.rollback()
+                    raise CreativeCanvasGraphConflict("This Canvas result already has a delivered output")
+                if prior_selected and self._delivery_lease_active(dict(prior_selected)):
+                    conn.rollback()
+                    raise CreativeCanvasGraphConflict("The selected Canvas output is being delivered")
+            next_revision = expected + 1
+            next_selected_id = (
+                normalized_output_id
+                if requested_selection
+                else None if prior_selected_id == normalized_output_id else prior_selected_id or None
+            )
+            updated_head = conn.execute(
+                """
+                UPDATE creative_canvas_output_review_heads
+                SET revision = ?, selected_output_version_id = ?, updated_at = ?
+                WHERE graph_id = ? AND result_node_id = ? AND revision = ?
+                """,
+                (
+                    next_revision,
+                    next_selected_id,
+                    now,
+                    row["graph_id"],
+                    row["result_node_id"],
+                    expected,
+                ),
+            )
+            if updated_head.rowcount != 1:
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas result review changed before this update")
+
+            affected_ids = [normalized_output_id]
+            if prior_selected_id and prior_selected_id != normalized_output_id:
+                affected_ids.append(prior_selected_id)
+            if requested_selection and prior_selected_id and prior_selected_id != normalized_output_id:
+                conn.execute(
+                    """
+                    UPDATE creative_canvas_output_reviews
+                    SET selected_for_delivery = 0, revision = ?, updated_at = ?,
+                        delivery_status = CASE
+                            WHEN delivery_status = 'pending' THEN 'failed'
+                            ELSE delivery_status
+                        END,
+                        delivery_error_detail_code = CASE
+                            WHEN delivery_status = 'pending' THEN 'delivery_lease_expired'
+                            ELSE delivery_error_detail_code
+                        END,
+                        delivery_lease_id = NULL,
+                        delivery_lease_expires_at = NULL
+                    WHERE output_version_id = ? AND graph_id = ? AND result_node_id = ?
+                      AND selected_for_delivery = 1
+                    """,
+                    (
+                        next_revision,
+                        now,
+                        prior_selected_id,
+                        row["graph_id"],
+                        row["result_node_id"],
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_output_reviews(
+                    output_version_id, session_id, graph_id, result_node_id,
+                    decision, revision, note, selected_for_delivery,
+                    delivery_status, delivery_attempt,
+                    created_at, updated_at, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?)
+                ON CONFLICT(output_version_id) DO UPDATE SET
+                    decision = excluded.decision,
+                    revision = excluded.revision,
+                    note = excluded.note,
+                    selected_for_delivery = excluded.selected_for_delivery,
+                    delivery_status = 'idle',
+                    delivery_lease_id = NULL,
+                    delivery_lease_expires_at = NULL,
+                    delivery_error_detail_code = NULL,
+                    delivery_manifest_artifact_id = NULL,
+                    delivery_manifest_digest = NULL,
+                    delivery_manifest_bytes_digest = NULL,
+                    delivery_manifest_relative_path = NULL,
+                    updated_at = excluded.updated_at,
+                    reviewed_at = excluded.reviewed_at
+                """,
+                (
+                    normalized_output_id,
+                    session_id,
+                    row["graph_id"],
+                    row["result_node_id"],
+                    normalized_decision,
+                    next_revision,
+                    normalized_note,
+                    1 if requested_selection else 0,
+                    now,
+                    now,
+                    now if normalized_decision != "pending" else None,
+                ),
+            )
+            affected = self._select_review_rows(
+                conn,
+                session_id=session_id,
+                output_version_ids=affected_ids,
+            )
+            response = self._review_response(
+                target_output_version_id=normalized_output_id,
+                affected=affected,
+            )
+            self._append_output_state_event(
+                conn,
+                row=row,
+                topic=OUTPUT_REVIEW_STATE_TOPIC,
+                event_ts=now,
+                payload={
+                    "schema": OUTPUT_REVIEW_STATE_SCHEMA,
+                    "runtimeId": "creative_media",
+                    "surfaceTargets": ["runtime_card", "runtime_timeline", "process"],
+                    "sessionId": session_id,
+                    "graphId": row["graph_id"],
+                    "resultNodeId": row["result_node_id"],
+                    "outputVersionId": normalized_output_id,
+                    "selectionRevision": next_revision,
+                    "review": self._event_review_projection(response["review"]),
+                    "affectedReviews": [
+                        {
+                            "outputVersionId": item["outputVersionId"],
+                            "review": self._event_review_projection(item["review"]),
+                        }
+                        for item in response["affectedReviews"]
+                    ],
+                },
+            )
+            conn.commit()
+        self._publish_output_state_activity(
+            session_id=session_id,
+            topic=OUTPUT_REVIEW_STATE_TOPIC,
+        )
+        return response
+
+    @staticmethod
+    def _delivery_failure_code(stage: str, error: Exception) -> str:
+        if isinstance(error, CreativeCanvasGraphConflict):
+            return "delivery_identity_conflict"
+        return {
+            "manifest": "delivery_manifest_write_failed",
+            "artifact": "delivery_artifact_registration_failed",
+            "ack": "delivery_ack_failed",
+        }.get(stage, "delivery_failed")
+
+    def _record_delivery_failure(
+        self,
+        *,
+        session_id: str,
+        output_version_id: str,
+        lease_id: str,
+        error_detail_code: str,
+    ) -> None:
+        now = _utc_now()
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=output_version_id,
+            )
+            if (
+                not row
+                or str(row.get("review_delivery_status") or "") != "pending"
+                or str(row.get("review_delivery_lease_id") or "") != lease_id
+            ):
+                conn.rollback()
+                return
+            updated = conn.execute(
+                """
+                UPDATE creative_canvas_output_reviews
+                SET delivery_status = 'failed', delivery_error_detail_code = ?,
+                    delivery_lease_id = NULL, delivery_lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE output_version_id = ? AND delivery_status = 'pending'
+                  AND delivery_lease_id = ?
+                """,
+                (error_detail_code, now, output_version_id, lease_id),
+            )
+            if updated.rowcount != 1:
+                conn.rollback()
+                return
+            refreshed = self._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=output_version_id,
+            )
+            review = self._review_projection(refreshed or {})
+            self._append_output_state_event(
+                conn,
+                row=refreshed or row,
+                topic=OUTPUT_DELIVERY_STATE_TOPIC,
+                event_ts=now,
+                payload={
+                    "schema": OUTPUT_DELIVERY_STATE_SCHEMA,
+                    "runtimeId": "creative_media",
+                    "surfaceTargets": ["runtime_card", "runtime_timeline", "process"],
+                    "sessionId": session_id,
+                    "graphId": row["graph_id"],
+                    "resultNodeId": row["result_node_id"],
+                    "outputVersionId": output_version_id,
+                    "selectionRevision": int(review.get("revision") or 0),
+                    "delivery": self._event_review_projection(review)["delivery"],
+                },
+            )
+            conn.commit()
+        self._publish_output_state_activity(
+            session_id=session_id,
+            topic=OUTPUT_DELIVERY_STATE_TOPIC,
+        )
+
+    @staticmethod
+    def _assert_delivery_artifact(
+        *,
+        artifact: dict[str, Any],
+        authority: WorkspaceAuthorityDescriptor,
+        session_id: str,
+        output_version_id: str,
+        manifest_artifact_id: str,
+        manifest_path: Path,
+        relative_path: str,
+        manifest_digest: str,
+        manifest_bytes_digest: str,
+    ) -> None:
+        normalized = normalize_artifact_record(dict(artifact or {}))
+        metadata = _record(normalized.get("metadata"))
+        try:
+            source_path = Path(str(normalized.get("sourcePath") or "")).expanduser().resolve(strict=False)
+        except (OSError, ValueError) as exc:
+            raise CreativeCanvasGraphConflict("Canvas delivery artifact source path is invalid") from exc
+        expected_workspace_root = Path(str(authority.workspace_root)).expanduser().resolve(strict=False)
+        if (
+            str(normalized.get("artifactId") or "") != manifest_artifact_id
+            or str(normalized.get("sessionId") or "") != session_id
+            or source_path != manifest_path
+            or str(normalized.get("workspacePath") or "").replace("\\", "/") != relative_path
+            or str(metadata.get("workspaceId") or "") != str(authority.workspace_id or "")
+            or str(metadata.get("projectId") or "") != str(authority.project_id or "")
+            or Path(str(metadata.get("workspaceRoot") or "")).expanduser().resolve(strict=False)
+            != expected_workspace_root
+            or str(metadata.get("workspaceRelativePath") or "").replace("\\", "/") != relative_path
+            or str(metadata.get("canvasOutputVersionId") or "") != output_version_id
+            or str(metadata.get("deliveryManifestDigest") or "") != manifest_digest
+            or str(metadata.get("deliveryManifestBytesDigest") or "") != manifest_bytes_digest
+        ):
+            raise CreativeCanvasGraphConflict("Canvas delivery manifest artifact identity is already in use")
+
+    def create_delivery_manifest(
+        self,
+        *,
+        session_id: str,
+        output_version_id: str,
+        expected_review_revision: int,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        authority, row = self._output_row_for_authority(
+            session_id=session_id,
+            output_version_id=output_version_id,
+            require_write=True,
+        )
+        expected = _strict_nonnegative_int(
+            expected_review_revision,
+            label="Canvas output delivery review revision",
+        )
+        if not isinstance(dry_run, bool):
+            raise CreativeCanvasGraphError("Canvas output delivery request is invalid")
+        normalized_output_id = str(row["output_version_id"])
+        review = self._review_projection(row)
+        if int(review["revision"]) != expected:
+            raise CreativeCanvasGraphConflict("Canvas output review changed before delivery")
+        if review["decision"] != "approved" or not review["selectedForDelivery"]:
+            raise CreativeCanvasGraphConflict("Canvas output must be approved and selected before delivery")
+        scope = self._media_scope(session_id)
+        resource = self._output_resource_projection(
+            session_id=session_id,
+            artifact_id=str(row.get("artifact_id") or ""),
+            media_type=str(row.get("media_type") or "unknown"),
+            scope=scope,
+        )
+        if resource.get("availability") != "available" or not _record(resource.get("resourceRef")):
+            raise CreativeCanvasGraphConflict("Canvas output resource is not available for delivery")
+        proof = self._sanitize_output_proof(_record(_json(row.get("metadata_json"), {})).get("proof"))
+        if not proof.get("available"):
+            raise CreativeCanvasGraphConflict("Canvas output has no immutable execution proof")
+        manifest_body = {
+            "schema": DELIVERY_MANIFEST_SCHEMA,
+            "sessionId": session_id,
+            "workspaceId": str(authority.workspace_id or "") or None,
+            "projectId": str(authority.project_id or "") or None,
+            "graphId": row["graph_id"],
+            "resultNodeId": row["result_node_id"],
+            "outputVersionId": normalized_output_id,
+            "version": int(row.get("version_index") or 0),
+            "resource": resource,
+            "proof": proof,
+            "review": {
+                "decision": review["decision"],
+                "revision": int(review["revision"]),
+                "note": review["note"],
+                "reviewedAt": review["reviewedAt"],
+            },
+            "createdAt": review["reviewedAt"] or row.get("created_at"),
+        }
+        manifest_digest = _digest(manifest_body)
+        manifest = {**manifest_body, "manifestDigest": manifest_digest}
+        manifest_artifact_id = f"art_canvas_delivery_{manifest_digest[:32]}"
+        manifest_bytes = (
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        manifest_bytes_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        workspace_root = Path(str(authority.workspace_root)).expanduser().resolve(strict=False)
+        relative_path = (
+            Path(".v8")
+            / "creative-media"
+            / "delivery"
+            / f"{normalized_output_id}-{manifest_digest[:12]}.json"
+        )
+        relative_path_value = relative_path.as_posix()
+        manifest_path = (workspace_root / relative_path).resolve(strict=False)
+        try:
+            manifest_path.relative_to(workspace_root)
+        except ValueError as exc:
+            raise CreativeCanvasGraphError("Canvas delivery manifest path escaped the current workspace") from exc
+        if dry_run:
+            return {
+                "status": "ready",
+                "dryRun": True,
+                "manifestArtifactId": manifest_artifact_id,
+                "manifestBytesDigest": manifest_bytes_digest,
+                "manifest": manifest,
+                "delivery": {
+                    "status": "ready",
+                    "attempt": int(_record(review.get("delivery")).get("attempt") or 0),
+                    "errorDetailCode": None,
+                },
+            }
+
+        lease_id = f"canvas-delivery-lease-{uuid.uuid4().hex}"
+        lease_expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=DELIVERY_LEASE_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        already_delivered = False
+        pending_event_committed = False
+        claim_now = _utc_now()
+        with db.get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current_row = self._select_output_row(
+                conn,
+                session_id=session_id,
+                output_version_id=normalized_output_id,
+            )
+            current_review = self._review_projection(current_row or {})
+            if (
+                not current_row
+                or str(current_row.get("graph_workspace_key") or "") != self._workspace_key(authority)
+                or int(current_review["revision"]) != expected
+                or current_review["decision"] != "approved"
+                or not current_review["selectedForDelivery"]
+            ):
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas output review changed before delivery could be claimed")
+            current_delivery = _record(current_review.get("delivery"))
+            current_status = str(current_delivery.get("status") or "idle")
+            stored_artifact_id = str(current_row.get("review_delivery_manifest_artifact_id") or "")
+            stored_digest = str(current_row.get("review_delivery_manifest_digest") or "")
+            stored_bytes_digest = str(current_row.get("review_delivery_manifest_bytes_digest") or "")
+            stored_relative_path = str(current_row.get("review_delivery_manifest_relative_path") or "")
+            if current_status == "delivered":
+                if (
+                    stored_artifact_id != manifest_artifact_id
+                    or stored_digest != manifest_digest
+                    or stored_bytes_digest != manifest_bytes_digest
+                    or stored_relative_path != relative_path_value
+                ):
+                    conn.rollback()
+                    raise CreativeCanvasGraphConflict("Canvas output is already bound to another delivery manifest")
+                already_delivered = True
+                conn.commit()
+            elif self._delivery_lease_active(current_row):
+                conn.rollback()
+                raise CreativeCanvasGraphConflict("Canvas output delivery is already in progress")
+            else:
+                attempt = int(current_delivery.get("attempt") or 0) + 1
+                claimed = conn.execute(
+                    """
+                    UPDATE creative_canvas_output_reviews
+                    SET delivery_status = 'pending', delivery_attempt = ?,
+                        delivery_lease_id = ?, delivery_lease_expires_at = ?,
+                        delivery_error_detail_code = NULL,
+                        delivery_manifest_artifact_id = ?,
+                        delivery_manifest_digest = ?,
+                        delivery_manifest_bytes_digest = ?,
+                        delivery_manifest_relative_path = ?,
+                        updated_at = ?
+                    WHERE output_version_id = ? AND decision = 'approved'
+                      AND selected_for_delivery = 1 AND delivery_status <> 'delivered'
+                    """,
+                    (
+                        attempt,
+                        lease_id,
+                        lease_expires_at,
+                        manifest_artifact_id,
+                        manifest_digest,
+                        manifest_bytes_digest,
+                        relative_path_value,
+                        claim_now,
+                        normalized_output_id,
+                    ),
+                )
+                if claimed.rowcount != 1:
+                    conn.rollback()
+                    raise CreativeCanvasGraphConflict("Canvas output delivery could not be claimed")
+                claimed_row = self._select_output_row(
+                    conn,
+                    session_id=session_id,
+                    output_version_id=normalized_output_id,
+                )
+                claimed_review = self._review_projection(claimed_row or {})
+                self._append_output_state_event(
+                    conn,
+                    row=claimed_row or current_row,
+                    topic=OUTPUT_DELIVERY_STATE_TOPIC,
+                    event_ts=claim_now,
+                    payload={
+                        "schema": OUTPUT_DELIVERY_STATE_SCHEMA,
+                        "runtimeId": "creative_media",
+                        "surfaceTargets": ["runtime_card", "runtime_timeline", "process"],
+                        "sessionId": session_id,
+                        "graphId": current_row["graph_id"],
+                        "resultNodeId": current_row["result_node_id"],
+                        "outputVersionId": normalized_output_id,
+                        "selectionRevision": expected,
+                        "delivery": self._event_review_projection(claimed_review)["delivery"],
+                    },
+                )
+                conn.commit()
+                pending_event_committed = True
+
+        if pending_event_committed:
+            self._publish_output_state_activity(
+                session_id=session_id,
+                topic=OUTPUT_DELIVERY_STATE_TOPIC,
+            )
+
+        stage = "manifest"
+        try:
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            if manifest_path.exists():
+                if manifest_path.read_bytes() != manifest_bytes:
+                    raise CreativeCanvasGraphConflict("Canvas delivery manifest file identity is already in use")
+            else:
+                temporary_path = manifest_path.with_name(f".{manifest_path.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    temporary_path.write_bytes(manifest_bytes)
+                    temporary_path.replace(manifest_path)
+                finally:
+                    temporary_path.unlink(missing_ok=True)
+            if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != manifest_bytes_digest:
+                raise CreativeCanvasGraphConflict("Canvas delivery manifest bytes failed verification")
+
+            stage = "artifact"
+            existing_artifact = db.get_runtime_artifact(manifest_artifact_id)
+            if not existing_artifact:
+                artifact_store.record_local_file(
+                    file_path=manifest_path,
+                    artifact_id=manifest_artifact_id,
+                    session_id=session_id,
+                    run_id=str(row.get("chat_run_id") or "") or None,
+                    resource_role="source_derivative",
+                    auto_attach_to_message=False,
+                    workspace_path=relative_path_value,
+                    metadata={
+                        "workspaceId": str(authority.workspace_id or "") or None,
+                        "projectId": str(authority.project_id or "") or None,
+                        "workspaceRoot": str(workspace_root),
+                        "workspaceRelativePath": relative_path_value,
+                        "storageClass": "workspace",
+                        "pathPlane": "workspace_artifact",
+                        "canvasGraphId": row["graph_id"],
+                        "canvasResultNodeId": row["result_node_id"],
+                        "canvasOutputVersionId": normalized_output_id,
+                        "deliveryManifestDigest": manifest_digest,
+                        "deliveryManifestBytesDigest": manifest_bytes_digest,
+                    },
+                    source_component="creative_canvas_graph",
+                    node="delivery_manifest",
+                )
+                existing_artifact = db.get_runtime_artifact(manifest_artifact_id)
+            if not existing_artifact:
+                raise CreativeCanvasGraphConflict("Canvas delivery manifest artifact was not recorded")
+            self._assert_delivery_artifact(
+                artifact=dict(existing_artifact),
+                authority=authority,
+                session_id=session_id,
+                output_version_id=normalized_output_id,
+                manifest_artifact_id=manifest_artifact_id,
+                manifest_path=manifest_path,
+                relative_path=relative_path_value,
+                manifest_digest=manifest_digest,
+                manifest_bytes_digest=manifest_bytes_digest,
+            )
+
+            if not already_delivered:
+                stage = "ack"
+                current_authority = self._authority(session_id, require_write=True)
+                if self._workspace_key(current_authority) != self._workspace_key(authority):
+                    raise CreativeCanvasGraphConflict("Canvas workspace authority changed during delivery")
+                delivered_at = _utc_now()
+                with db.get_connection() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    current_row = self._select_output_row(
+                        conn,
+                        session_id=session_id,
+                        output_version_id=normalized_output_id,
+                    )
+                    current_review = self._review_projection(current_row or {})
+                    if (
+                        not current_row
+                        or str(current_row.get("graph_workspace_key") or "") != self._workspace_key(current_authority)
+                        or int(current_review.get("revision") or 0) != expected
+                    ):
+                        conn.rollback()
+                        raise CreativeCanvasGraphConflict("Canvas output review changed before delivery acknowledgement")
+                    updated = conn.execute(
+                        """
+                        UPDATE creative_canvas_output_reviews
+                        SET delivery_status = 'delivered', delivered_at = COALESCE(delivered_at, ?),
+                            delivery_lease_id = NULL, delivery_lease_expires_at = NULL,
+                            delivery_error_detail_code = NULL, updated_at = ?
+                        WHERE output_version_id = ? AND decision = 'approved'
+                          AND selected_for_delivery = 1 AND delivery_status = 'pending'
+                          AND delivery_lease_id = ?
+                          AND delivery_manifest_artifact_id = ?
+                          AND delivery_manifest_digest = ?
+                          AND delivery_manifest_bytes_digest = ?
+                          AND delivery_manifest_relative_path = ?
+                        """,
+                        (
+                            delivered_at,
+                            delivered_at,
+                            normalized_output_id,
+                            lease_id,
+                            manifest_artifact_id,
+                            manifest_digest,
+                            manifest_bytes_digest,
+                            relative_path_value,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        conn.rollback()
+                        raise CreativeCanvasGraphConflict("Canvas output delivery acknowledgement was not accepted")
+                    refreshed = self._select_output_row(
+                        conn,
+                        session_id=session_id,
+                        output_version_id=normalized_output_id,
+                    )
+                    delivered_review = self._review_projection(refreshed or {})
+                    self._append_output_state_event(
+                        conn,
+                        row=refreshed or current_row,
+                        topic=OUTPUT_DELIVERY_STATE_TOPIC,
+                        event_ts=delivered_at,
+                        payload={
+                            "schema": OUTPUT_DELIVERY_STATE_SCHEMA,
+                            "runtimeId": "creative_media",
+                            "surfaceTargets": ["runtime_card", "runtime_timeline", "process"],
+                            "sessionId": session_id,
+                            "graphId": current_row["graph_id"],
+                            "resultNodeId": current_row["result_node_id"],
+                            "outputVersionId": normalized_output_id,
+                            "selectionRevision": expected,
+                            "delivery": self._event_review_projection(delivered_review)["delivery"],
+                        },
+                    )
+                    conn.commit()
+                self._publish_output_state_activity(
+                    session_id=session_id,
+                    topic=OUTPUT_DELIVERY_STATE_TOPIC,
+                )
+            else:
+                with db.get_connection() as conn:
+                    refreshed = self._select_output_row(
+                        conn,
+                        session_id=session_id,
+                        output_version_id=normalized_output_id,
+                    )
+                delivered_review = self._review_projection(refreshed or row)
+        except Exception as exc:
+            if not already_delivered:
+                self._record_delivery_failure(
+                    session_id=session_id,
+                    output_version_id=normalized_output_id,
+                    lease_id=lease_id,
+                    error_detail_code=self._delivery_failure_code(stage, exc),
+                )
+            raise
+
+        return {
+            "status": "delivered",
+            "dryRun": False,
+            "manifestArtifactId": manifest_artifact_id,
+            "manifestBytesDigest": manifest_bytes_digest,
+            "manifest": manifest,
+            "review": delivered_review,
+            "delivery": _record(delivered_review.get("delivery")),
         }
 
     def save_graph(
@@ -2224,13 +3453,50 @@ class CreativeCanvasGraphService:
         artifact: dict[str, Any],
     ) -> dict[str, Any]:
         result_node_id = str(entry["resultNodeId"])
+        artifact_id = _clean_id(
+            artifact.get("artifactId") or artifact.get("id"),
+            label="Canvas output artifact id",
+        )
+        authority = self._authority(session_id, require_write=True)
+        scope = self._media_scope(session_id)
+        persisted_artifact = db.get_runtime_artifact(artifact_id)
+        if (
+            scope is None
+            or not persisted_artifact
+            or not creative_media_resource_authority.artifact_matches_scope(
+                dict(persisted_artifact),
+                scope=scope,
+            )
+        ):
+            raise CreativeCanvasGraphError("Canvas output artifact is unavailable in the current session")
+        media_type = str(entry.get("outputMediaType") or "unknown").strip().lower()
+        proof = self._build_output_proof(entry=entry, job=job)
+        resource = self._output_resource_projection(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            media_type=media_type,
+            scope=scope,
+        )
+        if resource.get("availability") != "available":
+            raise CreativeCanvasGraphError("Canvas output artifact is unavailable in the current session")
         with db.get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             run_row = conn.execute(
-                "SELECT status FROM creative_canvas_graph_runs WHERE graph_run_id = ? LIMIT 1",
+                """
+                SELECT runs.status, runs.session_id, runs.graph_id, graphs.workspace_key
+                FROM creative_canvas_graph_runs AS runs
+                JOIN creative_canvas_graphs AS graphs ON graphs.graph_id = runs.graph_id
+                WHERE runs.graph_run_id = ? LIMIT 1
+                """,
                 (graph_run_id,),
             ).fetchone()
-            if not run_row or str(run_row["status"] or "") != "running":
+            if (
+                not run_row
+                or str(run_row["status"] or "") != "running"
+                or str(run_row["session_id"] or "") != session_id
+                or str(run_row["graph_id"] or "") != graph_id
+                or str(run_row["workspace_key"] or "") != self._workspace_key(authority)
+            ):
                 conn.rollback()
                 raise CreativeCanvasGraphCancelled("Canvas graph run was cancelled before output persistence")
             row = conn.execute(
@@ -2266,17 +3532,23 @@ class CreativeCanvasGraphService:
                     entry["actionNodeId"],
                     result_node_id,
                     version,
-                    artifact.get("artifactId") or artifact.get("id"),
+                    artifact_id or None,
                     job.get("jobId") or job.get("id"),
-                    entry.get("outputMediaType"),
+                    media_type,
                     entry.get("outputSlot"),
                     config_digest,
-                    json.dumps({"artifact": artifact}, ensure_ascii=False),
+                    json.dumps({"resource": resource, "proof": proof}, ensure_ascii=False),
                     _utc_now(),
                 ),
             )
             conn.commit()
-        return {"artifact": artifact, "version": version, "outputVersionId": output_version_id}
+        return {
+            "artifact": artifact,
+            "version": version,
+            "outputVersionId": output_version_id,
+            "resource": resource,
+            "proof": proof,
+        }
 
     def _request_for_entry(
         self,

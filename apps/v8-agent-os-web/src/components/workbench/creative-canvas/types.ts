@@ -19,6 +19,8 @@ export type CanvasResource = CreativeCanvasMediaResource & {
     projectionRecord?: Record<string, unknown>;
     folderId?: string;
     adoptedByCurrentSession?: boolean;
+    availability?: "available" | "unavailable";
+    unavailableReason?: string;
 };
 
 export type CanvasNode = {
@@ -163,6 +165,57 @@ export type CanvasOutputVersion = {
     jobId?: string;
     mediaType?: CreativeCanvasMediaType;
     createdAt?: string;
+    /** Session-authorized resource projection for this exact output version. */
+    resource?: Partial<CanvasResource> & Record<string, unknown>;
+    resourceRef?: Partial<CanvasResource> & Record<string, unknown>;
+    resourceProjection?: Partial<CanvasResource> & Record<string, unknown>;
+    /** Immutable provider/recipe/cost/QA proof for this exact output version. */
+    proof?: CanvasOutputVersionProof;
+    outputProof?: CanvasOutputVersionProof;
+    review?: CanvasOutputVersionReview;
+    status?: string;
+};
+
+export type CanvasOutputVersionReview = {
+    decision?: "pending" | "approved" | "rejected" | string;
+    revision?: number;
+    note?: string;
+    selectedForDelivery?: boolean;
+    reviewedAt?: string;
+    deliveryManifestArtifactId?: string;
+    deliveredAt?: string;
+};
+
+export type CanvasDeliveryProjection = {
+    status?: "ready" | "delivered" | "blocked" | "unavailable" | string;
+    dryRun?: boolean;
+    ready?: boolean;
+    reason?: string;
+    unavailableReason?: string;
+    manifestArtifactId?: string;
+    manifestDigest?: string;
+    review?: CanvasOutputVersionReview;
+    [key: string]: unknown;
+};
+
+export type CanvasOutputVersionProof = {
+    available?: boolean;
+    unavailableReason?: string;
+    provider?: string;
+    providerLabel?: string;
+    model?: string;
+    modelLabel?: string;
+    recipeId?: string;
+    operation?: string;
+    operationKind?: string;
+    elapsedMs?: number;
+    durationMs?: number;
+    cost?: number | string;
+    currency?: string;
+    quality?: Record<string, unknown>;
+    qa?: Record<string, unknown>;
+    status?: string;
+    [key: string]: unknown;
 };
 
 export type CanvasGraphRuntime = {

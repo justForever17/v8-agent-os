@@ -4116,38 +4116,49 @@ def test_creative_media_tools_can_call_runtime_facade(monkeypatch):
     module = types.ModuleType("runtimes.creative_media.runtime")
     module.creative_media_runtime = fake_runtime
     monkeypatch.setitem(sys.modules, "runtimes.creative_media.runtime", module)
+    monkeypatch.setattr(
+        "core.tools.native.creative_media_facade.creative_media_resource_authority.authorize_request_resources",
+        lambda _request: [],
+    )
 
-    catalog_payload = json.loads(creative_media_capabilities.invoke({"action": "catalog", "request": {}}))
-    assert catalog_payload["ok"] is True
+    with bind_runtime_context(
+        runtime_kind="creative_media",
+        session_id="session-creative-facade",
+        workspace_id="workspace-creative-facade",
+        project_id="project-creative-facade",
+        workspace_path="E:/Projects/creative-facade",
+    ):
+        catalog_payload = json.loads(creative_media_capabilities.invoke({"action": "catalog", "request": {}}))
+        assert catalog_payload["ok"] is True
 
-    job_payload = json.loads(
-        asyncio.run(
-            creative_media_jobs.ainvoke(
-                {
-                    "action": "create",
-                    "request": {"modality": "image", "operationKind": "image.generate", "prompt": "hero"},
-                }
+        job_payload = json.loads(
+            asyncio.run(
+                creative_media_jobs.ainvoke(
+                    {
+                        "action": "create",
+                        "request": {"modality": "image", "operationKind": "image.generate", "prompt": "hero"},
+                    }
+                )
             )
         )
-    )
-    assert "cm_fake" in job_payload["refs"]
+        assert "cm_fake" in job_payload["refs"]
 
-    recipe_payload = json.loads(
-        creative_media_plan.invoke(
-            {"action": "compile_recipe", "request": {"modality": "music", "prompt": "soft bgm"}}
+        recipe_payload = json.loads(
+            creative_media_plan.invoke(
+                {"action": "compile_recipe", "request": {"modality": "music", "prompt": "soft bgm"}}
+            )
         )
-    )
-    assert "cm_recipe_fake" in recipe_payload["refs"]
+        assert "cm_recipe_fake" in recipe_payload["refs"]
 
-    plan_payload = json.loads(
-        creative_media_edit.invoke({"action": "create_plan", "request": {"assetIds": ["asset-video"]}})
-    )
-    assert "cm_edit_fake" in plan_payload["refs"]
+        plan_payload = json.loads(
+            creative_media_edit.invoke({"action": "create_plan", "request": {"assetIds": ["asset-video"]}})
+        )
+        assert "cm_edit_fake" in plan_payload["refs"]
 
-    quality_payload = json.loads(
-        creative_media_quality.invoke({"action": "create_job", "request": {"jobId": "cm_fake"}})
-    )
-    assert "cm_quality_fake" in quality_payload["refs"]
+        quality_payload = json.loads(
+            creative_media_quality.invoke({"action": "create_job", "request": {"jobId": "cm_fake"}})
+        )
+        assert "cm_quality_fake" in quality_payload["refs"]
 
 
 def test_creative_media_runtime_group_exposes_only_six_facades():

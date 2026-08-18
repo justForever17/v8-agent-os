@@ -317,6 +317,36 @@ async def retry_canvas_graph_failed_branch(session_id: str, graph_run_id: str):
         _raise_canvas_http(error)
 
 
+@router.post("/sessions/{session_id}/canvas/graph/outputs/{output_version_id}/review")
+async def review_canvas_graph_output(session_id: str, output_version_id: str, body: dict = Body(...)):
+    try:
+        return await asyncio.to_thread(
+            creative_canvas_graph_service.review_output,
+            session_id=session_id,
+            output_version_id=output_version_id,
+            decision=str(body.get("decision") or ""),
+            note=str(body.get("note") or ""),
+            selected_for_delivery=body.get("selectedForDelivery"),
+            expected_revision=body.get("expectedRevision"),
+        )
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
+@router.post("/sessions/{session_id}/canvas/graph/outputs/{output_version_id}/delivery")
+async def deliver_canvas_graph_output(session_id: str, output_version_id: str, body: dict = Body(...)):
+    try:
+        return await asyncio.to_thread(
+            creative_canvas_graph_service.create_delivery_manifest,
+            session_id=session_id,
+            output_version_id=output_version_id,
+            expected_review_revision=body.get("expectedRevision"),
+            dry_run=body.get("dryRun", False),
+        )
+    except Exception as error:
+        _raise_canvas_http(error)
+
+
 @router.post("/sessions/{session_id}/canvas/graph")
 async def save_canvas_graph(session_id: str, body: dict = Body(...)):
     try:

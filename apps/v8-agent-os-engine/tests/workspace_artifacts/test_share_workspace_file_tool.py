@@ -123,7 +123,11 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
                 workspace_id="ws_demo",
                 project_id="proj_demo",
             ):
-                artifact = artifact_store.adopt_workspace_file(path="docs/demo.pdf", mode="preview")
+                artifact = artifact_store.adopt_workspace_file(
+                    path="docs/demo.pdf",
+                    mode="preview",
+                    session_id="sess_demo",
+                )
 
         self.assertEqual(artifact["origin"], "workspace_adopted")
         self.assertEqual(artifact["metadata"]["origin"], "workspace_adopted")

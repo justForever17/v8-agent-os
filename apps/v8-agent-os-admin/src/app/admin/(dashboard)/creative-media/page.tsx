@@ -32,6 +32,30 @@ type CreativeMediaData = {
     costEntries: Array<Record<string, unknown>>;
     safetyEvents: Array<Record<string, unknown>>;
     modelPreferences?: CreativeModelPreferences;
+    reconcilerStatus: CreativeMediaReconcilerStatus;
+};
+
+type CreativeMediaReconcilerStatus = {
+    schema?: string;
+    unavailable?: boolean;
+    detailCode?: string;
+    hasError?: boolean;
+    worker: {
+        state?: string;
+        running?: boolean;
+        lastCycleAt?: string | null;
+        lastCycle?: Record<string, unknown>;
+    };
+    uncertain: number;
+    projectionPending: number;
+    oldest: {
+        at?: string | null;
+        ageSeconds?: number | null;
+    };
+    adapterDistribution: Record<string, number>;
+    detailCodeDistribution: Record<string, number>;
+    quarantineCount: number;
+    generatedAt?: string;
 };
 
 type CreativeModelCandidate = {
@@ -90,6 +114,15 @@ const EMPTY_DATA: CreativeMediaData = {
     qualityJobs: [],
     costEntries: [],
     safetyEvents: [],
+    reconcilerStatus: {
+        worker: {},
+        uncertain: 0,
+        projectionPending: 0,
+        oldest: { at: null, ageSeconds: null },
+        adapterDistribution: {},
+        detailCodeDistribution: {},
+        quarantineCount: 0,
+    },
 };
 
 const CREATIVE_BOOTSTRAP_PATH = "/api/creative-media/bootstrap";
@@ -146,6 +179,72 @@ function countCatalogModalities(catalog?: Record<string, unknown>) {
     return Object.keys(modalities).length;
 }
 
+function finiteCount(value: unknown) {
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0;
+}
+
+function normalizeDistribution(value: unknown): Record<string, number> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, number>>((result, [key, count]) => {
+        const normalizedKey = text(key, "unknown").slice(0, 96);
+        result[normalizedKey] = finiteCount(count);
+        return result;
+    }, {});
+}
+
+function normalizeCreativeMediaReconcilerStatus(value: Record<string, unknown>): CreativeMediaReconcilerStatus {
+    const worker = recordValue(value, "worker");
+    const oldest = recordValue(value, "oldest");
+    return {
+        schema: text(value.schema, ""),
+        unavailable: value.unavailable === true,
+        detailCode: text(value.detailCode, ""),
+        hasError: value.hasError === true,
+        worker: {
+            state: text(worker.state, value.unavailable === true ? "unavailable" : "idle"),
+            running: Boolean(worker.running),
+            lastCycleAt: worker.lastCycleAt ? String(worker.lastCycleAt) : null,
+            lastCycle: recordValue(worker, "lastCycle"),
+        },
+        uncertain: finiteCount(value.uncertain),
+        projectionPending: finiteCount(value.projectionPending),
+        oldest: {
+            at: oldest.at ? String(oldest.at) : null,
+            ageSeconds: oldest.ageSeconds === null || oldest.ageSeconds === undefined ? null : finiteCount(oldest.ageSeconds),
+        },
+        adapterDistribution: normalizeDistribution(value.adapterDistribution),
+        detailCodeDistribution: normalizeDistribution(value.detailCodeDistribution),
+        quarantineCount: finiteCount(value.quarantineCount),
+        generatedAt: value.generatedAt ? String(value.generatedAt) : undefined,
+    };
+}
+
+function formatReconcilerAge(t: ReturnType<typeof useT>, seconds: number | null | undefined, unavailable = false) {
+    if (unavailable) return t("app.admin.dashboard.creativeMedia.reconcilerUnavailable");
+    if (seconds === null || seconds === undefined) return t("app.admin.dashboard.creativeMedia.reconcilerNoBacklog");
+    if (seconds < 60) return t("app.admin.dashboard.creativeMedia.reconcilerAgeSeconds", { count: seconds });
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return t("app.admin.dashboard.creativeMedia.reconcilerAgeMinutes", { count: minutes });
+    const hours = Math.floor(minutes / 60);
+    return t("app.admin.dashboard.creativeMedia.reconcilerAgeHours", { count: hours });
+}
+
+function reconcilerStateText(t: ReturnType<typeof useT>, state: unknown) {
+    const keyMap: Record<string, string> = {
+        running: "app.admin.dashboard.creativeMedia.reconcilerStateRunning",
+        idle: "app.admin.dashboard.creativeMedia.reconcilerStateIdle",
+        failed: "app.admin.dashboard.creativeMedia.reconcilerStateFailed",
+        unavailable: "app.admin.dashboard.creativeMedia.reconcilerStateUnavailable",
+    };
+    const normalized = String(state || "idle").toLowerCase();
+    return keyMap[normalized] ? t(keyMap[normalized]) : text(state, t("app.admin.dashboard.creativeMedia.reconcilerStateIdle"));
+}
+
+function reconcilerCount(status: CreativeMediaReconcilerStatus, value: number) {
+    return status.unavailable ? "-" : value;
+}
+
 function modalityLabel(t: ReturnType<typeof useT>, modality: string) {
     const normalized = String(modality || "").toLowerCase();
     const keyMap: Record<string, string> = {
@@ -193,7 +292,7 @@ function nestedText(value: unknown, key: string) {
 }
 
 function qualityRepairLabel(t: ReturnType<typeof useT>, quality: Record<string, unknown>) {
-    const repairs = Array.isArray(quality.repairAttempts) ? quality.repairAttempts.length : 0;
+    const repairs = finiteCount(quality.repairCount);
     if (repairs > 0) {
         return t("app.admin.dashboard.creativeMedia.qualityRepairCount", { count: repairs });
     }
@@ -214,12 +313,10 @@ function productionTitle(workOrder: Record<string, unknown>) {
 }
 
 function productionWorkspace(workOrder: Record<string, unknown>) {
-    return (
-        text(workOrder.workspacePath, "") ||
-        text(workOrder.workspace, "") ||
-        text(workOrder.workspaceId, "") ||
-        text(workOrder.projectId, "")
-    );
+    return [
+        text(workOrder.workspaceId, ""),
+        text(workOrder.projectId, ""),
+    ].filter(Boolean).join(" / ");
 }
 
 function productionRecipeIds(workOrder: Record<string, unknown>) {
@@ -350,6 +447,7 @@ function normalizeCreativeBootstrap(value: Record<string, unknown>): CreativeMed
         assets: arrayValue(recordValue(value, "assets"), "assets"),
         jobs: arrayValue(recordValue(value, "jobs"), "jobs"),
         modelPreferences: normalizeModelPreferences(modelPreferences),
+        reconcilerStatus: normalizeCreativeMediaReconcilerStatus(recordValue(value, "reconcilerStatus")),
     };
 }
 
@@ -382,16 +480,11 @@ export default function CreativeMediaPage() {
 
     const fetchDiagnostics = useCallback(async (force = false) => {
         try {
-            const [characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents] = await Promise.all([
-                fetchAdminJson("/api/creative-media/character-bibles", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/keyframes", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/edit-plans", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/renders", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/quality-jobs", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/cost-ledger", { force, ttlMs: 10_000 }),
-                fetchAdminJson("/api/creative-media/safety-events", { force, ttlMs: 10_000 }),
-            ]);
-            const diagnostics = normalizeCreativeDiagnostics({ characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents });
+            const governance = await fetchAdminJson<Record<string, unknown>>("/api/creative-media/governance/snapshot", {
+                force,
+                ttlMs: 10_000,
+            });
+            const diagnostics = normalizeCreativeDiagnostics(governance);
             setData((current) => ({ ...current, ...diagnostics }));
         } catch {
             // Delayed diagnostics should not block the production-control first screen.
@@ -417,6 +510,8 @@ export default function CreativeMediaPage() {
     }, [fetchData]);
 
     const musicRecipes = data.recipes.filter((item) => text(item.modality, "") === "music");
+    const reconciler = data.reconcilerStatus;
+    const reconcilerWorker = reconciler.worker || {};
     const connectedModelOptions = data.modelPreferences?.connectedOptions || [];
     const diagnosticCandidates = useMemo(() => [
         ...(data.modelPreferences?.connectedOptions || []).filter((candidate) => candidate.available === false),
@@ -500,7 +595,7 @@ export default function CreativeMediaPage() {
         setWorkingWorkOrderId(workOrderId);
         setError("");
         try {
-            const response = await fetch(`/api/creative-media/work-orders/${encodeURIComponent(workOrderId)}/${action}`, {
+            const response = await fetch(`/api/creative-media/governance/work-orders/${encodeURIComponent(workOrderId)}/${action}`, {
                 method: "POST",
             });
             const payload = await response.json().catch(() => ({}));
@@ -554,6 +649,73 @@ export default function CreativeMediaPage() {
                     </Card>
                 ))}
             </div>
+
+            <Card className="border-border bg-card/80 shadow-sm">
+                <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0 pb-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${reconciler.unavailable ? "text-rose-600" : reconciler.uncertain || reconciler.projectionPending ? "text-amber-600" : "text-muted-foreground"}`} />
+                        <div className="min-w-0">
+                            <CardTitle className="text-base">{t("app.admin.dashboard.creativeMedia.reconcilerTitle")}</CardTitle>
+                            <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerDescription")}</p>
+                        </div>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={() => void fetchData(true)} disabled={loading}>
+                        <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                        {t("app.admin.dashboard.creativeMedia.reconcilerRefresh")}
+                    </Button>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-0">
+                    <div className="grid gap-2 sm:grid-cols-4">
+                        <div className="rounded-md border bg-muted/20 px-3 py-2">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerWorker")}</div>
+                            <div className="mt-1 flex items-center gap-2 text-sm font-medium">
+                                <span className={`h-2 w-2 rounded-full ${reconcilerWorker.state === "running" ? "bg-emerald-500" : reconcilerWorker.state === "failed" || reconcilerWorker.state === "unavailable" ? "bg-rose-500" : "bg-slate-400"}`} />
+                                {reconcilerStateText(t, reconcilerWorker.state)}
+                            </div>
+                            <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                                {reconcilerWorker.lastCycleAt
+                                    ? `${t("app.admin.dashboard.creativeMedia.reconcilerLastCycle")}: ${reconcilerWorker.lastCycleAt}`
+                                    : t("app.admin.dashboard.creativeMedia.reconcilerLastCycleNone")}
+                            </div>
+                        </div>
+                        <div className="rounded-md border bg-muted/20 px-3 py-2">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerUncertain")}</div>
+                            <div className="mt-1 text-lg font-semibold">{reconcilerCount(reconciler, reconciler.uncertain)}</div>
+                        </div>
+                        <div className="rounded-md border bg-muted/20 px-3 py-2">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerProjectionPending")}</div>
+                            <div className="mt-1 text-lg font-semibold">{reconcilerCount(reconciler, reconciler.projectionPending)}</div>
+                        </div>
+                        <div className="rounded-md border bg-muted/20 px-3 py-2">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerOldest")}</div>
+                            <div className="mt-1 text-sm font-semibold">{formatReconcilerAge(t, reconciler.oldest.ageSeconds, reconciler.unavailable)}</div>
+                            <div className="text-[11px] text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerQuarantine", { count: reconciler.unavailable ? "-" : reconciler.quarantineCount })}</div>
+                        </div>
+                    </div>
+                    <div className="grid gap-3 text-xs md:grid-cols-2">
+                        <div className="min-w-0 rounded-md border px-3 py-2">
+                            <div className="mb-2 font-medium text-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerAdapters")}</div>
+                            {reconciler.unavailable ? <span className="text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerUnavailable")}</span> : Object.entries(reconciler.adapterDistribution).length ? (
+                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+                                    {Object.entries(reconciler.adapterDistribution).slice(0, 12).map(([adapter, count]) => (
+                                        <span key={adapter}><span className="font-mono text-foreground">{adapter}</span> {count}</span>
+                                    ))}
+                                </div>
+                            ) : <span className="text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerNoBacklog")}</span>}
+                        </div>
+                        <div className="min-w-0 rounded-md border px-3 py-2">
+                            <div className="mb-2 font-medium text-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerDetails")}</div>
+                            {reconciler.unavailable ? <span className="text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerUnavailable")}</span> : Object.entries(reconciler.detailCodeDistribution).length ? (
+                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+                                    {Object.entries(reconciler.detailCodeDistribution).slice(0, 12).map(([detailCode, count]) => (
+                                        <span key={detailCode}><span className="font-mono text-foreground">{detailCode}</span> {count}</span>
+                                    ))}
+                                </div>
+                            ) : <span className="text-muted-foreground">{t("app.admin.dashboard.creativeMedia.reconcilerNoBacklog")}</span>}
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
 
             <Card className="border-border bg-card/95 shadow-sm">
                 <CardHeader>
@@ -997,7 +1159,7 @@ export default function CreativeMediaPage() {
                             <TableBody>
                                 {data.safetyEvents.length ? data.safetyEvents.slice(0, 6).map((event) => (
                                     <TableRow key={text(event.eventId)}>
-                                        <TableCell>{Array.isArray(event.events) ? text((event.events[0] as Record<string, unknown> | undefined)?.kind) : "-"}</TableCell>
+                                        <TableCell>{text(event.eventKind)}</TableCell>
                                         <TableCell>{text(event.modality)}</TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{text(event.createdAt)}</TableCell>
                                     </TableRow>
@@ -1057,7 +1219,7 @@ export default function CreativeMediaPage() {
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.renderJobId)}</TableCell>
                                         <TableCell className="max-w-40 truncate font-mono text-xs">{text(render.planId)}</TableCell>
                                         <TableCell>{creativeMediaStatusLabel(t, render.status)}</TableCell>
-                                        <TableCell>{Array.isArray(render.artifacts) ? render.artifacts.length : 0}</TableCell>
+                                        <TableCell>{finiteCount(render.artifactCount)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyRenderJobs")} />}
                             </TableBody>

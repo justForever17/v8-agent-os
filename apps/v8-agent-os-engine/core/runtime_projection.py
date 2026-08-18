@@ -929,6 +929,10 @@ def _runtime_timeline_entry(
 
 CANVAS_GRAPH_RUN_STATE_TOPIC = "canvas.graph.run.state"
 CANVAS_GRAPH_RUN_STATE_SCHEMA = "v8.creative_canvas_graph_run_state.v1"
+CANVAS_OUTPUT_REVIEW_STATE_TOPIC = "canvas.graph.output.review.state"
+CANVAS_OUTPUT_REVIEW_STATE_SCHEMA = "v8.creative_canvas_output_review_state.v1"
+CANVAS_OUTPUT_DELIVERY_STATE_TOPIC = "canvas.graph.output.delivery.state"
+CANVAS_OUTPUT_DELIVERY_STATE_SCHEMA = "v8.creative_canvas_output_delivery_state.v1"
 CANVAS_GRAPH_RUN_STATE_STATUSES = {
     "queued",
     "running",
@@ -1025,6 +1029,110 @@ def _canvas_graph_run_state_metadata(
         and str(recovery.get("mode") or "").strip() == "failed_branch"
     ):
         metadata["recovery"] = {"canRetry": True, "mode": "failed_branch"}
+    return metadata
+
+
+def _canvas_output_state_metadata(
+    event: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    topic = str(event.get("topic") or "")
+    schema = str(payload.get("schema") or "")
+    is_review = topic == CANVAS_OUTPUT_REVIEW_STATE_TOPIC and schema == CANVAS_OUTPUT_REVIEW_STATE_SCHEMA
+    is_delivery = topic == CANVAS_OUTPUT_DELIVERY_STATE_TOPIC and schema == CANVAS_OUTPUT_DELIVERY_STATE_SCHEMA
+    if not (is_review or is_delivery):
+        return None
+    allowed = {
+        "schema", "runtimeId", "surfaceTargets", "sessionId", "graphId", "resultNodeId",
+        "outputVersionId", "selectionRevision", "review", "affectedReviews", "delivery",
+    }
+    if set(payload) - allowed:
+        return None
+    if payload.get("runtimeId") != "creative_media" or payload.get("surfaceTargets") != [
+        "runtime_card", "runtime_timeline", "process"
+    ]:
+        return None
+    session_id = str(payload.get("sessionId") or "").strip()
+    graph_id = str(payload.get("graphId") or "").strip()
+    result_node_id = str(payload.get("resultNodeId") or "").strip()
+    output_version_id = str(payload.get("outputVersionId") or "").strip()
+    revision = payload.get("selectionRevision")
+    if (
+        not all((session_id, graph_id, result_node_id, output_version_id))
+        or str(event.get("session_id") or "").strip() != session_id
+        or type(revision) is not int
+        or revision < 0
+    ):
+        return None
+
+    def delivery_projection(value: Any) -> Optional[Dict[str, Any]]:
+        record = value if isinstance(value, dict) else {}
+        if set(record) - {"status", "attempt", "errorDetailCode", "manifestArtifactId", "deliveredAt"}:
+            return None
+        status = str(record.get("status") or "").strip().lower()
+        attempt = record.get("attempt")
+        if status not in {"idle", "pending", "failed", "delivered"} or type(attempt) is not int or attempt < 0:
+            return None
+        projected = {"status": status, "attempt": attempt}
+        error_code = str(record.get("errorDetailCode") or "").strip()
+        artifact_id = str(record.get("manifestArtifactId") or "").strip()
+        delivered_at = str(record.get("deliveredAt") or "").strip()
+        if error_code and not re.fullmatch(r"[a-z0-9_]{1,120}", error_code):
+            return None
+        if error_code:
+            projected["errorDetailCode"] = error_code[:120]
+        if status == "delivered" and artifact_id:
+            projected["manifestArtifactId"] = artifact_id[:160]
+        if status == "delivered" and delivered_at:
+            projected["deliveredAt"] = delivered_at[:64]
+        return projected
+
+    def review_projection(value: Any) -> Optional[Dict[str, Any]]:
+        review = value if isinstance(value, dict) else {}
+        if set(review) - {"decision", "revision", "selectedForDelivery", "reviewedAt", "delivery"}:
+            return None
+        decision = str(review.get("decision") or "").strip().lower()
+        review_revision = review.get("revision")
+        if decision not in {"pending", "approved", "rejected"} or type(review_revision) is not int:
+            return None
+        delivery = delivery_projection(review.get("delivery"))
+        if delivery is None:
+            return None
+        return {
+            "decision": decision,
+            "revision": review_revision,
+            "selectedForDelivery": bool(review.get("selectedForDelivery")),
+            "delivery": delivery,
+        }
+
+    metadata: Dict[str, Any] = {
+        "schema": schema,
+        "sessionId": session_id,
+        "graphId": graph_id,
+        "resultNodeId": result_node_id,
+        "outputVersionId": output_version_id,
+        "selectionRevision": revision,
+    }
+    if is_review:
+        review = review_projection(payload.get("review"))
+        affected = payload.get("affectedReviews")
+        if review is None or not isinstance(affected, list) or len(affected) > 32:
+            return None
+        for item in affected:
+            if (
+                not isinstance(item, dict)
+                or set(item) - {"outputVersionId", "review"}
+                or not str(item.get("outputVersionId") or "").strip()
+                or review_projection(item.get("review")) is None
+            ):
+                return None
+        metadata["review"] = review
+        metadata["affectedReviewCount"] = len(affected)
+    else:
+        delivery = delivery_projection(payload.get("delivery"))
+        if delivery is None:
+            return None
+        metadata["delivery"] = delivery
     return metadata
 
 
@@ -1602,6 +1710,8 @@ def _runtime_orchestration_entry(event: Dict[str, Any], topic: str, payload: Dic
 
 RUNTIME_TIMELINE_MILESTONE_TOPICS = {
     CANVAS_GRAPH_RUN_STATE_TOPIC,
+    CANVAS_OUTPUT_REVIEW_STATE_TOPIC,
+    CANVAS_OUTPUT_DELIVERY_STATE_TOPIC,
     "handoff.ref.created",
     "runtime.episode.active",
     "runtime.episode.cancelled",
@@ -1687,6 +1797,36 @@ def project_runtime_timeline_from_events(events: List[Dict[str, Any]]) -> List[D
                     kind="progress",
                     summary=CANVAS_GRAPH_RUN_STATE_SUMMARIES[canvas_status],
                     status=canvas_status,
+                    actor_label=_runtime_actor_label("creative_media"),
+                    metadata=canvas_metadata,
+                )
+        elif topic in {CANVAS_OUTPUT_REVIEW_STATE_TOPIC, CANVAS_OUTPUT_DELIVERY_STATE_TOPIC}:
+            canvas_metadata = _canvas_output_state_metadata(event, payload)
+            if canvas_metadata:
+                if topic == CANVAS_OUTPUT_REVIEW_STATE_TOPIC:
+                    review = canvas_metadata["review"]
+                    status = str(review["decision"])
+                    summary = {
+                        "approved": "创作画布版本已批准",
+                        "rejected": "创作画布版本已拒绝",
+                        "pending": "创作画布版本评审已更新",
+                    }[status]
+                    kind = "governance"
+                else:
+                    status = str(canvas_metadata["delivery"]["status"])
+                    summary = {
+                        "pending": "创作画布成品正在交付",
+                        "failed": "创作画布成品交付失败",
+                        "delivered": "创作画布成品已交付",
+                        "idle": "创作画布成品等待交付",
+                    }[status]
+                    kind = "progress"
+                entry = _runtime_timeline_entry(
+                    event,
+                    runtime_id="creative_media",
+                    kind=kind,
+                    summary=summary,
+                    status=status,
                     actor_label=_runtime_actor_label("creative_media"),
                     metadata=canvas_metadata,
                 )

@@ -150,10 +150,12 @@ import {
     NODE_HEIGHT,
     NODE_WIDTH,
     type CanvasActionDefinition,
+    type CanvasDeliveryProjection,
     type CanvasEdge,
     type CanvasGraphRuntime,
     type CanvasGraphHistory,
     type CanvasNode,
+    type CanvasOutputVersion,
     type CanvasPort,
     type CanvasResource,
     type CanvasSnapshot,
@@ -180,10 +182,54 @@ const DRAWER_OVERSCAN_ROWS = 2;
 const CATALOG_CHANNELS = ["artifacts", "sources", "assets", "folders"] as const;
 
 type CatalogChannel = typeof CATALOG_CHANNELS[number];
+
+function outputVersionResource(
+    version: CanvasOutputVersion,
+    resourceMap: Map<string, CanvasResource>,
+    sessionId: string,
+): CanvasResource {
+    const projection = (version.resource || version.resourceProjection || {}) as Record<string, unknown>;
+    const rawRef = (projection.resourceRef || version.resourceRef || {}) as Record<string, unknown>;
+    const artifactId = String(projection.artifactId || rawRef.artifactId || version.artifactId || "").trim();
+    const origin = String(projection.origin || rawRef.origin || (artifactId ? "artifact" : "")).trim() as ResourceOrigin;
+    const resourceId = String(projection.id || projection.resourceId || rawRef.id || artifactId || "").trim();
+    const mapped = origin && resourceId ? resourceMap.get(`${origin}:${resourceId}`) : null;
+    const projectedSessionId = String(projection.sessionId || rawRef.sessionId || mapped?.sessionId || sessionId).trim();
+    const mediaType = String(projection.mediaType || version.mediaType || mapped?.mediaType || "unknown").trim();
+    const mimeType = String(projection.mimeType || mapped?.mimeType || (mediaType === "video" ? "video/mp4" : mediaType === "audio" ? "audio/wav" : mediaType === "image" ? "image/png" : "application/octet-stream")).trim();
+    const name = String(projection.name || mapped?.name || `Output v${version.version}`).trim();
+    const kind = String(rawRef.kind || "").trim().toLowerCase();
+    const refSessionMatches = projectedSessionId === sessionId;
+    const refArtifactMatches = !rawRef.artifactId || !artifactId || String(rawRef.artifactId) === artifactId;
+    const url = String(projection.url || projection.previewUrl || mapped?.url || mapped?.previewUrl || "").trim()
+        || (kind === "artifact_content" && artifactId && refSessionMatches && refArtifactMatches
+            ? `/api/artifacts/${encodeURIComponent(artifactId)}/content?sessionId=${encodeURIComponent(sessionId)}`
+            : "");
+    const unavailableReason = !refSessionMatches
+        ? "output version is bound to another session"
+        : !refArtifactMatches
+            ? "output version resource reference is inconsistent"
+            : String(projection.unavailableReason || "").trim();
+    return {
+        ...(mapped || {}),
+        id: resourceId || artifactId || version.outputVersionId,
+        origin: origin || "artifact",
+        sessionId: projectedSessionId,
+        name,
+        mimeType,
+        mediaType,
+        url: refSessionMatches && refArtifactMatches ? url : "",
+        previewUrl: refSessionMatches && refArtifactMatches ? String(projection.previewUrl || mapped?.previewUrl || "").trim() : "",
+        resourceRef: rawRef,
+        availability: url && refSessionMatches && refArtifactMatches ? "available" : "unavailable",
+        unavailableReason: unavailableReason || undefined,
+    };
+}
+
 type CanvasMutationOwner = {
     sessionId: string;
     token: string;
-    kind: "composer" | "run" | "retry";
+    kind: "composer" | "run" | "retry" | "review";
 };
 type CanvasCancelOwner = {
     sessionId: string;
@@ -377,7 +423,11 @@ export function CreativeArtifactCanvas({
     const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
     const [inspectNodeId, setInspectNodeId] = useState<string | null>(null);
     const [inspectResourceOverride, setInspectResourceOverride] = useState<CanvasResource | null>(null);
+    const [inspectVersionId, setInspectVersionId] = useState<string | null>(null);
     const [inspectMode, setInspectMode] = useState<CanvasInspectorMode>("details");
+    const [reviewBusy, setReviewBusy] = useState(false);
+    const [reviewError, setReviewError] = useState("");
+    const [deliveryByOutputVersion, setDeliveryByOutputVersion] = useState<Record<string, CanvasDeliveryProjection | null>>({});
     const [maskNodeId, setMaskNodeId] = useState<string | null>(null);
     const [spacePanning, setSpacePanning] = useState(false);
     const [preflightOpen, setPreflightOpen] = useState(false);
@@ -532,7 +582,11 @@ export function CreativeArtifactCanvas({
             setComposer(null);
             setInspectNodeId(null);
             setInspectResourceOverride(null);
+            setInspectVersionId(null);
             setInspectMode("details");
+            setReviewBusy(false);
+            setReviewError("");
+            setDeliveryByOutputVersion({});
             setMaskNodeId(null);
             setEnginePreflightIssues([]);
             setConnectionSourceId(null);
@@ -1104,7 +1158,11 @@ export function CreativeArtifactCanvas({
             edges: current.edges.filter((edge) => !removing.has(edge.from) && !removing.has(edge.to)),
         }));
         setSelectedIds((current) => current.filter((id) => !removing.has(id)));
-        if (inspectNodeId && removing.has(inspectNodeId)) setInspectNodeId(null);
+        if (inspectNodeId && removing.has(inspectNodeId)) {
+            setInspectNodeId(null);
+            setInspectResourceOverride(null);
+            setInspectVersionId(null);
+        }
         if (connectionDraft && removing.has(connectionDraft.fromNodeId)) {
             setConnectionDraft(null);
             setConnectionSourceId(null);
@@ -1580,6 +1638,8 @@ export function CreativeArtifactCanvas({
                 setEdgeNote(null);
                 setPendingConnectionDrop(null);
                 setInspectNodeId(null);
+                setInspectResourceOverride(null);
+                setInspectVersionId(null);
                 setMaskNodeId(null);
                 setConnectionSourceId(null);
                 setConnectionDraft(null);
@@ -2079,7 +2139,7 @@ export function CreativeArtifactCanvas({
         if (sessionRunning && !action.availableWhileRunning) return;
         switch (action.actionId) {
             case "local.view":
-                if (ids[0]) { setInspectResourceOverride(null); setInspectNodeId(ids[0]); }
+                if (ids[0]) { setInspectResourceOverride(null); setInspectVersionId(null); setInspectNodeId(ids[0]); }
                 break;
             case "local.download":
                 ids.map((id) => snapshot.nodes.find((node) => node.nodeId === id)).filter(Boolean).forEach((node) => {
@@ -2789,7 +2849,165 @@ export function CreativeArtifactCanvas({
         || (composerUsesPsdLayers && !composer?.psdEdits?.length),
     );
     const inspectNode = inspectNodeId ? snapshot.nodes.find((node) => node.nodeId === inspectNodeId) || null : null;
-    const inspectResource = inspectResourceOverride || (inspectNode ? displayResourceForNode(inspectNode) : null);
+    const inspectVersions = inspectNode?.kind === "result"
+        ? (graphRuntime.outputs[inspectNode.nodeId] || []).map((version) => ({
+            identity: version.outputVersionId,
+            resultNodeId: inspectNode.nodeId,
+            version,
+            resource: outputVersionResource(version, resourceMap, sessionId),
+        } satisfies CanvasReviewVersion))
+        : [];
+    const inspectSelectedVersion = inspectVersions.find((candidate) => candidate.identity === inspectVersionId) || inspectVersions[0] || null;
+
+    const reloadOutputReviewProjection = useCallback(async (
+        owner: CanvasMutationOwner,
+        epoch: number,
+    ) => {
+        const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph`, {
+            cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+        if (
+            !isCurrentMutationOwner(owner)
+            || !isCurrentCanvasRuntimeEpoch(epoch, runtimeMutationEpochRef.current)
+            || sessionIdRef.current !== sessionId
+        ) return false;
+        const authoritativeRuntime = { ...EMPTY_GRAPH_RUNTIME, ...recordOf(payload?.runtime) } as CanvasGraphRuntime;
+        setGraphRuntime((current) => {
+            if (
+                !isCurrentMutationOwner(owner)
+                || !isCurrentCanvasRuntimeEpoch(epoch, runtimeMutationEpochRef.current)
+                || sessionIdRef.current !== sessionId
+            ) return current;
+            return reconcileCanvasRuntimeProjection(current, authoritativeRuntime);
+        });
+        if (payload?.history) {
+            setGraphHistory({ ...EMPTY_GRAPH_HISTORY, ...recordOf(payload.history) } as CanvasGraphHistory);
+        }
+        return true;
+    }, [isCurrentMutationOwner, sessionId]);
+
+    const reviewOutputVersion = useCallback(async (
+        version: CanvasReviewVersion,
+        decision: "pending" | "approved" | "rejected",
+        note: string,
+        selectedForDelivery: boolean,
+    ) => {
+        if (sessionRunning || !version.identity || !version.resultNodeId) return;
+        const currentVersion = graphRuntime.outputs[version.resultNodeId]?.find(
+            (candidate) => candidate.outputVersionId === version.identity,
+        );
+        if (!currentVersion) return;
+        const owner = acquireMutationOwner("review");
+        if (!owner) return;
+        const epoch = advanceRuntimeMutationEpoch();
+        setReviewBusy(true);
+        setReviewError("");
+        try {
+            const response = await fetch(
+                `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/outputs/${encodeURIComponent(version.identity)}/review`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        decision,
+                        note,
+                        selectedForDelivery,
+                        expectedRevision: Number(currentVersion.review?.revision || 0),
+                    }),
+                    cache: "no-store",
+                },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (
+                !isCurrentMutationOwner(owner)
+                || !isCurrentCanvasRuntimeEpoch(epoch, runtimeMutationEpochRef.current)
+                || sessionIdRef.current !== sessionId
+            ) return;
+            if (!await reloadOutputReviewProjection(owner, epoch)) return;
+            setDeliveryByOutputVersion((current) => ({ ...current, [version.identity]: null }));
+        } catch (reason) {
+            if (isCurrentMutationOwner(owner) && sessionIdRef.current === sessionId) {
+                setReviewError(reason instanceof Error ? reason.message : String(reason));
+            }
+        } finally {
+            if (isCurrentMutationOwner(owner)) setReviewBusy(false);
+            releaseMutationOwner(owner);
+        }
+    }, [
+        acquireMutationOwner,
+        advanceRuntimeMutationEpoch,
+        graphRuntime.outputs,
+        isCurrentMutationOwner,
+        releaseMutationOwner,
+        reloadOutputReviewProjection,
+        sessionId,
+        sessionRunning,
+    ]);
+
+    const deliverOutputVersion = useCallback(async (
+        version: CanvasReviewVersion,
+        dryRun: boolean,
+    ) => {
+        if (sessionRunning || !version.identity || !version.resultNodeId) return;
+        const currentVersion = graphRuntime.outputs[version.resultNodeId]?.find(
+            (candidate) => candidate.outputVersionId === version.identity,
+        );
+        if (!currentVersion) return;
+        const owner = acquireMutationOwner("review");
+        if (!owner) return;
+        const epoch = advanceRuntimeMutationEpoch();
+        setReviewBusy(true);
+        setReviewError("");
+        try {
+            const response = await fetch(
+                `/api/workbench/sessions/${encodeURIComponent(sessionId)}/canvas/graph/outputs/${encodeURIComponent(version.identity)}/delivery`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        expectedRevision: Number(currentVersion.review?.revision || 0),
+                        dryRun,
+                    }),
+                    cache: "no-store",
+                },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
+            if (
+                !isCurrentMutationOwner(owner)
+                || !isCurrentCanvasRuntimeEpoch(epoch, runtimeMutationEpochRef.current)
+                || sessionIdRef.current !== sessionId
+            ) return;
+            const delivery = recordOf(payload?.delivery || payload);
+            if (!dryRun && !await reloadOutputReviewProjection(owner, epoch)) return;
+            setDeliveryByOutputVersion((current) => ({ ...current, [version.identity]: delivery as CanvasDeliveryProjection }));
+            if (!dryRun) void loadCatalog(true);
+        } catch (reason) {
+            if (isCurrentMutationOwner(owner) && sessionIdRef.current === sessionId) {
+                setReviewError(reason instanceof Error ? reason.message : String(reason));
+            }
+        } finally {
+            if (isCurrentMutationOwner(owner)) setReviewBusy(false);
+            releaseMutationOwner(owner);
+        }
+    }, [
+        acquireMutationOwner,
+        advanceRuntimeMutationEpoch,
+        graphRuntime.outputs,
+        isCurrentMutationOwner,
+        loadCatalog,
+        releaseMutationOwner,
+        reloadOutputReviewProjection,
+        sessionId,
+        sessionRunning,
+    ]);
+
+    const inspectResource = inspectNode?.kind === "result"
+        ? inspectSelectedVersion?.resource || null
+        : inspectResourceOverride || (inspectNode ? displayResourceForNode(inspectNode) : null);
     const inspectActionNode = inspectNode?.kind === "action"
         ? inspectNode
         : inspectNode?.kind === "result" && inspectNode.producerActionNodeId
@@ -2822,20 +3040,9 @@ export function CreativeArtifactCanvas({
     const inspectOutputNode = inspectActionNode
         ? snapshot.nodes.find((node) => node.kind === "result" && node.producerActionNodeId === inspectActionNode.nodeId) || null
         : inspectNode?.kind === "result" ? inspectNode : null;
-    const inspectOutputResource = inspectOutputNode ? displayResourceForNode(inspectOutputNode) : inspectResource;
+    const inspectOutputResource = inspectSelectedVersion?.resource || (inspectOutputNode ? displayResourceForNode(inspectOutputNode) : inspectResource);
     const inspectOutputLabel = inspectOutputResource?.name
         || (inspectOutputNode ? canvasNodeTitle(inspectOutputNode) : inspectResource?.name || "");
-    const inspectVersions = inspectNode?.kind === "result"
-        ? (graphRuntime.outputs[inspectNode.nodeId] || []).flatMap((version) => {
-            const versionResource = version.artifactId ? resourceMap.get(`artifact:${version.artifactId}`) : null;
-            return versionResource?.url ? [{
-                identity: version.outputVersionId,
-                resultNodeId: inspectNode.nodeId,
-                version,
-                resource: versionResource,
-            } satisfies CanvasReviewVersion] : [];
-        })
-        : [];
     const maskNode = maskNodeId ? snapshot.nodes.find((node) => node.nodeId === maskNodeId) || null : null;
     const maskResource = maskNode ? displayResourceForNode(maskNode) : null;
 
@@ -3181,6 +3388,7 @@ export function CreativeArtifactCanvas({
                                 if (node.kind === "action" && ["psd_composition", "psd_layers"].includes(String(actionDefinition?.parameterEditor))) openPsdActionEditor(node);
                                 else {
                                     setInspectResourceOverride(null);
+                                    setInspectVersionId(node.kind === "result" ? (graphRuntime.outputs[node.nodeId]?.[0]?.outputVersionId || null) : null);
                                     setInspectMode("details");
                                     setInspectNodeId(node.nodeId);
                                 }
@@ -3321,8 +3529,8 @@ export function CreativeArtifactCanvas({
                                             {node.kind === "result" && versions.length > 1 ? (
                                                 <div className="absolute bottom-2 right-2 flex max-w-[70%] flex-row-reverse gap-1 rounded-lg border border-white/70 bg-background/80 p-1 shadow-lg backdrop-blur dark:border-white/10">
                                                     {versions.slice(1, 6).map((version) => {
-                                                        const previous = version.artifactId ? resourceMap.get(`artifact:${version.artifactId}`) : null;
-                                                        return <button key={version.outputVersionId} type="button" onClick={(event) => { event.stopPropagation(); if (previous) { setInspectResourceOverride(previous); setInspectMode("details"); setInspectNodeId(node.nodeId); } }} title={`v${version.version}`} className="grid h-8 w-8 place-items-center overflow-hidden rounded border border-border/60 bg-muted text-[8px] font-semibold text-muted-foreground">{previous?.url && mediaTypeOf(previous) === "image" ? <img src={previous.url} alt="" className="h-full w-full object-cover" /> : `v${version.version}`}</button>;
+                                                        const previous = outputVersionResource(version, resourceMap, sessionId);
+                                                        return <button key={version.outputVersionId} type="button" onClick={(event) => { event.stopPropagation(); setInspectResourceOverride(null); setInspectVersionId(version.outputVersionId); setReviewError(""); setInspectMode("details"); setInspectNodeId(node.nodeId); }} title={`v${version.version}`} className="grid h-8 w-8 place-items-center overflow-hidden rounded border border-border/60 bg-muted text-[8px] font-semibold text-muted-foreground">{previous.url && mediaTypeOf(previous) === "image" ? <img src={previous.url} alt="" className="h-full w-full object-cover" /> : `v${version.version}`}</button>;
                                                     })}
                                                 </div>
                                             ) : null}
@@ -3342,7 +3550,7 @@ export function CreativeArtifactCanvas({
                                 >
                                     <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", node.kind === "action" ? "bg-violet-500" : node.kind === "result" ? "bg-emerald-500" : node.origin === "source" ? "bg-cyan-500" : node.origin === "artifact" ? "bg-violet-500" : "bg-slate-400")} />
                                     <span className="min-w-0 flex-1 truncate text-[11px] font-medium transition-colors group-hover/title:text-violet-700 dark:group-hover/title:text-violet-300">{nodeTitle || t("web.workbench.canvas.graph.result")}</span>
-                                    {node.kind === "result" && versions.length > 1 ? <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setInspectResourceOverride(null); setInspectMode("review"); setInspectNodeId(node.nodeId); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-violet-500/10 hover:text-violet-600" aria-label={t("web.workbench.canvas.review.title")} title={t("web.workbench.canvas.review.title")}><Columns2 className="h-3.5 w-3.5" /></button> : null}
+                                    {node.kind === "result" && versions.length > 1 ? <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setInspectResourceOverride(null); setInspectVersionId(versions[0]?.outputVersionId || null); setInspectMode("review"); setInspectNodeId(node.nodeId); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-violet-500/10 hover:text-violet-600" aria-label={t("web.workbench.canvas.review.title")} title={t("web.workbench.canvas.review.title")}><Columns2 className="h-3.5 w-3.5" /></button> : null}
                                     {node.kind === "result" && versions[0] ? <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">v{versions[0].version}</span> : null}
                                     {node.mask?.strokes.length ? <span className="rounded-full bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-rose-600">{t("web.workbench.canvas.graph.maskRevision", { revision: node.mask.revision })}</span> : null}
                                 </div>
@@ -3597,7 +3805,7 @@ export function CreativeArtifactCanvas({
                     className="custom-scrollbar absolute z-30 flex max-w-[calc(100%-24px)] -translate-x-1/2 -translate-y-[calc(100%+10px)] items-center gap-1 overflow-x-auto rounded-2xl border border-white/80 bg-background/92 p-1.5 shadow-[0_14px_42px_rgba(15,23,42,.16)] backdrop-blur-xl dark:border-white/10"
                 >
                     <span className="px-2 text-[10px] font-semibold text-muted-foreground">{t("web.workbench.canvas.graph.selectedCount", { count: selectedIds.length })}</span>
-                    {selectedIds.length === 1 ? <button type="button" onClick={() => { setInspectResourceOverride(null); setInspectMode("details"); setInspectNodeId(selectedIds[0]); }} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-violet-600" aria-label={t("web.workbench.canvas.inspector.open")} title={t("web.workbench.canvas.inspector.open")}><Info className="h-4 w-4" /></button> : null}
+                    {selectedIds.length === 1 ? <button type="button" onClick={() => { const selected = snapshot.nodes.find((candidate) => candidate.nodeId === selectedIds[0]); setInspectResourceOverride(null); setInspectVersionId(selected?.kind === "result" ? (graphRuntime.outputs[selected.nodeId]?.[0]?.outputVersionId || null) : null); setInspectMode("details"); setInspectNodeId(selectedIds[0]); }} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-violet-600" aria-label={t("web.workbench.canvas.inspector.open")} title={t("web.workbench.canvas.inspector.open")}><Info className="h-4 w-4" /></button> : null}
                     <button type="button" disabled={sessionRunning} onClick={openSelectionInteraction} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-primary disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.relationshipNote")}><MessageSquare className="h-4 w-4" /></button>
                     <button type="button" disabled={sessionRunning} onClick={() => selectedIds.length > 1 ? connectSelection(selectedIds) : setConnectionSourceId(selectedIds[0])} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-emerald-600 disabled:opacity-30" aria-label={selectedIds.length > 1 ? t("web.workbench.canvas.graph.connectSelection") : t("web.workbench.canvas.graph.connectNode")}><Link2 className="h-4 w-4" /></button>
                     {selectedImageNode ? <button type="button" disabled={sessionRunning} onClick={() => setMaskNodeId(selectedImageNode.nodeId)} className="rounded-xl p-2 text-muted-foreground hover:bg-muted hover:text-rose-600 disabled:opacity-30" aria-label={t("web.workbench.canvas.graph.drawMask")}><Sparkles className="h-4 w-4" /></button> : null}
@@ -3699,6 +3907,7 @@ export function CreativeArtifactCanvas({
                         node={inspectNode}
                         resource={inspectResource}
                         versions={inspectVersions}
+                        selectedVersion={inspectSelectedVersion}
                         mode={inspectMode}
                         action={inspectAction}
                         inputs={inspectInputs}
@@ -3708,8 +3917,15 @@ export function CreativeArtifactCanvas({
                             <CreativeCanvasPsdLayerEditor sessionId={sessionId} resource={candidate} edits={[]} onChange={() => undefined} readOnly />
                         ) : <CreativeCanvasMedia resource={candidate} inspect visible={visible} />}
                         onModeChange={setInspectMode}
+                        onVersionChange={(identity) => { setInspectVersionId(identity); setInspectResourceOverride(null); setReviewError(""); }}
+                        reviewBusy={reviewBusy}
+                        reviewError={reviewError}
+                        deliveryState={inspectSelectedVersion ? deliveryByOutputVersion[inspectSelectedVersion.identity] || null : null}
+                        onReviewChange={(version, decision, note, selectedForDelivery) => { void reviewOutputVersion(version, decision, note, selectedForDelivery); }}
+                        onDryRunDelivery={(version) => { void deliverOutputVersion(version, true); }}
+                        onConfirmDelivery={(version) => { void deliverOutputVersion(version, false); }}
                         onRetry={() => void retryFailedGraph()}
-                        onClose={() => { setInspectNodeId(null); setInspectResourceOverride(null); setInspectMode("details"); }}
+                        onClose={() => { setInspectNodeId(null); setInspectResourceOverride(null); setInspectVersionId(null); setInspectMode("details"); }}
                     />
                 </div>
             ) : null}

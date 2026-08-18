@@ -289,6 +289,7 @@ class DatabaseManager:
                 # created by an earlier v2 binary may therefore have the
                 # current version marker but still lack these tables.
                 self._ensure_runtime_safety_tables(conn)
+                self._ensure_creative_media_store_tables(conn)
                 conn.commit()
                 return
             if schema_version > DATABASE_SCHEMA_VERSION:
@@ -1969,6 +1970,7 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_config_broker_transactions_session ON config_broker_transactions (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_session ON ui_action_requests (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_expires ON ui_action_requests (state, expires_at)')
+            self._ensure_creative_media_store_tables(conn)
             
             # Simple Schema Migration (Adding missing columns if upgrading)
             migration_succeeded = True
@@ -2371,6 +2373,378 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_canvas_graph_remote_terminal_receipts_run "
             "ON creative_canvas_graph_remote_terminal_receipts (graph_run_id, node_id)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_canvas_output_reviews (
+                output_version_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                graph_id TEXT NOT NULL,
+                result_node_id TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (decision IN ('pending', 'approved', 'rejected')),
+                revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+                note TEXT NOT NULL DEFAULT '',
+                selected_for_delivery INTEGER NOT NULL DEFAULT 0
+                    CHECK (selected_for_delivery IN (0, 1)),
+                delivery_manifest_artifact_id TEXT,
+                delivery_status TEXT NOT NULL DEFAULT 'idle'
+                    CHECK (delivery_status IN ('idle', 'pending', 'failed', 'delivered')),
+                delivery_attempt INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempt >= 0),
+                delivery_lease_id TEXT,
+                delivery_lease_expires_at TEXT,
+                delivery_error_detail_code TEXT,
+                delivery_manifest_digest TEXT,
+                delivery_manifest_bytes_digest TEXT,
+                delivery_manifest_relative_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                delivered_at TEXT,
+                FOREIGN KEY (output_version_id)
+                    REFERENCES creative_canvas_node_outputs(output_version_id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (graph_id) REFERENCES creative_canvas_graphs(graph_id) ON DELETE CASCADE
+            )
+            """
+        )
+        review_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(creative_canvas_output_reviews)").fetchall()
+        }
+        for column_name, column_sql in (
+            ("delivery_status", "TEXT NOT NULL DEFAULT 'idle'"),
+            ("delivery_attempt", "INTEGER NOT NULL DEFAULT 0"),
+            ("delivery_lease_id", "TEXT"),
+            ("delivery_lease_expires_at", "TEXT"),
+            ("delivery_error_detail_code", "TEXT"),
+            ("delivery_manifest_digest", "TEXT"),
+            ("delivery_manifest_bytes_digest", "TEXT"),
+            ("delivery_manifest_relative_path", "TEXT"),
+        ):
+            if column_name not in review_columns:
+                conn.execute(
+                    f"ALTER TABLE creative_canvas_output_reviews ADD COLUMN {column_name} {column_sql}"
+                )
+        conn.execute(
+            """
+            UPDATE creative_canvas_output_reviews
+            SET delivery_status = CASE
+                    WHEN delivered_at IS NOT NULL THEN 'delivered'
+                    WHEN delivery_manifest_artifact_id IS NOT NULL THEN 'failed'
+                    ELSE 'idle'
+                END,
+                delivery_attempt = CASE
+                    WHEN delivery_attempt > 0 THEN delivery_attempt
+                    WHEN delivery_manifest_artifact_id IS NOT NULL THEN 1
+                    ELSE 0
+                END
+            WHERE delivery_status = 'idle'
+              AND (delivered_at IS NOT NULL OR delivery_manifest_artifact_id IS NOT NULL)
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_output_reviews_session "
+            "ON creative_canvas_output_reviews (session_id, updated_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_output_reviews_selected_result
+            ON creative_canvas_output_reviews (graph_id, result_node_id)
+            WHERE selected_for_delivery = 1
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_canvas_output_review_heads (
+                graph_id TEXT NOT NULL,
+                result_node_id TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+                selected_output_version_id TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (graph_id, result_node_id),
+                FOREIGN KEY (graph_id) REFERENCES creative_canvas_graphs(graph_id) ON DELETE CASCADE
+            )
+            """
+        )
+        graph_table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_graphs'"
+        ).fetchone()
+        if graph_table_exists:
+            conn.execute(
+                """
+                INSERT INTO creative_canvas_output_review_heads(
+                    graph_id, result_node_id, revision, selected_output_version_id, updated_at
+                )
+                SELECT graph_id, result_node_id, MAX(revision),
+                       MAX(CASE WHEN selected_for_delivery = 1 THEN output_version_id END),
+                       MAX(updated_at)
+                FROM creative_canvas_output_reviews
+                GROUP BY graph_id, result_node_id
+                ON CONFLICT(graph_id, result_node_id) DO UPDATE SET
+                    revision = MAX(creative_canvas_output_review_heads.revision, excluded.revision),
+                    selected_output_version_id = COALESCE(
+                        excluded.selected_output_version_id,
+                        creative_canvas_output_review_heads.selected_output_version_id
+                    ),
+                    updated_at = MAX(creative_canvas_output_review_heads.updated_at, excluded.updated_at)
+                """
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_canvas_output_review_heads_selected "
+            "ON creative_canvas_output_review_heads (selected_output_version_id)"
+        )
+
+    @staticmethod
+    def _ensure_creative_media_store_tables(conn: sqlite3.Connection) -> None:
+        """Create the additive Creative Media operational store.
+
+        These rows deliberately do not reference ``sessions``. A deleted
+        Session must not erase the minimum provider lifecycle and projection
+        evidence required to reconcile or quarantine a remote task.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_jobs (
+                job_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT NOT NULL DEFAULT '',
+                workspace_id TEXT NOT NULL DEFAULT '',
+                project_id TEXT NOT NULL DEFAULT '',
+                modality TEXT NOT NULL DEFAULT '',
+                adapter TEXT NOT NULL DEFAULT '',
+                operation_kind TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                provider_task_id TEXT,
+                next_reconcile_at TEXT,
+                projection_pending INTEGER NOT NULL DEFAULT 0
+                    CHECK (projection_pending IN (0, 1)),
+                revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_jobs_session "
+            "ON creative_media_jobs (session_id, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_jobs_status "
+            "ON creative_media_jobs (status, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_jobs_adapter "
+            "ON creative_media_jobs (adapter, status, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_jobs_reconcile_due "
+            "ON creative_media_jobs (next_reconcile_at, adapter, status) "
+            "WHERE next_reconcile_at IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_jobs_projection_pending "
+            "ON creative_media_jobs (projection_pending, next_reconcile_at) "
+            "WHERE projection_pending = 1"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_job_lifecycle (
+                job_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                detail_code TEXT NOT NULL DEFAULT '',
+                remote_task_may_continue INTEGER
+                    CHECK (remote_task_may_continue IN (0, 1)),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, phase),
+                FOREIGN KEY (job_id) REFERENCES creative_media_jobs(job_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_lifecycle_status "
+            "ON creative_media_job_lifecycle (phase, status, updated_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_job_projections (
+                job_id TEXT NOT NULL,
+                projection_kind TEXT NOT NULL,
+                state TEXT NOT NULL,
+                projection_pending INTEGER NOT NULL DEFAULT 0
+                    CHECK (projection_pending IN (0, 1)),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                next_attempt_at TEXT,
+                proof_digest TEXT,
+                detail_code TEXT NOT NULL DEFAULT '',
+                last_error TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                projected_at TEXT,
+                PRIMARY KEY (job_id, projection_kind),
+                FOREIGN KEY (job_id) REFERENCES creative_media_jobs(job_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_projections_pending "
+            "ON creative_media_job_projections "
+            "(projection_pending, next_attempt_at, updated_at) "
+            "WHERE projection_pending = 1"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_cost_entries (
+                entry_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                operation_kind TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_cost_job "
+            "ON creative_media_cost_entries (job_id, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_cost_session "
+            "ON creative_media_cost_entries (session_id, created_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_quality_jobs (
+                quality_job_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                quality_profile TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        quality_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(creative_media_quality_jobs)").fetchall()
+        }
+        if "revision" not in quality_columns:
+            conn.execute(
+                "ALTER TABLE creative_media_quality_jobs "
+                "ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_quality_job "
+            "ON creative_media_quality_jobs (job_id, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_quality_status "
+            "ON creative_media_quality_jobs (status, created_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_safety_events (
+                event_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                policy TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_safety_job "
+            "ON creative_media_safety_events (job_id, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_safety_session "
+            "ON creative_media_safety_events (session_id, created_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_work_orders (
+                work_order_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL DEFAULT '',
+                requesting_runtime TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT,
+                deleted_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_work_orders_session "
+            "ON creative_media_work_orders (session_id, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_work_orders_status "
+            "ON creative_media_work_orders (status, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_work_orders_runtime "
+            "ON creative_media_work_orders (requesting_runtime, updated_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_terminal_observation_outbox (
+                job_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                payload_json TEXT NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (job_id) REFERENCES creative_media_jobs(job_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creative_media_terminal_observation_pending "
+            "ON creative_media_terminal_observation_outbox (state, updated_at, job_id) "
+            "WHERE state = 'pending'"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS creative_media_store_migrations (
+                source_kind TEXT NOT NULL,
+                source_identity TEXT NOT NULL,
+                source_digest TEXT NOT NULL,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                skip_reasons_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source_kind, source_identity, source_digest)
+            )
+            """
+        )
+        migration_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(creative_media_store_migrations)").fetchall()
+        }
+        if "skip_reasons_json" not in migration_columns:
+            conn.execute(
+                "ALTER TABLE creative_media_store_migrations "
+                "ADD COLUMN skip_reasons_json TEXT NOT NULL DEFAULT '{}'"
+            )
 
     # --- Session Operations ---
 

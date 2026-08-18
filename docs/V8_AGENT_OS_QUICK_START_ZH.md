@@ -151,7 +151,7 @@ Web、Shell、桌宠和 CLI 是本机可信入口，不使用 Phone 配对票据
 
 ### 4.4 创意产物画布与精确媒体编辑
 
-Web 的右侧工作台提供 Creative Artifact Canvas。画布可以从当前会话产物和工作区素材库添加图片、视频与音频，建立引用关系、蒙版局部编辑或发起创意媒体任务；画布消息仍沿正常会话执行链进入 Supervisor，不是另一个隐藏的运行入口。任务运行期间会锁定会破坏 lineage 的自由修改。
+Web 的右侧工作台提供 Creative Artifact Canvas。画布可以从当前会话产物和工作区素材库添加图片、视频与音频，建立引用关系、蒙版局部编辑或发起创意媒体任务；typed Canvas Graph 绑定当前 Session/Workspace 并直接进入受治理的 Creative Media Runtime，不建立隐藏会话、第二套授权或页面内执行真相。Inspector 与 A/B Review 使用输出版本自己的资源和执行证据，批准并选定后才能生成交付清单。任务运行期间会锁定会破坏 lineage 的自由修改。
 
 精确抽帧、视频分段和音频分段由 Engine 自有的受治理媒体路径执行，使用输入指纹、视频 frame index/time base 或音频 sample index 校验边界，不经云端 provider，也不等同于 MediaKit 插件能力。Phone 目前只消费正常消息与产物，不提供 Web 的完整画布编辑面。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -33,6 +34,30 @@ def _patch_workspace(monkeypatch, root: Path) -> None:
 
     monkeypatch.setattr(psd_tools, "build_workspace_binding", _binding)
     monkeypatch.setattr(psd_tools, "resolve_workspace_tool_path", _resolve)
+    monkeypatch.setattr(
+        psd_tools,
+        "_runtime_context",
+        lambda: {
+            "session_id": "session-fixture",
+            "workspace_id": "workspace-fixture",
+            "project_id": "project-fixture",
+            "workspace_path": str(root),
+        },
+    )
+    monkeypatch.setattr(
+        psd_tools.creative_media_resource_authority,
+        "resolve_path",
+        lambda *, path, **_kwargs: SimpleNamespace(
+            path=(Path(path) if Path(path).is_absolute() else root / path).resolve(strict=False)
+        ),
+    )
+    monkeypatch.setattr(
+        psd_tools.creative_media_resource_authority,
+        "resolve_output_path",
+        lambda *, path, **_kwargs: SimpleNamespace(
+            path=(Path(path) if Path(path).is_absolute() else root / path).resolve(strict=False)
+        ),
+    )
 
 
 def test_alpha_inspect_returns_clean_markdown_for_true_alpha(tmp_path: Path, monkeypatch) -> None:

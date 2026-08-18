@@ -9,6 +9,18 @@ import pytest
 from core.database import DATABASE_SCHEMA_VERSION, DatabaseManager
 
 
+CREATIVE_MEDIA_STORE_TABLES = {
+    "creative_media_jobs",
+    "creative_media_job_lifecycle",
+    "creative_media_job_projections",
+    "creative_media_cost_entries",
+    "creative_media_quality_jobs",
+    "creative_media_safety_events",
+    "creative_media_work_orders",
+    "creative_media_store_migrations",
+}
+
+
 def _schema_version(path: Path) -> int:
     with sqlite3.connect(path) as conn:
         row = conn.execute("PRAGMA user_version").fetchone()
@@ -40,6 +52,33 @@ def test_new_database_is_initialized_and_versioned(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_graph_remote_terminal_receipts'"
         ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_output_reviews'"
+        ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'creative_canvas_output_review_heads'"
+        ).fetchone()
+        review_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(creative_canvas_output_reviews)").fetchall()
+        }
+        assert {
+            "delivery_status",
+            "delivery_attempt",
+            "delivery_lease_id",
+            "delivery_lease_expires_at",
+            "delivery_error_detail_code",
+            "delivery_manifest_digest",
+            "delivery_manifest_bytes_digest",
+            "delivery_manifest_relative_path",
+        }.issubset(review_columns)
+        table_names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert CREATIVE_MEDIA_STORE_TABLES.issubset(table_names)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
         assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
@@ -116,6 +155,9 @@ def test_version_one_database_upgrades_runtime_safety_ledgers(tmp_path: Path) ->
         "runtime_event_sequence_heads",
         "creative_canvas_graph_run_event_outbox",
         "creative_canvas_graph_remote_terminal_receipts",
+        "creative_canvas_output_reviews",
+        "creative_canvas_output_review_heads",
+        *CREATIVE_MEDIA_STORE_TABLES,
     }.issubset(table_names)
 
 
@@ -140,7 +182,43 @@ def test_current_schema_self_heals_missing_runtime_safety_ledgers(tmp_path: Path
         "runtime_event_sequence_heads",
         "creative_canvas_graph_run_event_outbox",
         "creative_canvas_graph_remote_terminal_receipts",
+        "creative_canvas_output_reviews",
+        "creative_canvas_output_review_heads",
+        *CREATIVE_MEDIA_STORE_TABLES,
     }.issubset(table_names)
+
+
+def test_current_schema_self_heals_creative_media_migration_reason_column(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    DatabaseManager(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE creative_media_store_migrations RENAME TO legacy_migrations")
+        conn.execute(
+            """
+            CREATE TABLE creative_media_store_migrations (
+                source_kind TEXT NOT NULL,
+                source_identity TEXT NOT NULL,
+                source_digest TEXT NOT NULL,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (source_kind, source_identity, source_digest)
+            )
+            """
+        )
+        conn.execute("DROP TABLE legacy_migrations")
+        conn.commit()
+
+    DatabaseManager(path)
+
+    with sqlite3.connect(path) as conn:
+        columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(creative_media_store_migrations)"
+            ).fetchall()
+        }
+    assert "skip_reasons_json" in columns
 
 
 def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Path) -> None:
@@ -168,6 +246,18 @@ def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Pat
     assert any("CREATE TABLE IF NOT EXISTS CREATIVE_CANVAS_GRAPH_RUN_EVENT_OUTBOX" in statement for statement in normalized)
     assert any(
         "CREATE TABLE IF NOT EXISTS CREATIVE_CANVAS_GRAPH_REMOTE_TERMINAL_RECEIPTS" in statement
+        for statement in normalized
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS CREATIVE_CANVAS_OUTPUT_REVIEWS" in statement
+        for statement in normalized
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS CREATIVE_MEDIA_JOBS" in statement
+        for statement in normalized
+    )
+    assert any(
+        "CREATE TABLE IF NOT EXISTS CREATIVE_MEDIA_JOB_PROJECTIONS" in statement
         for statement in normalized
     )
     assert not any(statement.startswith("ALTER TABLE") for statement in normalized)

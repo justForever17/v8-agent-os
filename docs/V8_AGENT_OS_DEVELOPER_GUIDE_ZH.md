@@ -205,7 +205,7 @@ Human Surface 只显示状态、结果、阻塞、风险、下一步和人类可
 
 UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 DOM 选择到源码映射、白名单属性 patch、diff、保存验证和精确 undo；不支持任意互联网页面、无法映射的生产压缩页面或“只改 inline style”的假保存。
 
-Creative Artifact Canvas 也是 Web 专属工作台。它组织当前会话产物与已采用的工作区素材，支持媒体卡片、连线、框选、蒙版局部编辑和受治理的 Creative Media 动作；运行中锁定会破坏 lineage 的自由修改。画布消息沿正常 ChatRuntime 进入当前会话，不建立旁路执行真相。精确抽帧、视频分段与音频分段由 Engine 自有媒体路径执行，要求配对的 FFmpeg/FFprobe 7+，并通过 probe fingerprint、frame index/time base 或 sample index 验证边界，不经过 provider 或 MediaKit 插件。
+Creative Artifact Canvas 也是 Web 专属工作台。它组织当前会话产物与已采用的工作区素材，支持媒体卡片、连线、框选、蒙版局部编辑和受治理的 Creative Media 动作；运行中锁定会破坏 lineage 的自由修改。typed Canvas Graph 以 Engine snapshot/event 为真相，绑定当前 Session/Workspace 后直接进入 Creative Media Runtime；页面只做投影和交互，不建立旁路状态。输出版本持有自己的资源、Provider/model/recipe、耗时、成本与 QA 证据，Review 通过 revision fence 批准、拒绝和选择交付版本。精确抽帧、视频分段与音频分段由 Engine 自有媒体路径执行，要求配对的 FFmpeg/FFprobe 7+，并通过 probe fingerprint、frame index/time base 或 sample index 验证边界，不经过 provider 或 MediaKit 插件。
 
 ## 10. 模型与 provider 合同
 

@@ -31,7 +31,7 @@ creative_media_quality
    通过角色设定、参考图/视频、首尾帧、桥接帧、镜头 recipe 和 artifact refs 维持多轮生成的一致性，不在每一镜重新猜角色。
 
 4. **Provider Job**
-   按 `modality + operationKind` 区分图片生成/编辑、文生视频、图生视频、首尾帧、主体参考、对口型、动作迁移、语音、音乐和 3D。fallback 只能在兼容的 operation kind 与输入合同之间发生，不能用相似显示名偷换能力。
+   按 `modality + operationKind` 区分图片生成/编辑、文生视频、图生视频、首尾帧、主体参考、对口型、动作迁移、语音、音乐和 3D。任务、生命周期、远端对账与成本/质量/安全证据以 SQLite 为运行真相；旧 `jobs.json` 只作幂等迁移和回滚读取输入。fallback 只能在兼容的 operation kind 与输入合同之间发生，不能用相似显示名偷换能力。
 
 5. **质量与交付**
    记录文件可打开性、比例、分辨率、时长、帧/采样边界、编码、音频流、跨镜头一致性、成本和安全改写证据。失败、降级或缺少 provider 能力会明确返回阻塞，不伪造成功产物。
@@ -43,10 +43,12 @@ Web 端提供 Creative Artifact Canvas，作为创意产物的全尺寸工作台
 - 从当前会话产物和工作区媒体素材库添加图片、视频与音频；
 - 连接素材、框选、移动、播放和查看媒体信息；
 - 创建蒙版并发起局部图片编辑；
-- 从画布动作沿正常 ChatRuntime 唤醒当前会话的 Supervisor；
+- 通过当前会话的 typed Canvas Graph 直接进入受治理的 Creative Media Runtime，并持久化运行状态、恢复信息和输出版本；
+- 在 Inspector 中查看每个输出版本自己的 Provider、模型、recipe、耗时、成本和 QA 证据，而不是拼接最新一次节点状态；
+- 对同一结果的图片、视频或音频版本进行 A/B Review，批准、拒绝或选定交付版本，并生成受治理的 delivery manifest；
 - 在运行期间锁定会破坏 source/artifact/mask lineage 的自由修改。
 
-可复用素材归工作区，当前会话必须显式采用后才能参与本轮创作；跨工作区引用会被拒绝。蒙版属于内部编辑输入，不进入普通素材库。画布不会创建独立的隐藏会话、插件授权或旁路执行状态。Phone 目前只消费正常消息、来源和产物，不提供 Web 的完整画布编辑面。
+可复用素材归工作区，当前会话必须显式采用后才能参与本轮创作；Artifact、Source、Workspace Asset 和本地路径在文件读取、Provider 请求、成本记账和产物写入之前统一执行 Session/Workspace authority 校验，跨区输入会在副作用前拒绝。蒙版属于内部编辑输入，不进入普通素材库。画布不会创建独立的隐藏会话、插件授权或旁路执行状态。Phone 目前只消费正常消息、来源和产物，不提供 Web 的完整画布编辑面。
 
 ## 精确本机媒体编辑
 
@@ -72,6 +74,6 @@ Admin 可以通过 `GET /object_info` 探测 ComfyUI provider，并为模型记�
 
 ## 当前状态与限制
 
-当前已具备六 facade 工具面、recipe、素材/产物 ledger、provider job、角色和关键帧引用、Web Creative Artifact Canvas、工作区素材库、精确本机抽帧/分段、质量/成本/安全证据和 Admin 治理面。
+当前已具备六 facade 工具面、recipe、素材/产物 ledger、SQLite job/lifecycle/projection、远端任务对账、Session 删除前清理、角色和关键帧引用、Web Creative Artifact Canvas、版本级 Inspector 与 A/B Review、受治理交付清单、工作区素材库、精确本机抽帧/分段、质量/成本/安全证据和 Admin 治理面。
 
-仍需依赖真实 provider 可用性、账户权限、额度和各供应商协议完成在线生成；Phone 没有完整 Canvas；ComfyUI 通用 workflow 执行尚未实现。Mock、dry-run 或 provider 可达性探测不能代替真实媒体生成验收。
+仍需依赖真实 provider 可用性、账户权限、额度和各供应商协议完成在线生成；Phone 没有完整 Canvas；ComfyUI 通用 workflow 执行尚未实现；多实体 3D Review 尚未进入本阶段。真实 MP4/WAV 浏览器验收只证明本机 Range、seek、同步、单边失败和资源释放，不证明任何付费 Provider 的在线生成或远端终止。Mock、dry-run 或 provider 可达性探测不能代替真实媒体生成验收。仍保留的 JSON 兼容面与退出计划见[技术债清单](./V8OS_CREATIVE_MEDIA_RUNTIME_TECH_DEBT_ZH.md)。

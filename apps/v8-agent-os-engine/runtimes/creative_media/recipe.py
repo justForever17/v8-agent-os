@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from core.creative_media_resource_authority import creative_media_resource_authority
 from core.storage import storage
 
 from .catalog import (
@@ -88,10 +89,18 @@ def _list_of_strings(value: Any) -> list[str]:
 def _scope_fields(request: dict[str, Any], previous: dict[str, Any] | None = None) -> dict[str, str]:
     previous = previous or {}
     return {
+        "sessionId": _clean_str(request.get("sessionId") or request.get("session_id") or previous.get("sessionId")),
         "projectId": _clean_str(request.get("projectId") or request.get("project_id") or previous.get("projectId")),
         "workspaceId": _clean_str(request.get("workspaceId") or request.get("workspace_id") or previous.get("workspaceId")),
         "workspacePath": _clean_str(request.get("workspacePath") or request.get("workspace_path") or previous.get("workspacePath")),
     }
+
+
+def _authorize_scoped_resources(request: dict[str, Any]) -> None:
+    # Agent facade requests always carry canonical Session scope. Keep the
+    # deterministic compiler usable for internal, resource-free fixtures.
+    if _clean_str(request.get("sessionId") or request.get("session_id")):
+        creative_media_resource_authority.authorize_request_resources(request)
 
 
 def _extract_quoted_text(prompt: str) -> list[str]:
@@ -355,6 +364,7 @@ class CreativeRecipeCompiler:
 
     def compile_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})
+        _authorize_scoped_resources(payload)
         modality = _normalize_modality(payload.get("modality") or "image")
         if modality not in SUPPORTED_RECIPE_MODALITIES:
             raise ValueError(f"Unsupported creative media recipe modality: {modality or 'missing'}")
@@ -426,6 +436,7 @@ class CreativeRecipeCompiler:
 
     def create_character_bible(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload or {})
+        _authorize_scoped_resources(request)
         bible_id = (
             _clean_str(request.get("characterBibleId") or request.get("character_bible_id") or request.get("id"))
             or f"cm_character_{uuid.uuid4().hex}"
@@ -467,6 +478,7 @@ class CreativeRecipeCompiler:
 
     def register_keyframe(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload or {})
+        _authorize_scoped_resources(request)
         keyframe_id = _clean_str(request.get("keyframeId") or request.get("keyframe_id") or request.get("id")) or f"cm_keyframe_{uuid.uuid4().hex}"
         store = _read_store(KEYFRAME_STORE_FILE, "keyframes")
         keyframes = dict(store.get("keyframes") or {})
@@ -525,6 +537,7 @@ class CreativeRecipeCompiler:
 
     def register_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload or {})
+        _authorize_scoped_resources(request)
         asset_id = _clean_str(request.get("assetId") or request.get("id")) or f"cm_asset_{uuid.uuid4().hex}"
         ledger = _read_store(ASSET_LEDGER_FILE, "assets")
         assets = dict(ledger.get("assets") or {})

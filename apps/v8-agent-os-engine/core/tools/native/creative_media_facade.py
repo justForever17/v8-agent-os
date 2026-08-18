@@ -6,6 +6,10 @@ from typing import Any, Literal
 
 from langchain_core.tools import tool
 
+from core.creative_media_resource_authority import (
+    CreativeMediaResourceAuthorityError,
+    creative_media_resource_authority,
+)
 from erc.runtime_context import get_runtime_context
 
 
@@ -385,7 +389,15 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "list_work_orders": _spec(
             "plan", "list_work_orders", "creative", "creative_media_list_work_orders",
             allowed={"limit", "requestingRuntime", "status"}, output_kind="work_order_list",
-            args=(("status", "status", None), ("requesting_runtime", "requestingRuntime", None), ("limit", "limit", 20)),
+            args=(
+                ("status", "status", None),
+                ("requesting_runtime", "requestingRuntime", None),
+                ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING),
+                ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None),
+                ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "production_pack": _spec(
             "plan", "production_pack", "creative", "creative_media_production_pack",
@@ -408,7 +420,11 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "list_assets": _spec(
             "assets", "list_assets", "creative", "creative_media_list_assets",
             allowed={"limit", "modality", "role"}, output_kind="asset_list",
-            args=(("modality", "modality", None), ("role", "role", None), ("limit", "limit", 20)),
+            args=(
+                ("modality", "modality", None), ("role", "role", None), ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "get_recipe": _spec(
             "assets", "get_recipe", "creative", "creative_media_get_recipe",
@@ -440,7 +456,11 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "get_keyframe": _spec(
             "assets", "get_keyframe", "creative", "creative_media_get_keyframe",
             required={"keyframeId"}, allowed={"keyframeId"}, output_kind="keyframe",
-            args=(("keyframe_id", "keyframeId", _MISSING),),
+            args=(
+                ("keyframe_id", "keyframeId", _MISSING),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "list_keyframes": _spec(
             "assets", "list_keyframes", "creative", "creative_media_list_keyframes",
@@ -450,6 +470,10 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
                 ("role", "role", None),
                 ("character_bible_id", "characterBibleId", None),
                 ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING),
+                ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None),
+                ("workspace_path", "workspacePath", _MISSING),
             ),
         ),
         "psd_inspect": _spec(
@@ -513,12 +537,20 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "get_plan": _spec(
             "edit", "get_plan", "creative", "creative_media_get_edit_plan",
             required={"planId"}, allowed={"planId"}, output_kind="edit_plan",
-            args=(("plan_id", "planId", _MISSING),),
+            args=(
+                ("plan_id", "planId", _MISSING),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "list_plans": _spec(
             "edit", "list_plans", "creative", "creative_media_list_edit_plans",
             allowed={"limit", "recipeId"}, output_kind="edit_plan_list",
-            args=(("recipe_id", "recipeId", None), ("limit", "limit", 20)),
+            args=(
+                ("recipe_id", "recipeId", None), ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "render": _spec(
             "edit", "render", "creative", "creative_media_render_edit_plan",
@@ -527,7 +559,11 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "get_render": _spec(
             "edit", "get_render", "creative", "creative_media_get_render",
             required={"renderJobId"}, allowed={"renderJobId"}, output_kind="render",
-            args=(("render_job_id", "renderJobId", _MISSING),),
+            args=(
+                ("render_job_id", "renderJobId", _MISSING),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "list_renders": _spec(
             "edit", "list_renders", "creative", "creative_media_list_renders",
@@ -537,6 +573,10 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
                 ("status", "status", None),
                 ("limit", "limit", 20),
                 ("detail_level", "detailLevel", "summary"),
+                ("session_id", "sessionId", _MISSING),
+                ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None),
+                ("workspace_path", "workspacePath", _MISSING),
             ),
         ),
     },
@@ -548,12 +588,20 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         "get_job": _spec(
             "quality", "get_job", "creative", "creative_media_get_quality_job",
             required={"qualityJobId"}, allowed={"qualityJobId"}, output_kind="quality_job",
-            args=(("quality_job_id", "qualityJobId", _MISSING),),
+            args=(
+                ("quality_job_id", "qualityJobId", _MISSING),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "list_jobs": _spec(
             "quality", "list_jobs", "creative", "creative_media_list_quality_jobs",
             allowed={"limit", "status"}, output_kind="quality_job_list",
-            args=(("status", "status", None), ("limit", "limit", 20)),
+            args=(
+                ("status", "status", None), ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "qa_check": _spec(
             "quality", "qa_check", "creative", "creative_media_qa_check",
@@ -561,11 +609,19 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
         ),
         "cost_ledger": _spec(
             "quality", "cost_ledger", "creative", "creative_media_cost_ledger",
-            allowed={"limit"}, output_kind="cost_ledger", args=(("limit", "limit", 20),),
+            allowed={"limit"}, output_kind="cost_ledger", args=(
+                ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "safety_events": _spec(
             "quality", "safety_events", "creative", "creative_media_safety_events",
-            allowed={"limit"}, output_kind="safety_events", args=(("limit", "limit", 20),),
+            allowed={"limit"}, output_kind="safety_events", args=(
+                ("limit", "limit", 20),
+                ("session_id", "sessionId", _MISSING), ("workspace_id", "workspaceId", _MISSING),
+                ("project_id", "projectId", None), ("workspace_path", "workspacePath", _MISSING),
+            ),
         ),
         "alpha_inspect": _spec(
             "quality", "alpha_inspect", "psd", "creative_media_alpha_inspect",
@@ -652,6 +708,36 @@ def _validation_error(spec: CreativeMediaActionSpec, code: str, message: str) ->
     )
 
 
+_OWNER_SCOPED_ACTIONS = frozenset(
+    {
+        ("plan", "compile_work_order"),
+        ("plan", "list_work_orders"),
+        ("assets", "register_asset"),
+        ("assets", "list_assets"),
+        ("assets", "register_keyframe"),
+        ("assets", "get_keyframe"),
+        ("assets", "list_keyframes"),
+        ("jobs", "create"),
+        ("jobs", "get"),
+        ("jobs", "list"),
+        ("jobs", "artifacts"),
+        ("jobs", "retry"),
+        ("edit", "create_plan"),
+        ("edit", "get_plan"),
+        ("edit", "list_plans"),
+        ("edit", "render"),
+        ("edit", "get_render"),
+        ("edit", "list_renders"),
+        ("quality", "create_job"),
+        ("quality", "get_job"),
+        ("quality", "list_jobs"),
+        ("quality", "qa_check"),
+        ("quality", "cost_ledger"),
+        ("quality", "safety_events"),
+    }
+)
+
+
 def _validate_request(spec: CreativeMediaActionSpec, request: Any) -> tuple[dict[str, Any] | None, str | None]:
     if request is None:
         payload: dict[str, Any] = {}
@@ -705,15 +791,19 @@ def _validate_request(spec: CreativeMediaActionSpec, request: Any) -> tuple[dict
         payload,
         include_canvas_operation=spec.facade == "jobs" and spec.action == "create",
     )
-    if (
-        spec.facade == "jobs"
-        and spec.action in {"get", "list", "artifacts", "retry"}
-        and _is_empty(scoped.get("sessionId"))
-    ):
+    if (spec.facade, spec.action) in _OWNER_SCOPED_ACTIONS and _is_empty(scoped.get("sessionId")):
         return None, _validation_error(
             spec,
             "runtime_scope_unavailable",
-            "current runtime session is required for Creative Media job access",
+            "current runtime session is required for Creative Media owner-scoped access",
+        )
+    try:
+        creative_media_resource_authority.authorize_request_resources(scoped)
+    except CreativeMediaResourceAuthorityError:
+        return None, _validation_error(
+            spec,
+            "media_resource_not_authorized",
+            "media resource is not available in the current session scope",
         )
     return scoped, None
 

@@ -5,6 +5,7 @@ import os
 import platform
 import queue
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -1067,6 +1068,8 @@ _BACKGROUND_PROCESS_RETENTION_SECONDS = 300
 _DEFAULT_BACKGROUND_COMMAND_TIMEOUT_SECONDS = 15 * 60
 _DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_SECONDS = 60 * 60
 _MAX_COMMAND_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60
+_COMMAND_DIAGNOSTICS_TIMEOUT_SECONDS = 1.5
+_COMMAND_DIAGNOSTICS_WORKER_LIMIT = 4
 _COMMAND_TERMINAL_MODES = {"auto", "pipe", "pty"}
 _SKILLS_ADD_COMMAND_PATTERN = re.compile(r"(?i)(?:^|[;&|]\s*)npx\s+skills\s+add\b")
 _PROMPT_HINT_PATTERN = re.compile(
@@ -1090,6 +1093,7 @@ _SPACED_CJK_SEQUENCE_PATTERN = re.compile(r"(?:[\u3400-\u9fff]\s){4,}[\u3400-\u9
 _REPEATED_CJK_PATTERN = re.compile(r"([\u3400-\u9fff])\1{7,}")
 _BOX_DRAWING_ONLY_LINE_PATTERN = re.compile(r"^[\s┌┐└┘├┤┬┴┼─│╭╮╰╯═║╔╗╚╝╠╣╦╩╬]+$")
 _BACKGROUND_COMMAND_PROFILES = {"auto", "chat_cli", "shell"}
+_command_diagnostics_slots = threading.BoundedSemaphore(_COMMAND_DIAGNOSTICS_WORKER_LIMIT)
 
 
 class CommandSessionBackendError(RuntimeError):
@@ -1607,13 +1611,18 @@ def _extract_command_head(command: str) -> str:
     return str(parts[0] if parts else "").strip()
 
 
-def _build_command_diagnostics_snapshot(command: str, *, cwd: str | None = None) -> dict[str, Any]:
+def _build_command_diagnostics_snapshot(
+    command: str,
+    *,
+    cwd: str | None = None,
+    probe_executables: bool = True,
+) -> dict[str, Any]:
     command_head = _extract_command_head(command)
     path_value = str(os.environ.get("PATH") or "")
     appdata = str(os.environ.get("APPDATA") or "").strip()
     roaming_npm = str(Path(appdata) / "npm") if appdata else ""
     local_npm = str(Path.home() / "AppData" / "Roaming" / "npm")
-    resolved_path = shutil.which(command_head, path=path_value) if command_head else None
+    resolved_path = shutil.which(command_head, path=path_value) if command_head and probe_executables else None
     oauth_candidates = {
         "qwen": Path.home() / ".qwen" / "oauth_creds.json",
         "codex": Path.home() / ".codex" / "auth.json",
@@ -1630,22 +1639,24 @@ def _build_command_diagnostics_snapshot(command: str, *, cwd: str | None = None)
     }
     for cli_name, candidates in cli_heads.items():
         resolved_candidates = []
-        for candidate in candidates:
-            resolved_candidate = shutil.which(candidate, path=path_value)
-            if resolved_candidate:
-                resolved_candidates.append(resolved_candidate)
+        if probe_executables:
+            for candidate in candidates:
+                resolved_candidate = shutil.which(candidate, path=path_value)
+                if resolved_candidate:
+                    resolved_candidates.append(resolved_candidate)
         oauth_path = oauth_candidates.get(cli_name)
         cli_health_matrix[cli_name] = {
-            "available": bool(resolved_candidates),
+            "available": bool(resolved_candidates) if probe_executables else None,
             "resolvedExecutables": resolved_candidates,
-            "oauthFile": str(oauth_path) if oauth_path and oauth_path.exists() else "",
+            "oauthFile": str(oauth_path) if probe_executables and oauth_path and oauth_path.exists() else "",
+            "probeState": "ready" if probe_executables else "deferred",
         }
     return {
         "commandHead": command_head,
         "resolvedExecutable": resolved_path or "",
         "currentWorkingDirectory": str(cwd or os.getcwd()),
         "shellPath": str(os.environ.get("COMSPEC") or ""),
-        "nodeExecutable": shutil.which("node", path=path_value) or "",
+        "nodeExecutable": shutil.which("node", path=path_value) if probe_executables else "",
         "preferredEncoding": locale.getpreferredencoding(False),
         "stdinEncoding": getattr(sys.stdin, "encoding", "") or "",
         "stdoutEncoding": getattr(sys.stdout, "encoding", "") or "",
@@ -1658,9 +1669,10 @@ def _build_command_diagnostics_snapshot(command: str, *, cwd: str | None = None)
         "pathEntryCount": len(normalized_path_entries),
         "pathEntriesHead": [item for item in path_value.split(os.pathsep) if item.strip()][:8],
         "oauthFiles": {
-            key: str(path) for key, path in oauth_candidates.items() if path.exists()
+            key: str(path) for key, path in oauth_candidates.items() if probe_executables and path.exists()
         },
         "cliHealthMatrix": cli_health_matrix,
+        "diagnosticsState": "ready" if probe_executables else "deferred",
     }
 
 
@@ -2515,6 +2527,7 @@ class BackgroundProcess:
         )
         self.deadline_at = self.started_at + self.timeout_seconds
         self._termination_lock = threading.RLock()
+        self._diagnostics_lock = threading.RLock()
         self._deadline_stop = threading.Event()
         self.conversation_turns: list[dict[str, Any]] = []
         self.active_turn_index: int = -1
@@ -2532,7 +2545,7 @@ class BackgroundProcess:
         self.exit_sentinel = ""
         self.command_completed_by_sentinel = False
         self.command_diagnostics = _extend_command_diagnostics_for_terminal(
-            _build_command_diagnostics_snapshot(command, cwd=self.cwd),
+            _build_command_diagnostics_snapshot(command, cwd=self.cwd, probe_executables=False),
             env_overrides=self.terminal_env_overrides,
             uses_winpty=bool(sys.platform == "win32" and interactive and HAS_WINPTY),
             shell_dialect=self.shell_dialect,
@@ -2640,6 +2653,62 @@ class BackgroundProcess:
         self.reader_thread.start()
         self.deadline_thread = threading.Thread(target=self._watch_deadline, daemon=True)
         self.deadline_thread.start()
+        self.diagnostics_thread = threading.Thread(
+            target=self._refresh_command_diagnostics,
+            name="v8-command-diagnostics",
+            daemon=True,
+        )
+        self.diagnostics_thread.start()
+
+    def _refresh_command_diagnostics(self) -> None:
+        if not _command_diagnostics_slots.acquire(blocking=False):
+            with self._diagnostics_lock:
+                self.command_diagnostics["diagnosticsState"] = "skipped_busy"
+            return
+
+        result_queue: queue.Queue[tuple[str, dict[str, Any] | None]] = queue.Queue(maxsize=1)
+
+        def resolve() -> None:
+            try:
+                result_queue.put(
+                    (
+                        "ready",
+                        _build_command_diagnostics_snapshot(
+                            self.command,
+                            cwd=self.cwd,
+                            probe_executables=True,
+                        ),
+                    )
+                )
+            except BaseException:
+                result_queue.put(("failed", None))
+            finally:
+                _command_diagnostics_slots.release()
+
+        worker = threading.Thread(target=resolve, name="v8-command-diagnostics-worker", daemon=True)
+        worker.start()
+        worker.join(timeout=_COMMAND_DIAGNOSTICS_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            with self._diagnostics_lock:
+                self.command_diagnostics["diagnosticsState"] = "timeout"
+            return
+
+        try:
+            state, snapshot = result_queue.get_nowait()
+        except queue.Empty:
+            state, snapshot = "failed", None
+        if state != "ready" or snapshot is None:
+            with self._diagnostics_lock:
+                self.command_diagnostics["diagnosticsState"] = "failed"
+            return
+        enriched = _extend_command_diagnostics_for_terminal(
+            snapshot,
+            env_overrides=self.terminal_env_overrides,
+            uses_winpty=bool(sys.platform == "win32" and self.interactive and HAS_WINPTY),
+            shell_dialect=self.shell_dialect,
+        )
+        with self._diagnostics_lock:
+            self.command_diagnostics.update(enriched)
 
     def _process_id(self) -> int | None:
         if self.proc is not None:
@@ -2660,6 +2729,10 @@ class BackgroundProcess:
 
     def _cleanup_backend_process(self) -> None:
         _terminate_process_tree(self._process_id())
+        if self.backend == "posix_pty":
+            # Closing the master after the child is terminated wakes the bounded
+            # reader loop and prevents a PTY session from keeping its owner alive.
+            self._close_posix_pty_fd()
         if self.pty_win is not None:
             cancel_io = getattr(self.pty_win, "cancel_io", None)
             if callable(cancel_io):
@@ -2672,6 +2745,16 @@ class BackgroundProcess:
                 self.proc.stdin.close()
             except Exception:
                 pass
+
+    def _close_posix_pty_fd(self) -> None:
+        fd = self.fd
+        self.fd = None
+        if fd is None:
+            return
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     def _mark_backend_failure(self, exc: BaseException, *, operation: str) -> None:
         _raise_if_process_control_exception(exc)
@@ -2992,15 +3075,23 @@ class BackgroundProcess:
                         self._mark_backend_failure(exc, operation="read")
                         break
             elif self.backend == "posix_pty" and self.fd is not None:
+                fd = self.fd
                 while self.is_running:
                     try:
-                        data = os.read(self.fd, 4096).decode('utf-8', 'replace')
-                        if data:
-                            self._ingest_output(data)
-                        else:
-                            break
-                    except OSError:
+                        readable, _, _ = select.select([fd], [], [], 0.1)
+                    except (OSError, ValueError):
                         break
+                    if not readable:
+                        continue
+                    try:
+                        raw_data = os.read(fd, 4096)
+                    except OSError:
+                        # macOS/Linux report EIO when the PTY slave closes. It is
+                        # the normal end-of-stream signal for a finite command.
+                        break
+                    if not raw_data:
+                        break
+                    self._ingest_output(raw_data.decode("utf-8", "replace"))
             else:
                 while self.is_running and self.proc:
                     char = self.proc.stdout.read(1)
@@ -3032,6 +3123,8 @@ class BackgroundProcess:
                 self.failure_message = f"Command exited with code {self.return_code}."
             if self.return_code == 0:
                 _notify_skills_inventory_command_completed(self.command)
+            if self.backend == "posix_pty":
+                self._close_posix_pty_fd()
 
     def get_new_output(self) -> str:
         chars = []
@@ -3266,8 +3359,12 @@ class BackgroundProcess:
             "chat_cli_total_chars": len(self.current_turn_text) if self.profile == "chat_cli" else None,
             "chat_cli_reported_chars": int(self.reported_offset) if self.profile == "chat_cli" else None,
             "chat_cli_last_digest": self.last_semantic_digest if self.profile == "chat_cli" else None,
-            "command_diagnostics": dict(self.command_diagnostics),
+            "command_diagnostics": self._command_diagnostics_snapshot(),
         }
+
+    def _command_diagnostics_snapshot(self) -> dict[str, Any]:
+        with self._diagnostics_lock:
+            return dict(self.command_diagnostics)
 
     def terminate(self, *, reason: str = "user_terminated", return_code: int = 130):
         with self._termination_lock:

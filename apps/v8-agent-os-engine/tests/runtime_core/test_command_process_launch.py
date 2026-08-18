@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import shlex
 import subprocess
 import sys
 import time
@@ -334,7 +335,31 @@ def test_windows_finite_interactive_command_reports_exact_exit(tmp_path, return_
     assert status["is_running"] is False
     assert status["return_code"] == return_code
     assert status["failure_kind"] == (None if return_code == 0 else "command_failed")
-    assert marker in output
+    assert marker in output or marker in str(status["screen_snapshot"])
+
+
+def test_command_diagnostics_probe_cannot_block_process_start(monkeypatch, tmp_path) -> None:
+    original_builder = command_module._build_command_diagnostics_snapshot
+
+    def slow_builder(*args, **kwargs):
+        if kwargs.get("probe_executables"):
+            time.sleep(3)
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(command_module, "_build_command_diagnostics_snapshot", slow_builder)
+    started_at = time.monotonic()
+    process = command_module.BackgroundProcess(
+        shlex.join([sys.executable, "-I", "-u", "-c", "print('V8OS_DIAGNOSTICS_NONBLOCKING')"])
+        if sys.platform != "win32"
+        else subprocess.list2cmdline([sys.executable, "-I", "-u", "-c", "print('V8OS_DIAGNOSTICS_NONBLOCKING')"]),
+        cwd=str(tmp_path),
+        shell_dialect="sh" if sys.platform != "win32" else "cmd",
+        timeout_seconds=10,
+    )
+    assert time.monotonic() - started_at < 1
+    process.reader_thread.join(timeout=5)
+    assert process.status_snapshot()["return_code"] == 0
+    assert process.status_snapshot()["command_diagnostics"]["diagnosticsState"] == "deferred"
 
 
 @pytest.mark.skipif(
@@ -357,6 +382,73 @@ def test_windows_missing_interactive_command_fails_without_waiting_for_deadline(
     assert status["return_code"] not in (None, 0)
     assert status["failure_kind"] == "command_failed"
     assert status["timed_out"] is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires a POSIX PTY backend")
+@pytest.mark.parametrize("return_code", [0, 7])
+def test_posix_finite_interactive_command_reports_exact_exit(tmp_path, return_code) -> None:
+    marker = f"V8OS_POSIX_PTY_EXIT_{return_code}"
+    command = shlex.join(
+        [
+            sys.executable,
+            "-I",
+            "-u",
+            "-c",
+            f"print({marker!r}); raise SystemExit({return_code})",
+        ]
+    )
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=True,
+        cwd=str(tmp_path),
+        shell_dialect="sh",
+        timeout_seconds=10,
+    )
+    process.reader_thread.join(timeout=5)
+
+    output = process.get_new_output()
+    status = process.status_snapshot()
+    assert process.reader_thread.is_alive() is False
+    assert status["is_running"] is False
+    assert status["return_code"] == return_code
+    assert status["failure_kind"] == (None if return_code == 0 else "command_failed")
+    assert marker in output
+    assert process.fd is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="requires a POSIX PTY backend")
+def test_posix_interactive_round_trip_and_termination_close_master(tmp_path) -> None:
+    marker = "V8OS_POSIX_PTY_ROUND_TRIP"
+    command = shlex.join([sys.executable, "-I", "-u", "-i", "-q"])
+    process = command_module.BackgroundProcess(
+        command,
+        interactive=True,
+        cwd=str(tmp_path),
+        shell_dialect="sh",
+        timeout_seconds=10,
+    )
+    process_id = process._process_id()
+    output = ""
+    try:
+        process.write_input(f"print({marker!r})\n")
+        deadline = time.time() + 5
+        while marker not in output and process.is_running and time.time() < deadline:
+            output += process.get_new_output()
+            if marker not in output:
+                time.sleep(0.05)
+        output += process.get_new_output()
+    finally:
+        process.terminate(reason="test_cleanup")
+        process.reader_thread.join(timeout=5)
+
+    assert marker in output or marker in str(process.status_snapshot()["screen_snapshot"])
+    assert process.reader_thread.is_alive() is False
+    assert process.fd is None
+    assert process_id is not None
+    deadline = time.time() + 5
+    while psutil.pid_exists(process_id) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not psutil.pid_exists(process_id)
 
 
 def test_windows_interactive_spawn_panic_cleans_spawned_process(monkeypatch, tmp_path) -> None:

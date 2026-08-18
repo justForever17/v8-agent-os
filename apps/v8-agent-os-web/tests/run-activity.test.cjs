@@ -3,12 +3,18 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
-const { evaluateSessionRuntimeEvent } = require("@v8/session-realtime");
+const { evaluateSessionRuntimeEvent, isActiveCommandSessionStatus } = require("@v8/session-realtime");
 
 const root = path.resolve(__dirname, "..");
 const sourcePath = path.join(root, "src", "lib", "chat", "run-activity.ts");
 const chatClientSource = fs.readFileSync(path.join(root, "src", "app", "chat", "ChatClient.tsx"), "utf8");
 const streamHookSource = fs.readFileSync(path.join(root, "src", "hooks", "use-langgraph-stream.ts"), "utf8");
+const commandSurfaceSources = [chatClientSource, ...[
+  "InteractiveTerminalCard.tsx",
+  "ManualTerminalPanel.tsx",
+  "ProcessesHUD.tsx",
+  "WorkspaceWorkbenchPanel.tsx",
+].map((name) => fs.readFileSync(path.join(root, "src", "components", "chat", name), "utf8"))];
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   fileName: sourcePath,
@@ -33,11 +39,24 @@ const {
 
 test("authoritative terminal runtime status clears a stale running sidebar summary", () => {
   assert.equal(deriveComposerRunActivity({
-    localStreamActive: false,
+    localStreamActive: true,
+    localRunId: "run-terminal",
     runtimeStatus: "completed",
+    runtimeRunId: "run-terminal",
     currentRunStatus: "completed",
+    currentRunId: "run-terminal",
     conversationStatus: "running",
+    conversationRunId: "run-terminal",
   }), false);
+});
+
+test("a stale terminal projection from another run cannot settle the submitted run", () => {
+  assert.equal(deriveComposerRunActivity({
+    localStreamActive: true,
+    localRunId: "run-current",
+    runtimeStatus: "completed",
+    runtimeRunId: "run-previous",
+  }), true);
 });
 
 test("external active run keeps the composer busy without a local HTTP stream", () => {
@@ -76,6 +95,16 @@ test("only runtime statuses that Engine can interrupt expose a stop affordance",
   assert.equal(runStatusAllowsInterrupt("completed"), false);
   assert.equal(isRecognizedRunStatus("completed"), true);
   assert.equal(isRecognizedRunStatus("mystery"), false);
+});
+
+test("Web command surfaces share the complete command terminal vocabulary", () => {
+  assert.equal(isActiveCommandSessionStatus("timed_out"), false);
+  assert.equal(isActiveCommandSessionStatus("interrupted"), false);
+  assert.equal(isActiveCommandSessionStatus("awaiting_input"), true);
+  assert.equal(isActiveCommandSessionStatus("unknown"), false);
+  for (const source of commandSurfaceSources) {
+    assert.match(source, /isActiveCommandSessionStatus/);
+  }
 });
 
 test("an external active run exposes the same stop target before compact controls hydrate", () => {

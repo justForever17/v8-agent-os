@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
+    isActiveCommandSessionStatus,
     resolveAdminProcessHttpPath,
     resolveAdminProcessWsUrl,
     type AdminProcessRef,
@@ -24,7 +25,7 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
     const t = useT();
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const processStatusRunning = useMemo(
-        () => String(process.status || '').trim().toLowerCase() !== 'stopped',
+        () => isActiveCommandSessionStatus(process.status),
         [process.status],
     );
     const streamUnavailable = useMemo(
@@ -199,7 +200,7 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
                     setPolledCompactSnapshot(nextSnapshot);
                 }
                 const stillRunning = typeof payload.process?.status === 'string'
-                    ? String(payload.process.status || '').trim().toLowerCase() !== 'stopped'
+                    ? isActiveCommandSessionStatus(payload.process.status)
                     : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
                 setObservedRunning(stillRunning);
             } catch (error) {

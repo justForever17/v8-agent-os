@@ -167,11 +167,13 @@ import {
     contextUsagePercent as resolveContextUsagePercent,
     evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isActiveCommandSessionStatus,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
     syncSessionRealtimeMessageState,
     shouldApplyRuntimeEventToMessage,
+    terminalRunStatusFromTopic,
 } from "@v8/session-realtime";
 import {
     composerTextContainsReference,
@@ -4030,6 +4032,40 @@ export default function ChatScreen() {
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
         }
+        const terminalRunStatus = terminalRunStatusFromTopic(
+            normalized.topic || normalized.data?.topic || normalized.name,
+            normalized.data,
+        );
+        if (terminalRunStatus) {
+            setRuntime((current) => ({
+                ...current,
+                status: terminalRunStatus,
+                latestSeq: normalized.seq || current.latestSeq,
+                runId: normalized.run_id || current.runId,
+            }));
+            const terminalSessionId = String(
+                normalized.session_id
+                || normalized.conversation_id
+                || activeConversationIdRef.current
+                || "",
+            ).trim();
+            if (terminalSessionId) {
+                setConversations((current) => current.map((conversation) => {
+                    if (String(conversation.sessionId || conversation.id || "").trim() !== terminalSessionId) {
+                        return conversation;
+                    }
+                    return {
+                        ...conversation,
+                        status: terminalRunStatus,
+                        workflowStatus: terminalRunStatus,
+                        controls: conversation.controls ? {
+                            ...conversation.controls,
+                            canInterrupt: false,
+                        } : conversation.controls,
+                    };
+                }));
+            }
+        }
         if (normalized.topic === "session.reasoning_effort.updated") {
             const payload = normalized.data && typeof normalized.data === "object"
                 ? normalized.data as SupervisorReasoningEffortControl
@@ -4733,9 +4769,11 @@ export default function ChatScreen() {
                 ),
             );
             const topic = String(normalized.data?.topic || "");
+            const controlledStatus = terminalRunStatus || String(normalized.data?.status || "").trim().toLowerCase();
             setRuntime((current) => ({
                 ...current,
-                status: topic.includes("paused") ? "waiting_approval" : topic.includes("failed") ? "failed" : current.status,
+                status: controlledStatus
+                    || (topic.includes("paused") ? "waiting_approval" : topic.includes("failed") ? "failed" : current.status),
                 latestSeq: normalized.seq || current.latestSeq,
                 runId: normalized.run_id || current.runId,
             }));
@@ -5912,7 +5950,26 @@ export default function ChatScreen() {
         }
         setRunActionBusy(true);
         try {
-            await dispatchRunCommand(authorizedFetch, runId, command);
+            const result = await dispatchRunCommand(authorizedFetch, runId, command);
+            if (command === "interrupt" && !asRecord(result).ignored) {
+                setRuntime((current) => ({ ...current, status: "interrupted", runId }));
+                const conversationId = String(activeConversationIdRef.current || "").trim();
+                if (conversationId) {
+                    setConversations((current) => current.map((conversation) => (
+                        String(conversation.sessionId || conversation.id || "").trim() === conversationId
+                            ? {
+                                ...conversation,
+                                status: "interrupted",
+                                workflowStatus: "interrupted",
+                                controls: conversation.controls ? {
+                                    ...conversation.controls,
+                                    canInterrupt: false,
+                                } : conversation.controls,
+                            }
+                            : conversation
+                    )));
+                }
+            }
             if (activeConversationIdRef.current) {
                 await loadConversationRef.current(activeConversationIdRef.current, { force: true });
             }
@@ -6954,11 +7011,7 @@ export default function ChatScreen() {
             return status === "done" || status === "skipped";
         });
     const projectionHasActiveProcess = hudProcesses.some((process) => {
-        const status = String(process.status || "").trim().toLowerCase();
-        return status !== "stopped"
-            && status !== "terminated"
-            && status !== "completed"
-            && status !== "failed";
+        return isActiveCommandSessionStatus(process.status);
     });
     const todoHudShouldAutoHide = todosAllCompleted
         && !projection.runControlState.pendingApproval

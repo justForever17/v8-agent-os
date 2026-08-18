@@ -2,7 +2,10 @@ import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/conten
 import type { AskUserInteraction, ChatMessage, ConversationSummary, PendingApproval, SessionTodoItem } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import {
+    TERMINAL_RUN_STATUSES,
+    deriveAuthoritativeRunControl,
     deriveMemoryRuntimeInsightFromGovernance,
+    normalizeRunStatus as normalizeSharedRunStatus,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
     type AdminProcessRef,
@@ -31,14 +34,6 @@ const ACTIVE_PROCESS_STATUSES = new Set([
     "waiting_approval",
 ]);
 
-const TERMINAL_RUN_STATUSES = new Set([
-    "completed",
-    "failed",
-    "cancelled",
-    "paused",
-    "idle",
-]);
-
 const STATUS_LABELS: Record<string, string> = {
     queued: "shared.runtime_status.queued",
     running: "shared.runtime_status.running",
@@ -48,6 +43,7 @@ const STATUS_LABELS: Record<string, string> = {
     completed: "shared.runtime_status.completed",
     failed: "shared.runtime_status.failed",
     cancelled: "shared.runtime_status.cancelled",
+    interrupted: "shared.runtime_status.interrupted",
     idle: "shared.runtime_status.idle",
 };
 
@@ -259,7 +255,7 @@ function collectVoiceCardDescriptors(messages: ChatMessage[]) {
 }
 
 function normalizeRunStatus(value: unknown, fallback = "idle") {
-    const normalized = String(value || "").trim().toLowerCase();
+    const normalized = normalizeSharedRunStatus(value);
     return normalized || fallback;
 }
 
@@ -345,54 +341,23 @@ function deriveRunControlState({
     ).trim() || undefined;
     const hasPendingApproval = approvals.length > 0 || Boolean(activeConversation?.hasPendingApproval);
     const hasActiveProcess = processes.some((process) => isActiveProcess(process, activeRunIdentity));
-    const canInterrupt = Boolean((controls?.canInterrupt && activeRunIdentity) || hasActiveProcess);
-    const canRetry = Boolean(controls?.canRetry);
-    const canResume = Boolean(controls?.canResume);
-    const canOpenApproval = Boolean(hasPendingApproval || controls?.canOpenApproval);
-
-    let status = optimisticStatus;
-    if (hasPendingApproval) {
-        status = "waiting_approval";
-    } else if (authoritativeStatus === "waiting_input") {
-        status = "waiting_input";
-    } else if (!hasActiveProcess && canRetry && !ACTIVE_PROCESS_STATUSES.has(authoritativeStatus)) {
-        status = "failed";
-    } else if (!hasActiveProcess && canResume && !ACTIVE_PROCESS_STATUSES.has(authoritativeStatus)) {
-        status = "paused";
-    } else if (authoritativeStatus && TERMINAL_RUN_STATUSES.has(authoritativeStatus) && !hasActiveProcess) {
-        status = authoritativeStatus;
-    } else if (optimisticStatus === "running") {
-        const authoritativeRunning = authoritativeStatus === "running";
-        const hasCurrentRun = Boolean(activeConversation?.currentRunId);
-        status = (authoritativeRunning && Boolean(activeRunIdentity)) || hasCurrentRun || canInterrupt || hasActiveProcess
-            ? "running"
-            : (authoritativeStatus || "idle");
-    } else if (authoritativeStatus && optimisticStatus === "idle") {
-        status = authoritativeStatus;
-    }
-
-    const shouldKeepRunId = Boolean(
-        historicalRunIdentity
-        && (
-            status === "running"
-            || status === "waiting_approval"
-            || status === "waiting_input"
-            || status === "failed"
-            || status === "cancelled"
-            || status === "paused"
-            || canRetry
-            || canResume
-        ),
-    );
+    const resolved = deriveAuthoritativeRunControl({
+        authoritativeStatus,
+        optimisticStatus,
+        activeRunId: activeRunIdentity,
+        historicalRunId: historicalRunIdentity,
+        hasPendingApproval,
+        hasActiveProcess,
+        controlCanInterrupt: Boolean(controls?.canInterrupt),
+        controlCanRetry: Boolean(controls?.canRetry),
+        controlCanResume: Boolean(controls?.canResume),
+    });
+    const isTerminal = TERMINAL_RUN_STATUSES.has(resolved.status);
 
     return {
-        runId: shouldKeepRunId ? historicalRunIdentity : undefined,
-        status,
-        pendingApproval: hasPendingApproval,
-        canOpenApproval,
-        canResume,
-        canRetry,
-        canInterrupt,
+        ...resolved,
+        pendingApproval: !isTerminal && hasPendingApproval,
+        canOpenApproval: !isTerminal && Boolean(hasPendingApproval || controls?.canOpenApproval),
     };
 }
 

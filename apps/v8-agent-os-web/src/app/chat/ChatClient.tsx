@@ -84,6 +84,7 @@ import {
     deriveAuthoritativeSessionView,
     evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isActiveCommandSessionStatus,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
     contextUsagePercent as resolveContextUsagePercent,
@@ -775,8 +776,7 @@ function dedupeProcesses(processes: AdminProcessRef[]) {
 }
 
 function isActiveTerminalProcess(process: AdminProcessRef) {
-    const status = String(process.status || '').trim().toLowerCase();
-    return Boolean(process.canInput) && !['stopped', 'terminated', 'completed', 'failed'].includes(status);
+    return Boolean(process.canInput) && isActiveCommandSessionStatus(process.status);
 }
 
 function terminalTabIdForManualSession(sessionId: string) {
@@ -1550,16 +1550,22 @@ export default function ChatClient() {
         && streamingConversationIdRef.current === activeConversationId,
     );
     const localSubmittedRunId = localConversationLoading ? submittedRunId : null;
+    const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
     const activeConversationRunning = useMemo(() => {
         const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
         return deriveComposerRunActivity({
             localStreamActive: localConversationLoading,
+            localRunId: localSubmittedRunId,
             runtimeStatus: sessionProjection?.runtimeStatus,
+            runtimeRunId: projectionRunId,
             currentRunStatus: currentRun?.status,
+            currentRunId: currentRun?.id,
             workflowStatus: sessionProjection?.controls?.workflowStatus || sessionProjection?.workflow?.status,
+            workflowRunId: sessionProjection?.workflow?.rootRunId || projectionRunId,
             conversationStatus: activeConversation?.status,
+            conversationRunId: activeConversation?.currentRunId,
         });
-    }, [activeConversationId, conversations, currentRun?.status, localConversationLoading, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.status]);
+    }, [activeConversationId, conversations, currentRun?.id, currentRun?.status, localConversationLoading, localSubmittedRunId, projectionRunId, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.rootRunId, sessionProjection?.workflow?.status]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
@@ -1585,7 +1591,6 @@ export default function ChatClient() {
     const governancePendingApproval = governanceApprovals[0] || null;
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
     const hasAskUserPending = Boolean(askUserApprovalId || askUserToolCallId);
-    const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
     const interruptibleRunId = activeConversationRunning
         ? deriveInterruptibleRunId({
             controlRunId: localSubmittedRunId || sessionProjection?.controls?.runId,
@@ -1601,14 +1606,32 @@ export default function ChatClient() {
             return;
         }
         void dispatchRunCommand(interruptibleRunId, "interrupt", "web_composer_interrupt")
-            .then(() => {
+            .then((result) => {
                 const conversationId = activeConversationIdRef.current;
+                if (!asPlainRecord(result).ignored) {
+                    const settled = settleTerminalStream(interruptibleRunId);
+                    if (settled) {
+                        streamingConversationIdRef.current = null;
+                        streamingTransportRef.current = null;
+                    }
+                    setSessionProjection((current) => current ? {
+                        ...current,
+                        runtimeStatus: "interrupted",
+                        currentRun: current.currentRun ? { ...current.currentRun, status: "interrupted" } : current.currentRun,
+                        controls: current.controls ? {
+                            ...current.controls,
+                            canInterrupt: false,
+                            workflowStatus: "interrupted",
+                        } : current.controls,
+                    } : current);
+                    if (conversationId) patchConversationSummary(conversationId, { status: "interrupted" });
+                }
                 if (conversationId) void loadRuns(conversationId);
             })
             .catch((error) => {
                 console.warn("[ChatClient] Failed to interrupt active run:", error);
             });
-    }, [dispatchRunCommand, interruptibleRunId, loadRuns]);
+    }, [dispatchRunCommand, interruptibleRunId, loadRuns, patchConversationSummary, settleTerminalStream]);
     const effectiveStatus = hasAskUserPending
         ? "waiting_input"
         : governancePendingApprovalId || currentRun?.status === "waiting_approval"

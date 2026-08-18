@@ -6,6 +6,7 @@ import {
     buildSessionOutputProjection,
     buildSessionSourceProjection,
     buildSubagentReturnProjection,
+    isActiveCommandSessionStatus,
     type AdminProcessRef,
     type SessionOutputProjection,
     type SessionSourceProjection,
@@ -61,7 +62,7 @@ function humanSafeOutputPath(path: string) {
 }
 
 function activeProcess(process: AdminProcessRef) {
-    return !["stopped", "terminated", "completed", "failed"].includes(text(process.status).toLowerCase());
+    return isActiveCommandSessionStatus(process.status);
 }
 
 function Section({ title, icon: Icon, count, children, defaultOpen = true }: { title: string; icon: typeof Box; count?: number; children: React.ReactNode; defaultOpen?: boolean }) {

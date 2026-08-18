@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Square, TerminalSquare, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import type { AdminProcessRef } from '@v8/session-realtime';
+import { isActiveCommandSessionStatus, type AdminProcessRef } from '@v8/session-realtime';
 import { useT } from '@/components/providers/LocaleProvider';
 import { cn } from '@/lib/utils';
 import { InteractiveTerminalCard } from './InteractiveTerminalCard';
@@ -80,8 +80,7 @@ function formatTerminalTitle(session: ManualTerminalSessionView) {
 }
 
 function isProcessRunning(process: AdminProcessRef) {
-    const status = String(process.status || '').trim().toLowerCase();
-    return !['stopped', 'terminated', 'completed', 'failed'].includes(status);
+    return isActiveCommandSessionStatus(process.status);
 }
 
 function formatProcessTitle(process: AdminProcessRef) {

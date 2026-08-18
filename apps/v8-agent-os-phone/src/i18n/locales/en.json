@@ -59,6 +59,7 @@
   "shared.runtime_status.completed": "Completed",
   "shared.runtime_status.failed": "Failed",
   "shared.runtime_status.idle": "Idle",
+  "shared.runtime_status.interrupted": "Interrupted",
   "shared.runtime_status.paused": "Paused",
   "shared.runtime_status.queued": "Queued",
   "shared.runtime_status.running": "Running",

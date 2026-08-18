@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
+    isActiveCommandSessionStatus,
     resolveAdminProcessWsUrl,
     type AdminProcessRef,
 } from "@v8/session-realtime";
@@ -52,11 +53,6 @@ function normalizeTerminalScreen(value: string) {
     return trimTerminalBuffer(cleanTerminalOutput(value || ""), 32000);
 }
 
-function isRunningStatus(status: unknown) {
-    const normalized = String(status || "").trim().toLowerCase();
-    return normalized !== "stopped" && normalized !== "terminated" && normalized !== "completed" && normalized !== "failed";
-}
-
 function processOutputPath(process: AdminProcessRef) {
     const explicitOutputPath = String(process.outputAdminPath || "").trim();
     if (explicitOutputPath) {
@@ -84,7 +80,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const { adminBaseUrl, authorizedFetch } = useAppSession();
     const { colors, themeMode, t } = useUiPrefs();
-    const [isRunning, setIsRunning] = useState(() => isRunningStatus(process.status));
+    const [isRunning, setIsRunning] = useState(() => isActiveCommandSessionStatus(process.status));
     const [isCollapsed, setIsCollapsed] = useState(compact);
     const [terminalOutput, setTerminalOutput] = useState(() => normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || "")));
     const [inputText, setInputText] = useState("");
@@ -103,7 +99,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const prefersScreenPolling = Boolean(process.usesTty && process.interactive);
 
     useEffect(() => {
-        setIsRunning(isRunningStatus(process.status));
+        setIsRunning(isActiveCommandSessionStatus(process.status));
     }, [process.status]);
 
     useEffect(() => {
@@ -233,7 +229,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                     setTerminalOutput((current) => appendTerminalOutput(current, payload.output || ""));
                 }
                 const stillRunning = typeof payload.process?.status === "string"
-                    ? isRunningStatus(payload.process.status)
+                    ? isActiveCommandSessionStatus(payload.process.status)
                     : Boolean(payload.is_running ?? payload.isRunning ?? payload.process?.is_running);
                 setIsRunning(stillRunning);
                 if (!stillRunning) {

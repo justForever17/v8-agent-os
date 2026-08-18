@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import type { AdminProcessRef } from "@v8/session-realtime";
+import { isActiveCommandSessionStatus, type AdminProcessRef } from "@v8/session-realtime";
 
 import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
 import { Card, CardContent } from "@/src/components/ui/card";
@@ -15,13 +15,12 @@ type ProcessesHUDProps = {
 const PROCESS_FINISHED_GRACE_SECONDS = 3;
 
 function isActiveProcess(process: AdminProcessRef) {
-    const status = String(process.status || "").trim().toLowerCase();
-    return status !== "stopped" && status !== "terminated" && status !== "completed" && status !== "failed";
+    return isActiveCommandSessionStatus(process.status);
 }
 
 function isRecentlyFinishedProcess(process: AdminProcessRef) {
-    const status = String(process.status || "").trim().toLowerCase();
-    if (!status || !["stopped", "terminated", "completed", "failed"].includes(status)) {
+    const status = String(process.status || "").trim();
+    if (!status || isActiveCommandSessionStatus(status)) {
         return false;
     }
     const secondsSinceOutput = Number(process.secondsSinceOutput);

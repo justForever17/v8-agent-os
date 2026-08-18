@@ -104,6 +104,9 @@ export type AdminProcessRef = {
   title?: string;
   commandPreview?: string;
   status?: string;
+  backend?: string;
+  terminalMode?: "auto" | "pipe" | "pty" | string;
+  resolvedTerminalMode?: "pipe" | "pty" | string;
   interactive?: boolean;
   usesTty?: boolean;
   canTerminate?: boolean;
@@ -116,6 +119,12 @@ export type AdminProcessRef = {
   toolCallId?: string;
   startedAt?: string;
   completedAt?: string | null;
+  timeoutSeconds?: number | null;
+  deadlineAt?: string | null;
+  timedOut?: boolean;
+  failureKind?: string | null;
+  failureMessage?: string | null;
+  terminationReason?: string | null;
   secondsSinceOutput?: number | null;
   secondsSinceInput?: number | null;
   ttyMode?: string;

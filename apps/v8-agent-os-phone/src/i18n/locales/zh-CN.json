@@ -59,6 +59,7 @@
   "shared.runtime_status.completed": "已完成",
   "shared.runtime_status.failed": "失败",
   "shared.runtime_status.idle": "空闲",
+  "shared.runtime_status.interrupted": "已中止",
   "shared.runtime_status.paused": "已暂停",
   "shared.runtime_status.queued": "排队中",
   "shared.runtime_status.running": "运行中",

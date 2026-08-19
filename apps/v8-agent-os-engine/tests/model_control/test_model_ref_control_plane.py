@@ -1876,7 +1876,7 @@ def test_explicit_provider_capability_override_wins_over_registry():
     assert normalized["maxTokens"] == 6789
 
 
-def test_connect_oauth_provider_does_not_seed_runtime_budget_parameters(monkeypatch):
+def test_connect_oauth_provider_preserves_catalog_budget_facts_without_inventing_parameters(monkeypatch):
     _use_in_memory_model_hub_commit(monkeypatch)
     saved_config = {}
     provider = {
@@ -1902,8 +1902,16 @@ def test_connect_oauth_provider_does_not_seed_runtime_budget_parameters(monkeypa
     result = asyncio.run(platform_routes.connect_model_provider({"providerId": "codex", "modelId": "gpt-5.5"}))
 
     model = result["config"]["providers"]["codex"]["models"]["gpt-5.5"]
-    assert model["contextWindow"] is None
-    assert model["maxTokens"] is None
+    assert model["contextWindow"] == 1_000_000
+    assert model["maxTokens"] == 100_000
+    assert model["factProvenance"]["contextWindow"]["source"] in {
+        "model_capability_registry",
+        "provider_catalog",
+    }
+    assert model["factProvenance"]["maxTokens"]["source"] in {
+        "model_capability_registry",
+        "provider_catalog",
+    }
     assert "temperature" not in model
 
 

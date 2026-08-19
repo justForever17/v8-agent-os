@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -359,6 +360,47 @@ def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str
     }
 
 
+def _atomic_write_text(target_path: Path, content: str, *, append: bool = False) -> None:
+    """Write text without exposing a partially truncated target file."""
+    existing_content = ""
+    if append and target_path.exists():
+        with target_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            existing_content = handle.read()
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target_path.name}.",
+        suffix=".v8os-tmp",
+        dir=str(target_path.parent),
+        text=False,
+    )
+    temporary_path = Path(temporary_name)
+    descriptor_open = True
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor_open = False
+            handle.write(existing_content + str(content or ""))
+            handle.flush()
+            os.fsync(handle.fileno())
+        if target_path.exists():
+            try:
+                os.chmod(temporary_path, target_path.stat().st_mode & 0o777)
+            except OSError:
+                pass
+        os.replace(temporary_path, target_path)
+    except BaseException:
+        if descriptor_open:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _native_file_read_error(
     *,
     kind: str,
@@ -467,6 +509,38 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
                 lines = f.readlines()
 
         total_lines = len(lines)
+        if start_line is not None and start_line < 1:
+            return _native_file_read_error(
+                kind="invalid_line_range",
+                summary="start_line must be a positive 1-based line number.",
+                path=target_path,
+                error="start_line_out_of_range",
+                recommended_next_action="Use start_line=1 or another line within the file.",
+            )
+        if end_line is not None and end_line < 1:
+            return _native_file_read_error(
+                kind="invalid_line_range",
+                summary="end_line must be a positive 1-based line number.",
+                path=target_path,
+                error="end_line_out_of_range",
+                recommended_next_action="Use an end_line within the file.",
+            )
+        if start_line is not None and end_line is not None and end_line < start_line:
+            return _native_file_read_error(
+                kind="invalid_line_range",
+                summary=f"end_line ({end_line}) cannot be before start_line ({start_line}).",
+                path=target_path,
+                error="reversed_line_range",
+                recommended_next_action=f"Use a range between line 1 and line {total_lines}.",
+            )
+        if start_line is not None and start_line > max(total_lines, 1):
+            return _native_file_read_error(
+                kind="line_range_out_of_bounds",
+                summary=f"start_line {start_line} is beyond the file's {total_lines} lines.",
+                path=target_path,
+                error="start_line_beyond_end_of_file",
+                recommended_next_action=f"Use a start_line between 1 and {max(total_lines, 1)}.",
+            )
         start_idx = max(0, start_line - 1) if start_line else 0
         end_idx = min(total_lines, end_line) if end_line else total_lines
 
@@ -566,16 +640,20 @@ def write_native_file(
 
     New files may be created directly. Before changing or appending to an existing file,
     call `read_native_file` in the same run. A successful write consumes that read receipt,
-    so read the file again before another modification.
+    so read the file again before another modification. For an existing file, choose exactly
+    one explicit mutation intent: append=True, a line/expected-text scoped patch, or
+    allow_full_replace=True for a deliberate whole-file replacement. The default must never
+    silently truncate an existing file.
 
     Arguments:
         path (str): Absolute path to the file.
         content (str): The string content to write.
-        append (bool): If True, appends to the end of the file. If False, overwrites the entire file.
+        append (bool): If True, appends to the end of the file. If False, another explicit
+            mutation intent is still required when the target already exists.
         line_start (int | None): Optional 1-based start line for scoped replacement.
         line_end (int | None): Optional 1-based end line for scoped replacement.
         expected_old_text (str): Optional exact text anchor for scoped replacement.
-        allow_full_replace (bool): Explicitly allow full overwrite of an existing long file.
+        allow_full_replace (bool): Explicitly allow full overwrite of an existing file.
     """
     try:
         runtime_context = get_runtime_context()
@@ -638,6 +716,8 @@ def write_native_file(
         if not allowed:
             return error_message or "Safety Guardian 已阻止文件写入。"
 
+        incoming_content = str(content or "")
+
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         scoped_patch_requested = (
@@ -646,7 +726,7 @@ def write_native_file(
             and (line_start is not None or line_end is not None or bool(str(expected_old_text or "")))
         )
         patch_proof: dict[str, Any] | None = None
-        write_content = str(content or "")
+        write_content = incoming_content
         write_reason = "file_write"
         if scoped_patch_requested:
             original_text = target_path.read_text(encoding="utf-8", errors="ignore")
@@ -675,28 +755,25 @@ def write_native_file(
             write_content = str(patch_result.get("newText") or "")
             patch_proof = dict(patch_result.get("proof") or {})
             write_reason = "file_scoped_patch"
-        elif (
-            not append
-            and target_path.exists()
-            and not allow_full_replace
-            and _line_count_for_guard(target_path.read_text(encoding="utf-8", errors="ignore")) >= 1000
-        ):
+        elif not append and target_path.exists() and not allow_full_replace:
+            existing_line_count = _line_count_for_guard(
+                target_path.read_text(encoding="utf-8", errors="ignore")
+            )
             return json.dumps(
                 {
                     "ok": False,
-                    "kind": "long_file_full_overwrite_block",
-                    "summary": "目标是已有长文件，已阻止无锚点全量覆盖。",
-                    "error": "long_file_requires_scoped_patch",
+                    "kind": "existing_file_full_overwrite_block",
+                    "summary": "目标文件已存在，但未声明追加、局部替换或显式全量覆盖意图，已阻止写入。",
+                    "error": "existing_file_requires_explicit_write_intent",
                     "path": str(target_path),
-                    "recommendedNextAction": "提供 line_start/line_end 或 expected_old_text 做精准替换；确需全量重写时显式设置 allow_full_replace=true 并说明原因。",
+                    "existingLineCount": existing_line_count,
+                    "recommendedNextAction": "追加请设置 append=true；局部修改请提供 line_start/line_end 或 expected_old_text；确需整份重写时设置 allow_full_replace=true。",
                 },
                 ensure_ascii=False,
                 indent=2,
             )
 
-        mode = 'a' if append else 'w'
-        with open(target_path, mode, encoding='utf-8') as f:
-            f.write(write_content)
+        _atomic_write_text(target_path, write_content, append=append)
         _invalidate_file_read_receipt(runtime_context, target_path)
 
         safety_guardian.observe_post_action(

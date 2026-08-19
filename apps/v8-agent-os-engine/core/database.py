@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import hashlib
+import logging
 import threading
 import time
 import uuid
@@ -249,7 +250,106 @@ class DatabaseManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.observability_db = ObservabilityDatabaseManager(self.db_path.parent / "observability.db")
         self._runtime_write_lock = threading.RLock()
+        # Repair the known malformed catalog entry before PRAGMA journal_mode
+        # touches the schema. SQLite parses the catalog for that pragma too.
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+        try:
+            self._repair_known_schema_objects(conn)
+        finally:
+            conn.close()
+        self._configure_journal_mode()
         self._init_db()
+
+    def _configure_journal_mode(self) -> None:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=30000;")
+            row = conn.execute("PRAGMA journal_mode=WAL;").fetchone()
+            journal_mode = str(row[0] if row else "").strip().lower()
+            if journal_mode != "wal":
+                raise sqlite3.DatabaseError(
+                    f"failed to configure WAL journal mode for '{self.db_path}': {journal_mode or 'unknown'}"
+                )
+        finally:
+            conn.close()
+
+    def _repair_known_schema_objects(self, conn: sqlite3.Connection) -> None:
+        """Repair the malformed relay-outbox index seen in old installs.
+
+        A broken ``sqlite_master`` entry prevents SQLite from parsing the whole
+        schema, so ordinary ``DROP INDEX`` and migration statements fail too.
+        Only this exact known index is eligible for catalog repair. Unknown
+        schema damage remains fail-closed. A SQLite backup is written before
+        the catalog row is changed so the original state can be recovered.
+        """
+
+        index_name = "idx_network_relay_outbox_message"
+        expected_sql = (
+            "CREATE INDEX idx_network_relay_outbox_message "
+            "ON network_relay_outbox (local_message_id)"
+        )
+        try:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                (index_name,),
+            ).fetchone()
+        except sqlite3.DatabaseError as original_error:
+            # ``writable_schema`` lets us inspect the raw catalog row without
+            # compiling the malformed index definition.
+            conn.execute("PRAGMA writable_schema = ON")
+            try:
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    (index_name,),
+                ).fetchone()
+            finally:
+                conn.execute("PRAGMA writable_schema = OFF")
+            if row is None:
+                raise original_error
+
+        stored_sql = str(row[0] or "").strip() if row else ""
+        normalized_stored = " ".join(stored_sql.lower().split())
+        normalized_expected = " ".join(expected_sql.lower().split())
+        if not stored_sql or normalized_stored == normalized_expected:
+            return
+
+        backup_path = self.db_path.with_name(
+            f"{self.db_path.name}.schema-repair-{int(time.time() * 1000)}.bak"
+        )
+        if backup_path.exists():
+            backup_path = self.db_path.with_name(
+                f"{self.db_path.name}.schema-repair-{uuid.uuid4().hex[:12]}.bak"
+            )
+        backup = sqlite3.connect(backup_path, check_same_thread=False, timeout=30.0)
+        try:
+            conn.backup(backup)
+            backup.commit()
+        finally:
+            backup.close()
+
+        logging.getLogger("v8chat.database").warning(
+            "Repairing malformed legacy index '%s'; SQLite backup saved at %s",
+            index_name,
+            backup_path,
+        )
+        conn.execute("PRAGMA writable_schema = ON")
+        try:
+            conn.execute(
+                "DELETE FROM sqlite_master WHERE type = 'index' AND name = ?",
+                (index_name,),
+            )
+        finally:
+            conn.execute("PRAGMA writable_schema = OFF")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_message "
+            "ON network_relay_outbox (local_message_id)"
+        )
+        conn.commit()
+        # The broken index may have reserved a root page before its definition
+        # was corrupted. Reclaim that page so the repaired database also passes
+        # SQLite's integrity check instead of retaining a harmless but noisy
+        # ``never used`` diagnostic.
+        conn.execute("VACUUM")
 
     def _run_write_with_retry(self, operation, *, retries: int = 8, lock_timeout_s: float = 0.0):
         delays = [0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5]
@@ -266,11 +366,9 @@ class DatabaseManager:
 
     @contextmanager
     def get_connection(self) -> Iterator[sqlite3.Connection]:
-        """Returns a new database connection with WAL mode enabled."""
+        """Returns a connection to the database configured during initialization."""
         conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        # Enable WAL mode for concurrency
-        conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute('PRAGMA busy_timeout=30000;')
         # Foreign keys support
         conn.execute('PRAGMA foreign_keys=ON;')
@@ -282,6 +380,7 @@ class DatabaseManager:
     def _init_db(self):
         """Initializes the database schema if it doesn't exist."""
         with self.get_connection() as conn:
+            self._repair_known_schema_objects(conn)
             schema_version_row = conn.execute("PRAGMA user_version").fetchone()
             schema_version = int(schema_version_row[0] if schema_version_row else 0)
             if schema_version == DATABASE_SCHEMA_VERSION:

@@ -30,6 +30,7 @@ def test_compact_session_snapshot_keeps_bounded_runtime_timeline(monkeypatch) ->
         "limit": 160,
         "compacted": True,
     }
+    assert result["messagesOmitted"] is True
     assert result["snapshot"]["messages"] == []
 
 
@@ -64,3 +65,23 @@ def test_compact_session_snapshot_preserves_historical_runtime_handoff(monkeypat
         "recentLimit": 160,
         "historicalMilestoneCount": 1,
     }
+    assert result["messagesOmitted"] is True
+
+
+def test_full_session_snapshot_marks_messages_as_included(monkeypatch) -> None:
+    from api import session_workflow_routes
+
+    monkeypatch.setattr(
+        session_workflow_routes.runtime_command_router,
+        "get_snapshot",
+        lambda _session_id: {
+            "latestSeq": 1,
+            "runtimeTimeline": [],
+            "snapshot": {"messages": [{"id": "message-1"}], "artifacts": []},
+        },
+    )
+
+    result = asyncio.run(session_workflow_routes.get_session_snapshot("session-full", compact=0))
+
+    assert result["messagesOmitted"] is False
+    assert result["snapshot"]["messages"] == [{"id": "message-1"}]

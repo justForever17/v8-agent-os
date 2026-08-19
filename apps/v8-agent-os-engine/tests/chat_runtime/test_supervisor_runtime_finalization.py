@@ -2799,6 +2799,11 @@ def test_supervisor_engineering_context_starts_in_bound_workspace_without_worktr
 def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, terminal_state):
     captured = {}
 
+    # This contract exercises handoff state construction; model routing is
+    # covered by the Model Hub resolver tests and must not invent a fixture
+    # model that is absent from the configured registry.
+    monkeypatch.setattr(ChatRuntime, "_resolve_engine_config", lambda _self, _request: None)
+
     async def fake_create_execution_bundle(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(graph=None, payload=None, graph_config={}, mode="start", diagnostics={})

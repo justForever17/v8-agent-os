@@ -174,7 +174,9 @@ def _windows_shell_syntax_violation_payload(
 ) -> dict[str, Any] | None:
     if sys.platform != "win32":
         return None
-    stripped = _strip_leading_shell_cwd(command)
+    # Validate the complete command. Removing a leading `cd ... &&` here hid
+    # the exact cross-shell operator that must be rejected on PowerShell 5.1.
+    stripped = str(command or "").strip()
     if not stripped:
         return None
     lowered = stripped.lower()
@@ -205,7 +207,7 @@ def _windows_shell_syntax_violation_payload(
             suggestions.append("Use $env:NAME for environment variables and Get-ChildItem for directory listing.")
         elif dialect == "powershell" and ("&&" in stripped or "||" in stripped):
             violations.append("powershell_5_chain_operator")
-            suggestions.append("Use '; if ($?) { ... }' in Windows PowerShell, or choose shell_dialect='pwsh'/'cmd' explicitly.")
+            suggestions.append("Pass cwd separately and run one PowerShell command, use '; if ($?) { ... }', or explicitly choose shell_dialect='pwsh'/'cmd' when that dialect is required.")
         elif dialect == "cmd" and (
             re.search(r"\$env:[A-Za-z_]", stripped, re.IGNORECASE)
             or re.search(r"\$\([^\r\n]+\)", stripped)

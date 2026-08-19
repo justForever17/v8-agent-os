@@ -142,7 +142,7 @@ def prepare_supervisor_messages(
     resolved_model_id: str | None,
     resolved_scope: str | None,
     scope_chain,
-    remaining_steps: int,
+    remaining_steps: int | None,
     prompt_profile: str = "full",
     return_state_updates: bool = False,
 ):
@@ -211,6 +211,25 @@ def prepare_supervisor_messages(
             )
         )
         _safe_print(f"[LoopBreaker] Repeated tool pattern detected ({tool_list}) x{loop_info['count']}")
+
+    normalized_remaining_steps: int | None = None
+    if remaining_steps is not None:
+        try:
+            normalized_remaining_steps = max(0, int(remaining_steps))
+        except (TypeError, ValueError):
+            normalized_remaining_steps = None
+    if normalized_remaining_steps is not None and normalized_remaining_steps <= 12:
+        prepared.append(
+            SystemMessage(
+                content=(
+                    "[Execution Progress Boundary]\n"
+                    "This graph segment is approaching its framework safety boundary. "
+                    "Do not begin a broad new tool loop. Conclude from current evidence, or route genuinely "
+                    "long remaining work into a durable Engineering/delegation Runtime with checkpointed progress. "
+                    "Never restart the same graph merely to reset a step counter."
+                )
+            )
+        )
 
     if return_state_updates:
         return prepared, list(getattr(prepared_context, "state_message_updates", None) or [])

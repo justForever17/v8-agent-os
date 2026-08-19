@@ -70,6 +70,36 @@ def _tool(name: str):
     return SimpleNamespace(name=name)
 
 
+def test_recursive_delegation_policy_remains_separate_runtime_governance(monkeypatch):
+    class _Config:
+        def get_supervisor_config(self):
+            return {
+                "delegation": {
+                    "recursive": {
+                        "enabled": False,
+                        "maxDelegationDepth": 4,
+                        "maxChildrenPerDelegation": 7,
+                        "maxTotalDelegationNodes": 31,
+                        "maxConcurrentDelegations": 5,
+                    }
+                }
+            }
+
+    monkeypatch.setattr(
+        native_delegation,
+        "_delegation_storage",
+        lambda: _Config(),
+    )
+
+    assert native_delegation._delegation_recursive_policy() == {
+        "enabled": False,
+        "maxDelegationDepth": 2,
+        "maxChildrenPerDelegation": 7,
+        "maxTotalDelegationNodes": 31,
+        "maxConcurrentDelegations": 5,
+    }
+
+
 def _ensure_runtime_binding(session_id: str, run_id: str) -> None:
     """Create the durable parents required by the episode foreign keys."""
     db.create_or_update_session(session_id, "Runtime broker test", user_id="test-user")

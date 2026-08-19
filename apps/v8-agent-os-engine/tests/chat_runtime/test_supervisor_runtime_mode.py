@@ -19,6 +19,28 @@ from runtimes.chat import runtime as chat_runtime_module
 from runtimes.chat.runtime import ChatRuntime
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_mode_tests_from_model_hub_and_run_storage(monkeypatch) -> None:
+    # These tests exercise routing and presentation only. Model Hub resolution
+    # and durable run transitions have their own contract suites and must not
+    # depend on a developer's real configuration here.
+    monkeypatch.setattr(ChatRuntime, "_resolve_engine_config", lambda _self, _request: None)
+    monkeypatch.setattr(
+        chat_runtime_module.run_service,
+        "transition_run_if_status",
+        lambda *_args, **_kwargs: {
+            "updated": True,
+            "previousStatus": "queued",
+            "currentStatus": "running",
+        },
+    )
+    monkeypatch.setattr(
+        chat_runtime_module.workflow_ledger_service,
+        "sync_run_status",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _request(*, data: dict | None = None, attachments: list[dict] | None = None) -> ChatRequest:
     return ChatRequest.model_validate({
         "session_id": "session-runtime-mode-test",
@@ -322,7 +344,6 @@ def test_promoted_guidance_restores_queued_request_runtime_mode_snapshot(monkeyp
     monkeypatch.setattr(chat_runtime_module.supervisor_runner, "get_state_snapshot", get_state_snapshot)
     monkeypatch.setattr(chat_runtime_module.supervisor_runner, "create_execution_bundle", create_execution_bundle)
     monkeypatch.setattr(runtime, "_safety_approval_mode_for_run", lambda *_args, **_kwargs: "manual")
-    monkeypatch.setattr(runtime, "_recursion_limit", lambda: 20)
     request = _request(data={"supervisorRuntimeMode": "engineering"})
     prepared = SimpleNamespace(
         supervisor_work_mode="daily",
@@ -428,7 +449,6 @@ def test_promoted_auto_guidance_clears_prior_canvas_and_engineering_routes(monke
     monkeypatch.setattr(chat_runtime_module.supervisor_runner, "get_state_snapshot", get_state_snapshot)
     monkeypatch.setattr(chat_runtime_module.supervisor_runner, "create_execution_bundle", create_execution_bundle)
     monkeypatch.setattr(runtime, "_safety_approval_mode_for_run", lambda *_args, **_kwargs: "manual")
-    monkeypatch.setattr(runtime, "_recursion_limit", lambda: 20)
     queued_request = _request(data={
         "supervisorWorkMode": "daily",
         "supervisorRuntimeMode": "auto",
@@ -772,7 +792,11 @@ def _lifecycle_chat_run(
         prepared=prepared,
         is_resume_request=False,
         user_id="local-user",
-        run_handle=SimpleNamespace(transition=lambda *_args, **_kwargs: None),
+        run_handle=SimpleNamespace(
+            descriptor=SimpleNamespace(status="queued", agent_id="supervisor"),
+            emit=lambda *_args, **_kwargs: None,
+            transition=lambda *_args, **_kwargs: None,
+        ),
         existing_binding=None,
         emit_runtime_event=lambda topic, payload, **kwargs: events.append({
             "topic": topic,

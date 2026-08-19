@@ -336,6 +336,7 @@ class ChatStreamState:
     active_trace_group_id: str | None = None
     reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     reasoning_surfaces_by_run: dict[str, dict[str, Any]] = field(default_factory=dict)
+    reasoning_started_at_ms_by_run: dict[str, int] = field(default_factory=dict)
     last_text_delta: str = ""
     last_text_delta_run_id: str = ""
     last_text_delta_at_ms: int | None = None
@@ -375,6 +376,7 @@ class ChatStreamState:
     supervisor_thinking_active_run_ids: set[str] = field(default_factory=set)
     supervisor_thinking_started_run_ids: set[str] = field(default_factory=set)
     supervisor_thinking_finished_run_ids: set[str] = field(default_factory=set)
+    chat_projection_failure_run_ids: set[str] = field(default_factory=set)
 
 
 def _assistant_export_requires_persistence(export_payload: dict[str, Any]) -> bool:
@@ -415,27 +417,6 @@ canonical_transcript_builder = CanonicalTranscriptBuilder()
 canonical_model_event_adapter = LangChainCanonicalModelEventAdapter()
 
 
-class GraphRecursionContinuationBudgetExceeded(RuntimeError):
-    def __init__(
-        self,
-        *,
-        continuation_count: int,
-        continuation_limit: int,
-        recursion_limit: int,
-        last_tool: str | None = None,
-        last_todo: str | None = None,
-    ) -> None:
-        self.continuation_count = continuation_count
-        self.continuation_limit = continuation_limit
-        self.recursion_limit = recursion_limit
-        self.last_tool = last_tool
-        self.last_todo = last_todo
-        super().__init__(
-            "长任务已达到 graph continuation 预算，当前 run 保留为可恢复状态；"
-            "请继续执行、拆分任务，或派发 Engineering/delegation。"
-        )
-
-
 def _supervisor_direct_scope_operation_fingerprint(run_id: str) -> str:
     return f"supervisor_direct_scope_exception:{str(run_id or '').strip()}"
 
@@ -449,6 +430,7 @@ class ChatRuntime:
 
     kind = "chat"
     TEXT_FLUSH_INTERVAL_SECONDS = 0.22
+    MAX_TOOL_WATCHDOG_RECOVERIES = 1
     DELEGATION_CLAIM_RE = re.compile(
         r"(派|派发|分配|交给|delegate|dispatch).{0,32}(子\s*agent|子代理|subagent|agent|工程子|工程师)",
         re.IGNORECASE,
@@ -462,6 +444,58 @@ class ChatRuntime:
         "streamwriter",
         "toolcallid",
     }
+
+    @staticmethod
+    def _append_chat_projection_safe(
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        **projection: Any,
+    ) -> None:
+        if chat_run.active_run_id in stream_state.chat_projection_failure_run_ids:
+            return
+        try:
+            workflow_ledger_service.append_chat_projection(
+                session_id=chat_run.session_id,
+                run_id=chat_run.active_run_id,
+                **projection,
+            )
+        except Exception as exc:
+            stream_state.chat_projection_failure_run_ids.add(chat_run.active_run_id)
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Chat preview projection degraded for run '%s'; canonical chat streaming continues",
+                chat_run.active_run_id,
+            )
+            try:
+                chat_run.emit_runtime_event(
+                    "chat.projection.degraded",
+                    {
+                        "failureClass": "workflow_preview_projection_unavailable",
+                        "recoverable": True,
+                        "summary": "辅助工作流预览暂不可用；消息主流和规范会话记录继续运行。",
+                        "errorType": type(exc).__name__,
+                    },
+                    agent_id=None,
+                    node="workflow_ledger_projection",
+                )
+            except Exception:
+                logging.getLogger("v8chat.chat_runtime").exception(
+                    "Failed to record degraded chat projection for run '%s'",
+                    chat_run.active_run_id,
+                )
+
+    @staticmethod
+    def _clear_chat_projection_safe(
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> None:
+        try:
+            workflow_ledger_service.clear_chat_projection(chat_run.active_run_id)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to clear auxiliary chat projection for run '%s'; canonical transcript is already durable",
+                chat_run.active_run_id,
+            )
+            stream_state.chat_projection_failure_run_ids.add(chat_run.active_run_id)
 
     def runtime_descriptor(self) -> dict[str, Any]:
         return {
@@ -4271,18 +4305,6 @@ class ChatRuntime:
 
         return user_input_already_recorded
 
-    def _recursion_limit(self) -> int:
-        ctx_config = storage.get_context_config()
-        return ctx_config.get("recursion_limit", 500)
-
-    def _max_graph_continuations(self) -> int:
-        ctx_config = storage.get_context_config() or {}
-        raw_value = ctx_config.get("maxGraphContinuations", ctx_config.get("max_graph_continuations", 5))
-        try:
-            return max(0, min(20, int(raw_value)))
-        except (TypeError, ValueError):
-            return 5
-
     def _safety_approval_mode_for_run(
         self,
         chat_run: ChatRunContext,
@@ -4895,7 +4917,6 @@ class ChatRuntime:
             context_mentions=chat_run.prepared.context_mentions,
             context_session_refs=chat_run.prepared.context_session_refs,
             session_coordination=chat_run.prepared.session_coordination_message,
-            recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
@@ -4905,64 +4926,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             session_id=chat_run.session_id,
             resume_value=chat_run.request.resume_value or {},
-            recursion_limit=self._recursion_limit(),
         )
-        return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
-
-    async def create_continuation_bundle(
-        self,
-        *,
-        chat_run: ChatRunContext,
-        previous_bundle: ChatExecutionBundle,
-        continuation_count: int,
-        continuation_reason: str,
-    ) -> ChatExecutionBundle | None:
-        snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
-        if not isinstance(snapshot, dict):
-            return None
-
-        state_messages = list(snapshot.get("messages") or [])
-        if not state_messages:
-            return None
-
-        continuation_envelope = {
-            "continuationCount": continuation_count,
-            "continuationReason": continuation_reason,
-            "routeContext": dict(snapshot.get("current_route_context") or {}),
-            "todosCount": len(list(snapshot.get("todos") or [])),
-            "messageCount": len(state_messages),
-            "sessionId": chat_run.session_id,
-            "projectId": chat_run.scope_result.binding.project_id,
-            "workspaceId": chat_run.scope_result.binding.workspace_id,
-            "workspacePath": chat_run.scope_result.binding.workspace_path,
-            "resolvedScope": chat_run.scope_result.binding.resolved_scope,
-        }
-        todos = list(snapshot.get("todos") or [])
-        last_todo = next((item for item in reversed(todos) if isinstance(item, dict)), None)
-        if last_todo:
-            continuation_envelope["lastTodo"] = {
-                "id": last_todo.get("id"),
-                "status": last_todo.get("status"),
-                "text": str(last_todo.get("text") or "")[:240],
-            }
-        runner_bundle = await supervisor_runner.create_execution_bundle(
-            config=chat_run.request.config,
-            messages=state_messages,
-            session_id=chat_run.session_id,
-            current_route_context=self._restart_route_context(chat_run, snapshot),
-            runtime_dispatch_status=None,
-            engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
-            task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
-            explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
-            context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
-            context_session_refs=snapshot.get("context_session_refs") if isinstance(snapshot.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
-            session_coordination=snapshot.get("session_coordination") if isinstance(snapshot.get("session_coordination"), dict) else dict(getattr(chat_run.prepared, "session_coordination_message", None) or {}),
-            recursion_limit=self._recursion_limit(),
-            transport=chat_run.transport,
-        )
-        diagnostics = dict(runner_bundle.diagnostics or {})
-        diagnostics.update(continuation_envelope)
-        runner_bundle.diagnostics = diagnostics
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
     def _build_tool_watchdog_timeout_messages(
@@ -5062,7 +5026,6 @@ class ChatRuntime:
             context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
             context_session_refs=snapshot.get("context_session_refs") if isinstance(snapshot.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             session_coordination=snapshot.get("session_coordination") if isinstance(snapshot.get("session_coordination"), dict) else dict(getattr(chat_run.prepared, "session_coordination_message", None) or {}),
-            recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
         diagnostics = dict(runner_bundle.diagnostics or {})
@@ -5198,7 +5161,6 @@ class ChatRuntime:
             context_mentions=list(guidance_chat_run.prepared.context_mentions or []),
             context_session_refs=list(guidance_chat_run.prepared.context_session_refs or []),
             session_coordination=dict(guidance_chat_run.prepared.session_coordination_message or {}),
-            recursion_limit=self._recursion_limit(),
             transport=guidance_chat_run.transport,
         )
         runner_payload = getattr(runner_bundle, "payload", None)
@@ -5297,7 +5259,6 @@ class ChatRuntime:
             context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
             context_session_refs=snapshot_dict.get("context_session_refs") if isinstance(snapshot_dict.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             session_coordination=coordination_message,
-            recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
         diagnostics = dict(runner_bundle.diagnostics or {})
@@ -5361,7 +5322,6 @@ class ChatRuntime:
             context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
             context_session_refs=snapshot_dict.get("context_session_refs") if isinstance(snapshot_dict.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             session_coordination=snapshot_dict.get("session_coordination") if isinstance(snapshot_dict.get("session_coordination"), dict) else dict(getattr(chat_run.prepared, "session_coordination_message", None) or {}),
-            recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
         diagnostics = dict(runner_bundle.diagnostics or {})
@@ -5712,6 +5672,20 @@ class ChatRuntime:
         finalize: bool = False,
     ) -> dict[str, Any]:
         message_id = self._ensure_assistant_canonical_message(chat_run, stream_state)
+        event_at_ms = 0
+        for candidate in (payload.get("timestamp"), (node or {}).get("timestamp")):
+            try:
+                normalized_candidate = int(candidate or 0)
+            except (TypeError, ValueError):
+                continue
+            if normalized_candidate > 0:
+                event_at_ms = normalized_candidate
+                break
+        if event_at_ms <= 0:
+            event_at_ms = self._now_timestamp_ms()
+        payload["timestamp"] = event_at_ms
+        if node is not None:
+            node["timestamp"] = event_at_ms
         payload, node = self._ensure_tool_event_surface_ids(
             payload,
             node,
@@ -6485,9 +6459,9 @@ class ChatRuntime:
                 }
             )
         if bool(owner.get("displayInMessage")):
-            workflow_ledger_service.append_chat_projection(
-                session_id=chat_run.session_id,
-                run_id=chat_run.active_run_id,
+            self._append_chat_projection_safe(
+                chat_run,
+                stream_state,
                 text_delta=stable_chunk,
                 agent_profile=profile,
                 latest_seq=runtime_event.get("seq"),
@@ -6553,6 +6527,19 @@ class ChatRuntime:
             stream_state=stream_state,
             model_run_id=model_run_id,
             reason="reasoning_delta",
+        )
+
+    def _note_model_reasoning_start(
+        self,
+        stream_state: ChatStreamState,
+        *,
+        model_run_id: str,
+        started_at_ms: int | None = None,
+    ) -> None:
+        run_key = self._normalized_stream_run_id(model_run_id)
+        stream_state.reasoning_started_at_ms_by_run.setdefault(
+            run_key,
+            int(started_at_ms or self._now_timestamp_ms()),
         )
 
     def _maybe_fire_supervisor_thinking_end(
@@ -6621,6 +6608,9 @@ class ChatRuntime:
         reasoning_unverified = bool(reasoning_surface_payload.get("unverified")) or str(
             reasoning_surface_payload.get("trust") or ""
         ).strip().lower() == "unverified"
+        event_at_ms = int(canonical_event_at_ms or self._now_timestamp_ms())
+        started_at_ms = stream_state.reasoning_started_at_ms_by_run.setdefault(run_key, event_at_ms)
+        duration_ms = max(0, event_at_ms - started_at_ms)
         reasoning_event = {
             "type": "reasoning_chunk",
             "content": reasoning_delta,
@@ -6628,7 +6618,9 @@ class ChatRuntime:
             "reasoningKind": reasoning_kind,
             "reasoningSurface": reasoning_surface_payload,
             "reasoningUnverified": reasoning_unverified,
-            "timestamp": 0,
+            "timestamp": event_at_ms,
+            "startTime": started_at_ms,
+            "durationMs": duration_ms,
             "_diagnostics": self._stream_trace_diagnostics(
                 chat_run,
                 kind="reasoning_delta",
@@ -6649,7 +6641,9 @@ class ChatRuntime:
             "content": node_content,
             "reasoningKind": reasoning_kind,
             "reasoningUnverified": reasoning_unverified,
-            "timestamp": self._now_timestamp_ms(),
+            "timestamp": event_at_ms,
+            "startTime": started_at_ms,
+            "time": duration_ms,
             "agentName": profile["name"],
             "agentAvatar": profile["avatar"],
             "agentRoleLabel": profile["roleLabel"],
@@ -6657,6 +6651,8 @@ class ChatRuntime:
                 "reasoningKind": reasoning_kind,
                 "reasoningSurface": reasoning_surface_payload,
                 "reasoningUnverified": reasoning_unverified,
+                "startTime": started_at_ms,
+                "durationMs": duration_ms,
             },
         }
         runtime_event = self._emit_owner_scoped_runtime_event(
@@ -6687,9 +6683,9 @@ class ChatRuntime:
                 }
             )
         if bool(owner.get("displayInMessage")):
-            workflow_ledger_service.append_chat_projection(
-                session_id=chat_run.session_id,
-                run_id=chat_run.active_run_id,
+            self._append_chat_projection_safe(
+                chat_run,
+                stream_state,
                 reasoning_delta=reasoning_delta,
                 agent_profile=profile,
                 latest_seq=runtime_event.get("seq"),
@@ -8498,6 +8494,11 @@ class ChatRuntime:
         if kind in {"on_chat_model_start", "on_chat_model_stream", "on_chat_model_end"}:
             continuation_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
             if bool(continuation_owner.get("displayInMessage")):
+                if kind == "on_chat_model_start":
+                    self._note_model_reasoning_start(
+                        stream_state,
+                        model_run_id=str(event.get("run_id") or ""),
+                    )
                 continuation_candidate = (
                     data.get("chunk")
                     if kind == "on_chat_model_stream"
@@ -9230,7 +9231,7 @@ class ChatRuntime:
             run_id=chat_run.active_run_id,
             message_id=assistant_message_id,
         )
-        workflow_ledger_service.clear_chat_projection(chat_run.active_run_id)
+        self._clear_chat_projection_safe(chat_run, stream_state)
 
     @staticmethod
     def _extract_final_assistant_text_from_state(state: dict[str, Any] | None) -> str:
@@ -10603,17 +10604,19 @@ class ChatRuntime:
             normalized["recoverable"] = False
             normalized["causeType"] = exc.cause_type
             normalized["userAction"] = "命令或流式执行后端异常，当前运行已失败并完成清理；请修复后端后重新发起任务。"
-        if isinstance(exc, GraphRecursionContinuationBudgetExceeded):
-            normalized["message"] = str(exc)
-            normalized["failureClass"] = "graph_recursion_continuation_budget"
-            normalized["code"] = "graph_recursion_continuation_budget"
+        if isinstance(exc, GraphRecursionError):
+            normalized["message"] = (
+                "长任务已接近图执行框架的安全边界，当前 checkpoint 已保留，"
+                "系统不会通过重开一轮来重复消耗工具调用。"
+            )
+            normalized["failureClass"] = "graph_progress_ceiling"
+            normalized["code"] = "graph_progress_ceiling"
             normalized["recoverable"] = True
-            normalized["continuationCount"] = exc.continuation_count
-            normalized["continuationLimit"] = exc.continuation_limit
-            normalized["recursionLimit"] = exc.recursion_limit
-            normalized["lastTool"] = exc.last_tool
-            normalized["lastTodo"] = exc.last_todo
-            normalized["userAction"] = "继续本轮、拆分任务，或要求 Supervisor 改走 Engineering/delegation。"
+            normalized["retryable"] = True
+            normalized["userAction"] = (
+                "可从已保存状态继续，并缩小下一步范围；复杂长任务应转入 Engineering/delegation，"
+                "不要原样重放整轮。"
+            )
         if chat_run and normalized.get("code") == "context_window_overflow":
             try:
                 context_config = storage.get_context_config() or {}
@@ -10665,7 +10668,7 @@ class ChatRuntime:
         if chat_run:
             try:
                 preserve_background_commands = bool(normalized.get("recoverable")) and str(normalized.get("failureClass") or "") in {
-                    "graph_recursion_continuation_budget",
+                    "graph_progress_ceiling",
                     "stream_idle_timeout",
                     "episode_stalled",
                 }
@@ -10695,15 +10698,14 @@ class ChatRuntime:
                             "watchdogPhase": normalized.get("watchdogPhase"),
                         },
                     )
-                elif isinstance(exc, GraphRecursionContinuationBudgetExceeded):
+                elif isinstance(exc, GraphRecursionError):
                     run_service.update_metadata(
                         chat_run.active_run_id,
                         {
-                            "failureClass": "graph_recursion_continuation_budget",
+                            "failureClass": "graph_progress_ceiling",
                             "recoverable": True,
-                            "continuationCount": exc.continuation_count,
-                            "continuationLimit": exc.continuation_limit,
-                            "recursionLimit": exc.recursion_limit,
+                            "checkpointPreserved": True,
+                            "automaticGraphRestart": False,
                         },
                     )
             except Exception as fail_exc:
@@ -11164,12 +11166,10 @@ class ChatRuntime:
                 yield self.finalize_success_run(chat_run, stream_state)
                 return
 
-            continuation_count = 0
-            continuation_reason = ""
+            tool_watchdog_recovery_count = 0
             continuation_bundle: ChatExecutionBundle | None = None
             last_execution_bundle: ChatExecutionBundle | None = None
             spec_revision_discipline_count = 0
-            max_continuations = self._max_graph_continuations()
             while True:
                 execution_bundle = continuation_bundle or await self.resolve_execution_bundle(chat_run=chat_run)
                 last_execution_bundle = execution_bundle
@@ -11398,15 +11398,15 @@ class ChatRuntime:
                 except GraphStreamIdleTimeoutError as exc:
                     if str(getattr(exc, "phase", "") or "") != "tool_wait":
                         raise
-                    if continuation_count >= max_continuations:
+                    if tool_watchdog_recovery_count >= self.MAX_TOOL_WATCHDOG_RECOVERIES:
                         raise
-                    continuation_count += 1
+                    tool_watchdog_recovery_count += 1
                     continuation_bundle = await self.create_tool_watchdog_continuation_bundle(
                         chat_run=chat_run,
                         previous_bundle=execution_bundle,
                         stream_state=stream_state,
                         exc=exc,
-                        continuation_count=continuation_count,
+                        continuation_count=tool_watchdog_recovery_count,
                     )
                     if continuation_bundle is None:
                         raise
@@ -11420,8 +11420,8 @@ class ChatRuntime:
                     chat_run.emit_runtime_event(
                         "run.continuation.scheduled",
                         {
-                            "continuationCount": continuation_count,
-                            "continuationLimit": max_continuations,
+                            "continuationCount": tool_watchdog_recovery_count,
+                            "continuationLimit": self.MAX_TOOL_WATCHDOG_RECOVERIES,
                             "continuationReason": "tool_watchdog_timeout",
                             "reason": "tool_watchdog_timeout",
                             "failureClass": "tool_watchdog_timeout",
@@ -11432,64 +11432,6 @@ class ChatRuntime:
                         },
                         agent_id=None,
                         node="tool_watchdog_recovery",
-                    )
-                    continue
-                except GraphRecursionError:
-                    if continuation_count >= max_continuations:
-                        last_todo = None
-                        diagnostics = dict(getattr(last_execution_bundle.runner_bundle, "diagnostics", {}) or {}) if last_execution_bundle else {}
-                        if isinstance(diagnostics.get("lastTodo"), dict):
-                            last_todo = str(diagnostics["lastTodo"].get("text") or "").strip() or None
-                        raise GraphRecursionContinuationBudgetExceeded(
-                            continuation_count=continuation_count,
-                            continuation_limit=max_continuations,
-                            recursion_limit=self._recursion_limit(),
-                            last_tool=stream_state.watchdog.last_observed_event,
-                            last_todo=last_todo,
-                        ) from None
-                    continuation_count += 1
-                    continuation_reason = "graph_recursion_limit"
-                    continuation_bundle = await self.create_continuation_bundle(
-                        chat_run=chat_run,
-                        previous_bundle=execution_bundle,
-                        continuation_count=continuation_count,
-                        continuation_reason=continuation_reason,
-                    )
-                    if continuation_bundle is None:
-                        raise
-                    active_command_sessions: list[dict[str, Any]] = []
-                    try:
-                        from core.native_tools import list_background_process_snapshots
-
-                        active_command_sessions = [
-                            {
-                                "commandId": item.get("commandId"),
-                                "status": item.get("status"),
-                                "cwd": item.get("cwd"),
-                                "awaitingInput": item.get("awaitingInput"),
-                            }
-                            for item in list_background_process_snapshots(run_id=chat_run.active_run_id)
-                            if item.get("status") in {"running", "failed", "stopped", "completed"}
-                        ][:6]
-                    except Exception:
-                        active_command_sessions = []
-                    continuation_diagnostics = dict(continuation_bundle.runner_bundle.diagnostics or {})
-                    chat_run.emit_runtime_event(
-                        "run.continuation.scheduled",
-                        {
-                            "continuationCount": continuation_count,
-                            "continuationLimit": max_continuations,
-                            "continuationReason": continuation_reason,
-                            "reason": continuation_reason,
-                            "recursionLimit": self._recursion_limit(),
-                            "lastTool": stream_state.watchdog.last_observed_event,
-                            "lastTodo": continuation_diagnostics.get("lastTodo"),
-                            "activeCommandSessions": active_command_sessions,
-                            "summary": f"长任务达到单段 graph 步数上限，正在自动续跑第 {continuation_count}/{max_continuations} 段。",
-                            "recommendedNextAction": "继续观察；若多次续跑仍接近预算，应拆分任务或派发 Engineering/delegation。",
-                        },
-                        agent_id=None,
-                        node="continuation_manager",
                     )
                     continue
 

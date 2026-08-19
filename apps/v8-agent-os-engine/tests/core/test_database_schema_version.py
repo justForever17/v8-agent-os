@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import core.database as database_module
 from core.database import DATABASE_SCHEMA_VERSION, DatabaseManager
 
 
@@ -82,6 +83,36 @@ def test_new_database_is_initialized_and_versioned(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
         assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+
+
+def test_journal_mode_is_configured_once_instead_of_on_every_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "state.db"
+    original_connect = sqlite3.connect
+    journal_mode_statements: list[str] = []
+
+    class TracingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):  # type: ignore[no-untyped-def]
+            normalized = " ".join(str(sql or "").strip().lower().split())
+            if normalized.startswith("pragma journal_mode"):
+                journal_mode_statements.append(normalized)
+            return super().execute(sql, parameters)
+
+    def traced_connect(database, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(database) == path:
+            kwargs["factory"] = TracingConnection
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", traced_connect)
+    manager = DatabaseManager(path)
+
+    for _ in range(5):
+        with manager.get_connection() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    assert journal_mode_statements == ["pragma journal_mode=wal;"]
 
 
 def test_unversioned_legacy_database_runs_idempotent_upgrade_once(tmp_path: Path) -> None:
@@ -239,7 +270,12 @@ def test_current_schema_probe_only_rechecks_runtime_safety_ledgers(tmp_path: Pat
     manager = TracingDatabaseManager(path)
     normalized = [statement.strip().upper() for statement in manager.schema_statements]
 
-    assert normalized[0] == "PRAGMA USER_VERSION"
+    assert any(
+        statement.startswith("SELECT SQL FROM SQLITE_MASTER")
+        and "IDX_NETWORK_RELAY_OUTBOX_MESSAGE" in statement
+        for statement in normalized
+    )
+    assert "PRAGMA USER_VERSION" in normalized
     assert any("CREATE TABLE IF NOT EXISTS RUNTIME_EPISODE_IDEMPOTENCY" in statement for statement in normalized)
     assert any("CREATE TABLE IF NOT EXISTS RUNTIME_SIDE_EFFECT_RECEIPTS" in statement for statement in normalized)
     assert any("CREATE TABLE IF NOT EXISTS RUNTIME_EVENT_SEQUENCE_HEADS" in statement for statement in normalized)

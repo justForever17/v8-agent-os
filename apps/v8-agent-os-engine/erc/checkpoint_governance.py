@@ -1106,7 +1106,6 @@ class CheckpointGovernanceService:
                     "checkpoint_ns": "",
                     "checkpoint_id": operation["source_checkpoint_id"],
                 },
-                "recursion_limit": 100,
             }
             snapshot = await graph.aget_state(source_config)
             source_values = dict(getattr(snapshot, "values", None) or {})
@@ -1152,7 +1151,6 @@ class CheckpointGovernanceService:
                             "thread_id": operation["target_thread_id"],
                             "checkpoint_ns": "",
                         },
-                        "recursion_limit": 100,
                     },
                     next_values,
                     **update_options,
@@ -1167,8 +1165,7 @@ class CheckpointGovernanceService:
                     **update_options,
                 )
 
-            invoke_config = {**branch_config, "recursion_limit": 100}
-            await graph.ainvoke(None, invoke_config)
+            await graph.ainvoke(None, branch_config)
             latest = await graph.aget_state(
                 {"configurable": {"thread_id": operation["target_thread_id"], "checkpoint_ns": ""}}
             )

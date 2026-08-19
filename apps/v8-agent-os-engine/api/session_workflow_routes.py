@@ -81,6 +81,22 @@ _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_a
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 _WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
 _WEB_SESSION_INDEX_VERSION = 4
+_STATE_DATABASE_ERROR_CODE = "state_database_unavailable"
+_STATE_DATABASE_ERROR_MESSAGE = "本地运行状态数据库暂时不可用，已有状态未被覆盖。请稍后重试。"
+
+
+def _state_database_http_exception(error: Exception, *, operation: str) -> HTTPException:
+    """Expose a bounded recovery contract without leaking SQLite internals."""
+    logger.exception("[SessionState] %s failed", operation)
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": _STATE_DATABASE_ERROR_CODE,
+            "message": _STATE_DATABASE_ERROR_MESSAGE,
+            "retryable": True,
+            "operation": operation,
+        },
+    )
 
 
 def _raise_media_library_http(error: Exception) -> None:
@@ -596,7 +612,7 @@ def _projects_registry_stamp() -> str:
     return "|".join(stamps) or "missing"
 
 
-def _read_web_session_index_payload() -> dict | None:
+def _read_web_session_index_payload(*, allow_stale: bool = False) -> dict | None:
     try:
         if not _WEB_SESSION_INDEX_PATH.exists():
             return None
@@ -605,13 +621,26 @@ def _read_web_session_index_payload() -> dict | None:
             return None
         if int(payload.get("version") or 0) != _WEB_SESSION_INDEX_VERSION:
             return None
-        if str(payload.get("projectsRegistryStamp") or "") != _projects_registry_stamp():
+        if not allow_stale and str(payload.get("projectsRegistryStamp") or "") != _projects_registry_stamp():
             return None
         if not isinstance(payload.get("sessions"), list):
             return None
         return payload
     except Exception:
         return None
+
+
+def _mark_session_index_degraded(payload: dict, *, operation: str) -> dict:
+    return {
+        **payload,
+        "degraded": True,
+        "degradation": {
+            "code": _STATE_DATABASE_ERROR_CODE,
+            "message": _STATE_DATABASE_ERROR_MESSAGE,
+            "retryable": True,
+            "operation": operation,
+        },
+    }
 
 
 def _write_web_session_index(records: list[dict]) -> dict:
@@ -677,19 +706,26 @@ async def get_sessions():
         sessions = _build_web_session_index_records()
         _write_web_session_index(sessions)
         return {"sessions": sessions}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        stale_payload = _read_web_session_index_payload(allow_stale=True)
+        if stale_payload is not None:
+            return _mark_session_index_degraded(stale_payload, operation="sessions")
+        raise _state_database_http_exception(error, operation="sessions") from error
 
 
 @router.get("/sessions/quick-index")
 async def get_sessions_quick_index(force: int = Query(default=0)):
+    payload = None
     try:
         payload = None if force else _read_web_session_index_payload()
         if payload is None:
             payload = _rebuild_web_session_index()
         return _overlay_active_run_status(payload)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        stale_payload = payload or _read_web_session_index_payload(allow_stale=True)
+        if stale_payload is not None:
+            return _mark_session_index_degraded(stale_payload, operation="quick-index")
+        raise _state_database_http_exception(error, operation="quick-index") from error
 
 
 @router.post("/sessions")
@@ -1533,6 +1569,7 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
             if isinstance(snapshot, dict):
                 payload = {
                     **payload,
+                    "messagesOmitted": compact == 1,
                     "snapshot": {
                         **snapshot,
                         "messages": [] if compact == 1 else _filter_deleted_messages(session_id, snapshot.get("messages") or []),

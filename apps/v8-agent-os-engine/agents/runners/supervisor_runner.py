@@ -143,8 +143,8 @@ class SupervisorAgentRunner:
             state["sessionCoordination"] = dict(session_coordination)
         return state
 
-    def build_graph_config(self, session_id: str, *, recursion_limit: int) -> dict:
-        return {"configurable": {"thread_id": session_id}, "recursion_limit": recursion_limit}
+    def build_graph_config(self, session_id: str) -> dict:
+        return {"configurable": {"thread_id": session_id}}
 
     @staticmethod
     def _message_id(message: Any) -> str:
@@ -221,11 +221,10 @@ class SupervisorAgentRunner:
         context_mentions: list[dict[str, Any]] | None = None,
         context_session_refs: list[dict[str, Any]] | None = None,
         session_coordination: dict[str, Any] | None = None,
-        recursion_limit: int,
         transport: str | None = None,
     ):
         graph, diagnostics = await self.build_graph(config)
-        graph_config = self.build_graph_config(session_id, recursion_limit=recursion_limit)
+        graph_config = self.build_graph_config(session_id)
         reconciled_messages, reconciliation = await self._reconcile_persistent_input(
             graph=graph,
             graph_config=graph_config,
@@ -253,12 +252,12 @@ class SupervisorAgentRunner:
     def build_resume_input(self, resume_value):
         return Command(resume=resume_value)
 
-    async def create_resume_bundle(self, *, config: EngineConfig, session_id: str, resume_value, recursion_limit: int):
+    async def create_resume_bundle(self, *, config: EngineConfig, session_id: str, resume_value):
         graph, diagnostics = await self.build_graph(config)
         return SupervisorExecutionBundle(
             graph=graph,
             payload=self.build_resume_input(resume_value),
-            graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),
+            graph_config=self.build_graph_config(session_id),
             mode="resume",
             diagnostics=diagnostics,
         )

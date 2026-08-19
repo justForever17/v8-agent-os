@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from api import session_workflow_routes
 
 
@@ -56,3 +60,30 @@ def test_quick_index_overlays_active_run_truth_without_rebuilding(monkeypatch):
     assert projected["sessions"][0]["workflowStatus"] == "waiting_input"
     assert projected["sessions"][0]["currentRunId"] == "run-current"
     assert projected["sessions"][0]["workflowSummary"]["workflowStatus"] == "waiting_input"
+
+
+def test_quick_index_preserves_stale_cache_when_database_projection_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_workflow_routes, "_WEB_SESSION_INDEX_PATH", tmp_path / "web_session_index.json")
+    monkeypatch.setattr(session_workflow_routes, "_build_web_session_index_records", lambda: (_ for _ in ()).throw(RuntimeError("malformed database schema")))
+    session_workflow_routes._write_web_session_index([
+        {"id": "stale-session", "sessionId": "stale-session", "title": "保留"},
+    ])
+
+    payload = asyncio.run(session_workflow_routes.get_sessions_quick_index(force=1))
+
+    assert payload["degraded"] is True
+    assert payload["degradation"]["code"] == "state_database_unavailable"
+    assert payload["sessions"][0]["id"] == "stale-session"
+
+
+def test_quick_index_returns_structured_503_without_cache_when_database_projection_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_workflow_routes, "_WEB_SESSION_INDEX_PATH", tmp_path / "missing.json")
+    monkeypatch.setattr(session_workflow_routes, "_build_web_session_index_records", lambda: (_ for _ in ()).throw(RuntimeError("malformed database schema")))
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(session_workflow_routes.get_sessions_quick_index(force=1))
+
+    error = caught.value
+    assert getattr(error, "status_code", None) == 503
+    assert error.detail["code"] == "state_database_unavailable"
+    assert error.detail["retryable"] is True

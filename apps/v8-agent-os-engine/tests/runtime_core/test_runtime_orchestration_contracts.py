@@ -748,9 +748,11 @@ def test_progress_event_drops_raw_payload_and_reasoning(monkeypatch) -> None:
 
 def test_windows_shell_dialect_is_deterministic(monkeypatch) -> None:
     monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module, "default_shell_dialect", lambda: "powershell")
 
     assert command_module._resolve_shell_dialect("$env:MODE='test'; Get-ChildItem -Force") == "powershell"
-    assert command_module._resolve_shell_dialect("set MODE=test && dir /b") == "cmd"
+    assert command_module._resolve_shell_dialect("set MODE=test && dir /b") == "powershell"
+    assert command_module._resolve_shell_dialect("set MODE=test && dir /b", "cmd") == "cmd"
     assert command_module._resolve_shell_dialect("Get-ChildItem", "pwsh") == "pwsh"
 
     violation = _windows_shell_syntax_violation_payload(
@@ -759,6 +761,13 @@ def test_windows_shell_dialect_is_deterministic(monkeypatch) -> None:
     )
     assert violation is not None
     assert "cmd_syntax_in_powershell" in violation["violations"]
+
+    chained = _windows_shell_syntax_violation_payload(
+        'cd "C:\\workspace" && dir',
+        shell_dialect=command_module._resolve_shell_dialect('cd "C:\\workspace" && dir'),
+    )
+    assert chained is not None
+    assert "powershell_5_chain_operator" in chained["violations"]
 
 
 def test_windows_shell_argv_uses_one_explicit_shell(monkeypatch) -> None:

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import locale
+import math
 import os
 import platform
 import queue
@@ -8,6 +9,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -33,7 +35,12 @@ else:
 
 from langchain_core.tools import InjectedToolCallId, tool
 
-from core.process_launch import windowless_subprocess_kwargs
+from core.command_environment import default_shell_dialect
+from core.process_launch import (
+    _attach_windows_process_job,
+    run_windowless_bounded,
+    windowless_subprocess_kwargs,
+)
 from core.tools.native.command_governance import (
     _detect_interactive_command,
     _detect_session_preferred_command,
@@ -267,40 +274,15 @@ def _normalize_shell_dialect(value: str | None) -> str:
 
 def _resolve_shell_dialect(command: str, requested: str | None = "auto") -> str:
     dialect = _normalize_shell_dialect(requested)
+    if dialect == "auto":
+        return default_shell_dialect()
     if sys.platform != "win32":
-        if dialect in {"auto", "bash"}:
+        if dialect == "bash":
             return "bash" if shutil.which("bash") else "sh"
         if dialect == "sh":
             return "sh"
         raise ValueError(f"当前平台不支持 Windows shell dialect: {dialect}")
-    if dialect != "auto":
-        return dialect
-
-    stripped = _strip_leading_shell_cwd(command)
-    lowered = str(stripped or "").strip().lower()
-    if re.match(r"^(?:cmd(?:\.exe)?\s+/[dqs]*c\b)", lowered):
-        return "cmd"
-    if re.match(r"^(?:pwsh(?:\.exe)?\b)", lowered):
-        return "pwsh"
-    if re.match(r"^(?:powershell(?:\.exe)?\b)", lowered):
-        return "powershell"
-    if re.match(r"^(?:bash(?:\.exe)?\b|sh\b)", lowered):
-        return "bash"
-    if (
-        re.search(r"\$env:[A-Za-z_]", stripped, re.IGNORECASE)
-        or re.search(r"(^|[;&|]\s*)(?:Get|Set|New|Remove|Copy|Move|Test)-[A-Za-z]+", stripped, re.IGNORECASE)
-        or re.search(r"\|\s*(?:Where|ForEach|Select)-Object\b", stripped, re.IGNORECASE)
-    ):
-        return "powershell"
-    if (
-        re.search(r"%[A-Za-z_][A-Za-z0-9_]*%", stripped)
-        or re.search(r"(^|[;&|]\s*)set\s+[A-Za-z_][A-Za-z0-9_]*=", stripped, re.IGNORECASE)
-        or re.search(r"(^|[;&|]\s*)dir\s+/[A-Za-z]", stripped, re.IGNORECASE)
-        or "&&" in stripped
-        or "||" in stripped
-    ):
-        return "cmd"
-    return "powershell"
+    return dialect
 
 
 def _shell_command_argv(command: str, shell_dialect: str) -> list[str]:
@@ -450,13 +432,13 @@ def execute_governed_argv(
     ) as envelope:
         try:
             sandbox_argv, sandbox_env = _sandbox_launch(governed_context, normalized_argv)
-            result = subprocess.run(
+            result = run_windowless_bounded(
                 sandbox_argv,
                 shell=False,
                 capture_output=True,
                 cwd=resolved_cwd,
                 env=sandbox_env,
-                timeout=timeout_seconds,
+                timeout=float(timeout_seconds),
                 **_windowless_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired:
@@ -466,6 +448,15 @@ def execute_governed_argv(
                 error="script execution timed out",
                 retryable=False,
                 recommended_next_action="缩小脚本任务，或改用具备可恢复会话的专项 runtime。",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return envelope.failure_payload(
+                summary="脚本进程启动失败，未留下后台进程。",
+                failure_class="launch_failed",
+                error=str(exc),
+                retryable=False,
+                recommended_next_action="检查可执行文件、工作区路径和 sandbox lease 后重试；长任务改用可观察 session。",
+                extra={"status": "failed"},
             )
 
     stdout, stdout_encoding = _decode_completed_process_bytes(result.stdout or b"", stream_name="stdout")
@@ -703,6 +694,7 @@ def execute_system_command(
     command: str,
     cwd: str = "",
     shell_dialect: str = "auto",
+    timeout_seconds: float | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run one short, non-interactive shell command and return a bounded result.
@@ -713,11 +705,27 @@ def execute_system_command(
     3. For installers, scaffolding, dev servers, TUI menus, password prompts, or long-running/watch commands, use `run_system_command(mode="auto")` so V8OS can open an observable terminal session.
     4. Do not use shell writes as a shortcut for known source/text edits; read the file first and use file tools when possible.
     5. Follow the shell dialect published by the Engineering Kernel/environment; do not mix shell syntaxes in one command.
+    6. The synchronous path has a strict 90-second deadline. A longer requested timeout must use a session.
     
     Arguments:
         command (str): The command to execute natively.
     """
     try:
+        requested_timeout = _parse_requested_timeout_seconds(timeout_seconds)
+        if requested_timeout is not None and requested_timeout > _SYNC_COMMAND_TIMEOUT_SECONDS:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "sync_timeout_requires_session",
+                    "summary": "同步命令最多运行 90 秒，已拒绝更长的阻塞式执行。",
+                    "error": "sync_timeout_exceeds_deadline",
+                    "requestedTimeoutSeconds": requested_timeout,
+                    "syncTimeoutSeconds": _SYNC_COMMAND_TIMEOUT_SECONDS,
+                    "recommendedNextAction": "改用 run_system_command(mode='session')，通过 observe/input/terminate 管理长任务。",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
         resolved_shell_dialect = _resolve_shell_dialect(command, shell_dialect)
         shell_violation = _windows_shell_syntax_violation_payload(command, shell_dialect=resolved_shell_dialect)
         if shell_violation:
@@ -765,32 +773,74 @@ def execute_system_command(
         if not allowed:
             return error_message or "Safety Guardian 已阻止命令执行。"
 
-        sync_deadline_ms = 90_000
+        sync_deadline_ms = int((requested_timeout or _SYNC_COMMAND_TIMEOUT_SECONDS) * 1000)
         with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
+            process_job = None
             try:
-                command_argv, command_env = _shell_subprocess_launch(
-                    command,
-                    resolved_shell_dialect,
-                    runtime_context,
-                )
-                popen_kwargs: dict[str, Any] = {}
-                if sys.platform != "win32":
-                    popen_kwargs["start_new_session"] = True
-                process = subprocess.Popen(
-                    command_argv,
-                    shell=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=resolved_cwd,
-                    env=command_env,
-                    **popen_kwargs,
-                    **_windowless_subprocess_kwargs(),
-                )
                 try:
-                    stdout_bytes, stderr_bytes = process.communicate(timeout=sync_deadline_ms / 1000)
+                    command_argv, command_env = _shell_subprocess_launch(
+                        command,
+                        resolved_shell_dialect,
+                        runtime_context,
+                    )
+                    popen_kwargs: dict[str, Any] = {}
+                    if sys.platform != "win32":
+                        popen_kwargs["start_new_session"] = True
+                    process = subprocess.Popen(
+                        command_argv,
+                        shell=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        cwd=resolved_cwd,
+                        env=command_env,
+                        **popen_kwargs,
+                        **_windowless_subprocess_kwargs(),
+                    )
+                    process_job = _attach_windows_process_job(process)
+                    deadline_at = time.monotonic() + (sync_deadline_ms / 1000)
+                    while True:
+                        remaining_seconds = deadline_at - time.monotonic()
+                        if remaining_seconds <= 0:
+                            _terminate_sync_process(process, process_job)
+                            stdout_bytes, stderr_bytes = _drain_terminated_sync_process(process)
+                            return json.dumps(
+                                envelope.failure_payload(
+                                    summary="Synchronous command exceeded its tool deadline.",
+                                    failure_class="deadline_exceeded",
+                                    error=f"Command timed out after {sync_deadline_ms // 1000} seconds.",
+                                    retryable=False,
+                                    recommended_next_action="改用 command_session_broker(mode='start') 以可观察、可恢复的 session 运行，或缩小命令范围。",
+                                ),
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                        try:
+                            stdout_bytes, stderr_bytes = process.communicate(timeout=min(0.5, remaining_seconds))
+                            break
+                        except subprocess.TimeoutExpired:
+                            control_signal = _peek_command_control_signal(runtime_context)
+                            control_command = str((control_signal or {}).get("command") or "").strip().lower()
+                            if control_command not in {"pause", "cancel", "interrupt"}:
+                                continue
+                            _terminate_sync_process(process, process_job)
+                            stdout_bytes, stderr_bytes = _drain_terminated_sync_process(process)
+                            return json.dumps(
+                                envelope.failure_payload(
+                                    summary="Synchronous command stopped after the run received a control signal.",
+                                    failure_class="user_interrupted",
+                                    error=f"Run control requested: {control_command}",
+                                    retryable=False,
+                                    recommended_next_action="等待当前 run 完成受治理清理；需要继续时重新发起一个明确的新命令。",
+                                    extra={
+                                        "status": "terminated",
+                                        "controlCommand": control_command,
+                                    },
+                                ),
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                    result_return_code = process.returncode
                 except subprocess.TimeoutExpired:
-                    _terminate_process_tree(process.pid)
-                    stdout_bytes, stderr_bytes = process.communicate(timeout=5)
                     return json.dumps(
                         envelope.failure_payload(
                             summary="Synchronous command exceeded its tool deadline.",
@@ -802,19 +852,25 @@ def execute_system_command(
                         ensure_ascii=False,
                         indent=2,
                     )
-                result_return_code = process.returncode
-            except subprocess.TimeoutExpired:
-                return json.dumps(
-                    envelope.failure_payload(
-                        summary="Synchronous command exceeded its tool deadline.",
-                        failure_class="deadline_exceeded",
-                        error=f"Command timed out after {sync_deadline_ms // 1000} seconds.",
-                        retryable=False,
-                        recommended_next_action="改用 command_session_broker(mode='start') 以可观察、可恢复的 session 运行，或缩小命令范围。",
-                    ),
-                    ensure_ascii=False,
-                    indent=2,
-                )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    return json.dumps(
+                        envelope.failure_payload(
+                            summary="同步命令进程启动失败，未留下后台进程。",
+                            failure_class="launch_failed",
+                            error=str(exc),
+                            retryable=False,
+                            recommended_next_action="检查可执行文件、工作区路径和 shell dialect 后重试；长任务改用可观察 session。",
+                            extra={"status": "failed"},
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+            finally:
+                if process_job is not None:
+                    try:
+                        process_job.close()
+                    except Exception:
+                        pass
         stdout, stdout_encoding = _decode_completed_process_bytes(stdout_bytes or b"", stream_name="stdout")
         stderr, stderr_encoding = _decode_completed_process_bytes(stderr_bytes or b"", stream_name="stderr")
         encoding_diagnostics = {
@@ -983,22 +1039,29 @@ def _launch_background_command(
         raise RuntimeError(error_message or "Safety Guardian 已阻止后台命令启动。")
 
     cmd_id = str(uuid.uuid4())[:8]
-    bg_proc = BackgroundProcess(
-        command,
-        session_id=runtime_context.get("session_id"),
-        run_id=runtime_context.get("run_id"),
-        interactive=interactive_mode,
-        terminal_mode=requested_terminal_mode,
-        profile=resolved_profile,
-        profile_reason=profile_reason or interactive_reason or session_reason,
-        cwd=resolved_cwd,
-        shell_dialect=resolved_shell_dialect,
-        runtime_context=runtime_context,
-        timeout_seconds=_normalize_command_session_timeout_seconds(
-            timeout_seconds,
+    try:
+        bg_proc = BackgroundProcess(
+            command,
+            session_id=runtime_context.get("session_id"),
+            run_id=runtime_context.get("run_id"),
             interactive=interactive_mode,
-        ),
-    )
+            terminal_mode=requested_terminal_mode,
+            profile=resolved_profile,
+            profile_reason=profile_reason or interactive_reason or session_reason,
+            cwd=resolved_cwd,
+            shell_dialect=resolved_shell_dialect,
+            runtime_context=runtime_context,
+            timeout_seconds=_normalize_command_session_timeout_seconds(
+                timeout_seconds,
+                interactive=interactive_mode,
+            ),
+        )
+    except OSError as exc:
+        raise CommandSessionBackendError(
+            backend="winpty" if interactive_mode and sys.platform == "win32" else "pipe",
+            operation="spawn",
+            message=f"命令进程无法启动：{exc}",
+        ) from exc
     bg_proc.command_id = cmd_id
     bg_proc.workspace_binding = workspace_preflight.get("binding")
     _bg_processes[cmd_id] = bg_proc
@@ -1073,6 +1136,7 @@ _DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_SECONDS = 60 * 60
 _MAX_COMMAND_SESSION_TIMEOUT_SECONDS = 2 * 60 * 60
 _COMMAND_DIAGNOSTICS_TIMEOUT_SECONDS = 1.5
 _COMMAND_DIAGNOSTICS_WORKER_LIMIT = 4
+_PIPE_ROOT_EXIT_DRAIN_SECONDS = 2.0
 _COMMAND_TERMINAL_MODES = {"auto", "pipe", "pty"}
 _SKILLS_ADD_COMMAND_PATTERN = re.compile(r"(?i)(?:^|[;&|]\s*)npx\s+skills\s+add\b")
 _PROMPT_HINT_PATTERN = re.compile(
@@ -1160,6 +1224,34 @@ def _normalize_command_session_timeout_seconds(
     return min(requested, float(_MAX_COMMAND_SESSION_TIMEOUT_SECONDS))
 
 
+_SYNC_COMMAND_TIMEOUT_SECONDS = 90.0
+
+
+def _parse_requested_timeout_seconds(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        requested = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timeout_seconds 必须是正数。") from exc
+    if not math.isfinite(requested) or requested <= 0:
+        raise ValueError("timeout_seconds 必须是正数。")
+    return requested
+
+
+def _peek_command_control_signal(runtime_context: dict[str, Any]) -> dict[str, Any] | None:
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    if not run_id:
+        return None
+    try:
+        from erc import erc_kernel
+
+        signal = erc_kernel.peek_control_signal(run_id)
+    except Exception:
+        return None
+    return dict(signal) if isinstance(signal, dict) else None
+
+
 def _terminate_process_tree(process_id: int | None, *, grace_seconds: float = 1.0) -> None:
     if not process_id or process_id == os.getpid():
         return
@@ -1182,6 +1274,100 @@ def _terminate_process_tree(process_id: int | None, *, grace_seconds: float = 1.
             process.kill()
         except psutil.Error:
             continue
+
+
+def _terminate_posix_process_group(process_group_id: int | None, *, grace_seconds: float = 0.5) -> bool:
+    if sys.platform == "win32" or not process_group_id:
+        return False
+    try:
+        process_group_id = int(process_group_id)
+    except (TypeError, ValueError):
+        return False
+    if process_group_id <= 0 or process_group_id == os.getpgrp():
+        return False
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + max(0.0, grace_seconds)
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            break
+        time.sleep(0.05)
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+    return True
+
+
+def _terminate_sync_process(
+    process: subprocess.Popen[Any],
+    process_job: Any | None,
+) -> None:
+    """Stop a sync command and every descendant before draining its pipes."""
+
+    if process_job is not None:
+        try:
+            if process_job.terminate():
+                return
+        except Exception:
+            pass
+    _terminate_process_tree(getattr(process, "pid", None))
+
+
+def _drain_terminated_sync_process(
+    process: subprocess.Popen[Any],
+    *,
+    timeout_seconds: float = 5.0,
+) -> tuple[bytes, bytes]:
+    """Collect bounded output after a sync process tree has been stopped.
+
+    A descendant can keep an inherited stdout/stderr handle open after the
+    direct process exits. A single ``communicate(timeout=...)`` may therefore
+    raise again and leave the pipe unreaped. Keep the drain bounded, force-kill
+    the direct process when necessary, and close the pipes before returning.
+    """
+
+    output = b""
+    error = b""
+    try:
+        output, error = process.communicate(timeout=max(0.1, float(timeout_seconds)))
+        return output or b"", error or b""
+    except subprocess.TimeoutExpired as first_timeout:
+        output = first_timeout.output or b""
+        error = first_timeout.stderr or b""
+        try:
+            process.kill()
+        except (OSError, AttributeError, ValueError):
+            pass
+        try:
+            drained_output, drained_error = process.communicate(timeout=1.0)
+            return drained_output or output or b"", drained_error or error or b""
+        except subprocess.TimeoutExpired as final_timeout:
+            return (
+                final_timeout.output or output or b"",
+                final_timeout.stderr or error or b"",
+            )
+        finally:
+            for stream in (
+                getattr(process, "stdin", None),
+                getattr(process, "stdout", None),
+                getattr(process, "stderr", None),
+            ):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
 _TERMINAL_KEY_ALIASES = {
     "up": "\x1b[A",
     "arrowup": "\x1b[A",
@@ -2500,6 +2686,8 @@ class BackgroundProcess:
         self.is_running = True
         self.pty_win = None
         self.proc = None
+        self.process_job = None
+        self.process_group_id = None
         self.fd = None
         self.uses_tty = False
         self.cols = 80
@@ -2524,6 +2712,8 @@ class BackgroundProcess:
         self.failure_message: str | None = None
         self.termination_reason: str | None = None
         self.timed_out = False
+        self.pipe_root_exit_observed_at: float | None = None
+        self.pipe_descendant_cleanup = False
         self.timeout_seconds = _normalize_command_session_timeout_seconds(
             timeout_seconds,
             interactive=interactive,
@@ -2651,9 +2841,20 @@ class BackgroundProcess:
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env,
                 cwd=self.cwd, **popen_kwargs, **_windowless_subprocess_kwargs(),
             )
+            self.process_job = _attach_windows_process_job(self.proc)
+            if sys.platform != "win32":
+                self.process_group_id = int(self.proc.pid)
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
+        self.pipe_reaper_thread = None
+        if self.backend == "pipe":
+            self.pipe_reaper_thread = threading.Thread(
+                target=self._watch_pipe_root_exit,
+                name="v8-command-pipe-reaper",
+                daemon=True,
+            )
+            self.pipe_reaper_thread.start()
         self.deadline_thread = threading.Thread(target=self._watch_deadline, daemon=True)
         self.deadline_thread.start()
         self.diagnostics_thread = threading.Thread(
@@ -2731,7 +2932,27 @@ class BackgroundProcess:
         return None
 
     def _cleanup_backend_process(self) -> None:
-        _terminate_process_tree(self._process_id())
+        process_job = self.process_job
+        self.process_job = None
+        job_terminated = False
+        if process_job is not None:
+            try:
+                if process_job.terminate():
+                    job_terminated = True
+            except Exception:
+                pass
+            finally:
+                if not job_terminated:
+                    try:
+                        process_job.close()
+                    except Exception:
+                        pass
+        group_terminated = False
+        if not job_terminated:
+            group_terminated = _terminate_posix_process_group(getattr(self, "process_group_id", None))
+        self.process_group_id = None
+        if not job_terminated and not group_terminated:
+            _terminate_process_tree(self._process_id())
         if self.backend == "posix_pty":
             # Closing the master after the child is terminated wakes the bounded
             # reader loop and prevents a PTY session from keeping its owner alive.
@@ -2743,11 +2964,49 @@ class BackgroundProcess:
                     cancel_io()
                 except BaseException as exc:
                     _raise_if_process_control_exception(exc)
-        if self.proc is not None and hasattr(self.proc, "stdin") and self.proc.stdin:
+        if self.proc is not None:
+            for stream in (
+                getattr(self.proc, "stdin", None),
+                getattr(self.proc, "stdout", None),
+                getattr(self.proc, "stderr", None),
+            ):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+
+    def _watch_pipe_root_exit(self) -> None:
+        process = self.proc
+        if self.backend != "pipe" or process is None or not hasattr(process, "poll"):
+            return
+        return_code: int | None = None
+        while self.is_running:
             try:
-                self.proc.stdin.close()
+                return_code = process.poll()
             except Exception:
-                pass
+                return
+            if return_code is not None:
+                break
+            if self._deadline_stop.wait(timeout=0.05):
+                return
+        if return_code is None or not self.is_running:
+            return
+
+        self.pipe_root_exit_observed_at = time.time()
+        if self._deadline_stop.wait(timeout=_PIPE_ROOT_EXIT_DRAIN_SECONDS):
+            return
+        with self._termination_lock:
+            if not self.is_running:
+                return
+            if self.return_code is None:
+                self.return_code = int(return_code)
+            self.pipe_descendant_cleanup = True
+            self.is_running = False
+            self.completed_at = time.time()
+            self._deadline_stop.set()
+            self._cleanup_backend_process()
 
     def _close_posix_pty_fd(self) -> None:
         fd = self.fd
@@ -3106,12 +3365,13 @@ class BackgroundProcess:
                         break
                     self._ingest_output(char)
         except BaseException as exc:
-            self._mark_backend_failure(exc, operation="read_loop")
+            if self.is_running:
+                self._mark_backend_failure(exc, operation="read_loop")
         finally:
             self.is_running = False
             self.completed_at = time.time()
             self._deadline_stop.set()
-            read_return_code = self._read_return_code()
+            read_return_code = self.return_code if self.return_code is not None else self._read_return_code()
             if self.return_code is None:
                 self.return_code = read_return_code
             if (
@@ -3132,6 +3392,13 @@ class BackgroundProcess:
                 _notify_skills_inventory_command_completed(self.command)
             if self.backend == "posix_pty":
                 self._close_posix_pty_fd()
+            process_job = self.process_job
+            self.process_job = None
+            if process_job is not None:
+                try:
+                    process_job.close()
+                except Exception:
+                    pass
 
     def get_new_output(self) -> str:
         chars = []
@@ -3354,6 +3621,10 @@ class BackgroundProcess:
             "timeout_seconds": self.timeout_seconds,
             "deadline_at": datetime.fromtimestamp(self.deadline_at, timezone.utc).isoformat(),
             "timed_out": self.timed_out,
+            "pipe_root_exit_observed_at": None
+            if self.pipe_root_exit_observed_at is None
+            else datetime.fromtimestamp(self.pipe_root_exit_observed_at, timezone.utc).isoformat(),
+            "pipe_descendant_cleanup": bool(self.pipe_descendant_cleanup),
             "failure_kind": self.failure_kind,
             "failure_message": self.failure_message,
             "termination_reason": self.termination_reason,
@@ -3592,8 +3863,9 @@ def run_system_command(
     - shell: 普通终端模式
 
     shell_dialect:
-    - Follow the detected shell dialect in the Engineering Kernel/environment; auto is compatibility-only and returns the resolved dialect.
+    - Follow the detected shell dialect in the Engineering Kernel/environment; auto uses that exact environment dialect and never guesses from command text.
     - Do not mix syntax from different shell dialects in one command.
+    - Pass the working directory through cwd. Do not prepend `cd`; on Windows PowerShell 5.1, do not use `&&`, `||`, or POSIX commands such as `ls -la`.
     """
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode not in {"auto", "sync", "session"}:
@@ -3606,6 +3878,7 @@ def run_system_command(
     if capsule_block:
         return json.dumps(capsule_block, ensure_ascii=False, indent=2)
     try:
+        requested_timeout = _parse_requested_timeout_seconds(timeout_seconds)
         normalized_profile = _normalize_background_command_profile(profile)
         normalized_terminal_mode = _normalize_command_terminal_mode(terminal_mode)
     except ValueError as exc:
@@ -3613,11 +3886,18 @@ def run_system_command(
 
     interactive_reason = _detect_interactive_command(command)
     session_reason = _detect_session_preferred_command(command)
+    timeout_forced_session = bool(
+        requested_timeout is not None
+        and requested_timeout > _SYNC_COMMAND_TIMEOUT_SECONDS
+    )
     prefer_session = (
         normalized_terminal_mode == "pty"
         or interactive_reason is not None
         or session_reason is not None
+        or timeout_forced_session
     )
+    if timeout_forced_session and not session_reason:
+        session_reason = "调用方请求的执行期限超过同步命令边界，已转为可观察 session。"
     effective_mode = normalized_mode
     if normalized_mode == "auto":
         if prefer_session:
@@ -3627,6 +3907,21 @@ def run_system_command(
 
     if effective_mode == "sync":
         if prefer_session:
+            if timeout_forced_session:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "mode": "sync",
+                        "kind": "sync_timeout_requires_session",
+                        "command": command,
+                        "summary": "同步命令最多运行 90 秒，已拒绝更长的阻塞式执行。",
+                        "error": "sync_timeout_exceeds_deadline",
+                        "requestedTimeoutSeconds": requested_timeout,
+                        "syncTimeoutSeconds": _SYNC_COMMAND_TIMEOUT_SECONDS,
+                        "recommendedNextAction": "改用 mode='session'，通过 observe/input/terminate 管理长任务。",
+                    },
+                    ensure_ascii=False,
+                )
             return json.dumps(
                 {
                     "ok": False,
@@ -3655,6 +3950,7 @@ def run_system_command(
             command=command,
             cwd=cwd,
             shell_dialect=shell_dialect,
+            timeout_seconds=requested_timeout,
             tool_call_id=tool_call_id,
         )
 

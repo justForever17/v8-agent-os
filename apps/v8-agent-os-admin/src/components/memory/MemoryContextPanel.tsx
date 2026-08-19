@@ -13,7 +13,6 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { cn } from "@/lib/utils";
@@ -34,8 +33,6 @@ interface SysModel {
 }
 interface ContextPolicy {
   schema_version?: number;
-  recursion_limit?: number;
-  maxGraphContinuations?: number;
   compression?: {
     enabled?: boolean;
     mode?: string;
@@ -67,9 +64,7 @@ interface ContextDomainData {
   modelBindings?: ContextBindings;
 }
 const DEFAULT_POLICY: ContextPolicy = {
-  schema_version: 3,
-  recursion_limit: 100,
-  maxGraphContinuations: 5,
+  schema_version: 4,
   compression: {
     enabled: true,
     mode: "persistent_baseline",
@@ -174,11 +169,20 @@ const PRESET_OPTIONS = [{
 }] as const;
 type PresetKey = (typeof PRESET_OPTIONS)[number]["key"];
 function normalizePolicy(policy?: ContextPolicy): ContextPolicy {
-  const maxGraphContinuations = Number(policy?.maxGraphContinuations ?? (policy as Record<string, unknown> | undefined)?.max_graph_continuations ?? DEFAULT_POLICY.maxGraphContinuations ?? 5);
+  const policyWithoutGraphBudget = {
+    ...(policy || {})
+  } as ContextPolicy & Record<string, unknown>;
+  for (const legacyKey of [
+    "recursion_limit",
+    "recursionLimit",
+    "maxGraphContinuations",
+    "max_graph_continuations"
+  ]) {
+    delete policyWithoutGraphBudget[legacyKey];
+  }
   return {
     ...DEFAULT_POLICY,
-    ...(policy || {}),
-    maxGraphContinuations: Number.isFinite(maxGraphContinuations) ? Math.max(0, Math.min(20, Math.round(maxGraphContinuations))) : 5,
+    ...policyWithoutGraphBudget,
     compression: {
       ...DEFAULT_POLICY.compression,
       ...(policy?.compression || {})
@@ -364,12 +368,6 @@ export function MemoryContextPanel() {
       label: tg(t, "81d60e7b"),
       value: policyForm.compression?.mode === "persistent_baseline" ? tg(t, "3d9158b9") : policyForm.compression?.mode || t("app.admin.dashboard.system.base.page.k6ed9c299"),
       description: tg(t, "2afde78b")
-    }, {
-      label: t("components.memory.MemoryContextPanel.maxGraphContinuationsSummaryLabel"),
-      value: t("components.memory.MemoryContextPanel.maxGraphContinuationsSummaryValue", {
-        count: policyForm.maxGraphContinuations ?? 5
-      }),
-      description: t("components.memory.MemoryContextPanel.maxGraphContinuationsSummaryDescription")
     }]} />
 
 
@@ -406,29 +404,6 @@ export function MemoryContextPanel() {
                             />
 
                             <div className="grid gap-5 md:grid-cols-2">
-                                <div className="space-y-1.5">
-                                    <Label>{tg(t, "8d68fefc")}</Label>
-                                    <Input type="number" min={10} max={5000} value={policyForm.recursion_limit ?? 100} onChange={event => setPolicyForm(prev => normalizePolicy({
-                  ...prev,
-                  recursion_limit: Number(event.target.value)
-                }))} />
-                                </div>
-
-                                <div className="space-y-2 rounded-2xl border border-border bg-card px-4 py-3 md:col-span-2">
-                                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                        <div className="space-y-1">
-                                            <Label>{t("components.memory.MemoryContextPanel.maxGraphContinuationsLabel")}</Label>
-                                        </div>
-                                        <Input className="w-24" type="number" min={0} max={20} value={policyForm.maxGraphContinuations ?? 5} onChange={event => setPolicyForm(prev => normalizePolicy({
-                  ...prev,
-                  maxGraphContinuations: Number(event.target.value)
-                }))} />
-                                    </div>
-                                    <Slider value={[policyForm.maxGraphContinuations ?? 5]} min={0} max={20} step={1} onValueChange={([value]) => setPolicyForm(prev => normalizePolicy({
-                ...prev,
-                maxGraphContinuations: value
-              }))} />
-                                </div>
 
                                 <div className="space-y-1.5">
                                     <Label>{tg(t, "726b4a24")}</Label>

@@ -16,7 +16,7 @@ from .supervisor_context import (
     has_explicit_recall_cue,
     resolve_supervisor_request_context,
 )
-from .no_progress_breaker import apply_no_progress_breaker
+from .no_progress_breaker import apply_no_progress_breaker, apply_remaining_steps_guard
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from core.context.delegation import build_delegation_context
 from core.delegation_result_contract import parse_delegation_acceptance_text
@@ -3312,6 +3312,11 @@ def execute_supervisor_turn(
             hasRecallCue=bool(passive_rag_diagnostics.get("has_recall_cue")),
             humanTurns=passive_rag_diagnostics.get("human_turns"),
         )
+        raw_remaining_steps = state.get("remaining_steps")
+        try:
+            remaining_steps = int(raw_remaining_steps) if raw_remaining_steps is not None else None
+        except (TypeError, ValueError):
+            remaining_steps = None
         prepared_result = prepare_supervisor_messages(
             messages=prepared_messages,
             system_content=system_content,
@@ -3322,7 +3327,7 @@ def execute_supervisor_turn(
             resolved_model_id=sup_model_name,
             resolved_scope=current_scope,
             scope_chain=scope_chain,
-            remaining_steps=state.get("remaining_steps", 100),
+            remaining_steps=remaining_steps,
             prompt_profile=(
                 "runtime_route_compiler"
                 if use_runtime_route_compiler
@@ -3632,6 +3637,7 @@ def execute_supervisor_turn(
             route_bundle=route_bundle,
             selected_tools=filtered_supervisor_tools,
         )
+        response, progress_guard = apply_remaining_steps_guard(response, remaining_steps)
         extensions_runtime_service.emit_response_tool_calls(response)
         response, loop_breaker = apply_no_progress_breaker(prepared_messages, response)
         extensions_runtime_service.emit_execution_completed(response=response)
@@ -3642,6 +3648,11 @@ def execute_supervisor_turn(
         print(
             f"[LoopBreaker] Short-circuited repeated tool cycle ({tool_list}) "
             f"x{loop_breaker['count']} with identical observation fingerprint"
+        )
+    if progress_guard is not None:
+        print(
+            "[ExecutionProgressGuard] Suppressed a new tool round with "
+            f"{progress_guard['remaining_steps']} managed steps remaining"
         )
     if state_compaction_updates:
         object.__setattr__(response, "_v8_state_compaction_updates", tuple(state_compaction_updates))

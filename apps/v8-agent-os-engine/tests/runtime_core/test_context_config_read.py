@@ -36,6 +36,9 @@ def test_context_config_read_normalizes_without_rewriting_historical_fields(monk
     resolved = storage.get_context_config()
 
     assert resolved == normalize_context_policy(raw)
+    assert resolved["schema_version"] == 4
+    assert "recursion_limit" not in resolved
+    assert "maxGraphContinuations" not in resolved
     assert "plugin_host" not in resolved["runtime_adapters"]
     assert writes == []
 
@@ -44,6 +47,6 @@ def test_explicit_context_config_save_still_persists_normalized_policy(monkeypat
     writes = []
     monkeypatch.setattr(storage, "write_json", lambda filename, payload: writes.append((filename, payload)))
 
-    storage.save_context_config({"recursion_limit": 1})
+    storage.save_context_config({"recursion_limit": 1, "maxGraphContinuations": 20})
 
-    assert writes == [("context_config.json", normalize_context_policy({"recursion_limit": 1}))]
+    assert writes == [("context_config.json", normalize_context_policy({}))]

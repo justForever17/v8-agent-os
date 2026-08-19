@@ -611,7 +611,7 @@ def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "one\nnew-a\nnew-b\nfour\n"
 
 
-def test_write_native_file_blocks_existing_long_file_full_overwrite_without_anchor(tmp_path, monkeypatch):
+def test_write_native_file_requires_explicit_intent_for_existing_file_full_overwrite(tmp_path, monkeypatch):
     from core import native_tools
 
     active_root = tmp_path / "active"
@@ -619,16 +619,76 @@ def test_write_native_file_blocks_existing_long_file_full_overwrite_without_anch
     active_root.mkdir()
     main_root.mkdir()
     _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
-    target = active_root / "src" / "very_long.txt"
+    target = active_root / "src" / "existing.txt"
     target.parent.mkdir(parents=True)
-    target.write_text("".join(f"line {index}\n" for index in range(1000)), encoding="utf-8")
+    target.write_text("one\ntwo\n", encoding="utf-8")
 
     with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
-        native_tools.read_native_file.func("src/very_long.txt")
-        result = native_tools.write_native_file.func("src/very_long.txt", "replacement")
+        native_tools.read_native_file.func("src/existing.txt")
+        blocked = native_tools.write_native_file.func("src/existing.txt", "replacement")
+        native_tools.read_native_file.func("src/existing.txt")
+        allowed = native_tools.write_native_file.func(
+            "src/existing.txt",
+            "replacement",
+            allow_full_replace=True,
+        )
 
-    assert "long_file_full_overwrite_block" in result
-    assert "line 999" in target.read_text(encoding="utf-8")
+    assert "existing_file_full_overwrite_block" in blocked
+    assert '"existingLineCount": 2' in blocked
+    assert "Created/Overwritten" in allowed
+    assert target.read_text(encoding="utf-8") == "replacement"
+
+
+def test_write_native_file_keeps_original_when_atomic_replace_fails(tmp_path, monkeypatch):
+    from core import native_tools
+    from core.tools.native import workspace_file as workspace_file_module
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    target = active_root / "src" / "existing.txt"
+    target.parent.mkdir(parents=True)
+    target.write_text("original\ncontent\n", encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise OSError("simulated atomic replace failure")
+
+    monkeypatch.setattr(workspace_file_module.os, "replace", fail_replace)
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        native_tools.read_native_file.func("src/existing.txt")
+        result = native_tools.write_native_file.func(
+            "src/existing.txt",
+            "replacement\n",
+            allow_full_replace=True,
+        )
+
+    assert "Error writing file" in result
+    assert target.read_text(encoding="utf-8") == "original\ncontent\n"
+    assert list(target.parent.glob(f".{target.name}.*.v8os-tmp")) == []
+
+
+def test_read_native_file_rejects_out_of_bounds_and_reversed_line_ranges(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    target = active_root / "short.txt"
+    target.write_text("one\ntwo\n", encoding="utf-8")
+
+    with bind_runtime_context(runtime_kind="chat", workspace_path=str(active_root), workspace_id="test2", project_id="test2"):
+        out_of_bounds = json.loads(native_tools.read_native_file.func("short.txt", start_line=340))
+        reversed_range = json.loads(native_tools.read_native_file.func("short.txt", start_line=2, end_line=1))
+
+    assert out_of_bounds["kind"] == "line_range_out_of_bounds"
+    assert out_of_bounds["error"] == "start_line_beyond_end_of_file"
+    assert "2 lines" in out_of_bounds["summary"]
+    assert reversed_range["kind"] == "invalid_line_range"
+    assert reversed_range["error"] == "reversed_line_range"
 
 
 def test_write_native_file_requires_read_before_modifying_existing_file(tmp_path, monkeypatch):

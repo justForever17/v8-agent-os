@@ -240,14 +240,40 @@ class DocumentParser:
             return f"[python-docx not installed for DOCX parsing of {file_path.name}]"
         
         doc = Document(file_path)
-        text_blocks = []
-        for para in doc.paragraphs:
-            if para.style.name.startswith('Heading'):
-                level = para.style.name.replace('Heading ', '')
-                prefix = '#' * int(level) if level.isdigit() else '#'
-                text_blocks.append(f"{prefix} {para.text}")
+        text_blocks: list[str] = []
+        for block in doc.iter_inner_content():
+            if hasattr(block, "rows"):
+                rows = []
+                for row in block.rows:
+                    rows.append([
+                        "\n".join(
+                            paragraph.text.strip()
+                            for paragraph in cell.paragraphs
+                            if paragraph.text.strip()
+                        )
+                        for cell in row.cells
+                    ])
+                if rows:
+                    width = max(len(row) for row in rows)
+                    normalized_rows = [row + ([""] * (width - len(row))) for row in rows]
+                    escaped_rows = [
+                        [value.replace("|", "\\|").replace("\n", "<br>") for value in row]
+                        for row in normalized_rows
+                    ]
+                    text_blocks.append("\n".join([
+                        f"| {' | '.join(escaped_rows[0])} |",
+                        f"| {' | '.join(['---'] * width)} |",
+                        *[f"| {' | '.join(row)} |" for row in escaped_rows[1:]],
+                    ]))
+                continue
+
+            style_name = str(getattr(getattr(block, "style", None), "name", "") or "")
+            if style_name.startswith("Heading"):
+                level = style_name.replace("Heading ", "")
+                prefix = "#" * int(level) if level.isdigit() else "#"
+                text_blocks.append(f"{prefix} {block.text}")
             else:
-                text_blocks.append(para.text)
+                text_blocks.append(block.text)
         return "\n\n".join(text_blocks)
 
     @staticmethod

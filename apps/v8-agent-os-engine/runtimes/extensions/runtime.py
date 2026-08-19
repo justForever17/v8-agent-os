@@ -2983,15 +2983,18 @@ class ExtensionsRuntimeService:
             return
 
         async def _runner() -> None:
+            retry_delay_seconds = 2.0
             while True:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(retry_delay_seconds)
                 try:
                     await self._refresh_skill_inventory_if_changed(reason="watcher")
+                    retry_delay_seconds = 2.0
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
                     print(f"[ExtensionsRuntime] Skills inventory watcher failed: {type(exc).__name__}: {exc}")
+                    retry_delay_seconds = min(30.0, max(2.0, retry_delay_seconds * 2.0))
 
         self._skills_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:skills_inventory_watcher")
 
@@ -3067,15 +3070,18 @@ class ExtensionsRuntimeService:
             return
 
         async def _runner() -> None:
+            retry_delay_seconds = 2.0
             while True:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(retry_delay_seconds)
                 try:
                     await self._refresh_mcp_inventory_if_changed(reason="watcher")
+                    retry_delay_seconds = 2.0
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self._last_refresh_error = str(exc).strip() or exc.__class__.__name__
                     print(f"[ExtensionsRuntime] MCP inventory watcher failed: {type(exc).__name__}: {exc}")
+                    retry_delay_seconds = min(30.0, max(2.0, retry_delay_seconds * 2.0))
 
         self._mcp_inventory_watcher_task = asyncio.create_task(_runner(), name="extensions_runtime:mcp_inventory_watcher")
 

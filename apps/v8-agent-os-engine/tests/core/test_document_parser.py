@@ -93,3 +93,34 @@ def test_xls_parser_reads_first_sheet_and_releases_resources(tmp_path: Path, mon
     assert released == [True]
     assert table.calls[0]["rows"] == [["alpha", 7]]
     assert table.calls[0]["options"]["headers"] == ["name", "value"]
+
+
+def test_docx_parser_preserves_paragraph_and_table_order(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "daily-report.docx"
+    source.write_bytes(b"docx-placeholder")
+
+    def paragraph(text: str, style: str = "Normal"):
+        return SimpleNamespace(text=text, style=SimpleNamespace(name=style))
+
+    def cell(*values: str):
+        return SimpleNamespace(paragraphs=[paragraph(value) for value in values])
+
+    table = SimpleNamespace(rows=[
+        SimpleNamespace(cells=[cell("Category"), cell("Work item")]),
+        SimpleNamespace(cells=[cell("Operations"), cell("Conference support", "Network maintenance")]),
+    ])
+    document = SimpleNamespace(iter_inner_content=lambda: iter([
+        paragraph("Daily report", "Heading 1"),
+        paragraph("Date: 2026.08.19"),
+        table,
+        paragraph("End of report"),
+    ]))
+    monkeypatch.setattr(document_parser_module, "Document", lambda path: document)
+
+    result = DocumentParser._parse_docx(source)
+
+    assert "# Daily report" in result
+    assert "| Category | Work item |" in result
+    assert "| Operations | Conference support<br>Network maintenance |" in result
+    assert result.index("Date: 2026.08.19") < result.index("| Category")
+    assert result.index("| Operations") < result.index("End of report")

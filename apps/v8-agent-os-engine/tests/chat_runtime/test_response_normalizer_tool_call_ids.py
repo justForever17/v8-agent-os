@@ -206,6 +206,48 @@ class ResponseNormalizerToolCallIdTests(unittest.TestCase):
         )
         self.assertNotIn("v8_deferred_dependent_tool_calls", normalized.additional_kwargs)
 
+    def test_exact_duplicate_side_effect_call_in_one_response_is_deduplicated(self):
+        message = SimpleNamespace(
+            content=[
+                {"type": "tool_use", "id": "write-1", "name": "write_native_file", "input": {"path": "a.py", "content": "x"}},
+                {"type": "tool_use", "id": "write-2", "name": "write_native_file", "input": {"path": "a.py", "content": "x"}},
+            ],
+            tool_calls=[
+                {"id": "write-1", "name": "write_native_file", "args": {"path": "a.py", "content": "x"}},
+                {"id": "write-2", "name": "write_native_file", "args": {"content": "x", "path": "a.py"}},
+            ],
+            additional_kwargs={
+                "tool_calls": [
+                    {"id": "write-1", "name": "write_native_file", "input": {"path": "a.py", "content": "x"}},
+                    {"id": "write-2", "name": "write_native_file", "input": {"content": "x", "path": "a.py"}},
+                ]
+            },
+            response_metadata={},
+        )
+
+        normalized = sanitize_response_tool_calls(message)
+
+        self.assertEqual(len(normalized.tool_calls), 1)
+        self.assertEqual(normalized.tool_calls[0]["providerToolCallId"], "write-1")
+        self.assertEqual(normalized.additional_kwargs["v8_deduplicated_tool_calls"][0]["name"], "write_native_file")
+        self.assertEqual(len(normalized.content), 1)
+
+    def test_duplicate_unknown_tool_is_not_silently_deduplicated(self):
+        message = SimpleNamespace(
+            content="",
+            tool_calls=[
+                {"id": "custom-1", "name": "custom_tool", "args": {"value": 1}},
+                {"id": "custom-2", "name": "custom_tool", "args": {"value": 1}},
+            ],
+            additional_kwargs={},
+            response_metadata={},
+        )
+
+        normalized = sanitize_response_tool_calls(message)
+
+        self.assertEqual(len(normalized.tool_calls), 2)
+        self.assertNotIn("v8_deduplicated_tool_calls", normalized.additional_kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()

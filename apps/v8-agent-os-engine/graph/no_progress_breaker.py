@@ -27,6 +27,8 @@ _ASYNC_PROGRESS_MARKERS = (
     "轮询",
 )
 
+MIN_REMAINING_STEPS_FOR_TOOL_ROUND = 6
+
 
 def _stable_json(value) -> str:
     try:
@@ -234,3 +236,43 @@ def apply_no_progress_breaker(messages, response) -> tuple[AIMessage, dict | Non
         "target_identities": target_identities[:4],
         "observation_fingerprint": observation_fingerprint,
     }
+
+
+def apply_remaining_steps_guard(response, remaining_steps: int | None) -> tuple[AIMessage, dict | None]:
+    tool_calls = list(getattr(response, "tool_calls", None) or [])
+    if not tool_calls:
+        return response, None
+    if remaining_steps is None:
+        # RemainingSteps is a framework-managed value. Missing state is
+        # unknown, not permission to invent or reset a product budget.
+        return response, None
+    try:
+        remaining = max(0, int(remaining_steps))
+    except (TypeError, ValueError):
+        return response, None
+    if remaining > MIN_REMAINING_STEPS_FOR_TOOL_ROUND:
+        return response, None
+
+    tool_names = list(dict.fromkeys(
+        str(call.get("name") or "unknown").strip() or "unknown"
+        for call in tool_calls
+        if isinstance(call, dict)
+    ))
+    guard = {
+        "reason": "insufficient_remaining_steps_for_tool_round",
+        "remaining_steps": remaining,
+        "minimum_steps": MIN_REMAINING_STEPS_FOR_TOOL_ROUND,
+        "suppressed_tool_names": tool_names,
+        "checkpoint_preserved": True,
+    }
+    return AIMessage(
+        content=(
+            "当前长任务已接近本段图执行的安全边界。系统已保留 checkpoint，"
+            "并停止开启新的工具回合，以免重复调用和重复计费。"
+            "请从当前已完成状态继续，或把剩余工作交给持久化的 Engineering/delegation Runtime。"
+        ),
+        additional_kwargs={
+            **dict(getattr(response, "additional_kwargs", {}) or {}),
+            "execution_progress_guard": guard,
+        },
+    ), guard

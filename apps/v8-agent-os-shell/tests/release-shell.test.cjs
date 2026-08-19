@@ -1434,6 +1434,8 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.doesNotMatch(installSmoke, /127\.0\.0\.1:9530\/health/);
   assert.match(installSmoke, /timeoutMs: 3_000/);
   assert.match(installSmoke, /--feature-pack-smoke/);
+  assert.match(installSmoke, /--install-document-pack/);
+  assert.match(installSmoke, /--document-pack-install-timeout-ms/);
   assert.match(installSmoke, /--feature-pack-probe-timeout-ms/);
   assert.match(installSmoke, /--command-probe-timeout-ms/);
   assert.match(installSmoke, /Math\.min\(120_000/);
@@ -1452,8 +1454,11 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(installSmoke, /!image\.failClosed[\s\S]*?image\.assetResolved/);
   assert.match(
     installSmoke,
-    /documents\.available && documents\.isolated[\s\S]*?documents\.moduleOriginsVerified && documents\.parsersVerified/,
+    /documents\.available && documents\.isolated[\s\S]*?documents\.moduleOriginsVerified && documents\.parsersVerified && documents\.nativeToolVerified/,
   );
+  assert.match(installSmoke, /\["restart", "--only", "engine", "--json"\]/);
+  assert.match(installSmoke, /packId: "document_ingestion", locale: "zh-CN"/);
+  assert.match(workflow, /matrix\.arch[\s\S]{0,180}--install-document-pack", "true/);
   assert.match(installSmoke, /ordinary\.backend === "pipe"/);
   assert.match(installSmoke, /failure\.failureClassified === true/);
   assert.match(installSmoke, /timeout\.deadlineClassified === true/);

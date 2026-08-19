@@ -553,6 +553,7 @@ function runtimeProbeSummary(payload) {
     "isolated",
     "moduleOriginsVerified",
     "parsersVerified",
+    "nativeToolVerified",
   ]);
   if (!rpa || !image || !documents || typeof payload.ok !== "boolean") {
     return { ok: false, error: "feature_pack_probe_invalid_response" };
@@ -571,7 +572,7 @@ function runtimeProbeSummary(payload) {
     (documents.state === "not_installed" && documents.failClosed)
     || (documents.state === "installed" && !documents.failClosed
       && documents.available && documents.isolated
-      && documents.moduleOriginsVerified && documents.parsersVerified)
+      && documents.moduleOriginsVerified && documents.parsersVerified && documents.nativeToolVerified)
   );
   const derivedOk = Boolean(rpaOk && imageOk && documentsOk);
   if (payload.ok !== derivedOk) {
@@ -924,6 +925,133 @@ function featurePackApiMatchesEngine(adminPayload, enginePayload) {
   return true;
 }
 
+function featurePackById(payload, key, packId) {
+  const packs = Array.isArray(payload?.[key]) ? payload[key] : [];
+  return packs.find((pack) => String(pack?.id || "") === packId) || null;
+}
+
+async function installDocumentFeaturePack({ headers, ports, timeoutMs }) {
+  const startedAt = Date.now();
+  if (!headers) return { ok: false, error: "internal_secret_missing", durationMs: 0 };
+  const installRequest = await fetchJson(`http://127.0.0.1:${ports.admin}/api/runtime-feature-packs`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ packId: "document_ingestion", locale: "zh-CN" }),
+    timeoutMs: 15_000,
+  });
+  const requestStatus = String(installRequest.payload?.status || "");
+  const sourceStrategy = Array.isArray(installRequest.payload?.sourceStrategy)
+    ? installRequest.payload.sourceStrategy.map((source) => String(source?.id || "")).filter(Boolean)
+    : [];
+  if (!installRequest.ok || !["started", "installing"].includes(requestStatus)) {
+    return {
+      ok: false,
+      requestStatus,
+      sourceStrategy,
+      durationMs: Date.now() - startedAt,
+      error: installRequest.ok ? "document_pack_install_not_started" : "document_pack_install_request_failed",
+    };
+  }
+
+  const deadline = startedAt + timeoutMs;
+  let installed = false;
+  let failed = false;
+  let lastEnginePayload = null;
+  while (Date.now() < deadline) {
+    const [engineState, adminState] = await Promise.all([
+      fetchJson(`http://127.0.0.1:${ports.engine}/v1/runtime-feature-packs/status`, {
+        headers,
+        timeoutMs: 3_000,
+      }),
+      fetchJson(`http://127.0.0.1:${ports.admin}/api/runtime-feature-packs?refresh=1`, {
+        headers,
+        timeoutMs: 3_000,
+      }),
+    ]);
+    if (engineState.ok) lastEnginePayload = engineState.payload;
+    const enginePack = featurePackById(engineState.payload, "featurePacks", "document_ingestion");
+    const adminPack = featurePackById(adminState.payload, "packs", "document_ingestion");
+    failed = enginePack?.status === "failed" || adminPack?.status === "failed";
+    installed = Boolean(
+      engineState.ok
+      && adminState.ok
+      && enginePack?.status === "installed"
+      && enginePack?.installed === true
+      && adminPack?.status === "installed"
+      && adminPack?.installed === true
+    );
+    if (installed || failed) break;
+    await sleep(1_000);
+  }
+  if (!installed) {
+    return {
+      ok: false,
+      requestStatus,
+      sourceStrategy,
+      durationMs: Date.now() - startedAt,
+      error: failed ? "document_pack_install_failed" : "document_pack_install_timeout",
+    };
+  }
+
+  const restart = await runPackagedCli(
+    shellExe,
+    resourceRoot,
+    ["restart", "--only", "engine", "--json"],
+    runtimeEnvironment,
+    60_000,
+  );
+  if (!restart.ok) {
+    return {
+      ok: false,
+      requestStatus,
+      sourceStrategy,
+      installed: true,
+      engineRestarted: false,
+      durationMs: Date.now() - startedAt,
+      error: "document_pack_engine_restart_failed",
+    };
+  }
+  const engineReady = await waitForReadiness(
+    "engine",
+    `http://127.0.0.1:${ports.engine}/readyz`,
+    Math.min(60_000, timeoutMs),
+  );
+  if (!engineReady.ok) {
+    return {
+      ok: false,
+      requestStatus,
+      sourceStrategy,
+      installed: true,
+      engineRestarted: true,
+      durationMs: Date.now() - startedAt,
+      error: "document_pack_engine_not_ready",
+    };
+  }
+
+  const finalEngineState = await fetchJson(
+    `http://127.0.0.1:${ports.engine}/v1/runtime-feature-packs/status`,
+    { headers, timeoutMs: 3_000 },
+  );
+  const finalPack = featurePackById(finalEngineState.payload, "featurePacks", "document_ingestion");
+  const finalStateValid = Boolean(
+    finalEngineState.ok
+    && finalPack?.status === "installed"
+    && finalPack?.installed === true
+    && finalPack?.restartRequired === false
+  );
+  return {
+    ok: finalStateValid,
+    requestStatus,
+    sourceStrategy,
+    installed: true,
+    engineRestarted: true,
+    restartRequired: finalPack?.restartRequired ?? null,
+    durationMs: Date.now() - startedAt,
+    error: finalStateValid ? null : "document_pack_restart_state_invalid",
+    enginePayload: finalStateValid ? finalEngineState.payload : lastEnginePayload,
+  };
+}
+
 function firstFailureStage(checks) {
   const failed = Object.entries(checks).find(([, check]) => !check?.ok && !check?.skipped);
   return failed ? failed[0] : null;
@@ -946,9 +1074,14 @@ const serviceTimeoutMs = positiveIntegerArg("--timeout-ms", 90_000);
 const startupBudgetMs = positiveIntegerArg("--startup-budget-ms", 90_000);
 const stabilityWindowMs = positiveIntegerArg("--stability-window-ms", 15_000);
 const featurePackSmokeEnabled = booleanArg("--feature-pack-smoke", true);
+const installDocumentPack = booleanArg("--install-document-pack", false);
 const occupyDefaultWebPort = booleanArg("--occupy-default-web-port", false);
 const featurePackProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--feature-pack-probe-timeout-ms", 30_000));
 const commandProbeTimeoutMs = Math.min(120_000, positiveIntegerArg("--command-probe-timeout-ms", 45_000));
+const documentPackInstallTimeoutMs = Math.min(
+  15 * 60_000,
+  positiveIntegerArg("--document-pack-install-timeout-ms", 8 * 60_000),
+);
 const stateRoot = path.resolve(
   process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os"),
 );
@@ -1249,10 +1382,21 @@ const featurePackApi = {
         ? "feature_pack_truth_mismatch"
         : null,
 };
+const rawDocumentPackInstall = installDocumentPack
+  ? await installDocumentFeaturePack({
+    headers,
+    ports: runtimePorts,
+    timeoutMs: documentPackInstallTimeoutMs,
+  })
+  : { ok: true, skipped: true, error: "document_pack_install_skipped" };
+const { enginePayload: installedDocumentPackEnginePayload, ...documentPackInstall } = rawDocumentPackInstall;
+const effectiveFeaturePackEnginePayload = installDocumentPack
+  ? installedDocumentPackEnginePayload
+  : rawFeaturePackEngineStatus.payload;
 const featurePackRuntime = !featurePackSmokeEnabled
   ? { ok: true, skipped: true, error: "feature_pack_probe_skipped" }
-  : featurePackEngineStatus.ok
-    ? await runFeaturePackRuntimeProbe(resourceRoot, rawFeaturePackEngineStatus.payload, featurePackProbeTimeoutMs)
+  : (installDocumentPack ? documentPackInstall.ok : featurePackEngineStatus.ok)
+    ? await runFeaturePackRuntimeProbe(resourceRoot, effectiveFeaturePackEnginePayload, featurePackProbeTimeoutMs)
     : { ok: false, error: "feature_pack_engine_status_unavailable" };
 const commandRuntime = packagedRuntimeLayout.ok
   ? await runCommandRuntimeProbe(resourceRoot, commandProbeTimeoutMs)
@@ -1339,6 +1483,7 @@ const checks = {
   featurePackEngineStatus,
   featurePackRuntime,
   featurePackApi,
+  documentPackInstall,
   commandRuntime,
   packagedCleanup,
 };

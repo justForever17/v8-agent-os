@@ -556,7 +556,7 @@ jobs:
       - name: Installed Windows desktop smoke
         if: matrix.os == 'windows'
         shell: pwsh
-        timeout-minutes: 8
+        timeout-minutes: 18
         env:
           V8_AGENT_OS_HOME: ${{ runner.temp }}/v8os-windows-smoke-${{ matrix.arch }}
           V8OS_WINDOWS_INSTALL_DIR: ${{ runner.temp }}/v8os-windows-install-${{ matrix.arch }}
@@ -611,7 +611,11 @@ jobs:
             $env:PYTHONPATH = $previousPythonPath
             Remove-Item -LiteralPath $credentialProbe -Force -ErrorAction SilentlyContinue
           }
-          node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs --shell-exe "$($shellExe.FullName)"
+          $smokeArgs = @("--shell-exe", $shellExe.FullName)
+          if ("${{ matrix.arch }}" -eq "x64") {
+            $smokeArgs += @("--install-document-pack", "true")
+          }
+          node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs @smokeArgs
 
       - name: Print Windows desktop smoke service logs
         if: failure() && matrix.os == 'windows'

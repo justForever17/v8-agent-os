@@ -1,4 +1,5 @@
 import type { RuntimeArtifact } from '@/lib/artifacts';
+import type { SessionToolResultStatus } from '@v8/session-realtime';
 
 // --- Base Node ---
 export interface UiTimelineNodeBase {
@@ -47,6 +48,8 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
     args?: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result?: any;
+    resultStatus?: SessionToolResultStatus;
+    resultReasonCode?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     agentVisibleResult?: any;
     agentVisibleChars?: number;

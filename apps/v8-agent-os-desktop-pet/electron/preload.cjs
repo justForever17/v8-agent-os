@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('v8CyberCore', {
   shutdownReady: (requestId) => ipcRenderer.invoke('v8-desktop:shutdown-ready', requestId),
   setAlwaysOnTop: (enabled) => ipcRenderer.invoke('v8-desktop:set-always-on-top', Boolean(enabled)),
   setClickThrough: (enabled) => ipcRenderer.invoke('v8-desktop:set-click-through', Boolean(enabled)),
+  setInteractionRegions: (regions) => ipcRenderer.send('v8-desktop:set-interaction-regions', regions),
   setPanelOpen: (enabled) => ipcRenderer.invoke('v8-desktop:set-panel-open', Boolean(enabled)),
   setCompanionScale: (scale) => ipcRenderer.invoke('v8-desktop:set-companion-scale', Number(scale) || 0.7),
   moveWindowBy: (dx, dy) => ipcRenderer.invoke('v8-desktop:move-window-by', Number(dx) || 0, Number(dy) || 0),

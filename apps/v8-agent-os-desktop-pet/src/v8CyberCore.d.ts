@@ -19,6 +19,7 @@ declare global {
       setAlwaysOnTop?: (enabled: boolean) => Promise<boolean>;
       setPanelOpen?: (enabled: boolean) => Promise<unknown>;
       setClickThrough?: (enabled: boolean) => Promise<boolean>;
+      setInteractionRegions?: (regions: Array<{ x: number; y: number; width: number; height: number }>) => void;
       setCompanionScale?: (scale: number) => Promise<boolean | { width: number; height: number }>;
       moveWindowBy?: (dx: number, dy: number) => Promise<boolean>;
       readLocalConfig?: (key: string) => Promise<Record<string, unknown> | null>;

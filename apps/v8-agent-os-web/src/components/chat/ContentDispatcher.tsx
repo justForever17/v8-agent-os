@@ -312,6 +312,18 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     ?? node.data?.agent_visible_result
                     ?? resultExecNode?.result
                     ?? node.result;
+                const resultStatus = resultExecNode?.resultStatus
+                    ?? node.resultStatus
+                    ?? resultExecNode?.data?.resultStatus
+                    ?? resultExecNode?.data?.result_status
+                    ?? node.data?.resultStatus
+                    ?? node.data?.result_status;
+                const resultReasonCode = resultExecNode?.resultReasonCode
+                    ?? node.resultReasonCode
+                    ?? resultExecNode?.data?.resultReasonCode
+                    ?? resultExecNode?.data?.result_reason_code
+                    ?? node.data?.resultReasonCode
+                    ?? node.data?.result_reason_code;
                 
                 const toolInvocation: ToolInvocation = {
                     toolCallId: node.toolCallId || '',
@@ -319,7 +331,13 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     args: node.args || {},
                     state: isFinished ? 'result' : 'call',
                     result: compactToolResult(toolName, result),
-                    clientSurface: buildClientToolSurface({ toolName, result, state: isFinished ? 'result' : 'call' })
+                    clientSurface: buildClientToolSurface({
+                        toolName,
+                        result,
+                        state: isFinished ? 'result' : 'call',
+                        resultStatus: typeof resultStatus === 'string' ? resultStatus : undefined,
+                        resultReasonCode: typeof resultReasonCode === 'string' ? resultReasonCode : undefined,
+                    })
                 };
                 const matchedProcess = toolInvocation.toolCallId
                     ? processes.find((process) => process.toolCallId === toolInvocation.toolCallId)

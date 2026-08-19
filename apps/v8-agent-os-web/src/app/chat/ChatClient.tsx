@@ -18,7 +18,9 @@ import {
     deriveComposerRunActivity,
     deriveInterruptibleRunId,
     isRecognizedRunStatus,
+    isTerminalRunStatus,
     runStatusAllowsInterrupt,
+    shouldApplyRunScopedStatus,
     terminalRunStatusFromTopic,
 } from "@/lib/chat/run-activity";
 import {
@@ -1306,9 +1308,14 @@ export default function ChatClient() {
         };
     }, []);
 
+    const settleTerminalStreamRef = useRef<(runId?: string | null) => boolean>(() => false);
+    const isRunAcceptancePendingRef = useRef<() => boolean>(() => false);
     const loadRuns = useCallback(async (conversationId: string) => {
         try {
-            const res = await fetch(`/api/runs?session_id=${encodeURIComponent(conversationId)}&limit=8`, { cache: "no-store" });
+            const res = await fetch(`/api/runs?session_id=${encodeURIComponent(conversationId)}&limit=8`, {
+                cache: "no-store",
+                signal: AbortSignal.timeout(8_000),
+            });
             if (!res.ok) {
                 setRunEntries([]);
                 return;
@@ -1318,7 +1325,11 @@ export default function ChatClient() {
             setRunEntries(runs);
             const latestRun = runs[0];
             const latestStatus = String(latestRun?.status || "").trim().toLowerCase();
-            if (latestRun?.id && isRecognizedRunStatus(latestStatus)) {
+            if (
+                latestRun?.id
+                && isRecognizedRunStatus(latestStatus)
+                && !isRunAcceptancePendingRef.current()
+            ) {
                 setSessionProjection((current) => current ? {
                     ...current,
                     runtimeStatus: latestStatus,
@@ -1334,6 +1345,13 @@ export default function ChatClient() {
                     },
                 } : current);
                 patchConversationSummary(conversationId, { status: latestStatus });
+                if (isTerminalRunStatus(latestStatus)) {
+                    const settled = settleTerminalStreamRef.current(latestRun.id);
+                    if (settled) {
+                        streamingConversationIdRef.current = null;
+                        streamingTransportRef.current = null;
+                    }
+                }
             }
         } catch (error) {
             console.warn("[ChatClient] Failed to load runs:", error);
@@ -1353,6 +1371,8 @@ export default function ChatClient() {
         resolveApproval,
         dispatchRunCommand,
         submittedRunId,
+        isRunAcceptancePending,
+        getSubmittedRunId,
     } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         submitEndpoint: `/api/chat-submit`,
@@ -1429,6 +1449,8 @@ export default function ChatClient() {
             }
         }
     });
+    settleTerminalStreamRef.current = settleTerminalStream;
+    isRunAcceptancePendingRef.current = isRunAcceptancePending;
 
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const isLoadingRef = useRef(isLoading);
@@ -1626,10 +1648,13 @@ export default function ChatClient() {
                     } : current);
                     if (conversationId) patchConversationSummary(conversationId, { status: "interrupted" });
                 }
-                if (conversationId) void loadRuns(conversationId);
             })
             .catch((error) => {
                 console.warn("[ChatClient] Failed to interrupt active run:", error);
+            })
+            .finally(() => {
+                const conversationId = activeConversationIdRef.current;
+                if (conversationId) void loadRuns(conversationId);
             });
     }, [dispatchRunCommand, interruptibleRunId, loadRuns, patchConversationSummary, settleTerminalStream]);
     const effectiveStatus = hasAskUserPending
@@ -3084,27 +3109,35 @@ export default function ChatClient() {
         if (terminalRunStatus) {
             const terminalRunId = readString((normalizedEvent as Record<string, unknown>).run_id)
                 || readString((normalizedEvent as Record<string, unknown>).runId);
-            if (isLocalStreamActive(conversationId)) {
+            const currentRunId = getSubmittedRunId() || localSubmittedRunId || projectionRunId;
+            const terminalTargetsCurrentRun = shouldApplyRunScopedStatus(
+                terminalRunId,
+                currentRunId,
+                isRunAcceptancePending(),
+            );
+            if (terminalTargetsCurrentRun && isLocalStreamActive(conversationId)) {
                 const settled = settleTerminalStream(terminalRunId);
                 if (settled) {
                     streamingConversationIdRef.current = null;
                     streamingTransportRef.current = null;
                 }
             }
-            setSessionProjection((current) => current ? {
-                ...current,
-                runtimeStatus: terminalRunStatus,
-                currentRun: current.currentRun ? {
-                    ...current.currentRun,
-                    status: terminalRunStatus,
-                } : current.currentRun,
-                controls: current.controls ? {
-                    ...current.controls,
-                    canInterrupt: false,
-                    workflowStatus: terminalRunStatus,
-                } : current.controls,
-            } : current);
-            patchConversationSummary(conversationId, { status: terminalRunStatus });
+            if (terminalTargetsCurrentRun) {
+                setSessionProjection((current) => current ? {
+                    ...current,
+                    runtimeStatus: terminalRunStatus,
+                    currentRun: current.currentRun ? {
+                        ...current.currentRun,
+                        status: terminalRunStatus,
+                    } : current.currentRun,
+                    controls: current.controls ? {
+                        ...current.controls,
+                        canInterrupt: false,
+                        workflowStatus: terminalRunStatus,
+                    } : current.controls,
+                } : current);
+                patchConversationSummary(conversationId, { status: terminalRunStatus });
+            }
         }
         const isHumanGuidanceEvent =
             normalizedEvent.name === "human_guidance"
@@ -3286,7 +3319,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, isLocalNdjsonStreamActive, isLocalStreamActive, loadRuns, patchConversationSummary, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadRuns, localSubmittedRunId, patchConversationSummary, projectionRunId, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;

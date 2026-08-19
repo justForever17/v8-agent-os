@@ -186,9 +186,10 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
 
             observed: dict[str, object] = {}
 
-            def exercise(modules):
+            def exercise(modules, *, native_reader=None):
                 observed["modules"] = tuple(modules)
-                return True
+                observed["nativeReader"] = native_reader
+                return True, True
 
             result, ok = module._probe_documents(
                 {
@@ -199,6 +200,7 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
                 },
                 import_module=lambda name: FakeModule(name),
                 exercise_parsers=exercise,
+                native_reader=lambda _path: "verified",
                 isolated_runtime=True,
             )
 
@@ -207,7 +209,78 @@ class FeaturePackRuntimeProbeTest(unittest.TestCase):
         self.assertTrue(result["isolated"])
         self.assertTrue(result["moduleOriginsVerified"])
         self.assertTrue(result["parsersVerified"])
+        self.assertTrue(result["nativeToolVerified"])
         self.assertEqual(observed["modules"], module.DOCUMENT_MODULE_NAMES)
+        self.assertIsNotNone(observed["nativeReader"])
+
+    def test_installed_document_probe_accepts_dependency_from_isolated_runtime(self) -> None:
+        module = load_probe_module()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "feature-pack" / "python"
+            runtime = root / "embedded-python"
+            target.mkdir(parents=True)
+            runtime.mkdir()
+
+            class FakeModule:
+                def __init__(self, origin: Path):
+                    self.__file__ = str(origin / "module.py")
+
+            def import_module(name: str):
+                origin = runtime if name == "tabulate" else target
+                return FakeModule(origin)
+
+            result, ok = module._probe_documents(
+                {
+                    "status": "installed",
+                    "installed": True,
+                    "restartRequired": False,
+                    "targetDir": str(target),
+                },
+                import_module=import_module,
+                exercise_parsers=lambda _modules, native_reader=None: (True, True),
+                isolated_runtime=True,
+                trusted_runtime_roots=(runtime,),
+            )
+
+        self.assertTrue(ok)
+        self.assertTrue(result["moduleOriginsVerified"])
+
+    def test_installed_document_probe_rejects_dependency_outside_governed_roots(self) -> None:
+        module = load_probe_module()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "feature-pack" / "python"
+            runtime = root / "embedded-python"
+            external = root / "external-site"
+            target.mkdir(parents=True)
+            runtime.mkdir()
+            external.mkdir()
+
+            class FakeModule:
+                def __init__(self, origin: Path):
+                    self.__file__ = str(origin / "module.py")
+
+            def import_module(name: str):
+                return FakeModule(external if name == "tabulate" else target)
+
+            result, ok = module._probe_documents(
+                {
+                    "status": "installed",
+                    "installed": True,
+                    "restartRequired": False,
+                    "targetDir": str(target),
+                },
+                import_module=import_module,
+                exercise_parsers=lambda _modules, native_reader=None: (True, True),
+                isolated_runtime=True,
+                trusted_runtime_roots=(runtime,),
+            )
+
+        self.assertFalse(ok)
+        self.assertFalse(result["moduleOriginsVerified"])
 
 
 if __name__ == "__main__":

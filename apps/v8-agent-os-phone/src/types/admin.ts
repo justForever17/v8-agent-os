@@ -6,6 +6,7 @@ import type {
     ComposerPresentation,
     PluginReferenceSummary,
     SessionHistoryControls,
+    SessionToolResultStatus,
 } from "@v8/session-realtime";
 
 export type {
@@ -295,6 +296,8 @@ export type PhoneUiExecutionNode = PhoneUiTimelineNodeBase & {
     toolName?: string;
     args?: unknown;
     result?: unknown;
+    resultStatus?: SessionToolResultStatus;
+    resultReasonCode?: string;
     agentVisibleResult?: unknown;
     agentVisibleChars?: number;
     mcpApp?: {

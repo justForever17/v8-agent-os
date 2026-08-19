@@ -492,6 +492,41 @@ export default function CyberPet({
     };
   }, [isDragging, handlePopOut]);
 
+  useEffect(() => {
+    const reportRegions = window.v8CyberCore?.setInteractionRegions;
+    if (window.v8CyberCore?.platform !== 'win32' || !reportRegions) return;
+
+    let animationFrameId = 0;
+    let lastSampleAt = 0;
+    let lastFingerprint = '';
+    const sample = (timestamp: number) => {
+      if (timestamp - lastSampleAt >= 50) {
+        lastSampleAt = timestamp;
+        const nodes = [
+          petRef.current,
+          ...Array.from(document.querySelectorAll<HTMLElement>('[data-menu-panel="true"][data-motion-state="open"]')),
+        ].filter((node): node is HTMLElement => Boolean(node));
+        const regions = nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        });
+        const fingerprint = JSON.stringify(regions.map((region) => [
+          Math.round(region.x),
+          Math.round(region.y),
+          Math.round(region.width),
+          Math.round(region.height),
+        ]));
+        if (regions.length > 0 && fingerprint !== lastFingerprint) {
+          lastFingerprint = fingerprint;
+          reportRegions(regions);
+        }
+      }
+      animationFrameId = requestAnimationFrame(sample);
+    };
+    animationFrameId = requestAnimationFrame(sample);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, []);
+
   // Close menu when the window loses focus (blur)
   useEffect(() => {
     const handleWindowBlur = () => {

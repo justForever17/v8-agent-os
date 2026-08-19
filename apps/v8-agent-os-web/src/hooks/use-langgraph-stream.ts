@@ -115,6 +115,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
     const [submittedRunId, setSubmittedRunId] = useState<string | null>(null);
     const abortControllerRef = useRef<AbortableTransport | null>(null);
     const submittedRunIdRef = useRef<string | null>(null);
+    const durableSubmitPendingRef = useRef(false);
     const pendingMessagesRef = useRef<Message[] | null>(null);
     const commitFrameRef = useRef<number | null>(null);
     const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -520,6 +521,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
                     ...(requestBody.data || {}),
                     clientMessageId: tempUserMsg.id,
                 };
+                durableSubmitPendingRef.current = true;
                 const payload = await submitDurableRun(requestBody);
                 const conversationId = String(
                     payload?.conversationId
@@ -529,6 +531,12 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
                 ).trim();
                 const runId = String(payload?.runId || payload?.run_id || '').trim();
                 const queued = payload?.queued === true;
+                if (!queued && !runId) {
+                    throw new Error('Engine accepted the chat run without returning a run id.');
+                }
+                submittedRunIdRef.current = queued ? null : runId;
+                setSubmittedRunId(queued ? null : runId);
+                durableSubmitPendingRef.current = false;
                 if (conversationId && handlersRef.current.onConnect) {
                     handlersRef.current.onConnect(conversationId, 'submit');
                 }
@@ -536,9 +544,6 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
                     await tryResyncConversation(conversationId || data?.conversationId, 'queued submit');
                     setIsLoading(false);
                     if (handlersRef.current.onFinish) handlersRef.current.onFinish(messagesRef.current);
-                } else {
-                    submittedRunIdRef.current = runId || null;
-                    setSubmittedRunId(runId || null);
                 }
                 return true;
             }
@@ -548,6 +553,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             return true;
 
         } catch (error) {
+            durableSubmitPendingRef.current = false;
             console.error("Stream failed:", error);
             const recovered = await tryResyncConversation(data?.conversationId, "HTTP stream");
             if (!recovered && handlersRef.current.onError) handlersRef.current.onError(error as Error);
@@ -570,6 +576,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             abortControllerRef.current = null;
         }
         submittedRunIdRef.current = null;
+        durableSubmitPendingRef.current = false;
         setSubmittedRunId(null);
         flushPendingMessages();
         setIsLoading(false);
@@ -582,6 +589,9 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         // run event. We deliberately leave the transport alive long enough to
         // accept any already-buffered final message nodes.
         const normalizedRunId = String(runId || '').trim();
+        if (durableSubmitPendingRef.current) {
+            return false;
+        }
         if (
             submittedRunIdRef.current
             && normalizedRunId
@@ -596,6 +606,9 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         if (handlersRef.current.onFinish) handlersRef.current.onFinish(messagesRef.current);
         return true;
     }, [flushPendingMessages, setIsLoading]);
+
+    const isRunAcceptancePending = useCallback(() => durableSubmitPendingRef.current, []);
+    const getSubmittedRunId = useCallback(() => submittedRunIdRef.current, []);
 
     const sendToolOutput = useCallback(async (toolCallId: string, output: string, data?: any) => {
         setIsLoading(true);
@@ -657,6 +670,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ reason }),
+            signal: AbortSignal.timeout(10_000),
         });
 
         if (!response.ok) {
@@ -678,5 +692,7 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         resolveApproval,
         dispatchRunCommand,
         submittedRunId,
+        isRunAcceptancePending,
+        getSubmittedRunId,
     };
 }

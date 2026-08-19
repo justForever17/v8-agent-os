@@ -3,12 +3,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const ts = require("typescript");
-const { evaluateSessionRuntimeEvent, isActiveCommandSessionStatus } = require("@v8/session-realtime");
+const { buildClientToolSurface, evaluateSessionRuntimeEvent, isActiveCommandSessionStatus } = require("@v8/session-realtime");
 
 const root = path.resolve(__dirname, "..");
 const sourcePath = path.join(root, "src", "lib", "chat", "run-activity.ts");
 const chatClientSource = fs.readFileSync(path.join(root, "src", "app", "chat", "ChatClient.tsx"), "utf8");
 const streamHookSource = fs.readFileSync(path.join(root, "src", "hooks", "use-langgraph-stream.ts"), "utf8");
+const runtimeStageSource = fs.readFileSync(path.join(root, "src", "lib", "runtime-stage.ts"), "utf8");
+const contentDispatcherSource = fs.readFileSync(path.join(root, "src", "components", "chat", "ContentDispatcher.tsx"), "utf8");
+const toolCardSource = fs.readFileSync(path.join(root, "src", "components", "chat", "ToolCard.tsx"), "utf8");
 const commandSurfaceSources = [chatClientSource, ...[
   "InteractiveTerminalCard.tsx",
   "ManualTerminalPanel.tsx",
@@ -32,8 +35,11 @@ const { BoundedRuntimeEventIdentityLedger } = identityLedgerModule.exports;
 const {
   deriveComposerRunActivity,
   deriveInterruptibleRunId,
+  isActiveRunStatus,
   isRecognizedRunStatus,
+  isTerminalRunStatus,
   runStatusAllowsInterrupt,
+  shouldApplyRunScopedStatus,
   terminalRunStatusFromTopic,
 } = testModule.exports;
 
@@ -50,6 +56,19 @@ test("authoritative terminal runtime status clears a stale running sidebar summa
   }), false);
 });
 
+test("Web tool cards render authoritative non-success statuses instead of treating every result as completed", () => {
+  assert.equal(buildClientToolSurface({
+    toolName: "run_system_command",
+    state: "result",
+    result: "$ pip install python-docx",
+    resultStatus: "waiting",
+  }).status, "waiting");
+  assert.match(contentDispatcherSource, /resultStatus:\s*typeof resultStatus === 'string'/);
+  assert.match(toolCardSource, /toolInvocation\.clientSurface\?\.status/);
+  assert.match(toolCardSource, /web\.toolCard\.timedOut/);
+  assert.match(toolCardSource, /web\.toolCard\.terminated/);
+});
+
 test("a stale terminal projection from another run cannot settle the submitted run", () => {
   assert.equal(deriveComposerRunActivity({
     localStreamActive: true,
@@ -57,6 +76,15 @@ test("a stale terminal projection from another run cannot settle the submitted r
     runtimeStatus: "completed",
     runtimeRunId: "run-previous",
   }), true);
+});
+
+test("Web rejects a delayed terminal event from a previous run", () => {
+  assert.equal(shouldApplyRunScopedStatus("run-previous", "run-current"), false);
+  assert.equal(shouldApplyRunScopedStatus("run-current", "run-current"), true);
+  assert.equal(shouldApplyRunScopedStatus("run-previous", "", true), false);
+  assert.match(chatClientSource, /isRunAcceptancePending\(\)/);
+  assert.match(chatClientSource, /getSubmittedRunId\(\) \|\| localSubmittedRunId \|\| projectionRunId/);
+  assert.match(chatClientSource, /if \(terminalTargetsCurrentRun\) \{[\s\S]*?patchConversationSummary\(conversationId, \{ status: terminalRunStatus \}\)/);
 });
 
 test("external active run keeps the composer busy without a local HTTP stream", () => {
@@ -87,6 +115,13 @@ test("terminal realtime events settle the matching durable run without aborting 
   const implementation = streamHookSource.match(/const settleTerminalStream = useCallback\(\(runId\?: string \| null\) => \{([\s\S]*?)\}, \[flushPendingMessages, setIsLoading\]\);/)?.[1] || "";
   assert.doesNotMatch(implementation, /\.abort\(/);
   assert.match(implementation, /submittedRunIdRef\.current !== normalizedRunId/);
+  assert.match(implementation, /durableSubmitPendingRef\.current/);
+});
+
+test("Web keeps a new durable submission busy until its run identity is accepted", () => {
+  assert.match(streamHookSource, /durableSubmitPendingRef\.current = true;[\s\S]*?await submitDurableRun/);
+  assert.match(streamHookSource, /submittedRunIdRef\.current = queued \? null : runId;[\s\S]*?durableSubmitPendingRef\.current = false/);
+  assert.match(chatClientSource, /!isRunAcceptancePendingRef\.current\(\)/);
 });
 
 test("only runtime statuses that Engine can interrupt expose a stop affordance", () => {
@@ -95,6 +130,14 @@ test("only runtime statuses that Engine can interrupt expose a stop affordance",
   assert.equal(runStatusAllowsInterrupt("completed"), false);
   assert.equal(isRecognizedRunStatus("completed"), true);
   assert.equal(isRecognizedRunStatus("mystery"), false);
+});
+
+test("all Web busy surfaces consume the shared terminal vocabulary", () => {
+  assert.equal(isActiveRunStatus("waiting_approval"), true);
+  assert.equal(isActiveRunStatus("interrupted"), false);
+  assert.equal(isTerminalRunStatus("recoverable_failed"), true);
+  assert.equal(isTerminalRunStatus("degraded"), true);
+  assert.match(runtimeStageSource, /const isBusy = isActiveRunStatus\(runtimeStatus\)/);
 });
 
 test("Web command surfaces share the complete command terminal vocabulary", () => {
@@ -126,6 +169,9 @@ test("an external active run exposes the same stop target before compact control
 
 test("Web reconciles remote runs and hydrates history when an initial snapshot has no messages", () => {
   assert.match(chatClientSource, /patchConversationSummary\(conversationId, \{ status: latestStatus \}\)/);
+  assert.match(chatClientSource, /isTerminalRunStatus\(latestStatus\)[\s\S]*?settleTerminalStreamRef\.current\(latestRun\.id\)/);
+  assert.match(chatClientSource, /\.finally\(\(\) => \{[\s\S]*?void loadRuns\(conversationId\)/);
+  assert.match(streamHookSource, /dispatchRunCommand[\s\S]*?signal: AbortSignal\.timeout\(10_000\)/);
   assert.match(chatClientSource, /canStopRun=\{canInterruptProjectedRun\}/);
   assert.match(chatClientSource, /deriveInterruptibleRunId\(\{/);
   assert.match(chatClientSource, /snapshotHistoryFallbackRequested/);
@@ -135,7 +181,7 @@ test("Web reconciles remote runs and hydrates history when an initial snapshot h
 test("Web starts chat work through the durable submit route and consumes progress from realtime", () => {
   assert.match(chatClientSource, /submitEndpoint: `\/api\/chat-submit`/);
   assert.match(streamHookSource, /const submitDurableRun = useCallback/);
-  assert.match(streamHookSource, /submittedRunIdRef\.current = runId \|\| null/);
+  assert.match(streamHookSource, /submittedRunIdRef\.current = queued \? null : runId/);
   assert.match(chatClientSource, /isLocalNdjsonStreamActive/);
   assert.match(chatClientSource, /streamingTransportRef\.current === "stream"/);
   assert.match(chatClientSource, /streamingConversationIdRef\.current = submittingConversationId/);

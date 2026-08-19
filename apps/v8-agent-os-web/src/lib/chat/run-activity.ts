@@ -1,14 +1,20 @@
 import {
     deriveAuthoritativeRunActivity,
+    isActiveRunStatus,
     isRecognizedRunStatus,
     normalizeRunStatus,
     runStatusAllowsInterrupt,
+    shouldApplyRunScopedStatus,
+    isTerminalRunStatus,
     terminalRunStatusFromTopic,
 } from "@v8/session-realtime/run-status";
 
 export {
+    isActiveRunStatus,
     isRecognizedRunStatus,
+    isTerminalRunStatus,
     runStatusAllowsInterrupt,
+    shouldApplyRunScopedStatus,
     terminalRunStatusFromTopic,
 };
 

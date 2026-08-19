@@ -7,6 +7,7 @@ import type {
   SessionRuntimeVisibility,
   V8ActionRequestRef,
 } from "./contract.js";
+import { normalizeSessionToolResultStatus } from "./contract.js";
 import { findRuntimeEventTaxonomyEntry } from "./event-taxonomy.js";
 import { getRuntimeRegistryEntry, normalizeRuntimeId } from "./runtime-registry.js";
 
@@ -971,6 +972,19 @@ function extractToolPayload(payload: JsonRecord) {
   );
   const args = payload.args ?? payload.request ?? nestedTool.args ?? nestedTool.request;
   const result = payload.result ?? payload.response ?? payload.result_preview ?? nestedTool.result ?? nestedTool.response ?? nestedTool.result_preview;
+  const resultStatus = normalizeSessionToolResultStatus(pickFirstString(
+    payload.resultStatus,
+    payload.result_status,
+    nestedTool.resultStatus,
+    nestedTool.result_status,
+    nestedTool.status,
+  ));
+  const resultReasonCode = pickFirstString(
+    payload.resultReasonCode,
+    payload.result_reason_code,
+    nestedTool.resultReasonCode,
+    nestedTool.result_reason_code,
+  );
   const agentVisibleResult = payload.agentVisibleResult
     ?? payload.agent_visible_result
     ?? payload.agentVisibleOutput
@@ -999,6 +1013,8 @@ function extractToolPayload(payload: JsonRecord) {
     toolName: toolName || undefined,
     args,
     result,
+    resultStatus,
+    resultReasonCode: resultReasonCode || undefined,
     agentVisibleResult,
     agentVisibleChars,
     mcpApp: payloadMcpApp,

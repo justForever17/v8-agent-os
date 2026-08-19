@@ -1594,14 +1594,24 @@ async function detectPythonLockEnvironment(pythonExe: string): Promise<Pick<Feat
 }
 
 function assetSmokeScript(kind: "onnx" | "mediapipe_task") {
+    const stagingOriginGuard = [
+        "def is_from_staging(root,item):",
+        " try:",
+        "  normalized_root=os.path.normcase(os.path.realpath(root))",
+        "  normalized_item=os.path.normcase(os.path.realpath(item))",
+        "  return os.path.commonpath([normalized_root,normalized_item]) == normalized_root",
+        " except ValueError:",
+        "  return False",
+    ];
     if (kind === "onnx") {
         return [
             "import json,os,sys",
             "root=os.path.realpath(sys.argv[1])",
             "sys.path.insert(0,root)",
+            ...stagingOriginGuard,
             "import onnxruntime as ort",
             "origin=os.path.realpath(getattr(ort,'__file__',''))",
-            "assert origin and os.path.commonpath([root,origin]) == root, 'module_not_loaded_from_staging:onnxruntime'",
+            "assert origin and is_from_staging(root,origin), 'module_not_loaded_from_staging:onnxruntime'",
             "providers=ort.get_available_providers()",
             "gpu=[p for p in providers if p not in ('CPUExecutionProvider','AzureExecutionProvider')]",
             "selected=(gpu[0] if sys.argv[3]=='GPU' and gpu else 'CPUExecutionProvider')",
@@ -1609,15 +1619,16 @@ function assetSmokeScript(kind: "onnx" | "mediapipe_task") {
             "session=ort.InferenceSession(sys.argv[2], providers=ordered)",
             "assert session.get_inputs() and session.get_outputs()",
             "print('__V8_SMOKE__'+json.dumps({'kind':'onnx','availableProviders':providers,'selectedExecutionProvider':selected}))",
-        ].join("; ");
+        ].join("\n");
     }
     return [
         "import json,os,sys",
         "root=os.path.realpath(sys.argv[1])",
         "sys.path.insert(0,root)",
+        ...stagingOriginGuard,
         "import mediapipe as mp",
         "origin=os.path.realpath(getattr(mp,'__file__',''))",
-        "assert origin and os.path.commonpath([root,origin]) == root, 'module_not_loaded_from_staging:mediapipe'",
+        "assert origin and is_from_staging(root,origin), 'module_not_loaded_from_staging:mediapipe'",
         "def open_task(delegate):",
         " options=mp.tasks.vision.HolisticLandmarkerOptions(base_options=mp.tasks.BaseOptions(model_asset_path=sys.argv[2],delegate=delegate),running_mode=mp.tasks.vision.RunningMode.IMAGE)",
         " task=mp.tasks.vision.HolisticLandmarker.create_from_options(options)",
@@ -1680,7 +1691,14 @@ async function runPythonImportSmokeCheck(
     const script = [
         "import importlib,json,os,sys",
         "root=os.path.realpath(sys.argv[1])",
-        "sys.path.append(root)",
+        "sys.path.insert(0,root)",
+        "def is_from_staging(root,item):",
+        " try:",
+        "  normalized_root=os.path.normcase(os.path.realpath(root))",
+        "  normalized_item=os.path.normcase(os.path.realpath(item))",
+        "  return os.path.commonpath([normalized_root,normalized_item]) == normalized_root",
+        " except ValueError:",
+        "  return False",
         "modules=json.loads(sys.argv[2])",
         "loaded={}",
         "for name in modules:",
@@ -1690,7 +1708,7 @@ async function runPythonImportSmokeCheck(
         " if module_file: origins.append(os.path.realpath(module_file))",
         " module_path=getattr(module,'__path__',None)",
         " if module_path: origins.extend(os.path.realpath(item) for item in module_path)",
-        " if not origins or any(os.path.commonpath([root,item]) != root for item in origins): raise RuntimeError('module_not_loaded_from_staging:'+name)",
+        " if not origins or any(not is_from_staging(root,item) for item in origins): raise RuntimeError('module_not_loaded_from_staging:'+name)",
         " loaded[name]=origins",
         "print('__V8_SMOKE__'+json.dumps({'kind':'python_import','modules':list(loaded)}))",
     ].join("\n");

@@ -19,6 +19,7 @@ const os = require('os');
 const { createCanonicalConfigWatcher } = require('../lib/canonical-config-watcher.cjs');
 const { createShellControlClient } = require('../lib/shell-control-client.cjs');
 const { createShellLifecycleWatchdog } = require('../lib/shell-lifecycle-watchdog.cjs');
+const { initialSafeShape, normalizeInteractionRegions } = require('../lib/interaction-region-policy.cjs');
 const {
   STABLE_RENDERER_ENTRY_URL,
   createDevelopmentTransport,
@@ -51,6 +52,9 @@ let lastPetStatus = { state: 'waiting_v8os', activeSessionId: null };
 let shutdownTimer = null;
 let shutdownRequestId = '';
 let gpuRecoveryRelaunchArgs = null;
+let rendererReadyToShow = false;
+let interactionRegionReady = process.platform !== 'win32';
+let interactionRegionTimer = null;
 
 const V8_WEB_URL = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 const MANAGED_BY_SHELL = process.env.V8_DESKTOP_PET_MANAGED_BY_SHELL === '1';
@@ -354,7 +358,8 @@ function sendPrepareShutdown(requestId) {
 function neutralizeDesktopOverlay() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
-    mainWindow.setIgnoreMouseEvents(false);
+    if (process.platform === 'win32') mainWindow.setShape(initialSafeShape(mainWindow.getBounds()));
+    mainWindow.setIgnoreMouseEvents(true, { forward: false });
   } catch {}
   try {
     mainWindow.setAlwaysOnTop(false);
@@ -365,7 +370,7 @@ function neutralizeDesktopOverlay() {
 }
 
 function emergencyHideWindow() {
-  clickThrough = false;
+  clickThrough = true;
   neutralizeDesktopOverlay();
   try {
     mainWindow?.hide();
@@ -627,12 +632,35 @@ async function createMainWindow() {
   }
 }
 
+function maybeShowMainWindow() {
+  if (!rendererReadyToShow || !interactionRegionReady || !mainWindow || mainWindow.isDestroyed() || shuttingDown) return false;
+  if (interactionRegionTimer) clearTimeout(interactionRegionTimer);
+  interactionRegionTimer = null;
+  mainWindow.show();
+  updateTrayMenu();
+  return true;
+}
+
+function armInteractionRegionDeadline() {
+  if (process.platform !== 'win32' || interactionRegionReady || interactionRegionTimer) return;
+  interactionRegionTimer = setTimeout(() => {
+    interactionRegionTimer = null;
+    if (interactionRegionReady || shuttingDown) return;
+    console.error('[CyberCore Desktop] renderer did not publish a bounded Windows interaction region');
+    reportPetStatus('error');
+    emergencyHideWindow();
+    safeShutdown({ source: 'interaction_region_unavailable' });
+  }, 5_000);
+}
+
 async function createMainWindowInternal() {
   const entry = await resolveEntry();
   if (shuttingDown) return;
   const trayIcon = createTrayIcon();
   const primaryDisplay = screen.getPrimaryDisplay();
   const { x, y, width, height } = primaryDisplay.workArea;
+  rendererReadyToShow = false;
+  interactionRegionReady = process.platform !== 'win32';
 
   mainWindow = new BrowserWindow({
     x,
@@ -656,8 +684,14 @@ async function createMainWindowInternal() {
     },
   });
 
-  mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  clickThrough = true;
+  if (process.platform === 'win32') {
+    mainWindow.setShape(initialSafeShape({ width, height }));
+    mainWindow.setIgnoreMouseEvents(false);
+    clickThrough = false;
+  } else {
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+    clickThrough = true;
+  }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     if (errorCode === -3 || shuttingDown) return;
@@ -677,8 +711,8 @@ async function createMainWindowInternal() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
-    updateTrayMenu();
+    rendererReadyToShow = true;
+    if (!maybeShowMainWindow()) armInteractionRegionDeadline();
   });
 
   mainWindow.on('close', (event) => {
@@ -688,6 +722,10 @@ async function createMainWindowInternal() {
   });
 
   mainWindow.on('closed', () => {
+    if (interactionRegionTimer) clearTimeout(interactionRegionTimer);
+    interactionRegionTimer = null;
+    rendererReadyToShow = false;
+    interactionRegionReady = process.platform !== 'win32';
     mainWindow = null;
   });
 
@@ -724,7 +762,7 @@ function updateTrayMenu() {
       { label: '打开 V8OS', click: () => openLocalProduct(V8_WEB_URL, '/chat') },
       { label: '打开桌宠设置', click: requestDesktopPetSettings },
       { type: 'separator' },
-      {
+      ...(process.platform === 'darwin' ? [{
         label: '点击穿透',
         type: 'checkbox',
         checked: clickThrough,
@@ -733,7 +771,7 @@ function updateTrayMenu() {
           mainWindow?.setIgnoreMouseEvents(clickThrough, { forward: true });
           updateTrayMenu();
         },
-      },
+      }] : []),
       { label: '隐藏桌宠', click: emergencyHideWindow },
       { type: 'separator' },
       { label: '关闭桌宠', click: safeShutdown },
@@ -749,6 +787,7 @@ function handleMainWindowStartupFailure(error) {
 }
 
 ipcMain.handle('v8-desktop:set-click-through', (_event, enabled) => {
+  if (process.platform === 'win32') return false;
   clickThrough = Boolean(enabled);
   mainWindow?.setIgnoreMouseEvents(clickThrough, { forward: true });
   updateTrayMenu();
@@ -816,6 +855,27 @@ ipcMain.handle('v8-desktop:shutdown-ready', (_event, requestId) => {
   shellControlClient?.send('shutdown-ready', { requestId: shutdownRequestId, reason: 'renderer_ready' });
   setTimeout(() => finalizeShutdown('renderer_ready'), 40);
   return true;
+});
+
+ipcMain.on('v8-desktop:set-interaction-regions', (event, regions) => {
+  if (
+    process.platform !== 'win32'
+    || !mainWindow
+    || mainWindow.isDestroyed()
+    || event.sender !== mainWindow.webContents
+  ) return;
+  const normalized = normalizeInteractionRegions(regions, mainWindow.getBounds());
+  if (normalized.length < 1) return;
+  try {
+    mainWindow.setShape(normalized);
+    interactionRegionReady = true;
+    maybeShowMainWindow();
+  } catch (error) {
+    console.error('[CyberCore Desktop] failed to apply the bounded Windows interaction region', error);
+    reportPetStatus('error');
+    emergencyHideWindow();
+    safeShutdown({ source: 'interaction_region_apply_failed' });
+  }
 });
 
 ipcMain.handle('v8-desktop:get-media-permission-status', async (_event, kind) => {

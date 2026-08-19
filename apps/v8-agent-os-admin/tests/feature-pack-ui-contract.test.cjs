@@ -446,6 +446,16 @@ test("feature pack child processes receive an explicit non-secret environment an
   assert.match(installerSource, /throw new Error\("feature_pack_not_available"\)/);
 });
 
+test("feature pack smoke loads staging first and treats cross-volume origins as outside", () => {
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+
+  assert.match(installerSource, /sys\.path\.insert\(0,root\)/);
+  assert.match(installerSource, /def is_from_staging\(root,item\):/);
+  assert.match(installerSource, /except ValueError:[\s\S]*?return False/);
+  assert.doesNotMatch(installerSource, /sys\.path\.append\(root\)/);
+  assert.doesNotMatch(installerSource, /os\.path\.commonpath\(\[root,(?:origin|item)\]\)/);
+});
+
 test("runtime navigation keeps beta only on dependency-gated runtimes and places them last", () => {
   const navSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "admin-navigation.ts"), "utf8");
   const runtimeGroup = navSource.slice(navSource.indexOf('id: "runtimes"'), navSource.indexOf('id: "capabilities"'));

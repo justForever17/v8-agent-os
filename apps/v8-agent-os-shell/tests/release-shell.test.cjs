@@ -298,19 +298,34 @@ test('packaged desktop pet reuses the Shell Electron runtime without packaged pe
     petMainSource.indexOf('async function createMainWindowInternal()'),
     petMainSource.indexOf('function resizeForPanel'),
   );
-  const initialClickThroughIndex = createWindowSource.indexOf(
+  const initialWindowsShapeIndex = createWindowSource.indexOf(
+    'mainWindow.setShape(initialSafeShape({ width, height }));',
+  );
+  const initialMacClickThroughIndex = createWindowSource.indexOf(
     'mainWindow.setIgnoreMouseEvents(true, { forward: true });',
   );
   const initiallyHiddenIndex = createWindowSource.indexOf('show: false,');
   assert.ok(initiallyHiddenIndex >= 0);
-  assert.ok(initialClickThroughIndex >= 0);
-  assert.ok(initiallyHiddenIndex < initialClickThroughIndex);
-  assert.ok(initialClickThroughIndex < createWindowSource.indexOf('mainWindow?.show()'));
+  assert.ok(initialWindowsShapeIndex >= 0);
+  assert.ok(initialMacClickThroughIndex >= 0);
+  assert.ok(initiallyHiddenIndex < initialWindowsShapeIndex);
+  assert.ok(initiallyHiddenIndex < initialMacClickThroughIndex);
+  assert.match(petMainSource, /ipcMain\.on\('v8-desktop:set-interaction-regions'/);
+  assert.match(petMainSource, /event\.sender !== mainWindow\.webContents/);
+  assert.match(petMainSource, /renderer did not publish a bounded Windows interaction region/);
+  assert.match(petMainSource, /process\.platform === 'win32'[\s\S]{0,160}return false/);
+  assert.match(petMainSource, /mainWindow\.setIgnoreMouseEvents\(true, \{ forward: false \}\)/);
   const didFinishLoadSource = createWindowSource.slice(
     createWindowSource.indexOf("mainWindow.webContents.on('did-finish-load'"),
     createWindowSource.indexOf("mainWindow.once('ready-to-show'"),
   );
   assert.doesNotMatch(didFinishLoadSource, /\.show\(/);
+  const readyToShowSource = createWindowSource.slice(
+    createWindowSource.indexOf("mainWindow.once('ready-to-show'"),
+    createWindowSource.indexOf("mainWindow.on('close'"),
+  );
+  assert.match(readyToShowSource, /maybeShowMainWindow\(\)/);
+  assert.doesNotMatch(readyToShowSource, /mainWindow\?\.show\(\)/);
 
   const launcher = await import(`${pathToFileURL(path.join(shellRoot, 'scripts', 'electron-launcher.mjs')).href}?test=${Date.now()}`);
   const target = path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'electron', 'main.cjs');
@@ -1452,6 +1467,8 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.match(featurePackProbe, /_exercise_document_parsers/);
   assert.match(featurePackProbe, /moduleOriginsVerified/);
   assert.match(featurePackProbe, /parsersVerified/);
+  assert.match(featurePackProbe, /nativeToolVerified/);
+  assert.match(featurePackProbe, /read_native_file\.func/);
   assert.match(installSmoke, /typeof pack\.installable !== "boolean"/);
   assert.match(installSmoke, /featurePackApiMatchesEngine/);
   assert.match(installSmoke, /adminPack\.status !== enginePack\.status/);

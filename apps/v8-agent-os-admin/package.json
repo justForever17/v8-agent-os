@@ -28,7 +28,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@v8/product-ui": "file:../../packages/product-ui/v8-product-ui-0.0.15.tgz",
-    "@v8/session-realtime": "file:../../packages/session-realtime/v8-session-realtime-0.0.35.tgz",
+    "@v8/session-realtime": "file:../../packages/session-realtime/v8-session-realtime-0.0.37.tgz",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

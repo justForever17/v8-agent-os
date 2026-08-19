@@ -1,4 +1,6 @@
-export type ClientToolSurfaceStatus = "running" | "completed" | "failed" | "blocked" | "waiting" | "unknown";
+import { normalizeSessionToolResultStatus, type SessionToolResultStatus } from "./contract.js";
+
+export type ClientToolSurfaceStatus = SessionToolResultStatus;
 
 export interface ClientToolSurface {
     title: string;
@@ -13,6 +15,8 @@ export interface BuildClientToolSurfaceInput {
     toolName: string;
     state?: "call" | "result" | string;
     result?: unknown;
+    resultStatus?: SessionToolResultStatus | string;
+    resultReasonCode?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -185,10 +189,28 @@ export function extractClientToolRefIds(resultText: string, maxRefs = 4): string
     return Array.from(refs);
 }
 
-function resolveStatus(state: string | undefined, resultText: string, record: Record<string, unknown> | null): ClientToolSurfaceStatus {
+function resolveStatus(
+    state: string | undefined,
+    resultText: string,
+    record: Record<string, unknown> | null,
+    resultStatus?: string,
+): ClientToolSurfaceStatus {
+    const authoritativeStatus = normalizeSessionToolResultStatus(resultStatus);
+    if (authoritativeStatus && authoritativeStatus !== "unknown") {
+        return authoritativeStatus;
+    }
     const normalizedState = String(state || "").toLowerCase();
     const statusText = String(record?.status || record?.state || "").toLowerCase();
     const combined = `${statusText}\n${resultText.slice(0, 2000)}`.toLowerCase();
+    if (/(timed_out|timeout|deadline_exceeded|超时)/.test(combined)) {
+        return "timed_out";
+    }
+    if (/(terminated|cancelled|canceled|interrupted|stopped|已终止|已取消)/.test(combined)) {
+        return "terminated";
+    }
+    if (/(command_session_required|command_session_redirect)/.test(combined)) {
+        return "waiting";
+    }
     if (/(unsafe_unobserved|blocked|safety_blocked|拒绝|阻断)/.test(combined)) {
         return "blocked";
     }
@@ -216,7 +238,7 @@ export function buildClientToolSurface(input: BuildClientToolSurfaceInput): Clie
     const record = asRecord(input.result);
     return {
         title: toolName,
-        status: resolveStatus(input.state, resultText, record),
+        status: resolveStatus(input.state, resultText, record, input.resultStatus),
         summary: extractSummary(input.result),
         progress: extractProgress(record),
         actionable: extractActionable(resultText, record),

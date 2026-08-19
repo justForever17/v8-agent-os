@@ -1,9 +1,10 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useMemo } from "react";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
-import { Activity, Loader2 } from "lucide-react";
+import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useAdminJsonResource } from "@/lib/use-admin-json-resource";
 import { formatLocalDateTime } from "@/lib/time";
@@ -215,7 +216,7 @@ export default function DashboardPage() {
     const [debugMode] = useDebugMode();
     const statsResource = useAdminJsonResource<unknown>(
         `/api/stats?days=${DASHBOARD_WINDOW_DAYS}`,
-        { ttlMs: 10_000 },
+        { ttlMs: 10_000, timeoutMs: 12_000 },
     );
     const normalized = useMemo(
         () => statsResource.data === undefined
@@ -242,11 +243,23 @@ export default function DashboardPage() {
             <RuntimeDashboardCards />
 
             {telemetryError ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    {t("app.admin.dashboard.page.telemetryUnavailable", { reason: telemetryError })}
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <span>{t("app.admin.dashboard.page.telemetryUnavailable")}</span>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={statsResource.isFetching}
+                        onClick={() => void statsResource.refresh().catch(() => undefined)}
+                    >
+                        <RefreshCw className={`mr-2 h-4 w-4 ${statsResource.isFetching ? "animate-spin" : ""}`} />
+                        {t("app.admin.dashboard.page.telemetryRetry")}
+                    </Button>
                 </div>
             ) : null}
 
+            {!telemetryError ? (
+                <>
             {/* Key Metrics */}
             <div data-v8-context-menu-ignore className="grid select-none grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
                 <Card>
@@ -434,6 +447,8 @@ export default function DashboardPage() {
                     </CardContent>
                 </Card>
             </div>
+                </>
+            ) : null}
 
         </div>
     );

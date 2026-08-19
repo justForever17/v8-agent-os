@@ -167,10 +167,13 @@ import {
     contextUsagePercent as resolveContextUsagePercent,
     evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isActiveRunStatus,
     isActiveCommandSessionStatus,
+    isTerminalRunStatus,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
     shouldAuthoritativelyRefreshOnRuntimeEvent,
+    shouldApplyRunScopedStatus,
     syncSessionRealtimeMessageState,
     shouldApplyRuntimeEventToMessage,
     terminalRunStatusFromTopic,
@@ -2115,6 +2118,7 @@ export default function ChatScreen() {
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeRef = useRef<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const activeRunIdRef = useRef<string>("");
+    const pendingRunAcceptanceRef = useRef(false);
     const activeConversationIdRef = useRef<string | null>(activeConversationId);
     const previousConversationIdRef = useRef<string | null>(null);
     const conversationTransitionTokenRef = useRef(0);
@@ -4036,13 +4040,28 @@ export default function ChatScreen() {
             normalized.topic || normalized.data?.topic || normalized.name,
             normalized.data,
         );
-        if (terminalRunStatus) {
-            setRuntime((current) => ({
-                ...current,
-                status: terminalRunStatus,
-                latestSeq: normalized.seq || current.latestSeq,
-                runId: normalized.run_id || current.runId,
-            }));
+        const optimisticRunId = String(runtimeRef.current.runId || "").trim();
+        const projectedRunId = String(activeRunIdRef.current || "").trim();
+        const currentRunId = isActiveRunStatus(runtimeRef.current.status) && optimisticRunId
+            ? optimisticRunId
+            : projectedRunId || optimisticRunId;
+        const terminalTargetsCurrentRun = !terminalRunStatus
+            || shouldApplyRunScopedStatus(
+                normalized.run_id,
+                currentRunId,
+                pendingRunAcceptanceRef.current,
+            );
+        if (terminalRunStatus && terminalTargetsCurrentRun) {
+            setRuntime((current) => {
+                const next = {
+                    ...current,
+                    status: terminalRunStatus,
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                };
+                runtimeRef.current = next;
+                return next;
+            });
             const terminalSessionId = String(
                 normalized.session_id
                 || normalized.conversation_id
@@ -4501,20 +4520,22 @@ export default function ChatScreen() {
                     },
                 ),
             );
-            setRuntime((current) => ({
-                ...current,
-                status: current.status === "waiting_approval" || current.status === "waiting_input" ? current.status : "completed",
-                latestSeq: normalized.seq || current.latestSeq,
-                runId: normalized.run_id || current.runId,
-                label: tRef.current("src.screens.chatscreen.completed"),
-            }));
-            patchAssistantTaskShell(todosRef.current, {
-                phase: "settling",
-                label: tRef.current("src.screens.chatscreen.task_completed"),
-                subtitle: tRef.current("src.screens.chatscreen.preparing_final_response_and_artifacts"),
-                runId: normalized.run_id,
-                createIfMissing: false,
-            });
+            if (terminalTargetsCurrentRun) {
+                setRuntime((current) => ({
+                    ...current,
+                    status: current.status === "waiting_approval" || current.status === "waiting_input" ? current.status : "completed",
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                    label: tRef.current("src.screens.chatscreen.completed"),
+                }));
+                patchAssistantTaskShell(todosRef.current, {
+                    phase: "settling",
+                    label: tRef.current("src.screens.chatscreen.task_completed"),
+                    subtitle: tRef.current("src.screens.chatscreen.preparing_final_response_and_artifacts"),
+                    runId: normalized.run_id,
+                    createIfMissing: false,
+                });
+            }
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(
                     normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
@@ -4540,20 +4561,22 @@ export default function ChatScreen() {
                     },
                 ),
             );
-            setRuntime((current) => ({
-                ...current,
-                status: "failed",
-                latestSeq: normalized.seq || current.latestSeq,
-                runId: normalized.run_id || current.runId,
-                label: tRef.current("src.screens.chatscreen.failed"),
-            }));
-            patchAssistantTaskShell(todosRef.current, {
-                phase: "error",
-                label: tRef.current("src.screens.chatscreen.task_failed"),
-                subtitle: String(normalized.error || normalized.content || tRef.current("src.screens.chatscreen.an_error_interrupted_the_run")),
-                runId: normalized.run_id,
-                createIfMissing: true,
-            });
+            if (terminalTargetsCurrentRun) {
+                setRuntime((current) => ({
+                    ...current,
+                    status: "failed",
+                    latestSeq: normalized.seq || current.latestSeq,
+                    runId: normalized.run_id || current.runId,
+                    label: tRef.current("src.screens.chatscreen.failed"),
+                }));
+                patchAssistantTaskShell(todosRef.current, {
+                    phase: "error",
+                    label: tRef.current("src.screens.chatscreen.task_failed"),
+                    subtitle: String(normalized.error || normalized.content || tRef.current("src.screens.chatscreen.an_error_interrupted_the_run")),
+                    runId: normalized.run_id,
+                    createIfMissing: true,
+                });
+            }
             if (shouldFallbackRefresh) {
                 scheduleRealtimeSnapshotRefresh(
                     normalized.session_id || normalized.conversation_id || activeConversationIdRef.current,
@@ -4804,6 +4827,9 @@ export default function ChatScreen() {
             ),
         );
 
+        if (terminalRunStatus && !terminalTargetsCurrentRun) {
+            return;
+        }
         setRuntime((current) => {
             const loweredTopic = topic.toLowerCase();
             let nextStatus = current.status;
@@ -5970,15 +5996,20 @@ export default function ChatScreen() {
                     )));
                 }
             }
-            if (activeConversationIdRef.current) {
-                await loadConversationRef.current(activeConversationIdRef.current, { force: true });
-            }
         } catch (error) {
             Alert.alert(
                 command === "interrupt" ? t("src.screens.chatscreen.stop_failed") : t("src.screens.chatscreen.retry_failed"),
                 error instanceof Error ? error.message : t("src.screens.chatscreen.run_command_failed"),
             );
         } finally {
+            const conversationId = String(activeConversationIdRef.current || "").trim();
+            if (conversationId) {
+                try {
+                    await loadConversationRef.current(conversationId, { force: true });
+                } catch (error) {
+                    console.warn("[ChatScreen] Failed to reconcile run command state", error);
+                }
+            }
             setRunActionBusy(false);
         }
     }, [authorizedFetch, runActionBusy, t]);
@@ -6111,11 +6142,11 @@ export default function ChatScreen() {
 
     const activeRunStatus = String(projection.runControlState.status || "").trim().toLowerCase();
     const activeConversationStatus = String(projection.activeConversation?.status || "").trim().toLowerCase();
-    const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(activeConversationStatus)
+    const isSessionRunning = isActiveRunStatus(activeConversationStatus)
         ? true
-        : ["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"].includes(activeConversationStatus)
+        : isTerminalRunStatus(activeConversationStatus)
             ? false
-            : ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(activeRunStatus);
+            : isActiveRunStatus(activeRunStatus);
     const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
     const hasRuntimeItems = projection.runtimeStageModel.items.length > 0;
     const showOverviewRail = Boolean(activeConversationId);
@@ -6598,6 +6629,7 @@ export default function ChatScreen() {
                     ));
                 }
 
+                pendingRunAcceptanceRef.current = true;
                 const submitResult = await submitChatMessage(
                     authorizedFetch,
                     text,
@@ -6689,11 +6721,16 @@ export default function ChatScreen() {
                     return next;
                 });
                 if (submittedRunId) {
-                    setRuntime((current) => ({
-                        ...current,
-                        status: "running",
-                        runId: submittedRunId,
-                    }));
+                    activeRunIdRef.current = submittedRunId;
+                    setRuntime((current) => {
+                        const next = {
+                            ...current,
+                            status: "running",
+                            runId: submittedRunId,
+                        };
+                        runtimeRef.current = next;
+                        return next;
+                    });
                 }
                 return;
             }
@@ -6757,6 +6794,7 @@ export default function ChatScreen() {
                 ));
             }
 
+            pendingRunAcceptanceRef.current = true;
             const submitResult = await submitChatMessage(
                 authorizedFetch,
                 text,
@@ -6859,11 +6897,16 @@ export default function ChatScreen() {
                 || "",
             ).trim();
             if (submittedRunId) {
-                setRuntime((current) => ({
-                    ...current,
-                    status: current.status === "waiting_input" || current.status === "waiting_approval" ? current.status : "running",
-                    runId: submittedRunId,
-                }));
+                activeRunIdRef.current = submittedRunId;
+                setRuntime((current) => {
+                    const next = {
+                        ...current,
+                        status: current.status === "waiting_input" || current.status === "waiting_approval" ? current.status : "running",
+                        runId: submittedRunId,
+                    };
+                    runtimeRef.current = next;
+                    return next;
+                });
                 setMessages((current) => {
                     const targetIndex = findLatestAssistantShellIndex(current);
                     if (targetIndex < 0) {
@@ -6926,6 +6969,7 @@ export default function ChatScreen() {
             }
             Alert.alert(t("src.screens.chatscreen.send_failed"), errorMessage);
         } finally {
+            pendingRunAcceptanceRef.current = false;
             setSending(false);
         }
     }, [

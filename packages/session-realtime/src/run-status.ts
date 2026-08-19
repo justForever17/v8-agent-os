@@ -72,8 +72,28 @@ export function isRecognizedRunStatus(value: unknown): boolean {
   return ACTIVE_RUN_STATUSES.has(status) || TERMINAL_RUN_STATUSES.has(status);
 }
 
+export function isActiveRunStatus(value: unknown): boolean {
+  return ACTIVE_RUN_STATUSES.has(normalizeRunStatus(value));
+}
+
+export function isTerminalRunStatus(value: unknown): boolean {
+  return TERMINAL_RUN_STATUSES.has(normalizeRunStatus(value));
+}
+
 export function runStatusAllowsInterrupt(value: unknown): boolean {
   return INTERRUPTIBLE_RUN_STATUSES.has(normalizeRunStatus(value));
+}
+
+export function shouldApplyRunScopedStatus(
+  eventRunIdValue: unknown,
+  currentRunIdValue: unknown,
+  pendingRunAcceptance = false,
+): boolean {
+  if (pendingRunAcceptance) return false;
+  const eventRunId = String(eventRunIdValue || "").trim();
+  const currentRunId = String(currentRunIdValue || "").trim();
+  if (!currentRunId) return true;
+  return Boolean(eventRunId) && eventRunId === currentRunId;
 }
 
 export function isActiveCommandSessionStatus(value: unknown): boolean {

@@ -315,6 +315,57 @@ export type AuthoritativeSessionSnapshot = {
   };
 };
 
+export type SessionToolResultStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "waiting"
+  | "timed_out"
+  | "terminated"
+  | "unknown";
+
+const SESSION_TOOL_RESULT_STATUSES = new Set<SessionToolResultStatus>([
+  "running",
+  "completed",
+  "failed",
+  "blocked",
+  "waiting",
+  "timed_out",
+  "terminated",
+  "unknown",
+]);
+
+export function normalizeSessionToolResultStatus(value: unknown): SessionToolResultStatus | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  const aliases: Record<string, SessionToolResultStatus> = {
+    success: "completed",
+    succeeded: "completed",
+    ok: "completed",
+    error: "failed",
+    failure: "failed",
+    timeout: "timed_out",
+    deadline_exceeded: "timed_out",
+    cancelled: "terminated",
+    canceled: "terminated",
+    stopped: "terminated",
+    interrupted: "terminated",
+    safety_blocked: "blocked",
+    denied: "blocked",
+    rejected: "blocked",
+    awaiting_input: "waiting",
+    waiting_input: "waiting",
+    waiting_approval: "waiting",
+    approval_required: "waiting",
+    queued: "running",
+    pending: "running",
+    starting: "running",
+    streaming: "running",
+  };
+  const normalized = (aliases[raw] || raw) as SessionToolResultStatus;
+  return SESSION_TOOL_RESULT_STATUSES.has(normalized) ? normalized : undefined;
+}
+
 export type NormalizedSessionRuntimeEvent = {
   type: string;
   name?: SessionRuntimeEventName | string;
@@ -349,6 +400,8 @@ export type NormalizedSessionRuntimeEvent = {
     toolName?: string;
     args?: unknown;
     result?: unknown;
+    resultStatus?: SessionToolResultStatus;
+    resultReasonCode?: string;
     agentVisibleResult?: unknown;
     agentVisibleChars?: number;
     mcpApp?: McpAppViewRef;

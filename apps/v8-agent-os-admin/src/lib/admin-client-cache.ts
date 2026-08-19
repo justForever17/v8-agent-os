@@ -1,6 +1,7 @@
 export type AdminCacheOptions = {
   force?: boolean;
   ttlMs?: number;
+  timeoutMs?: number;
 };
 
 export type AdminJsonSnapshot<T = unknown> = {
@@ -30,6 +31,7 @@ type AdminEngineOriginChangeOptions = {
 type RoutePrefetchTarget = string | [string, number];
 
 const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const EMPTY_SNAPSHOT: AdminJsonSnapshot = Object.freeze({
   expiresAt: 0,
   updatedAt: 0,
@@ -257,6 +259,7 @@ export function peekAdminJsonCache<T>(url: string): T | undefined {
 export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions = {}): Promise<T> {
   const key = cacheKey(url);
   const ttlMs = Math.max(0, options.ttlMs ?? DEFAULT_TTL_MS);
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const now = Date.now();
   const existing = cache.get(key);
 
@@ -270,6 +273,11 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
   const requestId = ++nextRequestId;
   const requestGeneration = cacheGeneration;
   const controller = new AbortController();
+  let requestTimedOut = false;
+  const timeout = setTimeout(() => {
+    requestTimedOut = true;
+    controller.abort();
+  }, timeoutMs);
   const request: Promise<T> = fetch(key, { cache: "no-store", signal: controller.signal })
     .then(async (response) => {
       assertCurrentGeneration(requestGeneration);
@@ -293,6 +301,9 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
     })
     .catch((error) => {
       assertCurrentGeneration(requestGeneration);
+      const requestError = requestTimedOut
+        ? new Error("admin_request_timeout")
+        : error;
       const current = cache.get(key);
       if (current?.requestId === requestId) {
         publish(key, {
@@ -300,11 +311,12 @@ export async function fetchAdminJson<T>(url: string, options: AdminCacheOptions 
           expiresAt: current.expiresAt,
           updatedAt: current.updatedAt,
           isFetching: false,
-          error: errorMessage(error),
+          error: errorMessage(requestError),
         });
       }
-      throw error;
-    });
+      throw requestError;
+    })
+    .finally(() => clearTimeout(timeout));
 
   publish(key, {
     data: existing?.data,

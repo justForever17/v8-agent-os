@@ -5,6 +5,7 @@ import {
     type ContextGovernanceDigest,
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
+    isActiveRunStatus,
     isEffectiveContextGovernancePayload,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
@@ -612,7 +613,7 @@ export function buildRuntimeStageModel(
         : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const runtimeActivitiesById = new Map<RuntimeId, RuntimeStageActivity[]>();
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
-    const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
+    const isBusy = isActiveRunStatus(runtimeStatus);
     const visibleRuntimeOrder = VISIBLE_RUNTIME_ORDER.filter((runtimeId) => {
         const runtimeActivities = runtimeActivitiesForCard(runtimeId, summaryActivities);
         const ownerVisible = runtimeId === rawActiveRuntimeId && (isBusy || options?.pendingApproval || options?.recoverable);

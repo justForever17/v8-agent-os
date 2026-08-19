@@ -184,6 +184,18 @@ function buildToolInvocation(
         ?? processFallbackResult;
 
     const state = executionNode.executionType === "tool_result" || result !== undefined && result !== null ? "result" : "call";
+    const resultStatus = resultNode?.resultStatus
+        ?? executionNode.resultStatus
+        ?? resultNode?.data?.resultStatus
+        ?? resultNode?.data?.result_status
+        ?? executionNode.data?.resultStatus
+        ?? executionNode.data?.result_status;
+    const resultReasonCode = resultNode?.resultReasonCode
+        ?? executionNode.resultReasonCode
+        ?? resultNode?.data?.resultReasonCode
+        ?? resultNode?.data?.result_reason_code
+        ?? executionNode.data?.resultReasonCode
+        ?? executionNode.data?.result_reason_code;
     return {
         toolCallId: String(
             executionNode.toolCallId
@@ -204,7 +216,13 @@ function buildToolInvocation(
             ?? {},
         state,
         result: compactToolResult(toolName, result),
-        clientSurface: buildClientToolSurface({ toolName, result, state }),
+        clientSurface: buildClientToolSurface({
+            toolName,
+            result,
+            state,
+            resultStatus: typeof resultStatus === "string" ? resultStatus : undefined,
+            resultReasonCode: typeof resultReasonCode === "string" ? resultReasonCode : undefined,
+        }),
     };
 }
 

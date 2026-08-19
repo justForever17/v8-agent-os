@@ -8,7 +8,7 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import type { ClientToolSurface } from "@v8/session-realtime";
+import type { ClientToolSurface, ClientToolSurfaceStatus } from "@v8/session-realtime";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -93,11 +93,29 @@ function resolveToolIconName(toolName: string) {
     return "tools";
 }
 
+function resolveToolStatus(toolInvocation: ToolInvocation): ClientToolSurfaceStatus {
+    return toolInvocation.clientSurface?.status || (toolInvocation.state === "result" ? "completed" : "running");
+}
+
+function statusPresentation(status: ClientToolSurfaceStatus) {
+    if (status === "completed") return { key: "src.components.chat.toolcard.complete", color: "#14B8A6" };
+    if (status === "running") return { key: "src.components.chat.toolcard.running", color: "#3B82F6" };
+    if (status === "waiting") return { key: "src.components.chat.toolcard.waiting", color: "#D97706" };
+    if (status === "blocked") return { key: "src.components.chat.toolcard.blocked", color: "#EA580C" };
+    if (status === "timed_out") return { key: "src.components.chat.toolcard.timed_out", color: "#DC2626" };
+    if (status === "terminated") return { key: "src.components.chat.toolcard.terminated", color: "#71717A" };
+    if (status === "failed") return { key: "src.components.chat.toolcard.failed", color: "#DC2626" };
+    return { key: "src.components.chat.toolcard.unknown", color: "#71717A" };
+}
+
 export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: ToolCardProps) {
     const { colors, themeMode, t } = useUiPrefs();
     const [isExpanded, setIsExpanded] = useState(false);
     const progress = useRef(new Animated.Value(0)).current;
-    const isComplete = toolInvocation.state === "result";
+    const hasResult = toolInvocation.state === "result";
+    const status = resolveToolStatus(toolInvocation);
+    const presentation = statusPresentation(status);
+    const isActive = status === "running";
 
     useEffect(() => {
         Animated.timing(progress, {
@@ -123,13 +141,13 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
         outputRange: [-6, 0],
     });
 
-    const accent = isComplete ? "#14B8A6" : "#3B82F6";
+    const accent = presentation.color;
     const iconName = resolveToolIconName(toolInvocation.toolName);
     const readableResult = buildReadableResult(toolInvocation, t);
 
     return (
         <View style={styles.wrap}>
-            {!isComplete ? <View style={[styles.activeGlow, { backgroundColor: "rgba(59,130,246,0.055)" }]} /> : null}
+            {isActive ? <View style={[styles.activeGlow, { backgroundColor: "rgba(59,130,246,0.055)" }]} /> : null}
             <View
                 style={[
                     styles.card,
@@ -149,17 +167,17 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             style={[
                                 styles.iconWrap,
                                 {
-                                    backgroundColor: isComplete ? "rgba(20,184,166,0.10)" : "rgba(59,130,246,0.12)",
-                                    borderColor: isComplete ? "rgba(20,184,166,0.18)" : "rgba(59,130,246,0.22)",
+                                    backgroundColor: `${accent}18`,
+                                    borderColor: `${accent}30`,
                                 },
                             ]}
                         >
                             <MaterialCommunityIcons
                                 name={iconName as never}
                                 size={10}
-                                color={isComplete ? "#14B8A6" : "#3B82F6"}
+                                color={accent}
                             />
-                            {!isComplete ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.20)" }]} /> : null}
+                            {isActive ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.20)" }]} /> : null}
                         </View>
 
                         <Text
@@ -173,12 +191,12 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         <Text style={[
                             styles.statusPill,
                             {
-                                color: isComplete ? "#0F766E" : "#2563EB",
-                                backgroundColor: isComplete ? "rgba(20,184,166,0.10)" : "rgba(59,130,246,0.10)",
-                                borderColor: isComplete ? "rgba(20,184,166,0.14)" : "rgba(59,130,246,0.16)",
+                                color: accent,
+                                backgroundColor: `${accent}14`,
+                                borderColor: `${accent}24`,
                             },
                         ]}>
-                            {isComplete ? t("src.components.chat.toolcard.complete") : t("src.components.chat.toolcard.running")}
+                            {t(presentation.key)}
                         </Text>
                     </View>
 
@@ -213,7 +231,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             <CodeBlock language="json" value={stringifyPayload(toolInvocation.args ?? {})} />
                         </View>
 
-                        {isComplete && !hideResult ? (
+                        {hasResult && !hideResult ? (
                             <View style={styles.section}>
                                 <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
                                     {t("src.components.chat.toolcard.output")}

@@ -9,8 +9,9 @@ import {
   type AdminCacheOptions,
 } from "@/lib/admin-client-cache";
 
-export function useAdminJsonResource<T>(url: string, options: Pick<AdminCacheOptions, "ttlMs"> = {}) {
+export function useAdminJsonResource<T>(url: string, options: Pick<AdminCacheOptions, "ttlMs" | "timeoutMs"> = {}) {
   const ttlMs = options.ttlMs;
+  const timeoutMs = options.timeoutMs;
   const subscribe = useCallback(
     (listener: () => void) => subscribeAdminJsonCache(url, listener),
     [url],
@@ -19,14 +20,14 @@ export function useAdminJsonResource<T>(url: string, options: Pick<AdminCacheOpt
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   useEffect(() => {
-    void fetchAdminJson<T>(url, { ttlMs }).catch(() => undefined);
-  }, [ttlMs, url]);
+    void fetchAdminJson<T>(url, { ttlMs, timeoutMs }).catch(() => undefined);
+  }, [timeoutMs, ttlMs, url]);
 
   useEffect(() => {
     const refreshIfStale = () => {
       const current = getAdminJsonSnapshot<T>(url);
       if (!current.isFetching && current.expiresAt <= Date.now()) {
-        void fetchAdminJson<T>(url, { ttlMs }).catch(() => undefined);
+        void fetchAdminJson<T>(url, { ttlMs, timeoutMs }).catch(() => undefined);
       }
     };
     const handleVisibility = () => {
@@ -38,16 +39,16 @@ export function useAdminJsonResource<T>(url: string, options: Pick<AdminCacheOpt
       window.removeEventListener("focus", refreshIfStale);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [ttlMs, url]);
+  }, [timeoutMs, ttlMs, url]);
 
   const refresh = useCallback(
-    () => fetchAdminJson<T>(url, { force: true, ttlMs }),
-    [ttlMs, url],
+    () => fetchAdminJson<T>(url, { force: true, ttlMs, timeoutMs }),
+    [timeoutMs, ttlMs, url],
   );
 
   return {
     ...snapshot,
-    isLoading: snapshot.data === undefined,
+    isLoading: snapshot.data === undefined && snapshot.error === null,
     isRefreshing: snapshot.data !== undefined && snapshot.isFetching,
     refresh,
   };

@@ -1,4 +1,5 @@
-import type { AdminResourceRef, McpAppViewRef, NormalizedSessionRuntimeEvent } from "./contract.js";
+import type { AdminResourceRef, McpAppViewRef, NormalizedSessionRuntimeEvent, SessionToolResultStatus } from "./contract.js";
+import { normalizeSessionToolResultStatus } from "./contract.js";
 import { deriveAdminResourceRefFromArtifactLike } from "./resources.js";
 import { isTodoToolRuntimePayload, shouldForwardRuntimeEventToRealtimeSurface } from "./event-normalizer.js";
 import { buildSessionRuntimeEventIdentity } from "./event-sequence.js";
@@ -26,6 +27,8 @@ export type SessionStreamToolPayload = {
   toolName?: string;
   args?: unknown;
   result?: unknown;
+  resultStatus?: SessionToolResultStatus;
+  resultReasonCode?: string;
   agentVisibleResult?: unknown;
   agentVisibleChars?: number;
   mcpApp?: McpAppViewRef;
@@ -105,6 +108,8 @@ export type SessionStreamExecutionNode = {
   toolName?: string;
   args?: unknown;
   result?: unknown;
+  resultStatus?: SessionToolResultStatus;
+  resultReasonCode?: string;
   agentVisibleResult?: unknown;
   agentVisibleChars?: number;
   mcpApp?: McpAppViewRef;
@@ -1354,6 +1359,20 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
               ? eventToolData.agent_visible_chars
               : undefined;
     const fallbackResult = event.tool?.result ?? eventData.result;
+    const resultStatus = event.tool?.resultStatus
+      ?? normalizeSessionToolResultStatus(eventData.resultStatus)
+      ?? normalizeSessionToolResultStatus(eventData.result_status)
+      ?? normalizeSessionToolResultStatus(eventToolData.resultStatus)
+      ?? normalizeSessionToolResultStatus(eventToolData.result_status)
+      ?? normalizeSessionToolResultStatus(eventToolData.status);
+    const resultReasonCode = event.tool?.resultReasonCode
+      ?? firstNonEmptyString(
+        eventData.resultReasonCode,
+        eventData.result_reason_code,
+        eventToolData.resultReasonCode,
+        eventToolData.result_reason_code,
+      )
+      ?? undefined;
     const displayResult = chooseAgentVisibleToolResult(toolName, agentVisibleResult, fallbackResult);
     const displayAgentVisibleResult = displayResult;
     const mcpApp = event.tool?.mcpApp
@@ -1375,6 +1394,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         toolInvocationId: toolCallId,
         toolName,
         result: displayResult,
+        resultStatus,
+        resultReasonCode,
         agentVisibleResult: displayAgentVisibleResult,
         agentVisibleChars,
         mcpApp,
@@ -1392,6 +1413,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
 
       if (existingToolCall) {
         existingToolCall.result = displayResult;
+        existingToolCall.resultStatus = resultStatus;
+        existingToolCall.resultReasonCode = resultReasonCode;
         existingToolCall.agentVisibleResult = displayAgentVisibleResult;
         existingToolCall.agentVisibleChars = agentVisibleChars;
         existingToolCall.mcpApp = mcpApp || existingToolCall.mcpApp;
@@ -1410,6 +1433,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
           toolInvocationId: toolCallId,
           toolName,
           result: displayResult,
+          resultStatus,
+          resultReasonCode,
           agentVisibleResult: displayAgentVisibleResult,
           agentVisibleChars,
           mcpApp,

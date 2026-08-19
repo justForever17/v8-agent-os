@@ -256,7 +256,11 @@ def _probe_image(resolve_asset, probe_onnx_runtime, status: dict[str, Any]) -> t
     )
 
 
-def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
+def _exercise_document_parsers(
+    modules: dict[str, Any],
+    *,
+    native_reader=None,
+) -> tuple[bool, bool]:
     with tempfile.TemporaryDirectory(prefix="v8os-document-pack-probe-") as temporary:
         root = Path(temporary)
 
@@ -267,7 +271,7 @@ def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
         if "V8OS document probe" not in "\n".join(
             paragraph.text for paragraph in modules["docx"].Document(docx_path).paragraphs
         ):
-            return False
+            return False, False
 
         xlsx_path = root / "probe.xlsx"
         workbook = modules["openpyxl"].Workbook()
@@ -276,7 +280,7 @@ def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
         reopened_workbook = modules["openpyxl"].load_workbook(xlsx_path, read_only=True, data_only=True)
         try:
             if reopened_workbook.active["A1"].value != "V8OS spreadsheet probe":
-                return False
+                return False, False
         finally:
             reopened_workbook.close()
 
@@ -286,7 +290,7 @@ def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
         slide.shapes.title.text = "V8OS presentation probe"
         presentation.save(pptx_path)
         if modules["pptx"].Presentation(pptx_path).slides[0].shapes.title.text != "V8OS presentation probe":
-            return False
+            return False, False
 
         pdf_path = root / "probe.pdf"
         pdf = modules["pymupdf"].open()
@@ -296,7 +300,7 @@ def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
         reopened = modules["pymupdf"].open(pdf_path)
         try:
             if reopened.page_count != 1 or "V8OS PDF probe" not in reopened[0].get_text():
-                return False
+                return False, False
         finally:
             reopened.close()
 
@@ -304,8 +308,21 @@ def _exercise_document_parsers(modules: dict[str, Any]) -> bool:
             [["ok"]],
             headers=["V8OS table probe"],
         ):
-            return False
-    return True
+            return False, False
+
+        if native_reader is None:
+            return True, False
+        native_expectations = (
+            (docx_path, "V8OS document probe"),
+            (xlsx_path, "V8OS spreadsheet probe"),
+            (pptx_path, "V8OS presentation probe"),
+            (pdf_path, "V8OS PDF probe"),
+        )
+        for document_path, marker in native_expectations:
+            result = str(native_reader(document_path) or "")
+            if marker not in result:
+                return True, False
+    return True, True
 
 
 def _probe_documents(
@@ -313,7 +330,9 @@ def _probe_documents(
     *,
     import_module=importlib.import_module,
     exercise_parsers=None,
+    native_reader=None,
     isolated_runtime: bool | None = None,
+    trusted_runtime_roots: tuple[Path, ...] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if str(status.get("status") or "") == "not_installed":
         result = _not_installed_result(status)
@@ -331,24 +350,42 @@ def _probe_documents(
             "isolated": False,
             "moduleOriginsVerified": False,
             "parsersVerified": False,
+            "nativeToolVerified": False,
             "error": "document_target_unavailable",
         }, False
     target_root = Path(target_dir).resolve(strict=False)
+    runtime_roots = trusted_runtime_roots
+    if runtime_roots is None:
+        runtime_roots = tuple(
+            dict.fromkeys(
+                Path(value).resolve(strict=False)
+                for value in (sys.base_prefix, sys.prefix)
+                if str(value or "").strip()
+            )
+        )
+    governed_roots = (target_root, *runtime_roots)
     modules: dict[str, Any] = {}
     try:
         modules = {name: import_module(name) for name in DOCUMENT_MODULE_NAMES}
         origins_verified = all(
-            Path(str(getattr(module, "__file__", "") or "")).resolve(strict=False).is_relative_to(target_root)
+            any(
+                Path(str(getattr(module, "__file__", "") or "")).resolve(strict=False).is_relative_to(root)
+                for root in governed_roots
+            )
             for module in modules.values()
         )
         parser_check = exercise_parsers or _exercise_document_parsers
-        parsers_verified = bool(parser_check(modules))
+        parsers_verified, native_tool_verified = parser_check(
+            modules,
+            native_reader=native_reader,
+        )
     except Exception:
         origins_verified = False
         parsers_verified = False
+        native_tool_verified = False
     isolated = bool(sys.flags.isolated) if isolated_runtime is None else bool(isolated_runtime)
     available = len(modules) == len(DOCUMENT_MODULE_NAMES)
-    ok = available and isolated and origins_verified and parsers_verified
+    ok = available and isolated and origins_verified and parsers_verified and native_tool_verified
     return (
         {
             "state": "installed",
@@ -358,6 +395,7 @@ def _probe_documents(
             "isolated": isolated,
             "moduleOriginsVerified": origins_verified,
             "parsersVerified": parsers_verified,
+            "nativeToolVerified": native_tool_verified,
             "error": None if ok else "document_runtime_validation_failed",
         },
         ok,
@@ -372,6 +410,18 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     # the readiness projection is sampled.  Sampling first would manufacture a
     # restartRequired=true result even when this process can load the pack.
     apply_paths(registry)
+    from core.tools.native.workspace_file import read_native_file
+    from erc.runtime_context import bind_runtime_context
+
+    def read_document(path: Path) -> str:
+        with bind_runtime_context(
+            runtime_kind="chat",
+            workspace_path=str(path.parent),
+            workspace_id="feature-pack-runtime-probe",
+            project_id="feature-pack-runtime-probe",
+        ):
+            return str(read_native_file.func(str(path)))
+
     statuses = build_statuses(registry)
     rpa_status = _status_by_id(statuses, RPA_PACK_ID)
     image_status = _status_by_id(statuses, IMAGE_PACK_ID)
@@ -382,7 +432,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     rpa, rpa_ok = _probe_rpa(adapter_class, rpa_status)
     image, image_ok = _probe_image(resolve_asset, probe_onnx_runtime, image_status)
-    documents, documents_ok = _probe_documents(document_status)
+    documents, documents_ok = _probe_documents(document_status, native_reader=read_document)
     ok = rpa_ok and image_ok and documents_ok
     return _result(
         ok=ok,

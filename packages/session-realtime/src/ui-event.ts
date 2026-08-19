@@ -1,4 +1,5 @@
 import type { AdminResourceRef, NormalizedSessionRuntimeEvent } from "./contract.js";
+import { normalizeSessionToolResultStatus } from "./contract.js";
 import {
   normalizeSessionRuntimeEvent,
   shouldForwardRuntimeEventToRealtimeSurface,
@@ -98,6 +99,22 @@ function buildToolPayload(event: NormalizedSessionRuntimeEvent): SessionStreamTo
             : undefined;
   const args = eventData.args ?? eventData.request ?? nestedTool.args ?? payloadTool.args;
   const result = eventData.result ?? eventData.response ?? eventData.result_preview ?? nestedTool.result ?? payloadTool.result;
+  const resultStatus = event.tool?.resultStatus
+    ?? normalizeSessionToolResultStatus(eventData.resultStatus)
+    ?? normalizeSessionToolResultStatus(eventData.result_status)
+    ?? normalizeSessionToolResultStatus(nestedTool.resultStatus)
+    ?? normalizeSessionToolResultStatus(nestedTool.result_status)
+    ?? normalizeSessionToolResultStatus(nestedTool.status)
+    ?? normalizeSessionToolResultStatus(payloadTool.resultStatus)
+    ?? normalizeSessionToolResultStatus(payloadTool.result_status);
+  const resultReasonCode = typeof event.tool?.resultReasonCode === "string" ? event.tool.resultReasonCode
+    : typeof eventData.resultReasonCode === "string" ? eventData.resultReasonCode
+      : typeof eventData.result_reason_code === "string" ? eventData.result_reason_code
+        : typeof nestedTool.resultReasonCode === "string" ? nestedTool.resultReasonCode
+          : typeof nestedTool.result_reason_code === "string" ? nestedTool.result_reason_code
+            : typeof payloadTool.resultReasonCode === "string" ? payloadTool.resultReasonCode
+              : typeof payloadTool.result_reason_code === "string" ? payloadTool.result_reason_code
+                : undefined;
   const agentVisibleResult = eventData.agentVisibleResult
     ?? eventData.agent_visible_result
     ?? nestedTool.agentVisibleResult
@@ -122,6 +139,8 @@ function buildToolPayload(event: NormalizedSessionRuntimeEvent): SessionStreamTo
     toolName,
     args,
     result,
+    resultStatus,
+    resultReasonCode,
     agentVisibleResult,
     agentVisibleChars,
     mcpApp,

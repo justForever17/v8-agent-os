@@ -165,3 +165,33 @@ test("the Engine origin boundary is SSR-safe even when reload is requested", () 
   ), true);
   assert.equal(cache.peekAdminJsonCache("/api/models"), undefined);
 });
+
+test("an Admin JSON request times out into a settled retryable snapshot", async () => {
+  let requestSignal;
+  const cache = loadTypeScriptModule("src/lib/admin-client-cache.ts", {
+    fetchImpl: (_url, init) => {
+      requestSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    },
+  });
+
+  await assert.rejects(
+    cache.fetchAdminJson("/api/stats?days=7", { timeoutMs: 5 }),
+    /admin_request_timeout/,
+  );
+
+  assert.equal(requestSignal.aborted, true);
+  assert.deepEqual(cache.getAdminJsonSnapshot("/api/stats?days=7"), {
+    data: undefined,
+    expiresAt: 0,
+    updatedAt: 0,
+    isFetching: false,
+    error: "admin_request_timeout",
+  });
+});

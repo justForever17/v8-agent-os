@@ -1308,6 +1308,36 @@ def _terminate_posix_process_group(process_group_id: int | None, *, grace_second
     return True
 
 
+def _reap_direct_subprocess(process: Any, *, timeout_seconds: float = 1.0) -> bool:
+    """Reap a terminated ``Popen`` child so its PID cannot remain a zombie."""
+
+    if process is None or isinstance(process, int):
+        return False
+    wait = getattr(process, "wait", None)
+    if not callable(wait):
+        return False
+    deadline = max(0.1, float(timeout_seconds))
+    try:
+        wait(timeout=deadline)
+        return True
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except (OSError, AttributeError, ValueError):
+            return False
+        try:
+            wait(timeout=deadline)
+            return True
+        except (subprocess.TimeoutExpired, ChildProcessError, OSError, TypeError, ValueError):
+            return False
+    except (ChildProcessError, OSError, TypeError, ValueError):
+        poll = getattr(process, "poll", None)
+        try:
+            return callable(poll) and poll() is not None
+        except Exception:
+            return False
+
+
 def _terminate_sync_process(
     process: subprocess.Popen[Any],
     process_job: Any | None,
@@ -2714,6 +2744,7 @@ class BackgroundProcess:
         self.timed_out = False
         self.pipe_root_exit_observed_at: float | None = None
         self.pipe_descendant_cleanup = False
+        self.direct_process_reaped = False
         self.timeout_seconds = _normalize_command_session_timeout_seconds(
             timeout_seconds,
             interactive=interactive,
@@ -2953,6 +2984,7 @@ class BackgroundProcess:
         self.process_group_id = None
         if not job_terminated and not group_terminated:
             _terminate_process_tree(self._process_id())
+        self.direct_process_reaped = _reap_direct_subprocess(self.proc)
         if self.backend == "posix_pty":
             # Closing the master after the child is terminated wakes the bounded
             # reader loop and prevents a PTY session from keeping its owner alive.
@@ -3625,6 +3657,7 @@ class BackgroundProcess:
             if self.pipe_root_exit_observed_at is None
             else datetime.fromtimestamp(self.pipe_root_exit_observed_at, timezone.utc).isoformat(),
             "pipe_descendant_cleanup": bool(self.pipe_descendant_cleanup),
+            "direct_process_reaped": bool(self.direct_process_reaped),
             "failure_kind": self.failure_kind,
             "failure_message": self.failure_message,
             "termination_reason": self.termination_reason,

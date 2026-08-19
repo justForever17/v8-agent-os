@@ -1091,6 +1091,8 @@ def test_noninteractive_command_session_deadline_kills_process_tree(tmp_path) ->
     assert status["termination_reason"] == "deadline_exceeded"
     assert status["return_code"] == 124
     assert command_module._command_session_state_from_status(status) == "timed_out"
+    if sys.platform != "win32":
+        assert status["direct_process_reaped"] is True
     assert not psutil.pid_exists(process_id)
 
 

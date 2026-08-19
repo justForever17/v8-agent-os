@@ -1,7 +1,7 @@
 {
   "name": "v8-agent-os-phone",
   "main": "expo-router/entry",
-  "version": "2026.8.19-1",
+  "version": "2026.8.20-1",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",

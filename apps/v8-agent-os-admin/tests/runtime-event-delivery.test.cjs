@@ -33,6 +33,7 @@ const {
     buildRuntimeEventDedupeKey,
     buildRuntimeEventDeliveryIdentity,
     RuntimeEventGapRecoveryThrottle,
+    shouldRequestSnapshotForEmptyEventPage,
     shouldDeliverRuntimeEventObservation,
 } = loadTypeScriptModule(sourcePath);
 const { SessionRuntimeEventContiguousCursor } = loadTypeScriptModule(eventSequenceSourcePath);
@@ -124,6 +125,12 @@ test("snapshot coverage rejects a delayed polling page after the snapshot wins t
 
   assert.equal(delayedPoll.observationReason, "snapshot_covered");
   assert.equal(shouldDeliverRuntimeEventObservation(delayedPoll), false);
+});
+
+test("an empty replay page with a newer watermark requests snapshot recovery", () => {
+  assert.equal(shouldRequestSnapshotForEmptyEventPage(3167, 3160), true);
+  assert.equal(shouldRequestSnapshotForEmptyEventPage(3160, 3160), false);
+  assert.equal(shouldRequestSnapshotForEmptyEventPage(0, 3160), false);
 });
 
 test("more than 512 pending events are delivered once while a gap awaits snapshot recovery", () => {

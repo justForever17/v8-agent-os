@@ -293,6 +293,9 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                         isStreaming={isStreaming}
                         reasoningKind={node.reasoningKind || node.data?.reasoningKind}
                         reasoningSurface={node.data?.reasoningSurface}
+                        data={{
+                            startTime: node.startTime || node.data?.startTime,
+                        }}
                     />
                 );
             }

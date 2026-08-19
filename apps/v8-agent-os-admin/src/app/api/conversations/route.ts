@@ -6,6 +6,7 @@ import {
 
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
+import { readSessionStateError } from "@/lib/server/session-state-error";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 const ENGINE_NOW_HEADER = "x-v8-engine-now";
@@ -34,8 +35,9 @@ export async function GET(req: NextRequest) {
         }
 
         if (!res.ok) {
-            console.error("Failed to fetch sessions from Python engine:", await res.text());
-            return NextResponse.json([]);
+            const failure = await readSessionStateError(res);
+            console.error("Failed to fetch sessions from Python engine:", failure.error.code);
+            return NextResponse.json(failure, { status: res.status >= 500 ? 503 : res.status });
         }
 
         const data = await res.json().catch(() => ({}));
@@ -43,13 +45,25 @@ export async function GET(req: NextRequest) {
             Array.isArray(data.sessions) ? data.sessions : [],
         );
         return NextResponse.json(sessions, {
-            headers: res.headers.get(ENGINE_NOW_HEADER)
-                ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
-                : undefined,
+            headers: {
+                ...(res.headers.get(ENGINE_NOW_HEADER)
+                    ? { [ENGINE_NOW_HEADER]: res.headers.get(ENGINE_NOW_HEADER)! }
+                    : {}),
+                ...(data?.degraded === true ? {
+                    "x-v8-state-degraded": "1",
+                    "x-v8-state-degradation-code": String(data?.degradation?.code || "state_database_unavailable"),
+                } : {}),
+            },
         });
     } catch (error) {
         console.error("Error communicating with Python engine:", error);
-        return NextResponse.json([]);
+        return NextResponse.json({
+            error: {
+                code: "state_database_unavailable",
+                message: "本地运行状态数据库暂时不可用，已有状态未被覆盖。请稍后重试。",
+                retryable: true,
+            },
+        }, { status: 503 });
     }
 }
 

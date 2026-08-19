@@ -48,18 +48,29 @@ function toText(value: unknown): string {
 }
 
 function compactText(value: unknown, limit = 180): string {
-    const text = redactClientText(String(value ?? "")).replace(/\s+/g, " ").trim();
+    const text = redactClientToolText(String(value ?? "")).replace(/\s+/g, " ").trim();
     if (!text) {
         return "";
     }
     return text.length > limit ? `${text.slice(0, Math.max(1, limit - 3)).trimEnd()}...` : text;
 }
 
-function redactClientText(value: string): string {
+export function redactClientToolText(value: string): string {
     return String(value ?? "")
         .replace(/\b[A-Za-z]:\\(?:Users|Projects|ProgramData|Windows|temp|Temp)[^\s,，;；)）\]}]*/gi, "[local path]")
         .replace(/\bactiveWorkspaceRoot=\[local path\]/gi, "activeWorkspaceRoot=[hidden]")
         .replace(/\bworkspacePath=\[local path\]/gi, "workspacePath=[hidden]");
+}
+
+export function formatClientToolResult(value: unknown): string {
+    if (typeof value === "string") {
+        return redactClientToolText(value);
+    }
+    try {
+        return redactClientToolText(JSON.stringify(value ?? "", null, 2));
+    } catch {
+        return redactClientToolText(String(value ?? ""));
+    }
 }
 
 function visibleLines(text: string): string[] {

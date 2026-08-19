@@ -10,6 +10,7 @@ import {
 } from '@/lib/chat-stream-state';
 import { createClientId } from '@/lib/id';
 import { normalizeRealtimeEvent } from '@/lib/realtime';
+import { shouldSettleSubmittedRun } from '@/lib/chat/run-activity';
 import {
     markStreamClientCommit,
     markStreamClientRender,
@@ -23,6 +24,7 @@ import { useChatStore } from '@/store/chat-store';
 import {
     createInitialSessionRealtimeMessageState,
     flushQueuedSessionRealtimeRuntimeEvents,
+    isClientVisualAttachment,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
 } from '@v8/session-realtime';
@@ -96,18 +98,8 @@ function attachmentUrl(item: Record<string, unknown>) {
     return String(item.publicUrl || item.url || item.workspacePath || "").trim();
 }
 
-function attachmentMime(item: Record<string, unknown>) {
-    return String(item.mimeType || item.mime_type || item.type || "").toLowerCase();
-}
-
-function isAudioAttachment(item: Record<string, unknown>) {
-    const url = attachmentUrl(item).toLowerCase();
-    const kind = String(item.mediaKind || item.previewKind || "").toLowerCase();
-    return kind === "audio" || attachmentMime(item).startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(url);
-}
-
-function isAudioUrl(value: string) {
-    return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(String(value || "").trim());
+function isVisualUrl(value: string) {
+    return isClientVisualAttachment({ url: value });
 }
 
 export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFinish, onConnect, onCustomEvent }: UseLangGraphStreamOptions) {
@@ -476,10 +468,10 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
             : dataAttachments.map(attachmentUrl).filter(Boolean);
         const nextImages: string[] = dataAttachments.length > 0
             ? dataAttachments
-                .filter((item: Record<string, unknown>) => !isAudioAttachment(item))
+                .filter(isClientVisualAttachment)
                 .map(attachmentUrl)
                 .filter((item): item is string => Boolean(item))
-            : allFileUrls.filter((url: string) => !isAudioUrl(url));
+            : allFileUrls.filter(isVisualUrl);
         const effectiveUserMessage = userMessage.trim();
         const nextNodes = effectiveUserMessage.trim()
             ? [{ id: createClientId('node'), kind: 'narrative' as const, role: 'user' as const, content: effectiveUserMessage, timestamp: Date.now() }]
@@ -589,14 +581,12 @@ export function useLangGraphStream({ apiEndpoint, submitEndpoint, onError, onFin
         // run event. We deliberately leave the transport alive long enough to
         // accept any already-buffered final message nodes.
         const normalizedRunId = String(runId || '').trim();
-        if (durableSubmitPendingRef.current) {
-            return false;
-        }
-        if (
-            submittedRunIdRef.current
-            && normalizedRunId
-            && submittedRunIdRef.current !== normalizedRunId
-        ) {
+        const activeSubmittedRunId = String(submittedRunIdRef.current || '').trim();
+        if (!shouldSettleSubmittedRun({
+            submittedRunId: activeSubmittedRunId,
+            terminalRunId: normalizedRunId,
+            acceptancePending: durableSubmitPendingRef.current,
+        })) {
             return false;
         }
         flushPendingMessages();

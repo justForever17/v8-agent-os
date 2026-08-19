@@ -388,6 +388,9 @@ export const ContentDispatcher = memo(function ContentDispatcher({
                 content: String(executionNode.content || ""),
                 data: {
                     ...(executionNode.time ? { elapsedTime: executionNode.time } : {}),
+                    ...((executionNode.startTime || executionNode.data?.startTime) ? {
+                        startTime: executionNode.startTime || executionNode.data?.startTime,
+                    } : {}),
                     ...(reasoningKind ? { reasoningKind } : {}),
                     ...(reasoningSurface ? { reasoningSurface } : {}),
                 },

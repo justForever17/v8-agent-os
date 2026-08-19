@@ -286,6 +286,7 @@ export type AuthoritativeSessionSnapshot = {
   session?: Record<string, unknown> | null;
   sessionId?: string;
   latestSeq?: number;
+  messagesOmitted?: boolean;
   messages?: unknown[];
   approvals?: unknown[];
   askUserInteractions?: unknown[];

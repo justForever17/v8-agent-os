@@ -30,6 +30,15 @@ function loadTsModule(relativePath) {
   return loaded.exports;
 }
 
+test("Phone uses the shared attachment contract and never projects documents as images", () => {
+  const screen = read("src/screens/ChatScreen.tsx");
+
+  assert.match(screen, /isClientAudioAttachment,/);
+  assert.match(screen, /isClientVisualAttachment,/);
+  assert.match(screen, /function isUploadedVisualFile\(file: UploadedWorkspaceFile\) \{\s+return isClientVisualAttachment\(file\);/);
+  assert.match(screen, /const images = attachments\s+\.filter\(isClientVisualAttachment\)/);
+});
+
 test("artifact list and selected detail remain independent failure domains", () => {
   const screen = read("src/screens/ArtifactsScreen.tsx");
 
@@ -219,6 +228,32 @@ test("Phone prunes only realtime identities covered by an advancing snapshot", (
     screen,
     /const snapshotWatermarkAdvanced = snapshotSeq > lastAppliedSnapshotSeqRef\.current;[\s\S]*?if \(snapshotWatermarkAdvanced\) \{\s*seenRealtimeEventKeysRef\.current\.pruneSnapshotCovered\(snapshotSeq\);\s*\}/,
   );
+});
+
+test("Phone terminal snapshots drive composer activity from authoritative runtime state", () => {
+  const screen = read("src/screens/ChatScreen.tsx");
+  const projectionStart = screen.indexOf("const applyConversationProjection = useCallback");
+  const projectionEnd = screen.indexOf("const applyRealtimeSnapshotPayload = useCallback", projectionStart);
+  const activityStart = screen.indexOf("const activeRunStatus =", projectionEnd);
+  const activityEnd = screen.indexOf("const isSessionFailed =", activityStart);
+  const projection = screen.slice(projectionStart, projectionEnd);
+  const activity = screen.slice(activityStart, activityEnd);
+
+  assert.ok(projectionStart > 0 && projectionEnd > projectionStart && activityStart > projectionEnd && activityEnd > activityStart);
+  assert.match(projection, /nextRuntimeStatus\s*\|\|\s*nextCurrentRun\.status/);
+  assert.match(projection, /setRuntime\(nextRuntime\);\s*runtimeRef\.current = nextRuntime/);
+  assert.match(activity, /isActiveRunStatus\(activeConversationStatus\)[\s\S]*?isTerminalRunStatus\(activeConversationStatus\)/);
+  assert.doesNotMatch(activity, /sending(?:Ref)?/);
+});
+
+test("Phone treats compact snapshots as message omission, never as an authoritative partial transcript", () => {
+  const screen = read("src/screens/ChatScreen.tsx");
+  assert.match(screen, /import \{ authoritativeSnapshotOmitsMessages \} from "@v8\/session-realtime\/cdc";/);
+  assert.match(
+    screen,
+    /const messagesOmitted = authoritativeSnapshotOmitsMessages\(payload\);\s+const snapshotMessages = messagesOmitted \? null : extractSnapshotMessages\(payload\);/,
+  );
+  assert.match(screen, /messagesOmitted,\s+snapshotMessageCount/);
 });
 
 test("Phone keeps a gap event identity beyond a partial snapshot watermark", () => {

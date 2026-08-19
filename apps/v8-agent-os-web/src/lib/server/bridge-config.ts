@@ -32,7 +32,11 @@ type CanonicalConfig = {
     };
 };
 
-const CANONICAL_CONFIG_PATH = path.join(os.homedir(), ".v8-agent-os", "config.json");
+export function resolveCanonicalConfigPath(environment: NodeJS.ProcessEnv = process.env) {
+    const explicitHome = String(environment.V8_AGENT_OS_HOME || "").trim();
+    const canonicalHome = explicitHome ? path.resolve(explicitHome) : path.join(os.homedir(), ".v8-agent-os");
+    return path.join(canonicalHome, "config.json");
+}
 
 function readJsonConfig(configPath: string): CanonicalConfig {
     try {
@@ -48,7 +52,7 @@ function readJsonConfig(configPath: string): CanonicalConfig {
 }
 
 export function readCanonicalConfig() {
-    return readJsonConfig(CANONICAL_CONFIG_PATH);
+    return readJsonConfig(resolveCanonicalConfigPath());
 }
 
 export function readCanonicalBridge() {

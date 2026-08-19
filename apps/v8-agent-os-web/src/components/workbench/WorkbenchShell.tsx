@@ -288,7 +288,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         if (document.kind === "session_overview") return <WorkspaceWorkbenchPanel {...props} />;
         if (document.kind === "subagent_activity") return <SubagentActivityRenderer document={document} messages={props.messages} runtimeModel={props.runtimeModel} processes={props.processes} />;
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
-        if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} />;
+        if (document.kind === "artifact") return <ArtifactRenderer key={document.documentId} document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
         if (document.kind === "creative_canvas") return null;
         return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.browserExternal")}</div>;

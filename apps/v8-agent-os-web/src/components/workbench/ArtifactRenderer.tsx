@@ -7,8 +7,13 @@ import { Download, ExternalLink, FileWarning, SlidersHorizontal } from "lucide-r
 import { CodeBlock } from "@/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { useT } from "@/components/providers/LocaleProvider";
-import { getWorkbenchDocumentPayload, type ArtifactWorkbenchDocument } from "@/lib/workbench";
+import {
+    createWorkspaceFileDocument,
+    getWorkbenchDocumentPayload,
+    type ArtifactWorkbenchDocument,
+} from "@/lib/workbench";
 import { normalizeRuntimeArtifact, resolveRuntimeArtifactUrl, type RuntimeArtifact } from "@/lib/artifacts";
+import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
 
 function ModelViewerLoading() {
     const t = useT();
@@ -59,7 +64,13 @@ function codeLanguage(document: ArtifactWorkbenchDocument, artifact: RuntimeArti
     return aliases[extension] || extension || "text";
 }
 
-export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocument }) {
+export function ArtifactRenderer({
+    document,
+    onSendLineComment,
+}: {
+    document: ArtifactWorkbenchDocument;
+    onSendLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
+}) {
     const t = useT();
     const cached = getWorkbenchDocumentPayload(document.documentId);
     const [artifact, setArtifact] = useState<RuntimeArtifact | null>(cached?.artifact || null);
@@ -117,9 +128,30 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
         return () => { cancelled = true; };
     }, [document.renderer, resourceUrl, text]);
 
+    const sourceDocument = useMemo(() => {
+        if (document.renderer !== "code" && document.renderer !== "text") return null;
+        const workspacePath = String(
+            artifact?.workspaceRelativePath
+            || artifact?.workspacePath
+            || artifact?.canonicalPath
+            || "",
+        ).trim();
+        const sessionId = String(document.subjectRef.sessionId || artifact?.sessionId || "").trim();
+        if (!workspacePath || !sessionId) return null;
+        return createWorkspaceFileDocument({
+            sessionId,
+            workspacePath,
+            title: document.title,
+            renderer: document.renderer,
+        });
+    }, [artifact?.canonicalPath, artifact?.sessionId, artifact?.workspacePath, artifact?.workspaceRelativePath, document.renderer, document.subjectRef.sessionId, document.title]);
+
     if (loading) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t("web.workbench.artifact.loading")}</div>;
     if (error && !resourceUrl && !text) {
         return <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground"><FileWarning className="h-6 w-6" /><span>{error}</span></div>;
+    }
+    if (sourceDocument) {
+        return <WorkspaceFileRenderer document={sourceDocument} onSendLineComment={onSendLineComment} />;
     }
 
     const preview = (() => {

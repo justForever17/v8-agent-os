@@ -15,6 +15,7 @@ import { LocaleProvider } from "@/components/providers/LocaleProvider";
 import { PersonalizationProvider } from "@/components/providers/PersonalizationProvider";
 import { SurfaceReadinessMarker } from "@/components/SurfaceReadinessMarker";
 import { AppContextMenu } from "@/components/ui/AppContextMenu";
+import { auth } from "@/lib/auth";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { buildPersonalizationBootstrapScript } from "@/lib/personalization";
 import { resolveInitialProductTheme } from "@/lib/server/product-theme";
@@ -37,6 +38,7 @@ export default async function RootLayout({
 }>) {
     const cookieStore = await cookies();
     const headerStore = await headers();
+    const initialSession = await auth();
     const initialLocale = resolveInitialLocale(
         cookieStore.get(LOCALE_COOKIE_NAME)?.value,
         headerStore.get("accept-language"),
@@ -64,7 +66,7 @@ export default async function RootLayout({
             </head>
             <body className="h-full overflow-hidden bg-background text-foreground antialiased font-sans" suppressHydrationWarning={true}>
                 <LocaleProvider initialLocale={initialLocale}>
-                    <SessionProvider>
+                    <SessionProvider session={initialSession}>
                         <ThemeProvider
                             attribute="class"
                             canonicalTheme={initialTheme.theme}

@@ -35,18 +35,13 @@ export function isCollapsibleTraceNode(node: UiTimelineNode): boolean {
             return false;
         }
         
-        // 2.3 排除：终端交互类工具（由活跃进程 HUD 和内置终端承载，高频强交互）
-        if (toolName === "start_background_command" || toolName === "run_system_command") {
-            return false;
-        }
-        
-        // 2.4 排除：Mcp 网页 App 独立框架 (McpAppFrame)
+        // 2.3 Mcp 网页 App 独立框架 (McpAppFrame)
         const hasMcp = !!(execNode.mcpApp || execNode.data?.mcpApp || execNode.data?.mcp_app);
         if (hasMcp) {
             return false;
         }
         
-        // 2.5 排除：其他在气泡中渲染为 null 的隐藏工具
+        // 2.4 排除：其他在气泡中渲染为 null 的隐藏工具
         if (toolName === "inspect_and_move_media") {
             return false;
         }
@@ -113,15 +108,25 @@ function extractNodeDuration(node: UiExecutionNode, resultNode?: UiExecutionNode
     
     const nodeTime = Number(node.time || 0);
     if (nodeTime > 0) {
-        return nodeTime;
+        return nodeTime / 1000;
     }
 
     const resultTime = Number(resultNode?.time || 0);
     if (resultTime > 0) {
-        return resultTime;
+        return resultTime / 1000;
     }
     
     return 0;
+}
+
+function toolInvocationCountKey(node: UiExecutionNode, fallbackIndex: number): string {
+    const toolIdentity = String(node.toolCallId || "").trim();
+    if (!toolIdentity) {
+        return `node:${String(node.id || fallbackIndex)}`;
+    }
+    const runId = String(node.runId || "").trim();
+    const ownerStreamKey = String(node.ownerStreamKey || "").trim();
+    return `tool:${runId}:${ownerStreamKey}:${toolIdentity}`;
 }
 
 // 客户端自适应聚类核心逻辑
@@ -140,14 +145,19 @@ export function groupTimelineNodes(
         let toolCount = 0;
         let totalDuration = 0;
         let isStreaming = false;
+        const countedToolKeys = new Set<string>();
 
-        traceBuffer.forEach((node) => {
+        traceBuffer.forEach((node, nodeIndex) => {
             const execNode = node as UiExecutionNode;
             if (execNode.executionType === "reasoning") {
                 reasoningCount++;
-                // Add reasoning time if available
-                totalDuration += Number(execNode.time || 0);
+                totalDuration += extractNodeDuration(execNode);
             } else if (execNode.executionType === "tool_call") {
+                const toolKey = toolInvocationCountKey(execNode, nodeIndex);
+                if (countedToolKeys.has(toolKey)) {
+                    return;
+                }
+                countedToolKeys.add(toolKey);
                 toolCount++;
                 const toolCallId = execNode.toolCallId?.trim();
                 const resultNode = toolCallId ? resultNodesByToolCallId.get(toolCallId) : undefined;

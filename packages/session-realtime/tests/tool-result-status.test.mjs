@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createInitialSessionRealtimeMessageState } from "../dist/cdc.js";
-import { buildClientToolSurface } from "../dist/client-tool-surface.js";
+import { buildClientToolSurface, formatClientToolResult } from "../dist/client-tool-surface.js";
 import { applyRealtimeEventToMessages } from "../dist/message-lifecycle.js";
 
 function applyToolResult(tool) {
@@ -61,4 +61,18 @@ test("legacy command redirect marker remains waiting when old history has no res
     state: "result",
     result: "$ pip install python-docx\n[command_session_required]",
   }).status, "waiting");
+});
+
+test("human tool result redacts local paths without removing parsed document content", () => {
+  const result = formatClientToolResult([
+    "--- File: C:\\Users\\Lenovo\\.v8-agent-os\\workspace\\report.docx (Lines 1 to 4 of 4) ---",
+    "# 信息科每日工作汇总",
+    "| 工作事项 | 负责人 |",
+    "| 机房巡检 | 张三 |",
+  ].join("\n"));
+
+  assert.doesNotMatch(result, /C:\\Users\\Lenovo/);
+  assert.match(result, /\[local path\]/);
+  assert.match(result, /机房巡检/);
+  assert.match(result, /负责人/);
 });

@@ -12,6 +12,8 @@ const streamHookSource = fs.readFileSync(path.join(root, "src", "hooks", "use-la
 const runtimeStageSource = fs.readFileSync(path.join(root, "src", "lib", "runtime-stage.ts"), "utf8");
 const contentDispatcherSource = fs.readFileSync(path.join(root, "src", "components", "chat", "ContentDispatcher.tsx"), "utf8");
 const toolCardSource = fs.readFileSync(path.join(root, "src", "components", "chat", "ToolCard.tsx"), "utf8");
+const chatMessageSource = fs.readFileSync(path.join(root, "src", "components", "chat", "ChatMessage.tsx"), "utf8");
+const timelineGrouperSourcePath = path.join(root, "src", "lib", "chat", "timeline-grouper.ts");
 const commandSurfaceSources = [chatClientSource, ...[
   "InteractiveTerminalCard.tsx",
   "ManualTerminalPanel.tsx",
@@ -24,6 +26,12 @@ const compiled = ts.transpileModule(fs.readFileSync(sourcePath, "utf8"), {
 }).outputText;
 const testModule = { exports: {} };
 new Function("require", "module", "exports", compiled)(require, testModule, testModule.exports);
+const timelineGrouperCompiled = ts.transpileModule(fs.readFileSync(timelineGrouperSourcePath, "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  fileName: timelineGrouperSourcePath,
+}).outputText;
+const timelineGrouperModule = { exports: {} };
+new Function("require", "module", "exports", timelineGrouperCompiled)(require, timelineGrouperModule, timelineGrouperModule.exports);
 const identityLedgerSourcePath = path.join(root, "src", "lib", "runtime-event-identity-ledger.ts");
 const identityLedgerCompiled = ts.transpileModule(fs.readFileSync(identityLedgerSourcePath, "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -35,6 +43,9 @@ const { BoundedRuntimeEventIdentityLedger } = identityLedgerModule.exports;
 const {
   deriveComposerRunActivity,
   deriveInterruptibleRunId,
+  deriveMatchingTerminalProjection,
+  shouldSettleSubmittedRun,
+  shouldPreserveCurrentHistoryOnEmpty,
   isActiveRunStatus,
   isRecognizedRunStatus,
   isTerminalRunStatus,
@@ -42,6 +53,85 @@ const {
   shouldApplyRunScopedStatus,
   terminalRunStatusFromTopic,
 } = testModule.exports;
+
+test("a matching terminal snapshot settles the submitted run", () => {
+  assert.deepEqual(deriveMatchingTerminalProjection({
+    localRunId: "run-current",
+    runtimeStatus: "completed",
+    projectedRunId: "run-current",
+    currentRunStatus: "completed",
+    currentRunId: "run-current",
+  }), {
+    runId: "run-current",
+    status: "completed",
+  });
+});
+
+test("a stale or not-yet-accepted snapshot cannot settle the submitted run", () => {
+  assert.equal(deriveMatchingTerminalProjection({
+    localRunId: "run-current",
+    runtimeStatus: "completed",
+    projectedRunId: "run-previous",
+  }), null);
+  assert.equal(deriveMatchingTerminalProjection({
+    localRunId: "run-current",
+    acceptancePending: true,
+    runtimeStatus: "completed",
+    projectedRunId: "run-current",
+  }), null);
+});
+
+test("an authoritative active status outranks a stale nested terminal record", () => {
+  assert.equal(deriveMatchingTerminalProjection({
+    localRunId: "run-current",
+    runtimeStatus: "running",
+    projectedRunId: "run-current",
+    currentRunStatus: "completed",
+    currentRunId: "run-current",
+  }), null);
+});
+
+test("terminal settlement is idempotent and run scoped", () => {
+  assert.equal(shouldSettleSubmittedRun({
+    submittedRunId: "run-current",
+    terminalRunId: "run-current",
+  }), true);
+  assert.equal(shouldSettleSubmittedRun({
+    submittedRunId: "",
+    terminalRunId: "run-current",
+  }), false);
+  assert.equal(shouldSettleSubmittedRun({
+    submittedRunId: "run-current",
+    terminalRunId: "",
+  }), false);
+  assert.equal(shouldSettleSubmittedRun({
+    submittedRunId: "run-current",
+    terminalRunId: "run-previous",
+  }), false);
+  assert.equal(shouldSettleSubmittedRun({
+    submittedRunId: "run-current",
+    terminalRunId: "run-current",
+    acceptancePending: true,
+  }), false);
+});
+
+test("terminal reconciliation cannot replace an authoritative snapshot with an empty turn page", () => {
+  assert.equal(shouldPreserveCurrentHistoryOnEmpty({
+    preserveCurrentOnEmpty: true,
+    currentMessageCount: 3,
+    incomingMessageCount: 0,
+  }), true);
+  assert.equal(shouldPreserveCurrentHistoryOnEmpty({
+    preserveCurrentOnEmpty: false,
+    currentMessageCount: 3,
+    incomingMessageCount: 0,
+  }), false);
+  assert.equal(shouldPreserveCurrentHistoryOnEmpty({
+    preserveCurrentOnEmpty: true,
+    currentMessageCount: 3,
+    incomingMessageCount: 2,
+  }), false);
+});
 
 test("authoritative terminal runtime status clears a stale running sidebar summary", () => {
   assert.equal(deriveComposerRunActivity({
@@ -67,6 +157,12 @@ test("Web tool cards render authoritative non-success statuses instead of treati
   assert.match(toolCardSource, /toolInvocation\.clientSurface\?\.status/);
   assert.match(toolCardSource, /web\.toolCard\.timedOut/);
   assert.match(toolCardSource, /web\.toolCard\.terminated/);
+});
+
+test("completed traces with file-producing tools are visible without a second click", () => {
+  assert.match(chatMessageSource, /hasArtifactProducingTool\(segment\)/);
+  assert.match(chatMessageSource, /toolName === "write_native_file"/);
+  assert.match(chatMessageSource, /const defaultExpanded = hasArtifactProducingTool\(segment\)/);
 });
 
 test("a stale terminal projection from another run cannot settle the submitted run", () => {
@@ -114,8 +210,15 @@ test("terminal realtime events settle the matching durable run without aborting 
   assert.match(streamHookSource, /settleTerminalStream[\s\S]*?flushPendingMessages\(\);[\s\S]*?setIsLoading\(false\);/);
   const implementation = streamHookSource.match(/const settleTerminalStream = useCallback\(\(runId\?: string \| null\) => \{([\s\S]*?)\}, \[flushPendingMessages, setIsLoading\]\);/)?.[1] || "";
   assert.doesNotMatch(implementation, /\.abort\(/);
-  assert.match(implementation, /submittedRunIdRef\.current !== normalizedRunId/);
+  assert.match(implementation, /shouldSettleSubmittedRun\(\{/);
   assert.match(implementation, /durableSubmitPendingRef\.current/);
+});
+
+test("terminal snapshots settle the matching durable run and replace optimistic deltas", () => {
+  assert.match(chatClientSource, /deriveMatchingTerminalProjection\(\{/);
+  assert.match(chatClientSource, /const terminalStreamSettled = terminalProjection[\s\S]*?settleTerminalStream\(terminalProjection\.runId\)/);
+  assert.match(chatClientSource, /mergeWithCurrent: localStreamActive && !terminalStreamSettled/);
+  assert.match(chatClientSource, /readString\(terminalEventData\.run_id\)[\s\S]*?readString\(terminalEventData\.runId\)/);
 });
 
 test("Web keeps a new durable submission busy until its run identity is accepted", () => {
@@ -174,8 +277,55 @@ test("Web reconciles remote runs and hydrates history when an initial snapshot h
   assert.match(streamHookSource, /dispatchRunCommand[\s\S]*?signal: AbortSignal\.timeout\(10_000\)/);
   assert.match(chatClientSource, /canStopRun=\{canInterruptProjectedRun\}/);
   assert.match(chatClientSource, /deriveInterruptibleRunId\(\{/);
-  assert.match(chatClientSource, /snapshotHistoryFallbackRequested/);
-  assert.match(chatClientSource, /Snapshot history hydration failed/);
+  assert.match(chatClientSource, /requestAuthoritativeResync\("snapshot_without_messages"\)/);
+  assert.match(chatClientSource, /requestAuthoritativeResync\("sse_error"\)/);
+  assert.match(chatClientSource, /Promise\.allSettled\(\[/);
+  assert.doesNotMatch(chatClientSource, /if \(!isLocalStreamActive\(activeConversationId\)\) \{\s*requestAuthoritativeResync/);
+});
+
+test("Web replaces live deltas with canonical history when a run reaches terminal state", () => {
+  assert.match(
+    chatClientSource,
+    /const localStreamWasActive = terminalTargetsCurrentRun && isLocalStreamActive\(conversationId\);[\s\S]*?canonicalReloadDeferredToStreamCompletion = true/,
+  );
+  assert.match(
+    chatClientSource,
+    /if \(!canonicalReloadDeferredToStreamCompletion\) \{[\s\S]*?mergeWithCurrent: false,[\s\S]*?preserveCurrentOnEmpty: true/,
+  );
+  assert.match(
+    chatClientSource,
+    /if \(!wasLoading \|\| isLoading \|\| !conversationId\) \{\s*return;\s*\}[\s\S]*?preserveCurrentOnEmpty: true/,
+  );
+  assert.match(chatClientSource, /preserveCurrentHistory \? messagesRef\.current : normalized/);
+});
+
+test("conversation identity hydration does not rerun merely because local loading settles", () => {
+  const effectStart = chatClientSource.indexOf("// Fetch history when ID changes");
+  const effectEnd = chatClientSource.indexOf("const eventSource = new EventSource", effectStart);
+  const effect = chatClientSource.slice(effectStart, effectEnd);
+
+  assert.ok(effectStart > 0 && effectEnd > effectStart);
+  assert.match(effect, /const localStreamLoading = isLoadingRef\.current/);
+  assert.doesNotMatch(effect, /\[activeConversationId,[^\]]*\bisLoading\b/);
+});
+
+test("Web timeline counts command tools and treats canonical node time as milliseconds", () => {
+  const grouper = fs.readFileSync(timelineGrouperSourcePath, "utf8");
+  assert.doesNotMatch(grouper, /toolName === "start_background_command" \|\| toolName === "run_system_command"/);
+  assert.match(grouper, /return nodeTime \/ 1000/);
+  assert.match(grouper, /totalDuration \+= extractNodeDuration\(execNode\)/);
+});
+
+test("Web tool totals deduplicate replayed identities without merging distinct runs", () => {
+  const { groupTimelineNodes } = timelineGrouperModule.exports;
+  const nodes = [
+    { id: "node-1", kind: "execution", executionType: "tool_call", toolCallId: "call-replayed", runId: "run-a", ownerStreamKey: "supervisor", timestamp: 1 },
+    { id: "node-2", kind: "execution", executionType: "tool_call", toolCallId: "call-replayed", runId: "run-a", ownerStreamKey: "supervisor", timestamp: 2 },
+    { id: "node-3", kind: "execution", executionType: "tool_call", toolCallId: "call-replayed", runId: "run-b", ownerStreamKey: "supervisor", timestamp: 3 },
+    { id: "node-4", kind: "execution", executionType: "tool_call", toolName: "run_system_command", runId: "run-b", ownerStreamKey: "supervisor", timestamp: 4 },
+  ];
+  const [segment] = groupTimelineNodes(nodes, new Map());
+  assert.equal(segment.toolCount, 3);
 });
 
 test("Web starts chat work through the durable submit route and consumes progress from realtime", () => {
@@ -211,10 +361,7 @@ test("Web prunes only realtime identities covered by an advancing snapshot", () 
     chatClientSource,
     /const snapshotWatermarkAdvanced = latestSeq > snapshotCoveredRealtimeSeqRef\.current;[\s\S]*?if \(snapshotWatermarkAdvanced\) \{\s*seenRealtimeEventIdentitiesRef\.current\.pruneSnapshotCovered\(latestSeq\);\s*\}/,
   );
-  assert.match(
-    chatClientSource,
-    /if \(latestSeq > snapshotCoveredRealtimeSeqRef\.current\) \{\s*snapshotCoveredRealtimeSeqRef\.current = latestSeq;\s*seenRealtimeEventIdentitiesRef\.current\.pruneSnapshotCovered\(latestSeq\);\s*\}/,
-  );
+  assert.match(chatClientSource, /snapshotCoveredRealtimeSeqRef\.current = Math\.max\(snapshotCoveredRealtimeSeqRef\.current, latestSeq\)/);
 });
 
 test("Web keeps a gap event identity beyond a partial snapshot watermark", () => {

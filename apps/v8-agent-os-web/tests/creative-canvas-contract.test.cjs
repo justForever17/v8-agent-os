@@ -970,6 +970,8 @@ test("Workbench fails closed on artifact sessions and previews text formats by f
   assert.match(renderer, /new URLSearchParams\(\{ sessionId: String\(document\.subjectRef\.sessionId \|\| ""\) \}\)/);
   assert.match(renderer, /fetch\(`\/api\/artifacts\/\$\{encodeURIComponent\(document\.subjectRef\.artifactId\)\}\?\$\{query\.toString\(\)\}`/);
   assert.match(renderer, /artifactSessionId !== document\.subjectRef\.sessionId/);
+  assert.match(renderer, /createWorkspaceFileDocument\(\{/);
+  assert.match(renderer, /<WorkspaceFileRenderer document=\{sourceDocument\} onSendLineComment=\{onSendLineComment\}/);
   const openOutput = overview.slice(
     overview.indexOf("const openOutput = useCallback"),
     overview.indexOf("const openSource = useCallback"),

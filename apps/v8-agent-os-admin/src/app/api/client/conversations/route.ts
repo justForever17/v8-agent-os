@@ -7,6 +7,7 @@ import {
 import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
 import { jsonSizeBytes, recordAdminApiMetric } from "@/lib/server/client-perf-metrics";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
+import { readSessionStateError } from "@/lib/server/session-state-error";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 const ENGINE_NOW_HEADER = "x-v8-engine-now";
@@ -35,8 +36,9 @@ export async function GET(req: NextRequest) {
         }
 
         if (!response.ok) {
-            console.error("[Client Conversations] Failed to fetch sessions:", await response.text());
-            return NextResponse.json([]);
+            const failure = await readSessionStateError(response);
+            console.error("[Client Conversations] Failed to fetch sessions:", failure.error.code);
+            return NextResponse.json(failure, { status: response.status >= 500 ? 503 : response.status });
         }
 
         const data = await response.json().catch(() => ({}));
@@ -56,13 +58,23 @@ export async function GET(req: NextRequest) {
                 ...(response.headers.get(ENGINE_NOW_HEADER)
                     ? { [ENGINE_NOW_HEADER]: response.headers.get(ENGINE_NOW_HEADER)! }
                     : {}),
+                ...(data?.degraded === true ? {
+                    "x-v8-state-degraded": "1",
+                    "x-v8-state-degradation-code": String(data?.degradation?.code || "state_database_unavailable"),
+                } : {}),
                 "x-v8-admin-proxy-ms": String(elapsedMs),
                 "x-v8-payload-bytes": String(payloadBytes),
             },
         });
     } catch (error) {
         console.error("[Client Conversations] Engine communication failed:", error);
-        return NextResponse.json([]);
+        return NextResponse.json({
+            error: {
+                code: "state_database_unavailable",
+                message: "本地运行状态数据库暂时不可用，已有状态未被覆盖。请稍后重试。",
+                retryable: true,
+            },
+        }, { status: 503 });
     }
 }
 

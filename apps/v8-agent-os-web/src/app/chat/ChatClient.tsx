@@ -17,10 +17,12 @@ import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
     deriveComposerRunActivity,
     deriveInterruptibleRunId,
+    deriveMatchingTerminalProjection,
     isRecognizedRunStatus,
     isTerminalRunStatus,
     runStatusAllowsInterrupt,
     shouldApplyRunScopedStatus,
+    shouldPreserveCurrentHistoryOnEmpty,
     terminalRunStatusFromTopic,
 } from "@/lib/chat/run-activity";
 import {
@@ -96,6 +98,7 @@ import {
     type SessionApprovalView,
     type SupervisorRuntimeMode,
 } from "@v8/session-realtime";
+import { authoritativeSnapshotOmitsMessages } from "@v8/session-realtime/cdc";
 
 const AskUserModal = dynamic(
     () => import("@/components/chat/AskUserModal").then((mod) => mod.AskUserModal),
@@ -744,7 +747,12 @@ function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: u
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
-            return snapshotMessage;
+            // During an active durable run the snapshot can contain a
+            // canonical-but-lagging node list. Merge by node identity so a
+            // just-delivered tool/reasoning node is not erased by that
+            // snapshot; terminal/history reloads still use the non-merge
+            // path and remain authoritative.
+            return normalizeMessagesForState([matchingCurrent, snapshotMessage])[0] || snapshotMessage;
         }
         const snapshotAuthoritativeAssistant = snapshotMessage.role === "assistant"
             && hasRenderableWebMessagePayload(snapshotMessage)
@@ -2311,7 +2319,11 @@ export default function ChatClient() {
         };
     }, [mergeTurnIndexEntries]);
 
-    const applyProjectedSnapshot = useCallback((projectedMessages: unknown[], latestSeq = 0) => {
+    const applyProjectedSnapshot = useCallback((
+        projectedMessages: unknown[],
+        latestSeq = 0,
+        options?: { mergeWithCurrent?: boolean },
+    ) => {
         if (runtimeFlushFrameRef.current !== null && typeof window !== "undefined") {
             window.cancelAnimationFrame(runtimeFlushFrameRef.current);
             runtimeFlushFrameRef.current = null;
@@ -2320,7 +2332,37 @@ export default function ChatClient() {
             clearTimeout(runtimeFlushTimerRef.current);
             runtimeFlushTimerRef.current = null;
         }
-        const normalized = mergeProjectedSnapshotMessages(messagesRef.current, projectedMessages);
+        let normalized = options?.mergeWithCurrent === false
+            ? normalizeProjectedMessages(projectedMessages)
+            : mergeProjectedSnapshotMessages(messagesRef.current, projectedMessages);
+
+        // A runtime event and its authoritative snapshot can arrive in the
+        // same task.  Applying the snapshot must not discard events waiting
+        // for the next animation frame; doing so hides tool/reasoning cards
+        // until a later history reload.  Replay the pending events against
+        // the merged snapshot before replacing the message-state ledger.
+        const pendingRuntimeEvents = realtimeMessageStateRef.current.pendingRuntimeEvents.slice();
+        if (pendingRuntimeEvents.length > 0) {
+            const pendingState = syncSessionRealtimeMessageState(
+                normalized,
+                WEB_STREAM_LIFECYCLE_OPTIONS,
+            );
+            for (const runtimeEvent of pendingRuntimeEvents) {
+                queueSessionRealtimeRuntimeEvent(pendingState, runtimeEvent);
+            }
+            const replayed = flushQueuedSessionRealtimeRuntimeEvents(
+                normalized,
+                pendingState,
+                {
+                    cloneMessages,
+                    normalizeMessages: normalizeMessagesForState,
+                    lifecycleOptions: WEB_STREAM_LIFECYCLE_OPTIONS,
+                },
+            );
+            if (replayed.changed) {
+                normalized = replayed.messages;
+            }
+        }
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
@@ -2356,7 +2398,10 @@ export default function ChatClient() {
         });
     }, []);
 
-    const loadConversationHistory = useCallback(async (conversationId: string) => {
+    const loadConversationHistory = useCallback(async (
+        conversationId: string,
+        options?: { mergeWithCurrent?: boolean; preserveCurrentOnEmpty?: boolean },
+    ) => {
         setQueuedMessages([]);
         turnIndexRef.current = [];
         setTurnIndex([]);
@@ -2368,9 +2413,7 @@ export default function ChatClient() {
             fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, { cache: "no-store" }),
             loadConversationTurnPage(conversationId),
         ]);
-        if (activeConversationIdRef.current !== conversationId) {
-            return;
-        }
+        if (activeConversationIdRef.current !== conversationId) return;
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
                 router.replace("/chat");
@@ -2401,6 +2444,11 @@ export default function ChatClient() {
 
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
         const normalized = normalizeMessagesForState(turnPage.messages);
+        const preserveCurrentHistory = shouldPreserveCurrentHistoryOnEmpty({
+            preserveCurrentOnEmpty: options?.preserveCurrentOnEmpty,
+            currentMessageCount: messagesRef.current.length,
+            incomingMessageCount: normalized.length,
+        });
         const messageTurnEntries = normalized.flatMap<ChatTurnIndexEntry>((message) => (
             message.turnId && Number(message.turnPosition || 0) > 0
                 ? [{
@@ -2416,18 +2464,14 @@ export default function ChatClient() {
         isLoadingOlderTurnsRef.current = false;
         setIsLoadingOlderTurns(false);
         setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
-        latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, latestSeq);
-        if (latestSeq > snapshotCoveredRealtimeSeqRef.current) {
-            snapshotCoveredRealtimeSeqRef.current = latestSeq;
-            seenRealtimeEventIdentitiesRef.current.pruneSnapshotCovered(latestSeq);
-        }
-        realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
-            normalized,
-            WEB_STREAM_LIFECYCLE_OPTIONS,
+        const nextMessages = applyProjectedSnapshot(
+            preserveCurrentHistory ? messagesRef.current : normalized,
+            latestSeq,
+            {
+                mergeWithCurrent: options?.mergeWithCurrent === true,
+            },
         );
-        messagesRef.current = normalized;
-        messageCacheRef.current.set(conversationId, cloneMessages(normalized));
-        setMessages(normalized);
+        messageCacheRef.current.set(conversationId, cloneMessages(nextMessages));
         const detailProcesses = Array.isArray(detailPayload?.processes) ? detailPayload.processes : [];
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
@@ -2440,7 +2484,7 @@ export default function ChatClient() {
                 setTotalTurnCount(resolvedTotal);
             }
         }
-    }, [applyAskUserPendingApproval, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router, setMessages]);
+    }, [applyAskUserPendingApproval, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -2572,10 +2616,13 @@ export default function ChatClient() {
         if (!wasLoading || isLoading || !conversationId) {
             return;
         }
-        void loadConversationTurnIndexPage(conversationId).catch((error) => {
-            console.warn("[ChatClient] Failed to refresh turn index after run completion:", error);
+        void loadConversationHistory(conversationId, {
+            mergeWithCurrent: false,
+            preserveCurrentOnEmpty: true,
+        }).catch((error) => {
+            console.warn("[ChatClient] Failed to hydrate canonical history after local run completion:", error);
         });
-    }, [isLoading, loadConversationTurnIndexPage]);
+    }, [isLoading, loadConversationHistory]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -3107,19 +3154,25 @@ export default function ChatClient() {
         const runtimeTimelineEntry = buildRuntimeTimelineEntryFromEvent(rawEvent);
         const terminalRunStatus = terminalRunStatusFromTopic(normalizedEvent.topic, normalizedEvent.data);
         if (terminalRunStatus) {
+            const terminalEventData = asPlainRecord(normalizedEvent.data);
             const terminalRunId = readString((normalizedEvent as Record<string, unknown>).run_id)
-                || readString((normalizedEvent as Record<string, unknown>).runId);
+                || readString((normalizedEvent as Record<string, unknown>).runId)
+                || readString(terminalEventData.run_id)
+                || readString(terminalEventData.runId);
             const currentRunId = getSubmittedRunId() || localSubmittedRunId || projectionRunId;
             const terminalTargetsCurrentRun = shouldApplyRunScopedStatus(
                 terminalRunId,
                 currentRunId,
                 isRunAcceptancePending(),
             );
-            if (terminalTargetsCurrentRun && isLocalStreamActive(conversationId)) {
+            const localStreamWasActive = terminalTargetsCurrentRun && isLocalStreamActive(conversationId);
+            let canonicalReloadDeferredToStreamCompletion = false;
+            if (localStreamWasActive) {
                 const settled = settleTerminalStream(terminalRunId);
                 if (settled) {
                     streamingConversationIdRef.current = null;
                     streamingTransportRef.current = null;
+                    canonicalReloadDeferredToStreamCompletion = true;
                 }
             }
             if (terminalTargetsCurrentRun) {
@@ -3137,6 +3190,14 @@ export default function ChatClient() {
                     } : current.controls,
                 } : current);
                 patchConversationSummary(conversationId, { status: terminalRunStatus });
+                if (!canonicalReloadDeferredToStreamCompletion) {
+                    void loadConversationHistory(conversationId, {
+                        mergeWithCurrent: false,
+                        preserveCurrentOnEmpty: true,
+                    }).catch((error) => {
+                        console.warn("[ChatClient] Failed to hydrate canonical history after remote terminal event:", error);
+                    });
+                }
             }
         }
         const isHumanGuidanceEvent =
@@ -3319,7 +3380,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadRuns, localSubmittedRunId, patchConversationSummary, projectionRunId, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, localSubmittedRunId, patchConversationSummary, projectionRunId, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -3699,9 +3760,10 @@ export default function ChatClient() {
         if (status !== "authenticated") {
             return;
         }
+        const localStreamLoading = isLoadingRef.current;
         if (activeConversationId) {
             if (
-                isLoading
+                localStreamLoading
                 && streamingConversationIdRef.current
                 && streamingConversationIdRef.current !== activeConversationId
             ) {
@@ -3714,7 +3776,7 @@ export default function ChatClient() {
             // CRITICAL FIX: If we are currently streaming content for this ID, 
             // DO NOT fetch from DB. The DB history is stale (empty) compared to our live stream.
             // Fetching would overwrite our live state with empty history, causing the "Flicker/Disappear" bug.
-            if (isLoading && streamingConversationIdRef.current === activeConversationId) {
+            if (localStreamLoading && streamingConversationIdRef.current === activeConversationId) {
                 console.log(`[ChatClient] Skipping history fetch for ${activeConversationId} (Streaming active)`);
                 return;
             }
@@ -3726,7 +3788,7 @@ export default function ChatClient() {
             void loadRuns(activeConversationId);
         } else {
             console.log("[ChatClient] New conversation reset");
-            if (isLoading) stop();
+            if (localStreamLoading) stop();
             latestRealtimeSeqRef.current = 0;
             snapshotCoveredRealtimeSeqRef.current = 0;
             seenRealtimeEventIdentitiesRef.current.clear();
@@ -3753,7 +3815,7 @@ export default function ChatClient() {
             messagesRef.current = [];
             setMessages([]);
         }
-    }, [activeConversationId, clearApprovalState, isLoading, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages]);
+    }, [activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages]);
 
     useEffect(() => {
         if (status !== "authenticated" || !activeConversationId) {
@@ -3761,7 +3823,32 @@ export default function ChatClient() {
         }
 
         const eventSource = new EventSource(`/api/realtime/sessions/${activeConversationId}/stream`);
-        let snapshotHistoryFallbackRequested = false;
+        let lastAuthoritativeResyncAt = 0;
+        let authoritativeResyncInFlight = false;
+        const requestAuthoritativeResync = (reason: "snapshot_without_messages" | "sse_error") => {
+            const now = Date.now();
+            if (authoritativeResyncInFlight || (now - lastAuthoritativeResyncAt) < 750) {
+                return;
+            }
+            lastAuthoritativeResyncAt = now;
+            authoritativeResyncInFlight = true;
+            const localStreamActive = isLocalStreamActive(activeConversationId);
+            void Promise.allSettled([
+                loadConversationHistory(activeConversationId, {
+                    mergeWithCurrent: localStreamActive,
+                    preserveCurrentOnEmpty: true,
+                }),
+                loadRuns(activeConversationId),
+            ]).then((results) => {
+                for (const result of results) {
+                    if (result.status === "rejected") {
+                        console.warn(`[ChatClient] Realtime resync failed (${reason}):`, result.reason);
+                    }
+                }
+            }).finally(() => {
+                authoritativeResyncInFlight = false;
+            });
+        };
 
         const handleSnapshot = (event: MessageEvent) => {
             try {
@@ -3777,8 +3864,31 @@ export default function ChatClient() {
                     setLegacyChatUnsupported(true);
                 }
                 applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId);
-                const localStreamActive = isLocalStreamActive(activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
+                const localStreamActive = isLocalStreamActive(activeConversationId);
+                const terminalProjection = nextView && localStreamActive
+                    ? deriveMatchingTerminalProjection({
+                        localRunId: getSubmittedRunId() || localSubmittedRunId,
+                        acceptancePending: isRunAcceptancePending(),
+                        runtimeStatus: nextView.runtimeStatus,
+                        projectedRunId: nextView.controls?.runId
+                            || nextView.currentRun?.id
+                            || nextView.workflow?.rootRunId,
+                        currentRunStatus: nextView.currentRun?.status,
+                        currentRunId: nextView.currentRun?.id,
+                        controlStatus: nextView.controls?.workflowStatus,
+                        controlRunId: nextView.controls?.runId,
+                        workflowStatus: nextView.workflow?.status,
+                        workflowRunId: nextView.workflow?.rootRunId,
+                    })
+                    : null;
+                const terminalStreamSettled = terminalProjection
+                    ? settleTerminalStream(terminalProjection.runId)
+                    : false;
+                if (terminalStreamSettled) {
+                    streamingConversationIdRef.current = null;
+                    streamingTransportRef.current = null;
+                }
                 setSessionProjection((current) => {
                     if (!nextView) {
                         return current;
@@ -3798,16 +3908,29 @@ export default function ChatClient() {
                 if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {
                     applySessionProcessSurface(nextView.processes);
                 }
-                if (!localStreamActive && Array.isArray(nestedSnapshot.messages)) {
+                const snapshotMessages = Array.isArray(nestedSnapshot.messages)
+                    ? nestedSnapshot.messages
+                    : Array.isArray(snapshotRecord.messages)
+                        ? snapshotRecord.messages
+                        : null;
+                const messagesOmitted = authoritativeSnapshotOmitsMessages(snapshotPayload);
+                const preserveLegacyCompactSnapshot = Boolean(
+                    snapshotMessages
+                    && snapshotMessages.length === 0
+                    && messagesRef.current.length > 0,
+                );
+                if (snapshotMessages && !messagesOmitted && !preserveLegacyCompactSnapshot) {
                     applyProjectedSnapshot(
-                        nestedSnapshot.messages,
+                        snapshotMessages,
                         Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),
+                        { mergeWithCurrent: localStreamActive && !terminalStreamSettled },
                     );
-                } else if (!localStreamActive && !snapshotHistoryFallbackRequested) {
-                    snapshotHistoryFallbackRequested = true;
-                    void loadConversationHistory(activeConversationId).catch((error) => {
-                        console.warn("[ChatClient] Snapshot history hydration failed:", error);
-                    });
+                } else if (
+                    terminalStreamSettled
+                    || messagesRef.current.length === 0
+                    || (!messagesOmitted && preserveLegacyCompactSnapshot)
+                ) {
+                    requestAuthoritativeResync("snapshot_without_messages");
                 }
             } catch (error) {
                 console.warn("[ChatClient] Failed to parse snapshot SSE payload:", error);
@@ -3824,12 +3947,7 @@ export default function ChatClient() {
         };
 
         const handleError = () => {
-            if (!isLocalStreamActive(activeConversationId)) {
-                void loadConversationHistory(activeConversationId).catch((error) => {
-                    console.warn("[ChatClient] Realtime resync failed:", error);
-                });
-                void loadRuns(activeConversationId);
-            }
+            requestAuthoritativeResync("sse_error");
         };
 
         eventSource.addEventListener("snapshot", handleSnapshot as EventListener);
@@ -3842,7 +3960,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns, status]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, localSubmittedRunId, settleTerminalStream, status]);
 
     useEffect(() => {
         if (!activeConversationId) {

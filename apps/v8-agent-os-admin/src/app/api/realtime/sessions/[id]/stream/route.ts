@@ -21,6 +21,7 @@ import {
 import {
     buildRuntimeEventDeliveryIdentity,
     RuntimeEventGapRecoveryThrottle,
+    shouldRequestSnapshotForEmptyEventPage,
     shouldDeliverRuntimeEventObservation,
 } from "@/lib/server/runtime-event-delivery";
 
@@ -279,9 +280,20 @@ export async function GET(
                                 engineElapsedMs: readEngineElapsedMs(eventsData),
                             });
                             const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
+                            const latestEventsSeq = Number(eventsData?.latestSeq || 0) || 0;
                             if (events.length > 0) {
                                 idlePollCount = 0;
                                 idleBackoffMs = 260;
+                            } else if (shouldRequestSnapshotForEmptyEventPage(
+                                latestEventsSeq,
+                                runtimeCursor.contiguousSeq,
+                            )) {
+                                // The replay page is empty but the durable
+                                // high-water mark moved. Ask the snapshot
+                                // path to cover the gap before polling again.
+                                queueSnapshotPush(120);
+                                idlePollCount = 0;
+                                idleBackoffMs = 320;
                             } else {
                                 const recentlyForwarded = Date.now() - lastForwardedAt < 6000;
                                 if (recentlyForwarded) {

@@ -56,6 +56,17 @@ test("Web refreshes visible session activity without replaying the initial loadi
   assert.match(context, /showInitialLoading = !hasLoadedRef\.current/);
 });
 
+test("conversation proxies preserve a database degradation instead of returning a fake empty history", () => {
+  const adminRoute = readText("apps/v8-agent-os-admin/src/app/api/conversations/route.ts");
+  const clientRoute = readText("apps/v8-agent-os-admin/src/app/api/client/conversations/route.ts");
+  const combined = `${adminRoute}\n${clientRoute}`;
+
+  assert.match(combined, /state_database_unavailable/);
+  assert.match(combined, /status: 503/);
+  assert.match(combined, /x-v8-state-degraded/);
+  assert.doesNotMatch(combined, /return NextResponse\.json\(\[\]\)/);
+});
+
 test("Web waits for the trusted local session before hydrating conversation history and realtime", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
@@ -69,16 +80,41 @@ test("Web waits for the trusted local session before hydrating conversation hist
   );
   assert.match(
     client,
-    /\[activeConversationId, clearApprovalState, isLoading, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages\]/,
+    /\[activeConversationId, clearApprovalState, loadConversationHistory, loadRuns, loadSessionScope, status, stop, setMessages\]/,
   );
   assert.match(
     client,
-    /\[activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns, status\]/,
+    /\[activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface,[^\]]*loadConversationHistory, loadRuns,[^\]]*status\]/,
   );
   assert.match(
     client,
     /if \(status !== "authenticated" \|\| !activeConversationId\) \{\s+applySessionProcessSurface\(\[\], \{ forceClear: true \}\);/,
   );
+});
+
+test("Web realtime recovery merges only the active session while normal navigation replaces history", () => {
+  const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+
+  assert.match(client, /options\?: \{ mergeWithCurrent\?: boolean; preserveCurrentOnEmpty\?: boolean \}/);
+  assert.match(client, /options\?\.mergeWithCurrent === false\s+\? normalizeProjectedMessages\(projectedMessages\)\s+: mergeProjectedSnapshotMessages/);
+  assert.match(client, /mergeWithCurrent: options\?\.mergeWithCurrent === true/);
+  assert.match(client, /const localStreamActive = isLocalStreamActive\(activeConversationId\)/);
+  assert.match(client, /authoritativeSnapshotOmitsMessages\(snapshotPayload\)/);
+  assert.match(client, /Array\.isArray\(nestedSnapshot\.messages\)[\s\S]*?Array\.isArray\(snapshotRecord\.messages\)/);
+  assert.match(client, /if \(snapshotMessages && !messagesOmitted && !preserveLegacyCompactSnapshot\)/);
+  assert.match(client, /mergeWithCurrent: localStreamActive && !terminalStreamSettled/);
+  assert.match(client, /messagesRef\.current\.length === 0[\s\S]*?requestAuthoritativeResync\("snapshot_without_messages"\)/);
+});
+
+test("Web realtime snapshot application replays queued runtime events and preserves live nodes", () => {
+  const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+
+  assert.match(client, /const pendingRuntimeEvents = realtimeMessageStateRef\.current\.pendingRuntimeEvents\.slice\(\)/);
+  assert.match(client, /const pendingState = syncSessionRealtimeMessageState\(/);
+  assert.match(client, /for \(const runtimeEvent of pendingRuntimeEvents\) \{\s+queueSessionRealtimeRuntimeEvent\(pendingState, runtimeEvent\)/);
+  assert.match(client, /const replayed = flushQueuedSessionRealtimeRuntimeEvents\(/);
+  assert.match(client, /normalizeMessagesForState\(\[matchingCurrent, snapshotMessage\]\)\[0\]/);
+  assert.match(client, /During an active durable run the snapshot can contain a/);
 });
 
 test("local HTTP preview cookies follow the configured public protocol instead of production mode", () => {

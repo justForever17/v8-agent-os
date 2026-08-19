@@ -3,7 +3,7 @@ import { ChevronDown, CheckCircle2, CircleAlert, Clock3, Loader2, ShieldAlert, S
 import { useState, memo } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import type { ClientToolSurface, ClientToolSurfaceStatus } from "@v8/session-realtime";
+import { formatClientToolResult, type ClientToolSurface, type ClientToolSurfaceStatus } from "@v8/session-realtime";
 import { useT } from "@/components/providers/LocaleProvider";
 
 export interface ToolInvocation {
@@ -45,7 +45,7 @@ function buildReadableResult(toolInvocation: ToolInvocation, t: (key: string, va
             return lines.join("\n");
         }
     }
-    return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    return formatClientToolResult(result);
 }
 
 function resolveToolStatus(toolInvocation: ToolInvocation): ClientToolSurfaceStatus {

@@ -275,19 +275,51 @@ function recordedAttachmentUrl(attachment: Record<string, unknown>): string {
   );
 }
 
-function recordedAttachmentIsAudio(attachment: Record<string, unknown>): boolean {
+function attachmentClassification(value: unknown) {
+  const attachment = asRecord(value);
   const declaredKind = String(attachment.mediaKind || attachment.previewKind || attachment.kind || "").toLowerCase();
-  const declaredMime = String(attachment.mimeType || attachment.type || "").toLowerCase();
+  const declaredMime = String(attachment.mimeType || attachment.mime_type || attachment.type || "").toLowerCase();
+  const probe = [
+    attachment.name,
+    recordedAttachmentUrl(attachment),
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return { declaredKind, declaredMime, probe };
+}
+
+export function isClientVisualAttachment(value: unknown): boolean {
+  const { declaredKind, declaredMime, probe } = attachmentClassification(value);
+  if (declaredKind === "image" || declaredKind === "video" || declaredMime.startsWith("image/") || declaredMime.startsWith("video/")) {
+    return true;
+  }
+  if (
+    declaredKind === "audio"
+    || declaredKind === "document"
+    || declaredKind === "file"
+    || declaredMime.startsWith("audio/")
+    || (declaredMime && declaredMime !== "application/octet-stream")
+  ) {
+    return false;
+  }
+  // WebM is intentionally excluded from an extension-only visual guess: old
+  // voice uploads used it too. A real WebM video carries video/webm metadata.
+  return /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|mov|m4v|mkv|avi)(?:[?#\s].*)?$/i.test(probe);
+}
+
+export function isClientAudioAttachment(value: unknown): boolean {
+  const { declaredKind, declaredMime, probe } = attachmentClassification(value);
   if (declaredKind === "image" || declaredKind === "video" || declaredMime.startsWith("image/") || declaredMime.startsWith("video/")) {
     return false;
   }
   if (declaredKind === "audio" || declaredMime.startsWith("audio/")) {
     return true;
   }
-  const probe = [
-    attachment.name,
-    recordedAttachmentUrl(attachment),
-  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  if (
+    declaredKind === "document"
+    || declaredKind === "file"
+    || (declaredMime && declaredMime !== "application/octet-stream")
+  ) {
+    return false;
+  }
   return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
 }
 
@@ -309,16 +341,16 @@ function buildRecordedUserMessage(
   const attachments = Array.isArray(eventData.attachments)
     ? eventData.attachments.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
     : [];
-  const audioUrls = new Set(
+  const nonVisualUrls = new Set(
     attachments
-      .filter(recordedAttachmentIsAudio)
+      .filter((attachment) => !isClientVisualAttachment(attachment))
       .map(recordedAttachmentUrl)
       .filter(Boolean)
       .map((value) => value.toLowerCase()),
   );
   const images = (Array.isArray(eventData.images) ? eventData.images : [])
     .map((value) => String(value || "").trim())
-    .filter((value) => value && !audioUrls.has(value.toLowerCase()));
+    .filter((value) => value && !nonVisualUrls.has(value.toLowerCase()));
   const metadata = {
     ...asRecord(eventData.metadata),
     ...(clientMessageId ? { clientMessageId } : {}),
@@ -825,33 +857,51 @@ function findMessageById<TMessage extends SessionStreamMessage>(localMessages: T
 function upsertTimelineNode(message: SessionStreamMessage, node: SessionStreamTimelineNode) {
   const nodes = Array.isArray(message.nodes) ? [...message.nodes] : [];
   const nodeId = String(node.id || "").trim();
-  if (nodeId) {
-    const existingIndex = nodes.findIndex((candidate) => String(candidate.id || "").trim() === nodeId);
-    if (existingIndex >= 0) {
-      const existing = nodes[existingIndex];
-      if (timelineNodeFinalized(existing) && existing.kind === "narrative" && node.kind === "narrative") {
-        const existingContent = String((existing as SessionStreamNarrativeNode).content || "");
-        const incomingContent = String((node as SessionStreamNarrativeNode).content || "");
-        if (existingContent === incomingContent) {
-          return existing;
-        }
-        const appendOnlyNode = {
-          ...node,
-          id: `${nodeId}:append:${nodes.length}`,
-        } as SessionStreamTimelineNode;
-        nodes.push(appendOnlyNode);
-        message.nodes = nodes;
-        message.timestamp = Date.now();
-        return appendOnlyNode;
+  const existingIndexById = nodeId
+    ? nodes.findIndex((candidate) => String(candidate.id || "").trim() === nodeId)
+    : -1;
+  const executionType = node.kind === "execution" ? node.executionType : undefined;
+  const toolIdentity = node.kind === "execution" && (executionType === "tool_call" || executionType === "tool_result")
+    ? String(node.toolInvocationId || node.toolCallId || "").trim()
+    : "";
+  const existingIndexByToolIdentity = toolIdentity
+    ? nodes.findIndex((candidate) => {
+      if (candidate.kind !== "execution" || candidate.executionType !== executionType) return false;
+      const candidateIdentity = String(candidate.toolInvocationId || candidate.toolCallId || "").trim();
+      if (!candidateIdentity || candidateIdentity !== toolIdentity) return false;
+      const incomingRunId = String(node.runId || "").trim();
+      const candidateRunId = String(candidate.runId || "").trim();
+      if (incomingRunId && candidateRunId && incomingRunId !== candidateRunId) return false;
+      const incomingStreamKey = String(node.ownerStreamKey || "").trim();
+      const candidateStreamKey = String(candidate.ownerStreamKey || "").trim();
+      return !incomingStreamKey || !candidateStreamKey || incomingStreamKey === candidateStreamKey;
+    })
+    : -1;
+  const existingIndex = existingIndexById >= 0 ? existingIndexById : existingIndexByToolIdentity;
+  if (existingIndex >= 0) {
+    const existing = nodes[existingIndex];
+    if (timelineNodeFinalized(existing) && existing.kind === "narrative" && node.kind === "narrative") {
+      const existingContent = String((existing as SessionStreamNarrativeNode).content || "");
+      const incomingContent = String((node as SessionStreamNarrativeNode).content || "");
+      if (existingContent === incomingContent) {
+        return existing;
       }
-      nodes[existingIndex] = {
-        ...existing,
+      const appendOnlyNode = {
         ...node,
+        id: `${nodeId}:append:${nodes.length}`,
       } as SessionStreamTimelineNode;
+      nodes.push(appendOnlyNode);
       message.nodes = nodes;
       message.timestamp = Date.now();
-      return nodes[existingIndex];
+      return appendOnlyNode;
     }
+    nodes[existingIndex] = {
+      ...existing,
+      ...node,
+    } as SessionStreamTimelineNode;
+    message.nodes = nodes;
+    message.timestamp = Date.now();
+    return nodes[existingIndex];
   }
   nodes.push(node);
   message.nodes = nodes;
@@ -1227,6 +1277,8 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     const content = String(event.content || "");
     const snapshot = typeof eventData.snapshot === "string" ? eventData.snapshot : undefined;
     const reasoningKind = String(event.reasoningKind || eventData.reasoningKind || "").trim() || undefined;
+    const startTime = Number(eventData.startTime || eventData.start_time || timelineFields.timestamp) || timelineFields.timestamp;
+    const durationMs = Math.max(0, Number(eventData.durationMs || eventData.duration_ms || 0) || 0);
     const explicitNode = event.node_id
       ? (Array.isArray(current.nodes)
         ? current.nodes.find((node) => String(node.id || "").trim() === event.node_id)
@@ -1237,11 +1289,17 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
       lastNode
       && lastNode.kind === "execution"
       && lastNode.executionType === "reasoning"
-      && !lastNode.time
       && executionStreamKeyMatches(lastNode, ownerFields)
     ) {
       Object.assign(lastNode, ownerFields);
       applyEventTimelineFields(lastNode, timelineFields);
+      lastNode.startTime = startTime;
+      lastNode.time = durationMs;
+      lastNode.data = {
+        ...(lastNode.data || {}),
+        startTime,
+        durationMs,
+      };
       if (reasoningKind) {
         lastNode.reasoningKind = reasoningKind;
         lastNode.data = {
@@ -1264,11 +1322,13 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         executionType: "reasoning",
         content: snapshot ?? content,
         reasoningKind,
-        time: 0,
-        startTime: timelineFields.timestamp,
+        time: durationMs,
+        startTime,
         data: {
           reasoningKind,
           reasoningSurface: eventData.reasoningSurface,
+          startTime,
+          durationMs,
         },
         ...nextActiveAgentProfile,
         ...ownerFields,

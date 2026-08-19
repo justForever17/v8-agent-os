@@ -12,10 +12,22 @@ type RuntimeEventObservation = {
 };
 
 export function shouldDeliverRuntimeEventObservation(observation: unknown) {
-    const candidate = observation && typeof observation === "object"
-        ? observation as RuntimeEventObservation
-        : {};
-    return candidate.acceptEvent !== false;
+  const candidate = observation && typeof observation === "object"
+    ? observation as RuntimeEventObservation
+    : {};
+  return candidate.acceptEvent !== false;
+}
+
+/**
+ * An empty replay page can still carry a newer durable watermark.  In that
+ * case the missing rows were pruned (or the page raced a snapshot), so the
+ * proxy must request an authoritative snapshot instead of polling the same
+ * cursor forever.
+ */
+export function shouldRequestSnapshotForEmptyEventPage(latestSeq: unknown, contiguousSeq: unknown) {
+  const latest = Number(latestSeq || 0) || 0;
+  const contiguous = Number(contiguousSeq || 0) || 0;
+  return latest > 0 && latest > contiguous;
 }
 
 export class RuntimeEventGapRecoveryThrottle {

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit, AtSign } from "lucide-react";
+import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit, AtSign, FileText, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo, useCallback } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
@@ -9,6 +9,8 @@ import { motion } from "framer-motion";
 import {
     buildCollaborationMicroStages,
     coerceAdminResourceRef,
+    isClientAudioAttachment,
+    isClientVisualAttachment,
     isRuntimeEpisodeGraphActivity,
     resolveAdminResourceUrl,
     type AdminProcessRef,
@@ -116,6 +118,19 @@ function getExecutionTopic(node: UiExecutionNode) {
 
 function getExecutionToolName(node: UiExecutionNode) {
     return String(node.toolName || node.data?.toolName || node.data?.tool_name || "").trim().toLowerCase();
+}
+
+function hasArtifactProducingTool(segment: Extract<TimelineSegment, { kind: "trace_group" }>) {
+    return segment.nodes.some((node) => {
+        if (!isExecutionNode(node) || (node.executionType !== "tool_call" && node.executionType !== "tool_result")) {
+            return false;
+        }
+        const toolName = getExecutionToolName(node);
+        return toolName === "write_native_file"
+            || toolName === "apply_patch"
+            || toolName === "write_file"
+            || Boolean(node.data?.artifact || node.data?.artifactRef || node.data?.resourceRef);
+    });
 }
 
 function isMicroStageSupersededTimelineNode(node: UiTimelineNode) {
@@ -355,35 +370,11 @@ function extractMessageAttachments(message: Message): MessageAttachmentRecord[] 
 }
 
 function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
-    if (item.mediaKind === "image" || item.mediaKind === "video" || item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
-        return false;
-    }
-    if (item.mediaKind === "audio" || item.mimeType.startsWith("audio/")) {
-        return true;
-    }
-    const probe = (() => {
-        try {
-            return decodeURIComponent(`${item.name} ${item.url}`);
-        } catch {
-            return `${item.name} ${item.url}`;
-        }
-    })();
-    return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
+    return isClientAudioAttachment(item);
 }
 
 function isVisualAttachmentRecord(item: MessageAttachmentRecord) {
-    const probe = (() => {
-        try {
-            return decodeURIComponent(`${item.name} ${item.url}`);
-        } catch {
-            return `${item.name} ${item.url}`;
-        }
-    })();
-    return item.mediaKind === "image"
-        || item.mediaKind === "video"
-        || item.mimeType.startsWith("image/")
-        || item.mimeType.startsWith("video/")
-        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|webm|mov|m4v)(?:[?#\s].*)?$/i.test(probe);
+    return isClientVisualAttachment(item);
 }
 
 function MessageActionButtons({
@@ -479,13 +470,17 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         () => attachmentRecords.filter(isAudioAttachmentRecord),
         [attachmentRecords],
     );
+    const fileAttachments = useMemo(
+        () => attachmentRecords.filter((item) => !isAudioAttachmentRecord(item) && !isVisualAttachmentRecord(item)),
+        [attachmentRecords],
+    );
     const visualAttachmentUrls = useMemo(
         () => attachmentRecords.filter((item) => !isAudioAttachmentRecord(item) && isVisualAttachmentRecord(item)).map((item) => item.url),
         [attachmentRecords],
     );
-    const audioAttachmentUrls = useMemo(
-        () => new Set(audioAttachments.map((item) => item.url.toLowerCase())),
-        [audioAttachments],
+    const nonVisualAttachmentUrls = useMemo(
+        () => new Set([...audioAttachments, ...fileAttachments].map((item) => item.url.toLowerCase())),
+        [audioAttachments, fileAttachments],
     );
 
     const handleCopy = (content: string) => {
@@ -511,8 +506,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 }
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
-            .filter((value) => Boolean(value) && !audioAttachmentUrls.has(value.toLowerCase())))),
-        [audioAttachmentUrls, canvasHumanSurface, message.images, visualAttachmentUrls],
+            .filter((value) => Boolean(value) && !nonVisualAttachmentUrls.has(value.toLowerCase())))),
+        [canvasHumanSurface, message.images, nonVisualAttachmentUrls, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
         return imagesArray.map((url) => {
@@ -797,6 +792,26 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 )}
                             </div>
                         )}
+                        {!isTool && fileAttachments.length > 0 && (
+                            <div className="mb-3 space-y-2">
+                                {fileAttachments.map((attachment, index) => (
+                                    <a
+                                        key={`${attachment.url}:${index}`}
+                                        href={attachment.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        download={attachment.name || undefined}
+                                        className="flex min-h-11 items-center gap-2 rounded-lg border border-white/20 bg-white/15 px-3 py-2 text-white transition-colors hover:bg-white/20"
+                                    >
+                                        <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
+                                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                            {attachment.name}
+                                        </span>
+                                        <Download className="h-4 w-4 shrink-0 opacity-80" aria-hidden="true" />
+                                    </a>
+                                ))}
+                            </div>
+                        )}
                         {!isTool && audioAttachments.length > 0 && (
                             <div className="mb-3 space-y-2">
                                 {audioAttachments.map((attachment, index) => (
@@ -984,7 +999,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                             );
                         }
 
-                        const defaultExpanded = hasAssistantTextResponse ? (isLoading && isLast) : false;
+                        const defaultExpanded = hasArtifactProducingTool(segment)
+                            || (hasAssistantTextResponse ? (isLoading && isLast) : false);
                         const isExpanded = expandedTraceGroups[segment.id] ?? defaultExpanded;
                         const hasActiveProgress = segment.isStreaming || (isLoading && isLast && index === timelineSegments.length - 1);
 

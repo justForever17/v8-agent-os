@@ -1269,7 +1269,9 @@ export function InputArea({
     const showRunBusy = runActive && !canQueueWhileRunning && !canStopActiveRun;
 
     // Convert attached files to MediaItems for Lightbox
-    const mediaItems: MediaItem[] = files.map((f) => {
+    const mediaItems: MediaItem[] = files.filter((f) => (
+        f.type.startsWith('image/') || f.type.startsWith('video/')
+    )).map((f) => {
         const isVideo = f.type.startsWith('video/');
         const itemType: 'video' | 'image' = isVideo ? 'video' : 'image';
         return {
@@ -1278,7 +1280,7 @@ export function InputArea({
             name: f.name,
             file: f
         };
-    }).filter(item => item.type === 'video' || item.type === 'image'); // exclude raw docs from lightbox
+    });
 
     return (
         <form

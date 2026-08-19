@@ -150,6 +150,15 @@ export type FlushQueuedRuntimeEventsOptions<TMessage = SessionStreamMessage> = {
   lifecycleOptions?: SessionStreamLifecycleOptions;
 };
 
+export function authoritativeSnapshotOmitsMessages(raw: unknown): boolean {
+  const root = asRecord(raw);
+  const nestedSnapshot = asRecord(root.snapshot);
+  return root.messagesOmitted === true
+    || root.messages_omitted === true
+    || nestedSnapshot.messagesOmitted === true
+    || nestedSnapshot.messages_omitted === true;
+}
+
 export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeSessionSnapshot | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -187,6 +196,7 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
           ? root.session_id
           : undefined,
     latestSeq: Number(root.latestSeq || root.latest_seq || asRecord(root.snapshot).latest_seq || 0) || 0,
+    messagesOmitted: authoritativeSnapshotOmitsMessages(root),
     messages: Array.isArray(root.messages)
       ? root.messages
       : Array.isArray(nestedSnapshot.messages)
@@ -397,6 +407,7 @@ export function buildAuthoritativeSnapshotFingerprint(snapshot: AuthoritativeSes
 
   return [
     String(snapshot.latestSeq || 0),
+    snapshot.messagesOmitted ? "messages-omitted" : "messages-included",
     messageFingerprint,
     approvalFingerprint,
     askUserFingerprint,
@@ -467,12 +478,44 @@ export function syncSessionRealtimeMessageState<TMessage = SessionStreamMessage>
   return createInitialSessionRealtimeMessageState(messages, options);
 }
 
+function snapshotStreamCoalesceKey(event: SessionStreamUiEvent) {
+  if (event.type !== "text_chunk" && event.type !== "reasoning_chunk") {
+    return "";
+  }
+  const data = asRecord(event.data);
+  if (typeof data.snapshot !== "string") {
+    return "";
+  }
+  const streamIdentity = String(
+    event.node_id
+    || data.ownerStreamKey
+    || data.owner_stream_key
+    || "",
+  ).trim();
+  if (!streamIdentity) {
+    return "";
+  }
+  return `${event.type}:${String(event.run_id || "").trim()}:${streamIdentity}`;
+}
+
 export function queueSessionRealtimeRuntimeEvent<TMessage = SessionStreamMessage>(
   state: SessionRealtimeMessageState<TMessage>,
   runtimeEvent: SessionStreamUiEvent,
 ) {
   if (!shouldApplyRuntimeEventToMessage(runtimeEvent)) {
     return false;
+  }
+  const coalesceKey = snapshotStreamCoalesceKey(runtimeEvent);
+  const lastPendingIndex = state.pendingRuntimeEvents.length - 1;
+  if (
+    coalesceKey
+    && lastPendingIndex >= 0
+    && snapshotStreamCoalesceKey(state.pendingRuntimeEvents[lastPendingIndex]) === coalesceKey
+  ) {
+    // Only collapse an adjacent snapshot burst. Crossing a tool, approval,
+    // artifact or another stream boundary would rewrite the visible timeline.
+    state.pendingRuntimeEvents[lastPendingIndex] = runtimeEvent;
+    return true;
   }
   state.pendingRuntimeEvents.push(runtimeEvent);
   return true;

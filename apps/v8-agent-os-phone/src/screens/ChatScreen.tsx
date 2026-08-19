@@ -169,6 +169,8 @@ import {
     flushQueuedSessionRealtimeRuntimeEvents,
     isActiveRunStatus,
     isActiveCommandSessionStatus,
+    isClientAudioAttachment,
+    isClientVisualAttachment,
     isTerminalRunStatus,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
@@ -186,6 +188,7 @@ import {
     stripComposerReferences,
     type ComposerInlineReference,
 } from "@v8/session-realtime/composer-inline-references";
+import { authoritativeSnapshotOmitsMessages } from "@v8/session-realtime/cdc";
 
 const REPLY_POP_SOUND = require("../../assets/audio/message-pop.mp3");
 const PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT = PHONE_RUNTIME_TIMELINE_LIMIT;
@@ -412,27 +415,11 @@ function buildPhaseRuntimeTimelineEntry(
 }
 
 function isUploadedAudioFile(file: UploadedWorkspaceFile) {
-    const name = String(file.name || file.url || file.publicUrl || file.workspacePath || "").toLowerCase();
-    const type = String(file.type || "").toLowerCase();
-    return file.previewKind === "audio" || type.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(name);
+    return isClientAudioAttachment(file);
 }
 
 function isUploadedVisualFile(file: UploadedWorkspaceFile) {
-    const name = String(file.name || file.url || file.publicUrl || file.workspacePath || "").toLowerCase();
-    const type = String(file.type || "").toLowerCase();
-    return file.previewKind === "image"
-        || file.previewKind === "video"
-        || type.startsWith("image/")
-        || type.startsWith("video/")
-        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|mov|m4v|webm|mkv|avi)$/i.test(name);
-}
-
-function isRecordedAudioAttachment(item: Record<string, unknown>) {
-    const name = String(item.name || item.url || item.publicUrl || item.workspacePath || "").toLowerCase();
-    const type = String(item.mimeType || item.mime_type || item.type || "").toLowerCase();
-    const kind = String(item.mediaKind || item.previewKind || item.kind || "").toLowerCase();
-    if (kind === "image" || kind === "video" || type.startsWith("image/") || type.startsWith("video/")) return false;
-    return kind === "audio" || type.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(name);
+    return isClientVisualAttachment(file);
 }
 
 const SPEC_COMMAND_DEFS: Array<Pick<CommandPresetSummary, "name" | "specCommandAction"> & { summaryKey: string }> = [
@@ -705,7 +692,7 @@ function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): Chat
     ).trim();
     const attachments = Array.isArray(metadata.attachments) ? metadata.attachments as Array<Record<string, unknown>> : [];
     const images = attachments
-        .filter((item) => !isRecordedAudioAttachment(item))
+        .filter(isClientVisualAttachment)
         .map((item) => String(item.publicUrl || item.url || "").trim())
         .filter(Boolean);
     const nodes = Array.isArray(record.nodes) ? record.nodes as PhoneUiTimelineNode[] : fallback.nodes || [];
@@ -3804,7 +3791,8 @@ export default function ChatScreen() {
     const applyRealtimeSnapshotPayload = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const profileStartedAt = getPerfNowMs();
         const payloadBytes = measureJsonBytes(payload);
-        const snapshotMessages = extractSnapshotMessages(payload);
+        const messagesOmitted = authoritativeSnapshotOmitsMessages(payload);
+        const snapshotMessages = messagesOmitted ? null : extractSnapshotMessages(payload);
         const snapshotSeq = buildSnapshotSequence(payload);
         const snapshotWatermarkAdvanced = snapshotSeq > lastAppliedSnapshotSeqRef.current;
         const snapshotQueuedMessages = extractQueuedMessages(payload);
@@ -3887,6 +3875,7 @@ export default function ChatScreen() {
                 elapsedMs,
                 payloadBytes,
                 snapshotSeq,
+                messagesOmitted,
                 snapshotMessageCount: Array.isArray(snapshotMessages) ? snapshotMessages.length : 0,
                 runtimeEventCount: countPayloadRuntimeEvents(payload),
                 queuedMessageCount: Array.isArray(snapshotQueuedMessages) ? snapshotQueuedMessages.length : 0,

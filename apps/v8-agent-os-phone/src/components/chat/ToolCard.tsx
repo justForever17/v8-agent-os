@@ -8,7 +8,7 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import type { ClientToolSurface, ClientToolSurfaceStatus } from "@v8/session-realtime";
+import { formatClientToolResult, type ClientToolSurface, type ClientToolSurfaceStatus } from "@v8/session-realtime";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -59,14 +59,7 @@ function buildReadableResult(toolInvocation: ToolInvocation, t: Translate) {
 }
 
 function stringifyPayload(value: unknown) {
-    if (typeof value === "string") {
-        return value;
-    }
-    try {
-        return JSON.stringify(value, null, 2);
-    } catch {
-        return String(value ?? "");
-    }
+    return formatClientToolResult(value);
 }
 
 function payloadLanguage(value: unknown) {

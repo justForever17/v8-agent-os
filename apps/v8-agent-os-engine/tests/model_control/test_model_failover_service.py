@@ -6,7 +6,7 @@ import pytest
 
 from core.model_control_plane import model_control_plane
 from core.model_failover_service import ModelFailoverService
-from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from core.llm_exceptions import V8LLMError, V8LLMInvalidRequestError
 from core.model_ref import make_model_ref
 
 
@@ -133,6 +133,26 @@ def test_candidate_plan_keeps_same_capability_and_same_api_standard(monkeypatch:
         make_model_ref("p-openai-b", "backup"),
     ]
     assert {candidate.api_standard for candidate in plan} == {"openai"}
+
+
+def test_missing_capability_candidate_fails_without_opening_model_review(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    monkeypatch.setattr(service, "build_candidate_plan", lambda **_kwargs: [])
+
+    with pytest.raises(V8LLMError) as exc_info:
+        service.invoke_with_failover(
+            config=_config(),
+            base_llm_instance=FakeLLM("unused"),
+            messages=[],
+            tools=None,
+            role="supervisor",
+            preferred_model_id=make_model_ref("p-openai-a", "primary"),
+            build_model=lambda _model_id: FakeLLM("unused"),
+        )
+
+    assert exc_info.value.code == "model_capability_unavailable"
+    assert exc_info.value.model == "p-openai-a::primary"
 
 
 def test_transient_error_retries_then_failovers_to_same_format_candidate(monkeypatch: pytest.MonkeyPatch):
@@ -288,7 +308,7 @@ def test_non_transient_model_error_does_not_hidden_failover(monkeypatch: pytest.
     primary = FakeLLM(Exception("400 invalid request"))
     built: list[str] = []
 
-    with pytest.raises(ModelGovernanceInterventionRequired) as exc_info:
+    with pytest.raises(V8LLMError) as exc_info:
         service.invoke_with_failover(
             config=_config(maxTotalAttempts=3, maxFailoverSeconds=30),
             base_llm_instance=primary,
@@ -301,7 +321,48 @@ def test_non_transient_model_error_does_not_hidden_failover(monkeypatch: pytest.
 
     assert primary.calls == 1
     assert built == []
+    assert exc_info.value.code == "invalid_request"
     assert exc_info.value.details["attempts"][0]["code"] == "invalid_request"
+
+
+def test_typed_provider_error_survives_failover_observability(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM(
+        V8LLMInvalidRequestError(
+            code="tool_continuation_invalid",
+            message="工具续写请求被 Provider 拒绝。",
+            provider="MiniMax",
+            model="p-openai-a::primary",
+            retryable=False,
+            user_action="请运行 Model Hub 连接测试。",
+            details={
+                "mode": "invoke",
+                "providerDiagnostic": {"statusCode": 400, "providerCode": "invalid_params"},
+            },
+        )
+    )
+
+    with pytest.raises(V8LLMError) as exc_info:
+        service.invoke_with_failover(
+            config=_config(maxTotalAttempts=1, maxFailoverSeconds=30),
+            base_llm_instance=primary,
+            messages=[],
+            tools=None,
+            role="supervisor",
+            preferred_model_id=make_model_ref("p-openai-a", "primary"),
+            build_model=lambda _model_id: FakeLLM("unused"),
+        )
+
+    attempt = exc_info.value.details["attempts"][0]
+    assert exc_info.value.code == "tool_continuation_invalid"
+    assert exc_info.value.model == "p-openai-a::primary"
+    assert attempt["code"] == "tool_continuation_invalid"
+    assert attempt["providerId"] == "p-openai-a"
+    assert attempt["diagnostic"]["providerDiagnostic"] == {
+        "statusCode": 400,
+        "providerCode": "invalid_params",
+    }
 
 
 def test_total_attempt_cap_stops_before_failover_candidate(monkeypatch: pytest.MonkeyPatch):
@@ -311,7 +372,7 @@ def test_total_attempt_cap_stops_before_failover_candidate(monkeypatch: pytest.M
     primary = FakeLLM(Exception("request timeout"), Exception("request timeout"))
     built: list[str] = []
 
-    with pytest.raises(ModelGovernanceInterventionRequired) as exc_info:
+    with pytest.raises(V8LLMError) as exc_info:
         service.invoke_with_failover(
             config=_config(maxTotalAttempts=2, maxFailoverSeconds=30),
             base_llm_instance=primary,

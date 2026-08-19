@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from core.llm_exceptions import V8LLMCapabilityMismatchError
+from core.llm_exceptions import (
+    V8LLMCapabilityMismatchError,
+    V8LLMInvalidRequestError,
+    V8LLMProviderUnavailableError,
+    raise_as_v8_llm_error,
+)
 from core.llm_factory import LLMFactory, OpenAICompatibleEmbedding, RestReranker
 from core.model_control_plane import model_control_plane
 from core.model_endpoint_binding import build_model_endpoint_binding
@@ -84,6 +89,30 @@ def test_provider_error_redacts_arbitrary_query_auth_parameter(query_name: str) 
     assert normalized["code"] == "timeout"
     assert normalized["message"] == "Provider request timed out."
     assert secret not in str(normalized)
+
+
+def test_llm_error_preserves_safe_provider_diagnostics() -> None:
+    class ProviderFailure(RuntimeError):
+        status_code = 503
+        body = {"error": {"type": "upstream_unavailable", "message": "do not persist this body"}}
+
+    with pytest.raises(V8LLMProviderUnavailableError) as failure:
+        raise_as_v8_llm_error(
+            ProviderFailure("503 service unavailable"),
+            provider="Provider",
+            model="provider::model",
+            details={"mode": "invoke"},
+        )
+
+    assert failure.value.details == {
+        "mode": "invoke",
+        "providerDiagnostic": {
+            "exceptionType": "ProviderFailure",
+            "statusCode": 503,
+            "providerCode": "upstream_unavailable",
+        },
+    }
+    assert "do not persist this body" not in str(failure.value.details)
 
 
 def test_anthropic_runtime_applies_custom_scheme_header() -> None:
@@ -178,6 +207,27 @@ def test_direct_chat_factory_installs_provider_compatibility_before_resolution(m
 
     with pytest.raises(RuntimeError, match="resolution reached"):
         LLMFactory.create_chat_model("provider::model-a")
+
+
+@pytest.mark.parametrize("lookup_status", ["missing", "ambiguous"])
+def test_direct_chat_factory_rejects_models_outside_model_hub(monkeypatch, lookup_status) -> None:
+    monkeypatch.setattr(
+        LLMFactory,
+        "_resolve_model_metadata",
+        classmethod(
+            lambda cls, _model_id: {
+                "is_found": False,
+                "lookup_status": lookup_status,
+            }
+        ),
+    )
+
+    with pytest.raises(V8LLMInvalidRequestError) as blocked:
+        LLMFactory.create_chat_model("unconfigured-model")
+
+    assert blocked.value.code == "model_not_configured"
+    assert blocked.value.model == "unconfigured-model"
+    assert blocked.value.provider == "modelhub"
 
 
 @pytest.mark.parametrize(

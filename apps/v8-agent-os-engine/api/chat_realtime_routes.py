@@ -33,9 +33,11 @@ from core.realtime_protocol import (
 )
 from erc.command_service import command_service
 from erc.command_router import runtime_command_router
-from erc.models import RuntimeCommand
+from erc.event_bus import event_bus
+from erc.models import RuntimeCommand, RuntimeSource
 from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
+from erc.workflow_ledger import workflow_ledger_service
 from runtimes.memory.scope_resolution import ScopeBindingConflictError, session_scope_binding_service
 
 
@@ -127,6 +129,99 @@ def _emit_background_chat_run_event(
             run_id or request.resume_run_id,
             exc_info=True,
         )
+
+
+def _persist_scope_binding_conflict(
+    request: ChatRequest,
+    *,
+    transport: str,
+    run_id: str | None,
+    payload: dict,
+) -> list[dict]:
+    session_id = str(request.session_id or "").strip()
+    active_run_id = str(run_id or request.resume_run_id or "").strip() or None
+    if not session_id:
+        return [
+            build_runtime_event(
+                kind="error",
+                topic="scope.conflict",
+                session_id=None,
+                run_id=active_run_id,
+                payload=payload,
+                source={
+                    "plane": "engine",
+                    "component": "chat_runtime",
+                    "node": "scope_resolution",
+                    "agent_id": None,
+                },
+            )
+        ]
+
+    source = RuntimeSource(
+        plane="engine",
+        component="chat_runtime",
+        node="scope_resolution",
+        agent_id=None,
+    )
+    emitter = event_bus.create_emitter(
+        session_id=session_id,
+        conversation_id=request.conversation_id or session_id,
+        run_id=active_run_id,
+        source=source,
+    )
+    transition: dict = {"updated": False}
+    error_message = str(payload.get("message") or "Session workspace/project scope is already bound")
+    if active_run_id:
+        transition = run_service.transition_run_if_status(
+            active_run_id,
+            expected_statuses=_FALLBACK_ACTIVE_CHAT_STATUSES,
+            status="failed",
+            error_message=error_message,
+            metadata={
+                "scope_conflict": True,
+                "scope_conflict_transport": transport,
+                "scope_conflict_changed_anchors": payload.get("changedAnchors") or {},
+            },
+        )
+        if transition.get("updated"):
+            previous_status = str(transition.get("previousStatus") or "queued")
+            try:
+                workflow_ledger_service.sync_run_status(
+                    active_run_id,
+                    run_status="failed",
+                    reason=error_message,
+                    metadata={"transitionNode": "scope_resolution", "previousStatus": previous_status},
+                )
+            except Exception:
+                logger.exception("Failed to synchronize scope-conflicted workflow for run %s", active_run_id)
+
+    events: list[dict] = []
+    scope_event = emitter.emit("scope.conflict", payload, kind="error")
+    if scope_event:
+        events.append(scope_event)
+
+    if not transition.get("updated"):
+        return events
+
+    previous_status = str(transition.get("previousStatus") or "queued")
+    state_event = emitter.emit(
+        "run.state.changed",
+        {
+            "from_status": previous_status,
+            "to_status": "failed",
+            "reason": "scope_conflict",
+        },
+    )
+    failed_event = emitter.emit(
+        "run.failed",
+        {
+            "error": error_message,
+            "reason": "scope_conflict",
+            "recommendedAction": payload.get("recommendedAction") or "create_new_session",
+        },
+    )
+    events.extend(event for event in (state_event, failed_event) if event)
+    return events
 
 
 def _runtime_ack_event(topic: str, payload: dict, *, session_id: str | None = None, run_id: str | None = None):
@@ -652,19 +747,13 @@ async def iter_chat_events(request: ChatRequest, transport: str = "http", run_id
                 event = _mark_engine_yield(event)
             yield event
     except ScopeBindingConflictError as exc:
-        yield build_runtime_event(
-            kind="error",
-            topic="scope.conflict",
-            session_id=request.session_id,
-            run_id=run_id or request.resume_run_id,
+        for event in _persist_scope_binding_conflict(
+            request,
+            transport=transport,
+            run_id=run_id,
             payload=exc.payload,
-            source={
-                "plane": "engine",
-                "component": "chat_runtime",
-                "node": "scope_resolution",
-                "agent_id": None,
-            },
-        )
+        ):
+            yield _mark_engine_yield(event)
 
 
 async def event_generator(request: ChatRequest, run_id: str):

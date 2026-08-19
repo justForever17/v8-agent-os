@@ -260,7 +260,12 @@ def main() -> None:
     parser.add_argument("--input", default="", help="Explicit LongMemEval data JSON path.")
     parser.add_argument("--limit", type=int, default=None, help="Optional smoke sample size. Omit for full split.")
     parser.add_argument("--model-profile", default="", help="V8OS model ref. Defaults to memory/default role model.")
-    parser.add_argument("--judge-model", choices=sorted(OPENAI_JUDGES | LOCAL_JUDGES), default="gpt-4o")
+    parser.add_argument(
+        "--judge-model",
+        choices=sorted(OPENAI_JUDGES | LOCAL_JUDGES),
+        required=True,
+        help="Explicit official evaluator model. V8OS never supplies a hidden model default.",
+    )
     parser.add_argument("--max-context-chars", type=int, default=240000)
     parser.add_argument("--official-timeout-seconds", type=int, default=7200)
     parser.add_argument("--official-repo-root", default=str(DEFAULT_OFFICIAL_REPO))

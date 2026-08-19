@@ -3810,84 +3810,17 @@ class ConfigBrokerService:
     def _verify_committed_model(self, proposed: dict[str, Any]) -> dict[str, Any]:
         provider_id = str(proposed.get("providerId") or "")
         model_id = str(proposed.get("modelId") or "")
-        model = dict(proposed.get("model") or {})
-        record = model_control_plane.get_model_record(make_model_ref(provider_id, model_id))
-        if not record:
-            return {
-                "ok": False,
-                "status": "missing_after_commit",
-                "summary": "模型记录未能从控制面重新读取。",
-                "verifier": "static_runtime_contract",
-            }
-        provider_record = dict(record.get("provider") or {})
-        model_record = dict(record.get("model") or {})
-        if (
-            provider_record.get("is_enabled") is False
-            or provider_record.get("isEnabled") is False
-            or model_record.get("isEnabled") is False
-        ):
-            return {
-                "ok": True,
-                "status": "configured_disabled",
-                "summary": "模型配置已写入并保持停用；未发起真实 Provider 调用。",
-                "verifier": "static_runtime_contract",
-            }
-        model_type = str(model.get("type") or "TEXT").strip().upper()
-        capability_class = str(model.get("capabilityClass") or "").strip().lower()
-        if model_type in {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "EMBEDDING", "RERANK", "RERANKER"} or capability_class in {
-            "media_generation",
-            "embedding",
-            "rerank",
-            "reranker",
-        }:
-            if proposed.get("credentialRequired"):
-                credential_ref = str(
-                    provider_record.get("credentialRef")
-                    or provider_record.get("credential_ref")
-                    or ""
-                ).strip()
-                try:
-                    credential_ready = bool(
-                        credential_ref and credential_ref_store.status(credential_ref).configured
-                    )
-                except CredentialStoreError:
-                    credential_ready = False
-                if not credential_ready:
-                    return {
-                        "ok": False,
-                        "status": "credential_missing",
-                        "summary": "Provider 需要 API Key，但受管凭据不存在或不可读取。",
-                        "verifier": "static_runtime_contract",
-                    }
-            endpoint = dict((record.get("model") or {}).get("endpointBinding") or model.get("endpointBinding") or {})
-            if capability_class == "media_generation" and not (
-                endpoint.get("adapter")
-                or dict(model.get("mediaLimits") or {}).get("adapter")
-                or model.get("parameterProfile")
-            ):
-                return {
-                    "ok": False,
-                    "status": "adapter_contract_missing",
-                    "summary": "媒体模型缺少 adapter/parameter profile 合同。",
-                    "verifier": "static_runtime_contract",
-                }
-            return {
-                "ok": True,
-                "status": "configured",
-                "summary": "模型配置已按运行时合同重新读取；真实媒体生成或检索调用需显式 live 验证。",
-                "verifier": "static_runtime_contract",
-            }
-        probe = _get_model_connection_tester().test_model_connection(
-            provider_id=provider_id,
-            model_id=model_id,
-            model_ref=make_model_ref(provider_id, model_id),
+        result = self._verify_committed_model_static(
+            provider_id,
+            model_id,
+            model_control_plane.get_config(),
         )
-        return {
-            "ok": bool(probe.get("ok")),
-            "status": probe.get("status"),
-            "summary": probe.get("message") or probe.get("summary"),
-            "verifier": "chat_connection_test",
-        }
+        if result.get("ok") and result.get("status") == "configured":
+            return {
+                **result,
+                "summary": "模型配置已按运行时静态合同保存；真实连接、流式和工具续写需显式执行连接测试。",
+            }
+        return result
 
     def commit(self, transaction_id: str, *, owner_id: str = "", user_confirmed_target: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -4171,7 +4104,9 @@ class ConfigBrokerService:
                         "providerId": proposed.get("providerId"),
                         "modelId": proposed.get("modelId"),
                         "modelRef": make_model_ref(str(proposed.get("providerId") or ""), str(proposed.get("modelId") or "")),
-                        "verified": True,
+                        "verified": False,
+                        "contractVerified": True,
+                        "liveVerified": False,
                     }
                 elif transaction["targetKind"] == "model_record":
                     provider_id = str(proposed.get("providerId") or "")

@@ -305,9 +305,11 @@ def build_catalog_model_connection_plan(
         provider_patch["defaultChannelId"] = _clean(default_channel_id or provider_row.get("defaultChannelId") or selected_channel.get("id"))
 
     is_custom_provider = bool(provider_row.get("isCustom"))
-    is_oauth_provider = auth_type == "oauth_file"
     registry_known_chat_model = bool(model_row.get("capabilityRegistryMatched")) and not is_media_provider
-    clear_runtime_budget = is_media_provider or is_oauth_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
+    # Context/output limits are Model Hub facts, not transport request options.
+    # OAuth runtimes may choose not to send a max-output field, but clearing the
+    # facts here makes a connected model ineligible for every governed role.
+    clear_runtime_budget = is_media_provider or (is_custom_provider and not registry_known_chat_model and not is_retrieval_model)
     managed_context_window = None if clear_runtime_budget else model_row.get("contextWindow")
     managed_max_tokens = None if clear_runtime_budget or is_retrieval_model else model_row.get("maxTokens")
 

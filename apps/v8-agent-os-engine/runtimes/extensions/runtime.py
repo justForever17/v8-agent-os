@@ -1952,6 +1952,65 @@ class ExtensionsRuntimeService:
         self._blocked_skill_records: list[dict[str, Any]] = []
         self._mcp_family_profile_cache: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _cold_start_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+        summary = {
+            "skillCount": 0,
+            "blockedSkillCount": 0,
+            "mcpServerCount": 0,
+            "connectedMcpServerCount": 0,
+            "mcpToolCount": 0,
+            "mcpFamilyCount": 0,
+        }
+        catalog = {
+            "fingerprint": "",
+            "revision": "",
+            "visibleRootSignature": "",
+            "changedAt": None,
+            "lastSkillInventoryChange": None,
+            "lastMcpInventoryChange": None,
+            "catalogScope": {
+                "mode": "default_workspace",
+                "workspacePath": "",
+                "workspaceId": "",
+                "projectId": "",
+            },
+            "summary": dict(summary),
+            "skillDependencyPolicy": {},
+            "skills": {
+                "root": "",
+                "roots": [],
+                "rootDescriptors": [],
+                "fingerprint": "",
+                "revision": "",
+                "visibleRootSignature": "",
+                "discoveryRevision": "",
+                "changedRoots": [],
+                "scopedRefreshMode": None,
+                "recentSkillDiscovery": [],
+                "changedAt": None,
+                "items": [],
+            },
+            "mcp": {
+                "servers": [],
+                "inventoryRevision": "",
+                "lastInventoryChange": None,
+            },
+        }
+        health = {
+            "summary": dict(summary),
+            "skillDependencyPolicy": {},
+            "skills": {
+                "root": "",
+                "roots": [],
+                "rootDescriptors": [],
+                "available": False,
+                "blockedCount": 0,
+            },
+            "mcp": {"statusBreakdown": {}, "health": {}},
+        }
+        return catalog, health
+
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
@@ -2844,8 +2903,11 @@ class ExtensionsRuntimeService:
             self._last_refresh_error = None
             if force_skill_reload:
                 await asyncio.to_thread(SkillLoader.reload_skills)
-            elif wait_for_optional_tasks:
-                await self._wait_optional_task(skill_refresh_task, timeout=12.0, label="SkillLoader")
+            elif skill_refresh_task:
+                # This runs inside the background refresh task. Waiting here
+                # prevents a second catalog scan from racing the SkillLoader,
+                # while Engine startup remains independent of the scan.
+                await asyncio.shield(skill_refresh_task)
             if force_mcp_reload:
                 await mcp_manager.cleanup()
                 await mcp_manager.initialize()
@@ -3042,9 +3104,7 @@ class ExtensionsRuntimeService:
         if self._cached_catalog is None or self._cached_health is None:
             self._load_cache()
         if self._cached_catalog is None or self._cached_health is None:
-            cold_catalog = await asyncio.to_thread(self._build_catalog_live)
-            self._cached_catalog = cold_catalog
-            self._cached_health = await asyncio.to_thread(self._build_health_live, cold_catalog)
+            self._cached_catalog, self._cached_health = self._cold_start_snapshot()
         self._startup_state = "refreshing"
         self._snapshot_freshness = "cached" if self._last_refresh_at else "cold"
         self._last_refresh_error = None

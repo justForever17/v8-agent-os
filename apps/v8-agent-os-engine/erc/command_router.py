@@ -290,8 +290,8 @@ class RuntimeCommandRouter:
     def _engine_config_from_run(self, run_record: Dict[str, Any] | None) -> EngineConfig:
         metadata = dict((run_record or {}).get("metadata") or {})
         return EngineConfig(
-            provider=metadata.get("provider") or "openai",
-            model_name=metadata.get("model") or "gpt-4o",
+            provider=str(metadata.get("provider") or ""),
+            model_name=str(metadata.get("model") or ""),
         )
 
     def _chat_messages_from_session(self, session_id: str) -> list[ChatMessage]:

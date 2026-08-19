@@ -144,6 +144,61 @@ def test_command_session_timeout_is_terminal_and_exposes_backend_failure():
     assert "deadline" in rendered
 
 
+def test_tool_result_status_preserves_command_session_redirect_as_waiting():
+    status, reason_code = ChatRuntime._resolve_tool_result_status(
+        ToolMessage(
+            content=json.dumps(
+                {
+                    "ok": False,
+                    "kind": "command_session_required",
+                    "reason": "Installer commands require an observable command session.",
+                    "redirect": {"tool": "command_session_broker", "args": {"mode": "start"}},
+                }
+            ),
+            name="run_system_command",
+            tool_call_id="call-redirect",
+        )
+    )
+
+    assert status == "waiting"
+    assert reason_code == "command_session_required"
+
+
+def test_tool_result_status_distinguishes_failure_timeout_and_termination():
+    assert ChatRuntime._resolve_tool_result_status({"ok": False, "kind": "command_result"}) == (
+        "failed",
+        "command_result",
+    )
+    assert ChatRuntime._resolve_tool_result_status(
+        {"ok": False, "kind": "command_session", "state": "timed_out", "failureKind": "deadline_exceeded"}
+    ) == ("timed_out", "command_session")
+    assert ChatRuntime._resolve_tool_result_status(
+        {"ok": True, "kind": "command_session", "state": "terminated"}
+    ) == ("terminated", "command_session")
+
+
+def test_tool_result_status_tracks_live_command_session_without_calling_it_complete():
+    assert ChatRuntime._resolve_tool_result_status(
+        {"ok": True, "kind": "command_session", "state": "running"}
+    ) == ("running", "command_session")
+
+
+def test_tool_result_status_marks_structured_and_legacy_native_file_errors_failed():
+    structured = json.dumps(
+        {
+            "ok": False,
+            "kind": "file_not_found",
+            "summary": "File does not exist.",
+        }
+    )
+
+    assert ChatRuntime._resolve_tool_result_status(structured) == ("failed", "file_not_found")
+    assert ChatRuntime._resolve_tool_result_status("Error: legacy native tool failure") == (
+        "failed",
+        "legacy_tool_error",
+    )
+
+
 def test_tool_node_budget_projects_command_json_to_terminal_surface():
     raw = json.dumps(
         {

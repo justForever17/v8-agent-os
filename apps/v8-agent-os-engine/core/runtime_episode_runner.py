@@ -7131,19 +7131,18 @@ class RuntimeEpisodeRunner:
     def _build_agent_nodes_map(self, *, force_refresh: bool = False) -> dict[str, Any]:
         if self._agent_nodes_map_cache is not None and not force_refresh:
             return self._agent_nodes_map_cache
-        from api.models import EngineConfig
         from graph.compat import sanitize_message_chain as compat_sanitize_message_chain
         from graph.compat import sanitize_response_tool_calls as compat_sanitize_response_tool_calls
         from graph.supervisor_builder import build_supervisor_runtime_bundle
         from graph.supervisor_support import build_agent_runtime_failure_command, extract_task_context, resolve_todos
         from runtimes.extensions.skills.loader import fetch_skill_instructions
 
-        try:
-            from core.engine_config_resolver import resolve_engine_config_for_role
+        from core.engine_config_resolver import require_engine_config, resolve_engine_config_for_role
 
-            config = resolve_engine_config_for_role("supervisor").get("engine_config") or EngineConfig()
-        except Exception:
-            config = EngineConfig()
+        config = require_engine_config(
+            resolve_engine_config_for_role("supervisor"),
+            role="supervisor",
+        )
         bundle = build_supervisor_runtime_bundle(
             config=config,
             fetch_skill_instructions_tool=fetch_skill_instructions,

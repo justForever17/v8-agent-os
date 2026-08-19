@@ -6,7 +6,7 @@ from typing import Any, Callable
 from langgraph.types import Command
 
 from api.models import EngineConfig
-from core.engine_config_resolver import resolve_engine_config_for_role
+from core.engine_config_resolver import require_engine_config, resolve_engine_config_for_role
 from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.model_failover_service import model_failover_service
@@ -64,7 +64,7 @@ def _is_request_model_override(config: EngineConfig, resolved_role_model_ref: st
     provider_id = str(config.provider or "").strip()
     model_id = str(config.model_name or "").strip()
     role_model_ref = str(resolved_role_model_ref or "").strip()
-    if not model_id or model_id == "gpt-4o" or not provider_id:
+    if not model_id or not provider_id:
         return False
     if not request_model_ref or request_model_ref == role_model_ref:
         return False
@@ -104,21 +104,18 @@ def build_supervisor_runtime_bundle(
     sup_config = storage.get_supervisor_config()
     supervisor_resolution = resolve_engine_config_for_role("supervisor")
     role_resolution = supervisor_resolution["resolution"]
+    role_engine_config = require_engine_config(supervisor_resolution, role="supervisor")
     sup_model_name = str(
         role_resolution.get("resolvedModelRef")
         or role_resolution.get("resolvedModelId")
         or ""
     )
-    supervisor_binding_state = str(supervisor_resolution["resolution"].get("bindingState") or "")
-    default_role_model = storage.get_role_model_id("default")
     request_model_override = _is_request_model_override(config, sup_model_name)
 
     if request_model_override:
         sup_model_name = _request_model_target(config)
-    elif supervisor_binding_state != "explicit" and config.model_name and config.model_name != default_role_model:
-        sup_model_name = _request_model_target(config)
     if not sup_model_name:
-        sup_model_name = default_role_model or config.model_name
+        sup_model_name = str(role_resolution.get("resolvedModelRef") or role_engine_config.model_name)
 
     supervisor_reasoning_effort = normalize_reasoning_effort(getattr(config, "supervisor_reasoning_effort", None))
     supervisor_model_kwargs = dict(caller_kwargs)

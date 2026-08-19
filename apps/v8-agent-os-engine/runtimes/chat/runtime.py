@@ -29,6 +29,7 @@ from core.delegation_broker import (
 )
 from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.llm_factory import llm_factory
+from core.llm_exceptions import V8LLMError
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
 from core.provider_continuation import (
     PRIVATE_PROVIDER_CONTINUATION_KEY,
@@ -43,7 +44,11 @@ from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.model_thinking_control import normalize_reasoning_effort, resolve_session_reasoning_effort_override
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
-from core.engine_config_resolver import resolve_engine_config_for_model_ref, resolve_engine_config_for_role
+from core.engine_config_resolver import (
+    require_engine_config,
+    resolve_engine_config_for_model_ref,
+    resolve_engine_config_for_role,
+)
 from core.graph_stream_watchdog import (
     GraphStreamDownstreamTimeoutError,
     GraphStreamIdleTimeoutError,
@@ -77,7 +82,7 @@ from erc.chat_canonical_transcript import (
 from erc.ask_user_tool_result import resolve_ask_user_tool_result_interaction
 from erc.canonical_model_events import LangChainCanonicalModelEventAdapter
 from erc.kernel import erc_kernel
-from erc.models import RuntimeSource
+from erc.models import RuntimeSource, TERMINAL_RUN_STATUSES
 from erc.runtime_registry import runtime_registry
 from erc.runtime_context import bind_runtime_context, get_runtime_context
 from erc.runtime_stability import runtime_stability_service
@@ -1476,6 +1481,8 @@ class ChatRuntime:
                             "toolName": tool_name,
                             "args": display_args,
                             "status": "cancelled",
+                            "resultStatus": "terminated",
+                            "resultReasonCode": "attachment_preflight_cancelled",
                             "result": "画布任务已结束，附件后台识别已收束。",
                         },
                         "timestamp": self._now_timestamp_ms(),
@@ -1489,6 +1496,8 @@ class ChatRuntime:
                         "args": display_args,
                         "result": "画布任务已结束，附件后台识别已收束。",
                         "status": "cancelled",
+                        "resultStatus": "terminated",
+                        "resultReasonCode": "attachment_preflight_cancelled",
                         "topic": "tool.finished",
                         "timestamp": self._now_timestamp_ms(),
                     },
@@ -1514,6 +1523,8 @@ class ChatRuntime:
                     "toolName": tool_name,
                     "args": display_args,
                     "status": status,
+                    "resultStatus": status,
+                    "resultReasonCode": "" if status == "completed" else "attachment_preflight_failed",
                     "result": compact_result,
                     "agentVisibleResult": agent_visible_result,
                 },
@@ -1529,6 +1540,8 @@ class ChatRuntime:
                 "result": compact_result,
                 "agentVisibleResult": agent_visible_result,
                 "status": status,
+                "resultStatus": status,
+                "resultReasonCode": "" if status == "completed" else "attachment_preflight_failed",
                 "topic": "tool.finished",
                 "timestamp": self._now_timestamp_ms(),
             }
@@ -3015,27 +3028,24 @@ class ChatRuntime:
         explicit_model_profile = str(getattr(getattr(request, "data", None), "model_profile", None) or "").strip()
         if explicit_model_profile and explicit_model_profile not in {"engine-default", "default"}:
             resolved = resolve_engine_config_for_model_ref(explicit_model_profile)
-            if resolved["resolution"].get("bindingState") == "request_override":
-                override_config = resolved["engine_config"]
-                request.config.provider = override_config.provider
-                request.config.model_name = override_config.model_name
-                request.config.api_key = override_config.api_key
-                request.config.base_url = override_config.base_url
-                return
-        if request.config.provider == "openai" and request.config.model_name == "gpt-4o":
-            resolved = resolve_engine_config_for_role(
-                "supervisor",
-                fallback_provider=request.config.provider,
-                fallback_model=request.config.model_name,
-                require_explicit=True,
-            )
-            if resolved["resolution"].get("bindingState") != "explicit":
-                return
-            role_engine_config = resolved["engine_config"]
-            request.config.provider = role_engine_config.provider
-            request.config.model_name = role_engine_config.model_name
-            request.config.api_key = role_engine_config.api_key
-            request.config.base_url = role_engine_config.base_url
+            engine_config = require_engine_config(resolved, model_ref=explicit_model_profile)
+        else:
+            requested_model = str(request.config.model_name or "").strip()
+            requested_provider = str(request.config.provider or "").strip()
+            if requested_model:
+                resolved = resolve_engine_config_for_model_ref(
+                    requested_model,
+                    provider_id="" if "::" in requested_model else requested_provider,
+                )
+                engine_config = require_engine_config(resolved, model_ref=requested_model)
+            else:
+                resolved = resolve_engine_config_for_role("supervisor")
+                engine_config = require_engine_config(resolved, role="supervisor")
+
+        request.config.provider = engine_config.provider
+        request.config.model_name = engine_config.model_name
+        request.config.api_key = engine_config.api_key
+        request.config.base_url = engine_config.base_url
 
     def prepare_request(self, request: ChatRequest) -> ChatPreparedRequest:
         session_id = request.session_id or str(uuid.uuid4())
@@ -3750,7 +3760,42 @@ class ChatRuntime:
             preflight_decision=preflight_decision,
         )
 
-    def emit_lifecycle_start_events(self, chat_run: ChatRunContext) -> None:
+    def _activate_run_for_execution(self, chat_run: ChatRunContext) -> dict[str, Any]:
+        descriptor = chat_run.run_handle.descriptor
+        expected_status = str(descriptor.status or "queued").strip().lower() or "queued"
+        if expected_status in TERMINAL_RUN_STATUSES:
+            return {
+                "updated": False,
+                "reason": f"status_mismatch:{expected_status}",
+                "currentStatus": expected_status,
+            }
+        transition = run_service.transition_run_if_status(
+            chat_run.active_run_id,
+            expected_statuses={expected_status},
+            status="running",
+        )
+        if not transition.get("updated"):
+            current_status = str(transition.get("currentStatus") or "").strip().lower()
+            if current_status:
+                descriptor.status = current_status
+            return transition
+        previous_status = str(transition.get("previousStatus") or expected_status).strip().lower()
+        descriptor.status = "running"
+        workflow_ledger_service.sync_run_status(
+            chat_run.active_run_id,
+            run_status="running",
+            reason=chat_run.transport,
+            metadata={
+                "transitionNode": "resume_manager" if chat_run.is_resume_request else "run_manager",
+                "previousStatus": previous_status,
+            },
+        )
+        return transition
+
+    def emit_lifecycle_start_events(self, chat_run: ChatRunContext) -> dict[str, Any]:
+        activation = self._activate_run_for_execution(chat_run)
+        if not activation.get("updated"):
+            return activation
         workflow_ledger_service.activate_runtime_step(
             chat_run.active_run_id,
             owner_runtime="chat",
@@ -3818,7 +3863,7 @@ class ChatRuntime:
                 agent_id=None,
                 node="resume_manager",
             )
-            chat_run.run_handle.transition("running", reason=chat_run.transport, node="resume_manager")
+            transition_node = "resume_manager"
         else:
             chat_run.emit_runtime_event(
                 "run.created",
@@ -3831,7 +3876,22 @@ class ChatRuntime:
                 },
                 node="run_manager",
             )
-            chat_run.run_handle.transition("running", reason=chat_run.transport, node="run_manager")
+            transition_node = "run_manager"
+
+        chat_run.run_handle.emit(
+            "run.state.changed",
+            {
+                "from_status": activation.get("previousStatus") or "queued",
+                "to_status": "running",
+                "reason": chat_run.transport,
+            },
+            source=RuntimeSource(
+                plane="engine",
+                component="erc",
+                node=transition_node,
+                agent_id=chat_run.run_handle.descriptor.agent_id,
+            ),
+        )
 
         if not chat_run.scope_result.reused_existing_binding:
             chat_run.emit_runtime_event(
@@ -3840,6 +3900,7 @@ class ChatRuntime:
                 agent_id=None,
                 node="scope_resolution",
             )
+        return activation
 
     def record_request_inputs(self, chat_run: ChatRunContext) -> dict[str, Any] | None:
         request = chat_run.request
@@ -7915,6 +7976,48 @@ class ChatRuntime:
         return jsonable
 
     @classmethod
+    def _resolve_tool_result_status(cls, value: Any) -> tuple[str, str]:
+        raw_value = getattr(value, "content", value)
+        candidate = cls._coerce_json_like_value(to_jsonable(raw_value))
+        if not isinstance(candidate, dict):
+            legacy_text = str(candidate or "").lstrip().lower()
+            if legacy_text.startswith("error:") or legacy_text.startswith("error "):
+                return "failed", "legacy_tool_error"
+            return "completed", ""
+
+        kind = str(candidate.get("kind") or "").strip().lower()
+        status = str(candidate.get("status") or candidate.get("state") or "").strip().lower()
+        failure_kind = str(candidate.get("failureKind") or candidate.get("failure_kind") or "").strip().lower()
+        reason_code = str(
+            candidate.get("reasonCode")
+            or candidate.get("reason_code")
+            or kind
+            or failure_kind
+            or status
+            or ""
+        ).strip()
+
+        if kind in {"command_session_required", "command_session_redirect"}:
+            return "waiting", reason_code or "command_session_required"
+        if status in {"timed_out", "timeout"} or failure_kind == "deadline_exceeded":
+            return "timed_out", reason_code or "deadline_exceeded"
+        if status in {"terminated", "stopped", "cancelled", "canceled", "interrupted"}:
+            return "terminated", reason_code or "terminated"
+        if status in {"blocked", "safety_blocked", "denied", "rejected"} or kind in {
+            "safety_blocked",
+            "unsafe_unobserved",
+            "workspace_boundary_blocked",
+        }:
+            return "blocked", reason_code or "blocked"
+        if status in {"awaiting_input", "waiting_input", "waiting_approval", "approval_required", "waiting"}:
+            return "waiting", reason_code or status
+        if status in {"running", "queued", "pending", "starting", "streaming"}:
+            return "running", reason_code or status
+        if candidate.get("ok") is False or status in {"failed", "failure", "error", "exception"}:
+            return "failed", reason_code or "tool_result_failed"
+        return "completed", reason_code
+
+    @classmethod
     def _extract_agent_visible_tool_result(cls, value: Any) -> str:
         direct_content = getattr(value, "content", None)
         if direct_content is not None:
@@ -8902,6 +9005,7 @@ class ChatRuntime:
                     return emitted_events
             compact_result = self._compact_tool_result_value(str(name or ""), output)
             agent_visible_result = self._agent_visible_tool_result_for_event(str(name or ""), output, compact_result)
+            result_status, result_reason_code = self._resolve_tool_result_status(output)
             active_tool_key = str(tool_call_id or name or "__unknown_tool__").strip()
             provider_shadow = dict(stream_state.tool_call_shadow_by_tool_call_id.get(tool_call_id) or {})
             mcp_app_payload = self._build_mcp_app_payload(
@@ -8942,6 +9046,8 @@ class ChatRuntime:
                     "toolInvocationId": tool_call_id,
                     "toolName": name,
                     "result": compact_result,
+                    "resultStatus": result_status,
+                    "resultReasonCode": result_reason_code,
                     "agentVisibleResult": agent_visible_result,
                     "agentVisibleChars": len(agent_visible_result),
                     **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
@@ -8975,6 +9081,8 @@ class ChatRuntime:
                 "toolInvocationId": tool_call_id,
                 "toolName": name,
                 "result": compact_result,
+                "resultStatus": result_status,
+                "resultReasonCode": result_reason_code,
                 "agentVisibleResult": agent_visible_result,
                 "agentVisibleChars": len(agent_visible_result),
                 **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
@@ -9935,6 +10043,8 @@ class ChatRuntime:
                     "toolName": tool_name,
                     "args": display_args,
                     "status": status,
+                    "resultStatus": "failed" if status == "failed" else "terminated",
+                    "resultReasonCode": reason or ("tool_result_failed" if status == "failed" else "run_terminated"),
                     "result": result_text,
                     "terminalReason": reason,
                     **provider_shadow,
@@ -9955,6 +10065,8 @@ class ChatRuntime:
                 "args": display_args,
                 "result": result_text,
                 "status": status,
+                "resultStatus": "failed" if status == "failed" else "terminated",
+                "resultReasonCode": reason or ("tool_result_failed" if status == "failed" else "run_terminated"),
                 "terminalReason": reason,
                 "timestamp": self._now_timestamp_ms(),
                 "agentName": profile["name"],
@@ -10455,7 +10567,18 @@ class ChatRuntime:
             chat_run.run_handle.refresh_chat_snapshot()
             if str(approval.get("status") or "").strip().lower() == "pending":
                 return [{"type": "done", "status": "waiting_approval", "run_id": chat_run.active_run_id}]
-        normalized = normalize_provider_error(exc)
+        if isinstance(exc, V8LLMError):
+            normalized = {
+                "code": exc.code,
+                "provider": exc.provider,
+                "model": exc.model,
+                "retryable": exc.retryable,
+                "message": exc.message,
+                "userAction": exc.user_action,
+                "diagnostic": dict(exc.details or {}),
+            }
+        else:
+            normalized = normalize_provider_error(exc)
         if isinstance(exc, CompatBridgeHardStop):
             failure_class = getattr(exc, "failure_class", CompatBridgeHardStop.failure_class)
             normalized["failureClass"] = failure_class
@@ -10774,6 +10897,17 @@ class ChatRuntime:
         stream_state: ChatStreamState | None = None
         for connected_event in self.emit_stream_connected_events(chat_run):
             yield connected_event
+        prestart_signal = self.consume_control_signal(chat_run.active_run_id)
+        if self.should_stop_stream(prestart_signal):
+            for final_event in self.finalize_interrupted_run(chat_run, prestart_signal, stream_state):
+                yield final_event
+            return
+        persisted_run = run_service.get_run(chat_run.active_run_id) or {}
+        persisted_status = str(persisted_run.get("status") or "").strip().lower()
+        if persisted_status in TERMINAL_RUN_STATUSES:
+            chat_run.run_handle.descriptor.status = persisted_status
+            yield {"type": "done", "status": persisted_status, "run_id": chat_run.active_run_id}
+            return
         lane_policy = runtime_stability_service.session_lane_policy()
         lane_metadata = {"transport": transport, "runtimeKind": "chat"}
         lane_decision = session_admission_service.try_acquire(
@@ -10908,7 +11042,37 @@ class ChatRuntime:
                 agent_id=None,
                 node="session_lane",
             )
-        self.emit_lifecycle_start_events(chat_run)
+        activation = self.emit_lifecycle_start_events(chat_run)
+        if not activation.get("updated"):
+            current_status = str(
+                activation.get("currentStatus")
+                or (run_service.get_run(chat_run.active_run_id) or {}).get("status")
+                or "cancelled"
+            ).strip().lower()
+            interrupted_signal = self.consume_control_signal(chat_run.active_run_id)
+            if self.should_stop_stream(interrupted_signal):
+                for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
+                    yield final_event
+            else:
+                yield {"type": "done", "status": current_status, "run_id": chat_run.active_run_id}
+            session_admission_service.release(
+                chat_run.session_id,
+                chat_run.active_run_id,
+                policy=lane_policy,
+                runtime_kind="chat",
+                metadata=lane_metadata,
+            )
+            chat_run.emit_runtime_event(
+                "run.lane.released",
+                {
+                    "policy": lane_decision.policy,
+                    "session_id": chat_run.session_id,
+                    "reason": "execution_start_rejected",
+                },
+                agent_id=None,
+                node="session_lane",
+            )
+            return
         self.record_request_inputs(chat_run)
         self._apply_explicit_plugin_grants(chat_run)
         try:

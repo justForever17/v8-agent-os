@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 from core.terminal_post_run import TerminalPostRunService
 from erc.kernel import ExecutionRuntimeCore
+from runtimes.chat.runtime import ChatRuntime
 
 
 def test_late_interrupt_does_not_reopen_completed_run(monkeypatch):
@@ -131,3 +135,70 @@ def test_interrupted_run_executes_terminal_post_run_cleanup(monkeypatch):
         source_component="test",
     ) is True
     assert calls == ["guides", "proof", "metadata", "memory", "hooks"]
+
+
+def test_chat_worker_honors_interrupt_after_connected_event_before_lane(monkeypatch):
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        active_run_id="run_prestart_interrupt",
+        session_id="session_prestart_interrupt",
+        run_handle=SimpleNamespace(
+            descriptor=SimpleNamespace(status="queued"),
+            refresh_chat_snapshot=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(runtime, "prepare_run_context", lambda *_args, **_kwargs: chat_run)
+    monkeypatch.setattr(runtime, "emit_stream_connected_events", lambda _chat_run: [{"type": "protocol_connected"}])
+    monkeypatch.setattr(
+        runtime,
+        "consume_control_signal",
+        lambda _run_id: {"command": "interrupt", "reason": "web_composer_interrupt"},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "finalize_interrupted_run",
+        lambda _chat_run, _signal, _stream_state: [
+            {"type": "done", "status": "interrupted", "run_id": "run_prestart_interrupt"}
+        ],
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.session_admission_service.try_acquire",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("an interrupted run must not acquire the lane")),
+    )
+
+    async def collect_events():
+        return [event async for event in runtime.stream_legacy_events(SimpleNamespace(), transport="submit")]
+
+    assert asyncio.run(collect_events()) == [
+        {"type": "protocol_connected"},
+        {"type": "done", "status": "interrupted", "run_id": "run_prestart_interrupt"},
+    ]
+
+
+def test_chat_execution_activation_cannot_resurrect_interrupted_run(monkeypatch):
+    runtime = ChatRuntime()
+    descriptor = SimpleNamespace(status="queued", agent_id="supervisor")
+    chat_run = SimpleNamespace(
+        active_run_id="run_activation_race",
+        transport="submit",
+        is_resume_request=False,
+        run_handle=SimpleNamespace(descriptor=descriptor),
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.run_service.transition_run_if_status",
+        lambda *_args, **_kwargs: {
+            "updated": False,
+            "reason": "status_mismatch:interrupted",
+            "currentStatus": "interrupted",
+        },
+    )
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.workflow_ledger_service.sync_run_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("terminal run must not be reactivated")),
+    )
+
+    result = runtime._activate_run_for_execution(chat_run)
+
+    assert result["updated"] is False
+    assert result["currentStatus"] == "interrupted"
+    assert descriptor.status == "interrupted"

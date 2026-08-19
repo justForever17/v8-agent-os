@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from urllib.parse import quote, quote_plus
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from core.model_connection_tester import ModelConnectionTester
 from core.observability_db import ObservabilityDatabaseManager
@@ -35,6 +36,77 @@ def test_connection_probe_uses_small_output_cap(monkeypatch):
     assert captured["max_tokens"] == 16
     assert captured["temperature"] == 0
     assert captured["streaming"] is False
+
+
+def test_streaming_probe_consumes_the_provider_stream_to_terminal(monkeypatch):
+    tester = ModelConnectionTester()
+    state = {"completed": False}
+
+    class StreamingClient:
+        def stream(self, _messages):
+            yield AIMessage(content="O")
+            yield AIMessage(content="K")
+            state["completed"] = True
+
+    monkeypatch.setattr(
+        "core.model_connection_tester.llm_factory.create_chat_model",
+        lambda *_args, **_kwargs: StreamingClient(),
+    )
+
+    result = tester._test_streaming_capability(
+        model_id="provider::model",
+        meta={"base_url": "https://example.test"},
+    )
+
+    assert result["message"] == "OK"
+    assert state["completed"] is True
+
+
+def test_tool_probe_verifies_the_tool_result_continuation(monkeypatch):
+    tester = ModelConnectionTester()
+    calls: list[tuple[object, list[object]]] = []
+
+    class BoundClient:
+        def __init__(self, tool_choice):
+            self.tool_choice = tool_choice
+
+        def invoke(self, messages):
+            calls.append((self.tool_choice, messages))
+            if self.tool_choice == "required":
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "name": "echo_status",
+                            "args": {"status": "ok"},
+                        }
+                    ],
+                )
+            assert isinstance(messages[0], HumanMessage)
+            assert isinstance(messages[1], AIMessage)
+            assert isinstance(messages[2], ToolMessage)
+            assert messages[2].tool_call_id == "call-1"
+            assert messages[2].content == "ok"
+            return AIMessage(content="done")
+
+    class ToolClient:
+        def bind_tools(self, _tools, tool_choice=None):
+            return BoundClient(tool_choice)
+
+    monkeypatch.setattr(
+        "core.model_connection_tester.llm_factory.create_chat_model",
+        lambda *_args, **_kwargs: ToolClient(),
+    )
+
+    result = tester._test_tool_calling_capability(
+        model_id="provider::model",
+        meta={"base_url": "https://example.test"},
+    )
+
+    assert result["continuationVerified"] is True
+    assert result["message"] == "tool continuation ok · echo_status"
+    assert [item[0] for item in calls] == ["required", None]
 
 
 def test_anthropic_probe_endpoint_exposes_misconfigured_versioned_base_url():

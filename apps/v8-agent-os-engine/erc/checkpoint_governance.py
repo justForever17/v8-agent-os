@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from core.database import db
-from core.engine_config_resolver import resolve_engine_config_for_role
+from core.engine_config_resolver import require_engine_config, resolve_engine_config_for_role
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
 
 
@@ -452,7 +452,10 @@ class CheckpointGovernanceService:
         source_fingerprint = self._checkpoint_fingerprint(thread_id, checkpoint_id)
         patch = self._normalize_state_patch(normalized_mode, state_patch)
 
-        engine_config = resolve_engine_config_for_role("supervisor").get("engine_config")
+        engine_config = require_engine_config(
+            resolve_engine_config_for_role("supervisor"),
+            role="supervisor",
+        )
         graph, _ = await _get_supervisor_runner().build_graph(engine_config)
         source_config = {
             "configurable": {
@@ -1092,7 +1095,10 @@ class CheckpointGovernanceService:
 
         self._update_operation(operation_id, state="running")
         try:
-            engine_config = resolve_engine_config_for_role("supervisor").get("engine_config")
+            engine_config = require_engine_config(
+                resolve_engine_config_for_role("supervisor"),
+                role="supervisor",
+            )
             graph, _ = await _get_supervisor_runner().build_graph(engine_config)
             source_config = {
                 "configurable": {

@@ -98,10 +98,11 @@ def test_official_evaluation_command_shape(tmp_path):
         official_repo_root=tmp_path / "LongMemEval",
         hypothesis_file=tmp_path / "hypotheses.jsonl",
         data_file=tmp_path / "longmemeval_oracle.json",
+        judge_model="explicit-evaluator-model",
     )
 
     assert command[0] == "python"
-    assert command[2] == "gpt-4o"
+    assert command[2] == "explicit-evaluator-model"
     assert str(command[1]).endswith("src\\evaluation\\evaluate_qa.py") or str(command[1]).endswith("src/evaluation/evaluate_qa.py")
     assert str(command[3]).endswith("hypotheses.jsonl")
 

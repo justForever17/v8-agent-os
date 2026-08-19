@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Annotated
 
 import pytest
+
+from api.models import EngineConfig
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.channels import DeltaChannel
 from langgraph.graph import END, START, StateGraph
@@ -117,7 +119,10 @@ def _patch_governance(
     monkeypatch.setattr(
         governance_module,
         "resolve_engine_config_for_role",
-        lambda _role: {"engine_config": object()},
+        lambda _role: {
+            "engine_config": EngineConfig(provider="provider", model_name="model"),
+            "resolution": {"role": "supervisor", "bindingState": "explicit"},
+        },
     )
 
 

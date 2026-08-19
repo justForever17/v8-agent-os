@@ -76,7 +76,7 @@ def build_official_evaluation_command(
     official_repo_root: str | Path,
     hypothesis_file: str | Path,
     data_file: str | Path,
-    judge_model: str = "gpt-4o",
+    judge_model: str,
 ) -> list[str]:
     repo_root = Path(official_repo_root)
     return [

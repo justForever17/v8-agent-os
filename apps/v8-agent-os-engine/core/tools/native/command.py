@@ -920,7 +920,10 @@ def _launch_background_command(
     interactive_mode = requested_terminal_mode == "pty" or (
         requested_terminal_mode == "auto" and interactive_reason is not None
     )
-    observable_session = session_reason is not None
+    # Every process launched through this path is registered in the broker and
+    # can be observed, controlled, and terminated by its commandId. Detection
+    # only chooses the path; it must not redefine the resulting capability.
+    observable_session = True
     if sys.platform == "win32" and interactive_mode and not HAS_WINPTY:
         raise CommandSessionBackendError(
             backend="winpty",
@@ -3064,15 +3067,19 @@ class BackgroundProcess:
     def _read_output(self):
         try:
             if self.backend == "winpty" and self.pty_win is not None:
-                while self.is_running and self.pty_win.isalive():
+                while self.is_running:
+                    alive = bool(self.pty_win.isalive())
                     try:
-                        data = self.pty_win.read()
+                        data = self.pty_win.read(blocking=False)
                         if data:
                             self._ingest_output(data)
-                        else:
-                            time.sleep(0.05)
+                            continue
+                        if not alive:
+                            break
+                        time.sleep(0.05)
                     except BaseException as exc:
-                        self._mark_backend_failure(exc, operation="read")
+                        if alive:
+                            self._mark_backend_failure(exc, operation="read")
                         break
             elif self.backend == "posix_pty" and self.fd is not None:
                 fd = self.fd

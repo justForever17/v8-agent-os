@@ -6,7 +6,7 @@ from typing import Any, Dict
 from urllib.parse import quote
 
 import requests
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -378,12 +378,10 @@ class ModelConnectionTester:
             _role="connection_test_stream",
         )
         chunks: list[str] = []
-        for index, chunk in enumerate(client.stream([HumanMessage(content="Reply with exact string: OK")])):
+        for chunk in client.stream([HumanMessage(content="Reply with exact string: OK")]):
             content = getattr(chunk, "content", "")
             if isinstance(content, str) and content:
                 chunks.append(content)
-            if index >= 4:
-                break
         latency_ms = (time.perf_counter() - started) * 1000
         return {
             "latencyMs": round(latency_ms, 2),
@@ -397,39 +395,62 @@ class ModelConnectionTester:
             return status
 
         started = time.perf_counter()
-        client = llm_factory.create_chat_model(
+        tool = StructuredTool.from_function(
+            echo_status,
+            name="echo_status",
+            description="Echo the provided status string.",
+        )
+        base_client = llm_factory.create_chat_model(
             model_id,
             temperature=0,
             max_tokens=96,
             streaming=False,
             _role="connection_test_tools",
-        ).bind_tools(
-            [StructuredTool.from_function(echo_status, name="echo_status", description="Echo the provided status string.")],
-            tool_choice="required",
         )
-        response = client.invoke(
-            [
-                HumanMessage(
-                    content=(
-                        "你必须调用名为 echo_status 的工具，"
-                        '把参数设置为 {"status":"ok"}，'
-                        "不要直接回答自然语言。"
-                    )
-                )
-            ]
+        request_message = HumanMessage(
+            content=(
+                "你必须调用名为 echo_status 的工具，"
+                '把参数设置为 {"status":"ok"}，'
+                "不要直接回答自然语言。"
+            )
         )
+        response = base_client.bind_tools([tool], tool_choice="required").invoke([request_message])
         tool_calls = list(getattr(response, "tool_calls", None) or [])
         if not tool_calls:
             raise RuntimeError("模型未返回工具调用。")
+        first_tool_call = dict(tool_calls[0] or {})
+        tool_call_id = str(first_tool_call.get("id") or "").strip()
+        tool_name = str(first_tool_call.get("name") or "").strip()
+        tool_args = first_tool_call.get("args") if isinstance(first_tool_call.get("args"), dict) else {}
+        if tool_name != "echo_status" or not tool_call_id:
+            raise RuntimeError("模型返回的工具调用缺少可续写的 name 或 tool_call_id。")
+        tool_result = echo_status(str(tool_args.get("status") or ""))
+        continuation = base_client.bind_tools([tool]).invoke(
+            [
+                request_message,
+                response,
+                ToolMessage(
+                    content=tool_result,
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+            ]
+        )
+        if list(getattr(continuation, "tool_calls", None) or []):
+            raise RuntimeError("工具结果回传后模型再次进入工具调用，未完成续写。")
+        continuation_text = _extract_text_preview(continuation)
+        if not continuation_text:
+            raise RuntimeError("工具结果回传后模型未返回可验证的最终回答。")
         response_metadata = dict(getattr(response, "response_metadata", {}) or {})
         latency_ms = (time.perf_counter() - started) * 1000
         return {
             "latencyMs": round(latency_ms, 2),
-            "message": f"tool call ok · {tool_calls[0].get('name') or 'unknown'}",
+            "message": f"tool continuation ok · {tool_name}",
             "requestKind": "tool_calling",
             "resolvedEndpoint": str(meta.get("base_url") or ""),
             "toolCallingMode": str(response_metadata.get("v8_tool_calling_mode") or "native"),
             "toolCallCount": len(tool_calls),
+            "continuationVerified": True,
         }
 
     def _test_structured_output_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:

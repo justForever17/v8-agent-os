@@ -220,6 +220,22 @@ def test_catalog_connection_preserves_server_audited_fact_provenance() -> None:
     assert plan["modelPatch"]["factProvenance"] == provenance
 
 
+def test_oauth_connection_preserves_catalog_context_facts_for_role_governance() -> None:
+    plan = build_catalog_model_connection_plan(
+        provider=_provider(
+            id="codex",
+            baseUrl="https://chatgpt.com/backend-api",
+            auth={"type": "oauth_file", "path": "~/.codex/auth.json", "preset": "codex"},
+        ),
+        model=_model(contextWindow=1_000_000, maxTokens=130_000),
+        model_id="reasoning-model",
+    )
+
+    assert plan["providerPatch"]["api_key"] == "oauth:~/.codex/auth.json"
+    assert plan["modelPatch"]["contextWindow"] == 1_000_000
+    assert plan["modelPatch"]["maxTokens"] == 130_000
+
+
 def test_channel_auth_contract_is_bound_to_the_model_endpoint() -> None:
     provider = _provider(
         channels=[

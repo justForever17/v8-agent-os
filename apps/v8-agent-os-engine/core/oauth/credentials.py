@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -25,6 +26,8 @@ _INVISIBLE_PATH_MARKERS = {
     "\u2068",
     "\u2069",
 }
+
+_OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
 
 
 def sanitize_oauth_path(raw_path: str | None) -> str:
@@ -65,6 +68,29 @@ def _pick_first(payload: Dict[str, Any], *paths: tuple[str, ...]) -> str:
         if current:
             return str(current)
     return ""
+
+
+def _account_id_from_jwt(raw_token: str) -> str:
+    parts = str(raw_token or "").split(".")
+    if len(parts) != 3:
+        return ""
+    try:
+        encoded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    auth_claim = payload.get(_OPENAI_AUTH_CLAIM)
+    if not isinstance(auth_claim, dict):
+        auth_claim = {}
+    return str(
+        auth_claim.get("chatgpt_account_id")
+        or auth_claim.get("account_id")
+        or payload.get("chatgpt_account_id")
+        or payload.get("account_id")
+        or ""
+    ).strip()
 
 
 def _resolve_expiry_ms(payload: Dict[str, Any]) -> int:
@@ -125,6 +151,7 @@ def resolve_oauth_reference(
         ("tokens", "access_token"),
         ("tokens", "token"),
     )
+    id_token = _pick_first(payload, ("id_token",), ("tokens", "id_token"))
     api_key = _pick_first(
         payload,
         ("api_key",),
@@ -134,6 +161,8 @@ def resolve_oauth_reference(
     )
     project_id = _pick_first(payload, ("projectId",), ("project_id",))
     account_id = _pick_first(payload, ("accountId",), ("account_id",), ("tokens", "account_id"))
+    if not account_id:
+        account_id = _account_id_from_jwt(access_token) or _account_id_from_jwt(id_token)
     api_standard_lower = str(api_standard or "openai").lower()
     provider_lower = str(provider_id or "").lower()
     expiry_ms = _resolve_expiry_ms(payload)
@@ -142,6 +171,20 @@ def resolve_oauth_reference(
     result["accountId"] = account_id
     result["accessToken"] = access_token
     result["expiryMs"] = expiry_ms
+
+    if provider_lower == "codex":
+        if not access_token:
+            result["error"] = (
+                "auth_error: Codex OAuth 文件中未找到 access_token；"
+                "OPENAI_API_KEY 不能用于 ChatGPT Codex runtime，请重新执行 Codex OAuth 登录。"
+            )
+            return result
+        if not account_id:
+            result["error"] = "auth_error: Codex OAuth 文件中未找到 account id，请重新执行 Codex OAuth 登录。"
+            return result
+        result["credential"] = access_token
+        result["oauthFlavor"] = "codex"
+        return result
 
     if api_standard_lower in {"google", "gemini"}:
         if api_key:

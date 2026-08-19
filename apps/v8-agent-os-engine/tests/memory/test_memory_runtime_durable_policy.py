@@ -872,6 +872,36 @@ class MemoryScopeResolutionTests(unittest.TestCase):
 
         self.assertIn("scope_hint", raised.exception.payload["changedAnchors"])
 
+    def test_bound_session_reuses_equivalent_windows_workspace_path(self):
+        workspace_path = r"E:\Projects\v8chat\v8-agent-os"
+        binding_service = _FakeBindingService()
+        binding_service.binding = SessionScopeBinding(
+            session_id="session-path-separators",
+            conversation_id="session-path-separators",
+            project_id="v8-agent-os",
+            workspace_id="v8-agent-os",
+            workspace_path=workspace_path,
+            scope_hint="global",
+            resolved_scope=canonical_workspace_scope(workspace_path),
+            scope_source="request_explicit",
+        )
+        service = ScopeResolutionService(
+            project_registry=_FakeProjectRegistry(None),
+            binding_service=binding_service,
+            resolution_repo=_FakeResolutionRepo(),
+        )
+
+        result = service.resolve(
+            session_id="session-path-separators",
+            project_id="v8-agent-os",
+            workspace_id="v8-agent-os",
+            workspace_path="E:/Projects/v8chat/v8-agent-os",
+            scope_hint="global",
+        )
+
+        self.assertTrue(result.reused_existing_binding)
+        self.assertEqual(result.binding.workspace_path, workspace_path)
+
 
 class MemoryStoreGovernanceTests(unittest.TestCase):
     def test_typed_identity_revoke_returns_to_placeholder_and_records_history(self):

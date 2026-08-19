@@ -321,6 +321,29 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
     assert not (main_root / "projects" / "wrong.txt").exists()
 
 
+def test_read_native_file_returns_structured_failure_for_missing_file(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        result = json.loads(native_tools.read_native_file.func("missing.txt"))
+
+    assert result["ok"] is False
+    assert result["kind"] == "file_not_found"
+    assert result["error"] == "file_not_found"
+    assert Path(result["path"]) == active_root / "missing.txt"
+
+
 def test_write_native_file_records_a_session_bound_artifact(tmp_path, monkeypatch):
     from core import native_tools
     from core.tools.native import workspace_file as workspace_file_module
@@ -546,6 +569,7 @@ def test_read_native_file_returns_governed_feature_pack_guidance_when_document_d
     assert result["code"] == "document_ingestion_dependencies_missing"
     assert result["details"]["featurePackId"] == "document_ingestion"
     assert "能力包" in result["details"]["recommendedNextAction"]
+    assert "不要调用系统 pip" in result["details"]["recommendedNextAction"]
 
 
 def test_read_native_file_rejects_legacy_binary_office_formats_without_fake_parser_support(tmp_path, monkeypatch):

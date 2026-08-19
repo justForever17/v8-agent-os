@@ -113,8 +113,8 @@ class ToolOutput(BaseModel):
 class EngineConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    provider: str = Field(default="openai", description="The provider name (openai, anthropic, google/gemini)")
-    model_name: str = Field(default="gpt-4o", description="The LLM model to use")
+    provider: str = Field(default="", description="The Model Hub provider id")
+    model_name: str = Field(default="", description="The Model Hub model id or qualified modelRef")
     api_key: Optional[str] = Field(default=None)
     base_url: Optional[str] = Field(default=None)
     system_prompt: Optional[str] = Field(default=None, description="The final system prompt to inject")

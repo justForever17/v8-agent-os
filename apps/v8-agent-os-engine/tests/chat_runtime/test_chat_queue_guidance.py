@@ -8,15 +8,20 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 import api.chat_realtime_routes as routes
+import erc.event_bus as event_bus_module
 import erc.run_service as run_service_module
+import erc.workflow_ledger as workflow_ledger_module
 from api.models import ChatMessage, ChatRequest, ChatRequestData
 from core.database import DatabaseManager
+from runtimes.memory.scope_resolution import ScopeBindingConflictError
 
 
 def _install_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DatabaseManager:
     test_db = DatabaseManager(tmp_path / "queue-guidance.sqlite3")
     monkeypatch.setattr(routes, "db", test_db)
+    monkeypatch.setattr(event_bus_module, "db", test_db)
     monkeypatch.setattr(run_service_module, "db", test_db)
+    monkeypatch.setattr(workflow_ledger_module, "db", test_db)
     return test_db
 
 
@@ -508,6 +513,106 @@ def test_background_resume_first_event_timeout_does_not_overwrite_completed_run(
     topics = [event["topic"] for event in test_db.get_runtime_events("session-timeout-completed")]
     assert "run.resume.worker.first_event_timeout" in topics
     assert "run.resume.worker.first_event_timeout_ignored" in topics
+
+
+def test_scope_conflict_terminalizes_accepted_run_and_persists_terminal_events(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-scope-conflict", "Scope Conflict")
+    test_db.create_run_record(
+        run_id="run-scope-conflict",
+        session_id="session-scope-conflict",
+        run_type="chat",
+        status="queued",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-scope-conflict",
+        conversation_id="session-scope-conflict",
+        resume_run_id="run-scope-conflict",
+    )
+    conflict_payload = {
+        "error": "scope_conflict",
+        "message": "This session is bound to another workspace.",
+        "changedAnchors": {"workspace_path": {"previous": "E:/one", "requested": "E:/two"}},
+        "recommendedAction": "create_new_session",
+    }
+
+    async def conflicting_stream(*_args, **_kwargs):
+        raise ScopeBindingConflictError(conflict_payload)
+        yield {}
+
+    _install_chat_runtime(monkeypatch, stream_legacy_events=conflicting_stream)
+
+    async def collect_events():
+        return [
+            event
+            async for event in routes.iter_chat_events(
+                request,
+                transport="background",
+                run_id="run-scope-conflict",
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+    run_record = test_db.get_run_record("run-scope-conflict") or {}
+
+    assert run_record.get("status") == "failed"
+    assert run_record.get("error_message") == conflict_payload["message"]
+    assert (run_record.get("metadata") or {}).get("scope_conflict") is True
+    assert [event["topic"] for event in events] == ["scope.conflict", "run.state.changed", "run.failed"]
+    persisted = test_db.get_runtime_events_for_run("run-scope-conflict")
+    assert [event["topic"] for event in persisted] == ["scope.conflict", "run.state.changed", "run.failed"]
+
+
+def test_scope_conflict_does_not_overwrite_an_already_interrupted_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    test_db.create_or_update_session("session-scope-race", "Scope Race")
+    test_db.create_run_record(
+        run_id="run-scope-race",
+        session_id="session-scope-race",
+        run_type="chat",
+        status="interrupted",
+    )
+    request = ChatRequest(
+        messages=[],
+        session_id="session-scope-race",
+        conversation_id="session-scope-race",
+        resume_run_id="run-scope-race",
+    )
+
+    async def conflicting_stream(*_args, **_kwargs):
+        raise ScopeBindingConflictError(
+            {
+                "error": "scope_conflict",
+                "message": "This session is bound to another workspace.",
+                "changedAnchors": {"workspace_path": {"previous": "E:/one", "requested": "E:/two"}},
+            }
+        )
+        yield {}
+
+    _install_chat_runtime(monkeypatch, stream_legacy_events=conflicting_stream)
+
+    async def collect_events():
+        return [
+            event
+            async for event in routes.iter_chat_events(
+                request,
+                transport="background",
+                run_id="run-scope-race",
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    assert (test_db.get_run_record("run-scope-race") or {}).get("status") == "interrupted"
+    assert [event["topic"] for event in events] == ["scope.conflict"]
+    assert [event["topic"] for event in test_db.get_runtime_events_for_run("run-scope-race")] == ["scope.conflict"]
 
 
 def test_background_non_resume_worker_failure_still_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

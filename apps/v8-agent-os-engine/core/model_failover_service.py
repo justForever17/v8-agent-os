@@ -11,7 +11,11 @@ from core.model_capability_matrix import (
     infer_runtime_capability_requirements,
 )
 from core.model_control_plane import model_control_plane
-from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from core.llm_exceptions import (
+    V8LLMCapabilityMismatchError,
+    V8LLMError,
+    build_llm_error_from_normalized,
+)
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.model_budget_service import model_budget_service
 from core.provider_compatibility import normalize_provider_error
@@ -357,10 +361,13 @@ class ModelFailoverService:
             capability_requirements=capability_requirements,
         )
         if not candidates:
-            raise ModelGovernanceInterventionRequired(
-                "当前没有可用的同类候选模型可用于切换。",
-                approval_kind="model_review",
-                question="当前角色没有可用的同类候选模型。是否要先调整模型配置后再继续？",
+            raise V8LLMCapabilityMismatchError(
+                code="model_capability_unavailable",
+                message="Model Hub 中没有满足当前运行能力要求的已配置模型。",
+                provider="model_hub",
+                model=effective_preferred_model_id,
+                retryable=False,
+                user_action="请在 Model Hub 中配置并测试满足当前角色能力要求的模型，然后重新发送消息。",
                 details={
                     "role": role,
                     "preferredModelId": preferred_model_id,
@@ -456,14 +463,26 @@ class ModelFailoverService:
                     )
                     return result
                 except Exception as exc:
-                    normalized = normalize_provider_error(
-                        exc,
-                        provider=candidate.provider_name,
-                        model=candidate.model_id,
-                    )
+                    if isinstance(exc, V8LLMError):
+                        normalized = {
+                            "code": exc.code,
+                            "provider": exc.provider or candidate.provider_name,
+                            "model": exc.model or candidate.model_id,
+                            "retryable": exc.retryable,
+                            "message": exc.message,
+                            "userAction": exc.user_action,
+                            "diagnostic": dict(exc.details or {}),
+                        }
+                    else:
+                        normalized = normalize_provider_error(
+                            exc,
+                            provider=candidate.provider_name,
+                            model=candidate.model_id,
+                        )
                     attempt = {
                         "modelId": candidate.model_id,
                         "providerId": candidate.provider_id,
+                        "providerName": normalized["provider"],
                         "reason": candidate.reason,
                         "retryIndex": retry_index,
                         "attemptOrdinal": total_attempts,
@@ -475,6 +494,8 @@ class ModelFailoverService:
                         "code": normalized["code"],
                         "message": normalized["message"],
                         "retryable": normalized["retryable"],
+                        "userAction": normalized.get("userAction") or "",
+                        "diagnostic": dict(normalized.get("diagnostic") or {}),
                     }
                     attempts.append(attempt)
                     logger.warning(
@@ -495,10 +516,16 @@ class ModelFailoverService:
                 if last_model == candidate.model_id and not self._can_try_next_candidate(last_code):
                     break
 
-        raise ModelGovernanceInterventionRequired(
-            "主模型与同类候选模型均调用失败。",
-            approval_kind="model_review",
-            question="当前主模型和同类候选模型都调用失败。是否允许暂停本次运行，待你调整模型后再继续？",
+        last_attempt = attempts[-1] if attempts else {}
+        raise build_llm_error_from_normalized(
+            {
+                "code": str(last_attempt.get("code") or "model_invocation_failed"),
+                "provider": str(last_attempt.get("providerName") or last_attempt.get("providerId") or "unknown"),
+                "model": str(last_attempt.get("modelId") or effective_preferred_model_id),
+                "retryable": bool(last_attempt.get("retryable")),
+                "message": str(last_attempt.get("message") or "Model Hub 中已配置的模型调用失败。"),
+                "userAction": str(last_attempt.get("userAction") or "请在 Model Hub 中运行连接测试，修正配置后重新发送消息。"),
+            },
             details={
                 "role": role,
                 "preferredModelId": preferred_model_id,

@@ -93,4 +93,8 @@ def raise_as_v8_llm_error(exc: Exception, *, provider: str | None = None, model:
     if isinstance(exc, V8LLMError):
         raise exc
     normalized = normalize_provider_error(exc, provider=provider, model=model)
-    raise build_llm_error_from_normalized(normalized, details=details) from exc
+    error_details = dict(details or {})
+    diagnostic = normalized.get("diagnostic")
+    if isinstance(diagnostic, dict) and diagnostic:
+        error_details["providerDiagnostic"] = dict(diagnostic)
+    raise build_llm_error_from_normalized(normalized, details=error_details) from exc

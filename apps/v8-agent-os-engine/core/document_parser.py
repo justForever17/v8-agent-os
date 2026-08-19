@@ -63,7 +63,10 @@ class DocumentIngestionDependencyError(RuntimeError):
                 "missingDependencies": self.missing_dependencies,
                 "featurePackId": "document_ingestion",
                 "requiredBundle": "document-ingestion",
-                "recommendedNextAction": "打开管理台顶部的能力包面板，安装“文档读取能力包”，重启 V8OS 后重试。",
+                "recommendedNextAction": (
+                    "打开管理台顶部的能力包面板，安装“文档读取能力包”，重启 V8OS 后重试；"
+                    "不要调用系统 pip 安装依赖，系统 Python 不属于 V8OS 的受管运行时。"
+                ),
             },
         }
 

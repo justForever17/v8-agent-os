@@ -90,6 +90,27 @@ def _redact_provider_error_message(message: Any, *, sensitive_values: Iterable[A
     return redacted
 
 
+def _safe_provider_error_diagnostic(exc: Exception) -> Dict[str, Any]:
+    diagnostic: Dict[str, Any] = {"exceptionType": type(exc).__name__}
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    try:
+        if status_code is not None:
+            diagnostic["statusCode"] = int(status_code)
+    except (TypeError, ValueError):
+        pass
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        provider_code = str(error.get("code") or error.get("type") or "").strip()
+        if provider_code:
+            diagnostic["providerCode"] = provider_code[:120]
+    return diagnostic
+
+
 def normalize_provider_error(
     exc: Exception,
     *,
@@ -195,4 +216,5 @@ def normalize_provider_error(
         "retryable": retryable,
         "message": message,
         "userAction": user_action,
+        "diagnostic": _safe_provider_error_diagnostic(exc),
     }

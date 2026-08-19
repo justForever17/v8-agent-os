@@ -278,6 +278,7 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
     monkeypatch.setattr(
         "graph.supervisor_builder.resolve_engine_config_for_role",
         lambda _role: {
+            "engine_config": EngineConfig(provider="role-provider", model_name=role_model),
             "resolution": {
                 "resolvedModelId": role_model,
                 "resolvedModelRef": role_model_ref,

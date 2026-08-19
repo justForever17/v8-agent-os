@@ -34,6 +34,45 @@ def _allow_command_launch(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(command_module, "_windows_shell_syntax_violation_payload", lambda *_args, **_kwargs: None)
 
 
+def _allow_native_command_launch(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(command_module, "get_runtime_context", lambda: {})
+    monkeypatch.setattr(
+        command_module,
+        "preflight_command_workspace",
+        lambda *_args, **_kwargs: {"ok": True, "cwd": str(tmp_path), "binding": {}},
+    )
+    monkeypatch.setattr(command_module.safety_guardian, "assess_system_command", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(command_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(command_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(command_module, "_sandbox_launch", lambda _context, argv: (list(argv), None))
+    monkeypatch.setattr(command_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(command_module, "_windows_shell_syntax_violation_payload", lambda *_args, **_kwargs: None)
+
+
+def _observe_until_terminal(session_id: str, *, timeout_seconds: float = 10) -> tuple[dict, list[dict]]:
+    observations: list[dict] = []
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        payload = json.loads(
+            command_module.command_session_broker.func(
+                mode="observe",
+                session_id=session_id,
+            )
+        )
+        observations.append(payload)
+        if payload.get("state") in {"completed", "failed", "timed_out", "terminated"}:
+            return payload, observations
+        time.sleep(0.05)
+    raise AssertionError(f"command session did not reach a terminal state: {observations[-1] if observations else {}}")
+
+
+def _terminate_test_session(session_id: str) -> None:
+    process = command_module._bg_processes.get(session_id)
+    if process is not None and process.is_running:
+        command_module.command_session_broker.func(mode="terminate", session_id=session_id)
+    command_module._bg_processes.pop(session_id, None)
+
+
 def test_windowless_subprocess_kwargs_are_windows_only(monkeypatch) -> None:
     create_no_window = 0x08000000
     monkeypatch.setattr(command_module.subprocess, "CREATE_NO_WINDOW", create_no_window, raising=False)
@@ -755,3 +794,127 @@ def test_noninteractive_command_session_deadline_kills_process_tree(tmp_path) ->
     assert status["return_code"] == 124
     assert command_module._command_session_state_from_status(status) == "timed_out"
     assert not psutil.pid_exists(process_id)
+
+
+def test_public_run_system_command_sync_executes_real_process(monkeypatch, tmp_path) -> None:
+    _allow_native_command_launch(monkeypatch, tmp_path)
+    shell_dialect = "cmd" if sys.platform == "win32" else "sh"
+    command = subprocess.list2cmdline([sys.executable, "-c", "print('V8_SYNC_OK')"])
+
+    payload = json.loads(
+        command_module.run_system_command.func(
+            command=command,
+            mode="sync",
+            cwd=str(tmp_path),
+            shell_dialect=shell_dialect,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["kind"] == "command_result"
+    assert payload["returnCode"] == 0
+    assert "V8_SYNC_OK" in payload["keyOutput"]
+
+
+def test_public_pipe_session_reaches_real_terminal_result(monkeypatch, tmp_path) -> None:
+    _allow_native_command_launch(monkeypatch, tmp_path)
+    shell_dialect = "cmd" if sys.platform == "win32" else "sh"
+    command = subprocess.list2cmdline(
+        [sys.executable, "-u", "-c", "import time; print('V8_PIPE_START', flush=True); time.sleep(0.2); print('V8_PIPE_DONE', flush=True)"]
+    )
+    session_id = ""
+    try:
+        started = json.loads(
+            command_module.run_system_command.func(
+                command=command,
+                mode="session",
+                terminal_mode="pipe",
+                timeout_seconds=5,
+                cwd=str(tmp_path),
+                shell_dialect=shell_dialect,
+            )
+        )
+        session_id = str(started.get("sessionId") or "")
+        assert session_id
+        assert started["observableSession"] is True
+        assert started["resolvedTerminalMode"] == "pipe"
+
+        terminal, observations = _observe_until_terminal(session_id)
+        visible_output = "\n".join(
+            str(item.get(key) or "")
+            for item in [started, *observations]
+            for key in ("initialPreview", "deltaText", "finalPreview")
+        )
+        assert terminal["state"] == "completed"
+        assert terminal["returnCode"] == 0
+        assert terminal["recommendedNextAction"] == "none"
+        assert "V8_PIPE_START" in visible_output
+        assert "V8_PIPE_DONE" in visible_output
+    finally:
+        if session_id:
+            _terminate_test_session(session_id)
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not command_module.HAS_WINPTY, reason="real WinPTY contract requires Windows and pywinpty")
+def test_public_pty_session_accepts_real_input_and_exits(monkeypatch, tmp_path) -> None:
+    _allow_native_command_launch(monkeypatch, tmp_path)
+    command = subprocess.list2cmdline(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "print('V8_PTY_READY', flush=True); value=input(); print('V8_PTY_ECHO:'+value, flush=True)",
+        ]
+    )
+    session_id = ""
+    try:
+        started = json.loads(
+            command_module.run_system_command.func(
+                command=command,
+                mode="session",
+                terminal_mode="pty",
+                timeout_seconds=10,
+                cwd=str(tmp_path),
+                shell_dialect="cmd",
+            )
+        )
+        session_id = str(started.get("sessionId") or "")
+        assert session_id
+        assert started["interactive"] is True
+        assert started["resolvedTerminalMode"] == "pty"
+
+        ready_observations: list[dict] = []
+        ready_deadline = time.time() + 8
+        while time.time() < ready_deadline:
+            observed = json.loads(command_module.command_session_broker.func(mode="observe", session_id=session_id))
+            ready_observations.append(observed)
+            ready_text = "\n".join(str(observed.get(key) or "") for key in ("deltaText", "outputPreview", "finalPreview"))
+            if "V8_PTY_READY" in ready_text or observed.get("awaitingInput"):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"PTY session did not become ready: {ready_observations[-1] if ready_observations else {}}")
+
+        input_result = json.loads(
+            command_module.command_session_broker.func(
+                mode="input",
+                session_id=session_id,
+                input_text="hello-from-pty",
+                submit=True,
+            )
+        )
+        assert input_result["ok"] is True
+        assert input_result["submittedEnter"] is True
+
+        terminal, observations = _observe_until_terminal(session_id)
+        visible_output = "\n".join(
+            str(item.get(key) or "")
+            for item in [input_result, *observations]
+            for key in ("deltaText", "semanticTextTail", "finalPreview")
+        )
+        assert terminal["state"] == "completed"
+        assert terminal["returnCode"] == 0
+        assert "V8_PTY_ECHO:hello-from-pty" in visible_output
+    finally:
+        if session_id:
+            _terminate_test_session(session_id)

@@ -3217,11 +3217,16 @@ class SkillLoader:
         explicit_project_id: str | None = None,
         exclude_root_paths: set[str] | None = None,
     ) -> dict[str, Any]:
+        background_task = cls._background_refresh_task
+        background_refresh_pending = bool(
+            cls._background_refresh_in_progress
+            or (background_task is not None and not background_task.done())
+        )
         if force_refresh:
             cls.ensure_fresh()
         elif not cls._skills_registry:
             cls.prime_startup_cache()
-            if not cls._skills_registry:
+            if not cls._skills_registry and not background_refresh_pending:
                 cls.ensure_fresh()
 
         visible_descriptors = cls._resolve_inventory_descriptors(
@@ -3238,6 +3243,25 @@ class SkillLoader:
             for item in list(exclude_root_paths or set())
             if cls._normalize_path(item)
         }
+        if not cls._skills_registry and background_refresh_pending:
+            snapshot = cls._inventory_snapshot(
+                registry={},
+                descriptors=[
+                    descriptor
+                    for descriptor in normalized_visible_descriptors
+                    if cls._descriptor_cache_key(descriptor) not in excluded_root_paths
+                ],
+                fingerprint=cls._skills_revision or cls._skills_fingerprint or "refreshing",
+                discovery_revision=cls._skills_revision or cls._skills_fingerprint or "refreshing",
+                scoped_refresh_mode="background_refresh_pending",
+                visible_registry_cache_hit=False,
+            )
+            snapshot["inventoryReadyState"] = cls._startup_state or "refreshing"
+            snapshot["snapshotFreshness"] = cls._snapshot_freshness or "cold"
+            snapshot["dirtyVisibleRoots"] = cls._dirty_root_paths_for_descriptors(
+                snapshot.get("rootDescriptors") or []
+            )
+            return snapshot
         tracked_root_paths = set(cls._root_inventory_states)
         missing_descriptors = [
             descriptor

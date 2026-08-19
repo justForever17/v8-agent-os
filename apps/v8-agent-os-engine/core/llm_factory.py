@@ -23,7 +23,7 @@ from core.openai_compatible_chat_model import V8OpenAICompatibleChatModel
 from core.gemini_cli_runtime import GeminiCliRuntimeModel
 from core.openai_codex_runtime import OpenAICodexResponsesRuntimeModel
 from core.model_capability_matrix import build_effective_capability_matrix, normalize_capability_metadata
-from core.llm_exceptions import V8LLMCapabilityMismatchError, raise_as_v8_llm_error
+from core.llm_exceptions import V8LLMCapabilityMismatchError, V8LLMInvalidRequestError, raise_as_v8_llm_error
 from core.provider_runtime_profiles import (
     is_anthropic_compat_provider,
     is_codex_oauth_provider,
@@ -1348,30 +1348,23 @@ class LLMFactory:
         meta = cls._resolve_model_metadata(model_id)
         
         if not meta.get("is_found"):
-            if meta.get("lookup_status") == "ambiguous":
-                raise ValueError(
-                    f"模型 '{model_id}' 存在多个 Provider，请使用 provider-qualified modelRef。"
-                )
-            # If the user passed a model completely unregistered, we attempt to initialize it 
-            # as OpenAI barebones just in case base_url/api_key are in standard env vars
-            provider_kwargs = cls._attach_telemetry(
-                {"model": model_id, **kwargs},
-                {"provider_id": "openai", "provider_name": "openai"},
-                model_id=model_id,
-                role=role,
-                request_kind=request_kind,
-                capability_class_override=capability_class_override,
-            )
-            return V8ChatModelAdapter(
-                model_id=model_id,
-                provider_standard="openai",
-                role=role,
-                meta={"provider_id": "openai", "provider_name": "openai", "api_standard": "openai"},
-                model_kwargs=provider_kwargs,
-                builder=lambda: V8OpenAICompatibleChatModel(
-                    v8_model_ref=f"openai::{model_id}",
-                    **provider_kwargs,
+            ambiguous = meta.get("lookup_status") == "ambiguous"
+            raise V8LLMInvalidRequestError(
+                code="model_not_configured",
+                message=(
+                    f"模型 {model_id} 在多个 Provider 中重名，运行已阻止。"
+                    if ambiguous
+                    else f"模型 {model_id or '<empty>'} 未在 Model Hub 中配置，运行已阻止。"
                 ),
+                provider="modelhub",
+                model=str(model_id or ""),
+                retryable=False,
+                user_action=(
+                    "请使用 Model Hub 中的 provider-qualified modelRef。"
+                    if ambiguous
+                    else "请先在 Admin 的 Model Hub 中配置并启用该模型。"
+                ),
+                details={"lookupStatus": str(meta.get("lookup_status") or "missing")},
             )
 
         cls._assert_runtime_enabled(meta, model_id)

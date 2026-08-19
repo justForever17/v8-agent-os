@@ -18,6 +18,7 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core.engine_config_resolver import (  # noqa: E402
+    require_engine_config,
     resolve_engine_config_for_model_ref,
     resolve_engine_config_for_role,
 )
@@ -116,12 +117,10 @@ def _resolve_openai_compatible_model(model_profile: str, *, role: str = "default
         resolved = resolve_engine_config_for_model_ref(
             model_ref,
             provider_id=provider_id,
-            fallback_provider=provider_id or "openai",
-            fallback_model=model_ref or "gpt-4o",
         )
     else:
-        resolved = resolve_engine_config_for_role(role, fallback_provider="openai", fallback_model="gpt-4o")
-    config = resolved["engine_config"]
+        resolved = resolve_engine_config_for_role(role)
+    config = require_engine_config(resolved, role=role, model_ref=profile)
     payload = asdict(config) if hasattr(config, "__dataclass_fields__") else dict(config)
     provider = str(payload.get("provider") or "")
     model_name = str(payload.get("model_name") or "")

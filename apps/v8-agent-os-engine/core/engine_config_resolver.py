@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from api.models import EngineConfig
+from core.llm_exceptions import V8LLMInvalidRequestError
 from core.model_control_plane import model_control_plane
 from core.oauth_credentials import resolve_provider_oauth_credential
 from core.storage import storage
@@ -45,20 +46,14 @@ def _hydrate_provider_credentials(provider: str, provider_config: Dict[str, Any]
 
 def resolve_engine_config_for_role(
     role: str,
-    *,
-    fallback_provider: str = "openai",
-    fallback_model: str = "gpt-4o",
-    require_explicit: bool = False,
 ) -> dict[str, Any]:
     routes = storage.get_routes()
     resolution = model_control_plane.resolve_model_for_role(role)
 
-    should_use_role_binding = not require_explicit or resolution.get("bindingState") == "explicit"
-    resolved_model_id = str(resolution.get("resolvedModelId") or "") if should_use_role_binding else ""
-    resolved_provider_id = str(resolution.get("resolvedProviderId") or "") if should_use_role_binding else ""
-
-    provider = resolved_provider_id or fallback_provider
-    model_name = resolved_model_id or fallback_model
+    resolved_model_id = str(resolution.get("resolvedModelId") or "")
+    resolved_provider_id = str(resolution.get("resolvedProviderId") or "")
+    provider = resolved_provider_id
+    model_name = resolved_model_id
 
     if resolved_model_id and not resolved_provider_id:
         for provider_name, provider_data in routes.get("providers", {}).items():
@@ -66,16 +61,19 @@ def resolve_engine_config_for_role(
                 provider = provider_name
                 break
 
-    provider_config = ((routes.get("providers") or {}).get(provider) or {}).get("provider") or {}
-    api_key, base_url = _hydrate_provider_credentials(provider, provider_config)
-
-    return {
-        "engine_config": EngineConfig(
+    engine_config = None
+    if provider and model_name:
+        provider_config = ((routes.get("providers") or {}).get(provider) or {}).get("provider") or {}
+        api_key, base_url = _hydrate_provider_credentials(provider, provider_config)
+        engine_config = EngineConfig(
             provider=provider,
             model_name=model_name,
             api_key=api_key or None,
             base_url=base_url or None,
-        ),
+        )
+
+    return {
+        "engine_config": engine_config,
         "resolution": resolution,
     }
 
@@ -84,8 +82,6 @@ def resolve_engine_config_for_model_ref(
     model_ref: str,
     *,
     provider_id: str = "",
-    fallback_provider: str = "openai",
-    fallback_model: str = "gpt-4o",
 ) -> dict[str, Any]:
     """Resolve an explicit per-run model ref without mutating role bindings."""
     normalized_model_ref = str(model_ref or "").strip()
@@ -95,20 +91,23 @@ def resolve_engine_config_for_model_ref(
         if normalized_model_ref
         else None
     )
-    resolved_provider_id = str((record or {}).get("provider_id") or normalized_provider_id or fallback_provider)
-    resolved_model_id = str((record or {}).get("model_id") or normalized_model_ref or fallback_model)
+    resolved_provider_id = str((record or {}).get("provider_id") or "")
+    resolved_model_id = str((record or {}).get("model_id") or "")
 
     routes = storage.get_routes()
-    provider_config = ((routes.get("providers") or {}).get(resolved_provider_id) or {}).get("provider") or {}
-    api_key, base_url = _hydrate_provider_credentials(resolved_provider_id, provider_config)
-
-    return {
-        "engine_config": EngineConfig(
+    engine_config = None
+    if record and resolved_provider_id and resolved_model_id:
+        provider_config = ((routes.get("providers") or {}).get(resolved_provider_id) or {}).get("provider") or {}
+        api_key, base_url = _hydrate_provider_credentials(resolved_provider_id, provider_config)
+        engine_config = EngineConfig(
             provider=resolved_provider_id,
             model_name=resolved_model_id,
             api_key=api_key or None,
             base_url=base_url or None,
-        ),
+        )
+
+    return {
+        "engine_config": engine_config,
         "resolution": {
             "role": "request_override",
             "bindingState": "request_override" if record else "missing",
@@ -119,3 +118,30 @@ def resolve_engine_config_for_model_ref(
             "lookupStatus": "exact" if record else "missing",
         },
     }
+
+
+def require_engine_config(resolved: dict[str, Any], *, role: str = "", model_ref: str = "") -> EngineConfig:
+    engine_config = resolved.get("engine_config")
+    if isinstance(engine_config, EngineConfig) and engine_config.provider and engine_config.model_name:
+        return engine_config
+
+    resolution = dict(resolved.get("resolution") or {})
+    requested_model_ref = str(model_ref or resolution.get("rawModelId") or "").strip()
+    if requested_model_ref:
+        message = f"模型 {requested_model_ref} 未在 Model Hub 中配置，运行已阻止。"
+    else:
+        message = "当前没有可供运行时使用的 Model Hub 模型绑定。"
+    raise V8LLMInvalidRequestError(
+        code="model_not_configured",
+        message=message,
+        provider=str(resolution.get("resolvedProviderId") or "modelhub"),
+        model=requested_model_ref,
+        retryable=False,
+        user_action="请在 Admin 的 Model Hub 中配置并启用模型，再设置对应的默认角色模型。",
+        details={
+            "role": str(role or resolution.get("role") or ""),
+            "bindingState": str(resolution.get("bindingState") or "unbound"),
+            "lookupStatus": str(resolution.get("lookupStatus") or ""),
+            "requestedModelRef": requested_model_ref,
+        },
+    )

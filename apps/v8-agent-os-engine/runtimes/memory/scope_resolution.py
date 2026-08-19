@@ -4,7 +4,7 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.database import db
-from core.workspace_identity import get_main_workspace_path
+from core.workspace_identity import get_main_workspace_path, workspace_path_key
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
 from persistence.repositories.scope_resolution_repository import ScopeResolutionRepository
 from runtimes.memory.models import (
@@ -109,6 +109,9 @@ def _diff_scope_anchors(
         # canonical projection as the same binding while continuing to reject
         # an unrelated explicit hint.
         if key == "scope_hint" and requested_value == _normalize_anchor_value(existing_binding.resolved_scope):
+            matched[key] = requested_value
+            continue
+        if key == "workspace_path" and workspace_path_key(existing_value) == workspace_path_key(requested_value):
             matched[key] = requested_value
             continue
         if existing_value == requested_value:

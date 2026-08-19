@@ -1745,15 +1745,16 @@ def test_catalog_connect_rejects_provider_without_http_endpoint(tmp_path, monkey
 def test_media_model_verification_uses_static_runtime_contract(monkeypatch) -> None:
     import core.config_broker_service as module
 
+    service = module.ConfigBrokerService()
+    monkeypatch.setattr(module.model_control_plane, "get_config", lambda: {"providers": {}})
     monkeypatch.setattr(
-        module.model_control_plane,
-        "get_model_record",
-        lambda _model_ref: {
-            "model": {
-                "type": "IMAGE",
-                "capabilityClass": "media_generation",
-                "endpointBinding": {"adapter": "openai_images", "endpointPath": "images/generations"},
-            }
+        service,
+        "_verify_committed_model_static",
+        lambda _provider_id, _model_id, _config: {
+            "ok": True,
+            "status": "configured",
+            "summary": "media contract configured",
+            "verifier": "static_runtime_contract",
         },
     )
     monkeypatch.setattr(
@@ -1762,7 +1763,7 @@ def test_media_model_verification_uses_static_runtime_contract(monkeypatch) -> N
         lambda: pytest.fail("media verification must not invoke the generic chat connection tester"),
     )
 
-    result = module.ConfigBrokerService()._verify_committed_model(
+    result = service._verify_committed_model(
         {
             "providerId": "provider",
             "modelId": "image-model",
@@ -1777,9 +1778,43 @@ def test_media_model_verification_uses_static_runtime_contract(monkeypatch) -> N
     assert result == {
         "ok": True,
         "status": "configured",
-        "summary": "模型配置已按运行时合同重新读取；真实媒体生成或检索调用需显式 live 验证。",
+        "summary": "模型配置已按运行时静态合同保存；真实连接、流式和工具续写需显式执行连接测试。",
         "verifier": "static_runtime_contract",
     }
+
+
+def test_chat_model_save_uses_static_contract_and_leaves_live_probe_explicit(monkeypatch) -> None:
+    import core.config_broker_service as module
+
+    service = module.ConfigBrokerService()
+    monkeypatch.setattr(module.model_control_plane, "get_config", lambda: {"providers": {}})
+    monkeypatch.setattr(
+        service,
+        "_verify_committed_model_static",
+        lambda provider_id, model_id, _config: {
+            "ok": True,
+            "status": "configured",
+            "summary": f"{provider_id}::{model_id}",
+            "verifier": "static_runtime_contract",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_get_model_connection_tester",
+        lambda: pytest.fail("saving a model must not run the explicit live capability suite"),
+    )
+
+    result = service._verify_committed_model(
+        {
+            "providerId": "provider",
+            "modelId": "model-a",
+            "model": {"type": "TEXT"},
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["verifier"] == "static_runtime_contract"
+    assert "显式执行连接测试" in result["summary"]
 
 
 def test_managed_catalog_recovery_transaction_is_reversible(tmp_path, monkeypatch) -> None:
@@ -2070,7 +2105,7 @@ def test_static_media_verifier_rejects_missing_managed_credential(tmp_path, monk
         config.update(_copy(current))
         return {"config": snapshot()}
 
-    def record(model_ref):
+    def record(model_ref, _config=None):
         provider_id, model_id = model_ref.split("::", 1)
         provider = dict(config.get("providers", {}).get(provider_id) or {})
         if model_id not in dict(provider.get("models") or {}):

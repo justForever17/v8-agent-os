@@ -359,6 +359,26 @@ def _read_before_write_block_payload(target_path: Path, reason: str) -> dict[str
     }
 
 
+def _native_file_read_error(
+    *,
+    kind: str,
+    summary: str,
+    path: str | Path,
+    error: str | None = None,
+    recommended_next_action: str | None = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "kind": kind,
+        "summary": summary,
+        "error": error or kind,
+        "path": str(path),
+    }
+    if recommended_next_action:
+        payload["recommendedNextAction"] = recommended_next_action
+    return json.dumps(payload, ensure_ascii=False)
+
+
 @tool
 def read_native_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
     """Read a code, text, Markdown, PDF, DOCX, PPTX, or spreadsheet file.
@@ -396,7 +416,12 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
             )
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
         if not target_path.exists() or not target_path.is_file():
-            return f"Error: File '{target_path}' does not exist or is not a file."
+            return _native_file_read_error(
+                kind="file_not_found",
+                summary=f"File '{target_path}' does not exist or is not a file.",
+                path=target_path,
+                recommended_next_action="确认 Active Workspace Root 和文件相对路径后重试。",
+            )
 
         suffix = target_path.suffix.lower()
         if suffix in DOCUMENT_EXTENSIONS:
@@ -420,13 +445,21 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
                     indent=2,
                 )
             if document_content.startswith("Error parsing document "):
-                return document_content
+                return _native_file_read_error(
+                    kind="document_parse_failed",
+                    summary=document_content,
+                    path=target_path,
+                    recommended_next_action="检查文档是否损坏，并查看 document_ingestion 能力包诊断。",
+                )
             lines = document_content.splitlines(keepends=True)
         elif is_binary(str(target_path)):
-            return (
-                f"Error: '{path}' appears to be a binary file. "
-                "如果这是图片，请优先用 `vision_media_analyzer`；如果是分享页或视频，请优先用 "
-                "`download_media_for_vision`。"
+            return _native_file_read_error(
+                kind="binary_file_unsupported",
+                summary=f"'{path}' appears to be a binary file.",
+                path=target_path,
+                recommended_next_action=(
+                    "图片请使用 vision_media_analyzer；分享页或视频请使用 download_media_for_vision。"
+                ),
             )
 
         else:
@@ -459,7 +492,11 @@ def read_native_file(path: str, start_line: Optional[int] = None, end_line: Opti
         return header + content + footer
 
     except Exception as e:
-        return f"Error reading file '{path}': {str(e)}"
+        return _native_file_read_error(
+            kind="file_read_failed",
+            summary=f"Error reading file '{path}': {str(e)}",
+            path=path,
+        )
 
 
 @tool

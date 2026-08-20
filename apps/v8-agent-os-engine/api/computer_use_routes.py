@@ -7,6 +7,8 @@ from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconne
 
 from core.storage import storage
 
+from .agent_browser_routes import open_agent_browser_profile
+
 from .models import (
     ComputerUseAgentBrowserOpenPayload,
     ComputerUseAppQueryPayload,
@@ -39,17 +41,6 @@ def _computer_use_runtime():
     from runtimes.computer_use.runtime import computer_use_runtime
 
     return computer_use_runtime
-
-
-def _open_agent_browser(*, browser_kind: str = "auto", url: str = "about:blank") -> dict[str, Any]:
-    runtime = _computer_use_runtime()
-    browser_automation = getattr(runtime, "browser_automation", None)
-    if browser_automation is None:
-        raise RuntimeError("Agent browser provider is unavailable.")
-    return browser_automation.open_agent_browser(
-        browser_kind=browser_kind,
-        url=url or "about:blank",
-    )
 
 
 def _browser_session_service():
@@ -218,22 +209,11 @@ async def get_computer_use_availability(refresh: bool = False):
     )
 
 
-@router.post("/agent-browser/open")
-async def open_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
-    try:
-        # The product surface exposes one Agent Browser. The provider chooses
-        # the installed Chromium-family implementation; callers never choose a
-        # Chrome/Edge branded surface.
-        return _open_agent_browser(browser_kind="auto", url=payload.url or "about:blank")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("/computer-use/agent-browser/open", deprecated=True)
 async def open_computer_use_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
     try:
-        return _open_agent_browser(
-            browser_kind=payload.browser_kind,
+        return await asyncio.to_thread(
+            open_agent_browser_profile,
             url=payload.url or "about:blank",
         )
     except Exception as e:

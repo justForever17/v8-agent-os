@@ -506,16 +506,21 @@ class ExecutionRuntimeCore:
         *,
         response: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        interaction = db.get_ask_user_interaction(interaction_id)
-        if not interaction:
-            return None
         answer_text = str((response or {}).get("answer") or "").strip() or None
-        db.update_ask_user_interaction(
+        resolution = db.resolve_ask_user_interaction_if_pending(
             interaction_id,
-            status="resolved",
             answer_text=answer_text,
         )
-        interaction = db.get_ask_user_interaction(interaction_id)
+        interaction = resolution.get("interaction") if isinstance(resolution, dict) else None
+        if not resolution.get("updated"):
+            if resolution.get("reason") == "interaction_not_found":
+                return None
+            return {
+                "interaction": interaction or db.get_ask_user_interaction(interaction_id),
+                "ignored": True,
+                "alreadyResolved": str(resolution.get("currentStatus") or "").lower() == "resolved",
+                "reason": resolution.get("reason") or "ask_user_resolution_not_applied",
+            }
         if not interaction:
             return None
         run_record = run_service.get_run(interaction["run_id"])

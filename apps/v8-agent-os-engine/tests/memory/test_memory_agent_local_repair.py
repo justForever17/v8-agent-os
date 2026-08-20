@@ -23,3 +23,28 @@ def test_memory_extraction_repair_drops_empty_entity():
 
     assert len(repaired.entities) == 1
     assert repaired.entities[0].name == "next.js"
+
+
+def test_memory_extraction_repair_coerces_string_list_fields_without_truncating_workflow():
+    payload = {
+        "summary": "document workflow",
+        "tags": "document-ingestion",
+        "preferences": [],
+        "knowledge": [],
+        "entities": [],
+        "relations": [],
+        "workflow_episodes": [
+            {
+                "task_family": "read a document",
+                "canonical_trigger_patterns": "read docx",
+                "ordered_actions": "install the governed capability pack",
+                "verification_steps": "the extracted text contains the expected heading",
+            }
+        ],
+    }
+
+    repaired = _repair_memory_extraction_payload(json.dumps(payload, ensure_ascii=False))
+
+    assert repaired.tags == ["document-ingestion"]
+    assert repaired.workflow_episodes[0].canonical_trigger_patterns == ["read docx"]
+    assert repaired.workflow_episodes[0].verification_steps == ["the extracted text contains the expected heading"]

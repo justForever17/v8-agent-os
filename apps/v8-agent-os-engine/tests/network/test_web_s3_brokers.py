@@ -931,7 +931,13 @@ class WebAndS3BrokerTests(unittest.TestCase):
                     "recommendedNextAction": "observe",
                 }
             ),
-        ) as mocked_start:
+        ) as mocked_start, patch(
+            "core.tools.native.delegation.persist_runtime_episode",
+            side_effect=lambda episode, **_kwargs: episode,
+        ), patch(
+            "core.tools.native.delegation.emit_runtime_episode_event",
+            return_value=None,
+        ):
             command = delegation_broker.func(
                 mode="dispatch",
                 tasks=[
@@ -982,6 +988,12 @@ class WebAndS3BrokerTests(unittest.TestCase):
         ), patch(
             "core.tools.native.delegation.prepare_delegated_engineering_workspace",
             return_value=None,
+        ), patch(
+            "core.tools.native.delegation.persist_runtime_episode",
+            side_effect=lambda episode, **_kwargs: episode,
+        ), patch(
+            "core.tools.native.delegation.emit_runtime_episode_event",
+            return_value=None,
         ):
             command = delegation_broker.func(
                 mode="dispatch",
@@ -1026,6 +1038,12 @@ class WebAndS3BrokerTests(unittest.TestCase):
             return_value={"delegation": {"externalWorkers": []}},
         ), patch(
             "core.tools.native.delegation.prepare_delegated_engineering_workspace",
+            return_value=None,
+        ), patch(
+            "core.tools.native.delegation.persist_runtime_episode",
+            side_effect=lambda episode, **_kwargs: episode,
+        ), patch(
+            "core.tools.native.delegation.emit_runtime_episode_event",
             return_value=None,
         ):
             command = delegation_broker.func(

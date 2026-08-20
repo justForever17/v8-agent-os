@@ -55,7 +55,11 @@ from erc.run_service import run_service
 from langchain_core.messages import HumanMessage, SystemMessage
 from runtimes.computer_use.app_catalog import ComputerUseAppCatalog
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
-from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
+from runtimes.computer_use.browser_automation import (
+    BrowserAutomationProvider,
+    BrowserLaneDecision,
+    agent_browser_automation,
+)
 from runtimes.computer_use.budgeting import (
     build_budget_update_request,
     collect_budget_usage,
@@ -409,7 +413,7 @@ class ComputerUseRuntime:
         self.driver = create_desktop_driver()
         self.visual_locator_runtime: VisualLocatorProvider = create_visual_locator_provider()
         self.visual_actor_provider = create_visual_actor_provider()
-        self.browser_automation = BrowserAutomationProvider()
+        self.browser_automation = agent_browser_automation
         self.playbook_executor_registry = create_default_playbook_executor_registry()
         self.app_adapters = ComputerUseAppAdapterRegistry()
         self.app_profiles = ComputerUseAppProfiles()

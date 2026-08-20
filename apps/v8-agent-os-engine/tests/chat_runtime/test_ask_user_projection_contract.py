@@ -1,5 +1,7 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
+from core.database import DatabaseManager
 from erc.ask_user_tool_result import resolve_ask_user_tool_result_interaction
 from core.runtime_projection import project_ask_user_interactions, project_pending_approvals
 
@@ -100,3 +102,34 @@ class AskUserProjectionContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_ask_user_resolution_is_atomic_and_replay_safe(tmp_path):
+    database = DatabaseManager(tmp_path / "ask-user.sqlite3")
+    database.create_or_update_session("session-once", "Ask once", user_id="owner")
+    database.create_run_record("run-once", "session-once", user_id="owner")
+    database.add_ask_user_interaction(
+        interaction_id="ask-once",
+        session_id="session-once",
+        run_id="run-once",
+        tool_call_id="call-once",
+        question="Choose one",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda answer: database.resolve_ask_user_interaction_if_pending(
+                    "ask-once",
+                    answer_text=answer,
+                ),
+                ["first", "second"],
+            )
+        )
+
+    assert sum(result.get("updated") is True for result in results) == 1
+    assert sum(result.get("reason") == "status_mismatch:resolved" for result in results) == 1
+    stored = database.get_ask_user_interaction("ask-once")
+    assert stored is not None
+    assert stored["status"] == "resolved"
+    assert stored["answer_text"] in {"first", "second"}

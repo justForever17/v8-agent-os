@@ -50,6 +50,35 @@ def test_policy_blocks_oversized_text_report_from_message_attachment(tmp_path: P
     assert applied["metadata"]["autoAttachBlockedReason"] == "max_bytes_exceeded"
 
 
+def test_agent_written_html_and_code_are_visible_message_artifacts(tmp_path: Path):
+    for filename, expected_rule, preview_kind in (
+        ("app.html", "agent_file_write_document", "document"),
+        ("generator.py", "agent_file_write_code", "code"),
+    ):
+        generated = tmp_path / filename
+        generated.write_text("generated", encoding="utf-8")
+        descriptor = build_artifact_descriptor(
+            artifact_id=f"art-{filename}",
+            file_path=generated,
+            workspace_path=filename,
+            metadata={
+                "origin": "agent_file_write",
+                "pathPlane": "workspace_artifact",
+            },
+        )
+
+        applied = apply_artifact_surface_policy(
+            descriptor,
+            session_id="session-1",
+            run_id="run-1",
+        )
+
+        assert applied["autoAttachToMessage"] is True
+        assert applied["surfaceVisible"] is True
+        assert applied["previewKind"] == preview_kind
+        assert applied["metadata"]["artifactSurfacePolicyRuleId"] == expected_rule
+
+
 def test_normalized_artifact_exposes_auto_attach_fields():
     normalized = normalize_artifact_record(
         {

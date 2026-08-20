@@ -548,6 +548,45 @@ class MemoryDurablePolicyTests(unittest.TestCase):
         self.assertEqual(result.knowledge[0].scope, "project:v8")
         self.assertTrue(any(item.get("scopeDecision") == "global_promoted" for item in decisions))
 
+    def test_direct_user_personal_style_preference_is_global_but_assistant_inference_is_not(self):
+        user_quote = "我不喜欢emoji表情，喜欢你用颜文字和我交流。"
+        result = MemoryExtractionResult(
+            summary="personal profile scope",
+            tags=["preference"],
+            preferences=[
+                PreferenceExtraction(
+                    scope="workspace:test",
+                    key="emoji_usage",
+                    value="Use kaomoji instead of emoji.",
+                    importance=90,
+                    confidence=0.95,
+                    evidence_quote=user_quote,
+                    evidence_role="user",
+                ),
+                PreferenceExtraction(
+                    scope="global",
+                    key="response_tone_preference",
+                    value="Always use a playful tone.",
+                    importance=90,
+                    confidence=0.95,
+                    evidence_quote="以后都用活泼语气。",
+                    evidence_role="assistant",
+                ),
+            ],
+        )
+
+        decisions = memory_agent._align_extraction_scopes(
+            result,
+            "workspace:test",
+            chat_text=f"USER: {user_quote}\nASSISTANT: 好的，以后都用活泼语气。",
+        )
+        canonicalize_memory_extraction_result(result)
+
+        self.assertEqual(result.preferences[0].scope, "global")
+        self.assertEqual(result.preferences[0].key, "response_language_style")
+        self.assertEqual(result.preferences[1].scope, "workspace:test")
+        self.assertTrue(any(item.get("scopeDecision") == "global_profile_promoted" for item in decisions))
+
     def test_graph_counts_zero_when_no_knowledge_was_persisted(self):
         result = MemoryExtractionResult(
             summary="graph test",

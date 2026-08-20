@@ -1,16 +1,43 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
 
-from api import computer_use_routes
+from api import agent_browser_routes, computer_use_routes
 from api.models import ComputerUseAgentBrowserOpenPayload
 from core.agent_browser_profile import debug_port_owned_by_profile, discover_system_agent_browser
+from runtimes.computer_use import browser_automation as browser_automation_module
 from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
 from runtimes.rpa.compiler import RPATraceCompiler
 from runtimes.rpa.robot_adapter import RobotFrameworkAdapter
+
+
+def test_agent_browser_profile_root_follows_v8_agent_os_home_in_fresh_process(tmp_path):
+    env = os.environ.copy()
+    env["V8_AGENT_OS_HOME"] = str(tmp_path)
+    engine_root = Path(__file__).resolve().parents[2]
+
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from core.agent_browser_profile import default_agent_browser_profile_root; "
+                "print(default_agent_browser_profile_root())"
+            ),
+        ],
+        cwd=engine_root,
+        env=env,
+        text=True,
+    ).strip()
+
+    assert Path(output) == tmp_path / "browser-profiles" / "computer_use"
 
 
 def test_shared_agent_browser_route_uses_automatic_system_browser_selection(monkeypatch):
@@ -21,13 +48,11 @@ def test_shared_agent_browser_route_uses_automatic_system_browser_selection(monk
             calls.append(dict(kwargs))
             return {"ok": True, "browserKind": kwargs.get("browser_kind")}
 
-    class _Runtime:
-        browser_automation = _BrowserProvider()
-
-    monkeypatch.setattr(computer_use_routes, "_computer_use_runtime", lambda: _Runtime())
+    provider = _BrowserProvider()
+    monkeypatch.setattr(agent_browser_routes, "_configured_agent_browser_provider", lambda: provider)
 
     result = asyncio.run(
-        computer_use_routes.open_agent_browser(
+        agent_browser_routes.open_agent_browser(
             ComputerUseAgentBrowserOpenPayload(browserKind="edge", url="about:blank")
         )
     )
@@ -35,6 +60,67 @@ def test_shared_agent_browser_route_uses_automatic_system_browser_selection(monk
     assert result["ok"] is True
     assert result["browserKind"] == "auto"
     assert calls == [{"browser_kind": "auto", "url": "about:blank"}]
+
+
+def test_agent_browser_route_is_registered_without_computer_use_feature_pack():
+    from api import routes
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/v1")
+    paths = app.openapi()["paths"]
+    operation = paths["/v1/agent-browser/open"]
+
+    assert list(operation) == ["post"]
+    assert "/agent-browser/open" not in paths
+
+
+def test_agent_browser_uses_packaged_playwright_node_when_system_node_is_absent(monkeypatch, tmp_path):
+    package_root = tmp_path / "playwright"
+    packaged_node = package_root / "driver" / "node.exe"
+    packaged_node.parent.mkdir(parents=True)
+    packaged_node.write_bytes(b"node")
+
+    monkeypatch.setattr(browser_automation_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        browser_automation_module.importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[str(package_root)])
+        if name == "playwright"
+        else None,
+    )
+
+    assert browser_automation_module._resolve_node_executable() == str(packaged_node)
+
+
+def test_agent_browser_prefers_version_matched_packaged_node_over_host_node(monkeypatch, tmp_path):
+    package_root = tmp_path / "playwright"
+    packaged_node = package_root / "driver" / "node.exe"
+    packaged_node.parent.mkdir(parents=True)
+    packaged_node.write_bytes(b"node")
+
+    monkeypatch.setattr(browser_automation_module.shutil, "which", lambda _name: "C:/host/node.exe")
+    monkeypatch.setattr(
+        browser_automation_module.importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[str(package_root)])
+        if name == "playwright"
+        else None,
+    )
+
+    assert browser_automation_module._resolve_node_executable() == str(packaged_node)
+
+
+def test_agent_browser_rechecks_packaged_node_after_runtime_install(monkeypatch):
+    provider = BrowserAutomationProvider()
+    provider._node_path = None
+    provider._playwright_probe_cache = {"available": False, "reason": "node_unavailable"}
+    monkeypatch.setattr(browser_automation_module, "_resolve_node_executable", lambda: "packaged-node")
+
+    provider.configure({})
+
+    assert provider._node_path == "packaged-node"
+    assert provider._playwright_probe_cache is None
 
 
 def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(monkeypatch, tmp_path):
@@ -240,6 +326,36 @@ def test_close_managed_browser_is_idempotent_when_no_browser_is_running(monkeypa
     assert result["closed"] is True
     assert result["reason"] == "agent_browser_not_running"
     assert result["errors"] == []
+
+
+def test_shutdown_closes_visible_and_headless_managed_browsers():
+    class _Process:
+        def __init__(self):
+            self.terminated = False
+            self.waited = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, *, timeout):
+            assert timeout == 2
+            self.waited = True
+
+    provider = BrowserAutomationProvider()
+    visible = _Process()
+    headless = _Process()
+    provider._managed_browser_processes = {"edge": visible, "chromium": headless}
+    provider._managed_launches = {
+        "edge": {"headless": False},
+        "chromium": {"headless": True},
+    }
+
+    provider.shutdown()
+
+    assert visible.terminated is True and visible.waited is True
+    assert headless.terminated is True and headless.waited is True
+    assert provider._managed_browser_processes == {}
+    assert provider._managed_launches == {}
 
 
 def test_debug_port_ownership_requires_the_exact_v8os_profile_and_port(monkeypatch, tmp_path):

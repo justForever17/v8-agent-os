@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,6 +131,67 @@ def test_chat_submit_queues_against_data_conversation_id_and_is_idempotent(monke
     assert items[0]["client_message_id"] == "client-repeat"
     assert items[0]["content"] == "第二条消息"
     assert items[0]["state"] == "pending"
+
+
+def test_queue_insert_is_atomic_across_reconnect_race(tmp_path: Path) -> None:
+    test_db = DatabaseManager(tmp_path / "queue-race.sqlite3")
+    _create_active_chat_run(test_db, session_id="session-race", run_id="run-race", status="streaming")
+
+    def insert(index: int) -> dict:
+        return test_db.add_chat_user_message_queue_item(
+            queue_id=f"queued-race-{index}",
+            session_id="session-race",
+            run_id="run-race",
+            client_message_id="client-race",
+            content="同一条重连消息",
+            metadata={"attempt": index},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(insert, (1, 2)))
+
+    assert len({item["id"] for item in results}) == 1
+    queued = test_db.list_chat_user_message_queue(session_id="session-race")
+    assert len(queued) == 1
+    assert queued[0]["ordinal"] == 1
+
+
+def test_websocket_start_uses_same_active_run_queue_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    test_db = _install_db(monkeypatch, tmp_path)
+    _create_active_chat_run(
+        test_db,
+        session_id="session-websocket-queue",
+        run_id="run-websocket-active",
+        status="streaming",
+    )
+    request = _chat_request(
+        session_id="session-websocket-queue",
+        client_message_id="client-websocket-guidance",
+        content="运行中补充这条要求",
+    )
+
+    queued = routes._queue_chat_request_while_run_active(
+        request,
+        session_id="session-websocket-queue",
+        source="chat_websocket_while_run_active",
+    )
+
+    assert queued is not None
+    assert queued["activeRun"]["id"] == "run-websocket-active"
+    assert queued["event"]["topic"] == "human_guidance.queued"
+    assert queued["event"]["run_id"] == "run-websocket-active"
+    assert queued["queueItem"]["metadata"]["source"] == "chat_websocket_while_run_active"
+    assert test_db.list_run_records(
+        session_id="session-websocket-queue",
+        run_type="chat",
+        limit=20,
+    ) == [test_db.get_run_record("run-websocket-active")]
+    items = test_db.list_chat_user_message_queue(session_id="session-websocket-queue")
+    assert len(items) == 1
+    assert items[0]["content"] == "运行中补充这条要求"
 
 
 def test_interrupted_lane_is_not_reported_as_an_active_chat_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

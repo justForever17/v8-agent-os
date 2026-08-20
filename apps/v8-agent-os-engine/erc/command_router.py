@@ -216,6 +216,8 @@ class RuntimeCommandRouter:
         if topic == "ask_user.respond":
             result = erc_kernel.resolve_ask_user_interaction(interaction_id, response=command.response)
             if result:
+                if result.get("ignored"):
+                    return result
                 interaction = result.get("interaction") or {}
                 result["spec_clarification"] = self._record_spec_clarification_from_ask_user(
                     interaction,

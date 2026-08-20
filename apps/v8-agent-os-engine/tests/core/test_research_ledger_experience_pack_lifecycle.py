@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 from core.tools.research_quality import build_research_review_binding
 
 
-_AS_OF = "2026-07-28T12:00:00Z"
+_AS_OF_DT = datetime.now(timezone.utc).replace(microsecond=0)
+_AS_OF = _AS_OF_DT.isoformat().replace("+00:00", "Z")
+_AS_OF_DATE = _AS_OF_DT.date().isoformat()
 
 
 def _accepted_research_bundle(
@@ -35,7 +37,9 @@ def _accepted_research_bundle(
             "host": f"source{index}.example",
             "selectedForEvidence": True,
             "retrievedAt": _AS_OF,
-            "publishedAt": f"2026-07-{index:02d}T00:00:00Z",
+            "publishedAt": (
+                _AS_OF_DT - timedelta(days=index)
+            ).isoformat().replace("+00:00", "Z"),
             "contentChars": 6000 + index,
             "readEvidence": {
                 "verified": True,
@@ -123,7 +127,7 @@ def _accepted_research_bundle(
     }
     bundle = {
             "evidenceBundleId": evidence_bundle_id,
-            "question": "截至 2026-07-28，V8 research runtime 应如何复用完整调研结果？",
+            "question": f"截至 {_AS_OF_DATE}，V8 research runtime 应如何复用完整调研结果？",
             "answer": full_result,
             "researchResult": full_result,
             "summary": "Reuse only a fully reviewed, source-backed research result.",

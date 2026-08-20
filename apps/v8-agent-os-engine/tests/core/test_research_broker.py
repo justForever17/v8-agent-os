@@ -8969,6 +8969,180 @@ def test_research_loop_continues_when_global_targets_hide_a_missing_facet(monkey
     assert state["stopReason"] == "high_quality_evidence_target_met"
 
 
+def test_research_loop_stops_when_all_transports_are_exhausted_for_the_run(monkeypatch):
+    calls = 0
+
+    def fake_run_search_shards(shards, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                **dict(shard),
+                "ok": False,
+                "resultCount": 0,
+                "providerAttemptMatrix": [
+                    {
+                        "provider": "brave",
+                        "status": "skipped",
+                        "failureClass": "credential_missing",
+                    },
+                    {
+                        "provider": "google",
+                        "status": "error",
+                        "failureClass": "network_timeout",
+                    },
+                    {
+                        "provider": "metaso",
+                        "status": "skipped",
+                        "failureClass": "needs_agent_browser_login",
+                    },
+                ],
+            }
+            for shard in shards
+        ]
+
+    monkeypatch.setattr(research_module, "_run_search_shards", fake_run_search_shards)
+    monkeypatch.setattr(
+        research_module,
+        "_selected_source_stats",
+        lambda *_args, **_kwargs: {
+            "selectedSourceCount": 0,
+            "distinctHostCount": 0,
+            "datedSourceCount": 0,
+            "sourceUrls": [],
+        },
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_selected_facet_evidence_stats",
+        lambda *_args, **_kwargs: {
+            "required": False,
+            "complete": False,
+            "requiredFacetIds": [],
+            "coveredFacetIds": [],
+            "missingFacetIds": [],
+            "sourceCountByFacet": {},
+        },
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_research_loop_report",
+        lambda *_args, **_kwargs: {
+            "outline": [],
+            "coveredClaims": [],
+            "uncoveredClaims": [],
+            "rejectedSources": [],
+            "researchLoopReport": {},
+        },
+    )
+
+    _shards, state = research_module._run_research_loop(
+        question="strict network research",
+        initial_shards=[
+            {"shardId": "one", "query": "one"},
+            {"shardId": "two", "query": "two"},
+        ],
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        freshness="current",
+        max_rounds=4,
+        use_agent_browser_profile=False,
+        tool_call_id="transport-circuit-test",
+    )
+
+    assert calls == 1
+    assert state["stopReason"] == "source_transport_exhausted"
+    assert state["transportSummary"]["exhaustedForRun"] is True
+    assert state["nextQueries"] == []
+
+
+def test_research_loop_allows_one_refinement_for_reachable_irrelevant_results(monkeypatch):
+    calls = 0
+
+    def fake_run_search_shards(shards, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                **dict(shard),
+                "ok": False,
+                "resultCount": 0,
+                "providerAttemptMatrix": [
+                    {
+                        "provider": "bing",
+                        "status": "irrelevant",
+                        "failureClass": "irrelevant_results",
+                    }
+                ],
+            }
+            for shard in shards
+        ]
+
+    monkeypatch.setattr(research_module, "_run_search_shards", fake_run_search_shards)
+    monkeypatch.setattr(
+        research_module,
+        "_selected_source_stats",
+        lambda *_args, **_kwargs: {
+            "selectedSourceCount": 0,
+            "distinctHostCount": 0,
+            "datedSourceCount": 0,
+            "sourceUrls": [],
+        },
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_selected_facet_evidence_stats",
+        lambda *_args, **_kwargs: {
+            "required": False,
+            "complete": False,
+            "requiredFacetIds": [],
+            "coveredFacetIds": [],
+            "missingFacetIds": [],
+            "sourceCountByFacet": {},
+        },
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_build_refinement_shards",
+        lambda *_args, **_kwargs: [
+            {"shardId": "repair-one", "query": "repair one"},
+            {"shardId": "repair-two", "query": "repair two"},
+        ],
+    )
+    monkeypatch.setattr(
+        research_module,
+        "_research_loop_report",
+        lambda *_args, **_kwargs: {
+            "outline": [],
+            "coveredClaims": [],
+            "uncoveredClaims": [],
+            "rejectedSources": [],
+            "researchLoopReport": {},
+        },
+    )
+
+    _shards, state = research_module._run_research_loop(
+        question="query refinement research",
+        initial_shards=[
+            {"shardId": "one", "query": "one"},
+            {"shardId": "two", "query": "two"},
+        ],
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        freshness="current",
+        max_rounds=4,
+        use_agent_browser_profile=False,
+        tool_call_id="transport-relevance-test",
+    )
+
+    assert calls == 2
+    assert len(state["rounds"]) == 2
+    assert state["stopReason"] == "source_transport_exhausted"
+    assert state["transportSummary"]["reachableButIrrelevant"] is True
+
+
 def test_architect_structural_target_requires_each_explicit_facet(monkeypatch):
     question = (
         "1. [timeline] Verify the compliance timeline.\n"

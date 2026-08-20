@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
+
 
 AGENT_BROWSER_PROFILE_MODE = "dedicated_debug_profile"
-AGENT_BROWSER_PROFILE_ROOT = Path.home() / ".v8-agent-os" / "browser-profiles" / "computer_use"
+AGENT_BROWSER_PROFILE_ROOT = V8_AGENT_OS_HOME / "browser-profiles" / "computer_use"
 SUPPORTED_AGENT_BROWSER_KINDS = {"auto", "chrome", "edge", "chromium"}
 
 

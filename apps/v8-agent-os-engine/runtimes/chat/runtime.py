@@ -10183,8 +10183,13 @@ class ChatRuntime:
             {"type": "done", "status": status, "run_id": chat_run.active_run_id},
         ]
 
-    @staticmethod
-    def finalize_client_transport_disconnect(chat_run: ChatRunContext, *, transport: str) -> bool:
+    def finalize_client_transport_disconnect(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        transport: str,
+        stream_state: ChatStreamState | None = None,
+    ) -> bool:
         """Close a client-bound run when its only execution transport disappears.
 
         Durable submit/resume workers are intentionally excluded: they must
@@ -10203,7 +10208,27 @@ class ChatRuntime:
         status = str(record.get("status") or "").strip().lower()
         if status not in _DISCONNECT_CANCELLABLE_RUN_STATES:
             return False
-        erc_kernel.cancel_run(run_id, reason=f"{normalized_transport}_client_disconnected")
+        terminal_reason = f"{normalized_transport}_client_disconnected"
+        erc_kernel.cancel_run(run_id, reason=terminal_reason)
+        if stream_state is not None:
+            try:
+                self._close_active_tool_calls_for_terminal(
+                    chat_run,
+                    stream_state,
+                    status="cancelled",
+                    reason=terminal_reason,
+                )
+                self.persist_final_assistant_message(
+                    chat_run,
+                    stream_state,
+                    state="cancelled",
+                    terminal_metadata={"terminalReason": terminal_reason},
+                )
+            except Exception:
+                logging.getLogger("v8chat.chat_runtime").exception(
+                    "Failed to finalize canonical assistant message after client disconnect for run '%s'",
+                    run_id,
+                )
         return True
 
     @staticmethod
@@ -11459,7 +11484,11 @@ class ChatRuntime:
             self.persist_final_assistant_message(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)
         except (asyncio.CancelledError, GeneratorExit):
-            self.finalize_client_transport_disconnect(chat_run, transport=transport)
+            self.finalize_client_transport_disconnect(
+                chat_run,
+                transport=transport,
+                stream_state=stream_state,
+            )
             raise
         except CompatExternalToolRequest as exc:
             payload = dict(getattr(exc, "payload", {}) or {})

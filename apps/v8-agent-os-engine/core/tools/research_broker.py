@@ -23215,6 +23215,105 @@ def _recent_research_discovery_seed_shards(
     return seeds[:32]
 
 
+_RESEARCH_PROVIDER_TERMINAL_FAILURES = {
+    "credential_missing",
+    "provider_adapter_unavailable",
+    "provider_disabled",
+    "provider_unconfigured",
+    "provider_unknown",
+    "needs_agent_browser_login",
+    "blocked_by_safety",
+}
+_RESEARCH_PROVIDER_BOUNDED_RETRY_FAILURES = {
+    "deadline_exceeded",
+    "network_timeout",
+    "provider_challenge",
+    "rate_limited",
+    "search_failed",
+    "service_unavailable",
+}
+_RESEARCH_PROVIDER_RELEVANCE_FAILURES = {
+    "irrelevant_results",
+    "no_results",
+}
+
+
+def _research_transport_failure_summary(shards: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize whether another query round can use a different transport.
+
+    A strict-network host can otherwise spend every Research round retrying the
+    exact same missing credentials, login-only providers, and timed-out public
+    endpoints.  This is a per-run circuit breaker: configuration is re-read on
+    the next Research run, so logging into Agent Browser immediately restores
+    MetaSo/Baidu eligibility without a process restart.
+    """
+
+    attempts = [
+        dict(item)
+        for item in _flatten_provider_attempts(shards)
+        if isinstance(item, dict) and _safe_text(item.get("provider"))
+    ]
+    if not attempts:
+        return {}
+    by_provider: dict[str, list[dict[str, Any]]] = {}
+    for attempt in attempts:
+        by_provider.setdefault(_safe_text(attempt.get("provider")).lower(), []).append(attempt)
+
+    provider_states: list[dict[str, Any]] = []
+    has_usable_provider = False
+    reachable_but_irrelevant = False
+    exhausted_for_run = True
+    for provider, provider_attempts in sorted(by_provider.items()):
+        statuses = {
+            _safe_text(item.get("status")).lower()
+            for item in provider_attempts
+            if _safe_text(item.get("status"))
+        }
+        failure_classes = {
+            _safe_text(item.get("failureClass") or item.get("reason")).lower()
+            for item in provider_attempts
+            if _safe_text(item.get("failureClass") or item.get("reason"))
+        }
+        if statuses & {"ok", "success"}:
+            state = "usable"
+            has_usable_provider = True
+            exhausted_for_run = False
+        elif failure_classes and failure_classes <= _RESEARCH_PROVIDER_TERMINAL_FAILURES:
+            state = "unavailable_until_configuration_changes"
+        elif failure_classes and failure_classes <= _RESEARCH_PROVIDER_RELEVANCE_FAILURES:
+            state = "reachable_but_irrelevant"
+            reachable_but_irrelevant = True
+        elif (
+            failure_classes
+            and failure_classes <= _RESEARCH_PROVIDER_BOUNDED_RETRY_FAILURES
+            and len(provider_attempts) >= 2
+        ):
+            state = "repeated_transport_failure"
+        else:
+            state = "retryable_or_unknown"
+            exhausted_for_run = False
+        provider_states.append(
+            {
+                "provider": provider,
+                "state": state,
+                "attemptCount": len(provider_attempts),
+                "failureClasses": sorted(failure_classes)[:6],
+            }
+        )
+
+    return {
+        "exhaustedForRun": bool(exhausted_for_run and not has_usable_provider),
+        "reachableButIrrelevant": reachable_but_irrelevant,
+        "providerCount": len(provider_states),
+        "providers": provider_states,
+        "recommendedNextAction": (
+            "Open the governed Agent Browser login surface or configure one search provider, then start a new Research run."
+            if exhausted_for_run and not has_usable_provider
+            else "Refine the query or continue with the remaining usable provider."
+        ),
+    }
+
+
 def _run_research_loop(
     *,
     question: str,
@@ -23307,6 +23406,9 @@ def _run_research_loop(
                 "facetEvidence": facet_stats,
             }
         )
+        transport_summary = _research_transport_failure_summary(completed)
+        if transport_summary:
+            loop_state["rounds"][-1]["transportSummary"] = transport_summary
         source_target_met = final_stats["selectedSourceCount"] >= TARGET_RESEARCH_SOURCE_COUNT
         host_target_met = final_stats["distinctHostCount"] >= TARGET_RESEARCH_DISTINCT_HOST_COUNT
         facet_target_met = facet_stats.get("complete") is True
@@ -23334,6 +23436,18 @@ def _run_research_loop(
             }
             loop_state["nextQueries"] = [shard.get("query") for shard in pending_shards]
             continue
+        if (
+            int(final_stats.get("selectedSourceCount") or 0) == 0
+            and transport_summary.get("exhaustedForRun") is True
+            and (
+                transport_summary.get("reachableButIrrelevant") is not True
+                or round_index >= min(2, discovery_round_cap)
+            )
+        ):
+            loop_state["stopReason"] = "source_transport_exhausted"
+            loop_state["transportSummary"] = transport_summary
+            loop_state["nextQueries"] = []
+            break
         missing_sources = max(0, TARGET_RESEARCH_SOURCE_COUNT - int(final_stats["selectedSourceCount"]))
         missing_facets = list(facet_stats.get("missingFacetIds") or [])
         refinement_limit = max(
@@ -24281,6 +24395,7 @@ def research_broker(
         research_loop_state["stopReason"] = "same_evidence_review_rejected_after_revision"
     while (
         not bundle.get("deliveryReady")
+        and research_loop_state.get("stopReason") != "source_transport_exhausted"
         and len(list(research_loop_state.get("rounds") or [])) < round_cap
         and int(architect_call_state.get("fullSynthesisAttempts") or 0)
         < _MAX_RESEARCH_ARCHITECT_FULL_SYNTHESIS_ATTEMPTS

@@ -9,6 +9,28 @@
   },
   "rules": [
     {
+      "id": "agent_file_write_document",
+      "origin": "agent_file_write",
+      "extensions": [".html", ".htm", ".md", ".markdown", ".txt", ".json", ".csv"],
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": false,
+      "previewKind": "document",
+      "maxBytes": 10485760,
+      "maxPerRun": 40
+    },
+    {
+      "id": "agent_file_write_code",
+      "origin": "agent_file_write",
+      "extensions": [".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".css", ".scss", ".vue", ".svelte", ".java", ".kt", ".go", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".swift", ".sh", ".bat", ".cmd", ".ps1"],
+      "autoAttachToMessage": true,
+      "surfaceVisible": true,
+      "supportsInlinePreview": false,
+      "previewKind": "code",
+      "maxBytes": 10485760,
+      "maxPerRun": 40
+    },
+    {
       "id": "computer_use_screenshot",
       "origin": "computer_use_screenshot",
       "kind": "image",

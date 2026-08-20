@@ -129,6 +129,8 @@ class PreferenceExtraction(BaseModel):
     confidence: float = Field(default=0.5, description="Confidence score from 0.0 to 1.0")
     durability: str = Field(default="stable", description="Durability: stable | operational | transient")
     target_store: str = Field(default="preference", description="Target store: preference | daily_log | skip")
+    evidence_quote: str = Field(default="", description="Exact user-authored quote that proves the preference; never quote the assistant")
+    evidence_role: str = Field(default="", description="Evidence author role; must be 'user' for a durable personal preference")
 
 
 class IdentityExtraction(BaseModel):
@@ -706,20 +708,45 @@ def _clean_required_dict_items(items: Any, required_keys: tuple[str, ...]) -> li
     return cleaned
 
 
+def _coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return [normalized] if normalized else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
+
+
 def _repair_memory_extraction_payload(text: str) -> MemoryExtractionResult:
     payload = _coerce_json_object(text)
     if not payload:
         raise ValueError("memory extraction output did not contain a JSON object")
-    payload["tags"] = [str(item).strip() for item in list(payload.get("tags") or []) if str(item or "").strip()][:8]
+    payload["tags"] = _coerce_string_list(payload.get("tags"))[:8]
     if not isinstance(payload.get("identity"), dict):
         payload["identity"] = {}
     payload["preferences"] = _clean_required_dict_items(payload.get("preferences"), ("scope", "key", "value"))
     payload["knowledge"] = _clean_required_dict_items(payload.get("knowledge"), ("fact", "category", "scope"))
     payload["entities"] = _clean_required_dict_items(payload.get("entities"), ("name", "type"))
     payload["relations"] = _clean_required_dict_items(payload.get("relations"), ("subject", "predicate", "object"))
-    payload["workflow_episodes"] = [
-        item for item in list(payload.get("workflow_episodes") or []) if isinstance(item, dict) and str(item.get("task_family") or "").strip()
-    ]
+    workflow_list_fields = (
+        "canonical_trigger_patterns",
+        "ordered_actions",
+        "tool_skill_sequence",
+        "failure_markers",
+        "user_correction_points",
+        "golden_path_steps",
+        "anti_patterns",
+        "verification_steps",
+    )
+    workflow_episodes: list[dict[str, Any]] = []
+    for item in list(payload.get("workflow_episodes") or []):
+        if not isinstance(item, dict) or not str(item.get("task_family") or "").strip():
+            continue
+        repaired_item = dict(item)
+        for field_name in workflow_list_fields:
+            repaired_item[field_name] = _coerce_string_list(repaired_item.get(field_name))
+        workflow_episodes.append(repaired_item)
+    payload["workflow_episodes"] = workflow_episodes
     return MemoryExtractionResult.model_validate(payload)
 
 
@@ -1008,16 +1035,19 @@ def _extract_with_llm(
         if json_match:
             str_content = json_match.group(1).strip()
             
-        # 针对无限复读循环做暴力截断 (如超过 2000 字符且没有结束的 }，则修复)
-        if len(str_content) > 4000:
-            logger.warning("[MemoryAgent] LLM output unusually long, possible repetition bug. Truncating.")
-            str_content = str_content[:4000]
-
         raw_output_preview = _safe_json_excerpt(str_content, limit=1200)
         if not str_content.strip():
             return _build_extraction_attempt(
                 failure_stage="llm_response_empty",
                 failure_reason=sanitized_output.no_visible_text_reason or "LLM returned empty content.",
+                extractor_model=extractor_model,
+                raw_output_preview=raw_output_preview,
+            )
+        if len(str_content) > 262_144:
+            logger.warning("[MemoryAgent] LLM output exceeded the governed extraction limit; rejecting without truncation.")
+            return _build_extraction_attempt(
+                failure_stage="llm_response_too_large",
+                failure_reason=f"Structured memory output exceeded 262144 characters ({len(str_content)}).",
                 extractor_model=extractor_model,
                 raw_output_preview=raw_output_preview,
             )
@@ -1644,6 +1674,39 @@ _GLOBAL_PROMOTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GLOBAL_PERSONAL_PREFERENCE_KEYS = {
+    "language_preference",
+    "response_tone_preference",
+    "response_language_style",
+    "format_preference",
+    "assistant_persona",
+    "emotional_boundary",
+}
+
+
+def _user_transcript_text(chat_text: str) -> str:
+    blocks = re.findall(
+        r"(?:^|\n)(?:USER|HUMAN):\s*(.*?)(?=\n(?:USER|HUMAN|ASSISTANT|AI|SYSTEM|TOOL):|\Z)",
+        str(chat_text or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return "\n".join(re.sub(r"\s+", " ", block).strip() for block in blocks if block.strip()).casefold()
+
+
+def _direct_user_profile_preference_reason(pref: PreferenceExtraction, chat_text: str) -> str | None:
+    canonical_key = canonicalize_preference_key(pref.key)
+    if canonical_key not in _GLOBAL_PERSONAL_PREFERENCE_KEYS:
+        return None
+    if str(pref.evidence_role or "").strip().lower() != "user":
+        return None
+    quote = re.sub(r"\s+", " ", str(pref.evidence_quote or "")).strip().casefold()
+    if len(quote) < 4:
+        return None
+    user_text = _user_transcript_text(chat_text)
+    if not user_text or quote not in user_text:
+        return None
+    return "direct_user_profile_preference"
+
 
 def _global_promotion_reason(text: str) -> str | None:
     normalized = str(text or "").strip()
@@ -1704,7 +1767,12 @@ def _route_legacy_identity_preferences(result: MemoryExtractionResult) -> list[d
     return decisions
 
 
-def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_scope: str) -> list[dict[str, Any]]:
+def _align_extraction_scopes(
+    result: MemoryExtractionResult,
+    effective_memory_scope: str,
+    *,
+    chat_text: str = "",
+) -> list[dict[str, Any]]:
     specific_prefixes = ("project:", "channel:", "workspace:", "external_api_thread:")
     target_scope = str(effective_memory_scope or "").strip() or "global"
     decisions = _route_legacy_identity_preferences(result)
@@ -1769,7 +1837,22 @@ def _align_extraction_scopes(result: MemoryExtractionResult, effective_memory_sc
         return target_scope
 
     for pref in result.preferences:
-        pref.scope = _coerce_scope(pref.scope, f"{pref.key} {pref.value}", "preference")
+        profile_reason = _direct_user_profile_preference_reason(pref, chat_text)
+        if profile_reason:
+            requested_scope = str(pref.scope or "").strip() or None
+            pref.scope = "global"
+            decisions.append(
+                {
+                    "itemType": "preference",
+                    "requestedScope": requested_scope,
+                    "finalScope": "global",
+                    "scopeDecision": "global_profile_promoted",
+                    "globalPromotionReason": profile_reason,
+                    "key": canonicalize_preference_key(pref.key),
+                }
+            )
+        else:
+            pref.scope = _coerce_scope(pref.scope, f"{pref.key} {pref.value}", "preference")
     for fact in result.knowledge:
         fact.scope = _coerce_scope(fact.scope, f"{fact.category} {fact.fact}", "knowledge")
     for workflow in getattr(result, "workflow_episodes", []) or []:
@@ -2720,7 +2803,11 @@ def analyze_session_memory(
             "parserErrorPreview": extraction_attempt.parser_error_preview or None,
         }
 
-    scope_decisions = _align_extraction_scopes(result, effective_memory_scope)
+    scope_decisions = _align_extraction_scopes(
+        result,
+        effective_memory_scope,
+        chat_text=chat_history_text,
+    )
     canonicalization = canonicalize_memory_extraction_result(result)
     identity_updates, identity_candidate_reason = _identity_updates_for_persistence(result.identity, policy)
     _emit_memory_event(

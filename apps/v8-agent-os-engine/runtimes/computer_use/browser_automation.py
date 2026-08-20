@@ -62,6 +62,26 @@ _DEDICATED_PROFILE_MODE = "dedicated_debug_profile"
 _DEFAULT_PROFILE_ROOT = default_agent_browser_profile_root()
 
 
+def _resolve_node_executable() -> str | None:
+    # The desktop runtime already ships Playwright's own Node driver.  Clean
+    # installs intentionally do not require a system-wide Node.js installation.
+    # Prefer that version-matched runtime over an arbitrary host Node.js.
+    for module_name in ("playwright", "patchright"):
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        for package_root in spec.submodule_search_locations:
+            driver_root = Path(package_root) / "driver"
+            for executable_name in ("node.exe", "node"):
+                candidate = driver_root / executable_name
+                if candidate.is_file():
+                    return str(candidate)
+    return shutil.which("node")
+
+
 def _basename(value: str | None) -> str:
     token = str(value or "").strip().replace("\\", "/").split("/")[-1]
     return token.lower()
@@ -143,13 +163,16 @@ class BrowserAutomationProvider:
         self._target_families: List[str] = ["chromium", "electron", "webview2"]
         self._managed_launches: Dict[str, Dict[str, Any]] = {}
         self._managed_browser_processes: Dict[str, subprocess.Popen[str]] = {}
-        self._node_path: str | None = shutil.which("node")
+        self._node_path: str | None = _resolve_node_executable()
         self._playwright_probe_cache: Dict[str, Any] | None = None
         self._availability_health_cache: Dict[str, Any] | None = None
         self._availability_health_checked_at: float = 0.0
         atexit.register(self.shutdown)
 
     def configure(self, config: Dict[str, Any] | None) -> None:
+        if not self._node_path:
+            self._node_path = _resolve_node_executable()
+            self._playwright_probe_cache = None
         payload = dict(config or {})
         lane = dict(payload.get("browserLane") or {})
         previous_probe_identity = (self._enabled, self._proxy_port, self._connect_timeout_ms)
@@ -1324,11 +1347,9 @@ class BrowserAutomationProvider:
         with self._lock:
             proc = self._proxy_process
             self._proxy_process = None
-            headless_processes = [
-                self._managed_browser_processes.pop(key)
-                for key, state in list(self._managed_launches.items())
-                if state.get("headless") and key in self._managed_browser_processes
-            ]
+            managed_browser_processes = list(self._managed_browser_processes.values())
+            self._managed_browser_processes.clear()
+            self._managed_launches.clear()
         if proc is not None:
             try:
                 proc.terminate()
@@ -1338,7 +1359,7 @@ class BrowserAutomationProvider:
                     proc.kill()
                 except Exception:
                     pass
-        for browser_process in headless_processes:
+        for browser_process in managed_browser_processes:
             try:
                 browser_process.terminate()
                 browser_process.wait(timeout=2)
@@ -1923,7 +1944,6 @@ class BrowserAutomationProvider:
                 "browserResult": value,
             },
         }
-
     def click_target(self, *, payload: Dict[str, Any], decision: BrowserLaneDecision) -> Dict[str, Any]:
         self._ensure_proxy(target_port=decision.target_port)
         target_id = self._select_target_id(
@@ -2024,3 +2044,9 @@ class BrowserAutomationProvider:
                 "browserResult": response,
             },
         }
+
+
+# Agent Browser is a product-level login surface shared by Research, RPA and
+# Computer Use.  One process-wide provider preserves launch ownership and CDP
+# state no matter which optional runtime imports it first.
+agent_browser_automation = BrowserAutomationProvider()

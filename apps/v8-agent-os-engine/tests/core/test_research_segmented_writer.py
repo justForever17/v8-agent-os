@@ -1017,10 +1017,19 @@ def test_segmented_writer_resigns_truncated_prompt_bodies_and_keeps_plan_payload
     invocation = CapturingInvocation(_accepted_plan(sources))
     candidate = _Candidate(max_tokens=4096, model_ref="minimax-cn::MiniMax-M3")
     monkeypatch.setattr(
-        "core.context_orchestrator.llm_factory.get_model_context_window",
-        lambda model_ref: 1_000_000
-        if model_ref == "minimax-cn::MiniMax-M3"
-        else None,
+        "core.context_window_guard.llm_factory.get_model_metadata",
+        lambda model_ref: {
+            "is_found": model_ref == "minimax-cn::MiniMax-M3",
+            "global_context_window": (
+                1_000_000 if model_ref == "minimax-cn::MiniMax-M3" else None
+            ),
+            "model_record": {"type": "TEXT"},
+            "capability_class": "chat",
+        },
+    )
+    monkeypatch.setattr(
+        "core.context_window_guard.storage.get_role_model_id",
+        lambda _role: "",
     )
     monkeypatch.setattr(
         research_module,

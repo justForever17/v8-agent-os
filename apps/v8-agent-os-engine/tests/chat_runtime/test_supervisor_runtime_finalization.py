@@ -2920,7 +2920,10 @@ def test_runtime_episode_handoff_resume_restarts_wait_graph_instead_of_resuming_
 def test_client_transport_disconnect_cancels_a_phantom_running_run(monkeypatch):
     runtime = ChatRuntime()
     chat_run = SimpleNamespace(active_run_id="run-client-disconnect")
+    stream_state = SimpleNamespace()
     cancelled = []
+    close_active_tools = Mock(return_value=[])
+    persist_final = Mock()
 
     monkeypatch.setattr(
         "runtimes.chat.runtime.db.get_run_record",
@@ -2930,9 +2933,27 @@ def test_client_transport_disconnect_cancels_a_phantom_running_run(monkeypatch):
         "runtimes.chat.runtime.erc_kernel.cancel_run",
         lambda run_id, *, reason: cancelled.append((run_id, reason)),
     )
+    monkeypatch.setattr(runtime, "_close_active_tool_calls_for_terminal", close_active_tools)
+    monkeypatch.setattr(runtime, "persist_final_assistant_message", persist_final)
 
-    assert runtime.finalize_client_transport_disconnect(chat_run, transport="websocket") is True
+    assert runtime.finalize_client_transport_disconnect(
+        chat_run,
+        transport="websocket",
+        stream_state=stream_state,
+    ) is True
     assert cancelled == [("run-client-disconnect", "websocket_client_disconnected")]
+    close_active_tools.assert_called_once_with(
+        chat_run,
+        stream_state,
+        status="cancelled",
+        reason="websocket_client_disconnected",
+    )
+    persist_final.assert_called_once_with(
+        chat_run,
+        stream_state,
+        state="cancelled",
+        terminal_metadata={"terminalReason": "websocket_client_disconnected"},
+    )
 
 
 def test_durable_submit_disconnect_does_not_cancel_engine_owned_run(monkeypatch):

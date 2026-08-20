@@ -639,6 +639,89 @@ def test_write_native_file_requires_explicit_intent_for_existing_file_full_overw
     assert target.read_text(encoding="utf-8") == "replacement"
 
 
+def test_write_native_file_rejects_truncated_html_without_publishing_a_file(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+
+    truncated = "<!doctype html><html><head><style>.card { text-align:"
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        result = json.loads(native_tools.write_native_file.func("broken.html", truncated))
+
+    assert result["ok"] is False
+    assert result["kind"] == "incomplete_html_document"
+    assert "css_declaration_truncated" in result["issues"]
+    assert "html_close_missing" in result["issues"]
+    assert not (active_root / "broken.html").exists()
+
+
+def test_write_native_file_keeps_existing_html_when_replacement_is_truncated(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    target = active_root / "app.html"
+    original = "<!doctype html><html><head></head><body>ready</body></html>"
+    target.write_text(original, encoding="utf-8")
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        native_tools.read_native_file.func("app.html")
+        result = json.loads(
+            native_tools.write_native_file.func(
+                "app.html",
+                "<!doctype html><html><body><script>const value = 1;",
+                allow_full_replace=True,
+            )
+        )
+
+    assert result["ok"] is False
+    assert result["kind"] == "incomplete_html_document"
+    assert "script_close_missing" in result["issues"]
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_write_native_file_accepts_complete_html_document(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    complete = (
+        "<!doctype html><html><head><style>.card{text-align:center}</style></head>"
+        "<body><main class='card'>ready</main><script>void 0</script></body></html>"
+    )
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+    ):
+        result = native_tools.write_native_file.func("app.html", complete)
+
+    assert "Successfully Created/Overwritten" in result
+    assert (active_root / "app.html").read_text(encoding="utf-8") == complete
+
+
 def test_write_native_file_keeps_original_when_atomic_replace_fails(tmp_path, monkeypatch):
     from core import native_tools
     from core.tools.native import workspace_file as workspace_file_module

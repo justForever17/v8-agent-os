@@ -401,6 +401,57 @@ def _atomic_write_text(target_path: Path, content: str, *, append: bool = False)
         raise
 
 
+def _html_integrity_issues(content: str) -> list[str]:
+    """Return only high-confidence signs that a full HTML write was truncated."""
+
+    text = str(content or "")
+    lowered = text.lower()
+    issues: list[str] = []
+    document_like = any(token in lowered for token in ("<!doctype html", "<html", "<head", "<body"))
+    if document_like:
+        for opening, closing, label in (
+            ("<html", "</html>", "html_close_missing"),
+            ("<head", "</head>", "head_close_missing"),
+            ("<body", "</body>", "body_close_missing"),
+        ):
+            if opening in lowered and closing not in lowered:
+                issues.append(label)
+    for opening, closing, label in (
+        ("<style", "</style>", "style_close_missing"),
+        ("<script", "</script>", "script_close_missing"),
+    ):
+        if lowered.count(opening) > lowered.count(closing):
+            issues.append(label)
+
+    # A model/tool payload cut in the middle of a CSS declaration commonly
+    # ends with `property:` or an unterminated block.  Restrict this check to a
+    # trailing style section so valid text such as `Note:` is not rejected.
+    style_start = lowered.rfind("<style")
+    style_end = lowered.rfind("</style>")
+    if style_start > style_end:
+        style_tail = text[style_start:].rstrip()
+        if re.search(r"[-\w]+\s*:\s*$", style_tail):
+            issues.append("css_declaration_truncated")
+        if style_tail.count("{") > style_tail.count("}"):
+            issues.append("css_block_unclosed")
+    return list(dict.fromkeys(issues))
+
+
+def _html_integrity_block_payload(target_path: Path, issues: list[str]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "kind": "incomplete_html_document",
+        "error": "html_integrity_check_failed",
+        "summary": "HTML 内容疑似在标签或 CSS 声明中途截断，已阻止写入和产物发布。",
+        "path": str(target_path),
+        "issues": issues,
+        "recommendedNextAction": (
+            "重新生成完整 HTML，确认文档级 html/head/body、style/script 均闭合后再次调用 "
+            "write_native_file；工具返回 ok=false 时不得把该文件宣称为完成产物。"
+        ),
+    }
+
+
 def _native_file_read_error(
     *,
     kind: str,
@@ -772,6 +823,18 @@ def write_native_file(
                 ensure_ascii=False,
                 indent=2,
             )
+
+        final_content = write_content
+        if append and target_path.exists():
+            final_content = target_path.read_text(encoding="utf-8", errors="ignore") + write_content
+        if target_path.suffix.lower() in {".html", ".htm"}:
+            integrity_issues = _html_integrity_issues(final_content)
+            if integrity_issues:
+                return json.dumps(
+                    _html_integrity_block_payload(target_path, integrity_issues),
+                    ensure_ascii=False,
+                    indent=2,
+                )
 
         _atomic_write_text(target_path, write_content, append=append)
         _invalidate_file_read_receipt(runtime_context, target_path)

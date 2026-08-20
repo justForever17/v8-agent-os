@@ -7753,9 +7753,30 @@ class DatabaseManager:
         metadata: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         now_iso = utc_now_iso()
+        normalized_client_message_id = str(client_message_id or "").strip() or None
 
-        def _write():
+        def _write() -> Dict[str, Any]:
             with self.get_connection() as conn:
+                # Retries from WebSocket reconnects and rapid double submits
+                # must not allocate two queue ordinals for the same client
+                # message.  Serialize lookup + insert in the same transaction.
+                conn.execute("BEGIN IMMEDIATE")
+                if normalized_client_message_id:
+                    existing = conn.execute(
+                        '''
+                        SELECT *
+                        FROM chat_user_message_queue
+                        WHERE session_id = ?
+                          AND client_message_id = ?
+                          AND state != 'cancelled'
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        ''',
+                        (session_id, normalized_client_message_id),
+                    ).fetchone()
+                    if existing:
+                        conn.rollback()
+                        return self._hydrate_chat_user_message_queue_row(dict(existing))
                 ordinal = self._next_chat_user_message_queue_ordinal(conn, session_id)
                 conn.execute(
                     '''
@@ -7767,7 +7788,7 @@ class DatabaseManager:
                         queue_id,
                         session_id,
                         run_id,
-                        client_message_id,
+                        normalized_client_message_id,
                         content,
                         json.dumps(to_jsonable(attachments or []), ensure_ascii=False),
                         json.dumps(to_jsonable(file_urls or []), ensure_ascii=False),
@@ -7779,10 +7800,14 @@ class DatabaseManager:
                     ),
                 )
                 conn.execute('UPDATE sessions SET updated_at = ? WHERE id = ?', (now_iso, session_id))
+                inserted = conn.execute(
+                    'SELECT * FROM chat_user_message_queue WHERE id = ?',
+                    (queue_id,),
+                ).fetchone()
                 conn.commit()
+                return self._hydrate_chat_user_message_queue_row(dict(inserted)) if inserted else {}
 
-        self._run_write_with_retry(_write)
-        return self.get_chat_user_message_queue_item(queue_id) or {}
+        return dict(self._run_write_with_retry(_write) or {})
 
     def get_chat_user_message_queue_item(self, queue_id: str) -> Optional[Dict[str, Any]]:
         normalized_id = str(queue_id or "").strip()
@@ -10851,6 +10876,74 @@ class DatabaseManager:
                 (status, request_str, normalized_answer, status, resolved_at, interaction_id),
             )
             conn.commit()
+
+    def resolve_ask_user_interaction_if_pending(
+        self,
+        interaction_id: str,
+        *,
+        answer_text: Optional[str] = None,
+        request: Optional[Dict[str, Any]] = None,
+        resolved_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resolve one ask-user interaction exactly once.
+
+        Browser retries, double clicks, and reconnect replay may submit the
+        same answer more than once. The state transition and answer write must
+        share one transaction; only the winner may resume the graph.
+        """
+
+        request_str = json.dumps(request, ensure_ascii=False) if request is not None else None
+        normalized_answer = str(answer_text or "").strip() or None
+
+        def _write() -> Dict[str, Any]:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM ask_user_interactions WHERE id = ?",
+                    (interaction_id,),
+                ).fetchone()
+                if not row:
+                    conn.rollback()
+                    return {"updated": False, "reason": "interaction_not_found"}
+                current = dict(row)
+                current_status = str(current.get("status") or "").strip().lower()
+                if current_status != "pending":
+                    conn.rollback()
+                    return {
+                        "updated": False,
+                        "reason": f"status_mismatch:{current_status or 'unknown'}",
+                        "currentStatus": current_status,
+                        "interaction": current,
+                    }
+                conn.execute(
+                    '''
+                    UPDATE ask_user_interactions
+                    SET status = 'resolved',
+                        request_json = COALESCE(?, request_json),
+                        answer_text = COALESCE(?, answer_text),
+                        resolved_at = COALESCE(?, CURRENT_TIMESTAMP)
+                    WHERE id = ? AND status = 'pending'
+                    ''',
+                    (request_str, normalized_answer, resolved_at, interaction_id),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM ask_user_interactions WHERE id = ?",
+                    (interaction_id,),
+                ).fetchone()
+                conn.commit()
+                interaction = dict(updated) if updated else current
+                interaction["request"] = (
+                    json.loads(interaction.get("request_json") or "{}")
+                    if interaction.get("request_json")
+                    else {}
+                )
+                return {
+                    "updated": True,
+                    "previousStatus": current_status,
+                    "interaction": interaction,
+                }
+
+        return self._run_write_with_retry(_write)
 
     # --- Telemetry / Usage Operations ---
 

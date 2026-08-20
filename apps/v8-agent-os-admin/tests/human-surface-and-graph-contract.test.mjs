@@ -40,6 +40,9 @@ test("knowledge graph uses clustered spacing, drag, subtle motion, and reduced-m
     assert.match(graph, /enableNodeDrag/);
     assert.match(graph, /prefers-reduced-motion: reduce/);
     assert.match(graph, /requestAnimationFrame/);
+    assert.match(graph, /setInterval\(refreshVisibleGraph, 5_000\)/);
+    assert.match(graph, /document\.visibilityState === "visible"/);
+    assert.match(graph, /loadGraph\(\{ silent: true \}\)/);
     assert.doesNotMatch(graph, /denseCore/);
     assert.doesNotMatch(graph, /2200/);
     assert.match(graph, /menuMode === "summary"/);
@@ -95,6 +98,13 @@ test("Agent Browser is configured from Research without exposing Chrome and Edge
 
     assert.match(researchPage, /AgentBrowserPanel/);
     assert.match(browserPanel, /\/api\/agent-browser\/open/);
+    assert.match(browserPanel, /fetchConfigDomain<SystemBaseData>\("system-base"/);
+    assert.match(browserPanel, /Promise\.allSettled/);
+    assert.match(browserPanel, /useAgentBrowserProfile: true/);
+    assert.match(browserPanel, /agentBrowserProfileAllowlist: allowlist/);
+    assert.match(browserPanel, /agentBrowser\.profileConfigFailed/);
+    assert.match(browserPanel, /https:\/\/metaso\.cn\//);
+    assert.match(browserPanel, /https:\/\/www\.baidu\.com\//);
     assert.match(browserPanel, /agentBrowser\.title/);
     assert.doesNotMatch(browserPanel, /openChrome|openEdge|browserKind/);
     assert.doesNotMatch(desktopPage, /openAgentBrowser|agentBrowser\.openChrome|agentBrowser\.openEdge/);

@@ -6,11 +6,26 @@ import { Globe2, Loader2, ShieldCheck } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { fetchConfigDomain, saveConfigDomain } from "@/lib/config-registry";
 
 type AgentBrowserResult = {
     ok: boolean;
     summary: string;
 };
+
+type SystemBaseData = {
+    webFetch?: {
+        useAgentBrowserProfile?: boolean;
+        agentBrowserProfileAllowlist?: string[];
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+};
+
+const LOGIN_TARGETS = {
+    metaso: { url: "https://metaso.cn/", hosts: ["metaso.cn"] },
+    baidu: { url: "https://www.baidu.com/", hosts: ["baidu.com"] },
+} as const;
 
 function responseSummary(payload: Record<string, unknown>, fallback: string) {
     const summary = typeof payload.summary === "string" && payload.summary.trim()
@@ -33,28 +48,54 @@ function responseSummary(payload: Record<string, unknown>, fallback: string) {
 
 export function AgentBrowserPanel() {
     const t = useT();
-    const [opening, setOpening] = useState(false);
+    const [opening, setOpening] = useState<"generic" | keyof typeof LOGIN_TARGETS | null>(null);
     const [result, setResult] = useState<AgentBrowserResult | null>(null);
 
-    const openAgentBrowser = async () => {
+    const openAgentBrowser = async (target: "generic" | keyof typeof LOGIN_TARGETS = "generic") => {
         if (opening) return;
-        setOpening(true);
+        setOpening(target);
         setResult(null);
         try {
-            const response = await fetch("/api/agent-browser/open", {
+            const loginTarget = target === "generic" ? null : LOGIN_TARGETS[target];
+            const profileConfiguration = loginTarget ? (async () => {
+                const envelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
+                const webFetch = envelope.data?.webFetch || {};
+                const allowlist = Array.from(new Set([
+                    ...(Array.isArray(webFetch.agentBrowserProfileAllowlist) ? webFetch.agentBrowserProfileAllowlist : []),
+                    ...loginTarget.hosts,
+                ].map((host) => String(host || "").trim().toLowerCase()).filter(Boolean)));
+                await saveConfigDomain<SystemBaseData>("system-base", {
+                    data: {
+                        ...envelope.data,
+                        webFetch: {
+                            ...webFetch,
+                            useAgentBrowserProfile: true,
+                            agentBrowserProfileAllowlist: allowlist,
+                        },
+                    },
+                });
+            })() : Promise.resolve();
+            const browserRequest = fetch("/api/agent-browser/open", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url: "about:blank" }),
+                body: JSON.stringify({ url: loginTarget?.url || "about:blank" }),
             });
+            const [configurationResult, browserResult] = await Promise.allSettled([
+                profileConfiguration,
+                browserRequest,
+            ]);
+            if (browserResult.status === "rejected") throw browserResult.reason;
+            const response = browserResult.value;
             const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+            const browserOk = response.ok && payload.ok !== false;
+            const configurationOk = configurationResult.status === "fulfilled";
             setResult({
-                ok: response.ok && payload.ok !== false,
-                summary: responseSummary(
-                    payload,
-                    response.ok
-                        ? t("app.admin.dashboard.research.runtime.agentBrowser.opened")
-                        : t("app.admin.dashboard.research.runtime.agentBrowser.failed"),
-                ),
+                ok: browserOk && configurationOk,
+                summary: !browserOk
+                    ? responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.failed"))
+                    : !configurationOk
+                        ? t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed")
+                        : responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.opened")),
             });
         } catch (error) {
             setResult({
@@ -64,7 +105,7 @@ export function AgentBrowserPanel() {
                     : t("app.admin.dashboard.research.runtime.agentBrowser.failed"),
             });
         } finally {
-            setOpening(false);
+            setOpening(null);
         }
     };
 
@@ -88,12 +129,22 @@ export function AgentBrowserPanel() {
                         </div>
                     </div>
                 </div>
-                <Button type="button" onClick={() => void openAgentBrowser()} disabled={opening} className="shrink-0">
-                    {opening ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                    {opening
-                        ? t("app.admin.dashboard.research.runtime.agentBrowser.opening")
-                        : t("app.admin.dashboard.research.runtime.agentBrowser.open")}
-                </Button>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                    <Button type="button" variant="outline" onClick={() => void openAgentBrowser("metaso")} disabled={Boolean(opening)}>
+                        {opening === "metaso" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
+                        {t("app.admin.dashboard.research.runtime.agentBrowser.openMetaso")}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => void openAgentBrowser("baidu")} disabled={Boolean(opening)}>
+                        {opening === "baidu" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
+                        {t("app.admin.dashboard.research.runtime.agentBrowser.openBaidu")}
+                    </Button>
+                    <Button type="button" onClick={() => void openAgentBrowser("generic")} disabled={Boolean(opening)}>
+                        {opening === "generic" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
+                        {opening === "generic"
+                            ? t("app.admin.dashboard.research.runtime.agentBrowser.opening")
+                            : t("app.admin.dashboard.research.runtime.agentBrowser.open")}
+                    </Button>
+                </div>
             </CardContent>
             {result ? (
                 <div className={`border-t px-5 py-3 text-xs leading-5 ${result.ok

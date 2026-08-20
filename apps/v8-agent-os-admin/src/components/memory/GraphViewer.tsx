@@ -136,6 +136,19 @@ function seedGraphData(graph: GraphData): GraphData {
   });
   return { nodes, links, meta: graph.meta };
 }
+function preserveGraphPositions(next: GraphData, current: GraphData | null): GraphData {
+  if (!current?.nodes?.length) return next;
+  const positions = new Map(current.nodes.map((node) => [node.id, node]));
+  return {
+    ...next,
+    nodes: next.nodes.map((node) => {
+      const previous = positions.get(node.id);
+      return previous && Number.isFinite(previous.x) && Number.isFinite(previous.y)
+        ? { ...node, x: previous.x, y: previous.y, vx: previous.vx, vy: previous.vy }
+        : node;
+    }),
+  };
+}
 export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   const { toast } = useToast();
   const t = useT();
@@ -168,6 +181,9 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   }>>([]);
   const guidedFilterRef = useRef("");
   const autoFitPendingRef = useRef(true);
+  const graphRequestIdRef = useRef(0);
+  const graphResponseSignatureRef = useRef("");
+  const relationRequestIdRef = useRef(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
   const normalizedFilter = filterNode.trim().toLowerCase();
@@ -324,6 +340,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     slice(0, 6);
   }, [connectTarget, data?.nodes, selectedNodeId]);
   const closeMenu = useCallback(() => {
+    relationRequestIdRef.current += 1;
     setMenuMode("summary");
     setMenuPosition(null);
     setRelations([]);
@@ -347,36 +364,47 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       setWorkspaceReady(true);
     }
   }, []);
-  const loadGraph = useCallback(async () => {
+  const loadGraph = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    const requestId = ++graphRequestIdRef.current;
     if (!workspaceReady) return;
     if (!selectedWorkspaceKey) {
+      graphResponseSignatureRef.current = "";
       setData({ nodes: [], links: [] });
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(`/api/memory/graph?workspaceKey=${encodeURIComponent(selectedWorkspaceKey)}`);
       if (!res.ok) {
         throw new Error(`Load failed: ${res.status}`);
       }
       const json = await res.json();
-      autoFitPendingRef.current = true;
-      setData(seedGraphData(json));
+      if (requestId !== graphRequestIdRef.current) return;
+      const responseSignature = `${selectedWorkspaceKey}:${JSON.stringify(json)}`;
+      if (responseSignature === graphResponseSignatureRef.current) return;
+      graphResponseSignatureRef.current = responseSignature;
+      if (!silent) autoFitPendingRef.current = true;
+      const nextGraph = seedGraphData(json);
+      setData((current) => silent ? preserveGraphPositions(nextGraph, current) : nextGraph);
     }
     catch (err) {
+      if (requestId !== graphRequestIdRef.current) return;
       console.error("Failed to load full graph:", err);
-      toast({
-        title: t("components.memory.GraphViewer.k0a0a7635"),
-        description: t("components.memory.GraphViewer.kc39f4757"),
-        variant: "destructive"
-      });
+      if (!silent) {
+        toast({
+          title: t("components.memory.GraphViewer.k0a0a7635"),
+          description: t("components.memory.GraphViewer.kc39f4757"),
+          variant: "destructive"
+        });
+      }
     } finally
     {
-      setLoading(false);
+      if (requestId === graphRequestIdRef.current) setLoading(false);
     }
   }, [selectedWorkspaceKey, t, toast, workspaceReady]);
   const loadEntityRelations = useCallback(async (entityId: string) => {
+    const requestId = ++relationRequestIdRef.current;
     if (!selectedWorkspaceKey) {
       setRelations([]);
       return;
@@ -387,9 +415,11 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         throw new Error(`Relation query failed: ${res.status}`);
       }
       const json = await res.json();
+      if (requestId !== relationRequestIdRef.current) return;
       setRelations(Array.isArray(json?.relations) ? json.relations : []);
     }
     catch (error) {
+      if (requestId !== relationRequestIdRef.current) return;
       console.error("Failed to query entity relations:", error);
       setRelations([]);
       toast({
@@ -577,11 +607,26 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [closeMenu]);
   const refreshGraphState = useCallback(async () => {
-    await loadGraph();
+    await loadGraph({ silent: true });
     if (selectedNodeId) {
       await loadEntityRelations(selectedNodeId);
     }
   }, [loadEntityRelations, loadGraph, selectedNodeId]);
+  useEffect(() => {
+    const refreshVisibleGraph = () => {
+      if (document.visibilityState === "visible") {
+        void refreshGraphState();
+      }
+    };
+    const interval = window.setInterval(refreshVisibleGraph, 5_000);
+    window.addEventListener("focus", refreshVisibleGraph);
+    document.addEventListener("visibilitychange", refreshVisibleGraph);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshVisibleGraph);
+      document.removeEventListener("visibilitychange", refreshVisibleGraph);
+    };
+  }, [refreshGraphState]);
   const handleDeleteNode = useCallback(async () => {
     if (!selectedNode || !selectedWorkspaceKey) {
       return;

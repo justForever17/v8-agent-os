@@ -25,6 +25,27 @@ export function normalizeSafetyApprovalMode(value) {
   return ["manual", "reduced", "minimal"].includes(mode) ? mode : "reduced";
 }
 
+export function resolveChatWorkspaceSelection({
+  requestedSessionId = "",
+  requestedWorkspacePath = "",
+  requestedWorkspaceId = "",
+  requestedProjectId = "",
+  storedBinding = {},
+} = {}) {
+  if (requestedSessionId || requestedWorkspacePath || requestedWorkspaceId || requestedProjectId) {
+    return {
+      workspacePath: requestedWorkspacePath,
+      workspaceId: requestedWorkspaceId,
+      projectId: requestedProjectId,
+    };
+  }
+  return {
+    workspacePath: requestedWorkspacePath || storedBinding.path || "",
+    workspaceId: requestedWorkspaceId || storedBinding.workspaceId || "",
+    projectId: requestedProjectId || storedBinding.projectId || "",
+  };
+}
+
 function remainingText(args) {
   const skipped = new Set([
     "--session",
@@ -120,6 +141,24 @@ function isAssistantMessage(message) {
   return role.includes("assistant") || role.includes("supervisor") || type.includes("assistant");
 }
 
+export function assistantTerminalFailure(message) {
+  if (!isAssistantMessage(message)) return null;
+  const state = String(message?.state || message?.status || "").trim().toLowerCase();
+  if (!["failed", "cancelled", "canceled", "interrupted", "aborted"].includes(state)) return null;
+  const reason = String(
+    message?.metadata?.terminalReason
+    || message?.metadata?.failureClass
+    || message?.terminalReason
+    || state,
+  ).trim();
+  const stateLabel = state === "failed" ? "失败" : "终止";
+  return {
+    state,
+    reason,
+    message: `主理人运行已${stateLabel}${reason && reason !== state ? `（${reason}）` : ""}。`,
+  };
+}
+
 async function latestMessageIds(sessionId) {
   const response = await adminJson(`/api/client/conversations/${encodeURIComponent(sessionId)}/turns?limit=1`, { timeoutMs: 10_000 });
   if (!response.ok) return new Set();
@@ -139,6 +178,14 @@ async function waitForAssistant(sessionId, beforeIds, { timeoutMs = 120_000 } = 
         return !beforeIds.has(id) && extractMessageText(message);
       });
       if (candidate) return candidate;
+      const terminalFailure = [...messages].reverse().find((message, index) => {
+        if (!assistantTerminalFailure(message)) return false;
+        const id = String(message.id || message.messageId || `${messages.length - index - 1}:${extractMessageText(message).slice(0, 48)}`);
+        return !beforeIds.has(id);
+      });
+      if (terminalFailure) {
+        throw new Error(assistantTerminalFailure(terminalFailure).message);
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
@@ -152,14 +199,14 @@ export async function sendChatMessage(args, { print = true } = {}) {
   }
   const requestedSessionId = optionValue(args, "--session", "");
   const storedBinding = currentWorkspaceBinding();
-  let workspacePath = optionValue(args, "--workspace", "");
-  let workspaceId = optionValue(args, "--workspace-id", "");
-  let projectId = optionValue(args, "--project", "");
-  if (!requestedSessionId) {
-    workspacePath = workspacePath || storedBinding.path;
-    workspaceId = workspaceId || storedBinding.workspaceId;
-    projectId = projectId || storedBinding.projectId;
-  }
+  const workspaceSelection = resolveChatWorkspaceSelection({
+    requestedSessionId,
+    requestedWorkspacePath: optionValue(args, "--workspace", ""),
+    requestedWorkspaceId: optionValue(args, "--workspace-id", ""),
+    requestedProjectId: optionValue(args, "--project", ""),
+    storedBinding,
+  });
+  let { workspacePath, workspaceId, projectId } = workspaceSelection;
   if (workspacePath) {
     const trusted = await registerTrustedWorkspaceProject(workspacePath, {
       projectId,

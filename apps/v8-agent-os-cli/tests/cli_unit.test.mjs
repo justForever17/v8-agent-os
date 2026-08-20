@@ -17,7 +17,13 @@ import {
   configureComponentRuntimePorts,
   parseComponentSelection,
 } from "../src/components.mjs";
-import { buildChatSubmitPayload, extractMessageText, normalizeSafetyApprovalMode } from "../src/chat_commands.mjs";
+import {
+  assistantTerminalFailure,
+  buildChatSubmitPayload,
+  extractMessageText,
+  normalizeSafetyApprovalMode,
+  resolveChatWorkspaceSelection,
+} from "../src/chat_commands.mjs";
 import { requireOk } from "../src/client_api.mjs";
 import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
 import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
@@ -1825,6 +1831,35 @@ test("chat payload preserves session, workspace, project, and spec mode", () => 
   assert.equal(payload.data.safetyApprovalMode, "minimal");
 });
 
+test("explicit chat workspace paths never inherit stale workspace identities", () => {
+  const storedBinding = {
+    path: "C:\\Users\\OldMachine\\.v8-agent-os\\workspace",
+    workspaceId: "old-workspace",
+    projectId: "old-project",
+  };
+  assert.deepEqual(resolveChatWorkspaceSelection({
+    requestedWorkspacePath: "C:\\current\\workspace",
+    storedBinding,
+  }), {
+    workspacePath: "C:\\current\\workspace",
+    workspaceId: "",
+    projectId: "",
+  });
+  assert.deepEqual(resolveChatWorkspaceSelection({ storedBinding }), {
+    workspacePath: storedBinding.path,
+    workspaceId: storedBinding.workspaceId,
+    projectId: storedBinding.projectId,
+  });
+  assert.deepEqual(resolveChatWorkspaceSelection({
+    requestedWorkspaceId: "current-workspace",
+    storedBinding,
+  }), {
+    workspacePath: "",
+    workspaceId: "current-workspace",
+    projectId: "",
+  });
+});
+
 test("chat safety approval mode defaults to reduced for local trusted clients", () => {
   assert.equal(normalizeSafetyApprovalMode("manual"), "manual");
   assert.equal(normalizeSafetyApprovalMode("reduced"), "reduced");
@@ -1851,6 +1886,21 @@ test("chat text extractor handles string and rich parts", () => {
   assert.equal(extractMessageText({ content: "plain" }), "plain");
   assert.equal(extractMessageText({ content: [{ text: "a" }, { content: "b" }] }), "a\nb");
   assert.equal(extractMessageText({ parts: ["x", { text: "y" }] }), "x\ny");
+});
+
+test("chat terminal failures stop waiting even when the assistant has no text", () => {
+  assert.deepEqual(assistantTerminalFailure({
+    role: "assistant",
+    state: "failed",
+    content: "",
+    metadata: { terminalReason: "auth_error" },
+  }), {
+    state: "failed",
+    reason: "auth_error",
+    message: "主理人运行已失败（auth_error）。",
+  });
+  assert.equal(assistantTerminalFailure({ role: "assistant", state: "streaming" }), null);
+  assert.equal(assistantTerminalFailure({ role: "user", state: "failed" }), null);
 });
 
 test("inbox pending filter excludes closed and empty items", () => {

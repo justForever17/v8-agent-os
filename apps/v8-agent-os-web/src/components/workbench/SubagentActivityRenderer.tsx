@@ -14,6 +14,7 @@ import { ContentDispatcher } from "@/components/chat/ContentDispatcher";
 import { ImagePreview, MediaPlayer } from "@/components/chat/MediaRenderers";
 import { useT } from "@/components/providers/LocaleProvider";
 import { inferArtifactCardType, normalizeRuntimeArtifact, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
+import { downloadArtifact } from "@/lib/artifact-download";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
 import { createArtifactDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
@@ -88,7 +89,7 @@ function SubagentEventStream({ item, processes, sessionId }: { item: SubagentRet
                             type={type}
                             subtitle={artifact.displaySubtitle || t("web.workbench.subagent.artifact")}
                             onClick={() => openDocument(createArtifactDocument(artifact, sessionId), { activate: true, mode: "split" })}
-                            onDownload={url ? () => window.open(url, "_blank", "noopener,noreferrer") : undefined}
+                            onDownload={url ? () => downloadArtifact(url, artifact.title || artifact.id) : undefined}
                         />
                     );
                 }

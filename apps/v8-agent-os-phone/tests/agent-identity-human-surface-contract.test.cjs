@@ -90,6 +90,23 @@ test("live merge cannot replace a configured identity with a canonical placehold
   assert.equal(message.agentRoleLabel, "创意总监");
 });
 
+test("canonical ordinal and turn position keep Phone history and live merges ordered", () => {
+  const { normalizeMessagesForState } = loadChatState();
+  const messages = normalizeMessagesForState([
+    { id: "assistant-2", role: "assistant", ordinal: 4, turnPosition: 2, timestamp: 400, content: "second" },
+    { id: "user-1", role: "user", ordinal: 1, turnPosition: 1, timestamp: 100, content: "first" },
+    { id: "assistant-1", role: "assistant", ordinal: 2, turnPosition: 1, timestamp: 200, content: "reply" },
+    { id: "user-2", role: "user", ordinal: 3, turnPosition: 2, timestamp: 300, content: "next" },
+  ]);
+
+  assert.deepEqual(messages.map((message) => message.id), [
+    "user-1",
+    "assistant-1",
+    "user-2",
+    "assistant-2",
+  ]);
+});
+
 test("overview and optimistic placeholders resolve authoritative profile assets", () => {
   const overview = read("src/components/chat/SessionOverviewPanel.tsx");
   const screen = read("src/screens/ChatScreen.tsx");

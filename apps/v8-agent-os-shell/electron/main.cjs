@@ -14,6 +14,7 @@ const {
   isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
   isTrustedProductUrl,
+  isTrustedProductDownloadUrl,
   trustedProductOrigins,
 } = require('../lib/surface-security.cjs');
 const {
@@ -1410,6 +1411,11 @@ function createMainWindow() {
   mainWindow.webContents.on('will-navigate', (event, targetUrl, _isInPlace, isMainFrame) => {
     const mainFrameNavigation = typeof event.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const destination = event.url || targetUrl;
+    if (mainFrameNavigation !== false && isTrustedProductDownloadUrl(destination, productOrigins)) {
+      event.preventDefault();
+      mainWindow.webContents.downloadURL(destination);
+      return;
+    }
     if (mainFrameNavigation !== false && adminSessionLocked && isWebSurfaceUrl(destination)) {
       event.preventDefault();
       setImmediate(() => { void loadInMainWindow(adminLoginUrl()); });
@@ -1429,7 +1435,9 @@ function createMainWindow() {
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const route = classifyWindowOpen(url, productOrigins);
-    if (route === 'product') {
+    if (route === 'download') {
+      mainWindow.webContents.downloadURL(url);
+    } else if (route === 'product') {
       void loadInMainWindow(url);
     } else if (route === 'external') {
       void shell.openExternal(url).catch(() => {

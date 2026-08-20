@@ -13,6 +13,7 @@ import { createExternalArtifactDocument } from '@/lib/workbench';
 import { useT } from '@/components/providers/LocaleProvider';
 import { decodeWorkbenchFileHref, resolveAndOpenWorkspaceFile } from '@/lib/workbench-actions';
 import { useWorkbenchStore } from '@/store/workbench-store';
+import { artifactDownloadUrl } from '@/lib/artifact-download';
 
 // 宽松的媒体文件扩展名检测 (允许 URL 后带有参数, 如 ?token=...)
 const MEDIA_EXTENSIONS = {
@@ -238,10 +239,8 @@ function DocumentLinkCard({
                     <ExternalLink className="h-4 w-4" />
                 </button>
                 <a
-                    href={href}
+                    href={artifactDownloadUrl(href)}
                     download
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     title={t("web.artifactCard.download")}
                 >

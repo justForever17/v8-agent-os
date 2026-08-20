@@ -165,6 +165,13 @@ test("completed traces with file-producing tools are visible without a second cl
   assert.match(chatMessageSource, /const defaultExpanded = hasArtifactProducingTool\(segment\)/);
 });
 
+test("legacy non-visual upload URLs render as file rows instead of broken images", () => {
+  assert.match(chatMessageSource, /compatibilityFiles/);
+  assert.match(chatMessageSource, /!isClientVisualAttachment\(\{ url \}\)/);
+  assert.match(chatMessageSource, /isClientVisualAttachment\(\{ url: value \}\)/);
+  assert.match(chatMessageSource, /downloadArtifact\(attachment\.url, attachment\.name\)/);
+});
+
 test("a stale terminal projection from another run cannot settle the submitted run", () => {
   assert.equal(deriveComposerRunActivity({
     localStreamActive: true,

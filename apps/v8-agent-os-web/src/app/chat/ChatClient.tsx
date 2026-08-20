@@ -2572,15 +2572,7 @@ export default function ChatClient() {
             const nextMessages = normalizeMessagesForState([
                 ...messagesRef.current,
                 ...turnPage.messages,
-            ]).map((message, index) => ({ message, index })).sort((left, right) => {
-                const leftPosition = Number(left.message.turnPosition || 0);
-                const rightPosition = Number(right.message.turnPosition || 0);
-                if (leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition) {
-                    return leftPosition - rightPosition;
-                }
-                const timestampDelta = Number(left.message.timestamp || 0) - Number(right.message.timestamp || 0);
-                return timestampDelta || left.index - right.index;
-            }).map(({ message }) => message);
+            ]);
             mergeTurnIndexEntries(nextMessages.flatMap<ChatTurnIndexEntry>((message) => (
                 message.turnId && Number(message.turnPosition || 0) > 0
                     ? [{

@@ -11,6 +11,7 @@ function readText(relativePath) {
 
 test("Web renders the newest canonical turn before the optional navigation index", () => {
   const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  const state = readText("apps/v8-agent-os-web/src/lib/chat-stream-state.ts");
   const window = readText("apps/v8-agent-os-web/src/components/chat/ChatWindow.tsx");
   const route = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turn-index/route.ts");
 
@@ -21,6 +22,10 @@ test("Web renders the newest canonical turn before the optional navigation index
   assert.match(client, /messagesRef\.current\.some\(\(message\) => message\.turnId === target\.turnId\)/);
   assert.match(client, /\.\.\.messagesRef\.current,\s*\.\.\.turnPage\.messages/);
   assert.match(client, /radius: 1/);
+  assert.match(state, /leftOrdinal > 0 && rightOrdinal > 0 && leftOrdinal !== rightOrdinal/);
+  assert.match(state, /leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition/);
+  assert.match(state, /return left\.index - right\.index/);
+  assert.doesNotMatch(client, /\]\.map\(\(message, index\) => \(\{ message, index \}\)\)\.sort/);
   assert.match(client, /messageCacheRef/);
   assert.match(client, /useLayoutEffect/);
   assert.match(client, /onReachTop=\{loadOlderConversationTurn\}/);

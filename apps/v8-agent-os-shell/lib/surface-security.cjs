@@ -17,6 +17,18 @@ function isTrustedProductUrl(value, origins) {
   return Boolean(origin && origins?.has(origin));
 }
 
+function isTrustedProductDownloadUrl(value, origins) {
+  if (!isTrustedProductUrl(value, origins)) return false;
+  try {
+    const url = new URL(String(value || ''));
+    if (!['1', 'true'].includes(String(url.searchParams.get('download') || '').toLowerCase())) return false;
+    return /^\/api\/artifacts\/[^/]+\/content\/?$/.test(url.pathname)
+      || /^\/api\/workbench\/sessions\/[^/]+\/files\/read\/?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function isStartupSurfaceUrl(value) {
   return String(value || '').startsWith('data:text/html;charset=utf-8,');
 }
@@ -31,6 +43,7 @@ function isSafeExternalUrl(value) {
 }
 
 function classifyWindowOpen(value, origins) {
+  if (isTrustedProductDownloadUrl(value, origins)) return 'download';
   if (isTrustedProductUrl(value, origins)) return 'product';
   if (isSafeExternalUrl(value)) return 'external';
   return 'deny';
@@ -64,6 +77,7 @@ module.exports = {
   isStartupSurfaceUrl,
   isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
+  isTrustedProductDownloadUrl,
   isTrustedProductUrl,
   normalizedOrigin,
   trustedProductOrigins,

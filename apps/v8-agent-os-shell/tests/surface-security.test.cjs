@@ -4,6 +4,7 @@ const {
   classifyWindowOpen,
   isTrustedAdminAuthIpcSource,
   isTrustedIpcSource,
+  isTrustedProductDownloadUrl,
   isTrustedProductUrl,
   trustedProductOrigins,
 } = require('../lib/surface-security.cjs');
@@ -26,6 +27,10 @@ test('new windows are always denied and only safe destinations are routed elsewh
   assert.equal(classifyWindowOpen('https://user:pass@example.com/private', origins), 'deny');
   assert.equal(classifyWindowOpen('file:///etc/passwd', origins), 'deny');
   assert.equal(classifyWindowOpen('javascript:alert(1)', origins), 'deny');
+  assert.equal(classifyWindowOpen('http://127.0.0.1:9527/api/artifacts/art-1/content?sessionId=s1&download=1', origins), 'download');
+  assert.equal(classifyWindowOpen('http://127.0.0.1:9527/api/artifacts/art-1/content?sessionId=s1', origins), 'product');
+  assert.equal(isTrustedProductDownloadUrl('http://127.0.0.1:9527/api/workbench/sessions/s1/files/read?path=a.py&download=true', origins), true);
+  assert.equal(isTrustedProductDownloadUrl('http://127.0.0.1:9527/api/anything?download=1', origins), false);
 });
 
 test('IPC requires the main window top frame and grants startup pages only explicit minimal access', () => {

@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
 import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
+import { downloadArtifact } from "@/lib/artifact-download";
 import { createArtifactDocument, createSessionOverviewDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -352,10 +353,23 @@ function resolveAttachmentUrl(value: unknown) {
     return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
 }
 
+function attachmentNameFromUrl(value: string) {
+    try {
+        const parsed = new URL(value, "http://v8os.local");
+        const path = parsed.searchParams.get("workspace_relative_path")
+            || parsed.searchParams.get("path")
+            || parsed.pathname;
+        const name = decodeURIComponent(String(path || "").split("/").filter(Boolean).at(-1) || "");
+        return name || "attachment";
+    } catch {
+        return String(value || "").split(/[\\/]/).filter(Boolean).at(-1) || "attachment";
+    }
+}
+
 function extractMessageAttachments(message: Message): MessageAttachmentRecord[] {
     const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
     const rawAttachments = Array.isArray(metadata.attachments) ? metadata.attachments : [];
-    return rawAttachments
+    const structured = rawAttachments
         .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
         .map((item) => {
             const rawUrl = item.publicUrl || item.public_url || item.url || item.workspacePath || item.workspace_path || item.resourceRef;
@@ -367,6 +381,18 @@ function extractMessageAttachments(message: Message): MessageAttachmentRecord[] 
             };
         })
         .filter((item) => item.url);
+    const knownUrls = new Set(structured.map((item) => item.url.toLowerCase()));
+    const compatibilityFiles = (Array.isArray(message.images) ? message.images : [])
+        .map(resolveAttachmentUrl)
+        .filter((url) => Boolean(url) && !knownUrls.has(url.toLowerCase()))
+        .filter((url) => !isClientVisualAttachment({ url }))
+        .map((url) => ({
+            url,
+            name: attachmentNameFromUrl(url),
+            mimeType: "",
+            mediaKind: isClientAudioAttachment({ url }) ? "audio" : "file",
+        }));
+    return [...structured, ...compatibilityFiles];
 }
 
 function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
@@ -506,7 +532,11 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 }
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
-            .filter((value) => Boolean(value) && !nonVisualAttachmentUrls.has(value.toLowerCase())))),
+            .filter((value) => (
+                Boolean(value)
+                && !nonVisualAttachmentUrls.has(value.toLowerCase())
+                && isClientVisualAttachment({ url: value })
+            )))),
         [canvasHumanSurface, message.images, nonVisualAttachmentUrls, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
@@ -795,12 +825,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         {!isTool && fileAttachments.length > 0 && (
                             <div className="mb-3 space-y-2">
                                 {fileAttachments.map((attachment, index) => (
-                                    <a
+                                    <button
+                                        type="button"
                                         key={`${attachment.url}:${index}`}
-                                        href={attachment.url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        download={attachment.name || undefined}
+                                        onClick={() => downloadArtifact(attachment.url, attachment.name)}
                                         className="flex min-h-11 items-center gap-2 rounded-lg border border-white/20 bg-white/15 px-3 py-2 text-white transition-colors hover:bg-white/20"
                                     >
                                         <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -808,7 +836,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             {attachment.name}
                                         </span>
                                         <Download className="h-4 w-4 shrink-0 opacity-80" aria-hidden="true" />
-                                    </a>
+                                    </button>
                                 ))}
                             </div>
                         )}
@@ -971,6 +999,11 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className="min-h-[56px] space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]" aria-live="polite">
                     {assistantEmptyActive ? <AssistantActivityDots label={t("web.chat.supervisorResponding")} /> : null}
                     {timelineSegments.map((segment, index) => {
+                        const isActiveSegment = Boolean(
+                            isLoading
+                            && isLast
+                            && index === timelineSegments.length - 1
+                        );
                         if (segment.kind === "collaboration_stage") {
                             return (
                                 <CollaborationMicroStageScene
@@ -989,8 +1022,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 <ContentDispatcher 
                                     key={segment.node.id || index}
                                     node={segment.node}
-                                    isExecuting={!!(isLoading && isLast)}
-                                    isStreaming={!!(isLoading && isLast)}
+                                    isExecuting={isActiveSegment}
+                                    isStreaming={isActiveSegment}
                                     resultNode={hasToolCallId(segment.node) && segment.node.executionType === 'tool_call'
                                         ? resultNodesByToolCallId.get(segment.node.toolCallId.trim())
                                         : undefined}
@@ -1002,7 +1035,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         const defaultExpanded = hasArtifactProducingTool(segment)
                             || (hasAssistantTextResponse ? (isLoading && isLast) : false);
                         const isExpanded = expandedTraceGroups[segment.id] ?? defaultExpanded;
-                        const hasActiveProgress = segment.isStreaming || (isLoading && isLast && index === timelineSegments.length - 1);
+                        const hasActiveProgress = isActiveSegment;
 
                         return (
                             <div key={segment.id} className="my-1.5 flex flex-col rounded-xl border border-zinc-200/50 dark:border-zinc-800/50 bg-zinc-500/5 dark:bg-zinc-400/5 overflow-hidden shadow-sm">
@@ -1042,18 +1075,22 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
 
                                 {isExpanded && (
                                     <div className="border-t border-zinc-200/40 dark:border-zinc-800/40 bg-background/30 p-2.5 space-y-2">
-                                        {segment.nodes.map((node, nodeIdx) => (
-                                            <ContentDispatcher 
-                                                key={node.id || nodeIdx}
-                                                node={node}
-                                                isExecuting={!!(isLoading && isLast)}
-                                                isStreaming={!!(isLoading && isLast)}
-                                                resultNode={hasToolCallId(node) && node.executionType === 'tool_call'
-                                                    ? resultNodesByToolCallId.get(node.toolCallId.trim())
-                                                    : undefined}
-                                                processes={processes}
-                                            />
-                                        ))}
+                                        {segment.nodes.map((node, nodeIdx) => {
+                                            const isActiveNode = hasActiveProgress
+                                                && nodeIdx === segment.nodes.length - 1;
+                                            return (
+                                                <ContentDispatcher
+                                                    key={node.id || nodeIdx}
+                                                    node={node}
+                                                    isExecuting={isActiveNode}
+                                                    isStreaming={isActiveNode}
+                                                    resultNode={hasToolCallId(node) && node.executionType === 'tool_call'
+                                                        ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                                        : undefined}
+                                                    processes={processes}
+                                                />
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>
@@ -1078,7 +1115,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || t("web.chat.artifact.noPath")}
                                             type={inferArtifactCardType(artifact)}
                                             onClick={workbenchSessionId ? () => openWorkbenchDocument(createArtifactDocument(artifact, workbenchSessionId), { activate: true, mode: "split" }) : undefined}
-                                            onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}
+                                            onDownload={artifactUrl ? () => downloadArtifact(artifactUrl, artifact.title || artifact.id) : undefined}
                                         />
                                     );
                                 })}

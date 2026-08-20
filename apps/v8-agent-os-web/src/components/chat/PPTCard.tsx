@@ -3,6 +3,7 @@
 import { Download, FileText, PanelRightOpen } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
+import { downloadArtifact } from "@/lib/artifact-download";
 import { createExternalArtifactDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
 
@@ -32,7 +33,7 @@ export function PPTCard({ url, filename, filesize }: PPTCardProps) {
                 <div className="text-[10px] text-muted-foreground">{filesize || t("web.fileCard.pptHint")}</div>
             </div>
             <button data-v8-context-open-workbench type="button" disabled={!document} onClick={() => document && openDocument(document, { activate: true, mode: "split" })} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" aria-label={t("web.artifactCard.openWorkbench")}><PanelRightOpen className="h-3.5 w-3.5" /></button>
-            <a href={url} download target="_blank" rel="noreferrer" className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.artifactCard.download")}><Download className="h-3.5 w-3.5" /></a>
+            <button type="button" onClick={() => downloadArtifact(url, displayFilename)} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.artifactCard.download")}><Download className="h-3.5 w-3.5" /></button>
         </div>
     );
 }

@@ -428,6 +428,7 @@ function TraceGroup({
     id,
     nodes,
     collapsedByDefault,
+    active,
     messageIdentity,
     assistantActive,
     streamPhase,
@@ -449,6 +450,7 @@ function TraceGroup({
     id: string;
     nodes: PhoneUiTimelineNode[];
     collapsedByDefault: boolean;
+    active: boolean;
     messageIdentity: string;
     assistantActive: boolean;
     streamPhase?: ChatMessage["uiStreamPhase"];
@@ -482,30 +484,35 @@ function TraceGroup({
             />
             {isExpanded ? (
                 <View style={styles.traceGroupContent}>
-                    {nodes.map((node, index) => (
-                        <NodeRenderBoundary
-                            key={node.id || `${id}:trace-node:${index}`}
-                            title={fallbackTitle}
-                            description={fallbackDescription}
-                            borderColor={borderColor}
-                            backgroundColor={backgroundColor}
-                            titleColor={titleColor}
-                            textColor={textColor}
-                        >
-                            <ContentDispatcher
-                                node={node}
-                                messageIdentity={`${messageIdentity}:trace:${id}:${index}`}
-                                isExecuting={assistantActive}
-                                isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
-                                speakingKey={speakingKey}
-                                onSpeakVoice={onSpeakVoice}
-                                processes={processes}
-                                resultNode={hasToolCallId(node) && node.executionType === "tool_call"
-                                    ? resultNodesByToolCallId.get(node.toolCallId.trim())
-                                    : undefined}
-                            />
-                        </NodeRenderBoundary>
-                    ))}
+                    {nodes.map((node, index) => {
+                        const nodeActive = active
+                            && assistantActive
+                            && index === nodes.length - 1;
+                        return (
+                            <NodeRenderBoundary
+                                key={node.id || `${id}:trace-node:${index}`}
+                                title={fallbackTitle}
+                                description={fallbackDescription}
+                                borderColor={borderColor}
+                                backgroundColor={backgroundColor}
+                                titleColor={titleColor}
+                                textColor={textColor}
+                            >
+                                <ContentDispatcher
+                                    node={node}
+                                    messageIdentity={`${messageIdentity}:trace:${id}:${index}`}
+                                    isExecuting={nodeActive}
+                                    isStreaming={nodeActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
+                                    speakingKey={speakingKey}
+                                    onSpeakVoice={onSpeakVoice}
+                                    processes={processes}
+                                    resultNode={hasToolCallId(node) && node.executionType === "tool_call"
+                                        ? resultNodesByToolCallId.get(node.toolCallId.trim())
+                                        : undefined}
+                                />
+                            </NodeRenderBoundary>
+                        );
+                    })}
                 </View>
             ) : null}
         </View>
@@ -1576,6 +1583,7 @@ export const MessageBubble = memo(function MessageBubble({
                                                 id={segment.id}
                                                 nodes={segment.nodes as PhoneUiTimelineNode[]}
                                                 collapsedByDefault={segment.collapsedByDefault}
+                                                active={segment.active}
                                                 messageIdentity={messageIdentity}
                                                 assistantActive={assistantActive}
                                                 streamPhase={streamPhase}
@@ -1602,6 +1610,8 @@ export const MessageBubble = memo(function MessageBubble({
                                         );
                                     }
                                     const node = segment.node as PhoneUiTimelineNode;
+                                    const nodeActive = assistantActive
+                                        && index === timelineSegments.length - 1;
                                     return (
                                         <NodeRenderBoundary
                                             key={node.id || `${messageIdentity}:node:${index}`}
@@ -1615,8 +1625,8 @@ export const MessageBubble = memo(function MessageBubble({
                                             <ContentDispatcher
                                                 node={node}
                                                 messageIdentity={`${messageIdentity}:node:${index}`}
-                                                isExecuting={assistantActive}
-                                                isStreaming={streamPhase === "streaming" || streamPhase === "agent_started"}
+                                                isExecuting={nodeActive}
+                                                isStreaming={nodeActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
                                                 speakingKey={speakingKey}
                                                 onSpeakVoice={onSpeakVoice}
                                                 processes={processes}
@@ -1632,6 +1642,8 @@ export const MessageBubble = memo(function MessageBubble({
                                     const voiceKey = block.type === "voice"
                                         ? buildVoicePlaybackKey(messageIdentity, String(index), block.content)
                                         : "";
+                                    const blockActive = assistantActive
+                                        && index === fallbackBlocks.length - 1;
                                     return (
                                         <NodeRenderBoundary
                                             key={block.id}
@@ -1644,7 +1656,7 @@ export const MessageBubble = memo(function MessageBubble({
                                         >
                                             <MessageBlockItem
                                                 block={block}
-                                                isStreaming={assistantActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
+                                                isStreaming={blockActive && (streamPhase === "streaming" || streamPhase === "agent_started")}
                                                 speaking={Boolean(voiceKey) && speakingKey === voiceKey}
                                                 onSpeak={voiceKey && onSpeakVoice ? () => onSpeakVoice(block.content, voiceKey) : undefined}
                                             />

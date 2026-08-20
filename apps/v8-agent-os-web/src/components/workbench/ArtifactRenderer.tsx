@@ -13,6 +13,7 @@ import {
     type ArtifactWorkbenchDocument,
 } from "@/lib/workbench";
 import { normalizeRuntimeArtifact, resolveRuntimeArtifactUrl, type RuntimeArtifact } from "@/lib/artifacts";
+import { artifactDownloadUrl } from "@/lib/artifact-download";
 import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
 
 function ModelViewerLoading() {
@@ -129,7 +130,13 @@ export function ArtifactRenderer({
     }, [document.renderer, resourceUrl, text]);
 
     const sourceDocument = useMemo(() => {
-        if (document.renderer !== "code" && document.renderer !== "text") return null;
+        const sourceRenderer = (
+            document.renderer === "code"
+            || document.renderer === "text"
+            || document.renderer === "markdown"
+            || document.renderer === "html"
+        ) ? document.renderer : null;
+        if (!sourceRenderer) return null;
         const workspacePath = String(
             artifact?.workspaceRelativePath
             || artifact?.workspacePath
@@ -142,7 +149,7 @@ export function ArtifactRenderer({
             sessionId,
             workspacePath,
             title: document.title,
-            renderer: document.renderer,
+            renderer: sourceRenderer,
         });
     }, [artifact?.canonicalPath, artifact?.sessionId, artifact?.workspacePath, artifact?.workspaceRelativePath, document.renderer, document.subjectRef.sessionId, document.title]);
 
@@ -182,7 +189,7 @@ export function ArtifactRenderer({
             <div className="flex h-8 shrink-0 items-center justify-end gap-1 border-b border-border/60 px-2">
                 {uiPatchUrl ? <a href={uiPatchUrl} className="inline-flex h-6 items-center gap-1 rounded-sm px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.uiPatch.open")}><SlidersHorizontal className="h-3.5 w-3.5" />{t("web.uiPatch.openShort")}</a> : null}
                 {resourceUrl ? <a href={resourceUrl} target="_blank" rel="noreferrer" className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.artifact.openExternal")}><ExternalLink className="h-3.5 w-3.5" /></a> : null}
-                {resourceUrl ? <a href={resourceUrl} download className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.artifact.download")}><Download className="h-3.5 w-3.5" /></a> : null}
+                {resourceUrl ? <a href={artifactDownloadUrl(resourceUrl)} download={artifact?.title || document.title} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.artifact.download")}><Download className="h-3.5 w-3.5" /></a> : null}
             </div>
             <div className="min-h-0 flex-1 overflow-auto">{preview}</div>
             <ArtifactMetadata artifact={artifact} document={document} />

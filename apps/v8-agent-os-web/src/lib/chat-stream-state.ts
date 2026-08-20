@@ -292,7 +292,26 @@ export function normalizeMessagesForState(messages: Message[]): Message[] {
         buildMessageIdentityKeys(merged[existingIndex]).forEach((key) => indexByKey.set(key, existingIndex));
     }
 
-    return merged;
+    return merged
+        .map((message, index) => ({ message, index }))
+        .sort((left, right) => {
+            const leftOrdinal = Number(left.message.ordinal || 0);
+            const rightOrdinal = Number(right.message.ordinal || 0);
+            if (leftOrdinal > 0 && rightOrdinal > 0 && leftOrdinal !== rightOrdinal) {
+                return leftOrdinal - rightOrdinal;
+            }
+            const leftPosition = Number(left.message.turnPosition || 0);
+            const rightPosition = Number(right.message.turnPosition || 0);
+            if (leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition) {
+                return leftPosition - rightPosition;
+            }
+            const timestampDelta = Number(left.message.timestamp || 0) - Number(right.message.timestamp || 0);
+            if (timestampDelta !== 0) {
+                return timestampDelta;
+            }
+            return left.index - right.index;
+        })
+        .map(({ message }) => message);
 }
 
 export function mergeMessageCollections(base: Message[], incoming: Message[]): Message[] {

@@ -338,3 +338,22 @@ jobs:
           make_latest: ${{ needs.plan.outputs.prerelease == 'true' && 'false' || 'true' }}
           fail_on_unmatched_files: true
           files: release-assets/*
+
+      - name: Enforce published release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          EXPECTED_PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          EXPECTED_LATEST: ${{ needs.plan.outputs.prerelease == 'true' && 'false' || 'true' }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F "prerelease=${EXPECTED_PRERELEASE}" \
+            -f "make_latest=${EXPECTED_LATEST}" >/dev/null
+          actual_prerelease="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --jq '.prerelease')"
+          if [[ "$actual_prerelease" != "$EXPECTED_PRERELEASE" ]]; then
+            echo "Release prerelease metadata mismatch: expected=${EXPECTED_PRERELEASE} actual=${actual_prerelease}" >&2
+            exit 1
+          fi

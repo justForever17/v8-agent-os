@@ -714,6 +714,9 @@ test('root release workflow is the only fan-in publisher and enforces required p
   assert.match(workflow, /pattern: v8os-desktop-\*/);
   assert.match(workflow, /name: phone-android-package/);
   assert.match(workflow, /prerelease: \$\{\{ needs\.plan\.outputs\.prerelease \}\}/);
+  assert.match(workflow, /name: Enforce published release metadata/);
+  assert.match(workflow, /-F "prerelease=\$\{EXPECTED_PRERELEASE\}"/);
+  assert.match(workflow, /Release prerelease metadata mismatch/);
   assert.match(workflow, /fail_on_unmatched_files: true/);
   assert.equal((workflow.match(/contents: write/g) || []).length, 1);
   assert.equal(

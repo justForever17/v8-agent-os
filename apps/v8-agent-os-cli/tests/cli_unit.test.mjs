@@ -27,6 +27,8 @@ import { DEFAULT_PORTS } from "../src/paths.mjs";
 import {
   cleanupFailedRuntimeHandoff,
   DESKTOP_PET_TERMINATION_TIMEOUT_MS,
+  MANAGED_SHELL_RESTART_ARG,
+  MANAGED_SHELL_RESTART_TIMEOUT_MS,
   MANAGED_SHELL_SHUTDOWN_ARG,
   MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS,
   managedStopOptions,
@@ -34,12 +36,15 @@ import {
   observeEarlyProcessExit,
   orderedManagedStopPids,
   packagedRuntimeDescriptorMatches,
+  requestPackagedShellRestart,
   requestPackagedShellShutdown,
+  requestsManagedShellRestart,
   requestsManagedShellShutdown,
   resolveManagedComponentIdentity,
   runWindowsProcessProbe,
   SHELL_TERMINATION_TIMEOUT_MS,
   spawnManagedChild,
+  stopComponents,
   waitForRuntimeComponentHandoff,
   verifiedComponentPortOwner,
   verifiedManagedComponentPid,
@@ -535,6 +540,72 @@ test("packaged stop-all asks the verified Shell to run governed V8OS shutdown", 
     V8OS_SHELL_PACKAGED: "1",
     V8_REPO_ROOT: path.resolve(runtimeDescriptor.repoRoot),
   });
+});
+
+test("packaged Shell-only stop asks Electron to release its profile before restart", async () => {
+  assert.equal(requestsManagedShellRestart(["shell"]), true);
+  assert.equal(requestsManagedShellRestart(["shell", "web"]), false);
+  assert.equal(requestsManagedShellRestart([]), false);
+  const runtimeDescriptor = {
+    packaged: true,
+    runtimeKind: "shell",
+    pid: 4301,
+    executablePath: path.join("C:\\Program Files", "V8 Agent OS", "V8 Agent OS.exe"),
+    repoRoot: path.join("C:\\Program Files", "V8 Agent OS", "resources", "v8os"),
+  };
+  let spawned = null;
+  const child = new EventEmitter();
+  child.unref = () => { child.unrefCalled = true; };
+  const result = await requestPackagedShellRestart(["shell"], {
+    readRuntimeDescriptor: () => runtimeDescriptor,
+    readProcessDescriptor: async () => ({ pid: 4301 }),
+    verifyRuntimePid: () => 4301,
+    spawnImpl(command, args, options) {
+      spawned = { command, args, options };
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
+    },
+    waitForPidExit: async (pid, timeoutMs) => pid === 4301 && timeoutMs === MANAGED_SHELL_RESTART_TIMEOUT_MS,
+  });
+  assert.deepEqual(result, {
+    attempted: true,
+    stopped: true,
+    reason: "governed_shell_restart",
+    pid: 4301,
+  });
+  assert.equal(spawned.command, runtimeDescriptor.executablePath);
+  assert.deepEqual(spawned.args, [MANAGED_SHELL_RESTART_ARG]);
+  assert.equal(spawned.options.windowsHide, true);
+  assert.equal(child.unrefCalled, true);
+});
+
+test("Shell-only stop reports governed restart without entering the force-kill fallback", async () => {
+  const runtimeDescriptor = {
+    packaged: true,
+    runtimeKind: "shell",
+    pid: 4302,
+    executablePath: path.join("C:\\Program Files", "V8 Agent OS", "V8 Agent OS.exe"),
+  };
+  const child = new EventEmitter();
+  child.unref = () => undefined;
+  const results = await stopComponents(["shell"], {
+    managedShellRestart: {
+      readRuntimeDescriptor: () => runtimeDescriptor,
+      readProcessDescriptor: async () => ({ pid: 4302 }),
+      verifyRuntimePid: () => 4302,
+      spawnImpl() {
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      },
+      waitForPidExit: async () => true,
+    },
+  });
+  assert.deepEqual(results, [{
+    id: "shell",
+    status: "stopped",
+    reason: "governed_shell_restart",
+    pid: 4302,
+  }]);
 });
 
 test("managed startup observes an immediate child exit before recording success", async () => {

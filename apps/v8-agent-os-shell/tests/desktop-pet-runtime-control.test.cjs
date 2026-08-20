@@ -46,8 +46,11 @@ test('Admin and tray runtime controls share the graceful desktop pet shutdown pa
   assert.doesNotMatch(quitSource, /finally \{[\s\S]*app\.quit\(\)/);
   assert.match(mainSource, /app\.on\('before-quit',[\s\S]{0,180}if \(quitting\) return;[\s\S]{0,180}void quitV8OS\(\)/);
   assert.match(mainSource, /MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown'/);
-  assert.match(mainSource, /else if \(process\.argv\.includes\(MANAGED_SHELL_SHUTDOWN_ARG\)\)[\s\S]{0,320}app\.exit\(0\)/);
+  assert.match(mainSource, /MANAGED_SHELL_RESTART_ARG = '--v8os-managed-restart'/);
+  assert.match(mainSource, /process\.argv\.includes\(MANAGED_SHELL_SHUTDOWN_ARG\)[\s\S]{0,160}process\.argv\.includes\(MANAGED_SHELL_RESTART_ARG\)[\s\S]{0,320}app\.exit\(0\)/);
   assert.match(mainSource, /app\.on\('second-instance',[\s\S]{0,220}argv\.includes\(MANAGED_SHELL_SHUTDOWN_ARG\)[\s\S]{0,120}void quitV8OS\(\)/);
+  assert.match(mainSource, /app\.on\('second-instance',[\s\S]{0,420}argv\.includes\(MANAGED_SHELL_RESTART_ARG\)[\s\S]{0,120}void quitShellForRestart\(\)/);
+  assert.match(mainSource, /async function quitShellForRestart[\s\S]{0,900}removeShellProcessRecord[\s\S]{0,900}shellControl\?\.stop\(\)[\s\S]{0,500}app\.quit\(\)/);
 });
 
 test('Linux desktop pet availability blocks starts but preserves residual shutdown', () => {

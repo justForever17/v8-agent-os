@@ -398,14 +398,16 @@ async function waitForDesktopPet(descriptorPath, shellDescriptorPath, timeoutMs)
   return { ok: false, error: lastError };
 }
 
-function readShellSurface(descriptorPath, expectedPid) {
+function readShellSurface(descriptorPath, expectedPid, expectedSurfaceKind = "") {
   try {
     const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
     const surfaceKind = String(descriptor?.surfaceKind || "");
     const pid = Number(descriptor?.pid || 0);
     const allowedSurfaceKinds = new Set(["web", "admin", "admin-login"]);
+    const surfaceKindMatches = !expectedSurfaceKind || surfaceKind === expectedSurfaceKind;
     const ok = descriptor?.surfaceReady === true
       && allowedSurfaceKinds.has(surfaceKind)
+      && surfaceKindMatches
       && pid === expectedPid
       && isPidAlive(pid);
     return {
@@ -414,7 +416,11 @@ function readShellSurface(descriptorPath, expectedPid) {
       softwareRendering: descriptor?.softwareRendering === true,
       surfaceKind: allowedSurfaceKinds.has(surfaceKind) ? surfaceKind : null,
       surfaceReadyAt: typeof descriptor?.surfaceReadyAt === "string" ? descriptor.surfaceReadyAt : null,
-      error: ok ? "" : "shell_surface_not_ready",
+      error: ok
+        ? ""
+        : descriptor?.surfaceReady === true && allowedSurfaceKinds.has(surfaceKind) && !surfaceKindMatches
+          ? "shell_surface_kind_mismatch"
+          : "shell_surface_not_ready",
     };
   } catch (error) {
     return {
@@ -426,12 +432,12 @@ function readShellSurface(descriptorPath, expectedPid) {
   }
 }
 
-async function waitForShellSurface(descriptorPath, expectedPid, timeoutMs) {
+async function waitForShellSurface(descriptorPath, expectedPid, timeoutMs, expectedSurfaceKind = "") {
   const startedAt = Date.now();
   let last = { ok: false, error: "shell_control_descriptor_missing" };
   while (Date.now() - startedAt < timeoutMs) {
     if (!isPidAlive(expectedPid)) return { ok: false, pid: expectedPid, error: "shell_process_exited" };
-    last = readShellSurface(descriptorPath, expectedPid);
+    last = readShellSurface(descriptorPath, expectedPid, expectedSurfaceKind);
     if (last.ok) return last;
     await sleep(500);
   }
@@ -1224,20 +1230,34 @@ if (bootstrapSurface.ok) {
       runtimeEnvironment,
       45_000,
     );
+    const shellStopItem = packagedCliItem(stopped, "shell");
+    const governedRestart = shellStopItem?.status === "stopped"
+      && shellStopItem?.reason === "governed_shell_restart";
     const exited = stopped.ok && await waitForPidExit(initialShellPid);
     shellRestart = {
-      ok: Boolean(stopped.ok && exited),
+      ok: Boolean(stopped.ok && governedRestart && exited),
       stopped: Boolean(stopped.ok),
+      governedRestart: Boolean(governedRestart),
+      stopReason: typeof shellStopItem?.reason === "string" ? shellStopItem.reason : null,
       oldProcessExited: Boolean(exited),
       cliExitCode: stopped.exitCode,
       cliSignal: stopped.signal,
       cliError: stopped.error,
       cliStderr: String(stopped.stderr || '').slice(-4000),
-      error: !stopped.ok ? "initial_shell_stop_failed" : exited ? "" : "initial_shell_exit_timeout",
+      error: !stopped.ok
+        ? "initial_shell_stop_failed"
+        : !governedRestart
+          ? "initial_shell_restart_not_governed"
+          : exited ? "" : "initial_shell_exit_timeout",
     };
     if (shellRestart.ok) {
       child = spawnPackagedShell(shellExe, stateRoot, runtimeEnvironment, shellArgs);
-      shellSurface = await waitForShellSurface(shellControlPath, child.pid || 0, serviceTimeoutMs);
+      shellSurface = await waitForShellSurface(
+        shellControlPath,
+        child.pid || 0,
+        serviceTimeoutMs,
+        "admin-login",
+      );
       rawInstanceManifest = await fetchJson("http://127.0.0.1:9528/api/client/instance", { timeoutMs: 3_000 });
       existingOwnerLogin = await loginSmokeOwner(ownerCredentials);
     }
@@ -1429,6 +1449,8 @@ const packagedCleanup = {
   cliStderr: String(stopAll.stderr || '').slice(-4000),
   managedPortsClosed: cleanupProof.openPorts.length === 0,
   managedProcessesExited: cleanupProof.livePids.length === 0,
+  openPorts: cleanupProof.openPorts,
+  livePids: cleanupProof.livePids,
   externalDefaultPortPreserved: defaultWebPortStillOccupied,
   error: !stopAll.ok
     ? "packaged_stop_all_failed"

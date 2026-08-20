@@ -46,6 +46,7 @@ let productOrigins = trustedProductOrigins([webBaseUrl, adminBaseUrl]);
 const CORE_SERVICE_IDS = ['engine', 'admin', 'web'];
 const CORE_SERVICE_LABELS = { engine: 'Engine', admin: 'Admin', web: 'Web' };
 const MANAGED_SHELL_SHUTDOWN_ARG = '--v8os-managed-shutdown';
+const MANAGED_SHELL_RESTART_ARG = '--v8os-managed-restart';
 const updateChecksEnabled = app.isPackaged && process.env.V8OS_DISABLE_UPDATE_CHECK !== '1';
 const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 20_000;
 
@@ -1323,6 +1324,28 @@ async function quitV8OS() {
   if (retry) setImmediate(() => { void quitV8OS(); });
 }
 
+async function quitShellForRestart() {
+  if (quitting) return;
+  quitting = true;
+  app.emit('v8os-governed-shutdown-started');
+  try {
+    const { removeShellProcessRecord } = await cliApi();
+    await removeShellProcessRecord(shellProcessRecordIdentity);
+  } catch (error) {
+    console.warn('[V8OS Shell] Unable to remove Shell process record during component restart', {
+      reason: error?.message || 'unknown_error',
+    });
+  }
+  try {
+    await shellControl?.stop();
+  } catch (error) {
+    console.warn('[V8OS Shell] Unable to stop Shell control channel during component restart', {
+      reason: error?.message || 'unknown_error',
+    });
+  }
+  app.quit();
+}
+
 function updateTrayMenu() {
   if (!tray) return;
   const model = buildTrayMenuModel({
@@ -1665,14 +1688,21 @@ app.on('v8os-gpu-recovery-requested', (relaunchArgs) => {
 });
 if (!hasSingleInstanceLock) {
   app.quit();
-} else if (process.argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)) {
-  // A governed shutdown request must never become a visible replacement Shell
+} else if (
+  process.argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)
+  || process.argv.includes(MANAGED_SHELL_RESTART_ARG)
+) {
+  // A governed lifecycle helper must never become a visible replacement Shell
   // if the original instance exits between CLI identity verification and spawn.
   app.whenReady().then(() => app.exit(0));
 } else {
   app.on('second-instance', (_event, argv) => {
     if (argv.includes(MANAGED_SHELL_SHUTDOWN_ARG)) {
       void quitV8OS();
+      return;
+    }
+    if (argv.includes(MANAGED_SHELL_RESTART_ARG)) {
+      void quitShellForRestart();
       return;
     }
     const deepLink = deepLinkFromArgv(argv);

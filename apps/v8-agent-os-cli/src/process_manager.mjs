@@ -25,6 +25,8 @@ export const SHELL_TERMINATION_TIMEOUT_MS = 20_000;
 export const DESKTOP_PET_TERMINATION_TIMEOUT_MS = 10_000;
 export const MANAGED_SHELL_SHUTDOWN_ARG = "--v8os-managed-shutdown";
 export const MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS = 30_000;
+export const MANAGED_SHELL_RESTART_ARG = "--v8os-managed-restart";
+export const MANAGED_SHELL_RESTART_TIMEOUT_MS = 15_000;
 const RUNTIME_HANDOFF_DIR = path.join(STATE_ROOT, "runtime", "cli", "handoffs");
 
 export function managedStopOptions(componentId, platform = process.platform, options = {}) {
@@ -1093,6 +1095,11 @@ export function requestsManagedShellShutdown(componentIds) {
   return WHOLE_V8OS_SHUTDOWN_COMPONENTS.every((id) => selected.has(id));
 }
 
+export function requestsManagedShellRestart(componentIds) {
+  const selected = [...new Set(Array.isArray(componentIds) ? componentIds : [])];
+  return selected.length === 1 && selected[0] === "shell";
+}
+
 export function managedShellShutdownEnvironment(environment = process.env, runtimeDescriptor = {}) {
   const next = { ...environment };
   for (const key of Object.keys(next)) {
@@ -1103,8 +1110,7 @@ export function managedShellShutdownEnvironment(environment = process.env, runti
   return next;
 }
 
-export async function requestPackagedShellShutdown(componentIds, options = {}) {
-  if (!requestsManagedShellShutdown(componentIds)) return { attempted: false, stopped: false, reason: "partial_stop" };
+async function requestPackagedShellAction(actionArg, options = {}) {
   const readRuntime = options.readRuntimeDescriptor || runtimeProcessDescriptor;
   const describe = options.readProcessDescriptor || readProcessDescriptor;
   const verify = options.verifyRuntimePid || verifiedRuntimeComponentPid;
@@ -1122,7 +1128,7 @@ export async function requestPackagedShellShutdown(componentIds, options = {}) {
     return { attempted: false, stopped: false, reason: "packaged_shell_identity_unverified" };
   }
   try {
-    const child = spawnImpl(executablePath, [MANAGED_SHELL_SHUTDOWN_ARG], {
+    const child = spawnImpl(executablePath, [actionArg], {
       cwd: path.dirname(executablePath),
       env: managedShellShutdownEnvironment(options.environment || process.env, runtimeDescriptor),
       detached: false,
@@ -1132,15 +1138,42 @@ export async function requestPackagedShellShutdown(componentIds, options = {}) {
     await awaitSpawn(child);
     child.unref?.();
   } catch {
-    return { attempted: true, stopped: false, reason: "shutdown_request_failed", pid: shellPid };
+    return {
+      attempted: true,
+      stopped: false,
+      reason: options.requestFailureReason || "shutdown_request_failed",
+      pid: shellPid,
+    };
   }
-  const stopped = await waitForExit(shellPid, options.timeoutMs || MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS);
+  const stopped = await waitForExit(shellPid, options.timeoutMs);
   return {
     attempted: true,
     stopped,
-    reason: stopped ? "governed_shutdown" : "governed_shutdown_timeout",
+    reason: stopped ? options.successReason : options.timeoutReason,
     pid: shellPid,
   };
+}
+
+export async function requestPackagedShellShutdown(componentIds, options = {}) {
+  if (!requestsManagedShellShutdown(componentIds)) return { attempted: false, stopped: false, reason: "partial_stop" };
+  return requestPackagedShellAction(MANAGED_SHELL_SHUTDOWN_ARG, {
+    ...options,
+    timeoutMs: options.timeoutMs || MANAGED_SHELL_SHUTDOWN_TIMEOUT_MS,
+    requestFailureReason: "shutdown_request_failed",
+    successReason: "governed_shutdown",
+    timeoutReason: "governed_shutdown_timeout",
+  });
+}
+
+export async function requestPackagedShellRestart(componentIds, options = {}) {
+  if (!requestsManagedShellRestart(componentIds)) return { attempted: false, stopped: false, reason: "partial_stop" };
+  return requestPackagedShellAction(MANAGED_SHELL_RESTART_ARG, {
+    ...options,
+    timeoutMs: options.timeoutMs || MANAGED_SHELL_RESTART_TIMEOUT_MS,
+    requestFailureReason: "governed_shell_restart_request_failed",
+    successReason: "governed_shell_restart",
+    timeoutReason: "governed_shell_restart_timeout",
+  });
 }
 
 async function stopComponent(id, options) {
@@ -1219,8 +1252,18 @@ export async function stopComponents(componentIds = Object.keys(COMPONENTS), opt
   const governedShutdown = options.skipManagedShellShutdown === true
     ? { attempted: false, stopped: false, reason: "disabled" }
     : await requestPackagedShellShutdown(selected, options.managedShellShutdown || {});
+  const governedRestart = options.skipManagedShellShutdown === true || governedShutdown.attempted
+    ? { attempted: false, stopped: false, reason: "disabled" }
+    : await requestPackagedShellRestart(selected, options.managedShellRestart || {});
   const stopOptions = governedShutdown.attempted && !governedShutdown.stopped
     ? { ...options, forceDesktopPet: true }
     : options;
-  return Promise.all(selected.map((id) => stopComponent(id, stopOptions)));
+  return Promise.all(selected.map((id) => id === "shell" && governedRestart.stopped
+    ? {
+      id,
+      status: "stopped",
+      reason: governedRestart.reason,
+      pid: governedRestart.pid,
+    }
+    : stopComponent(id, stopOptions)));
 }

@@ -115,6 +115,8 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /result\.payload\?\.user\?\.login === credentials\.login/);
   assert.match(installSmokeSource, /result\.payload\?\.user\?\.role === "ADMIN"/);
   assert.match(installSmokeSource, /stop", "--only", "shell"/);
+  assert.match(installSmokeSource, /shellStopItem\?\.reason === "governed_shell_restart"/);
+  assert.match(installSmokeSource, /waitForShellSurface\([\s\S]{0,180}"admin-login"/);
   assert.match(installSmokeSource, /shellSurface\.surfaceKind === "admin-login"/);
   assert.match(installSmokeSource, /initial_bootstrap_surface_mismatch/);
   assert.match(installSmokeSource, /admin_auth_lock_surface_mismatch/);
@@ -126,6 +128,7 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(installSmokeSource, /\.\.\.\(shellNoSandbox \? \["--no-sandbox"\] : \[\]\)/);
   assert.match(installSmokeSource, /\.\.\.\(softwareRendering \? \["--v8os-software-rendering"\] : \[\]\)/);
   assert.match(installSmokeSource, /software_rendering_mode_mismatch/);
+  assert.match(installSmokeSource, /livePids: cleanupProof\.livePids/);
   const packagedShellSpawnSource = installSmokeSource.slice(
     installSmokeSource.indexOf('function spawnPackagedShell'),
     installSmokeSource.indexOf('async function waitForPidExit'),

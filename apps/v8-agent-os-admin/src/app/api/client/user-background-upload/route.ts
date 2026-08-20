@@ -3,10 +3,13 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { once } from "events";
 
-import sharp from "sharp";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireClientContext } from "@/lib/server/client-proxy";
+import {
+    getNativeImageProcessingAvailability,
+    NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+} from "@/lib/server/native-image-processing";
 import { getSessionIdentifier, updateUserRecord } from "@/lib/users";
 import {
     buildUserMediaPublicPath,
@@ -95,6 +98,15 @@ export async function POST(req: NextRequest) {
         ) {
             return NextResponse.json({ error: uploadTooLargeMessage(isVideo, isPhoneUpload) }, { status: 413 });
         }
+        if (!isVideo) {
+            const availability = getNativeImageProcessingAvailability();
+            if (!availability.available) {
+                return NextResponse.json({
+                    error: NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+                    code: availability.reasonCode,
+                }, { status: 503 });
+            }
+        }
 
         const directory = ensureUserMediaDirectory("background");
         const persistedMediaType = isVideo ? "video" : "image";
@@ -118,6 +130,7 @@ export async function POST(req: NextRequest) {
                 }
                 await fs.promises.rename(temporaryPath, targetPath);
             } else {
+                const { default: sharp } = await import("sharp");
                 const image = sharp(temporaryPath, { animated: false }).rotate();
                 const metadata = await image.metadata();
                 originalWidth = metadata.width || null;

@@ -10,6 +10,7 @@ import {
   managedAuthEnvironment,
   runtimeHostnameForApp,
   stageStandaloneAssets,
+  summarizeLinuxX64InstructionSet,
 } from "./run-next-with-managed-auth.mjs";
 
 function createStandaloneFixture() {
@@ -91,4 +92,27 @@ test("managed auth overrides inherited localhost origins with the canonical loop
   assert.equal(environment.AUTH_URL, "http://127.0.0.1:19528");
   assert.equal(environment.NEXTAUTH_URL, "http://127.0.0.1:19528");
   assert.equal(environment.V8_TEST_MARKER, "preserved");
+});
+
+test("Linux SIGILL diagnostics distinguish SSE4a from SSE4.2 across every processor", () => {
+  assert.deepEqual(
+    summarizeLinuxX64InstructionSet(
+      "processor: 0\nflags: fpu sse sse2 sse4a\nprocessor: 1\nflags: fpu sse sse2 sse4a\n",
+      "linux",
+      "x64",
+    ),
+    {
+      evidence: "proc_cpuinfo",
+      sse4a: true,
+      sse4_1: false,
+      sse4_2: false,
+      avx: false,
+    },
+  );
+  assert.equal(
+    summarizeLinuxX64InstructionSet("flags: sse sse2 sse4_1 sse4_2 avx\n", "linux", "x64")?.sse4_2,
+    true,
+  );
+  assert.equal(summarizeLinuxX64InstructionSet("", "linux", "x64")?.evidence, "unavailable");
+  assert.equal(summarizeLinuxX64InstructionSet("", "win32", "x64"), null);
 });

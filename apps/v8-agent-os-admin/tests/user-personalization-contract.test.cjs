@@ -48,3 +48,63 @@ test("MP4 backgrounds are validated, stored atomically, and served with byte ran
   assert.match(mediaRoute, /status = 206/);
   assert.match(mediaRoute, /Content-Range/);
 });
+
+test("native image processing is lazy and old Linux x64 CPUs fail closed", async () => {
+  const capability = await import("../src/lib/server/native-image-processing.ts");
+  const routes = [
+    read("src/app/api/avatar-upload/route.ts"),
+    read("src/app/api/client/user-avatar-upload/route.ts"),
+    read("src/app/api/client/user-background-upload/route.ts"),
+  ];
+
+  for (const route of routes) {
+    assert.doesNotMatch(route, /import sharp from ["']sharp["']/);
+    assert.match(route, /await import\(["']sharp["']\)/);
+    assert.match(route, /getNativeImageProcessingAvailability\(\)/);
+  }
+
+  assert.deepEqual(
+    capability.evaluateNativeImageProcessingAvailability({
+      platform: "linux",
+      arch: "x64",
+      cpuInfo: "processor: 0\nflags: fpu sse sse2 sse4a\n",
+    }),
+    {
+      available: false,
+      reasonCode: "linux_x64_sse4_2_required",
+      evidence: "proc_cpuinfo",
+    },
+  );
+  assert.equal(
+    capability.evaluateNativeImageProcessingAvailability({
+      platform: "linux",
+      arch: "x64",
+      cpuInfo: "processor: 0\nflags: fpu sse sse2 sse4_1 sse4_2\n",
+    }).available,
+    true,
+  );
+  assert.equal(
+    capability.evaluateNativeImageProcessingAvailability({
+      platform: "linux",
+      arch: "x64",
+      cpuInfo: "processor: 0\nflags: sse sse2 sse4_2\nprocessor: 1\nflags: sse sse2 sse4a\n",
+    }).available,
+    false,
+  );
+  assert.equal(
+    capability.evaluateNativeImageProcessingAvailability({
+      platform: "linux",
+      arch: "arm64",
+      cpuInfo: null,
+    }).available,
+    true,
+  );
+  assert.equal(
+    capability.evaluateNativeImageProcessingAvailability({
+      platform: "win32",
+      arch: "x64",
+      cpuInfo: null,
+    }).available,
+    true,
+  );
+});

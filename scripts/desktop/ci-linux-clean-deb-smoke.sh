@@ -75,6 +75,9 @@ sudo apt-get update
 sudo apt-get install -y \
   binutils file desktop-file-utils dbus-x11 xvfb xauth openssl util-linux \
   apparmor-utils
+if [[ "$expected_arch" == "x64" ]]; then
+  sudo apt-get install -y qemu-user-static cpuid curl xz-utils
+fi
 for harness_tool in openssl unshare apparmor_status apparmor_parser; do
   command -v "$harness_tool" >/dev/null 2>&1 || {
     echo "Linux clean DEB harness tool is unavailable: $harness_tool" >&2
@@ -197,6 +200,10 @@ test -f "$desktop_file"
 desktop-file-validate "$desktop_file"
 
 mkdir -p "$state_root"
+if [[ "$expected_arch" == "x64" ]]; then
+  bash scripts/desktop/ci-linux-legacy-x64-admin-smoke.sh \
+    "$shell_exe" "$resource_root" "$state_root"
+fi
 credential_probe="$state_root/credential-smoke.py"
 cat >"$credential_probe" <<'PY'
 import secrets

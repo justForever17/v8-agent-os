@@ -108,6 +108,35 @@ export function managedAuthEnvironment(port, environment = process.env) {
   };
 }
 
+export function summarizeLinuxX64InstructionSet(
+  cpuInfo,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  if (platform !== "linux" || arch !== "x64") return null;
+  const featureSets = Array.from(
+    String(cpuInfo || "").matchAll(/^(?:flags|features)\s*:\s*(.+)$/gim),
+    (match) => new Set(match[1].trim().toLowerCase().split(/\s+/).filter(Boolean)),
+  );
+  if (featureSets.length === 0) return { evidence: "unavailable" };
+  const everyCpuHas = (feature) => featureSets.every((features) => features.has(feature));
+  return {
+    evidence: "proc_cpuinfo",
+    sse4a: everyCpuHas("sse4a"),
+    sse4_1: everyCpuHas("sse4_1"),
+    sse4_2: everyCpuHas("sse4_2"),
+    avx: everyCpuHas("avx"),
+  };
+}
+
+function currentLinuxX64InstructionSet() {
+  try {
+    return summarizeLinuxX64InstructionSet(fs.readFileSync("/proc/cpuinfo", "utf8"));
+  } catch {
+    return summarizeLinuxX64InstructionSet("");
+  }
+}
+
 function main(args = process.argv.slice(2)) {
   const app = argumentValue(args, "--app");
   const mode = argumentValue(args, "--mode");
@@ -189,6 +218,11 @@ function main(args = process.argv.slice(2)) {
     console.log(
       `[V8OS Next] run-exit run=${runId} app=${app} mode=${mode} pid=${child.pid || "unknown"} code=${code ?? "null"} signal=${signal || "none"} elapsedMs=${Date.now() - childStartedAtMs}`,
     );
+    if (signal === "SIGILL") {
+      console.error(
+        `[V8OS Next] native-instruction-failure run=${runId} app=${app} mode=${mode} cpu=${JSON.stringify(currentLinuxX64InstructionSet())}`,
+      );
+    }
     let exitCode = code ?? 1;
     if (exitCode === 0 && mode === "build") {
       try {

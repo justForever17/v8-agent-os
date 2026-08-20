@@ -498,6 +498,8 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(preview, /Ubuntu 22\.04\/24\.04 GNU x64\/arm64/);
   assert.match(preview, /其他 glibc 发行版仅 best-effort/);
   assert.match(preview, /Alpine\/musl 不受支持/);
+  assert.match(preview, /不具备 SSE4\.2 的旧 CPU 合同/);
+  assert.match(preview, /图片背景转码会明确返回不可用，MP4 背景不受影响/);
   assert.match(preview, /profile 不是安全隔离边界/);
   assert.match(preview, /AppImage 不会静默回退到 `--no-sandbox`/);
   assert.match(preview, /user namespace.*明确失败/);
@@ -506,6 +508,7 @@ test('desktop release notes advertise the multi-platform unsigned preview assets
   assert.match(stable, /Windows\/macOS 的 Shell 会托管 Engine\/Admin\/Web\/桌宠/);
   assert.match(stable, /Linux 的 Engine\/Admin\/Web\/Shell 可用；当前桌宠.*blocked/);
   assert.match(stable, /Ubuntu 22\.04\/24\.04 GNU x64\/arm64/);
+  assert.match(stable, /不具备 SSE4\.2 的旧 CPU 合同/);
   assert.match(stable, /AppImage 不会静默回退到 `--no-sandbox`/);
 });
 
@@ -1014,6 +1017,7 @@ test('packaged startup evidence records Next child lineage and a bounded stabili
 
   assert.match(runner, /run-start run=.*pid=.*host=.*port=/);
   assert.match(runner, /run-exit run=.*pid=.*code=.*signal=.*elapsedMs=/);
+  assert.match(runner, /native-instruction-failure run=.*cpu=/);
   assert.match(smoke, /--stability-window-ms/);
   assert.match(smoke, /initialRuntimeStability/);
   assert.match(smoke, /stableShellSurface/);
@@ -1076,6 +1080,32 @@ test('Linux clean DEB smoke installs and verifies its AppArmor harness tools exp
   assert.match(linuxSmoke, /apparmor_parser/);
   assert.match(linuxSmoke, /openssl/);
   assert.match(linuxSmoke, /unshare/);
+  assert.match(linuxSmoke, /qemu-user-static/);
+  assert.match(linuxSmoke, /ci-linux-legacy-x64-admin-smoke\.sh/);
+});
+
+test('Linux x64 DEB smoke starts the packaged Admin on an SSE4a-only CPU contract', () => {
+  const legacySmoke = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'ci-linux-legacy-x64-admin-smoke.sh'),
+    'utf8',
+  );
+  assert.match(legacySmoke, /legacy_cpu_model="phenom,fxsr-opt=off"/);
+  assert.match(legacySmoke, /qemu-x86_64-static -cpu "\$legacy_cpu_model"/);
+  assert.match(legacySmoke, /0x00000001/);
+  assert.match(legacySmoke, /1 << 20/);
+  assert.match(legacySmoke, /0x80000001/);
+  assert.match(legacySmoke, /1 << 6/);
+  assert.match(legacySmoke, /ELECTRON_RUN_AS_NODE=1/);
+  assert.match(legacySmoke, /process\.versions\.node/);
+  assert.match(legacySmoke, /node-v\$\{node_version\}-linux-x64\.tar\.xz/);
+  assert.match(legacySmoke, /d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0/);
+  assert.match(legacySmoke, /sha256sum -c/);
+  assert.match(legacySmoke, /qemu-x86_64-static -cpu "\$legacy_cpu_model" "\$node_binary"/);
+  assert.match(legacySmoke, /\/login/);
+  assert.match(legacySmoke, /V8OS_LINUX_LEGACY_X64_ADMIN_SMOKE_OK/);
+  assert.doesNotMatch(legacySmoke, /--jitless/);
+  assert.doesNotMatch(legacySmoke, /--no-sandbox/);
+  assert.doesNotMatch(legacySmoke, /--disable-gpu-sandbox/);
 });
 
 test('Electron runtime acquisition verifies the pinned package and official checksum contract', () => {

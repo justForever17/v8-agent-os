@@ -1,10 +1,13 @@
 import path from "path";
 import { randomUUID } from "crypto";
 
-import sharp from "sharp";
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireClientContext } from "@/lib/server/client-proxy";
+import {
+    getNativeImageProcessingAvailability,
+    NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+} from "@/lib/server/native-image-processing";
 import { getSessionIdentifier, updateUserRecord } from "@/lib/users";
 import {
     buildUserMediaPublicPath,
@@ -36,7 +39,15 @@ export async function POST(req: NextRequest) {
         if (file.size > MAX_SIZE_BYTES) {
             return NextResponse.json({ error: "图片过大，请换一张更小的图片" }, { status: 400 });
         }
+        const availability = getNativeImageProcessingAvailability();
+        if (!availability.available) {
+            return NextResponse.json({
+                error: NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+                code: availability.reasonCode,
+            }, { status: 503 });
+        }
 
+        const { default: sharp } = await import("sharp");
         const buffer = Buffer.from(await file.arrayBuffer());
         const userAvatarDir = ensureUserMediaDirectory("avatar");
 

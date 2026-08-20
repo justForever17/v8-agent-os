@@ -2,11 +2,14 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 
-import sharp from "sharp";
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { verifyServiceAuth } from "@/lib/service-auth";
+import {
+    getNativeImageProcessingAvailability,
+    NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+} from "@/lib/server/native-image-processing";
 import { resolveAdminPublicBaseUrl } from "@/lib/server/runtime-config";
 import { findUserByIdentifier } from "@/lib/users";
 
@@ -47,7 +50,15 @@ export async function POST(req: NextRequest) {
         if (file.size > MAX_SIZE_BYTES) {
             return NextResponse.json({ error: "图片过大，请换一张更小的图片" }, { status: 400 });
         }
+        const availability = getNativeImageProcessingAvailability();
+        if (!availability.available) {
+            return NextResponse.json({
+                error: NATIVE_IMAGE_PROCESSING_UNAVAILABLE_MESSAGE,
+                code: availability.reasonCode,
+            }, { status: 503 });
+        }
 
+        const { default: sharp } = await import("sharp");
         const source = Buffer.from(await file.arrayBuffer());
         fs.mkdirSync(AVATAR_DIR, { recursive: true });
 

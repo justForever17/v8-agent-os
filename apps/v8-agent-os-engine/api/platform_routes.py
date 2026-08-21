@@ -1939,12 +1939,15 @@ async def probe_model_provider(data: dict = Body(...)):
         )
         if decision.is_block() or decision.is_review():
             raise HTTPException(status_code=409, detail="provider probe target was not authorized")
-        result = (
-            model_provider_catalog.probe_provider_entry(
-                probe_provider,
-                credential=credential,
-                base_url=str(probe_target.get("baseUrl") or ""),
-            )
+        # The catalog probe uses the synchronous requests client (including
+        # bounded retries).  Keep the route async so a slow or unreachable
+        # provider cannot monopolize the Engine event loop and make /health
+        # or /readyz appear dead to the desktop shell.
+        result = await asyncio.to_thread(
+            model_provider_catalog.probe_provider_entry,
+            probe_provider,
+            credential=credential,
+            base_url=str(probe_target.get("baseUrl") or ""),
         )
         # A probe is diagnostic only. The custom provider catalog is committed
         # after the model connection transaction succeeds.

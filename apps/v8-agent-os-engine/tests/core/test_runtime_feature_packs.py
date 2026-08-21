@@ -255,6 +255,14 @@ def test_image_analysis_hashed_lock_contract(platform_name, architecture):
     assert all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*==[^\s]+ --hash=sha256:[0-9a-f]{64}", line) for line in lines)
     names = [re.split(r"==", line, maxsplit=1)[0].lower().replace("_", "-").replace(".", "-") for line in lines]
     assert names == ["flatbuffers", "numpy", "onnxruntime", "packaging", "protobuf"]
+    numpy_line = lines[1]
+    if platform_name == "linux" and architecture == "x64":
+        assert numpy_line == (
+            "numpy==2.3.5 --hash=sha256:"
+            "8cba086a43d54ca804ce711b2a940b16e452807acebe7852ff327f1ecd49b0d4"
+        )
+    else:
+        assert numpy_line.startswith("numpy==2.4.6 --hash=sha256:")
     assert not (ENGINE_ROOT / "requirements" / "feature-packs" / "locks" / "creative-media-image-analysis-cp311-macos-x64.txt").exists()
 
 

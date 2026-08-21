@@ -32,6 +32,7 @@ if [[ "$packaged_node_version" != "$node_version" ]]; then
   exit 1
 fi
 admin_root="$resource_root/apps/v8-agent-os-admin"
+engine_root="$resource_root/apps/v8-agent-os-engine"
 engine_python="$resource_root/apps/v8-agent-os-engine/.python/bin/python3"
 test -x "$engine_python"
 standalone_root="$admin_root/.next/standalone"
@@ -68,12 +69,14 @@ if (( (extended_ecx_value & (1 << 6)) == 0 )); then
   exit 1
 fi
 
-smoke_root="$state_root/legacy-x64-admin"
-runtime_home="$smoke_root/home"
-log_path="$smoke_root/admin-qemu.log"
+smoke_root="$state_root/legacy-x64-engine-admin"
+engine_home="$smoke_root/engine-home"
+admin_home="$smoke_root/admin-home"
+engine_log_path="$smoke_root/engine-qemu.log"
+admin_log_path="$smoke_root/admin-qemu.log"
 tool_root="$(mktemp -d)"
-mkdir -p "$runtime_home"
-chmod 700 "$smoke_root" "$runtime_home"
+mkdir -p "$engine_home" "$admin_home"
+chmod 700 "$smoke_root" "$engine_home" "$admin_home"
 
 node_archive="$tool_root/$node_archive_name"
 curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
@@ -83,58 +86,150 @@ tar -xJf "$node_archive" -C "$tool_root"
 node_binary="$tool_root/node-v${node_version}-linux-x64/bin/node"
 test -x "$node_binary"
 
-port="$("$engine_python" - <<'PY'
+pick_port() {
+  "$engine_python" - <<'PY'
 import socket
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
     listener.bind(("127.0.0.1", 0))
     print(listener.getsockname()[1])
 PY
-)"
+}
+
+engine_port="$(pick_port)"
+admin_port="$(pick_port)"
 auth_secret="$(openssl rand -hex 32)"
 checkpoint_key="$(openssl rand -hex 32)"
 server_dir="$(dirname "$server_path")"
+engine_pid=""
 admin_pid=""
 
-cleanup() {
-  if [[ -n "$admin_pid" ]] && kill -0 "$admin_pid" >/dev/null 2>&1; then
-    kill -TERM "$admin_pid" >/dev/null 2>&1 || true
+stop_process() {
+  local process_pid="$1"
+  local process_label="$2"
+  if [[ -n "$process_pid" ]] && kill -0 "$process_pid" >/dev/null 2>&1; then
+    kill -TERM "$process_pid" >/dev/null 2>&1 || true
     stopped=false
     for _ in $(seq 1 20); do
-      if ! kill -0 "$admin_pid" >/dev/null 2>&1; then
-        wait "$admin_pid" >/dev/null 2>&1 || true
+      if ! kill -0 "$process_pid" >/dev/null 2>&1; then
+        wait "$process_pid" >/dev/null 2>&1 || true
         stopped=true
         break
       fi
       sleep 0.25
     done
     if [[ "$stopped" != true ]]; then
-      echo "Legacy x64 Admin did not stop after SIGTERM" >&2
-      kill -KILL "$admin_pid" >/dev/null 2>&1 || true
-      wait "$admin_pid" >/dev/null 2>&1 || true
+      echo "Legacy x64 $process_label did not stop after SIGTERM" >&2
+      kill -KILL "$process_pid" >/dev/null 2>&1 || true
+      wait "$process_pid" >/dev/null 2>&1 || true
     fi
   fi
+}
+
+cleanup() {
+  stop_process "$admin_pid" "Admin"
+  stop_process "$engine_pid" "Engine"
   rm -rf "$tool_root"
 }
 trap cleanup EXIT
 
+# Verify the actual packaged native dependency under the emulated CPU before
+# starting the service.  This catches an import-time SIGILL that an Admin-only
+# smoke cannot observe.
+if ! numpy_probe_output="$(
+  cd "$engine_root"
+  env \
+    V8_AGENT_OS_HOME="$engine_home" \
+    HOME="$engine_home" \
+    USERPROFILE="$engine_home" \
+    V8_AGENT_OS_DISABLE_BYTECODE=1 \
+    PYTHONPATH="$engine_root" \
+    qemu-x86_64-static -cpu "$legacy_cpu_model" "$engine_python" -c \
+      'import numpy; print("__V8_NUMPY__" + str(numpy.__version__))' 2>&1
+)"; then
+  echo "Packaged Linux x64 NumPy import failed on the legacy CPU" >&2
+  echo "$numpy_probe_output" >&2
+  exit 1
+fi
+if ! grep -Fxq "__V8_NUMPY__2.3.5" <<<"$numpy_probe_output"; then
+  echo "Packaged Linux x64 runtime did not expose the legacy-safe NumPy 2.3.5 wheel" >&2
+  echo "$numpy_probe_output" >&2
+  exit 1
+fi
+
+(
+  cd "$engine_root"
+  env \
+    V8_AGENT_OS_HOME="$engine_home" \
+    HOME="$engine_home" \
+    USERPROFILE="$engine_home" \
+    AUTH_SECRET="$auth_secret" \
+    NEXTAUTH_SECRET="$auth_secret" \
+    V8_CHECKPOINT_AES_KEY="$checkpoint_key" \
+    V8_AGENT_OS_DISABLE_BYTECODE=1 \
+    V8_AGENT_OS_PYCACHE_PREFIX="$engine_home/cache/pycache" \
+    V8OS_DISABLE_UPDATE_CHECK=1 \
+    PYTHONPATH="$engine_root" \
+    ENGINE_HOST=127.0.0.1 \
+    ENGINE_PORT="$engine_port" \
+    ENGINE_RELOAD=0 \
+    qemu-x86_64-static -cpu "$legacy_cpu_model" "$engine_python" main.py
+) >"$engine_log_path" 2>&1 &
+engine_pid=$!
+
+engine_ready=false
+for _ in $(seq 1 240); do
+  if ! kill -0 "$engine_pid" >/dev/null 2>&1; then
+    wait "$engine_pid" || true
+    echo "Packaged Engine exited on the legacy x64 CPU before readiness" >&2
+    cat "$engine_log_path" >&2
+    exit 1
+  fi
+  ready_code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$engine_port/readyz" || true)"
+  health_code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$engine_port/health" || true)"
+  if [[ "$ready_code" == "200" && "$health_code" == "200" ]]; then
+    engine_ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$engine_ready" != true ]]; then
+  echo "Packaged Engine did not become ready on the legacy x64 CPU" >&2
+  cat "$engine_log_path" >&2
+  exit 1
+fi
+
+for _ in $(seq 1 3); do
+  sleep 5
+  if ! kill -0 "$engine_pid" >/dev/null 2>&1; then
+    wait "$engine_pid" || true
+    echo "Packaged Engine became unstable on the legacy x64 CPU" >&2
+    cat "$engine_log_path" >&2
+    exit 1
+  fi
+  test "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$engine_port/readyz")" = "200"
+  test "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$engine_port/health")" = "200"
+done
+
+echo "V8OS_LINUX_LEGACY_X64_ENGINE_SMOKE_OK"
+
 (
   cd "$server_dir"
   env \
-    V8_AGENT_OS_HOME="$runtime_home" \
-    HOME="$runtime_home" \
-    USERPROFILE="$runtime_home" \
+    V8_AGENT_OS_HOME="$admin_home" \
+    HOME="$admin_home" \
+    USERPROFILE="$admin_home" \
     AUTH_SECRET="$auth_secret" \
     NEXTAUTH_SECRET="$auth_secret" \
     AUTH_TRUST_HOST=true \
-    AUTH_URL="http://127.0.0.1:$port" \
-    NEXTAUTH_URL="http://127.0.0.1:$port" \
+    AUTH_URL="http://127.0.0.1:$admin_port" \
+    NEXTAUTH_URL="http://127.0.0.1:$admin_port" \
     V8_CHECKPOINT_AES_KEY="$checkpoint_key" \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=127.0.0.1 \
-    PORT="$port" \
+    PORT="$admin_port" \
     qemu-x86_64-static -cpu "$legacy_cpu_model" "$node_binary" "$server_path"
-) >"$log_path" 2>&1 &
+) >"$admin_log_path" 2>&1 &
 admin_pid=$!
 
 ready=false
@@ -142,10 +237,10 @@ for _ in $(seq 1 240); do
   if ! kill -0 "$admin_pid" >/dev/null 2>&1; then
     wait "$admin_pid" || true
     echo "Packaged Admin exited on the legacy x64 CPU before readiness" >&2
-    cat "$log_path" >&2
+    cat "$admin_log_path" >&2
     exit 1
   fi
-  if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/login" || true)" == "200" ]]; then
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$admin_port/login" || true)" == "200" ]]; then
     ready=true
     break
   fi
@@ -153,7 +248,7 @@ for _ in $(seq 1 240); do
 done
 if [[ "$ready" != true ]]; then
   echo "Packaged Admin did not become ready on the legacy x64 CPU" >&2
-  cat "$log_path" >&2
+  cat "$admin_log_path" >&2
   exit 1
 fi
 
@@ -162,10 +257,10 @@ for _ in $(seq 1 3); do
   if ! kill -0 "$admin_pid" >/dev/null 2>&1; then
     wait "$admin_pid" || true
     echo "Packaged Admin became unstable on the legacy x64 CPU" >&2
-    cat "$log_path" >&2
+    cat "$admin_log_path" >&2
     exit 1
   fi
-  test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/login")" = "200"
+  test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$admin_port/login")" = "200"
 done
 
 echo "V8OS_LINUX_LEGACY_X64_ADMIN_SMOKE_OK"

@@ -945,6 +945,10 @@ test('desktop preview uses a slim portable Python release profile', () => {
     'utf8',
   );
   assert.match(linuxRequirements, /^PyGObject==3\.48\.2 ; sys_platform == "linux"$/m);
+  assert.match(
+    linuxRequirements,
+    /^numpy==2\.3\.5 ; sys_platform == "linux" and platform_machine == "x86_64"$/m,
+  );
   assert.doesNotMatch(linuxRequirements, /^pyatspi(?:[<=>\\[]|\\s|$)/im);
   assert.match(posixRuntimeScript, /PYATSPI_IMPORT_OK/);
   assert.match(posixRuntimeScript, /f2fb289a9d2e4dac65fca8db0f4d3d65607a0cf2/);
@@ -1101,6 +1105,11 @@ test('Linux x64 DEB smoke starts the packaged Admin on an SSE4a-only CPU contrac
   assert.match(legacySmoke, /d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0/);
   assert.match(legacySmoke, /sha256sum -c/);
   assert.match(legacySmoke, /qemu-x86_64-static -cpu "\$legacy_cpu_model" "\$node_binary"/);
+  assert.match(legacySmoke, /qemu-x86_64-static -cpu "\$legacy_cpu_model" "\$engine_python" -c/);
+  assert.match(legacySmoke, /__V8_NUMPY__2\.3\.5/);
+  assert.match(legacySmoke, /\/readyz/);
+  assert.match(legacySmoke, /\/health/);
+  assert.match(legacySmoke, /V8OS_LINUX_LEGACY_X64_ENGINE_SMOKE_OK/);
   assert.match(legacySmoke, /\/login/);
   assert.match(legacySmoke, /V8OS_LINUX_LEGACY_X64_ADMIN_SMOKE_OK/);
   assert.doesNotMatch(legacySmoke, /--jitless/);

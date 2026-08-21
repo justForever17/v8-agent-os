@@ -5,6 +5,11 @@ PyGObject==3.48.2 ; sys_platform == "linux"
 # pyatspi2 is not published on PyPI. prepare-posix-python-runtime.mjs copies
 # the pinned GNOME Python frontend after PyGObject has been built.
 python-xlib>=0.33 ; sys_platform == "linux"
+# The current NumPy 2.4 Linux x86_64 wheels use an x86-64-v2 baseline and can
+# raise SIGILL during import on older x86_64 CPUs (for example SSE4a-only hosts).
+# Keep the full NumPy API, but use the last compatible Linux x64 wheel.  The
+# marker leaves Windows, macOS, and Linux arm64 resolution unchanged.
+numpy==2.3.5 ; sys_platform == "linux" and platform_machine == "x86_64"
 # Explicitly use the Freedesktop Secret Service backend. keyring pulls its
 # pure-Python SecretStorage and Jeepney dependencies on Linux.
 keyring==25.7.0 ; sys_platform == "linux"

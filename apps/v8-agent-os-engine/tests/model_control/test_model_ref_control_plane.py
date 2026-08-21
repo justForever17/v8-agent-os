@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -1253,6 +1254,79 @@ def test_probe_allows_cross_origin_catalog_preview_without_credential(monkeypatc
     result = asyncio.run(platform_routes.probe_model_provider({"providerId": "demo"}))
     assert result["ok"] is True
     assert captured["credential"] == ""
+    assert result["usedStoredCredential"] is False
+
+
+def test_provider_probe_offloads_blocking_catalog_request_from_event_loop(monkeypatch):
+    provider = {
+        "id": "demo",
+        "name": "Demo",
+        "baseUrl": "https://api.example.com/v1",
+        "apiStandard": "openai",
+        "probeStrategy": "openai_models",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+    }
+    started = threading.Event()
+    release = threading.Event()
+    worker_thread_id: list[int] = []
+
+    class _AllowDecision:
+        @staticmethod
+        def is_block():
+            return False
+
+        @staticmethod
+        def is_review():
+            return False
+
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: provider)
+    monkeypatch.setattr(
+        platform_routes.model_provider_catalog,
+        "resolve_probe_target",
+        lambda _provider, base_url="": {
+            "url": "https://api.example.com/v1/models",
+            "baseUrl": base_url or "https://api.example.com/v1",
+        },
+    )
+    monkeypatch.setattr(platform_routes, "_catalog_probe_url_in_scope", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        platform_routes.safety_guardian,
+        "assess_http_request",
+        lambda *_args, **_kwargs: _AllowDecision(),
+    )
+
+    def blocking_probe(_provider, *, credential="", base_url=""):
+        worker_thread_id.append(threading.get_ident())
+        started.set()
+        release.wait(timeout=2)
+        return {"ok": True, "models": [], "baseUrl": base_url, "credentialSeen": bool(credential)}
+
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "probe_provider_entry", blocking_probe)
+
+    async def exercise_probe():
+        task = asyncio.create_task(
+            platform_routes.probe_model_provider({"providerId": "demo", "apiKey": "sk-test"})
+        )
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.001)
+            assert started.is_set(), "probe worker did not start"
+
+            heartbeat_ticks = 0
+            for _ in range(10):
+                await asyncio.sleep(0.005)
+                heartbeat_ticks += 1
+            assert heartbeat_ticks == 10
+            assert worker_thread_id and worker_thread_id[0] != threading.get_ident()
+        finally:
+            release.set()
+        return await task
+
+    result = asyncio.run(exercise_probe())
+    assert result["ok"] is True
+    assert result["credentialSource"] == "request"
     assert result["usedStoredCredential"] is False
 
 

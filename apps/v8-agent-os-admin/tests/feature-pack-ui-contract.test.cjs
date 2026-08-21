@@ -416,6 +416,15 @@ test("image analysis platform lock files are complete and fail closed on unsuppo
       assert.equal(lines.length, 5, file);
       assert.ok(lines.every((line) => /^[A-Za-z0-9][A-Za-z0-9_.-]*==[^\s]+ --hash=sha256:[0-9a-f]{64}$/.test(line)), file);
       assert.deepEqual(lines.map((line) => line.split("==", 1)[0]), ["flatbuffers", "numpy", "onnxruntime", "packaging", "protobuf"]);
+      if (platformName === "linux" && architecture === "x64") {
+        assert.equal(
+          lines[1],
+          "numpy==2.3.5 --hash=sha256:8cba086a43d54ca804ce711b2a940b16e452807acebe7852ff327f1ecd49b0d4",
+          file,
+        );
+      } else {
+        assert.match(lines[1], /^numpy==2\.4\.6 --hash=sha256:[0-9a-f]{64}$/, file);
+      }
     }
   }
   assert.equal(

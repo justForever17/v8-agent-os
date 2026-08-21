@@ -140,7 +140,11 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         event = chat_run.events[-1]
         self.assertEqual(event["topic"], "engineering.plan.projected")
         self.assertEqual(event["payload"]["summary"], "工程执行合同已投影 · 1 个工程任务")
-        self.assertEqual(event["payload"]["riskFlags"], ["write_set_missing"])
+        self.assertEqual(event["payload"]["riskFlags"], [])
+        self.assertEqual(event["payload"]["writeSet"], ["src/example.py"])
+        self.assertEqual(event["payload"]["projectionSource"], "runtime_task_briefs")
+        self.assertEqual(event["payload"]["selectedDelegationsSource"], "none_observed")
+        self.assertTrue(event["payload"]["projectionDiagnostics"]["writeSetReconciledFromTaskBrief"])
         self.assertEqual(event["payload"]["traceRef"], {"runId": "run_test"})
 
     async def test_engineering_projection_does_not_project_research_brief_as_engineering(self):

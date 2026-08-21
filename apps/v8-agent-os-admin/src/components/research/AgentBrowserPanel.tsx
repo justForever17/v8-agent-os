@@ -55,18 +55,20 @@ export function AgentBrowserPanel() {
         if (opening) return;
         setOpening(target);
         setResult(null);
+        const loginTarget = target === "generic" ? null : LOGIN_TARGETS[target];
+        let profileReady = !loginTarget;
         try {
-            const loginTarget = target === "generic" ? null : LOGIN_TARGETS[target];
-            const profileConfiguration = loginTarget ? (async () => {
+            if (loginTarget) {
                 const envelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
-                const webFetch = envelope.data?.webFetch || {};
+                const existingData = envelope.data || {};
+                const webFetch = existingData.webFetch || {};
                 const allowlist = Array.from(new Set([
                     ...(Array.isArray(webFetch.agentBrowserProfileAllowlist) ? webFetch.agentBrowserProfileAllowlist : []),
                     ...loginTarget.hosts,
                 ].map((host) => String(host || "").trim().toLowerCase()).filter(Boolean)));
                 await saveConfigDomain<SystemBaseData>("system-base", {
                     data: {
-                        ...envelope.data,
+                        ...existingData,
                         webFetch: {
                             ...webFetch,
                             useAgentBrowserProfile: true,
@@ -74,33 +76,58 @@ export function AgentBrowserPanel() {
                         },
                     },
                 });
-            })() : Promise.resolve();
-            const browserRequest = fetch("/api/agent-browser/open", {
+                // Saving invalidates the registry cache; force a fresh read-back
+                // before opening a login window so Research cannot observe the
+                // previous disabled/empty effective configuration.
+                const effectiveEnvelope = await fetchConfigDomain<SystemBaseData>("system-base", { force: true });
+                const effectiveWebFetch = effectiveEnvelope.data?.webFetch || {};
+                const effectiveAllowlist = new Set(
+                    (Array.isArray(effectiveWebFetch.agentBrowserProfileAllowlist)
+                        ? effectiveWebFetch.agentBrowserProfileAllowlist
+                        : [])
+                        .map((host) => String(host || "").trim().toLowerCase())
+                        .filter(Boolean),
+                );
+                const effectiveProfileEnabled = effectiveWebFetch.useAgentBrowserProfile === true;
+                const effectiveHostsAllowed = loginTarget.hosts.every((host) => {
+                    const normalizedHost = host.toLowerCase();
+                    return Array.from(effectiveAllowlist).some((allowedHost) => (
+                        allowedHost === normalizedHost
+                        || allowedHost === `*.${normalizedHost}`
+                        || (allowedHost.startsWith("*.") && normalizedHost.endsWith(allowedHost.slice(1)))
+                    ));
+                });
+                if (!effectiveProfileEnabled || !effectiveHostsAllowed) {
+                    setResult({
+                        ok: false,
+                        summary: t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed"),
+                    });
+                    return;
+                }
+                profileReady = true;
+            }
+
+            const response = await fetch("/api/agent-browser/open", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ url: loginTarget?.url || "about:blank" }),
             });
-            const [configurationResult, browserResult] = await Promise.allSettled([
-                profileConfiguration,
-                browserRequest,
-            ]);
-            if (browserResult.status === "rejected") throw browserResult.reason;
-            const response = browserResult.value;
             const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
             const browserOk = response.ok && payload.ok !== false;
-            const configurationOk = configurationResult.status === "fulfilled";
             setResult({
-                ok: browserOk && configurationOk,
+                ok: browserOk,
                 summary: !browserOk
                     ? responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.failed"))
-                    : !configurationOk
-                        ? t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed")
-                        : responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.opened")),
+                    : loginTarget
+                        ? responseSummary(payload, t("app.admin.dashboard.research.runtime.agentBrowser.opened"))
+                        : t("app.admin.dashboard.research.runtime.agentBrowser.genericOpened"),
             });
         } catch (error) {
             setResult({
                 ok: false,
-                summary: error instanceof Error
+                summary: loginTarget && !profileReady
+                    ? t("app.admin.dashboard.research.runtime.agentBrowser.profileConfigFailed")
+                    : error instanceof Error
                     ? error.message
                     : t("app.admin.dashboard.research.runtime.agentBrowser.failed"),
             });

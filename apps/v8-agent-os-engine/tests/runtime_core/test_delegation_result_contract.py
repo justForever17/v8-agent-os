@@ -16,6 +16,12 @@ def test_delegation_result_contract_preserves_lineage_acceptance_and_artifact_ev
             "artifactRefs": [{"path": "README.md"}],
             "missingExpectedArtifacts": ["PROOF.json"],
             "toolsUsed": ["write_native_file"],
+            "availableTools": ["read_native_file", "write_native_file"],
+            "requiredTool": "write_native_file",
+            "requiredToolVisible": True,
+            "toolCallCount": 3,
+            "writeToolCallCount": 1,
+            "writeToolSucceeded": True,
             "toolPolicy": {"mode": "allowlist", "allowedTools": ["write_native_file"]},
             "expectedOutputs": ["README.md"],
             "behaviorScope": ["Only update README.md"],
@@ -35,6 +41,10 @@ def test_delegation_result_contract_preserves_lineage_acceptance_and_artifact_ev
     assert contract["supervisorAcceptance"]["status"] == "pending"
     assert contract["resultSchemaMatched"] is True
     assert contract["toolsUsed"] == ["write_native_file"]
+    assert contract["availableTools"] == ["read_native_file", "write_native_file"]
+    assert contract["requiredTool"] == "write_native_file"
+    assert contract["requiredToolVisible"] is True
+    assert contract["writeToolSucceeded"] is True
     assert contract["toolPolicy"]["mode"] == "allowlist"
     assert contract["expectedOutputs"] == ["README.md"]
     assert contract["behaviorScope"] == ["Only update README.md"]

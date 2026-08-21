@@ -144,6 +144,142 @@ def _delegated_message_owner_id(message: Any) -> str:
     ).strip()
 
 
+def _tool_name_variants(value: Any) -> set[str]:
+    """Return the canonical/raw spellings used by native and gateway tools."""
+    if isinstance(value, str):
+        raw_values = [value]
+    else:
+        metadata = dict(getattr(value, "metadata", None) or {})
+        raw_values = [
+            getattr(value, "name", ""),
+            metadata.get("canonicalName"),
+            metadata.get("rawName"),
+        ]
+    variants: set[str] = set()
+    for raw_value in raw_values:
+        name = str(raw_value or "").strip()
+        if not name:
+            continue
+        variants.add(name)
+        if name.startswith("gateway."):
+            variants.add(name[len("gateway.") :].strip())
+        if "." in name:
+            variants.add(name.split(".", 1)[1].strip())
+    return {item for item in variants if item}
+
+
+def _tool_name_is(value: Any, expected: str) -> bool:
+    return str(expected or "").strip() in _tool_name_variants(value)
+
+
+def _tool_surface_names(tools: list[Any] | None) -> list[str]:
+    names: set[str] = set()
+    for tool_ref in list(tools or []):
+        if isinstance(tool_ref, str):
+            names.update(_tool_name_variants(tool_ref))
+            continue
+        canonical = _canonical_tool_name(tool_ref)
+        raw = _raw_tool_name(tool_ref)
+        name = canonical or raw or str(getattr(tool_ref, "name", "") or "").strip()
+        if name:
+            names.add(name)
+    return sorted(names)
+
+
+def _tool_result_succeeded(message: Any) -> bool:
+    """Keep write discipline tied to a successful ToolMessage, not a prose claim."""
+    if not isinstance(message, ToolMessage):
+        return False
+    if str(getattr(message, "status", "") or "").strip().lower() == "error":
+        return False
+    content = getattr(message, "content", "")
+    if isinstance(content, dict):
+        payload = dict(content)
+    else:
+        try:
+            payload = json.loads(str(content or ""))
+        except Exception:
+            payload = None
+    if isinstance(payload, dict):
+        if payload.get("ok") is False or payload.get("error"):
+            return False
+        if "ok" in payload:
+            return bool(payload.get("ok"))
+        return True
+    text = str(content or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith(("error", "failed", "failure", "blocked")):
+        return False
+    if any(marker in lowered for marker in ("write was blocked", "写入失败", "写入被阻止", "已阻止写入")):
+        return False
+    return True
+
+
+def _delegated_tool_call_dicts(message: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    raw_calls = list(getattr(message, "tool_calls", None) or [])
+    additional = getattr(message, "additional_kwargs", None)
+    if isinstance(additional, dict):
+        raw_calls.extend(list(additional.get("tool_calls") or []))
+    for call in raw_calls:
+        if isinstance(call, dict):
+            function = call.get("function")
+            if isinstance(function, dict):
+                calls.append(
+                    {
+                        "id": call.get("id"),
+                        "name": function.get("name") or call.get("name"),
+                        "args": function.get("arguments") or call.get("args"),
+                    }
+                )
+            else:
+                calls.append(dict(call))
+            continue
+        calls.append(
+            {
+                "id": getattr(call, "id", None),
+                "name": getattr(call, "name", None),
+                "args": getattr(call, "args", None),
+            }
+        )
+    return calls
+
+
+def _delegated_write_tool_observation(messages: list[Any], *, agent_id: str) -> dict[str, Any]:
+    """Correlate a child-owned write call with its ToolMessage result."""
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    attempted_names: set[str] = set()
+    owned_tool_call_count = 0
+    for message in list(messages or []):
+        if _delegated_message_owner_id(message) != agent_id or not isinstance(message, AIMessage):
+            continue
+        for call in _delegated_tool_call_dicts(message):
+            owned_tool_call_count += 1
+            call_id = str(call.get("id") or "").strip()
+            if call_id:
+                calls_by_id[call_id] = dict(call)
+
+    successful = False
+    for message in list(messages or []):
+        if not isinstance(message, ToolMessage):
+            continue
+        call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+        call = calls_by_id.get(call_id)
+        if not isinstance(call, dict) or not _tool_name_is(call.get("name"), "write_native_file"):
+            continue
+        attempted_names.add("write_native_file")
+        if _tool_result_succeeded(message):
+            successful = True
+    return {
+        "toolCallCount": owned_tool_call_count,
+        "attempted": bool(attempted_names),
+        "successful": successful,
+        "attemptedTools": sorted(attempted_names),
+    }
+
+
 def _delegated_tool_names(messages: list[Any], *, agent_id: str) -> list[str]:
     names: set[str] = set()
     for message in list(messages or []):
@@ -906,6 +1042,8 @@ def _task_brief_requires_artifact_write(task_brief: dict | None) -> bool:
         return False
     if _truthy_task_value(task_brief.get("writeRequired") or task_brief.get("write_required")):
         return True
+    if _truthy_task_value(task_brief.get("readOnly") or task_brief.get("read_only")):
+        return False
     deliverable_kind = str(task_brief.get("deliverableKind") or task_brief.get("deliverable_kind") or "").strip().lower()
     if deliverable_kind in {"artifact", "patch", "implementation", "skill_artifact", "project_artifact"}:
         return True
@@ -940,6 +1078,7 @@ def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
     lines = [
         "",
         "Artifact Write Discipline:",
+        "- This is a write-required task: before the final handoff you MUST make at least one successful `write_native_file` call for the assigned artifact; prose, JSON arguments, or a planned path are not write evidence.",
         "- Use `write_native_file` for assigned final project artifacts, including Markdown, source code, SKILL.md, and references/** documents.",
         "- Never author the canonical Spec contract documents (`requirements.md`, `design.md`, or `tasks.md`) with `write_native_file`; those stages belong exclusively to `spec_broker` before runtime execution is approved.",
         "- Do NOT use `run_system_command`, shell redirection, `echo`, `New-Item`, `Set-Content`, or `Out-File` to create or populate artifact content files.",
@@ -1816,6 +1955,27 @@ def build_agent_node(
                         route_bundle,
                         combined_tools,
                     )
+                tool_surface = _tool_surface_names(combined_tools)
+                write_required = _task_brief_requires_artifact_write(delegated_task_brief)
+                write_tool_visible = "write_native_file" in {
+                    variant
+                    for tool_name in tool_surface
+                    for variant in _tool_name_variants(tool_name)
+                }
+                write_observation = _delegated_write_tool_observation(
+                    messages,
+                    agent_id=agent_id,
+                )
+                required_tool_choice = (
+                    "required"
+                    if write_required and write_tool_visible and not write_observation["successful"]
+                    else None
+                )
+                missing_required_tool = (
+                    "write_native_file"
+                    if write_required and not write_tool_visible
+                    else None
+                )
                 extensions_runtime_service.emit_route_selected(
                     user_query=extensions_route_query,
                     route_bundle=route_bundle,
@@ -1882,6 +2042,13 @@ def build_agent_node(
                 "inheritedSkillNames": inherited_skill_names,
                 "delegatedFullQuery": delegated_query,
                 "extensionsRouteQuery": extensions_route_query,
+                "toolSurface": tool_surface,
+                "requiredTool": "write_native_file" if write_required else None,
+                "requiredToolChoice": required_tool_choice,
+                "requiredToolVisible": write_tool_visible if write_required else None,
+                "toolCallCount": write_observation["toolCallCount"],
+                "writeToolSucceeded": write_observation["successful"] if write_required else None,
+                "missingRequiredTool": missing_required_tool,
             }
             for key in ("parentDelegationId", "delegationId", "delegationDepth", "delegationNodeCount", "delegationBudget"):
                 if key in inherited_route_context:
@@ -1948,6 +2115,7 @@ def build_agent_node(
                         role=f"agent:{agent_id}",
                         preferred_model_id=agent_model_id or supervisor_model_id,
                         invocation_config=build_runtime_callback_config(),
+                        tool_choice=required_tool_choice,
                         build_model=lambda candidate_model_id: create_subagent_chat_model(
                             candidate_model_id,
                             role=f"agent:{agent_id}",
@@ -1994,6 +2162,23 @@ def build_agent_node(
                 delegation_id=str(inherited_route_context.get("delegationId") or ""),
             )
 
+            response_observation = _delegated_write_tool_observation(
+                [*messages, response],
+                agent_id=agent_id,
+            )
+            write_tool_missing = write_required and not response_observation["successful"]
+            route_context_record.update(
+                {
+                    "toolCallCount": response_observation["toolCallCount"],
+                    "writeToolSucceeded": response_observation["successful"] if write_required else None,
+                    "missingRequiredTool": (
+                        "write_native_file"
+                        if write_required and (not write_tool_visible or write_tool_missing)
+                        else None
+                    ),
+                }
+            )
+
             if getattr(response, "tool_calls", None):
                 return Command(
                     goto=f"{agent_id}_tools",
@@ -2004,7 +2189,7 @@ def build_agent_node(
                     },
                 )
 
-            if reflection_enabled:
+            if reflection_enabled and not write_tool_missing:
                 return Command(
                     goto=f"{agent_id}_reviewer",
                     update={
@@ -2015,11 +2200,24 @@ def build_agent_node(
                 )
 
             final_content = _delegated_visible_result_text(response)
-            sub_tools_used = _delegated_tool_names(state["messages"], agent_id=agent_id)
+            sub_tools_used = _delegated_tool_names([*messages, response], agent_id=agent_id)
 
-            refined_parts = [f"[{agent_name} 执行完毕]"]
+            refined_parts = [
+                f"[{agent_name} 执行被阻断]"
+                if write_tool_missing
+                else f"[{agent_name} 执行完毕]"
+            ]
             if sub_tools_used:
                 refined_parts.append(f"使用工具: {', '.join(sub_tools_used)}")
+            if write_tool_missing:
+                refined_parts.append(
+                    "写入证据缺失：该任务要求成功调用 `write_native_file`，但当前回合没有成功的写入 ToolMessage。"
+                    + (
+                        "工具面中不存在 `write_native_file`，已按 fail-closed 阻断。"
+                        if not write_tool_visible
+                        else "请由 Supervisor 触发有限重试，不得把 prose 当作产物。"
+                    )
+                )
             refined_parts.append(f"结果: {final_content}")
             refined_parts.append(
                 "\n[Supervisor Acceptance Required]: Inspect this exact result and explicitly accept, retry, or ignore it."
@@ -2036,6 +2234,18 @@ def build_agent_node(
                     "v8_owner_delegation_id": str(inherited_route_context.get("delegationId") or ""),
                     "v8_subagent_tools_used": sub_tools_used,
                     "v8_subagent_result_text": final_content,
+                    "v8_tool_surface": tool_surface,
+                    "v8_required_tool": "write_native_file" if write_required else None,
+                    "v8_required_tool_choice": required_tool_choice,
+                    "v8_tool_call_count": response_observation["toolCallCount"],
+                    "v8_write_tool_succeeded": response_observation["successful"] if write_required else None,
+                    "v8_missing_required_tool": (
+                        "write_native_file" if write_tool_missing else None
+                    ),
+                    "v8_delegation_status": "blocked" if write_tool_missing else "completed",
+                    "v8_delegation_error": (
+                        "required_artifact_tool_not_called" if write_tool_missing else None
+                    ),
                 },
             )
             return Command(

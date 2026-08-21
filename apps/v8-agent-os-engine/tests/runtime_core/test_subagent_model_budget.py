@@ -1,4 +1,8 @@
+from contextlib import nullcontext
+from types import SimpleNamespace
+
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from api.models import EngineConfig
 from core.llm_factory import LLMFactory
@@ -207,6 +211,119 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
             {"streaming": True, "timeout": 180},
         ),
     ]
+
+
+def test_write_required_subagent_forces_tool_choice_until_successful_write(monkeypatch):
+    captured = []
+    write_tool = SimpleNamespace(name="write_native_file", metadata={})
+    task_brief = {
+        "taskBriefId": "brief-write",
+        "goal": "Create the bounded artifact.",
+        "writeRequired": True,
+        "writeSet": ["artifact.html"],
+        "expectedOutputs": ["artifact.html"],
+    }
+
+    monkeypatch.setattr(
+        "graph.agent_factories._resolved_workspace_binding_for_state",
+        lambda _state: {"activeWorkspaceRoot": ".", "mainWorkspaceRoot": "."},
+    )
+    monkeypatch.setattr(
+        "graph.agent_factories.build_engineering_kernel_context",
+        lambda **_kwargs: ("", {}),
+    )
+    monkeypatch.setattr(
+        "graph.agent_factories.detect_command_environment",
+        lambda: {"commandLanguage": "PowerShell", "shellDialect": "powershell"},
+    )
+    monkeypatch.setattr("graph.agent_factories.render_host_alerts_line", lambda: "")
+    monkeypatch.setattr("graph.agent_factories.render_host_load_line", lambda: "")
+    monkeypatch.setattr("graph.agent_factories.utc_now_iso", lambda: "2026-08-21T00:00:00Z")
+    monkeypatch.setattr(
+        "graph.agent_factories._resolve_inherited_route_context",
+        lambda *_args, **_kwargs: {
+            "taskBrief": task_brief,
+            "query": task_brief["goal"],
+            "delegationDepth": 2,
+        },
+    )
+    monkeypatch.setattr("graph.agent_factories._apply_task_tool_policy", lambda tools, _brief: list(tools))
+    monkeypatch.setattr("graph.agent_factories._build_agent_system_bundle", lambda **_kwargs: {"content": "", "segments": []})
+    monkeypatch.setattr("graph.agent_factories.ensure_reasoning_content", lambda message: message)
+    monkeypatch.setattr("graph.agent_factories.context_orchestrator.prepare", lambda **kwargs: SimpleNamespace(messages=kwargs["messages"], audit={}))
+    monkeypatch.setattr("graph.agent_factories.emit_context_prepared_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("graph.agent_factories.build_delegation_context", lambda **_kwargs: {})
+    monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.bind_execution_context", lambda **_kwargs: object())
+    monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.reset_execution_context", lambda *_args: None)
+    monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.emit_route_selected", lambda **_kwargs: None)
+    monkeypatch.setattr("graph.agent_factories.bind_runtime_context", lambda **_kwargs: nullcontext())
+
+    def _invoke(_llm, _messages, _tools, **kwargs):
+        captured.append(kwargs.get("tool_choice"))
+        if len(captured) == 1:
+            return AIMessage(content="I need to inspect the task first.")
+        return AIMessage(content="The artifact is complete.")
+
+    node = build_agent_node(
+        agent_id="worker",
+        agent_data={"id": "worker", "capabilitySnapshot": {}},
+        agent_name="Worker",
+        agent_system_prompt="",
+        agent_tool_selectors=[],
+        agent_tool_mode="explicit",
+        all_mcp_tools=[],
+        filtered_native_tools=[write_tool],
+        fetch_skill_instructions_tool=None,
+        reflection_enabled=False,
+        agent_model_id=None,
+        default_agent_llm=object(),
+        supervisor_model_id="demo::supervisor-model",
+        robust_invoke=_invoke,
+        build_failure_command=lambda **kwargs: pytest.fail(f"unexpected failure: {kwargs}"),
+        extract_task_context=lambda messages: messages,
+        resolve_todos=lambda value: {"task_info": {}, "items": []},
+        sanitize_message_chain=lambda messages: messages,
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    first = node(
+        {
+            "messages": [HumanMessage(content="delegated", additional_kwargs={"v8_governance_type": "delegated_task_instruction"})],
+            "current_route_context": {"taskBrief": task_brief, "delegationDepth": 2},
+            "parallel_branch": {"agentName": "Worker"},
+            "workspace_path": ".",
+        }
+    )
+    assert captured == ["required"]
+    assert first.goto == "supervisor"
+
+    successful_tool_call = AIMessage(
+        content="",
+        tool_calls=[{"id": "write-1", "name": "write_native_file", "args": {"path": "artifact.html"}}],
+        additional_kwargs={
+            "v8_owner_agent_id": "worker",
+            "v8_owner_subagent_id": "worker",
+        },
+    )
+    successful_tool_result = ToolMessage(
+        content="Successfully Created/Overwritten file: artifact.html (10 chars written)",
+        name="write_native_file",
+        tool_call_id="write-1",
+    )
+    second = node(
+        {
+            "messages": [
+                HumanMessage(content="delegated", additional_kwargs={"v8_governance_type": "delegated_task_instruction"}),
+                successful_tool_call,
+                successful_tool_result,
+            ],
+            "current_route_context": {"taskBrief": task_brief, "delegationDepth": 2},
+            "parallel_branch": {"agentName": "Worker"},
+            "workspace_path": ".",
+        }
+    )
+    assert captured == ["required", None]
+    assert second.goto == "supervisor"
 
 
 def test_reviewer_without_override_reuses_budgeted_default_agent_model(monkeypatch):

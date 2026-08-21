@@ -99,9 +99,13 @@ test("Agent Browser is configured from Research without exposing Chrome and Edge
     assert.match(researchPage, /AgentBrowserPanel/);
     assert.match(browserPanel, /\/api\/agent-browser\/open/);
     assert.match(browserPanel, /fetchConfigDomain<SystemBaseData>\("system-base"/);
-    assert.match(browserPanel, /Promise\.allSettled/);
+    assert.doesNotMatch(browserPanel, /Promise\.allSettled/);
     assert.match(browserPanel, /useAgentBrowserProfile: true/);
     assert.match(browserPanel, /agentBrowserProfileAllowlist: allowlist/);
+    assert.match(browserPanel, /effectiveEnvelope/);
+    assert.match(browserPanel, /effectiveProfileEnabled/);
+    assert.match(browserPanel, /effectiveHostsAllowed/);
+    assert.match(browserPanel, /genericOpened/);
     assert.match(browserPanel, /agentBrowser\.profileConfigFailed/);
     assert.match(browserPanel, /https:\/\/metaso\.cn\//);
     assert.match(browserPanel, /https:\/\/www\.baidu\.com\//);
@@ -111,4 +115,9 @@ test("Agent Browser is configured from Research without exposing Chrome and Edge
     assert.doesNotMatch(rpaWorkbench, /browserKind:\s*[^\n]*["']chrome["']/);
     assert.match(rpaWorkbench, /browserKind:\s*[^\n]*["']auto["']/);
     assert.match(browserRoute, /\/agent-browser\/open/);
+
+    const saveIndex = browserPanel.indexOf("saveConfigDomain<SystemBaseData>");
+    const readBackIndex = browserPanel.indexOf("const effectiveEnvelope");
+    const openIndex = browserPanel.indexOf('fetch("/api/agent-browser/open"');
+    assert.ok(saveIndex >= 0 && readBackIndex > saveIndex && openIndex > readBackIndex);
 });

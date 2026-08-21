@@ -6822,6 +6822,71 @@ def test_parallel_branch_stops_semantic_artifact_stall_even_with_varied_messages
     assert counter > 20
 
 
+def test_parallel_branch_bounded_artifact_correction_returns_typed_write_tool_failure(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "artifact_worker",
+            "agentName": "Artifact Worker",
+            "delegationId": "delegation-artifact-correction",
+            "invocationId": "invoke-artifact-correction",
+            "taskBriefId": "TASK-ARTIFACT-CORRECTION",
+            "reason": "Create the expected HTML artifact.",
+            "taskBrief": {
+                "goal": "Create the expected HTML artifact.",
+                "writeRequired": True,
+                "writeSet": ["hospital-it-event-generator/index.html"],
+                "expectedOutputs": ["hospital-it-event-generator/index.html"],
+                "engineeringTaskCapsule": {
+                    "writeRequired": True,
+                    "expectedArtifacts": ["hospital-it-event-generator/index.html"],
+                },
+            },
+        },
+    }
+    counter = 0
+
+    def _node_func(_state):
+        nonlocal counter
+        counter += 1
+        return Command(
+            goto="supervisor",
+            update={"messages": [AIMessage(content="The artifact is complete.")]},
+        )
+
+    _messages, _todos, summary, _children = asyncio.run(
+        _run_parallel_agent_branch(
+            state,
+            {
+                "node_func": _node_func,
+                "tool_mode": "test",
+                "tools": [SimpleNamespace(name="write_native_file")],
+            },
+        )
+    )
+
+    assert counter == 3
+    assert summary["status"] == "blocked"
+    assert summary["error"] == "required_artifact_tool_not_called"
+    assert summary["requiredTool"] == "write_native_file"
+    assert summary["requiredToolVisible"] is True
+    assert summary["missingRequiredTool"] == "write_native_file"
+    assert summary["missingExpectedArtifacts"]
+    assert summary["availableTools"] == ["write_native_file"]
+    assert sum(
+        1
+        for message in _messages
+        if getattr(message, "additional_kwargs", {}).get("v8_governance_type")
+        == "required_artifact_tool_correction"
+    ) == 2
+
+
 def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exists(tmp_path):
     from graph.parallel_support import _run_parallel_agent_branch, _runtime_context_from_parallel_state
     from langchain_core.messages import HumanMessage

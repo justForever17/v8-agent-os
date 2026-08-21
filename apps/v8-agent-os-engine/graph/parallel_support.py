@@ -965,6 +965,67 @@ def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
     return records
 
 
+def _normalized_tool_surface_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if name.startswith("gateway."):
+        name = name[len("gateway.") :].strip()
+    if "." in name:
+        name = name.split(".", 1)[1].strip()
+    return name
+
+
+def _available_tool_surface(agent_data: dict[str, Any] | None) -> list[str]:
+    names: set[str] = set()
+    for tool_ref in list((agent_data or {}).get("tools") or []):
+        raw_name = getattr(tool_ref, "name", None) if not isinstance(tool_ref, str) else tool_ref
+        normalized = _normalized_tool_surface_name(raw_name)
+        if normalized:
+            names.add(normalized)
+    return sorted(names)
+
+
+def _required_artifact_write_status(
+    *,
+    branch: dict[str, Any],
+    state: dict[str, Any],
+    delta_messages: list[Any],
+    agent_data: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return bounded write evidence for a write-required delegated branch."""
+    expected_paths = _infer_expected_artifact_paths(branch, state)
+    if not expected_paths:
+        return None
+    records = _tool_execution_records(delta_messages)
+    write_records = [
+        record
+        for record in records
+        if _normalized_tool_surface_name(record.get("tool")) == "write_native_file"
+    ]
+    available_tools = _available_tool_surface(agent_data)
+    missing_paths = [str(path) for path in expected_paths if not path.exists()]
+    write_tool_succeeded = any(bool(record.get("succeeded")) for record in write_records)
+    return {
+        "requiredTool": "write_native_file",
+        "requiredToolVisible": "write_native_file" in available_tools,
+        "requiredToolChoice": (
+            "required"
+            if "write_native_file" in available_tools and not write_tool_succeeded
+            else None
+        ),
+        "availableTools": available_tools,
+        "toolCallCount": len(records),
+        "writeToolCallCount": len(write_records),
+        "writeToolSucceeded": write_tool_succeeded,
+        "missingRequiredTool": (
+            "write_native_file"
+            if "write_native_file" not in available_tools or not write_tool_succeeded
+            else None
+        ),
+        "expectedArtifacts": [str(path) for path in expected_paths],
+        "missingExpectedArtifacts": missing_paths,
+    }
+
+
 _CREATIVE_FACADE_BY_TOOL = {
     "creative_media_capabilities": "capabilities",
     "creative_media_plan": "plan",
@@ -2328,6 +2389,7 @@ async def _run_parallel_agent_branch(
     required_child_correction_count = 0
     verification_correction_count = 0
     creative_evidence_correction_count = 0
+    artifact_correction_count = 0
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
@@ -2871,6 +2933,58 @@ async def _run_parallel_agent_branch(
                     )
                     current_node = agent_id
                     continue
+                artifact_status = _required_artifact_write_status(
+                    branch=branch,
+                    state=local_state,
+                    delta_messages=control_messages,
+                    agent_data=agent_data,
+                )
+                missing_artifacts = list((artifact_status or {}).get("missingExpectedArtifacts") or [])
+                if artifact_status and missing_artifacts:
+                    if (
+                        bool(artifact_status.get("requiredToolVisible"))
+                        and artifact_correction_count < 2
+                    ):
+                        artifact_correction_count += 1
+                        final_retry = artifact_correction_count == 2
+                        exact_paths = ", ".join(f"`{path}`" for path in missing_artifacts[:16])
+                        local_state = _merge_state_update(
+                            local_state,
+                            {
+                                "messages": [
+                                    HumanMessage(
+                                        content=(
+                                            "[V8OS delegated artifact correction]\n"
+                                            "The delegated task is write-required, but its declared artifact is still missing. "
+                                            f"You MUST now call the real `write_native_file` tool for these exact workspace paths: {exact_paths}. "
+                                            + (
+                                                "This is the second and final correction; make the real write call now or return a typed blocker. "
+                                                if final_retry
+                                                else "Do not put HTML/source content or tool arguments in prose."
+                                            )
+                                            + " A successful ToolMessage and the resulting file are required before a final handoff."
+                                        ),
+                                        additional_kwargs={
+                                            "v8_governance_type": "required_artifact_tool_correction",
+                                            "v8_correction_attempt": artifact_correction_count,
+                                            "v8_required_tool": "write_native_file",
+                                            "v8_missing_expected_artifacts": missing_artifacts[:16],
+                                        },
+                                    )
+                                ]
+                            },
+                        )
+                        _publish_parallel_progress(
+                            progress_callback,
+                            stage="discipline_corrected",
+                            status="running",
+                            summary=(
+                                f"{branch.get('agentName') or agent_id} 正在补齐声明的文件产物"
+                                f"（{artifact_correction_count}/2）。"
+                            ),
+                        )
+                        current_node = agent_id
+                        continue
                 break
             current_node = goto
             continue
@@ -3039,6 +3153,48 @@ async def _run_parallel_agent_branch(
             "toolsUsed": _extract_tool_names(delta_messages),
             **artifact_failure,
         }, []
+    artifact_status = _required_artifact_write_status(
+        branch=branch,
+        state=local_state,
+        delta_messages=delta_messages,
+        agent_data=agent_data,
+    )
+    if artifact_status and artifact_status.get("missingExpectedArtifacts"):
+        write_tool_succeeded = bool(artifact_status.get("writeToolSucceeded"))
+        return delta_messages, delta_todos, {
+            "invocationId": branch.get("invocationId"),
+            "taskBriefId": branch.get("taskBriefId"),
+            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+            "taskGoal": branch.get("reason"),
+            "agentId": agent_id,
+            "agentName": branch.get("agentName") or agent_id,
+            "delegationId": branch.get("delegationId"),
+            "lane": branch.get("lane") or "subagent",
+            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+            "targetLabel": branch.get("agentName") or agent_id,
+            "branchIndex": branch.get("branchIndex"),
+            "status": "blocked",
+            "error": (
+                "required_artifact_tool_not_called"
+                if not write_tool_succeeded
+                else "expected_artifact_not_ready"
+            ),
+            "completedAt": _now_iso(),
+            "messageCount": len(delta_messages),
+            "todoDeltaCount": len(delta_todos),
+            "toolMode": agent_data.get("tool_mode"),
+            "toolsUsed": _extract_tool_names(delta_messages),
+            "compactTranscript": _compact_transcript(delta_messages),
+            "localSelfCheck": (
+                "The worker returned after bounded artifact corrections without a successful write_native_file "
+                "ToolMessage and a ready expected artifact. Prose completion is not delivery evidence."
+            ),
+            "acceptanceHint": (
+                "Retry the same delegated task with write_native_file visible and call it for every exact "
+                "expected path before acceptance."
+            ),
+            **artifact_status,
+        }, []
     verification_failure = _validate_required_verification_evidence(
         branch=branch,
         delta_messages=delta_messages,
@@ -3100,6 +3256,19 @@ async def _run_parallel_agent_branch(
         "todoDeltaCount": len(delta_todos),
         "toolMode": agent_data.get("tool_mode"),
         "toolsUsed": _extract_tool_names(delta_messages),
+        "availableTools": _available_tool_surface(agent_data),
+        **(
+            {
+                "requiredTool": artifact_status.get("requiredTool"),
+                "requiredToolVisible": artifact_status.get("requiredToolVisible"),
+                "requiredToolChoice": artifact_status.get("requiredToolChoice"),
+                "toolCallCount": artifact_status.get("toolCallCount"),
+                "writeToolCallCount": artifact_status.get("writeToolCallCount"),
+                "writeToolSucceeded": artifact_status.get("writeToolSucceeded"),
+            }
+            if artifact_status
+            else {}
+        ),
         "toolPolicy": dict((branch.get("taskBrief") or {}).get("toolPolicy") or {})
         if isinstance(branch.get("taskBrief"), dict)
         else {},

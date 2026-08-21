@@ -156,6 +156,29 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertTrue(result["dryRunMatrix"]["enabled"])
         self.assertGreaterEqual(result["dryRunMatrix"]["scenarioCount"], 4)
 
+    def test_context_pack_reconciles_explicit_task_brief_write_set(self) -> None:
+        temp, root = self._repo()
+        self.addCleanup(temp.cleanup)
+        task_brief = {
+            "taskBriefId": "explicit-write-set",
+            "goal": "Implement the bounded admin change.",
+            "writeRequired": True,
+            "writeSet": ["src/admin-panel.tsx"],
+            "expectedOutputs": ["src/admin-panel.tsx"],
+        }
+        with patch.object(engineering_lane_service, "get_config", return_value=_engineering_config()), patch(
+            "runtimes.engineering.service.workspace_resolution_service.resolve_workspace_descriptor",
+            return_value={"workspaceRoot": str(root), "source": "main_workspace", "isScopedOverride": False},
+        ), patch("runtimes.engineering.service.workflow_memory_service.match_hints", return_value=[]):
+            result = engineering_lane_service.build_context_pack(
+                user_query="实现 admin panel 改动",
+                mode="force",
+                task_brief=task_brief,
+            )
+        contract = result["codingExecutionContractPreview"]
+        self.assertEqual(contract["writeSet"], ["src/admin-panel.tsx"])
+        self.assertNotIn("write_set_missing", contract["riskFlags"])
+
     def test_soft_gate_warns_when_changed_file_outside_write_set(self) -> None:
         temp, root = self._repo()
         self.addCleanup(temp.cleanup)

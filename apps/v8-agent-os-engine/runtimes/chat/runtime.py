@@ -9643,6 +9643,49 @@ class ChatRuntime:
                 }
             )
 
+        # The initial chat context pack is intentionally optimistic and is built
+        # before the Supervisor has materialized its authoritative worker briefs.
+        # Once an Engineering capability episode exposes a real TaskBrief, its
+        # writeSet is the stronger projection source; do not surface the earlier
+        # task_brief=None diagnostic as if the delegated contract lacked a write set.
+        optimistic_risk_flags = [
+            str(flag).strip()
+            for flag in list(coding_contract.get("riskFlags") or [])
+            if str(flag).strip()
+        ]
+        authoritative_write_set = list(dict.fromkeys(
+            str(path).strip()
+            for capsule in task_capsules
+            for path in list(capsule.get("writeSet") or [])
+            if str(path).strip()
+        ))
+        projection_source = "optimistic_context_pack"
+        if authoritative_write_set:
+            authoritative_read_set = list(coding_contract.get("readSet") or [])
+            authoritative_verification_matrix = list(coding_contract.get("verificationMatrix") or [])
+            coding_contract = {
+                **coding_contract,
+                "writeSet": authoritative_write_set[:24],
+                "ownershipPlan": engineering_lane_service._ownership_plan(  # type: ignore[attr-defined]
+                    write_set=authoritative_write_set,
+                    read_set=authoritative_read_set,
+                ),
+                "mergeOrder": engineering_lane_service._merge_order(  # type: ignore[attr-defined]
+                    write_set=authoritative_write_set,
+                    verification_matrix=authoritative_verification_matrix,
+                ),
+                "proofExpectations": engineering_lane_service._proof_expectations(  # type: ignore[attr-defined]
+                    verification_matrix=authoritative_verification_matrix,
+                    write_set=authoritative_write_set,
+                ),
+                "riskFlags": [
+                    str(flag).strip()
+                    for flag in list(coding_contract.get("riskFlags") or [])
+                    if str(flag).strip() != "write_set_missing"
+                ],
+            }
+            projection_source = "runtime_task_briefs"
+
         ownership_plan = list(coding_contract.get("ownershipPlan") or []) if isinstance(coding_contract, dict) else []
         critical_files = list(coding_contract.get("criticalFiles") or [])[:12] if isinstance(coding_contract, dict) else []
         verification_matrix = [
@@ -9682,6 +9725,15 @@ class ChatRuntime:
                 "mergeOrder": list(coding_contract.get("mergeOrder") or [])[:6] if isinstance(coding_contract, dict) else [],
                 "selectedDelegations": selected_delegations[:12],
                 "taskCapsules": task_capsules,
+                "projectionSource": projection_source,
+                "taskBriefSource": "capability_episode_inputs" if task_briefs else "none",
+                "selectedDelegationsSource": "parallel_results" if selected_delegations else "none_observed",
+                "projectionDiagnostics": {
+                    "optimisticContextPackRiskFlags": optimistic_risk_flags[:8],
+                    "authoritativeTaskBriefObserved": bool(task_briefs),
+                    "writeSetReconciledFromTaskBrief": bool(authoritative_write_set),
+                    "selectedDelegationCountObserved": len(selected_delegations),
+                },
                 "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
                 "traceRef": {"runId": chat_run.active_run_id},
             },

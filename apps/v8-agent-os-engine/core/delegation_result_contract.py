@@ -188,6 +188,14 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "missingVerificationTools": _list(item.get("missingVerificationTools")),
         "verificationEvidenceMismatches": _list(item.get("verificationEvidenceMismatches")),
         "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
+        "availableTools": _list(item.get("availableTools")),
+        "requiredTool": item.get("requiredTool"),
+        "requiredToolVisible": item.get("requiredToolVisible"),
+        "requiredToolChoice": item.get("requiredToolChoice"),
+        "toolCallCount": item.get("toolCallCount"),
+        "writeToolCallCount": item.get("writeToolCallCount"),
+        "writeToolSucceeded": item.get("writeToolSucceeded"),
+        "missingRequiredTool": item.get("missingRequiredTool"),
         "toolPolicy": dict(item.get("toolPolicy") or task_brief.get("toolPolicy") or {})
         if isinstance(item.get("toolPolicy") or task_brief.get("toolPolicy") or {}, dict)
         else {},

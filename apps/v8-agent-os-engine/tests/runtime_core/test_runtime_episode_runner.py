@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -48,7 +49,22 @@ def _accepted_research_payload(
     question: str,
     *,
     primary_url: str = "https://docs.example.com/official",
+    fixture_time: datetime | None = None,
 ) -> dict:
+    if fixture_time is None:
+        fixture_retrieved_at = "2026-07-28T08:00:00Z"
+        fixture_as_of = "2026-07-28"
+        fixture_updated_at = "2026-07-27"
+    else:
+        normalized_fixture_time = (
+            fixture_time.replace(tzinfo=timezone.utc)
+            if fixture_time.tzinfo is None
+            else fixture_time.astimezone(timezone.utc)
+        ).replace(microsecond=0)
+        fixture_retrieved_at = normalized_fixture_time.isoformat().replace("+00:00", "Z")
+        fixture_as_of = normalized_fixture_time.date().isoformat()
+        fixture_updated_at = (normalized_fixture_time - timedelta(days=1)).date().isoformat()
+    fixture_reviewed_at = fixture_retrieved_at
     urls = [
         primary_url,
         "https://standards.example.org/reference",
@@ -66,14 +82,14 @@ def _accepted_research_payload(
             "title": f"Selected source {index}",
             "url": url,
             "selectedForEvidence": True,
-            "retrievedAt": "2026-07-28T08:00:00Z",
-            "updatedAt": "2026-07-27",
+            "retrievedAt": fixture_retrieved_at,
+            "updatedAt": fixture_updated_at,
             "contentChars": 6000,
             "readEvidence": {
                 "verified": True,
                 "contentChars": 6000,
                 "contentSha256": "c" * 64,
-                "retrievedAt": "2026-07-28T08:00:00Z",
+                "retrievedAt": fixture_retrieved_at,
             },
         }
         for index, url in enumerate(urls, start=1)
@@ -130,7 +146,7 @@ def _accepted_research_payload(
         "ok": True,
         "question": question,
         "freshness": "current",
-        "asOf": "2026-07-28",
+        "asOf": fixture_as_of,
         "reviewDecision": "accept",
         "independentReview": independent_review,
         "experienceReuse": {
@@ -145,17 +161,17 @@ def _accepted_research_payload(
             "sources": sources,
             "claimTable": claims,
             "limitations": [],
-            "asOf": "2026-07-28",
+            "asOf": fixture_as_of,
             "reviewDecision": "accept",
             "independentReview": independent_review,
         },
         "finalExperiencePack": {
             "question": question,
-            "asOf": "2026-07-28",
+            "asOf": fixture_as_of,
             "reviewDecision": "accept",
             "independentReview": independent_review,
             "temporalAssessment": {
-                "asOf": "2026-07-28",
+                "asOf": fixture_as_of,
                 "summary": "Current evidence was retrieved and independently reviewed for the requested date.",
             },
             "modelSynthesis": {
@@ -186,7 +202,7 @@ def _accepted_research_payload(
             build_research_review_binding(
                 payload,
                 reviewer_model_id=reviewer_model_id,
-                reviewed_at="2026-07-28T08:00:00Z",
+                reviewed_at=fixture_reviewed_at,
             )
         )
         consensus_reviews.append(review)
@@ -2489,10 +2505,13 @@ def test_research_handoff_consumer_hint_injects_only_a_short_refresh_decision_no
 
 def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypatch):
     calls: list[dict] = []
+    fixture_time = datetime.now(timezone.utc).replace(microsecond=0)
+    fixture_as_of = fixture_time.date().isoformat()
     expected_payload = _accepted_research_payload(
         "research_march7",
         "调研《崩坏：星穹铁道》三月七官方设定与剧情台词",
         primary_url="https://example.com/official",
+        fixture_time=fixture_time,
     )
 
     def _fake_research_broker(**kwargs):
@@ -2552,7 +2571,7 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert handoff["researchRefs"] == ["research://bundle/research_march7"]
     assert handoff["sourceCount"] == 8
     assert handoff["answer"] == expected_payload["researchAnswerPack"]["answer"]
-    assert handoff["asOf"] == "2026-07-28"
+    assert handoff["asOf"] == fixture_as_of
     assert handoff["reviewDecision"] == "accept"
     assert handoff["qualityTier"] == "high_quality"
     assert handoff["answerSha256"] == hashlib.sha256(

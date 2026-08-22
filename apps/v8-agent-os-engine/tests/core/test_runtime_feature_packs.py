@@ -1047,7 +1047,7 @@ def test_desktop_runtime_installs_and_probes_research_fetchers():
     desktop_preview = _requirements_text("desktop-preview.txt")
 
     for requirements in (minimal, desktop_preview):
-        assert re.search(r"^\s*scrapling\[fetchers\]==0\.4\.11\s*$", requirements, flags=re.MULTILINE)
+        assert re.search(r"^\s*scrapling\[fetchers\]==0\.4\.1\s*$", requirements, flags=re.MULTILINE)
         assert not re.search(r"^\s*scrapling\s*$", requirements, flags=re.MULTILINE)
 
     repo_root = ENGINE_ROOT.parents[1]

@@ -760,7 +760,9 @@ jobs:
           pkill -TERM -x 'V8 Agent OS' || true
           node apps/v8-agent-os-shell/tests/scripts/verify_desktop_cleanup.mjs \
             --state-root "$V8_AGENT_OS_HOME"
-          hdiutil detach "$mount_point" || hdiutil detach "$mount_point" -force
+          if mount | grep -Fq " on $mount_point "; then
+            hdiutil detach "$mount_point" || hdiutil detach "$mount_point" -force
+          fi
 
       - name: Print macOS desktop smoke service logs
         if: failure() && matrix.os == 'macos'

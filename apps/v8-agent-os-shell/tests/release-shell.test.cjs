@@ -913,6 +913,12 @@ test('desktop preview uses a slim portable Python release profile', () => {
   }
   assert.match(releaseRequirements, /-r platform-macos\.txt/);
   assert.match(releaseRequirements, /-r platform-linux\.txt/);
+  assert.match(releaseRequirements, /^scrapling\[fetchers\]==0\.4\.1$/m);
+  const minimalRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'minimal.txt'),
+    'utf8',
+  );
+  assert.match(minimalRequirements, /^scrapling\[fetchers\]==0\.4\.1$/m);
   const macRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'platform-macos.txt'),
     'utf8',
@@ -1240,6 +1246,12 @@ test('unified release keeps desktop runtime probes in CI evidence', () => {
   assert.doesNotMatch(appImageSmoke, /--shell-exe "\$appimage"/);
   assert.match(workflow, /Packaged macOS desktop smoke/);
   assert.match(workflow, /hdiutil attach "\$dmg_path" -mountpoint "\$mount_point" -nobrowse -readonly/);
+  const macCleanup = workflow.slice(
+    workflow.indexOf('Cleanup macOS desktop smoke processes'),
+    workflow.indexOf('Print macOS desktop smoke service logs'),
+  );
+  assert.match(macCleanup, /if mount \| grep -Fq " on \$mount_point "; then/);
+  assert.match(macCleanup, /hdiutil detach "\$mount_point" \|\| hdiutil detach "\$mount_point" -force/);
   assert.match(workflow, /Install Linux desktop preview package/);
   assert.match(workflow, /mapfile -t deb_paths/);
   assert.match(workflow, /test "\$\{#deb_paths\[@\]\}" -eq 1/);

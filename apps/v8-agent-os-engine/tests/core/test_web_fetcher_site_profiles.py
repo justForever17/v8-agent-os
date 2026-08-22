@@ -333,6 +333,60 @@ def test_static_fetch_does_not_restart_tls_attempt_after_budget_is_exhausted(mon
     assert elapsed < 1.2
 
 
+def test_missing_scrapling_fetcher_dependency_is_terminal_and_actionable() -> None:
+    error = "No module named 'curl_cffi'"
+
+    assert web_fetcher._classify_web_fetch_failure(error) == "runtime_dependency_missing"
+    payload = json.loads(
+        web_fetcher._render_error_payload(
+            url="https://search.example.com",
+            requested_mode="dynamic",
+            referer_mode="none",
+            referer_url="",
+            error=error,
+        )
+    )
+
+    assert payload["failureClass"] == "runtime_dependency_missing"
+    assert payload["retryable"] is False
+    assert "重新安装 V8OS" in payload["recommendedNextAction"]
+
+
+def test_explicit_metaso_search_preserves_runtime_dependency_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {"globalPreferred": ["metaso"], "cnPreferred": ["metaso"]},
+            "providers": {"metaso": {"enabled": True}},
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    monkeypatch.setattr(web_fetcher, "_agent_browser_profile_search_skip", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_search_public",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "failureClass": "runtime_dependency_missing",
+            "reason": "No module named 'curl_cffi'",
+        },
+    )
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="LangChain release history",
+            search_engine="metaso",
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["failureClass"] == "runtime_dependency_missing"
+    assert payload["retryable"] is False
+    assert "重新安装 V8OS" in payload["recommendedNextAction"]
+
+
 def test_auto_search_preserves_budget_for_a_later_working_provider(monkeypatch) -> None:
     timeouts: list[tuple[str, float]] = []
 

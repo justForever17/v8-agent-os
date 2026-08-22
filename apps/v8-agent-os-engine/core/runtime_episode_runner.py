@@ -710,6 +710,116 @@ def _research_handoff_consumer_hint(experience_reuse: dict[str, Any] | None) -> 
     return f"{hint} Supervisor update note: {note}" if note else hint
 
 
+def _research_source_acquisition_diagnostic(run_payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the bounded source-transport diagnosis without exposing raw fetch data.
+
+    Research quality floors deliberately remain fail-closed.  The broker also
+    records a typed transport summary when every provider is unavailable or
+    terminal for the current run, but the old episode handoff dropped that
+    field and made a transport failure look like an answer-length failure.
+    Keep this projection small and provider-agnostic so the Supervisor can
+    repair login/configuration and start a new run without receiving URLs,
+    cookies, or raw provider payloads.
+    """
+
+    payload = dict(run_payload or {})
+    loop_state = payload.get("researchLoopState")
+    loop_state = loop_state if isinstance(loop_state, dict) else {}
+    rounds = [item for item in list(loop_state.get("rounds") or []) if isinstance(item, dict)]
+    transport = loop_state.get("transportSummary")
+    if not isinstance(transport, dict):
+        for round_item in reversed(rounds):
+            candidate = round_item.get("transportSummary")
+            if isinstance(candidate, dict):
+                transport = candidate
+                break
+    if not isinstance(transport, dict):
+        return {}
+
+    def _bounded_count(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    providers: list[dict[str, Any]] = []
+    for item in list(transport.get("providers") or [])[:16]:
+        if not isinstance(item, dict):
+            continue
+        provider = _preview(item.get("provider"), limit=80)
+        if not provider:
+            continue
+        failure_classes = list(
+            dict.fromkeys(
+                _preview(value, limit=80)
+                for value in list(item.get("failureClasses") or [])[:8]
+                if _preview(value, limit=80)
+            )
+        )
+        providers.append(
+            {
+                "provider": provider,
+                "state": _preview(item.get("state"), limit=80),
+                "attemptCount": _bounded_count(item.get("attemptCount")),
+                **({"failureClasses": failure_classes} if failure_classes else {}),
+            }
+        )
+
+    failure_classes = list(
+        dict.fromkeys(
+            failure_class
+            for item in providers
+            for failure_class in list(item.get("failureClasses") or [])
+            if failure_class
+        )
+    )[:16]
+    loop_report = loop_state.get("researchLoopReport")
+    loop_report = loop_report if isinstance(loop_report, dict) else {}
+    readable_source_count = max(
+        len(list(loop_state.get("readSources") or [])),
+        *(_bounded_count(item.get("readSourceCount")) for item in rounds),
+        0,
+    )
+    selected_source_count = max(
+        *(_bounded_count(item.get("selectedSourceCount")) for item in rounds),
+        _bounded_count(loop_report.get("selectedSourceCount")),
+        0,
+    )
+    exhausted = bool(transport.get("exhaustedForRun") is True)
+    stop_reason = _preview(loop_state.get("stopReason"), limit=100)
+    if stop_reason == "source_transport_exhausted":
+        exhausted = True
+    if (
+        readable_source_count == 0
+        and selected_source_count == 0
+        and stop_reason
+        in {
+            "architect_evidence_repair_no_new_evidence",
+            "no_refinement_queries_available",
+        }
+    ):
+        exhausted = True
+    if not providers and not exhausted and not stop_reason:
+        return {}
+    recommended_next_action = _preview(transport.get("recommendedNextAction"), limit=360)
+    if "runtime_dependency_missing" in failure_classes:
+        recommended_next_action = (
+            "Repair or reinstall the V8OS Research fetcher dependencies, then start a new Research run."
+        )
+    return {
+        "state": "exhausted" if exhausted else "observed",
+        "stopReason": stop_reason,
+        "exhaustedForRun": exhausted,
+        "reachableButIrrelevant": bool(transport.get("reachableButIrrelevant") is True),
+        "providerCount": _bounded_count(transport.get("providerCount") or len(providers)),
+        "readableSourceCount": readable_source_count,
+        "selectedSourceCount": selected_source_count,
+        **({"failureClasses": failure_classes} if failure_classes else {}),
+        "providers": providers,
+        "recommendedNextAction": recommended_next_action,
+    }
+
+
 def _research_evidence_status(
     *,
     brief: dict[str, Any],
@@ -729,6 +839,11 @@ def _research_evidence_status(
     reasons: list[str] = []
     if run_payload.get("_transportDeliveryReady") is False:
         reasons.append("research_delivery_gate_not_ready")
+    source_acquisition = _research_source_acquisition_diagnostic(run_payload)
+    if not source_items and source_acquisition.get("state") == "exhausted":
+        reasons.append("research_source_transport_exhausted")
+        if "runtime_dependency_missing" in list(source_acquisition.get("failureClasses") or []):
+            reasons.append("research_source_runtime_dependency_missing")
     research_quality = _research_quality_module()
     quality_accepted = research_quality.research_bundle_is_high_quality(run_payload)
     if not quality_accepted:
@@ -2557,6 +2672,7 @@ class RuntimeEpisodeRunner:
             missing_evidence = research_quality.research_missing_evidence(run_payload)
             critical_missing_evidence = research_quality.research_critical_missing_evidence(run_payload)
             recommended_queries = _research_recommended_queries(run_payload)
+            source_acquisition = _research_source_acquisition_diagnostic(run_payload)
             brief_coverage = [
                 dict(item)
                 for item in list(run_payload.get("briefCoverage") or [])
@@ -2659,6 +2775,7 @@ class RuntimeEpisodeRunner:
                     "evidenceStatusReasons": evidence_status_reasons,
                     "briefCoverage": brief_coverage,
                     "briefCoverageComplete": run_payload.get("briefCoverageComplete") is True,
+                    "sourceAcquisition": source_acquisition,
                 }
             )
 
@@ -2724,6 +2841,27 @@ class RuntimeEpisodeRunner:
                 if str(query).strip()
             )
         )[:8]
+        source_acquisition_by_brief = [
+            {
+                "taskBriefId": str(item.get("taskBriefId") or "").strip(),
+                **dict(item.get("sourceAcquisition") or {}),
+            }
+            for item in unit_results
+            if isinstance(item.get("sourceAcquisition"), dict)
+            and item.get("sourceAcquisition")
+        ]
+        exhausted_source_acquisition = [
+            item
+            for item in source_acquisition_by_brief
+            if item.get("state") == "exhausted"
+        ]
+        source_acquisition_summary = (
+            dict(exhausted_source_acquisition[0])
+            if exhausted_source_acquisition
+            else dict(source_acquisition_by_brief[0])
+            if source_acquisition_by_brief
+            else {}
+        )
         if missing_task_brief_ids:
             aggregate_quality_tier = "insufficient"
             unit_review_decisions = {
@@ -2785,6 +2923,7 @@ class RuntimeEpisodeRunner:
                         "evidenceStatusReasons",
                         "briefCoverage",
                         "briefCoverageComplete",
+                        "sourceAcquisition",
                     )
                 }
                 for item in unit_results
@@ -2811,6 +2950,8 @@ class RuntimeEpisodeRunner:
             "temporalAssessment": unit_results[0].get("temporalAssessment") if len(unit_results) == 1 else {},
             "experienceReuse": unit_results[0].get("experienceReuse") if len(unit_results) == 1 else {},
             "forceRefreshRequested": unit_results[0].get("forceRefreshRequested") if len(unit_results) == 1 else False,
+            "sourceAcquisition": source_acquisition_summary,
+            "sourceAcquisitionByBrief": source_acquisition_by_brief[:16],
         }
         if missing_task_brief_ids:
             evidence_gaps = [
@@ -2838,7 +2979,28 @@ class RuntimeEpisodeRunner:
             ]
             retry_exhausted = final_repair_attempt
             has_downstream_evidence = bool(ready_units)
-            if retry_exhausted:
+            source_transport_exhausted = bool(exhausted_source_acquisition)
+            source_dependency_missing = any(
+                "runtime_dependency_missing" in list(item.get("failureClasses") or [])
+                for item in exhausted_source_acquisition
+            )
+            if source_transport_exhausted:
+                if source_dependency_missing:
+                    consumer_hint = (
+                        "Research could not load the installed webpage fetchers, so no readable evidence entered the "
+                        "Architect. Repair or reinstall the V8OS Research runtime dependencies, then start a new "
+                        "Research run; do not lower the answer-quality floor or treat search-process text as the answer."
+                    )
+                    recommended_next_action = "repair_research_runtime_dependencies"
+                else:
+                    consumer_hint = (
+                        "Research exhausted the configured source transports before any readable evidence entered the "
+                        "Architect. Repair the governed Agent Browser login/allowlist or configure an available provider, "
+                        "then start a new Research run; do not lower the answer-quality floor or treat search-process text "
+                        "as the answer."
+                    )
+                    recommended_next_action = "repair_research_source_access"
+            elif retry_exhausted:
                 consumer_hint = (
                     "The bounded Research repair is exhausted. Carry the typed evidenceGaps into a downstream "
                     "task only for reversible, locally verifiable work when safe; otherwise report the blocker. "
@@ -2866,8 +3028,20 @@ class RuntimeEpisodeRunner:
                 consumer_hint=consumer_hint,
                 extra={
                     **coverage_extra,
-                    "researchState": "partial_evidence" if ready_units else "evidence_missing",
-                    "degradedReason": "research_run_missing_evidence",
+                    "researchState": (
+                        "source_acquisition_failed"
+                        if source_transport_exhausted
+                        else "partial_evidence"
+                        if ready_units
+                        else "evidence_missing"
+                    ),
+                    "degradedReason": (
+                        "research_source_runtime_dependency_missing"
+                        if source_dependency_missing
+                        else "research_source_transport_exhausted"
+                        if source_transport_exhausted
+                        else "research_run_missing_evidence"
+                    ),
                     "recommendedNextAction": recommended_next_action,
                     "retryExhausted": retry_exhausted,
                     "evidenceGaps": evidence_gaps,
@@ -4101,6 +4275,43 @@ class RuntimeEpisodeRunner:
             "todo:",
             "tbd",
         )
+
+        def _contains_unresolved_placeholder(text: str) -> bool:
+            """Detect unresolved content without flagging a negated mention.
+
+            Engineering research-like Markdown often records the acceptance
+            contract itself (for example, "不得出现占位字样").  A raw
+            substring check treated that explanation as a placeholder and
+            blocked an otherwise complete artifact.  Keep the gate strict for
+            status/value lines while ignoring explicit negation or wording
+            that discusses the marker as a term.
+            """
+
+            negation = re.compile(
+                r"(?:不允许|不得|禁止|避免|不要|不应|不出现|未出现|没有|无(?:任何)?|不存在|"
+                r"not|without|no)\s*.{0,12}$",
+                re.IGNORECASE,
+            )
+            term_mention = re.compile(
+                r"(?:字样|词语|术语|标记|token|text|string)\s*$",
+                re.IGNORECASE,
+            )
+            for raw_line in text.splitlines():
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                lowered = line.lower()
+                for marker in placeholder_markers:
+                    index = lowered.find(marker.lower())
+                    if index < 0:
+                        continue
+                    before = lowered[:index].rstrip(" `*_\"'：:，,。;；-–—")
+                    after = lowered[index + len(marker) :].lstrip(" `*_\"'：:，,。;；-–—")
+                    if negation.search(before) or term_mention.search(after):
+                        continue
+                    return True
+            return False
+
         unready: list[str] = []
         for value in cls._engineering_expected_artifact_values(briefs):
             normalized = str(value or "").strip().strip("`'\"")
@@ -4123,11 +4334,11 @@ class RuntimeEpisodeRunner:
                 content = resolved.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 continue
-            normalized_content = content.strip().lower()
+            normalized_content = content.strip()
             if not normalized_content:
                 unready.append(normalized)
                 continue
-            if any(marker in normalized_content for marker in placeholder_markers):
+            if _contains_unresolved_placeholder(normalized_content):
                 unready.append(normalized)
         return unready
 

@@ -1111,6 +1111,7 @@
   "web.governance.noClarifications": "No clarification records.",
   "web.governance.blockers": "Blocked by: {value}",
   "web.governance.warnings": "Notes: {value}",
+  "web.governance.humanGuidance": "User-injected message",
   "web.governance.reject": "Reject",
   "web.collaborationMicroStage.status.active": "Running",
   "web.collaborationMicroStage.status.attempted": "Attempted",

@@ -321,6 +321,40 @@ def build_runtime_episode_wait_node():
         return updated, available
 
     def _compact_handoff_projection(handoff: dict) -> dict:
+        def _compact_source_acquisition(value: object) -> dict:
+            if not isinstance(value, dict):
+                return {}
+            providers = [
+                {
+                    "provider": _string_value(item.get("provider"))[:80],
+                    "state": _string_value(item.get("state"))[:80],
+                    "attemptCount": int(item.get("attemptCount") or 0),
+                    "failureClasses": [
+                        str(reason)[:80]
+                        for reason in list(item.get("failureClasses") or [])[:8]
+                        if str(reason).strip()
+                    ],
+                }
+                for item in list(value.get("providers") or [])[:16]
+                if isinstance(item, dict) and _string_value(item.get("provider"))
+            ]
+            return {
+                "state": _string_value(value.get("state"))[:80],
+                "stopReason": _string_value(value.get("stopReason"))[:120],
+                "exhaustedForRun": bool(value.get("exhaustedForRun")),
+                "reachableButIrrelevant": bool(value.get("reachableButIrrelevant")),
+                "providerCount": int(value.get("providerCount") or len(providers)),
+                "readableSourceCount": int(value.get("readableSourceCount") or 0),
+                "selectedSourceCount": int(value.get("selectedSourceCount") or 0),
+                "failureClasses": [
+                    str(reason)[:80]
+                    for reason in list(value.get("failureClasses") or [])[:16]
+                    if str(reason).strip()
+                ],
+                "providers": providers,
+                "recommendedNextAction": _string_value(value.get("recommendedNextAction"))[:360],
+            }
+
         def _is_research_result(item: dict) -> bool:
             return bool(
                 item.get("answer")
@@ -727,6 +761,7 @@ def build_runtime_episode_wait_node():
                         str(value)[:160]
                         for value in list(item.get("evidenceStatusReasons") or [])[:6]
                     ],
+                    "sourceAcquisition": _compact_source_acquisition(item.get("sourceAcquisition")),
                 }
             )
         visible_research_answer_count = sum(
@@ -875,6 +910,7 @@ def build_runtime_episode_wait_node():
             "projectionRecoveryAvailable": projection_recovery_available,
             "consumerHint": _string_value(handoff.get("consumerHint"), handoff.get("recommendedNextAction"))[:600],
             "recommendedNextAction": _string_value(handoff.get("recommendedNextAction"))[:160],
+            "sourceAcquisition": _compact_source_acquisition(handoff.get("sourceAcquisition")),
             "taskBriefIds": [
                 str(item).strip()
                 for item in list(handoff.get("taskBriefIds") or [])
@@ -1242,6 +1278,19 @@ def build_runtime_episode_wait_node():
                         detail_tool = _string_value(result.get("detailTool"))
                         if detail_tool:
                             lines.append("    detail: " + detail_tool)
+                    source_acquisition = (
+                        result.get("sourceAcquisition")
+                        if isinstance(result.get("sourceAcquisition"), dict)
+                        else {}
+                    )
+                    if source_acquisition.get("state"):
+                        lines.append(
+                            "    source acquisition: "
+                            f"state={source_acquisition.get('state')}; "
+                            f"stopReason={source_acquisition.get('stopReason') or 'unknown'}; "
+                            f"readableSources={int(source_acquisition.get('readableSourceCount') or 0)}; "
+                            f"failureClasses={','.join(list(source_acquisition.get('failureClasses') or [])) or 'none'}"
+                        )
                     if result.get("limitations"):
                         lines.append(
                             "    limitations: "

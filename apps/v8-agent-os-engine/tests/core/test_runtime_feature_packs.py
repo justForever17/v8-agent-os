@@ -1040,3 +1040,24 @@ def test_requirements_move_heavy_runtime_dependencies_into_feature_packs():
     _assert_requirement_present(motion_capture_pack, "mediapipe")
     _assert_requirement_absent(desktop_common, "mediapipe")
     _assert_requirement_absent(desktop_preview, "mediapipe")
+
+
+def test_desktop_runtime_installs_and_probes_research_fetchers():
+    minimal = _requirements_text("minimal.txt")
+    desktop_preview = _requirements_text("desktop-preview.txt")
+
+    for requirements in (minimal, desktop_preview):
+        assert re.search(r"^\s*scrapling\[fetchers\]==0\.4\.11\s*$", requirements, flags=re.MULTILINE)
+        assert not re.search(r"^\s*scrapling\s*$", requirements, flags=re.MULTILINE)
+
+    repo_root = ENGINE_ROOT.parents[1]
+    windows_prepare = (repo_root / "scripts" / "desktop" / "prepare-windows-python-runtime.ps1").read_text(
+        encoding="utf-8"
+    )
+    posix_prepare = (repo_root / "scripts" / "desktop" / "prepare-posix-python-runtime.mjs").read_text(
+        encoding="utf-8"
+    )
+    for prepare_script in (windows_prepare, posix_prepare):
+        assert "import curl_cffi" in prepare_script
+        assert "from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher" in prepare_script
+        assert "V8OS_RESEARCH_FETCHERS_OK" in prepare_script

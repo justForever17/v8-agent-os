@@ -9057,6 +9057,32 @@ def test_research_loop_stops_when_all_transports_are_exhausted_for_the_run(monke
     assert state["nextQueries"] == []
 
 
+def test_research_transport_treats_missing_packaged_fetcher_as_terminal() -> None:
+    summary = research_module._research_transport_failure_summary(
+        [
+            {
+                "providerAttemptMatrix": [
+                    {
+                        "provider": "metaso",
+                        "status": "error",
+                        "failureClass": "runtime_dependency_missing",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert summary["exhaustedForRun"] is True
+    assert summary["providers"] == [
+        {
+            "provider": "metaso",
+            "state": "unavailable_until_configuration_changes",
+            "attemptCount": 1,
+            "failureClasses": ["runtime_dependency_missing"],
+        }
+    ]
+
+
 def test_research_loop_allows_one_refinement_for_reachable_irrelevant_results(monkeypatch):
     calls = 0
 

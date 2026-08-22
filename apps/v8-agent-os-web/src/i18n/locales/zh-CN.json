@@ -1111,6 +1111,7 @@
   "web.governance.noClarifications": "暂无澄清记录。",
   "web.governance.blockers": "阻断：{value}",
   "web.governance.warnings": "提醒：{value}",
+  "web.governance.humanGuidance": "用户主动注入消息",
   "web.governance.reject": "拒绝",
   "web.collaborationMicroStage.status.active": "运行中",
   "web.collaborationMicroStage.status.attempted": "已尝试",

@@ -1474,6 +1474,39 @@ def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeh
     assert results[1]["blockedDependencies"] == ["TASK-001"]
 
 
+def test_engineering_research_artifact_guard_ignores_negated_placeholder_mentions(tmp_path):
+    report = tmp_path / "V8OS测评.md"
+    report.write_text(
+        "# 实测报告\n\n"
+        "本报告按合同交付；不得出现任何占位字样，正文已完成。\n"
+        "没有待补充内容，所有章节均已核对。\n",
+        encoding="utf-8",
+    )
+    brief = {
+        "taskBriefId": "report",
+        "goal": "Write a reusable Markdown evaluation report.",
+        "context": {"runtimeLane": "Research"},
+        "writeRequired": True,
+        "expectedArtifacts": ["V8OS测评.md"],
+        "engineeringTaskCapsule": {
+            "writeRequired": True,
+            "expectedArtifacts": ["V8OS测评.md"],
+        },
+    }
+
+    assert RuntimeEpisodeRunner._engineering_unready_expected_artifacts(
+        workspace_path=str(tmp_path),
+        worker_briefs=[brief],
+    ) == []
+    guarded = RuntimeEpisodeRunner._delegation_summary_with_expected_artifact_guard(
+        {"status": "ok", "artifactRefs": [{"path": str(report)}]},
+        branch={"taskBrief": brief},
+        workspace_path=str(tmp_path),
+    )
+    assert guarded["status"] == "ok"
+    assert "error" not in guarded
+
+
 def test_engineering_expected_artifact_guard_reads_managed_child_worktree(monkeypatch, tmp_path):
     parent_workspace = tmp_path / "parent"
     child_workspace = tmp_path / "child"
@@ -3328,6 +3361,113 @@ def test_research_episode_does_not_mark_missing_official_information_ready(monke
     assert handoff["status"] == "degraded"
     assert handoff["missingTaskBriefIds"] == ["python-windows"]
     assert "explicit_critical_evidence_gap" in handoff["taskBriefResults"][0]["evidenceStatusReasons"]
+
+
+@pytest.mark.parametrize(
+    (
+        "failure_class",
+        "stop_reason",
+        "transport_exhausted",
+        "expected_degraded_reason",
+        "expected_next_action",
+    ),
+    [
+        (
+            "needs_agent_browser_login",
+            "source_transport_exhausted",
+            True,
+            "research_source_transport_exhausted",
+            "repair_research_source_access",
+        ),
+        (
+            "runtime_dependency_missing",
+            "architect_evidence_repair_no_new_evidence",
+            False,
+            "research_source_runtime_dependency_missing",
+            "repair_research_runtime_dependencies",
+        ),
+    ],
+)
+def test_research_episode_surfaces_source_transport_exhaustion_without_lowering_quality_floor(
+    monkeypatch,
+    failure_class,
+    stop_reason,
+    transport_exhausted,
+    expected_degraded_reason,
+    expected_next_action,
+):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") != "run":
+            return json.dumps({"ok": True, "items": []})
+        return json.dumps(
+            {
+                "ok": False,
+                "kind": "research_evidence_bundle",
+                "researchAnswerPack": {"answer": "", "sources": [], "claimTable": []},
+                "researchLoopState": {
+                    "stopReason": stop_reason,
+                    "readSources": [],
+                    "researchLoopReport": {"selectedSourceCount": 0},
+                    "transportSummary": {
+                        "exhaustedForRun": transport_exhausted,
+                        "reachableButIrrelevant": False,
+                        "providerCount": 2,
+                        "providers": [
+                            {
+                                "provider": "metaso",
+                                "state": "unavailable_until_configuration_changes",
+                                "attemptCount": 1,
+                                "failureClasses": [failure_class],
+                            },
+                            {
+                                "provider": "baidu",
+                                "state": "unavailable_until_configuration_changes",
+                                "attemptCount": 1,
+                                "failureClasses": [failure_class],
+                            },
+                        ],
+                        "recommendedNextAction": "Repair the governed Agent Browser login surface.",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "diagnose source transport"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "transport-gap",
+                        "goal": "Explain the configured provider access failure.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["degradedReason"] == expected_degraded_reason
+    assert handoff["recommendedNextAction"] == expected_next_action
+    result = handoff["taskBriefResults"][0]
+    assert result["sourceAcquisition"]["state"] == "exhausted"
+    assert result["sourceAcquisition"]["failureClasses"] == [failure_class]
+    assert result["sourceAcquisition"]["providers"][0]["failureClasses"] == [failure_class]
+    assert result["sourceAcquisition"]["readableSourceCount"] == 0
+    assert "research_source_transport_exhausted" in result["evidenceStatusReasons"]
+    if failure_class == "runtime_dependency_missing":
+        assert "research_source_runtime_dependency_missing" in result["evidenceStatusReasons"]
+    assert "do not lower the answer-quality floor" in handoff["consumerHint"]
 
 
 @pytest.mark.parametrize(

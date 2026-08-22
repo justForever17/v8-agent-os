@@ -23222,6 +23222,7 @@ _RESEARCH_PROVIDER_TERMINAL_FAILURES = {
     "provider_unconfigured",
     "provider_unknown",
     "needs_agent_browser_login",
+    "runtime_dependency_missing",
     "blocked_by_safety",
 }
 _RESEARCH_PROVIDER_BOUNDED_RETRY_FAILURES = {

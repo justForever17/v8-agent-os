@@ -541,6 +541,10 @@ if ($Architecture -eq "arm64") {
 }
 $requirementsInstallArguments += @("-r", $installRequirementsFile)
 Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments $requirementsInstallArguments -Description "Install desktop preview Engine requirements"
+Invoke-Checked -FilePath $pythonExe -Arguments @(
+  "-X", "utf8", "-c",
+  "import curl_cffi; from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher; print('V8OS_RESEARCH_FETCHERS_OK')"
+)
 
 if ($Architecture -eq "arm64") {
   $arm64CompatibilityVersionProbe = @"

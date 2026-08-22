@@ -293,6 +293,12 @@ async function main() {
     run(python, ["-m", "ensurepip", "--upgrade"]);
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel"]);
     run(python, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", requirementsPath]);
+    run(python, [
+      "-X",
+      "utf8",
+      "-c",
+      "import curl_cffi; from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher; print('V8OS_RESEARCH_FETCHERS_OK')",
+    ]);
     if (runtime.platform === "linux") {
       await installLinuxPyatspi(python, runtimeDir, workDir);
       run(python, ["-m", "pip", "check"]);

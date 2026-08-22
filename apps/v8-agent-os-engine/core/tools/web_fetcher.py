@@ -1912,6 +1912,13 @@ def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
         return "network_timeout"
     if "invalid argument" in lowered or "expected `int`" in lowered:
         return "tool_configuration_error"
+    if (
+        "no module named" in lowered
+        or "cannot import name" in lowered
+        or "module not found" in lowered
+        or "is not installed" in lowered
+    ):
+        return "runtime_dependency_missing"
     if "no active session available" in lowered:
         return "tool_context_unavailable"
     if "agent_browser_profile_not_allowed" in lowered:
@@ -4095,6 +4102,8 @@ def _render_error_payload(
                 if failure_class == "agent_browser_profile_mismatch"
                 else "Agent 浏览器 profile 未启用或目标域名未命中 allowlist；请在 Admin / System Base 配置 useAgentBrowserProfile 与 allowlist，或改用无登录公开来源。"
                 if failure_class == "agent_browser_profile_not_allowed"
+                else "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
+                if failure_class == "runtime_dependency_missing"
                 else "根据 failureClass 决定换源、缩小请求或停止该工具链。"
             ),
             "error": normalized_error,
@@ -6146,7 +6155,11 @@ def web_search(
                                 "failureClass": metaso_result.get("failureClass") or "search_failed",
                                 "elapsedMs": int((time.monotonic() - started_at) * 1000),
                                 "retryable": metaso_result.get("failureClass") in {"provider_rate_limited", "network_timeout", "deadline_exceeded", "no_results"},
-                                "recommendedNextAction": "MetaSo 公共搜索当前限流或无结果；请启用 Agent 浏览器登录态、稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。",
+                                "recommendedNextAction": (
+                                    "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
+                                    if metaso_result.get("failureClass") == "runtime_dependency_missing"
+                                    else "MetaSo 公共搜索当前限流或无结果；请启用 Agent 浏览器登录态、稍后重试、换 search_vertical，或让 auto 降级到其他搜索源。"
+                                ),
                                 "error": last_error,
                                 **_source_router_payload_fields(
                                     router_plan,
@@ -6414,6 +6427,8 @@ def web_search(
         operational_attempts = [item for item in attempted_providers if item.get("status") != "blocked"]
     if operational_attempts and all(item.get("failureClass") == "network_timeout" for item in operational_attempts):
         aggregate_failure = "network_timeout"
+    elif any(item.get("failureClass") == "runtime_dependency_missing" for item in operational_attempts):
+        aggregate_failure = "runtime_dependency_missing"
     elif any(item.get("failureClass") == "tool_configuration_error" for item in operational_attempts):
         aggregate_failure = "tool_configuration_error"
     elif any(item.get("failureClass") == "tool_context_unavailable" for item in operational_attempts):
@@ -6438,6 +6453,8 @@ def web_search(
             "recommendedNextAction": (
                 "部分搜索源当前不可用；优先使用 MetaSo/DuckDuckGo，或换 search_vertical/缩小关键词，或改用 research_broker 记录 failed_source。"
                 if aggregate_failure in {"network_timeout", "search_failed", "provider_challenge", "no_results"}
+                else "当前安装缺少 Research 网页抓取依赖。请修复或重新安装 V8OS 后开始新的 Research run；重复当前搜索不会恢复依赖。"
+                if aggregate_failure == "runtime_dependency_missing"
                 else "检查工具配置/安全审批上下文；不要继续盲等 watchdog。"
             ),
             "error": last_error or "No search provider returned usable results.",

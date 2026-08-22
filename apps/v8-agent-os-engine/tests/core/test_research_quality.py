@@ -258,6 +258,21 @@ def test_research_quality_rejects_short_or_uncited_answer() -> None:
     assert f"answer_citation_floor_not_met:{MIN_RESEARCH_SOURCE_COUNT}" in issues
 
 
+def test_research_quality_does_not_count_page_body_as_final_answer() -> None:
+    payload = _accepted_payload()
+    payload["researchAnswerPack"]["answer"] = "[S1] 简短结论。"
+    for source in payload["researchAnswerPack"]["sources"]:
+        source["text"] = "网页正文事实。" * 2000
+        source["contentChars"] = len(source["text"])
+        source["readEvidence"]["contentChars"] = len(source["text"])
+
+    metrics = research_acceptance_metrics(payload)
+    issues = research_acceptance_issues(payload)
+
+    assert metrics["effectiveAnswerChars"] < MIN_RESEARCH_ANSWER_CHARS
+    assert f"detailed_answer_floor_not_met:{MIN_RESEARCH_ANSWER_CHARS}" in issues
+
+
 def test_research_quality_rejects_citation_list_without_inline_evidence_spread() -> None:
     payload = _accepted_payload()
     citation_keys = [f"[S{index}]" for index in range(1, MIN_RESEARCH_SOURCE_COUNT + 1)]

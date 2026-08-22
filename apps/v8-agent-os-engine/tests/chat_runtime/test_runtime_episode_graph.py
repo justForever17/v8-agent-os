@@ -1212,6 +1212,24 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
             },
             "coverageComplete": False,
             "recommendedNextAction": "retry_missing_research_briefs",
+            "sourceAcquisition": {
+                "state": "exhausted",
+                "stopReason": "architect_evidence_repair_no_new_evidence",
+                "exhaustedForRun": True,
+                "providerCount": 1,
+                "readableSourceCount": 0,
+                "selectedSourceCount": 0,
+                "failureClasses": ["runtime_dependency_missing"],
+                "providers": [
+                    {
+                        "provider": "metaso",
+                        "state": "unavailable_until_configuration_changes",
+                        "attemptCount": 1,
+                        "failureClasses": ["runtime_dependency_missing"],
+                    }
+                ],
+                "recommendedNextAction": "Repair the installed Research fetchers.",
+            },
             "taskBriefResults": [
                 {
                     "taskBriefId": "jsonb",
@@ -1225,6 +1243,24 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
                     "claimCount": 2,
                     "limitations": ["Official SQLite JSONB boundary was not established."],
                     "evidenceStatusReasons": ["explicit_critical_evidence_gap"],
+                    "sourceAcquisition": {
+                        "state": "exhausted",
+                        "stopReason": "architect_evidence_repair_no_new_evidence",
+                        "exhaustedForRun": True,
+                        "providerCount": 1,
+                        "readableSourceCount": 0,
+                        "selectedSourceCount": 0,
+                        "failureClasses": ["runtime_dependency_missing"],
+                        "providers": [
+                            {
+                                "provider": "metaso",
+                                "state": "unavailable_until_configuration_changes",
+                                "attemptCount": 1,
+                                "failureClasses": ["runtime_dependency_missing"],
+                            }
+                        ],
+                        "recommendedNextAction": "Repair the installed Research fetchers.",
+                    },
                 }
             ],
             "terminalEpisode": True,
@@ -1258,9 +1294,13 @@ def test_runtime_episode_wait_node_projects_exact_research_gap_for_bounded_retry
         "research_broker(mode='get_evidence', evidenceBundleId='jsonb-partial')"
     )
     assert projected["results"][0]["evidenceStatusReasons"] == ["explicit_critical_evidence_gap"]
+    assert projected["sourceAcquisition"]["failureClasses"] == ["runtime_dependency_missing"]
+    assert projected["results"][0]["sourceAcquisition"]["readableSourceCount"] == 0
     assert "covered=fts5, python-win; missing=jsonb; complete=False" in str(message.content)
     assert "retry only the missing brief IDs once" in str(message.content)
     assert "explicit_critical_evidence_gap" in str(message.content)
+    assert "source acquisition: state=exhausted" in str(message.content)
+    assert "failureClasses=runtime_dependency_missing" in str(message.content)
     assert "research:// is evidence lineage, not a toolobs:// rawRef" in str(message.content)
     assert "never pass research:// to tool_observation_detail" in str(message.content)
 

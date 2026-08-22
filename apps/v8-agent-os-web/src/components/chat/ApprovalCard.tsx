@@ -13,6 +13,9 @@ type ApprovalCardProps = {
     status?: string;
     tone?: ApprovalTone;
     eventSummary?: unknown;
+    showIcon?: boolean;
+    showStatus?: boolean;
+    showHint?: boolean;
 };
 
 const TONE_STYLES: Record<ApprovalTone, { wrapper: string; icon: string }> = {
@@ -51,7 +54,16 @@ function summaryRows(value: unknown) {
         .slice(0, 6);
 }
 
-export function ApprovalCard({ title, body, status, tone = "approval", eventSummary }: ApprovalCardProps) {
+export function ApprovalCard({
+    title,
+    body,
+    status,
+    tone = "approval",
+    eventSummary,
+    showIcon = true,
+    showStatus = true,
+    showHint = true,
+}: ApprovalCardProps) {
     const t = useT();
     const styles = TONE_STYLES[tone];
     const Icon = tone === "control" ? AlertTriangle : ShieldAlert;
@@ -66,13 +78,15 @@ export function ApprovalCard({ title, body, status, tone = "approval", eventSumm
     return (
         <div className={`my-1.5 overflow-hidden rounded-2xl border p-3 shadow-sm ${styles.wrapper}`}>
             <div className="flex items-start gap-3">
-                <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${styles.icon}`}>
-                    <Icon className="h-4.5 w-4.5" />
-                </div>
+                {showIcon ? (
+                    <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl ${styles.icon}`}>
+                        <Icon className="h-4.5 w-4.5" />
+                    </div>
+                ) : null}
                 <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                         <strong className="text-[12px] font-semibold tracking-wide">{title}</strong>
-                        {status ? <Badge variant="outline">{status}</Badge> : null}
+                        {showStatus && status ? <Badge variant="outline">{status}</Badge> : null}
                     </div>
                     <div className="mt-2 whitespace-pre-wrap text-sm leading-6">
                         {body}
@@ -87,7 +101,7 @@ export function ApprovalCard({ title, body, status, tone = "approval", eventSumm
                             ))}
                         </div>
                     ) : null}
-                    <div className="mt-2 text-xs font-medium text-current/70">{hint}</div>
+                    {showHint ? <div className="mt-2 text-xs font-medium text-current/70">{hint}</div> : null}
                 </div>
             </div>
         </div>

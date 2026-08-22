@@ -409,6 +409,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
 
         case 'governance': {
             const isApproval = node.governanceType === 'approval_request';
+            const isHumanGuidance = node.governanceType === 'human_guidance';
             const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
             const approvalLabel =
                 approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input"
@@ -419,7 +420,9 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                         ? t("web.generated.a5dd088a32")
                         : t("web.generated.6257968f39");
             const controlLabel =
-                node.governanceType === "safety_blocked"
+                isHumanGuidance
+                    ? t("web.governance.humanGuidance")
+                    : node.governanceType === "safety_blocked"
                     ? t("web.generated.a5dd088a32")
                     : node.governanceType === "context_governance"
                         ? t("web.generated.a85ae899a5")
@@ -465,8 +468,11 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                 <ApprovalCard
                     title={isApproval ? approvalLabel : controlLabel}
                     body={question}
-                    status={node.status}
-                    eventSummary={eventSummary}
+                    status={isHumanGuidance ? undefined : node.status}
+                    eventSummary={isHumanGuidance ? undefined : eventSummary}
+                    showIcon={!isHumanGuidance}
+                    showStatus={!isHumanGuidance}
+                    showHint={!isHumanGuidance}
                     tone={
                         !isApproval
                             ? node.governanceType === "safety_blocked"

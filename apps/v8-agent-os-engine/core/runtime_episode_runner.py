@@ -4289,7 +4289,12 @@ class RuntimeEpisodeRunner:
 
             negation = re.compile(
                 r"(?:不允许|不得|禁止|避免|不要|不应|不出现|未出现|没有|无(?:任何)?|不存在|"
-                r"not|without|no)\s*.{0,12}$",
+                r"而非|并非|不是|并不是|不属于|不构成|not|without|no|rather\s+than|instead\s+of)"
+                r"\s*.{0,18}$",
+                re.IGNORECASE,
+            )
+            negation_after = re.compile(
+                r"^.{0,18}(?:不属于|不构成|并非|不是|does\s+not|is\s+not|isn't|are\s+not)",
                 re.IGNORECASE,
             )
             term_mention = re.compile(
@@ -4302,14 +4307,18 @@ class RuntimeEpisodeRunner:
                     continue
                 lowered = line.lower()
                 for marker in placeholder_markers:
-                    index = lowered.find(marker.lower())
-                    if index < 0:
-                        continue
-                    before = lowered[:index].rstrip(" `*_\"'：:，,。;；-–—")
-                    after = lowered[index + len(marker) :].lstrip(" `*_\"'：:，,。;；-–—")
-                    if negation.search(before) or term_mention.search(after):
-                        continue
-                    return True
+                    for match in re.finditer(re.escape(marker), lowered, re.IGNORECASE):
+                        index = match.start()
+                        before = lowered[:index].rstrip(" `*_\"'：:，,。;；-–—")
+                        after = lowered[match.end() :].lstrip(" `*_\"'：:，,。;；-–—")
+                        clause_before = re.split(r"[。！？.!?；;：:，,]", before)[-1].strip()
+                        if (
+                            negation.search(clause_before)
+                            or negation_after.search(after)
+                            or term_mention.search(after)
+                        ):
+                            continue
+                        return True
             return False
 
         unready: list[str] = []

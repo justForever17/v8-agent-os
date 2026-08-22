@@ -1479,6 +1479,8 @@ def test_engineering_research_artifact_guard_ignores_negated_placeholder_mention
     report.write_text(
         "# 实测报告\n\n"
         "本报告按合同交付；不得出现任何占位字样，正文已完成。\n"
+        "长度下限确保这是真正的完整 Markdown，而非一行占位。\n"
+        "占位一词不构成未完成状态；这里只是在解释验收合同。\n"
         "没有待补充内容，所有章节均已核对。\n",
         encoding="utf-8",
     )
@@ -1505,6 +1507,27 @@ def test_engineering_research_artifact_guard_ignores_negated_placeholder_mention
     )
     assert guarded["status"] == "ok"
     assert "error" not in guarded
+
+
+def test_engineering_research_artifact_guard_still_rejects_unresolved_marker_after_negated_mention(tmp_path):
+    report = tmp_path / "V8OS测评.md"
+    report.write_text(
+        "# 实测报告\n\n"
+        "本报告不得出现占位字样，但当前证据状态：待补充。\n",
+        encoding="utf-8",
+    )
+    brief = {
+        "taskBriefId": "report",
+        "goal": "Write a reusable Markdown evaluation report.",
+        "context": {"runtimeLane": "Research"},
+        "writeRequired": True,
+        "expectedArtifacts": ["V8OS测评.md"],
+    }
+
+    assert RuntimeEpisodeRunner._engineering_unready_expected_artifacts(
+        workspace_path=str(tmp_path),
+        worker_briefs=[brief],
+    ) == ["V8OS测评.md"]
 
 
 def test_engineering_expected_artifact_guard_reads_managed_child_worktree(monkeypatch, tmp_path):

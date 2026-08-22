@@ -1571,3 +1571,100 @@ def test_isolation_required_write_does_not_silently_fall_back_in_non_git_workspa
     assert error.value.code == "git_parallel_isolation_not_enabled"
     assert error.value.details["directExecutionAvailable"] is True
     assert not (workspace / ".git").exists()
+
+
+def test_parallel_native_write_can_fall_back_to_governed_direct_workspace_without_git(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = EngineeringSandboxService(
+        home=tmp_path / "v8-home",
+        git_service=_git_service(tmp_path),
+        database=DatabaseManager(tmp_path / "state.db"),
+    )
+    monkeypatch.setattr(
+        "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
+        lambda: service,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_brief = normalize_task_brief(
+        {
+            "taskBriefId": "parallel-native-write",
+            "goal": "Write one disjoint native-tool artifact.",
+            "context": {"workspacePath": str(workspace)},
+            "writeRequired": True,
+            "writeSet": ["result.txt"],
+            "expectedOutputs": ["result.txt"],
+            "acceptanceContract": "result.txt contains the requested result.",
+        }
+    )
+
+    prepared = prepare_delegated_engineering_workspace(
+        base_state={
+            "run_id": "run-parallel-direct",
+            "session_id": "session-parallel-direct",
+            "project_id": "demo",
+            "workspace_path": str(workspace),
+        },
+        task_brief=task_brief,
+        delegation_id="delegation-parallel-direct",
+        current_depth=0,
+        runtime_context={"run_id": "run-parallel-direct", "workspace_path": str(workspace)},
+        parallel_dispatch=True,
+        allow_parallel_direct_fallback=True,
+    )
+
+    assert prepared["engineering_workspace_strategy"] == "direct"
+    assert prepared["parallel_direct_fallback"] is True
+    assert prepared["managed_engineering_execution"] is False
+    assert prepared["engineering_workspace_strategy_reasons"][0] == "parallel_writes"
+    assert prepared["engineering_workspace_strategy_reasons"][1].startswith(
+        "git_parallel_isolation_not_enabled:"
+    )
+    assert not (workspace / ".git").exists()
+
+
+def test_git_service_acquisition_failure_is_typed_before_worker_start(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _GitUnavailable(RuntimeError):
+        code = "git_not_installed"
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.delegation.get_engineering_sandbox_service",
+        lambda: (_ for _ in ()).throw(_GitUnavailable("git_not_installed")),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_brief = normalize_task_brief(
+        {
+            "taskBriefId": "parallel-isolated-write",
+            "goal": "Write an explicitly isolated artifact.",
+            "context": {"workspacePath": str(workspace), "requiresIsolation": True},
+            "writeRequired": True,
+            "writeSet": ["result.txt"],
+            "expectedOutputs": ["result.txt"],
+            "acceptanceContract": "result.txt contains the requested result.",
+        }
+    )
+
+    with pytest.raises(EngineeringWorkspaceIsolationError) as error:
+        prepare_delegated_engineering_workspace(
+            base_state={
+                "run_id": "run-git-missing",
+                "session_id": "session-git-missing",
+                "project_id": "demo",
+                "workspace_path": str(workspace),
+            },
+            task_brief=task_brief,
+            delegation_id="delegation-git-missing",
+            current_depth=0,
+            runtime_context={"run_id": "run-git-missing", "workspace_path": str(workspace)},
+            parallel_dispatch=True,
+            allow_parallel_direct_fallback=True,
+        )
+
+    assert error.value.code == "git_parallel_isolation_unavailable"
+    assert error.value.details["reason"] == "git_not_installed"

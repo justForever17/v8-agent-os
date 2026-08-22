@@ -1294,6 +1294,36 @@ def _host_matches_domains(host: str, domains: list[str]) -> bool:
     return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
 
 
+def _first_party_domain_matches_question(url: Any, question: Any) -> bool:
+    host = _host(_safe_text(url)).removeprefix("www.")
+    parts = [part for part in host.split(".") if part]
+    if len(parts) < 2:
+        return False
+    compound_suffixes = {
+        "ac.uk",
+        "co.jp",
+        "co.uk",
+        "com.au",
+        "com.br",
+        "com.cn",
+        "com.sg",
+        "com.tw",
+        "org.uk",
+    }
+    suffix = ".".join(parts[-2:])
+    label_index = -3 if suffix in compound_suffixes and len(parts) >= 3 else -2
+    registrable_label = parts[label_index]
+    if not re.fullmatch(r"[a-z0-9]{4,}", registrable_label):
+        return False
+    question_without_routes = re.sub(
+        r"(?<![a-z0-9])site:[^\s]+",
+        " ",
+        _URL_IN_TEXT_RE.sub(" ", _safe_text(question).lower()),
+    )
+    question_tokens = set(re.findall(r"[a-z0-9]{4,}", question_without_routes))
+    return registrable_label in question_tokens
+
+
 def _source_matches_intent(quality: dict[str, Any], source_intent: Any) -> bool:
     if _safe_text(source_intent).lower() != "official_primary":
         return True
@@ -1311,14 +1341,17 @@ def _source_quality(
     title: str = "",
     snippet: str = "",
     video_research: bool = False,
+    question: str = "",
 ) -> dict[str, Any]:
     normalized_host = _host(url)
     allowed_match = any(normalized_host == domain or normalized_host.endswith(f".{domain}") for domain in allowed_domains)
     catalog_entry = _catalog_match(url)
     public_institution = any(normalized_host.endswith(suffix) for suffix in _PUBLIC_INSTITUTION_HOST_SUFFIXES)
+    first_party_subject_match = _first_party_domain_matches_question(url, question)
     authoritative_hint = (
         allowed_match
         or public_institution
+        or first_party_subject_match
         or any(hint in normalized_host or hint in url.lower() for hint in _AUTHORITATIVE_HOST_HINTS)
     )
     low_quality_hint = any(hint in normalized_host or hint in url.lower() for hint in _LOW_QUALITY_HOST_HINTS)
@@ -1340,6 +1373,9 @@ def _source_quality(
     if public_institution:
         score += 20
         reasons.append("official_public_institution_host")
+    if first_party_subject_match:
+        score += 15
+        reasons.append("first_party_domain_subject_match")
     if authoritative_hint:
         score += 20
         reasons.append("authoritative_host_hint")
@@ -1366,7 +1402,7 @@ def _source_quality(
         "reasons": reasons,
         "catalogSourceId": catalog_entry.get("id") if catalog_entry else None,
         "catalogCategory": catalog_entry.get("category") if catalog_entry else None,
-        "authorityTier": catalog_entry.get("authorityTier") if catalog_entry else ("primary" if public_institution else None),
+        "authorityTier": catalog_entry.get("authorityTier") if catalog_entry else ("primary" if public_institution or first_party_subject_match else None),
         "popularitySignals": popularity,
     }
 
@@ -19907,13 +19943,14 @@ def _run_search_shard(
             title=title,
             snippet=snippet,
             video_research=video_research,
+            question=query,
         )
         discovery_relevance = _source_relevance_score(
             query,
             title=title,
             snippet=snippet,
         )
-        if _source_matches_intent(quality, source_intent) and (
+        if (site_domains or _source_matches_intent(quality, source_intent)) and (
             discovery_relevance >= 10 or int(quality.get("authorityScore") or 0) >= 70
         ):
             read_eligible_urls.add(url)
@@ -20081,6 +20118,7 @@ def _run_search_shard(
                     if part
                 ),
                 video_research=video_research,
+                question=query,
             )
             result["sourceQualityHints"] = final_quality
             if not _source_matches_intent(final_quality, source_intent):

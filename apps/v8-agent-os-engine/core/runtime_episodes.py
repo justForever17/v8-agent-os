@@ -280,6 +280,16 @@ def resolve_runtime_episode_current_handoff(
         "resolution": resolution,
         "availableHandoffIds": list(dict.fromkeys(available_ids)),
     }
+    episode_error_code = str(
+        episode.get("errorCode") or episode.get("error_code") or ""
+    ).strip()
+    episode_error_message = str(
+        episode.get("errorMessage") or episode.get("error_message") or ""
+    ).strip()
+    if episode_error_code:
+        diagnostic["episodeErrorCode"] = episode_error_code
+    if episode_error_message:
+        diagnostic["episodeErrorMessage"] = episode_error_message
     if resolution in {
         "current_handoff_payload_corrupted",
         "current_handoff_integrity_unverified",

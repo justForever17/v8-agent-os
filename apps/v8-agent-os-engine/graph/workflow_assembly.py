@@ -286,22 +286,41 @@ def build_runtime_episode_wait_node():
             should_surface = bool(handoff_rows) or state in TERMINAL_EPISODE_STATES
             if not should_surface:
                 continue
-            error_code = (
+            delivery_error_code = (
                 "runtime_handoff_payload_corrupted"
                 if resolution == "current_handoff_payload_corrupted"
                 else "runtime_result_handoff_missing"
                 if resolution in {"missing_handoff", "result_ref_not_found"}
                 else "runtime_result_handoff_invalid"
             )
+            episode_error_code = _string_value(diagnostic.get("episodeErrorCode"))
+            episode_error_message = _string_value(diagnostic.get("episodeErrorMessage"))
+            root_episode_failure = bool(
+                state in {"failed", "cancelled"} and episode_error_code
+            )
+            error_code = (
+                episode_error_code
+                if root_episode_failure
+                else delivery_error_code
+            )
             typed_diagnostic = {
                 **diagnostic,
                 "producerEpisodeId": episode_id,
-                "kind": "runtime_delivery_diagnostic",
+                "kind": (
+                    "runtime_episode_failure_diagnostic"
+                    if root_episode_failure
+                    else "runtime_delivery_diagnostic"
+                ),
                 "status": "failed",
                 "optional": _is_optional_episode(episode),
                 "errorCode": error_code,
+                "deliveryErrorCode": delivery_error_code,
+                "error": episode_error_message,
                 "compactSummary": (
-                    f"Runtime episode {episode_id} has no safely resolvable current delivery "
+                    f"Runtime episode {episode_id} failed with {error_code}; its current delivery "
+                    f"is not safely resolvable ({resolution})."
+                    if root_episode_failure
+                    else f"Runtime episode {episode_id} has no safely resolvable current delivery "
                     f"({resolution})."
                 ),
                 "recoverable": resolution != "current_handoff_payload_corrupted",

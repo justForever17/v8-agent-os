@@ -406,6 +406,17 @@ _EXPLICIT_RUNTIME_SELECTION_DENY_RE = re.compile(
     r"(?:不要|不准|禁止|无需|别|不再|do\s+not|don't|must\s+not|never|without)",
     re.IGNORECASE,
 )
+_DIRECT_EXECUTION_TOOL_RE = re.compile(
+    r"(?:`?(?:web_broker|web_read|web_search|write_native_file|read_native_file|run_system_command)`?"
+    r"|写入工具|网页工具|原生文件工具)",
+    re.IGNORECASE,
+)
+_DIRECT_EXECUTION_BOUNDARY_RE = re.compile(
+    r"(?:主理人|supervisor|你).{0,24}(?:自己|直接|亲自)"
+    r"|(?:自己|直接|亲自).{0,24}(?:调用|使用|执行|写入|搜索)"
+    r"|(?:不借助|不使用|不要使用|无需|without).{0,48}(?:runtime|运行时|subagent|子代理)",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_session_coordination_request(
@@ -596,6 +607,24 @@ def _ensure_named_tools(selected_tools, available_tools, required_names: set[str
     return result
 
 
+def _has_mixed_direct_and_runtime_execution_boundaries(user_query: str) -> bool:
+    """Keep per-slice execution choices out of the global route selector."""
+
+    query = str(user_query or "").lower()
+    if not (
+        _DIRECT_EXECUTION_TOOL_RE.search(query)
+        and _DIRECT_EXECUTION_BOUNDARY_RE.search(query)
+    ):
+        return False
+    for _kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
+        for marker in markers:
+            for match in re.finditer(re.escape(marker.lower()), query):
+                prefix = query[max(0, match.start() - 28) : match.start()]
+                if _EXPLICIT_RUNTIME_SELECTION_PREFIX_RE.search(prefix):
+                    return True
+    return False
+
+
 def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     if not isinstance(state, dict):
         return []
@@ -609,6 +638,8 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     }
     allowed.discard("")
     query = str(user_query or "").lower()
+    if _has_mixed_direct_and_runtime_execution_boundaries(query):
+        return []
     if re.search(
         r"(?:不要|禁止|无需|不(?:要|再)?使用|do\s+not|don't|without)\s*"
         r"(?:调用|使用|call|use)?\s*`?runtime_broker`?",
@@ -687,7 +718,7 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
     )
 
 
-def _authoritative_runtime_route_kinds(state) -> list[str]:
+def _authoritative_runtime_route_kinds(state, user_query: str = "") -> list[str]:
     if not isinstance(state, dict):
         return []
     if _spec_mode_active(state) and not _spec_runtime_execution_allowed(state):
@@ -712,6 +743,8 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
     continuation = route_context.get("engineeringContinuation")
     if not isinstance(continuation, dict):
         continuation = task_shape.get("engineeringContinuation") if isinstance(task_shape.get("engineeringContinuation"), dict) else {}
+    if _has_mixed_direct_and_runtime_execution_boundaries(user_query):
+        return []
     if bool(route_context.get("engineeringRequired")):
         return ["engineering"]
     if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
@@ -2958,7 +2991,7 @@ def execute_supervisor_turn(
         return response
 
     explicit_runtime_kinds = _explicit_runtime_orchestration_kinds(state, user_query)
-    authoritative_runtime_kinds = _authoritative_runtime_route_kinds(state)
+    authoritative_runtime_kinds = _authoritative_runtime_route_kinds(state, user_query)
     observed_runtime_kinds = _observed_runtime_episode_kinds(state)
     pending_required_runtime_kinds = [
         kind

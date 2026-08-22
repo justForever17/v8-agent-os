@@ -474,6 +474,24 @@ def _current_runtime_handoffs(
             current[episode_id] = [selected]
             continue
         resolution = str(diagnostic.get("resolution") or "missing_handoff")
+        episode_error_code = str(diagnostic.get("episodeErrorCode") or "").strip()
+        episode_error_message = str(diagnostic.get("episodeErrorMessage") or "").strip()
+        if (
+            state in {"failed", "cancelled"}
+            and episode_error_code
+            and resolution in {"missing_handoff", "result_ref_not_found"}
+        ):
+            return current, {
+                "reason": episode_error_code,
+                "episodeId": episode_id,
+                "state": state,
+                "episodeErrorMessage": episode_error_message,
+                "deliveryResolution": resolution,
+                "expectedResultRef": diagnostic.get("resultRef") or "",
+                "availableHandoffIds": list(diagnostic.get("availableHandoffIds") or [])[:12],
+                "recoverable": True,
+                "nextAction": "repair_the_runtime_failure_then_retry_the_episode",
+            }
         if resolution == "current_handoff_payload_corrupted":
             return current, {
                 "reason": "runtime_handoff_payload_corrupted",

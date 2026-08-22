@@ -1380,6 +1380,78 @@ def test_search_shard_enforces_site_operator_before_read(monkeypatch):
     assert completed["fetchedTopSources"][0]["preflightSourceQualityGate"]["selectedForEvidence"] is True
 
 
+def test_search_shard_reads_explicit_official_site_before_applying_evidence_gate(monkeypatch):
+    read_urls: list[str] = []
+
+    def fake_search(**kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "offline-fixture",
+                "results": [
+                    {
+                        "title": "LangChain v1 release notes",
+                        "url": "https://docs.langchain.com/oss/python/releases/langchain-v1",
+                        "snippet": "Official LangChain v1 release notes and migration changes.",
+                    }
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        read_urls.append(kwargs["url"])
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": kwargs["url"],
+                "title": "LangChain v1 release notes",
+                "text": (
+                    "LangChain v1 release notes describe the current package, migration path, "
+                    "agent APIs, middleware, and compatibility changes. " * 18
+                ),
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    completed = research_module._run_search_shard(
+        {
+            "shardId": "langchain-official-site",
+            "kind": "facet:release-changes",
+            "query": "site:docs.langchain.com LangChain v1 release notes migration changes",
+            "sourceIntent": "official_primary",
+        },
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="multi_source_evidence",
+        max_rounds=1,
+        use_agent_browser_profile=False,
+        tool_call_id="langchain-official-site-test",
+    )
+
+    assert read_urls == ["https://docs.langchain.com/oss/python/releases/langchain-v1"]
+    fetched = completed["fetchedTopSources"][0]
+    assert "first_party_domain_subject_match" in completed["results"][0]["sourceQualityHints"]["reasons"]
+    assert fetched["preflightSourceQualityGate"]["selectedForEvidence"] is True
+
+
+def test_site_operator_alone_does_not_promote_an_unrelated_domain_to_primary():
+    quality = research_module._source_quality(
+        "https://docs.example.net/langchain-v1",
+        allowed_domains=[],
+        source_policy="multi_source_evidence",
+        title="LangChain v1 notes",
+        snippet="LangChain release changes",
+        question="site:docs.example.net LangChain v1 release changes",
+    )
+
+    assert "first_party_domain_subject_match" not in quality["reasons"]
+    assert quality["authorityTier"] is None
+    assert research_module._source_matches_intent(quality, "official_primary") is False
+
+
 def test_search_shard_official_primary_skips_secondary_sources(monkeypatch):
     read_urls: list[str] = []
 

@@ -97,6 +97,8 @@ _DEPRECATED_DELEGATION_TARGET_IDS = {"project-planner"}
 
 def _engineering_workspace_preparation_failure(exc: Exception) -> dict[str, str]:
     code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+    if code == "git_not_installed":
+        code = "git_parallel_isolation_unavailable"
     if code in {
         "git_parallel_isolation_not_enabled",
         "git_parallel_isolation_unavailable",
@@ -2749,6 +2751,10 @@ def delegation_broker(
                         current_depth=current_depth,
                         runtime_context=runtime_context,
                         parallel_dispatch=len(normalized_tasks) > 1,
+                        allow_parallel_direct_fallback=bool(
+                            len(normalized_tasks) > 1
+                            and not workset_decision.get("worksetConflictGroup")
+                        ),
                     )
                     if managed_workspace:
                         branch_task_brief = bind_engineering_task_workspace(

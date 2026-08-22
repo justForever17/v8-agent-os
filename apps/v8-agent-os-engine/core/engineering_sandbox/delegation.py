@@ -35,6 +35,7 @@ def prepare_delegated_engineering_workspace(
     current_depth: int,
     runtime_context: dict[str, Any],
     parallel_dispatch: bool = False,
+    allow_parallel_direct_fallback: bool = False,
 ) -> dict[str, Any] | None:
     """Optionally allocate the worktree + sandbox lease for one write branch.
 
@@ -82,6 +83,22 @@ def prepare_delegated_engineering_workspace(
         task_brief,
         parallel_dispatch=parallel_dispatch,
     )
+
+    def _direct_projection(*, fallback_reason: str = "") -> dict[str, Any]:
+        reasons = list(strategy.isolation_reasons)
+        if fallback_reason:
+            reasons.append(fallback_reason)
+        return {
+            "workspace_path": original_workspace,
+            "original_workspace_path": original_workspace,
+            "write_set": write_set,
+            "engineering_capsule_mode": capsule_mode,
+            "engineering_workspace_strategy": "direct",
+            "engineering_workspace_strategy_reasons": reasons,
+            "managed_engineering_execution": False,
+            "parallel_direct_fallback": bool(fallback_reason),
+        }
+
     if strategy.strategy != "git_worktree":
         logger.info(
             "Engineering task will use the bound workspace directly",
@@ -90,15 +107,11 @@ def prepare_delegated_engineering_workspace(
                 "strategy": strategy.as_dict(),
             },
         )
-        return {
-            "workspace_path": original_workspace,
-            "original_workspace_path": original_workspace,
-            "write_set": write_set,
-            "engineering_capsule_mode": capsule_mode,
-            "engineering_workspace_strategy": "direct",
-            "engineering_workspace_strategy_reasons": [],
-            "managed_engineering_execution": False,
-        }
+        return _direct_projection()
+    parallel_only_fallback = bool(
+        allow_parallel_direct_fallback
+        and set(strategy.isolation_reasons) == {"parallel_writes"}
+    )
     raw_network_profile = str(
         capsule.get("networkProfile")
         or task_brief.get("networkProfile")
@@ -118,8 +131,8 @@ def prepare_delegated_engineering_workspace(
         or route_context.get("worktreeId")
         or ""
     ).strip() or None
-    sandbox_service = get_engineering_sandbox_service()
     try:
+        sandbox_service = get_engineering_sandbox_service()
         repository_status = sandbox_service.project_repository_status(
             workspace_root=original_workspace,
             project_id=str(base_state.get("project_id") or runtime_context.get("project_id") or "").strip()
@@ -128,15 +141,30 @@ def prepare_delegated_engineering_workspace(
     except Exception as exc:
         if str(getattr(exc, "code", "") or "").strip() != "git_not_installed":
             raise
+        if parallel_only_fallback:
+            logger.warning(
+                "Optional Git parallel isolation is unavailable; using governed direct write sets",
+                extra={"delegationId": delegation_id, "reason": "git_not_installed"},
+            )
+            return _direct_projection(fallback_reason="git_not_installed")
         raise EngineeringWorkspaceIsolationError(
             "git_parallel_isolation_unavailable",
             reason="git_not_installed",
             strategy=strategy.as_dict(),
         ) from exc
-    if str((repository_status.get("repository") or {}).get("state") or "").strip() != "ready":
+    repository_state = str((repository_status.get("repository") or {}).get("state") or "").strip()
+    if repository_state != "ready":
+        if parallel_only_fallback:
+            logger.info(
+                "Optional Git parallel isolation is not enabled; using governed direct write sets",
+                extra={"delegationId": delegation_id, "reason": repository_state or "not_enabled"},
+            )
+            return _direct_projection(
+                fallback_reason=f"git_parallel_isolation_not_enabled:{repository_state or 'not_enabled'}"
+            )
         raise EngineeringWorkspaceIsolationError(
             "git_parallel_isolation_not_enabled",
-            reason=str((repository_status.get("repository") or {}).get("state") or "not_enabled"),
+            reason=repository_state or "not_enabled",
             strategy=strategy.as_dict(),
         )
     prepared = sandbox_service.prepare_task_workspace(

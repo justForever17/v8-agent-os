@@ -1960,6 +1960,27 @@ def test_completion_gate_reports_missing_terminal_runtime_delivery():
     assert decision.details["recoverable"] is True
 
 
+def test_completion_gate_preserves_terminal_episode_failure_when_handoff_is_missing():
+    decision = evaluate_supervisor_completion(
+        episodes=[
+            {
+                "episodeId": "episode_delegation_git_missing",
+                "state": "failed",
+                "kind": "delegation",
+                "errorCode": "git_parallel_isolation_unavailable",
+                "errorMessage": "Optional Git isolation is unavailable.",
+            }
+        ],
+        handoffs_by_episode={},
+        final_text="子代理已经完成。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "git_parallel_isolation_unavailable"
+    assert decision.details["deliveryResolution"] == "missing_handoff"
+    assert decision.details["episodeErrorMessage"] == "Optional Git isolation is unavailable."
+
+
 def test_completion_gate_reports_result_ref_that_has_no_canonical_delivery():
     decision = evaluate_supervisor_completion(
         episodes=[

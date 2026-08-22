@@ -1137,6 +1137,74 @@ class BrowserAutomationProvider:
             "externalWindow": bool(external_window),
         }
 
+    def ensure_agent_browser_background(
+        self,
+        *,
+        browser_kind: str | None = None,
+    ) -> Dict[str, Any]:
+        """Start the governed Agent Browser profile without showing a window."""
+
+        requested_kind = normalize_agent_browser_kind(browser_kind)
+        with self._lock:
+            target_port = self._target_port
+            if self._is_debug_port_reachable(target_port):
+                kind = self._managed_agent_browser_kind_at_port(target_port)
+                if not kind:
+                    return {
+                        "ok": False,
+                        "failureClass": "agent_browser_port_conflict",
+                        "summary": "Agent Browser 调试端口被非 V8OS profile 占用。",
+                        "targetPort": target_port,
+                    }
+                return {
+                    "ok": True,
+                    "kind": "agent_browser_background",
+                    "browserKind": kind,
+                    "targetPort": target_port,
+                    "managedStarted": False,
+                    "managedHeadless": self._debug_browser_is_headless(target_port),
+                    "profile": self.agent_browser_profile_summary(kind),
+                }
+            if not self._node_path:
+                return {"ok": False, "failureClass": "node_unavailable"}
+            if not self._helper_script_path().exists():
+                return {"ok": False, "failureClass": "helper_script_missing"}
+            if not self._probe_playwright_dependency().get("available"):
+                return {"ok": False, "failureClass": "playwright_module_missing"}
+            system_browser = self.discover_system_browser(requested_kind)
+            if not system_browser.get("available"):
+                return {"ok": False, "failureClass": "compatible_browser_missing"}
+            kind = str(system_browser.get("browserKind") or "chromium")
+            profile_dir = self._dedicated_user_data_dir(kind)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            decision = self._start_managed_chromium_debug_browser(
+                app_id=kind,
+                app_name=kind,
+                headless=True,
+                allow_when_disabled=True,
+            )
+            if decision is None or not decision.available:
+                return {
+                    "ok": False,
+                    "failureClass": (
+                        str(decision.reason or "managed_browser_launch_failed")
+                        if decision is not None
+                        else "managed_browser_launch_failed"
+                    ),
+                    "browserKind": kind,
+                    "targetPort": target_port,
+                }
+            self._invalidate_availability_health_cache()
+            return {
+                "ok": True,
+                "kind": "agent_browser_background",
+                "browserKind": str(decision.browser_kind or kind),
+                "targetPort": int(decision.target_port or target_port),
+                "managedStarted": True,
+                "managedHeadless": True,
+                "profile": self.agent_browser_profile_summary(kind),
+            }
+
     def open_agent_browser(self, *, browser_kind: str | None = None, url: str = "about:blank") -> Dict[str, Any]:
         requested_kind = normalize_agent_browser_kind(browser_kind)
         target_url = str(url or "").strip() or "about:blank"
@@ -1168,6 +1236,23 @@ class BrowserAutomationProvider:
             }
         target_port = self._target_port
         managed_started = False
+        if self._is_debug_port_reachable(target_port) and self._debug_browser_is_headless(target_port):
+            kind = self._managed_agent_browser_kind_at_port(target_port) or ""
+            if not kind:
+                return {
+                    "ok": False,
+                    "failureClass": "agent_browser_port_conflict",
+                    "summary": "Agent 浏览器端口已被其他无头浏览器占用。",
+                    "recommendedNextAction": "请关闭占用该调试端口的浏览器后重试。",
+                }
+            closed = self.close_managed_browser(target_port=target_port, wait_seconds=0.1)
+            if not closed.get("closed") or self._is_debug_port_reachable(target_port):
+                return {
+                    "ok": False,
+                    "failureClass": "agent_browser_headless_promotion_failed",
+                    "summary": "后台 Agent 浏览器仍在使用该 profile，暂时无法切换为可见登录窗口。",
+                    "recommendedNextAction": "结束当前 Web/Research 任务后重试；必要时重启 Engine。",
+                }
         if not self._is_debug_port_reachable(target_port):
             system_browser = self.discover_system_browser(requested_kind)
             if not system_browser.get("available"):

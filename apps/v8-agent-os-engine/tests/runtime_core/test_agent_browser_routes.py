@@ -358,6 +358,121 @@ def test_shutdown_closes_visible_and_headless_managed_browsers():
     assert provider._managed_launches == {}
 
 
+def test_web_research_background_browser_uses_dedicated_headless_profile(monkeypatch, tmp_path):
+    helper = tmp_path / "browser_cdp_proxy.mjs"
+    helper.write_text("console.log('ok')", encoding="utf-8")
+    provider = BrowserAutomationProvider()
+    provider.configure(
+        {
+            "browserLane": {
+                "enabled": False,
+                "allowManagedLaunch": True,
+                "userDataDir": str(tmp_path / "profiles"),
+            }
+        }
+    )
+    provider._node_path = "node"
+    monkeypatch.setattr(provider, "_helper_script_path", lambda: helper)
+    monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(
+        provider,
+        "discover_system_browser",
+        lambda _kind=None: {"available": True, "browserKind": "edge"},
+    )
+    launches: list[dict] = []
+
+    def start_browser(**kwargs):
+        launches.append(dict(kwargs))
+        return BrowserLaneDecision(
+            enabled=True,
+            available=True,
+            family="chromium",
+            reason="managed_debug_browser_started",
+            target_port=9222,
+            managed_launch=True,
+            browser_kind="edge",
+        )
+
+    monkeypatch.setattr(provider, "_start_managed_chromium_debug_browser", start_browser)
+
+    result = provider.ensure_agent_browser_background()
+
+    assert result["ok"] is True
+    assert result["managedHeadless"] is True
+    assert launches == [
+        {
+            "app_id": "edge",
+            "app_name": "edge",
+            "headless": True,
+            "allow_when_disabled": True,
+        }
+    ]
+
+
+def test_manual_login_promotes_owned_background_browser_to_visible_window(monkeypatch, tmp_path):
+    helper = tmp_path / "browser_cdp_proxy.mjs"
+    helper.write_text("console.log('ok')", encoding="utf-8")
+    provider = BrowserAutomationProvider()
+    provider.configure(
+        {
+            "browserLane": {
+                "enabled": False,
+                "allowManagedLaunch": True,
+                "userDataDir": str(tmp_path / "profiles"),
+            }
+        }
+    )
+    provider._node_path = "node"
+    running = {"value": True}
+    monkeypatch.setattr(provider, "_helper_script_path", lambda: helper)
+    monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: running["value"])
+    monkeypatch.setattr(provider, "_debug_browser_is_headless", lambda _port: running["value"])
+    monkeypatch.setattr(provider, "_managed_agent_browser_kind_at_port", lambda _port: "edge")
+
+    def close_background(**_kwargs):
+        running["value"] = False
+        return {"closed": True}
+
+    monkeypatch.setattr(provider, "close_managed_browser", close_background)
+    monkeypatch.setattr(
+        provider,
+        "discover_system_browser",
+        lambda _kind=None: {"available": True, "browserKind": "edge"},
+    )
+    launches: list[dict] = []
+
+    def start_browser(**kwargs):
+        launches.append(dict(kwargs))
+        running["value"] = True
+        return BrowserLaneDecision(
+            enabled=True,
+            available=True,
+            family="chromium",
+            reason="managed_debug_browser_started",
+            target_port=9222,
+            managed_launch=True,
+            browser_kind="edge",
+        )
+
+    monkeypatch.setattr(provider, "_start_managed_chromium_debug_browser", start_browser)
+    monkeypatch.setattr(provider, "_ensure_proxy", lambda **_kwargs: None)
+    monkeypatch.setattr(provider, "_health", lambda: {"connected": True})
+    monkeypatch.setattr(provider, "open_tab", lambda **_kwargs: {"opened": True})
+
+    result = provider.open_agent_browser(url="https://www.baidu.com/")
+
+    assert result["ok"] is True
+    assert launches == [
+        {
+            "app_id": "edge",
+            "app_name": "edge",
+            "allow_when_disabled": True,
+        }
+    ]
+
+
 def test_debug_port_ownership_requires_the_exact_v8os_profile_and_port(monkeypatch, tmp_path):
     profile_dir = tmp_path / "edge"
     listener = SimpleNamespace(

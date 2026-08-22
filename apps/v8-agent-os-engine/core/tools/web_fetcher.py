@@ -2291,6 +2291,13 @@ def _auto_agent_browser_profile_allowed(url: str, mode: str) -> tuple[bool, str 
     return _agent_browser_profile_allowed(url)
 
 
+def _ensure_agent_browser_background_session() -> dict[str, Any]:
+    from runtimes.computer_use.browser_automation import agent_browser_automation
+
+    agent_browser_automation.configure(dict(storage.get_computer_use_config() or {}))
+    return dict(agent_browser_automation.ensure_agent_browser_background() or {})
+
+
 def _active_agent_browser_cdp_context() -> dict[str, str]:
     runtime_config = storage.get_computer_use_config() or {}
     browser_lane = dict(runtime_config.get("browserLane") or {})
@@ -2301,10 +2308,21 @@ def _active_agent_browser_cdp_context() -> dict[str, str]:
         response = requests.get(f"{endpoint}/json/version", timeout=1.0)
         response.raise_for_status()
         payload = dict(response.json() or {})
-    except Exception as exc:
-        raise RuntimeError(
-            "agent_browser_not_open: open Agent Browser in Admin and finish login before using its session."
-        ) from exc
+    except Exception as initial_exc:
+        startup = _ensure_agent_browser_background_session()
+        if not startup.get("ok"):
+            failure_class = _safe_text(startup.get("failureClass")) or "managed_browser_launch_failed"
+            raise RuntimeError(
+                f"agent_browser_not_open: governed background startup failed ({failure_class})."
+            ) from initial_exc
+        try:
+            response = requests.get(f"{endpoint}/json/version", timeout=1.0)
+            response.raise_for_status()
+            payload = dict(response.json() or {})
+        except Exception as retry_exc:
+            raise RuntimeError(
+                "agent_browser_not_open: governed background session did not publish its CDP endpoint."
+            ) from retry_exc
     product = " ".join(
         [
             str(payload.get("Browser") or ""),
@@ -4096,7 +4114,7 @@ def _render_error_payload(
                 if failure_class == "network_timeout"
                 else "目标可能需要登录。请在 Admin / 深度调研打开 Agent 浏览器完成登录；Admin 开启 Agent profile 且目标域名命中 allowlist 后，web/research 的浏览器读取路径会自动复用该登录态。"
                 if failure_class == "needs_login"
-                else "Agent 浏览器尚未打开。请在 Admin / 深度调研打开 Agent 浏览器并完成登录后重试。"
+                else "受治理的后台 Agent 浏览器未能启动。请检查兼容浏览器、profile 占用和安装依赖；需要登录时再从 Admin / 深度调研打开可见窗口。"
                 if failure_class == "agent_browser_not_open"
                 else "Agent 浏览器调试端口被其他浏览器占用。请关闭该调试浏览器或更换端口后重新打开 Agent 浏览器；V8OS 不会读取用户日常 profile。"
                 if failure_class == "agent_browser_profile_mismatch"

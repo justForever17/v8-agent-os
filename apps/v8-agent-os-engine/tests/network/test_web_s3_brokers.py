@@ -120,13 +120,41 @@ class WebAndS3BrokerTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "agent_browser_profile_mismatch"):
                     _active_agent_browser_cdp_context()
 
-    def test_agent_browser_cdp_context_requires_an_open_browser(self):
-        with patch(
-            "core.tools.web_fetcher.storage.get_computer_use_config",
-            return_value={"browserLane": {"proxyPort": 3456}},
-        ), patch("core.tools.web_fetcher.requests.get", side_effect=OSError("connection refused")):
-            with self.assertRaisesRegex(RuntimeError, "agent_browser_not_open"):
-                _active_agent_browser_cdp_context()
+    def test_agent_browser_cdp_context_starts_governed_background_session_when_closed(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "Browser": "Edg/140.0.0.0",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/background",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_dir = Path(temp_dir) / "edge"
+            profile_dir.mkdir(parents=True)
+            with patch(
+                "core.tools.web_fetcher.storage.get_computer_use_config",
+                return_value={"browserLane": {"proxyPort": 3456}},
+            ), patch(
+                "core.tools.web_fetcher._ensure_agent_browser_background_session",
+                return_value={"ok": True, "managedHeadless": True},
+            ) as ensure_background, patch(
+                "core.tools.web_fetcher.configured_agent_browser_profile_dir",
+                return_value=profile_dir,
+            ), patch(
+                "core.tools.web_fetcher.debug_port_owned_by_profile",
+                return_value=True,
+            ), patch(
+                "core.tools.web_fetcher.requests.get",
+                side_effect=[OSError("connection refused"), _Response()],
+            ):
+                context = _active_agent_browser_cdp_context()
+
+        ensure_background.assert_called_once_with()
+        self.assertEqual(context["browserKind"], "edge")
+        self.assertEqual(context["cdpUrl"], "ws://127.0.0.1:9222/devtools/browser/background")
 
     def test_web_read_returns_clean_markdown_without_page_chrome(self):
         html = """

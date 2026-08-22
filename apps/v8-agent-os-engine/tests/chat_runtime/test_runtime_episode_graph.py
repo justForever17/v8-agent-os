@@ -67,6 +67,32 @@ def test_supervisor_request_context_ignores_runtime_handoff_envelope() -> None:
     assert context["current_scope"] == "workspace:test"
 
 
+def test_mixed_direct_and_runtime_slices_do_not_globally_narrow_supervisor_tools() -> None:
+    query = (
+        "帮我测试三个场景：1. 你自己使用 web_broker，再用写入工具写一个短 HTML，"
+        "全程不借助其他 runtime 和 subagent。2. 使用 research runtime 调研 LangChain。"
+        "3. 调用 engineering runtime 完成一个极简 Agent TUI。"
+    )
+    state = {
+        "task_shape_hint": {
+            "boundaryDecision": {
+                "askUserNeeded": False,
+                "primaryRuntime": "engineering",
+                "supportingRuntimes": ["research", "delegation"],
+            }
+        },
+        "current_route_context": {
+            "supervisorRuntimeMode": "auto",
+            "engineeringRequired": True,
+            "explicitEngineeringRequested": True,
+        },
+    }
+
+    assert _explicit_runtime_orchestration_kinds(state, query) == []
+    assert _authoritative_runtime_route_kinds(state, query) == []
+    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+
+
 def test_runtime_handoff_continues_unfinished_runtime_todos_without_polling() -> None:
     state = {
         "todos": [
@@ -1893,6 +1919,35 @@ def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure
     assert status["nextAction"] == "recoverable_failure"
     assert status["state"] == "episode_failed"
     assert status["failedHandoffCount"] == 1
+
+
+def test_runtime_episode_wait_node_preserves_failure_code_when_child_handoff_is_missing() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_missing_child_delivery_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "delegation", "reason": "run child worker"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    db.complete_runtime_episode(
+        episode_id,
+        state="failed",
+        error_code="git_parallel_isolation_unavailable",
+        error_message="Git is unavailable before worker start.",
+    )
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    status = command.update["runtime_dispatch_status"]
+    diagnostics = command.update["current_route_context"]["runtimeDeliveryDiagnostics"]
+    assert command.goto == "supervisor"
+    assert status["state"] == "episode_failed"
+    assert status["reason"] == "git_parallel_isolation_unavailable"
+    assert diagnostics[0]["errorCode"] == "git_parallel_isolation_unavailable"
+    assert diagnostics[0]["deliveryErrorCode"] == "runtime_result_handoff_missing"
+    assert "Git is unavailable before worker start" in diagnostics[0]["error"]
 
 
 def test_runtime_episode_wait_node_uses_proven_retry_instead_of_stale_failure() -> None:

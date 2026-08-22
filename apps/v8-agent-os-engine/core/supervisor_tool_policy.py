@@ -164,7 +164,7 @@ def _native_tool_definitions(
                     name=tool_name,
                     description=str(getattr(tool_ref, "description", getattr(tool_ref, "__doc__", "")) or "").strip()
                     or "系统默认可用工具。",
-                    reason="系统默认能力，主理人始终可用。",
+                    reason="系统默认能力；实际每轮可见面仍受当前任务边界与治理策略约束。",
                 )
             )
         return definitions
@@ -191,7 +191,7 @@ def _native_tool_definitions(
                 SupervisorToolDefinition(
                     name=normalized,
                     description="系统默认可用工具。",
-                    reason="系统默认能力，主理人始终可用。",
+                    reason="系统默认能力；实际每轮可见面仍受当前任务边界与治理策略约束。",
                 )
             )
         return definitions

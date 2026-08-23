@@ -714,6 +714,11 @@ def _source_catalog() -> dict[str, Any]:
         if isinstance(payload.get("hostQueryAliases"), dict)
         else {}
     )
+    host_query_rewrites = (
+        payload.get("hostQueryRewrites")
+        if isinstance(payload.get("hostQueryRewrites"), dict)
+        else {}
+    )
     return {
         "version": payload.get("version"),
         "entries": [entry for entry in entries if isinstance(entry, dict)],
@@ -721,6 +726,11 @@ def _source_catalog() -> dict[str, Any]:
             _safe_text(host).lower(): _as_list(aliases)
             for host, aliases in host_query_aliases.items()
             if _safe_text(host)
+        },
+        "hostQueryRewrites": {
+            _safe_text(host).lower(): _safe_text(replacement).lower()
+            for host, replacement in host_query_rewrites.items()
+            if _safe_text(host) and _safe_text(replacement)
         },
         "officialEntitySeeds": [
             seed
@@ -20724,6 +20734,22 @@ def _build_refinement_shards(
     return refined
 
 
+_RESEARCH_RUNTIME_DIAGNOSTIC_GAP_PATTERNS = (
+    re.compile(r"research should continue until at least \d+ readable sources", re.IGNORECASE),
+    re.compile(r"no source-backed claims were extracted from readable page bodies", re.IGNORECASE),
+    re.compile(r"(?:answer|evidence|source|host|claim|coverage)_floor_not_met", re.IGNORECASE),
+    re.compile(
+        r"(?:architect|independent)_review_not_accepted|research_(?:brief_coverage_incomplete|delivery_gate_not_ready|source_transport_exhausted)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _research_gap_is_runtime_diagnostic(value: Any) -> bool:
+    text = re.sub(r"\s+", " ", _safe_text(value)).strip()
+    return bool(text) and any(pattern.search(text) for pattern in _RESEARCH_RUNTIME_DIAGNOSTIC_GAP_PATTERNS)
+
+
 def _research_critical_gap_queries(
     question: str,
     critical_gaps: list[Any],
@@ -20757,6 +20783,8 @@ def _research_critical_gap_queries(
     for raw_gap in list(critical_gaps or []):
         gap = re.sub(r"\s+", " ", _safe_text(raw_gap)).strip()
         if len(gap) < 8:
+            continue
+        if _research_gap_is_runtime_diagnostic(gap):
             continue
         indexes = sorted(_research_entity_indexes_in_text(hints, gap))
         scoped_labels = [labels[index] for index in indexes if index < len(labels)]
@@ -20859,6 +20887,8 @@ def _normalize_research_search_query(value: Any) -> str:
     query = re.sub(r"\s+", " ", _safe_text(value)).strip()
     if not query:
         return ""
+    if _research_gap_is_runtime_diagnostic(query):
+        return ""
     # A combined runtime brief is useful planning material, but it is not one
     # literal search-engine query.  When a model echoes the whole multi-facet
     # brief as a repair query, drop it so the existing per-facet deterministic
@@ -20879,6 +20909,15 @@ def _normalize_research_search_query(value: Any) -> str:
         flags=re.IGNORECASE,
     )
     query = re.sub(r"^(?:请)?(?:获取|抓取|读取|打开|访问|查找|搜索|检索|查询)\s*[:：-]?\s*", "", query)
+    for stale_host, current_host in dict(
+        _source_catalog().get("hostQueryRewrites") or {}
+    ).items():
+        query = re.sub(
+            rf"(?<![a-z0-9.-])site:{re.escape(stale_host)}(?=\s|$)",
+            f"site:{current_host}",
+            query,
+            flags=re.IGNORECASE,
+        )
     return _deterministic_facet_search_query(query, max_chars=280).strip(" \t\r\n-:：")
 
 

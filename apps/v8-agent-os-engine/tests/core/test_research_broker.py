@@ -1437,6 +1437,33 @@ def test_search_shard_reads_explicit_official_site_before_applying_evidence_gate
     assert fetched["preflightSourceQualityGate"]["selectedForEvidence"] is True
 
 
+def test_research_catalog_rewrites_retired_langchain_host_and_exposes_current_hint():
+    assert research_module._normalize_research_search_query(
+        "site:python.langchain.com LangChain v1 release notes"
+    ).startswith("site:docs.langchain.com ")
+
+    hints = research_module._catalog_official_host_hints(
+        "调研 LangChain 最新版本的能力范围"
+    )
+    assert any(item["host"] == "docs.langchain.com" for item in hints)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "Research should continue until at least 8 readable sources are available; 5 is only the rejection floor.",
+        "No source-backed claims were extracted from readable page bodies.",
+        "research_source_transport_exhausted",
+    ],
+)
+def test_runtime_gate_diagnostics_never_become_research_queries(diagnostic):
+    assert research_module._normalize_research_search_query(diagnostic) == ""
+    assert research_module._research_critical_gap_queries(
+        "LangChain latest capabilities",
+        [diagnostic],
+    ) == []
+
+
 def test_site_operator_alone_does_not_promote_an_unrelated_domain_to_primary():
     quality = research_module._source_quality(
         "https://docs.example.net/langchain-v1",

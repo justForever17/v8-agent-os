@@ -54,6 +54,7 @@ interface ChatMessageProps {
     isLast?: boolean;
     userAvatar?: string | null;
     userName?: string | null;
+    supervisorProfile?: { name: string; roleLabel: string; avatar: string } | null;
     runtimeActivities?: RuntimeStageActivity[];
     executionActive?: boolean;
     animateEntrance?: boolean;
@@ -455,7 +456,7 @@ function AssistantActivityDots({ label }: { label: string }) {
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [], executionActive = false, animateEntrance = false }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, supervisorProfile, runtimeActivities = [], executionActive = false, animateEntrance = false }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const workbenchSessionId = useWorkbenchStore((state) => state.sessionId);
@@ -942,6 +943,18 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     );
 }
 
+    const usesCurrentSupervisorProfile = message.role === "assistant"
+        && (!message.agentType || message.agentType === "supervisor");
+    const displayAgentName = usesCurrentSupervisorProfile
+        ? supervisorProfile?.name || message.agentName || "智能主管"
+        : message.agentName || "V8 Engine";
+    const displayAgentRoleLabel = usesCurrentSupervisorProfile
+        ? supervisorProfile?.roleLabel || message.agentRoleLabel || "主理人"
+        : message.agentRoleLabel;
+    const displayAgentAvatar = usesCurrentSupervisorProfile
+        ? supervisorProfile?.avatar || message.agentAvatar || DEFAULT_AVATAR
+        : message.agentAvatar || DEFAULT_AVATAR;
+
     // ASSISTANT MESSAGE
     return (
         <>
@@ -959,7 +972,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         "bg-white/80 dark:bg-zinc-800/80 border-white/50 dark:border-white/10 backdrop-blur-md",
                         isLoading && isLast ? "shadow-[0_0_15px_rgba(139,92,246,0.3)] border-violet-500/30" : ""
                     )}>
-                        <img src={message.agentAvatar || DEFAULT_AVATAR} alt={message.agentName || "Supervisor"} className="w-full h-full object-cover" />
+                        <img src={displayAgentAvatar} alt={displayAgentName} className="w-full h-full object-cover" />
                     </div>
                     {/* Status Dot */}
                     {isLoading && isLast && (
@@ -973,18 +986,18 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className="flex flex-col justify-center">
                     <div className="flex items-center gap-2">
                         <span className="bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-[14px] font-bold tracking-tight text-transparent sm:text-[15px]">
-                            {message.agentName || "V8 Engine"}
+                            {displayAgentName}
                         </span>
 
                         {/* Role Badge */}
-                        {(message.agentRoleLabel || message.agentType) && (
+                        {(displayAgentRoleLabel || message.agentType) && (
                             <span className={cn(
                                 "rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] shadow-sm backdrop-blur-md",
-                                message.agentType === 'supervisor' || message.agentRoleLabel?.includes('群主')
+                                usesCurrentSupervisorProfile || message.agentRoleLabel?.includes('群主')
                                     ? "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400"
                                     : "bg-blue-500/10 text-blue-600 border-blue-500/20 dark:text-blue-400"
                             )}>
-                                {message.agentRoleLabel || (message.agentType === 'supervisor' ? t("web.generated.510a63c701") : t("web.generated.e4139b1ce2"))}
+                                {displayAgentRoleLabel || (message.agentType === 'supervisor' ? t("web.generated.510a63c701") : t("web.generated.e4139b1ce2"))}
                             </span>
                         )}
                     </div>

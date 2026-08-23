@@ -37,6 +37,10 @@ const {
     shouldDeliverRuntimeEventObservation,
 } = loadTypeScriptModule(sourcePath);
 const { SessionRuntimeEventContiguousCursor } = loadTypeScriptModule(eventSequenceSourcePath);
+const streamRouteSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "app", "api", "realtime", "sessions", "[id]", "stream", "route.ts"),
+  "utf8",
+);
 
 test("durable event ids take precedence over a shared fallback dedupe key", () => {
   assert.equal(buildRuntimeEventDeliveryIdentity({
@@ -149,4 +153,13 @@ test("more than 512 pending events are delivered once while a gap awaits snapsho
   assert.equal(replayed.filter(shouldDeliverRuntimeEventObservation).length, 0);
   assert.ok(replayed.every((item) => item.observationReason === "pending_duplicate"));
   assert.equal(cursor.contiguousSeq, 10);
+});
+
+test("realtime stream covers the durable watermark before starting replay polling", () => {
+  const bootstrap = streamRouteSource.indexOf("await fetchAndPushSnapshot(true)");
+  const polling = streamRouteSource.indexOf("while (!closed)", bootstrap);
+
+  assert.ok(bootstrap > -1);
+  assert.ok(polling > bootstrap);
+  assert.doesNotMatch(streamRouteSource, /void fetchAndPushSnapshot\(true\)/);
 });

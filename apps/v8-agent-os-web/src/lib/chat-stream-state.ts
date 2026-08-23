@@ -88,9 +88,9 @@ function resolveAgentAvatar(value: unknown): string | undefined {
 export const WEB_STREAM_LIFECYCLE_OPTIONS: SessionStreamLifecycleOptions = {
     createId: createClientId,
     defaultAgentProfile: {
-        agentName: 'Supervisor',
+        agentName: '智能主管',
         agentAvatar: DEFAULT_AVATAR,
-        agentRoleLabel: 'Supervisor',
+        agentRoleLabel: '主理人',
     },
     resolveAgentProfile: (event, fallback, defaultAgentProfile) => {
         const eventData = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};

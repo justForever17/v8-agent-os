@@ -35,14 +35,17 @@ test("Topbar uses feature pack API instead of legacy runtime install API", () =>
   assert.match(featurePackSnapshotSource, /snapshotRequests = new Map<string, Promise<SnapshotCache>>/);
 });
 
-test("feature pack dropdown keeps long content inside the bounded custom scroll surface", () => {
+test("feature pack dropdown keeps actions inside a compact bounded scroll surface", () => {
   const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
 
-  assert.match(topbarSource, /h-\[calc\(100dvh-5\.5rem\)\][^\n]*max-h-\[42rem\][^\n]*overflow-hidden/);
+  assert.match(topbarSource, /fixed left-2 right-2 top-12[^\n]*max-h-\[40rem\][^\n]*overflow-hidden/);
+  assert.match(topbarSource, /sm:absolute sm:left-auto sm:right-0 sm:top-full sm:h-\[calc\(100dvh-5\.5rem\)\]/);
   assert.match(topbarSource, /className="h-full min-w-0 max-w-full overflow-x-hidden"/);
-  assert.match(topbarSource, /w-full min-w-0 max-w-full overflow-hidden rounded-2xl/);
-  assert.match(topbarSource, /\[overflow-wrap:anywhere\]/);
-  assert.match(topbarSource, /className="shrink-0 rounded-xl"/);
+  assert.match(topbarSource, /visibleFeaturePacks = .*pack\.installable \|\| pack\.installed/);
+  assert.match(topbarSource, /rounded-lg[^\n]*sm:w-\[22rem\]/);
+  assert.match(topbarSource, /className="h-7 shrink-0 rounded-md px-2\.5"/);
+  assert.doesNotMatch(topbarSource, /const description = t\(`/);
+  assert.doesNotMatch(topbarSource, /pack\.runtimeFamilies\.map/);
   assert.match(topbarSource, /scrollbarClassName="w-2 /);
 });
 
@@ -152,7 +155,6 @@ test("feature pack cards localize metadata and do not expose raw installer error
     }
   }
   assert.match(topbarSource, /featurePackInstallFailedDetail/);
-  assert.match(topbarSource, /featurePackExecutionProvider/);
   assert.match(topbarSource, /const anotherPackInstalling = Boolean/);
   assert.match(topbarSource, /const canInstall = showInstall && !isInstalling && !anotherPackInstalling/);
   assert.match(topbarSource, /description: t\("components\.layout\.Topbar\.featurePackInstallFailedDescription"\)/);
@@ -195,6 +197,10 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /new Transform/);
   assert.match(installerSource, /offset \+ received > asset\.size/);
   assert.match(installerSource, /feature_pack_asset_size_exceeded/);
+  assert.match(installerSource, /featurePackAssetSources/);
+  assert.match(installerSource, /feature_pack_asset_sources_exhausted/);
+  assert.match(installerSource, /hostname\.endsWith\("\.hf\.co"\)/);
+  assert.match(installerSource, /\[Asset source recovered\]/);
   assert.match(installerSource, /normalizeStatus\(existing\.status\) === "installing"/);
   assert.match(installerSource, /本次请求未重复启动下载/);
   assert.match(managedNextSource, /V8_AGENT_OS_REPO_ROOT:\s*repoRoot/);
@@ -431,6 +437,13 @@ test("image analysis platform lock files are complete and fail closed on unsuppo
     fs.existsSync(path.join(lockRoot, "creative-media-image-analysis-cp311-macos-x64.txt")),
     false,
   );
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(adminRoot, "..", "..", "apps", "v8-agent-os-engine", "requirements", "feature-packs", "creative-media-image-analysis.manifest.json"),
+    "utf8",
+  ));
+  assert.match(manifest.assets[0].url, /^https:\/\/huggingface\.co\//);
+  assert.ok(manifest.assets[0].mirrors.some((url) => url.startsWith("https://hf-mirror.com/")));
+  assert.equal(manifest.assets[0].sha256, "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a");
 });
 
 test("feature pack child processes receive an explicit non-secret environment and empty packs are disabled", () => {

@@ -1,6 +1,6 @@
 {
-  "version": 5,
-  "updatedAt": "2026-08-01",
+  "version": 6,
+  "updatedAt": "2026-08-23",
   "description": "Research source quality catalog. This is not a network allowlist; it ranks public sources by authority and task fit.",
   "hostQueryAliases": {
     "platform.openai.com": ["openai", "codex", "codex cli", "chatgpt"],
@@ -13,7 +13,11 @@
     "ai.google.dev": ["google", "gemini", "gemini cli"],
     "geminicli.com": ["google", "gemini", "gemini cli"],
     "docs.github.com": ["github", "copilot", "copilot cli"],
-    "github.blog": ["github", "copilot", "copilot cli"]
+    "github.blog": ["github", "copilot", "copilot cli"],
+    "docs.langchain.com": ["langchain", "langchain python"]
+  },
+  "hostQueryRewrites": {
+    "python.langchain.com": "docs.langchain.com"
   },
   "officialEntitySeeds": [
     {
@@ -198,7 +202,8 @@
         "click.palletsprojects.com",
         "docs.pydantic.dev",
         "fastapi.tiangolo.com",
-        "typer.tiangolo.com"
+        "typer.tiangolo.com",
+        "docs.langchain.com"
       ],
       "authorityTier": "primary",
       "authorityBoost": 35,

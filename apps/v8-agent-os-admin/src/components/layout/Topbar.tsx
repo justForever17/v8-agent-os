@@ -499,6 +499,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     }, [loadInstallState, locale, t, toast]);
 
     const featurePackLabel = t("components.layout.Topbar.featurePacksLabel");
+    const visibleFeaturePacks = (installState?.packs || []).filter((pack) => pack.installable || pack.installed);
     const featurePackButtonTitle = installState?.summary?.missing
         ? t("components.layout.Topbar.featurePacksMissingCount", { count: String(installState.summary.missing) })
         : featurePackLabel;
@@ -581,27 +582,22 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                             <Monitor />
                         </TopbarGlowActionButton>
                         {activePanel === "install" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 h-[calc(100dvh-5.5rem)] max-h-[42rem] w-[24rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-3xl border-border bg-card/95 p-0 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                            <Card className="fixed left-2 right-2 top-12 z-50 mt-2 h-[calc(100dvh-4rem)] max-h-[40rem] w-auto overflow-hidden rounded-lg border-border bg-card/95 p-0 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:h-[calc(100dvh-5.5rem)] sm:w-[22rem] sm:max-w-[calc(100vw-1rem)]">
                                 <ScrollArea
                                     className="h-full min-w-0 max-w-full overflow-x-hidden"
                                     scrollbarClassName="w-2 bg-muted/70 py-1 dark:bg-white/[0.04]"
                                     thumbClassName="bg-muted-foreground/45 transition-colors hover:bg-muted-foreground/70 dark:bg-slate-500/60 dark:hover:bg-slate-400/80"
                                 >
-                                    <div className="w-full min-w-0 max-w-full space-y-4 overflow-x-hidden p-4 pr-5 text-sm text-muted-foreground dark:text-slate-300">
-                                            <div className="space-y-1">
+                                    <div className="w-full min-w-0 max-w-full overflow-x-hidden p-3 pr-4 text-sm text-muted-foreground dark:text-slate-300">
+                                            <div className="flex items-center justify-between gap-3 pb-3">
                                                 <div className="text-sm font-semibold text-foreground dark:text-slate-100">{featurePackLabel}</div>
-                                                <div className="text-xs text-muted-foreground dark:text-muted-foreground">
-                                                    {t("components.layout.Topbar.featurePacksDescription")}
-                                                </div>
+                                                {installState ? <span className="text-[11px] tabular-nums text-muted-foreground">{installState.summary.installed}/{visibleFeaturePacks.length}</span> : null}
                                             </div>
-                                            <section className="-mx-4 border-y border-border/70 bg-muted/50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.025]" aria-labelledby="v8os-update-title">
+                                            <section className="-mx-3 border-y border-border/70 bg-muted/50 px-3 py-3 dark:border-white/10 dark:bg-white/[0.025]" aria-labelledby="v8os-update-title">
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div className="min-w-0">
                                                         <div id="v8os-update-title" className="text-sm font-semibold text-foreground dark:text-slate-100">
                                                             {t("components.layout.Topbar.v8osUpdateTitle")}
-                                                        </div>
-                                                        <div className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
-                                                            {t("components.layout.Topbar.v8osUpdateDescription")}
                                                         </div>
                                                     </div>
                                                     {v8osUpdateState?.status === "current" && !v8osUpdateError ? (
@@ -626,7 +622,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div className="mt-2 text-[11px] leading-5 text-muted-foreground" role="status" aria-live="polite">
+                                                <div className="mt-2 text-[11px] leading-4 text-muted-foreground" role="status" aria-live="polite">
                                                     {t(`components.layout.Topbar.v8osUpdateStatus.${updateStatusKey}`)}
                                                 </div>
                                                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -634,7 +630,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                         type="button"
                                                         size="sm"
                                                         variant="outline"
-                                                        className="h-8 rounded-xl px-2.5"
+                                                        className="h-8 rounded-md px-2.5"
                                                         onClick={() => void loadV8OSUpdateState(true)}
                                                         disabled={v8osUpdateLoading}
                                                     >
@@ -642,26 +638,23 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                         {t("components.layout.Topbar.v8osUpdateCheck")}
                                                     </Button>
                                                     {updateAvailable ? (
-                                                        <Button type="button" size="sm" className="h-8 rounded-xl px-2.5" onClick={() => void openV8OSUpdate()}>
+                                                        <Button type="button" size="sm" className="h-8 rounded-md px-2.5" onClick={() => void openV8OSUpdate()}>
                                                             {t("components.layout.Topbar.v8osUpdateAction")}
                                                             <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
                                                         </Button>
                                                     ) : (
-                                                        <Button type="button" size="sm" className="h-8 rounded-xl px-2.5" disabled>
+                                                        <Button type="button" size="sm" className="h-8 rounded-md px-2.5" disabled>
                                                             {t("components.layout.Topbar.v8osUpdateAction")}
                                                         </Button>
                                                     )}
                                                 </div>
-                                                <div className="mt-2 text-[10px] leading-4 text-muted-foreground">
-                                                    {t("components.layout.Topbar.v8osUpdatePreviewNotice")}
-                                                </div>
                                             </section>
-                                            <div className="space-y-2">
+                                            <div>
                                                 {installLoading && !installState ? (
                                                     <div className="flex h-28 items-center justify-center">
                                                         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                                                     </div>
-                                                ) : (installState?.packs || []).map((pack) => {
+                                                ) : visibleFeaturePacks.map((pack) => {
                                                 const isInstalled = pack.status === "installed";
                                                 const isInstalling = pack.status === "installing" || installSubmittingPackId === pack.id;
                                                 const anotherPackInstalling = Boolean(
@@ -672,26 +665,13 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                 const canInstall = showInstall && !isInstalling && !anotherPackInstalling;
                                                 const packI18nKey = `components.layout.Topbar.featurePack.${pack.id}`;
                                                 const productName = t(`${packI18nKey}.name`);
-                                                const description = t(`${packI18nKey}.description`);
                                                 const hover = t(`${packI18nKey}.hover`);
                                                 return (
-                                                    <div key={pack.id} className="w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={hover}>
-                                                        <div className="flex items-start justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                                <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{productName}</div>
-                                                                <div className="mt-1 break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere] dark:text-muted-foreground">{description}</div>
-                                                                {pack.runtimeFamilies.length ? (
-                                                                    <div className="mt-2 flex flex-wrap gap-1.5">
-                                                                        {pack.runtimeFamilies.map((family) => (
-                                                                            <span key={family} className="rounded-full bg-card px-2 py-0.5 text-[10px] font-medium text-muted-foreground dark:bg-card/10 dark:text-slate-300">
-                                                                                {family}
-                                                                            </span>
-                                                                        ))}
-                                                                    </div>
-                                                                ) : null}
-                                                            </div>
+                                                    <div key={pack.id} className="w-full min-w-0 border-b border-border/60 py-3 last:border-b-0 dark:border-white/10" title={hover}>
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <div className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground dark:text-slate-100">{productName}</div>
                                                             <span className={cn(
-                                                                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                                                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
                                                                 pack.status === "installed"
                                                                     ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
                                                                     : pack.status === "failed"
@@ -702,42 +682,20 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                             )}>
                                                                 {t(`components.layout.Topbar.featurePackStatus.${pack.status}`)}
                                                             </span>
-                                                        </div>
-                                                        {pack.hasError ? (
-                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">
-                                                                {t("components.layout.Topbar.featurePackInstallFailedDetail")}
-                                                            </div>
-                                                        ) : null}
-                                                        {pack.executionProvider ? (
-                                                            <div className="mt-2 break-words text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
-                                                                {t("components.layout.Topbar.featurePackExecutionProvider", { provider: pack.executionProvider })}
-                                                                {pack.gpuAdapters?.length ? (
-                                                                    <span title={pack.gpuAdapters.join(", ")}>
-                                                                        {` · ${t("components.layout.Topbar.featurePackDetectedGpu", { gpu: pack.gpuAdapters[0] })}`}
-                                                                    </span>
-                                                                ) : null}
-                                                            </div>
-                                                        ) : null}
-                                                        {pack.logName ? (
-                                                            <div className="mt-2 truncate text-[11px] text-muted-foreground">
-                                                                {t("components.layout.Topbar.featurePackLogRef")}: {pack.logName}
-                                                            </div>
-                                                        ) : null}
-                                                        <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3">
-                                                            <div className="min-w-0 flex-1 break-words text-[11px] text-muted-foreground">
-                                                                {pack.restartRequired ? t("components.layout.Topbar.featurePackRestartRequired") : t("components.layout.Topbar.featurePackNoRestart")}
-                                                            </div>
                                                             {isInstalling ? (
-                                                                <span className="inline-flex shrink-0 items-center text-xs text-sky-600 dark:text-sky-200">
-                                                                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                                                                    {t("components.layout.Topbar.featurePackInstalling")}
-                                                                </span>
+                                                                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-sky-600 dark:text-sky-200" />
                                                             ) : showInstall ? (
-                                                                <Button size="sm" className="shrink-0 rounded-xl" disabled={!canInstall} onClick={() => void handleInstallFeaturePack(pack.id)}>
+                                                                <Button size="sm" className="h-7 shrink-0 rounded-md px-2.5" disabled={!canInstall} onClick={() => void handleInstallFeaturePack(pack.id)}>
                                                                     {t("components.layout.Topbar.featurePackInstall")}
                                                                 </Button>
                                                             ) : null}
                                                         </div>
+                                                        {pack.hasError ? (
+                                                            <div className="mt-1.5 truncate text-[11px] text-rose-700 dark:text-rose-200" title={pack.logName || undefined}>
+                                                                {t("components.layout.Topbar.featurePackInstallFailedDetail")}
+                                                            </div>
+                                                        ) : null}
+                                                        {pack.restartRequired ? <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">{t("components.layout.Topbar.featurePackRestartRequired")}</div> : null}
                                                     </div>
                                                 );
                                                 })}

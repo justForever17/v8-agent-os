@@ -105,6 +105,7 @@ type FeaturePackAsset = {
     id: string;
     target: string;
     url: string;
+    mirrors?: string[];
     size: number;
     sha256: string;
 };
@@ -304,6 +305,8 @@ const FEATURE_PACK_ASSET_HOSTS = new Set([
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
     "storage.googleapis.com",
+    "huggingface.co",
+    "hf-mirror.com",
 ]);
 
 function v8Home() {
@@ -1263,9 +1266,19 @@ function readPipResolutionReport(reportFile: string) {
 
 function assertTrustedFeaturePackAssetUrl(rawUrl: string) {
     const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "https:" || !FEATURE_PACK_ASSET_HOSTS.has(parsed.hostname.toLowerCase())) {
+    const hostname = parsed.hostname.toLowerCase();
+    const trustedHost = FEATURE_PACK_ASSET_HOSTS.has(hostname) || hostname.endsWith(".hf.co");
+    if (parsed.protocol !== "https:" || !trustedHost) {
         throw new Error(`Feature pack asset host is not allowed: ${parsed.hostname || "unknown"}`);
     }
+}
+
+function featurePackAssetSources(asset: FeaturePackAsset) {
+    return Array.from(new Set(
+        [asset.url, ...(asset.mirrors || [])]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean),
+    ));
 }
 
 async function fetchTrustedFeaturePackAsset(
@@ -1300,7 +1313,9 @@ async function fetchTrustedFeaturePackAsset(
 }
 
 async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: string, output: fs.WriteStream) {
-    assertTrustedFeaturePackAssetUrl(asset.url);
+    const sources = featurePackAssetSources(asset);
+    if (!sources.length) throw new Error(`feature_pack_asset_source_missing:${asset.id}`);
+    sources.forEach(assertTrustedFeaturePackAssetUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FEATURE_PACK_ASSET_TIMEOUT_MS);
     const target = path.resolve(modelRoot, asset.target);
@@ -1316,24 +1331,45 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
         offset = 0;
     }
     try {
-        const request = async (resumeOffset: number) => fetchTrustedFeaturePackAsset(
-            asset.url,
-            resumeOffset,
-            controller.signal,
-        );
-        let response = await request(offset);
+        const request = async (resumeOffset: number) => {
+            const failures: string[] = [];
+            for (const sourceUrl of sources) {
+                const sourceHost = new URL(sourceUrl).hostname.toLowerCase();
+                try {
+                    const response = await fetchTrustedFeaturePackAsset(
+                        sourceUrl,
+                        resumeOffset,
+                        controller.signal,
+                    );
+                    if (!response.ok || !response.body) {
+                        const status = response.status;
+                        await response.body?.cancel().catch(() => undefined);
+                        throw new Error(`HTTP ${status}`);
+                    }
+                    if (failures.length) output.write(`[Asset source recovered] ${asset.id} via ${sourceHost}\n`);
+                    return { response, sourceUrl };
+                } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    failures.push(`${sourceHost}:${reason.slice(0, 160)}`);
+                    output.write(`[Asset source failed] ${asset.id} ${sourceHost}: ${reason.slice(0, 240)}\n`);
+                }
+            }
+            throw new Error(`feature_pack_asset_sources_exhausted:${asset.id}:${failures.join("|")}`);
+        };
+        let attempt = await request(offset);
+        let response = attempt.response;
         if (offset > 0 && response.status !== 206) {
             await response.body?.cancel().catch(() => undefined);
             fs.rmSync(partial, { force: true });
             offset = 0;
-            response = await request(0);
+            attempt = await request(0);
+            response = attempt.response;
         }
-        if (!response.ok || !response.body) {
-            throw new Error(`Asset download failed (${response.status}): ${asset.id}`);
-        }
+        const responseBody = response.body;
+        if (!responseBody) throw new Error(`feature_pack_asset_body_missing:${asset.id}`);
         const contentLength = Number(response.headers.get("content-length"));
         if (Number.isFinite(contentLength) && contentLength > asset.size - offset) {
-            await response.body.cancel().catch(() => undefined);
+            await responseBody.cancel().catch(() => undefined);
             fs.rmSync(partial, { force: true });
             throw new Error(`feature_pack_asset_size_exceeded:${asset.id}`);
         }
@@ -1354,7 +1390,7 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
         });
         try {
             await pipeline(
-                Readable.fromWeb(response.body as never),
+                Readable.fromWeb(responseBody as never),
                 sizeLimiter,
                 fs.createWriteStream(partial, { flags: offset > 0 ? "a" : "w" }),
                 { signal: controller.signal },
@@ -1376,7 +1412,7 @@ async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: stri
         }
         fs.renameSync(partial, target);
         output.write(`[Asset verified] ${asset.id} sha256=${actualHash}\n`);
-        return { ...asset, path: target, verifiedSha256: actualHash };
+        return { ...asset, sourceUrl: attempt.sourceUrl, path: target, verifiedSha256: actualHash };
     } finally {
         clearTimeout(timeout);
     }
@@ -2044,7 +2080,9 @@ async function runTransactionalAssetPackInstall(input: {
                 target: asset.target,
                 size: asset.size,
                 sha256: asset.verifiedSha256,
-                url: asset.url,
+                url: "sourceUrl" in asset && typeof asset.sourceUrl === "string"
+                    ? asset.sourceUrl
+                    : asset.url,
             })),
         };
         assertFeaturePackLogHealthy(output);

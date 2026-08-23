@@ -33,6 +33,7 @@ interface ChatWindowProps {
     isLoading?: boolean;
     userAvatar?: string | null;
     userName?: string | null;
+    supervisorProfile?: { name: string; roleLabel: string; avatar: string } | null;
     shellClassName?: string;
     runtimeActivities?: RuntimeStageActivity[];
     sessionRunning?: boolean;
@@ -55,6 +56,7 @@ export function ChatWindow({
     isLoading,
     userAvatar,
     userName,
+    supervisorProfile,
     shellClassName,
     runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
     sessionRunning,
@@ -320,6 +322,7 @@ export function ChatWindow({
                                             isLast={index === messages.length - 1}
                                             userAvatar={userAvatar}
                                             userName={userName}
+                                            supervisorProfile={supervisorProfile}
                                             runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
                                             executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
                                             animateEntrance={Boolean(isLoading && index >= messages.length - 2)}

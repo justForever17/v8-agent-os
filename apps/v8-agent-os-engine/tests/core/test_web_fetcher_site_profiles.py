@@ -136,6 +136,35 @@ def test_configured_provider_preferences_do_not_restore_user_removed_sources(mon
     assert web_fetcher._configured_source_provider_order("global") == ["bing"]
 
 
+def test_auto_router_prioritizes_allowlisted_agent_browser_search_hosts(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "globalPreferred": ["yahoo", "duckduckgo", "google", "bing", "metaso", "baidu"],
+            },
+            "providers": {
+                provider: {"enabled": True}
+                for provider in ("yahoo", "duckduckgo", "google", "bing", "metaso", "baidu")
+            },
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn", "baidu.com"],
+        },
+    )
+
+    plan = web_fetcher._source_router_plan(
+        query="LangChain current capabilities official documentation",
+        requested_provider="auto",
+    )
+
+    assert plan["plannedProviders"][:2] == ["metaso", "baidu"]
+    assert plan["providers"][:2] == ["metaso", "baidu"]
+    assert plan["profilePromotedProviders"] == ["metaso", "baidu"]
+    assert plan["networkRoute"] == "agent_browser"
+    assert web_fetcher._source_router_payload_fields(plan)["networkRoute"] == "agent_browser"
+
+
 def test_auto_search_failure_preserves_operational_error_and_has_no_selected_provider(monkeypatch) -> None:
     monkeypatch.setattr(
         web_fetcher,
@@ -331,6 +360,43 @@ def test_static_fetch_does_not_restart_tls_attempt_after_budget_is_exhausted(mon
     assert len(calls) == 1
     assert 1.0 <= calls[0] <= 1.5
     assert elapsed < 1.2
+
+
+def test_agent_browser_profile_gets_the_full_provider_navigation_budget(monkeypatch) -> None:
+    timeouts: list[int] = []
+
+    class _FailingBrowserFetcher:
+        @staticmethod
+        def fetch(_url: str, **kwargs: object) -> object:
+            timeouts.append(int(kwargs["timeout"]))
+            raise TimeoutError("simulated browser navigation timeout")
+
+    monkeypatch.setattr(web_fetcher, "_try_import_dynamic_fetcher", lambda: (_FailingBrowserFetcher, None))
+    monkeypatch.setattr(web_fetcher, "_try_import_stealth_fetcher", lambda: (_FailingBrowserFetcher, None))
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn"],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_active_agent_browser_cdp_context",
+        lambda: {"profileDir": "agent-profile", "browserKind": "edge", "cdpUrl": "ws://127.0.0.1/devtools/browser/test"},
+    )
+
+    with pytest.raises(RuntimeError, match="网页抓取失败"):
+        web_fetcher._fetch_with_scrapling_internal(
+            "https://metaso.cn/?q=langchain",
+            mode="auto",
+            timeout_seconds=8,
+            use_agent_browser_profile=True,
+        )
+
+    assert timeouts
+    assert timeouts[0] >= 7_500
 
 
 def test_missing_scrapling_fetcher_dependency_is_terminal_and_actionable() -> None:

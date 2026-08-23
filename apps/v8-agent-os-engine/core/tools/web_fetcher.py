@@ -2085,6 +2085,29 @@ def _configured_source_provider_order(locale: str) -> list[str]:
     return _ordered_unique([*legacy_order, *defaults])
 
 
+def _prioritize_governed_browser_providers(candidates: list[str]) -> tuple[list[str], list[str]]:
+    """Prefer explicitly enabled login-profile routes before proxy-bound public search.
+
+    A user who enabled the Agent Browser profile and allowlisted a search host
+    has supplied a stronger routing signal than the locale heuristic.  Keeping
+    those providers behind several 10-second public-provider timeouts can
+    exhaust the total search budget before the governed route is attempted.
+    """
+
+    promoted: list[str] = []
+    remaining: list[str] = []
+    for provider in candidates:
+        capability = _source_provider_capability(provider)
+        search_url = _provider_search_url(provider, "")
+        profile_ready = bool(
+            capability.get("supportsLoginProfile")
+            and search_url
+            and _agent_browser_profile_allowed(search_url)[0]
+        )
+        (promoted if profile_ready else remaining).append(provider)
+    return [*promoted, *remaining], promoted
+
+
 def _provider_network_route(provider: str, locale: str, *, needs_login: bool = False) -> str:
     if needs_login:
         return "agent_browser"
@@ -2117,6 +2140,9 @@ def _source_router_plan(
         candidates = _configured_source_provider_order(locale)
 
     planned = _ordered_unique(candidates)
+    profile_promoted_providers: list[str] = []
+    if not requested_provider or requested_provider == "auto":
+        planned, profile_promoted_providers = _prioritize_governed_browser_providers(planned)
     executable: list[str] = []
     skipped: list[dict[str, Any]] = []
     for provider in planned:
@@ -2176,14 +2202,20 @@ def _source_router_plan(
         executable.append(provider)
 
     selected_route_provider = executable[0] if executable else (planned[0] if planned else "")
+    selected_uses_profile = selected_route_provider in profile_promoted_providers
     return {
         "locale": locale,
         "intent": "ui_reference" if ui_reference else ("high_stakes" if high_stakes else "search"),
         "requestedProvider": requested_provider,
         "plannedProviders": planned,
+        "profilePromotedProviders": profile_promoted_providers,
         "providers": executable,
         "skippedProviders": skipped,
-        "networkRoute": _provider_network_route(selected_route_provider, locale, needs_login=needs_login) if selected_route_provider else "auto",
+        "networkRoute": _provider_network_route(
+            selected_route_provider,
+            locale,
+            needs_login=needs_login or selected_uses_profile,
+        ) if selected_route_provider else "auto",
     }
 
 
@@ -2199,7 +2231,15 @@ def _source_router_payload_fields(
         else _safe_text(selected_provider)
     )
     locale = plan.get("locale") or "global"
-    network_route = _provider_network_route(provider, str(locale)) if provider else (plan.get("networkRoute") or "auto")
+    network_route = (
+        _provider_network_route(
+            provider,
+            str(locale),
+            needs_login=provider in set(plan.get("profilePromotedProviders") or []),
+        )
+        if provider
+        else (plan.get("networkRoute") or "auto")
+    )
     return {
         "sourceCapability": _source_provider_public_capability(provider) if provider else {},
         "networkRoute": network_route,
@@ -2209,6 +2249,7 @@ def _source_router_payload_fields(
             "intent": plan.get("intent") or "search",
             "requestedProvider": plan.get("requestedProvider") or "auto",
             "plannedProviders": plan.get("plannedProviders") or [],
+            "profilePromotedProviders": plan.get("profilePromotedProviders") or [],
             "executableProviders": plan.get("providers") or [],
             "selectedProvider": provider or None,
             "skippedProviders": plan.get("skippedProviders") or [],
@@ -2764,7 +2805,6 @@ def _fetch_with_scrapling_internal(
         plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
         if not plans:
             raise RuntimeError("agent_browser_profile_requires_browser_mode: use dynamic/stealth/auto when useAgentBrowserProfile=true.")
-    per_mode_timeout = max(1.0, total_timeout / max(len(plans), 1))
     agent_browser_profile_dir = ""
     agent_browser_profile_host = ""
     agent_browser_kind = ""
@@ -2777,6 +2817,10 @@ def _fetch_with_scrapling_internal(
                 " and a matching agentBrowserProfileAllowlist domain."
             )
         agent_browser_profile_host = matched_host or auto_matched_host or ""
+    per_mode_timeout = max(
+        1.0,
+        total_timeout if effective_agent_browser_profile else total_timeout / max(len(plans), 1),
+    )
     def _effective_browser_fetch_options() -> dict[str, Any]:
         nonlocal agent_browser_profile_dir, agent_browser_kind
         _static_fetch_options, browser_fetch_options = _current_fetch_options()

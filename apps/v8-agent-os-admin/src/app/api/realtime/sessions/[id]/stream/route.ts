@@ -258,9 +258,12 @@ export async function GET(
                 sendSse({ ok: true, ts: Date.now() }, "heartbeat");
             }, 15000);
 
-            void fetchAndPushSnapshot(true);
-
             void (async () => {
+                // Establish the durable high-water mark before replay polling.
+                // Live fanout is already subscribed above, so events produced
+                // during this read remain visible without replaying the entire
+                // session from after_seq=0.
+                await fetchAndPushSnapshot(true);
                 while (!closed) {
                     try {
                         const eventsStartedAt = Date.now();

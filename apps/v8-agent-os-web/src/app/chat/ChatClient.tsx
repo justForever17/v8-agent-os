@@ -168,6 +168,12 @@ interface SupervisorReasoningEffortControl {
     sessionId?: string;
 }
 
+type SupervisorDisplayProfile = {
+    name: string;
+    roleLabel: string;
+    avatar: string;
+};
+
 type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 type SessionProjectionView = AuthoritativeSessionView & {
@@ -888,6 +894,11 @@ export default function ChatClient() {
     const contextSessionIdParam = String(searchParams.get("contextSessionId") || "").trim();
     const router = useRouter();
     const [localConnectError, setLocalConnectError] = useState<string | null>(null);
+    const [supervisorDisplayProfile, setSupervisorDisplayProfile] = useState<SupervisorDisplayProfile>({
+        name: "智能主管",
+        roleLabel: "主理人",
+        avatar: "",
+    });
     const localConnectAttemptedRef = useRef(false);
     const queueLabels = useMemo<QueueUiLabels>(() => ({
         title: t("web.generated.8d4c2b7a1f"),
@@ -960,6 +971,44 @@ export default function ChatClient() {
     useEffect(() => {
         void clearLegacyWebConversationCache();
     }, []);
+
+    const loadSupervisorDisplayProfile = useCallback(async () => {
+        const response = await fetch("/api/supervisor-profile", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+        if (!payload) return;
+        const next = {
+            name: readString(payload.name) || "智能主管",
+            roleLabel: readString(payload.roleLabel) || "主理人",
+            avatar: resolveProfileAvatarSrc(readString(payload.avatar)),
+        };
+        setSupervisorDisplayProfile((current) => (
+            current.name === next.name
+            && current.roleLabel === next.roleLabel
+            && current.avatar === next.avatar
+                ? current
+                : next
+        ));
+    }, []);
+
+    useEffect(() => {
+        if (status !== "authenticated") return;
+        let disposed = false;
+        const refresh = () => {
+            if (disposed || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+            void loadSupervisorDisplayProfile().catch(() => undefined);
+        };
+        refresh();
+        const timer = window.setInterval(refresh, 2_000);
+        window.addEventListener("focus", refresh);
+        document.addEventListener("visibilitychange", refresh);
+        return () => {
+            disposed = true;
+            window.clearInterval(timer);
+            window.removeEventListener("focus", refresh);
+            document.removeEventListener("visibilitychange", refresh);
+        };
+    }, [loadSupervisorDisplayProfile, status]);
 
     const [input, setInput] = useState("");
     const { conversations, refreshConversations, createConversation, patchConversationSummary, updateConversationPresentation } = useConversationContext();
@@ -4185,6 +4234,7 @@ export default function ChatClient() {
                             isLoading={localConversationLoading}
                             userAvatar={chatUserAvatar}
                             userName={chatUserName}
+                            supervisorProfile={supervisorDisplayProfile}
                             shellClassName="w-full"
                             runtimeActivities={runtimeStageModel.messageActivities}
                             sessionRunning={activeConversationRunning}

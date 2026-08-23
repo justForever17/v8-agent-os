@@ -163,6 +163,19 @@ export function WorkspaceWorkbenchPanel({
     const [fileError, setFileError] = useState("");
     const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
     const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
+    const resourceRevision = useMemo(
+        () => runtimeModel.messageActivities
+            .filter((activity) => {
+                const topic = text(activity.topic).toLowerCase();
+                return topic === "artifact.recorded"
+                    || topic.startsWith("handoff.ref.")
+                    || topic === "runtime.episode.handoff_ready";
+            })
+            .slice(-16)
+            .map((activity) => `${activity.id}:${activity.timestamp || ""}`)
+            .join("|"),
+        [runtimeModel.messageActivities],
+    );
     const subagentReturns = useMemo(
         () => buildSubagentReturnProjection(messages, runtimeModel.messageActivities.map((activity) => activity.node)),
         [messages, runtimeModel.messageActivities],
@@ -243,11 +256,7 @@ export function WorkspaceWorkbenchPanel({
     }, [openDocument, sessionId]);
 
     useEffect(() => {
-        if (!sessionId) {
-            setRuntimeArtifacts([]);
-            setSessionSources([]);
-            return;
-        }
+        if (!sessionId) return;
         const controller = new AbortController();
         const query = new URLSearchParams({ sessionId, limit: "100" });
         void fetch(`/api/artifacts?${query.toString()}`, { cache: "no-store", signal: controller.signal })
@@ -264,7 +273,7 @@ export function WorkspaceWorkbenchPanel({
                 if (!controller.signal.aborted) setRuntimeArtifacts([]);
             });
         return () => controller.abort();
-    }, [sessionId]);
+    }, [resourceRevision, sessionId]);
 
     useEffect(() => {
         if (!sessionId) return;
@@ -282,7 +291,7 @@ export function WorkspaceWorkbenchPanel({
                 if (!controller.signal.aborted) setSessionSources([]);
             });
         return () => controller.abort();
-    }, [sessionId]);
+    }, [resourceRevision, sessionId]);
 
     return (
         <div className="h-full min-h-0 overflow-auto bg-background">

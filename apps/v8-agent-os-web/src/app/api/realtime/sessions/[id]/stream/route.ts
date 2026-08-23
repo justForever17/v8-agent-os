@@ -24,7 +24,7 @@ export async function GET(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${adminApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web`, {
+        const res = await fetch(`${adminApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web&compact=1`, {
             method: "GET",
             headers: {
                 "Content-Type": "text/event-stream",

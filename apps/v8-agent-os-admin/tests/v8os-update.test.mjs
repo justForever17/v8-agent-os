@@ -242,7 +242,10 @@ test("Topbar prefers the Shell update authority and keeps browser fallback read-
   assert.match(topbar, /shell\.openUpdateRelease\(\)/);
   assert.match(topbar, /V8OS_UPDATE_CACHE_TTL_MS = 5 \* 60 \* 1000/);
   assert.match(topbar, /<ScrollArea/);
-  assert.match(topbar, /h-\[calc\(100dvh-5\.5rem\)\] max-h-\[42rem\]/);
+  assert.match(
+    topbar,
+    /fixed left-2 right-2 top-12[^"]*h-\[calc\(100dvh-4rem\)\][^"]*max-h-\[40rem\][^"]*sm:absolute[^"]*sm:h-\[calc\(100dvh-5\.5rem\)\][^"]*sm:w-\[22rem\]/,
+  );
   const updateLoader = topbar.slice(topbar.indexOf("const loadV8OSUpdateState"), topbar.indexOf("const closePanels"));
   assert.doesNotMatch(updateLoader, /setInterval|setTimeout/);
   assert.match(route, /resolveUserEmail/);

@@ -1,7 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
-    Animated,
-    Easing,
     Pressable,
     StyleSheet,
     Text,
@@ -9,6 +7,15 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { formatClientToolResult, type ClientToolSurface, type ClientToolSurfaceStatus } from "@v8/session-realtime";
+import Animated, {
+    Easing,
+    Keyframe,
+    LinearTransition,
+    ReduceMotion,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
+} from "react-native-reanimated";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -27,6 +34,16 @@ type ToolCardProps = {
     toolInvocation: ToolInvocation;
     hideResult?: boolean;
 };
+
+const CONTENT_ENTER = new Keyframe({
+    0: { opacity: 0, transform: [{ translateY: -6 }] },
+    100: { opacity: 1, transform: [{ translateY: 0 }], easing: Easing.out(Easing.cubic) },
+}).duration(220).reduceMotion(ReduceMotion.System);
+const CONTENT_EXIT = new Keyframe({
+    0: { opacity: 1, transform: [{ translateY: 0 }] },
+    100: { opacity: 0, transform: [{ translateY: -6 }], easing: Easing.out(Easing.cubic) },
+}).duration(180).reduceMotion(ReduceMotion.System);
+const CARD_LAYOUT = LinearTransition.duration(220).reduceMotion(ReduceMotion.System);
 
 function looksLikeRawStructuredOutput(value: unknown) {
     if (value === null || value === undefined) {
@@ -104,35 +121,23 @@ function statusPresentation(status: ClientToolSurfaceStatus) {
 export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: ToolCardProps) {
     const { colors, themeMode, t } = useUiPrefs();
     const [isExpanded, setIsExpanded] = useState(false);
-    const progress = useRef(new Animated.Value(0)).current;
+    const progress = useSharedValue(0);
     const hasResult = toolInvocation.state === "result";
     const status = resolveToolStatus(toolInvocation);
     const presentation = statusPresentation(status);
     const isActive = status === "running";
 
     useEffect(() => {
-        Animated.timing(progress, {
-            toValue: isExpanded ? 1 : 0,
+        progress.value = withTiming(isExpanded ? 1 : 0, {
             duration: 260,
             easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
+            reduceMotion: ReduceMotion.System,
+        });
     }, [isExpanded, progress]);
 
-    const rotate = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: ["0deg", "180deg"],
-    });
-
-    const contentOpacity = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, 1],
-    });
-
-    const contentTranslateY = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [-6, 0],
-    });
+    const chevronStyle = useAnimatedStyle(() => ({
+        transform: [{ rotate: `${progress.value * 180}deg` }],
+    }));
 
     const accent = presentation.color;
     const iconName = resolveToolIconName(toolInvocation.toolName);
@@ -141,7 +146,8 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
     return (
         <View style={styles.wrap}>
             {isActive ? <View style={[styles.activeGlow, { backgroundColor: "rgba(59,130,246,0.055)" }]} /> : null}
-            <View
+            <Animated.View
+                layout={CARD_LAYOUT}
                 style={[
                     styles.card,
                     {
@@ -193,7 +199,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         </Text>
                     </View>
 
-                    <Animated.View style={{ transform: [{ rotate }] }}>
+                    <Animated.View style={chevronStyle}>
                         <MaterialCommunityIcons
                             name="chevron-down"
                             size={18}
@@ -204,13 +210,10 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 
                 {isExpanded ? (
                     <Animated.View
-                        style={[
-                            styles.content,
-                            {
-                                opacity: contentOpacity,
-                                transform: [{ translateY: contentTranslateY }],
-                            },
-                        ]}
+                        entering={CONTENT_ENTER}
+                        exiting={CONTENT_EXIT}
+                        layout={CARD_LAYOUT}
+                        style={styles.content}
                     >
                         {toolInvocation.clientSurface?.summary && !toolInvocation.clientSurface.summary.startsWith("{") && !toolInvocation.clientSurface.summary.startsWith("[") ? (
                             <Text style={[styles.summary, { color: colors.textMuted }]}>
@@ -237,7 +240,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         ) : null}
                     </Animated.View>
                 ) : null}
-            </View>
+            </Animated.View>
         </View>
     );
 }, (prev, next) => (

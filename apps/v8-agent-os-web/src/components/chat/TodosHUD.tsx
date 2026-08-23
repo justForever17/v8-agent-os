@@ -52,20 +52,18 @@ export function TodosHUD({ items, isStale = false, shouldAutoHide = false, dismi
         return () => window.clearTimeout(timer);
     }, [allCompleted, dismissDelayMs, shouldAutoHide, todos.length, todosSignature]);
 
-    if (todos.length === 0 || dismissed) {
-        return null;
-    }
-
     return (
-        <AnimatePresence>
-            <motion.div
-                initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                className="pointer-events-auto w-[min(19rem,calc(100vw-1.5rem))] max-w-full select-none"
-                layout
-            >
+        <AnimatePresence initial={false}>
+            {todos.length > 0 && !dismissed ? (
+                <motion.div
+                    key="todos-hud"
+                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                    transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                    className="pointer-events-auto w-[min(19rem,calc(100vw-1.5rem))] max-w-full select-none"
+                    layout
+                >
                 <div className="flex flex-col overflow-hidden rounded-2xl border border-white/30 bg-background/46 shadow-[0_18px_48px_rgba(15,23,42,0.12)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/42">
                     <div
                         className="flex min-h-[36px] cursor-pointer items-center gap-2 border-b border-white/15 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent px-3 py-1.5 transition-colors hover:bg-primary/5 sm:min-h-[40px] sm:px-4 sm:py-2"
@@ -149,7 +147,8 @@ export function TodosHUD({ items, isStale = false, shouldAutoHide = false, dismi
                         ) : null}
                     </AnimatePresence>
                 </div>
-            </motion.div>
+                </motion.div>
+            ) : null}
         </AnimatePresence>
     );
 }

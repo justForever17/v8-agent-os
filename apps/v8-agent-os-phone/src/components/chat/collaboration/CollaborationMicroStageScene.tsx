@@ -1,11 +1,14 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import Svg, { Circle, Ellipse, Path, Rect } from "react-native-svg";
 import Animated, {
     cancelAnimation,
     Easing,
     FadeIn,
+    ReduceMotion,
     useAnimatedStyle,
+    useReducedMotion,
     useSharedValue,
     withDelay,
     withRepeat,
@@ -25,6 +28,13 @@ import type {
 import { selectCollaborationMicroStageLayout } from "@v8/session-realtime";
 
 import { createTranslator } from "@/src/lib/locale";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
+import {
+    nextMotionFrameIndex,
+    retainDepartingMotionItem,
+    shouldRunContinuousMotion,
+    shouldRunTransitionMotion,
+} from "@/src/lib/motion-policy";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import type { ThemeColors } from "@/src/theme/tokens";
 import {
@@ -309,14 +319,12 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[], executionActi
             });
 
             current.forEach((stage) => {
-                if (incomingIds.has(stage.id) || stage.renderPhase === "exiting") {
-                    return;
-                }
-                next.push({
-                    ...stage,
-                    renderPhase: "exiting",
+                const departing = retainDepartingMotionItem(stage, incomingIds, (item) => ({
+                    ...item,
+                        renderPhase: "exiting" as const,
                     phaseUntil: phaseUntil("exiting", now),
-                });
+                }));
+                if (departing) next.push(departing);
             });
 
             return next.sort((left, right) => left.timestamp - right.timestamp);
@@ -625,7 +633,7 @@ function supervisorWaypointsForItems(items: PositionedStageActorItem[], width: n
     });
 }
 
-function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean) {
+function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean, motionEnabled: boolean) {
     const [displayState, setDisplayState] = useState<{ action: SupervisorDisplayAction; facingLeft: boolean }>(() => ({
         action,
         facingLeft,
@@ -638,7 +646,7 @@ function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean
         const crossesDirectionalBoundary = isDirectionalSupervisorAction(previous.action)
             !== isDirectionalSupervisorAction(action);
         const needsTurnBridge = crossesDirectionalBoundary;
-        if (!needsTurnBridge) {
+        if (!motionEnabled || !needsTurnBridge) {
             setDisplayState({ action, facingLeft });
             return undefined;
         }
@@ -648,12 +656,17 @@ function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean
             setDisplayState({ action, facingLeft });
         }, TURN_BRIDGE_DURATION_MS);
         return () => clearTimeout(timer);
-    }, [action, facingLeft]);
+    }, [action, facingLeft, motionEnabled]);
 
     return displayState;
 }
 
-function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean) {
+function useSupervisorFrame(
+    action: SupervisorDisplayAction,
+    facingLeft: boolean,
+    motionEnabled: boolean,
+    continuousMotionEnabled: boolean,
+) {
     const frames = action === "turn"
         ? (facingLeft ? SUPERVISOR_TURN_FRAMES.left : SUPERVISOR_TURN_FRAMES.right)
         : SUPERVISOR_ACTION_FRAMES[action];
@@ -666,13 +679,14 @@ function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean
         let timer: ReturnType<typeof setTimeout> | undefined;
         let current = 0;
         setFrameIndex(0);
-        if (frames.length <= 1) return undefined;
+        if (!motionEnabled || (loops && !continuousMotionEnabled) || frames.length <= 1) return undefined;
 
         const scheduleNext = () => {
             timer = setTimeout(() => {
                 if (cancelled) return;
-                if (!loops && current >= frames.length - 1) return;
-                current = (current + 1) % frames.length;
+                const next = nextMotionFrameIndex(current, frames.length, loops);
+                if (next === null) return;
+                current = next;
                 setFrameIndex(current);
                 scheduleNext();
             }, durations[Math.min(current, durations.length - 1)] || 180);
@@ -682,7 +696,7 @@ function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean
             cancelled = true;
             if (timer) clearTimeout(timer);
         };
-    }, [action, durations, frames, loops]);
+    }, [action, continuousMotionEnabled, durations, frames, loops, motionEnabled]);
 
     return frames[frameIndex] ?? frames[0] ?? 0;
 }
@@ -690,12 +704,21 @@ function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean
 function SupervisorSprite({
     action,
     facingLeft,
+    motionEnabled,
+    continuousMotionEnabled,
 }: {
     action: SupervisorAction;
     facingLeft: boolean;
+    motionEnabled: boolean;
+    continuousMotionEnabled: boolean;
 }) {
-    const displayState = useSupervisorDisplayState(action, facingLeft);
-    const frame = useSupervisorFrame(displayState.action, displayState.facingLeft);
+    const displayState = useSupervisorDisplayState(action, facingLeft, motionEnabled);
+    const frame = useSupervisorFrame(
+        displayState.action,
+        displayState.facingLeft,
+        motionEnabled,
+        continuousMotionEnabled,
+    );
     const sheet = displayState.action === "celebrate" ? SUPERVISOR_FAREWELL_SHEET : SUPERVISOR_SHEET;
     const column = frame % sheet.columns;
     const row = Math.floor(frame / sheet.columns);
@@ -737,17 +760,28 @@ function GroundShadow({ width = 54, opacity = 0.16 }: { width?: number; opacity?
     );
 }
 
-function MagicPortal({ color }: { color: string }) {
+function MagicPortal({ color, motionEnabled }: { color: string; motionEnabled: boolean }) {
     const spin = useSharedValue(0);
     const glow = useSharedValue(0);
 
     useEffect(() => {
-        spin.value = withRepeat(withTiming(1, { duration: 980, easing: Easing.linear }), -1, false);
+        cancelAnimation(spin);
+        cancelAnimation(glow);
+        if (!motionEnabled) {
+            spin.value = 0;
+            glow.value = 0;
+            return undefined;
+        }
+        spin.value = withTiming(1.4, { duration: 1400, easing: Easing.linear });
         glow.value = withSequence(
             withTiming(1, { duration: 420, easing: Easing.out(Easing.cubic) }),
             withDelay(620, withTiming(0, { duration: 360, easing: Easing.in(Easing.cubic) })),
         );
-    }, [glow, spin]);
+        return () => {
+            cancelAnimation(spin);
+            cancelAnimation(glow);
+        };
+    }, [glow, motionEnabled, spin]);
 
     const animatedStyle = useAnimatedStyle(() => ({
         opacity: glow.value,
@@ -786,11 +820,13 @@ function StatusBadge({
     color,
     palette,
     t,
+    continuousMotionEnabled,
 }: {
     status: CollaborationMicroStageStatus;
     color: string;
     palette: ThemeColors;
     t: ReturnType<typeof createTranslator>;
+    continuousMotionEnabled: boolean;
 }) {
     const keys: Record<CollaborationMicroStageStatus, Parameters<ReturnType<typeof createTranslator>>[0]> = {
         active: "src.components.chat.collaborationmicrostagescene.status_active",
@@ -803,13 +839,14 @@ function StatusBadge({
     const tone = statusTone(status, palette);
     const rotation = useSharedValue(0);
     useEffect(() => {
-        if (status === "active") {
+        cancelAnimation(rotation);
+        if (status === "active" && continuousMotionEnabled) {
             rotation.value = withRepeat(withTiming(1, { duration: 820, easing: Easing.linear }), -1, false);
             return () => cancelAnimation(rotation);
         }
-        rotation.value = withTiming(0, { duration: 160 });
+        rotation.value = 0;
         return undefined;
-    }, [rotation, status]);
+    }, [continuousMotionEnabled, rotation, status]);
     const ringStyle = useAnimatedStyle(() => ({
         transform: [{ rotate: `${rotation.value * 360}deg` }],
     }));
@@ -822,7 +859,10 @@ function StatusBadge({
             <Animated.View
                 style={[
                     styles.statusRing,
-                    { borderColor: tone, borderTopColor: status === "active" ? "transparent" : tone },
+                    {
+                        borderColor: tone,
+                        borderTopColor: status === "active" && continuousMotionEnabled ? "transparent" : tone,
+                    },
                     ringStyle,
                 ]}
             />
@@ -843,6 +883,8 @@ type WorkCellProps = {
     dark: boolean;
     supervisorX: SharedValue<number>;
     supervisorY: SharedValue<number>;
+    motionEnabled: boolean;
+    continuousMotionEnabled: boolean;
     onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
     t: ReturnType<typeof createTranslator>;
 };
@@ -859,6 +901,8 @@ const WorkCell = memo(function WorkCell({
     dark,
     supervisorX,
     supervisorY,
+    motionEnabled,
+    continuousMotionEnabled,
     onOpenDetailRef,
     t,
 }: WorkCellProps) {
@@ -877,52 +921,71 @@ const WorkCell = memo(function WorkCell({
     const warningPulse = useSharedValue(0);
 
     useEffect(() => {
+        cancelAnimation(appeared);
         if (phase === "exiting") {
-            appeared.value = withTiming(0, { duration: EXIT_DURATION_MS, easing: Easing.in(Easing.cubic) });
+            appeared.value = withTiming(0, { duration: motionEnabled ? EXIT_DURATION_MS : 0, easing: Easing.in(Easing.cubic) });
             return;
         }
         if (phase === "entering") {
+            if (!motionEnabled) {
+                appeared.value = 1;
+                return;
+            }
             appeared.value = withDelay(
                 Math.min(index, 6) * 70,
                 withSpring(1, { damping: 14, stiffness: 105 }),
             );
             return;
         }
-        appeared.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.cubic) });
-    }, [appeared, index, phase]);
+        appeared.value = withTiming(1, { duration: motionEnabled ? 220 : 0, easing: Easing.out(Easing.cubic) });
+    }, [appeared, index, motionEnabled, phase]);
 
     useEffect(() => {
-        if (actorStatus === "failed" || actorStatus === "degraded") {
+        cancelAnimation(warningPulse);
+        if (continuousMotionEnabled && (actorStatus === "failed" || actorStatus === "degraded")) {
             warningPulse.value = withRepeat(
                 withSequence(withTiming(1, { duration: 420 }), withTiming(0, { duration: 420 })),
-                -1,
+                4,
                 true,
             );
-            return;
+            return () => cancelAnimation(warningPulse);
         }
-        warningPulse.value = withTiming(0, { duration: 180 });
-    }, [actorStatus, warningPulse]);
+        warningPulse.value = 0;
+        return undefined;
+    }, [actorStatus, continuousMotionEnabled, warningPulse]);
 
     useEffect(() => {
+        cancelAnimation(reportTravel);
+        cancelAnimation(submit);
         if (isHandoff) {
+            if (!motionEnabled) {
+                reportTravel.value = 1;
+                submit.value = 1;
+                return;
+            }
             reportTravel.value = withDelay(260, withTiming(1, { duration: 1320, easing: Easing.out(Easing.cubic) }));
             submit.value = withDelay(1420, withTiming(1, { duration: 480, easing: Easing.out(Easing.cubic) }));
             return;
         }
-        reportTravel.value = withTiming(0, { duration: 160 });
-        submit.value = withTiming(0, { duration: 160 });
-    }, [isHandoff, reportTravel, submit]);
+        reportTravel.value = withTiming(0, { duration: motionEnabled ? 160 : 0 });
+        submit.value = withTiming(0, { duration: motionEnabled ? 160 : 0 });
+    }, [isHandoff, motionEnabled, reportTravel, submit]);
 
     useEffect(() => {
+        cancelAnimation(robotVisibility);
         if (isCurtain) {
+            if (!motionEnabled) {
+                robotVisibility.value = 0;
+                return;
+            }
             robotVisibility.value = withDelay(
                 1450,
                 withTiming(0, { duration: 520, easing: Easing.out(Easing.cubic) }),
             );
             return;
         }
-        robotVisibility.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
-    }, [isCurtain, robotVisibility]);
+        robotVisibility.value = withTiming(1, { duration: motionEnabled ? 160 : 0, easing: Easing.out(Easing.cubic) });
+    }, [isCurtain, motionEnabled, robotVisibility]);
 
     const cellStyle = useAnimatedStyle(() => ({
         opacity: appeared.value,
@@ -964,10 +1027,16 @@ const WorkCell = memo(function WorkCell({
                 cellStyle,
             ]}
         >
-            {(phase === "entering" || cue === "summon") && <MagicPortal color={color} />}
+            {(phase === "entering" || cue === "summon") && <MagicPortal color={color} motionEnabled={motionEnabled} />}
             <WorkbenchShadow />
             <View style={styles.workstationLayer}>
-                <WorkstationDisplay cue={cue} color={color} phase={phase} status={actorStatus} />
+                <WorkstationDisplay
+                    cue={cue}
+                    color={color}
+                    phase={phase}
+                    status={actorStatus}
+                    continuousMotionEnabled={continuousMotionEnabled}
+                />
             </View>
             {actor.kind === "subagent" ? (
                 <Animated.View style={[styles.robotLayer, botStyle]}>
@@ -987,7 +1056,12 @@ const WorkCell = memo(function WorkCell({
                         </Text>
                     </View>
                     <GroundShadow width={38} opacity={0.18} />
-                    <SubagentRobotSprite action={robotAction} color={color} />
+                    <SubagentRobotSprite
+                        action={robotAction}
+                        color={color}
+                        motionEnabled={motionEnabled}
+                        continuousMotionEnabled={continuousMotionEnabled}
+                    />
                 </Animated.View>
             ) : null}
             {isHandoff && (
@@ -1018,7 +1092,13 @@ const WorkCell = memo(function WorkCell({
                 </Pressable>
             </Animated.View>
             <View style={styles.statusBadgeWrap}>
-                <StatusBadge status={actorStatus} color={color} palette={palette} t={t} />
+                <StatusBadge
+                    status={actorStatus}
+                    color={color}
+                    palette={palette}
+                    t={t}
+                    continuousMotionEnabled={continuousMotionEnabled}
+                />
             </View>
         </Animated.View>
     );
@@ -1069,6 +1149,20 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     onOpenOverview,
 }: CollaborationMicroStageRendererProps) {
     const t = createTranslator(locale);
+    const reduceMotion = useReducedMotion();
+    const isFocused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const motionEnabled = shouldRunTransitionMotion({
+        reducedMotion: reduceMotion,
+        surfaceVisible: isFocused,
+        appVisible,
+    });
+    const continuousMotionEnabled = shouldRunContinuousMotion({
+        reducedMotion: reduceMotion,
+        executionActive,
+        surfaceVisible: isFocused,
+        appVisible,
+    });
     const supervisorX = useSharedValue(26);
     const supervisorY = useSharedValue(0);
     const sceneOpacity = useSharedValue(1);
@@ -1127,8 +1221,8 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
             }
         };
 
-        if (sceneMode !== "working" || patrolWaypoints.length === 0) {
-            moveTo(focusPosition, sceneMode === "entering" ? 360 : 520, false);
+        if (!continuousMotionEnabled || sceneMode !== "working" || patrolWaypoints.length === 0) {
+            moveTo(focusPosition, motionEnabled ? (sceneMode === "entering" ? 360 : 520) : 0, false);
             return () => settleTimers.forEach((timer) => clearTimeout(timer));
         }
 
@@ -1151,6 +1245,8 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
         focusPosition.x,
         focusPosition.y,
         focusPosition.targetCenterX,
+        continuousMotionEnabled,
+        motionEnabled,
         patrolSignature,
         patrolWaypoints,
         positionedItems.length,
@@ -1174,10 +1270,10 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
 
     useEffect(() => {
         sceneOpacity.value = withTiming(allExiting ? 0 : 1, {
-            duration: allExiting ? EXIT_DURATION_MS : 180,
+            duration: motionEnabled ? (allExiting ? EXIT_DURATION_MS : 180) : 0,
             easing: allExiting ? Easing.in(Easing.cubic) : Easing.out(Easing.cubic),
         });
-    }, [allExiting, sceneOpacity]);
+    }, [allExiting, motionEnabled, sceneOpacity]);
 
     const supervisorStyle = useAnimatedStyle(() => ({
         transform: [
@@ -1193,7 +1289,10 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     if (retainedStages.length === 0 || positionedItems.length === 0) {
         if (initialized && hasFinalOutcome && onOpenOverview) {
             return (
-                <Animated.View entering={FadeIn.duration(180)} style={styles.overviewLinkWrap}>
+                <Animated.View
+                    entering={reduceMotion ? undefined : FadeIn.duration(180).reduceMotion(ReduceMotion.System)}
+                    style={styles.overviewLinkWrap}
+                >
                     <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={overviewLinkLabel}
@@ -1220,7 +1319,12 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
                 <Animated.View style={[styles.supervisorLayer, supervisorStyle]}>
                     <SupervisorSpeechBubble text={supervisorSpeech} palette={palette} />
                     <GroundShadow width={78} opacity={0.2} />
-                    <SupervisorSprite action={action} facingLeft={supervisorFacingLeft} />
+                    <SupervisorSprite
+                        action={action}
+                        facingLeft={supervisorFacingLeft}
+                        motionEnabled={motionEnabled}
+                        continuousMotionEnabled={continuousMotionEnabled}
+                    />
                 </Animated.View>
                 {positionedItems.map((item, index) => (
                     <WorkCell
@@ -1236,6 +1340,8 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
                         dark={dark}
                         supervisorX={supervisorX}
                         supervisorY={supervisorY}
+                        motionEnabled={motionEnabled}
+                        continuousMotionEnabled={continuousMotionEnabled}
                         onOpenDetailRef={onOpenDetailRef}
                         t={t}
                     />

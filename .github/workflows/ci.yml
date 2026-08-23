@@ -144,7 +144,9 @@ jobs:
               ;;
             phone)
               npm --prefix apps/v8-agent-os-phone run lint
-              node --test apps/v8-agent-os-phone/tests/*.test.cjs
+              node --test \
+                apps/v8-agent-os-phone/tests/*.test.cjs \
+                apps/v8-agent-os-phone/tests/*.test.mjs
               npm --prefix apps/v8-agent-os-phone run export:android
               ;;
             *)

@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Animated, PanResponder, Pressable, StyleSheet, View } from "react-native";
+import { useReducedMotion } from "react-native-reanimated";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -24,17 +25,20 @@ export const EdgeActionRail = memo(function EdgeActionRail({
     onClose: () => void;
 }) {
     const { colors, themeMode } = useUiPrefs();
+    const reduceMotion = useReducedMotion();
     const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
     const closedOffset = side === "left" ? -expandedWidth : expandedWidth;
     const railColor = themeMode === "dark" ? "rgba(148, 163, 184, 0.48)" : "rgba(100, 116, 139, 0.48)";
 
     useEffect(() => {
-        Animated.timing(progress, {
+        const animation = Animated.timing(progress, {
             toValue: open ? 1 : 0,
-            duration: 180,
+            duration: reduceMotion ? 0 : 180,
             useNativeDriver: true,
-        }).start();
-    }, [open, progress]);
+        });
+        animation.start();
+        return () => animation.stop();
+    }, [open, progress, reduceMotion]);
 
     const panResponder = useMemo(() => PanResponder.create({
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy),

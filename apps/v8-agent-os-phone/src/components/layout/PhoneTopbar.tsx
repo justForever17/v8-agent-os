@@ -1,7 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-    Animated,
-    Easing,
     Image,
     LayoutChangeEvent,
     Pressable,
@@ -9,13 +7,25 @@ import {
     Text,
     View,
 } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import type { LucideIcon } from "lucide-react-native";
 import { Monitor, MoonStar, SunMedium, Workflow } from "lucide-react-native";
 import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
+import Animated, {
+    cancelAnimation,
+    Easing,
+    Extrapolation,
+    interpolate,
+    useAnimatedStyle,
+    useReducedMotion,
+    useSharedValue,
+    withTiming,
+} from "react-native-reanimated";
 
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { PhoneRpaOverlay } from "@/src/components/rpa/PhoneRpaOverlay";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
 const PRODUCT_MARK = require("../../../assets/images/product-mark.png");
@@ -86,57 +96,47 @@ export function PhoneWordmark({
     dark,
     text = "V8 Agent OS",
     fontSize = 18.5,
+    active = true,
 }: {
     dark: boolean;
     text?: string;
     fontSize?: number;
+    active?: boolean;
 }) {
-    const shine = useRef(new Animated.Value(0)).current;
-    const gradientFlow = useRef(new Animated.Value(0)).current;
+    const shine = useSharedValue(0);
+    const reduceMotion = useReducedMotion();
+    const appVisible = useAppVisibility();
+    const animationEnabled = active && appVisible && !reduceMotion;
     const [textWidth, setTextWidth] = useState(Math.max(Math.ceil(text.length * fontSize * 0.68), 90));
     const lineHeight = Math.round(fontSize * 1.18);
 
     useEffect(() => {
-        const loop = Animated.loop(
-            Animated.timing(shine, {
-                toValue: 1,
-                duration: 3800,
-                easing: Easing.bezier(0.22, 1, 0.36, 1),
-                useNativeDriver: true,
-            }),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [shine]);
-
-    useEffect(() => {
-        const loop = Animated.loop(
-            Animated.timing(gradientFlow, {
-                toValue: 1,
-                duration: 8600,
-                easing: Easing.linear,
-                useNativeDriver: true,
-            }),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [gradientFlow]);
+        cancelAnimation(shine);
+        shine.value = 0;
+        if (!animationEnabled) return undefined;
+        shine.value = withTiming(1, { duration: 2200, easing: Easing.bezier(0.22, 1, 0.36, 1) });
+        return () => cancelAnimation(shine);
+    }, [animationEnabled, shine]);
 
     const gradientWidth = Math.max(Math.round(textWidth * 2.6), 220);
     const gradientTravel = gradientWidth * 0.5;
     const shineWidth = Math.max(Math.round(textWidth * 0.74), 64);
-    const translateX = shine.interpolate({
-        inputRange: [0, 0.16, 0.28, 0.58, 0.72, 1],
-        outputRange: [textWidth + 24, textWidth + 24, textWidth * 0.72, -shineWidth * 0.2, -shineWidth * 0.68, -shineWidth],
-    });
-    const opacity = shine.interpolate({
-        inputRange: [0, 0.16, 0.28, 0.58, 0.72, 1],
-        outputRange: [0, 0, 0.94, 0.84, 0, 0],
-    });
-    const gradientTranslateX = gradientFlow.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, -gradientTravel],
-    });
+    const shineStyle = useAnimatedStyle(() => ({
+        opacity: interpolate(
+            shine.value,
+            [0, 0.16, 0.28, 0.58, 0.72, 1],
+            [0, 0, 0.94, 0.84, 0, 0],
+            Extrapolation.CLAMP,
+        ),
+        transform: [{
+            translateX: interpolate(
+                shine.value,
+                [0, 0.16, 0.28, 0.58, 0.72, 1],
+                [textWidth + 24, textWidth + 24, textWidth * 0.72, -shineWidth * 0.2, -shineWidth * 0.68, -shineWidth],
+                Extrapolation.CLAMP,
+            ),
+        }],
+    }), [shineWidth, textWidth]);
 
     const handleMeasure = (event: LayoutChangeEvent) => {
         const nextWidth = Math.max(90, Math.ceil(event.nativeEvent.layout.width));
@@ -165,7 +165,7 @@ export function PhoneWordmark({
                         styles.wordmarkGradient,
                         {
                             width: gradientWidth,
-                            transform: [{ translateX: gradientTranslateX }],
+                            transform: [{ translateX: -gradientTravel * 0.25 }],
                         },
                     ]}
                 >
@@ -185,9 +185,8 @@ export function PhoneWordmark({
                         styles.wordmarkShine,
                         {
                             width: shineWidth,
-                            opacity,
-                            transform: [{ translateX }],
                         },
+                        shineStyle,
                     ]}
                 >
                     <LinearGradient
@@ -268,17 +267,19 @@ function BrandArea({
     colors,
     themeMode,
     onBrandPress,
+    wordmarkActive,
 }: {
     colors: ReturnType<typeof useUiPrefs>["colors"];
     themeMode: "light" | "dark";
     onBrandPress?: () => void;
+    wordmarkActive: boolean;
 }) {
     const content = (
         <>
             <View style={[styles.brandMarkWrap, { borderColor: `${colors.border}A6`, backgroundColor: colors.surfaceStrong }]}>
                 <Image source={PRODUCT_MARK} style={styles.brandMark} />
             </View>
-            <PhoneWordmark dark={themeMode === "dark"} />
+            <PhoneWordmark dark={themeMode === "dark"} active={wordmarkActive} />
         </>
     );
 
@@ -311,6 +312,7 @@ export function PhoneTopbar({
     onBrandPress?: () => void;
 }) {
     const { colors, themeMode, t } = useUiPrefs();
+    const isFocused = useIsFocused();
     const [rpaOpen, setRpaOpen] = useState(false);
     const actionMap = useMemo(() => new Map(actions.map((action) => [action.key, action])), [actions]);
     const orderedActions = ACTION_ORDER
@@ -327,7 +329,7 @@ export function PhoneTopbar({
                 },
             ]}
         >
-            <BrandArea colors={colors} themeMode={themeMode} onBrandPress={onBrandPress} />
+            <BrandArea colors={colors} themeMode={themeMode} onBrandPress={onBrandPress} wordmarkActive={isFocused} />
 
             <View style={styles.actions}>
                 {orderedActions

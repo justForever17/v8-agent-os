@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type {
     CollaborationMicroStageCue,
     CollaborationMicroStageStatus,
 } from "@v8/session-realtime";
+import { nextMotionFrameIndex } from "@/lib/motion-policy";
 
 export type SubagentRobotPhase =
     | "entering"
@@ -84,7 +85,11 @@ export function subagentRobotActionFor({
     return "idle";
 }
 
-function useSubagentRobotFrame(action: SubagentRobotAction) {
+function useSubagentRobotFrame(
+    action: SubagentRobotAction,
+    motionEnabled: boolean,
+    continuousMotionEnabled: boolean,
+) {
     const frames = ROBOT_ACTION_FRAMES[action];
     const durations = ROBOT_ACTION_DURATIONS[action];
     const loops = LOOPING_ROBOT_ACTIONS.has(action);
@@ -98,13 +103,14 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let current = 0;
-        if (frames.length <= 1) return undefined;
+        if (!motionEnabled || (loops && !continuousMotionEnabled) || frames.length <= 1) return undefined;
 
         const scheduleNext = () => {
             timer = setTimeout(() => {
                 if (cancelled) return;
-                if (!loops && current >= frames.length - 1) return;
-                current = (current + 1) % frames.length;
+                const next = nextMotionFrameIndex(current, frames.length, loops);
+                if (next === null) return;
+                current = next;
                 setFrameState({ action, index: current });
                 scheduleNext();
             }, durations[Math.min(current, durations.length - 1)] || 240);
@@ -114,7 +120,7 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
             cancelled = true;
             if (timer) clearTimeout(timer);
         };
-    }, [action, durations, frames, loops]);
+    }, [action, continuousMotionEnabled, durations, frames, loops, motionEnabled]);
 
     return frames[frameIndex] ?? frames[0] ?? 0;
 }
@@ -122,11 +128,15 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
 export function SubagentRobotSprite({
     action,
     color,
+    motionEnabled = true,
+    continuousMotionEnabled = true,
 }: {
     action: SubagentRobotAction;
     color: string;
+    motionEnabled?: boolean;
+    continuousMotionEnabled?: boolean;
 }) {
-    const frame = useSubagentRobotFrame(action);
+    const frame = useSubagentRobotFrame(action, motionEnabled, continuousMotionEnabled);
     const column = frame % ROBOT_SHEET.columns;
     const row = Math.floor(frame / ROBOT_SHEET.columns);
     const sheetWidth = ROBOT_SHEET.frameSize * ROBOT_SHEET.columns;
@@ -344,16 +354,24 @@ export function WorkstationDisplay({
     color,
     phase,
     status,
+    continuousMotionEnabled = true,
 }: {
     cue: CollaborationMicroStageCue;
     color: string;
     phase: SubagentRobotPhase;
     status: CollaborationMicroStageStatus;
+    continuousMotionEnabled?: boolean;
 }) {
     const pattern = screenPatternFor(cue, status, phase);
 
     return (
-        <div aria-hidden="true" className="pointer-events-none relative h-[88px] w-[88px]">
+        <div
+            aria-hidden="true"
+            className="pointer-events-none relative h-[88px] w-[88px]"
+            style={{
+                "--workstation-motion-state": continuousMotionEnabled ? "running" : "paused",
+            } as CSSProperties}
+        >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
                 src="/subagent_workstation.png"
@@ -376,16 +394,16 @@ export function WorkstationDisplay({
                 </svg>
             </div>
             <style jsx>{`
-                .micro-screen-travel { animation: microScreenTravel 1.45s ease-in-out infinite; transform-origin: center; }
-                .micro-screen-pulse { animation: microScreenPulse 1.35s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-                .micro-screen-scan { animation: microScreenScan 1.6s ease-in-out infinite; }
-                .micro-screen-build { animation: microScreenBuild 1.55s ease-in-out infinite; transform-origin: left center; transform-box: fill-box; }
-                .micro-screen-spark { animation: microScreenSpark 1.25s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-                .micro-screen-pointer { animation: microScreenPointer 1.7s ease-in-out infinite; }
-                .micro-screen-orbit { animation: microScreenOrbit 1.8s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-                .micro-screen-retry { animation: microScreenRetry 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-                .micro-screen-complete { animation: microScreenComplete 1.8s ease-out infinite; transform-origin: center; transform-box: fill-box; }
-                .micro-screen-dot { animation: microScreenDot 1.35s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+                .micro-screen-travel { animation: microScreenTravel 1.45s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; }
+                .micro-screen-pulse { animation: microScreenPulse 1.35s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
+                .micro-screen-scan { animation: microScreenScan 1.6s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); }
+                .micro-screen-build { animation: microScreenBuild 1.55s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: left center; transform-box: fill-box; }
+                .micro-screen-spark { animation: microScreenSpark 1.25s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
+                .micro-screen-pointer { animation: microScreenPointer 1.7s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); }
+                .micro-screen-orbit { animation: microScreenOrbit 1.8s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
+                .micro-screen-retry { animation: microScreenRetry 1.6s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
+                .micro-screen-complete { animation: microScreenComplete 1.8s ease-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
+                .micro-screen-dot { animation: microScreenDot 1.35s ease-in-out infinite; animation-play-state: var(--workstation-motion-state); transform-origin: center; transform-box: fill-box; }
                 .micro-screen-dot-b { animation-delay: 150ms; }
                 .micro-screen-dot-c { animation-delay: 300ms; }
                 @keyframes microScreenTravel {

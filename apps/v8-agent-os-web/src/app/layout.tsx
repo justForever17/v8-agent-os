@@ -12,6 +12,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { SessionProvider } from "@/components/providers/SessionProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
+import { MotionProvider } from "@/components/providers/MotionProvider";
 import { PersonalizationProvider } from "@/components/providers/PersonalizationProvider";
 import { SurfaceReadinessMarker } from "@/components/SurfaceReadinessMarker";
 import { AppContextMenu } from "@/components/ui/AppContextMenu";
@@ -76,16 +77,18 @@ export default async function RootLayout({
                             storageKey={PRODUCT_THEME_STORAGE_KEY}
                             disableTransitionOnChange
                         >
-                            <PersonalizationProvider>
-                                <SurfaceReadinessMarker />
-                                <AppContextMenu />
-                                <div className="relative z-0 flex h-dvh min-h-dvh flex-col overflow-hidden">
-                                    <Topbar />
-                                    <main className="flex min-h-0 flex-1 overflow-hidden">
-                                        {children}
-                                    </main>
-                                </div>
-                            </PersonalizationProvider>
+                            <MotionProvider>
+                                <PersonalizationProvider>
+                                    <SurfaceReadinessMarker />
+                                    <AppContextMenu />
+                                    <div className="relative z-0 flex h-dvh min-h-dvh flex-col overflow-hidden">
+                                        <Topbar />
+                                        <main className="flex min-h-0 flex-1 overflow-hidden">
+                                            {children}
+                                        </main>
+                                    </div>
+                                </PersonalizationProvider>
+                            </MotionProvider>
                         </ThemeProvider>
                     </SessionProvider>
                 </LocaleProvider>

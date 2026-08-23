@@ -5,6 +5,7 @@ import Animated, {
     cancelAnimation,
     runOnJS,
     useAnimatedStyle,
+    useReducedMotion,
     useSharedValue,
     withDelay,
     withTiming,
@@ -142,6 +143,7 @@ export function PhoneReasoningEffortControl<Level extends string>({
     const [dragging, setDragging] = useState(false);
     const [pendingValue, setPendingValue] = useState<Level | null>(null);
     const [showFill, setShowFill] = useState(false);
+    const reduceMotion = useReducedMotion();
     const latestDragXRef = useRef(xForPosition(stopForIndex(controlledIndex, safeLevels.length), railWidth));
     const dragStartXRef = useRef(latestDragXRef.current);
     const committedIndexRef = useRef(controlledIndex);
@@ -173,18 +175,21 @@ export function PhoneReasoningEffortControl<Level extends string>({
         committedIndexRef.current = controlledIndex;
         const nextX = xForPosition(stopForIndex(controlledIndex, safeLevels.length), railWidth);
         latestDragXRef.current = nextX;
-        thumbX.value = withTiming(nextX, {
+        cancelAnimation(thumbX);
+        thumbX.value = reduceMotion ? nextX : withTiming(nextX, {
             duration: 180,
             easing: Easing.bezier(0.22, 1, 0.36, 1),
         });
-    }, [controlledIndex, dragging, pendingValue, railWidth, safeLevels.length, thumbX, value]);
+    }, [controlledIndex, dragging, pendingValue, railWidth, reduceMotion, safeLevels.length, thumbX, value]);
 
     useEffect(() => {
-        maxTransition.value = withTiming(settledIsMax ? 1 : 0, {
+        cancelAnimation(maxTransition);
+        const target = settledIsMax ? 1 : 0;
+        maxTransition.value = reduceMotion ? target : withTiming(target, {
             duration: settledIsMax ? 220 : 170,
             easing: Easing.bezier(0.16, 1, 0.3, 1),
         });
-    }, [maxTransition, settledIsMax]);
+    }, [maxTransition, reduceMotion, settledIsMax]);
 
     const finishFill = useCallback((cycle: number) => {
         if (fillCycleRef.current === cycle) setShowFill(false);
@@ -196,13 +201,17 @@ export function PhoneReasoningEffortControl<Level extends string>({
         cancelAnimation(fillProgress);
         cancelAnimation(fillOpacity);
         fillProgress.value = 0;
-        fillOpacity.value = 1;
+        fillOpacity.value = reduceMotion ? 0 : 1;
+        if (reduceMotion) {
+            setShowFill(false);
+            return;
+        }
         setShowFill(true);
         fillProgress.value = withDelay(55, withTiming(1, { duration: 980, easing: Easing.linear }));
         fillOpacity.value = withDelay(1105, withTiming(0, { duration: 180, easing: Easing.out(Easing.quad) }, (finished) => {
             if (finished) runOnJS(finishFill)(cycle);
         }));
-    }, [fillOpacity, fillProgress, finishFill]);
+    }, [fillOpacity, fillProgress, finishFill, reduceMotion]);
 
     const stopFill = useCallback(() => {
         fillCycleRef.current += 1;
@@ -212,6 +221,10 @@ export function PhoneReasoningEffortControl<Level extends string>({
         fillOpacity.value = 0;
         setShowFill(false);
     }, [fillOpacity, fillProgress]);
+
+    useEffect(() => {
+        if (reduceMotion) stopFill();
+    }, [reduceMotion, stopFill]);
 
     useEffect(() => () => {
         cancelAnimation(fillProgress);
@@ -234,7 +247,8 @@ export function PhoneReasoningEffortControl<Level extends string>({
         setDraftIndex(safeIndex);
         if (safeIndex === safeLevels.length - 1 && previousCommittedIndex !== safeIndex) startFill();
         else if (safeIndex !== safeLevels.length - 1) stopFill();
-        thumbX.value = withTiming(nextX, {
+        cancelAnimation(thumbX);
+        thumbX.value = reduceMotion ? nextX : withTiming(nextX, {
             duration: 180,
             easing: Easing.bezier(0.22, 1, 0.36, 1),
         });
@@ -256,7 +270,7 @@ export function PhoneReasoningEffortControl<Level extends string>({
                 }
             });
         }
-    }, [onValueCommit, railWidth, safeLevels, startFill, stopFill, thumbX, value]);
+    }, [onValueCommit, railWidth, reduceMotion, safeLevels, startFill, stopFill, thumbX, value]);
 
     const commitFromX = useCallback((rawX: number) => {
         commitIndex(nearestIndex(positionForX(rawX, railWidth), safeLevels.length));

@@ -24,6 +24,7 @@ import { WorkbenchFilePicker } from "./WorkbenchFilePicker";
 import type { CanvasTaskRequest } from "./CreativeArtifactCanvas";
 import { createCreativeCanvasDocument } from "@/lib/workbench";
 import { prefetchWorkspaceFiles } from "@/lib/workbench-actions";
+import { createWorkbenchResizeSession } from "./workbench-motion-behavior";
 
 const CreativeArtifactCanvas = dynamic(
     () => import("./CreativeArtifactCanvas").then((module) => module.CreativeArtifactCanvas),
@@ -231,8 +232,10 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const setWidth = useWorkbenchStore((state) => state.setWidth);
     const shouldReduceMotion = useReducedMotion();
     const panelRef = useRef<HTMLElement | null>(null);
+    const resizeCleanupRef = useRef<(() => void) | null>(null);
     const [containerWidth, setContainerWidth] = useState(() => typeof window === "undefined" ? 1200 : window.innerWidth);
     const [isResizing, setIsResizing] = useState(false);
+    const [transientPanelWidth, setTransientPanelWidth] = useState<number | null>(null);
     const [filePickerOpen, setFilePickerOpen] = useState(false);
 
     useEffect(() => {
@@ -258,6 +261,19 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         return () => window.clearTimeout(timeout);
     }, [props.sessionId]);
 
+    useEffect(() => () => {
+        resizeCleanupRef.current?.();
+        resizeCleanupRef.current = null;
+    }, []);
+
+    useEffect(() => {
+        if (mode === "split" && containerWidth >= 760) return;
+        resizeCleanupRef.current?.();
+        resizeCleanupRef.current = null;
+        setIsResizing(false);
+        setTransientPanelWidth(null);
+    }, [containerWidth, mode]);
+
     const activeTab = useMemo(
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,
         [activeDocumentId, tabs],
@@ -271,7 +287,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const shouldShow = mode !== "closed";
     const compactWorkbench = containerWidth > 0 && containerWidth < 760;
     const effectiveMode = mode === "focus" || compactWorkbench ? "focus" : "split";
-    const desiredPanelWidth = width > 0 ? width : containerWidth / 3;
+    const desiredPanelWidth = transientPanelWidth ?? (width > 0 ? width : containerWidth / 3);
     const minimumPanelWidth = Math.min(280, Math.max(200, containerWidth * 0.28));
     const maximumPanelWidth = Math.max(200, containerWidth - 420);
     const panelWidth = Math.min(maximumPanelWidth, Math.max(minimumPanelWidth, desiredPanelWidth));
@@ -332,7 +348,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                             messages={props.messages}
                             workspacePath={props.workspacePath}
                             sessionRunning={props.sessionRunning}
-                            visible={document.kind === "creative_canvas"}
+                            visible={shouldShow && document.kind === "creative_canvas"}
                             onSubmitTask={props.onSubmitCanvasTask}
                         />
                     </div>
@@ -376,19 +392,46 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                             if (event.key === "ArrowRight") setWidth(panelWidth - 20);
                         }}
                         onPointerDown={(event) => {
+                            if (event.button !== 0) return;
+                            resizeCleanupRef.current?.();
                             event.currentTarget.setPointerCapture(event.pointerId);
                             setIsResizing(true);
+                            setTransientPanelWidth(panelWidth);
                             const parentRight = event.currentTarget.parentElement?.getBoundingClientRect().right || window.innerWidth;
-                            const handleMove = (moveEvent: PointerEvent) => setWidth(parentRight - moveEvent.clientX);
-                            const handleUp = () => {
-                                setIsResizing(false);
+                            const session = createWorkbenchResizeSession({
+                                pointerId: event.pointerId,
+                                parentRight,
+                                initialWidth: panelWidth,
+                                minimumWidth: minimumPanelWidth,
+                                maximumWidth: Math.min(960, maximumPanelWidth),
+                                onPreview: setTransientPanelWidth,
+                                onCommit: setWidth,
+                            });
+                            let ended = false;
+                            const removeListeners = () => {
                                 window.removeEventListener("pointermove", handleMove);
-                                window.removeEventListener("pointerup", handleUp);
-                                window.removeEventListener("pointercancel", handleUp);
+                                window.removeEventListener("pointerup", handleEnd);
+                                window.removeEventListener("pointercancel", handleEnd);
+                            };
+                            const handleMove = (moveEvent: PointerEvent) => session.move(moveEvent.pointerId, moveEvent.clientX);
+                            const handleEnd = (endEvent: PointerEvent) => {
+                                if (ended) return;
+                                if (!session.finish(endEvent.pointerId)) return;
+                                ended = true;
+                                removeListeners();
+                                resizeCleanupRef.current = null;
+                                setIsResizing(false);
+                                setTransientPanelWidth(null);
+                            };
+                            resizeCleanupRef.current = () => {
+                                if (ended) return;
+                                ended = true;
+                                removeListeners();
+                                session.dispose();
                             };
                             window.addEventListener("pointermove", handleMove);
-                            window.addEventListener("pointerup", handleUp, { once: true });
-                            window.addEventListener("pointercancel", handleUp, { once: true });
+                            window.addEventListener("pointerup", handleEnd);
+                            window.addEventListener("pointercancel", handleEnd);
                         }}
                 />
             ) : null}

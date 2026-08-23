@@ -10,8 +10,6 @@ type ContextReferencesHUDProps = {
 };
 
 export function ContextReferencesHUD({ contextReferences }: ContextReferencesHUDProps) {
-    if (contextReferences.length === 0) return null;
-
     const getIcon = (type: ContextReferenceItem['type']) => {
         switch (type) {
             case 'file': return <FileCode className="w-3.5 h-3.5 text-blue-500" />;
@@ -23,30 +21,36 @@ export function ContextReferencesHUD({ contextReferences }: ContextReferencesHUD
     };
 
     return (
-        <div className="mb-2 flex w-full justify-center pointer-events-none sm:sticky sm:top-4 sm:z-40 sm:mb-4">
-            <motion.div
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex max-w-[92%] flex-wrap justify-center gap-2 pointer-events-auto sm:max-w-[80%]"
-            >
-                <AnimatePresence>
-                    {contextReferences.slice(-10).map((ref) => (
-                        <motion.div
-                            key={ref.id}
-                            initial={{ opacity: 0, scale: 0.8 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.8 }}
-                            className="group flex items-center gap-1.5 rounded-full border border-border/50 bg-background/92 px-3 py-1.5 shadow-sm transition-colors cursor-help hover:bg-background/95 backdrop-blur-sm sm:backdrop-blur-md"
-                            title={ref.details || ref.label}
-                        >
-                            {getIcon(ref.type)}
-                            <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors max-w-[150px] truncate">
-                                {ref.label}
-                            </span>
-                        </motion.div>
-                    ))}
-                </AnimatePresence>
-            </motion.div>
-        </div>
+        <AnimatePresence initial={false}>
+            {contextReferences.length > 0 ? (
+                <motion.div
+                    key="context-references-hud"
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="mb-2 flex w-full justify-center pointer-events-none sm:sticky sm:top-4 sm:z-40 sm:mb-4"
+                >
+                    <div className="flex max-w-[92%] flex-wrap justify-center gap-2 pointer-events-auto sm:max-w-[80%]">
+                        <AnimatePresence initial={false}>
+                            {contextReferences.slice(-10).map((ref) => (
+                                <motion.div
+                                    key={ref.id}
+                                    initial={{ opacity: 0, scale: 0.8 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.8 }}
+                                    className="group flex items-center gap-1.5 rounded-full border border-border/50 bg-background/92 px-3 py-1.5 shadow-sm transition-colors cursor-help hover:bg-background/95 backdrop-blur-sm sm:backdrop-blur-md"
+                                    title={ref.details || ref.label}
+                                >
+                                    {getIcon(ref.type)}
+                                    <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors max-w-[150px] truncate">
+                                        {ref.label}
+                                    </span>
+                                </motion.div>
+                            ))}
+                        </AnimatePresence>
+                    </div>
+                </motion.div>
+            ) : null}
+        </AnimatePresence>
     );
 }

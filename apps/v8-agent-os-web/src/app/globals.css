@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+@media (prefers-reduced-motion: reduce) {
+    html:focus-within {
+        scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        transition-delay: 0ms !important;
+    }
+}
+
 @layer base {
     :root {
         --background: 210 40% 98%;
@@ -217,10 +233,10 @@
                 #a855f7 86%,
                 #8b5cf6 100%);
         background-size: 220% 100%;
+        background-position: 42% 50%;
         -webkit-background-clip: text;
         background-clip: text;
         filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.25)) drop-shadow(0 8px 18px rgba(99, 102, 241, 0.14));
-        animation: v8os-gradient-flow 8s linear infinite;
         z-index: 2;
     }
 
@@ -253,17 +269,8 @@
         background-clip: text;
         mix-blend-mode: screen;
         opacity: 0.95;
-        animation: v8os-laser-sweep 3.9s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+        animation: v8os-laser-sweep 2.2s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
         z-index: 3;
-    }
-
-    @keyframes v8os-gradient-flow {
-        0% {
-            background-position: 0% 50%;
-        }
-        100% {
-            background-position: 220% 50%;
-        }
     }
 
     @keyframes v8os-laser-sweep {
@@ -293,7 +300,7 @@
         }
 
         .v8os-wordmark__shine {
-            opacity: 0.25;
+            opacity: 0;
             background-position: 50% 50%;
         }
     }

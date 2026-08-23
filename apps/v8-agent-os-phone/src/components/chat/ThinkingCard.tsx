@@ -1,7 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
-    Animated,
-    Easing,
     Pressable,
     StyleSheet,
     Text,
@@ -9,6 +7,15 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import Animated, {
+    Easing,
+    Keyframe,
+    LinearTransition,
+    ReduceMotion,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
+} from "react-native-reanimated";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
@@ -24,6 +31,16 @@ type ThinkingCardProps = {
     };
 };
 
+const CONTENT_ENTER = new Keyframe({
+    0: { opacity: 0, transform: [{ translateY: -6 }] },
+    100: { opacity: 1, transform: [{ translateY: 0 }], easing: Easing.out(Easing.cubic) },
+}).duration(220).reduceMotion(ReduceMotion.System);
+const CONTENT_EXIT = new Keyframe({
+    0: { opacity: 1, transform: [{ translateY: 0 }] },
+    100: { opacity: 0, transform: [{ translateY: -6 }], easing: Easing.out(Easing.cubic) },
+}).duration(180).reduceMotion(ReduceMotion.System);
+const CARD_LAYOUT = LinearTransition.duration(220).reduceMotion(ReduceMotion.System);
+
 export const ThinkingCard = memo(function ThinkingCard({
     content,
     isStreaming = false,
@@ -37,16 +54,19 @@ export const ThinkingCard = memo(function ThinkingCard({
     const [currentElapsedTime, setCurrentElapsedTime] = useState(elapsedTime || 0);
     const hasAutoExpanded = useRef(false);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const progress = useRef(new Animated.Value(0)).current;
+    const progress = useSharedValue(0);
 
     useEffect(() => {
-        Animated.timing(progress, {
-            toValue: isExpanded ? 1 : 0,
+        progress.value = withTiming(isExpanded ? 1 : 0, {
             duration: 260,
             easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
+            reduceMotion: ReduceMotion.System,
+        });
     }, [isExpanded, progress]);
+
+    const chevronStyle = useAnimatedStyle(() => ({
+        transform: [{ rotate: `${progress.value * 180}deg` }],
+    }));
 
     useEffect(() => {
         if (isStreaming && !hasAutoExpanded.current) {
@@ -97,21 +117,6 @@ export const ThinkingCard = memo(function ThinkingCard({
         return null;
     }
 
-    const rotate = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: ["0deg", "180deg"],
-    });
-
-    const contentOpacity = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, 1],
-    });
-
-    const contentTranslateY = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [-6, 0],
-    });
-
     const formatTime = (ms: number) => {
         if (ms < 1000) return `${ms}ms`;
         return `${(ms / 1000).toFixed(1)}s`;
@@ -135,7 +140,8 @@ export const ThinkingCard = memo(function ThinkingCard({
     return (
         <View style={styles.wrap}>
             {isStreaming ? <View style={[styles.activeGlow, { backgroundColor: "rgba(139,92,246,0.065)" }]} /> : null}
-            <View
+            <Animated.View
+                layout={CARD_LAYOUT}
                 style={[
                     styles.card,
                     {
@@ -195,7 +201,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         ) : null}
                     </View>
 
-                    <Animated.View style={{ transform: [{ rotate }] }}>
+                    <Animated.View style={chevronStyle}>
                         <MaterialCommunityIcons
                             name="chevron-down"
                             size={18}
@@ -206,13 +212,10 @@ export const ThinkingCard = memo(function ThinkingCard({
 
                 {isExpanded ? (
                     <Animated.View
-                        style={[
-                            styles.contentOuter,
-                            {
-                                opacity: contentOpacity,
-                                transform: [{ translateY: contentTranslateY }],
-                            },
-                        ]}
+                        entering={CONTENT_ENTER}
+                        exiting={CONTENT_EXIT}
+                        layout={CARD_LAYOUT}
+                        style={styles.contentOuter}
                     >
                         <View
                             style={[
@@ -240,7 +243,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         </View>
                     </Animated.View>
                 ) : null}
-            </View>
+            </Animated.View>
         </View>
     );
 });

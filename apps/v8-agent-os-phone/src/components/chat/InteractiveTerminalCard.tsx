@@ -2,6 +2,8 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
     Animated,
     Easing,
+    type NativeScrollEvent,
+    type NativeSyntheticEvent,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -9,6 +11,7 @@ import {
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useReducedMotion } from "react-native-reanimated";
 import {
     isActiveCommandSessionStatus,
     resolveAdminProcessWsUrl,
@@ -18,6 +21,11 @@ import {
 import { Button } from "@/src/components/ui/button";
 import { Card, CardContent } from "@/src/components/ui/card";
 import { Input } from "@/src/components/ui/input";
+import {
+    createFrameTaskScheduler,
+    createTerminalScrollState,
+    reduceTerminalScrollState,
+} from "@/src/lib/motion-behavior";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -80,6 +88,7 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const { adminBaseUrl, authorizedFetch } = useAppSession();
     const { colors, themeMode, t } = useUiPrefs();
+    const reduceMotion = useReducedMotion();
     const [isRunning, setIsRunning] = useState(() => isActiveCommandSessionStatus(process.status));
     const [isCollapsed, setIsCollapsed] = useState(compact);
     const [terminalOutput, setTerminalOutput] = useState(() => normalizeTerminalScreen(String(processRecord.stableScreenSnapshot || process.screenSnapshot || "")));
@@ -89,6 +98,11 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     const [pollingEnabled, setPollingEnabled] = useState(false);
     const rotation = useRef(new Animated.Value(compact ? 1 : 0)).current;
     const scrollRef = useRef<ScrollView | null>(null);
+    const terminalScrollStateRef = useRef(createTerminalScrollState());
+    const scrollToEndScheduler = useMemo(
+        () => createFrameTaskScheduler(requestAnimationFrame, cancelAnimationFrame),
+        [],
+    );
     const wsRef = useRef<WebSocket | null>(null);
     const wsOpenedRef = useRef(false);
     const notifiedTerminationRef = useRef(false);
@@ -110,13 +124,22 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
     }, [process.screenSnapshot, processRecord.stableScreenSnapshot]);
 
     useEffect(() => {
-        Animated.timing(rotation, {
+        rotation.stopAnimation();
+        if (reduceMotion) {
+            rotation.setValue(isCollapsed ? 1 : 0);
+            return undefined;
+        }
+        const animation = Animated.timing(rotation, {
             toValue: isCollapsed ? 1 : 0,
             duration: 220,
             easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
-        }).start();
-    }, [isCollapsed, rotation]);
+        });
+        animation.start();
+        return () => animation.stop();
+    }, [isCollapsed, reduceMotion, rotation]);
+
+    useEffect(() => () => scrollToEndScheduler.cancel(), [scrollToEndScheduler]);
 
     useEffect(() => {
         if (!process?.processId) {
@@ -289,6 +312,39 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
         }
     };
 
+    const scheduleScrollToEnd = () => {
+        scrollToEndScheduler.request(() => {
+            const scrollState = terminalScrollStateRef.current;
+            if (scrollState.isDragging || !scrollState.isPinnedToBottom) {
+                return;
+            }
+            scrollRef.current?.scrollToEnd({ animated: false });
+        });
+    };
+
+    const handleTerminalScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+        const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+        terminalScrollStateRef.current = reduceTerminalScrollState(
+            terminalScrollStateRef.current,
+            {
+                type: "scroll",
+                contentHeight: contentSize.height,
+                viewportHeight: layoutMeasurement.height,
+                offsetY: contentOffset.y,
+            },
+        ).state;
+    };
+
+    const setTerminalDragging = (isDragging: boolean) => {
+        terminalScrollStateRef.current = reduceTerminalScrollState(
+            terminalScrollStateRef.current,
+            { type: isDragging ? "drag_start" : "drag_end" },
+        ).state;
+        if (isDragging) {
+            scrollToEndScheduler.cancel();
+        }
+    };
+
     const chevronRotation = rotation.interpolate({
         inputRange: [0, 1],
         outputRange: ["0deg", "-90deg"],
@@ -375,7 +431,31 @@ export const InteractiveTerminalCard = memo(function InteractiveTerminalCard({
                             ref={scrollRef}
                             style={[styles.terminalScroll, compact && styles.terminalScrollCompact]}
                             contentContainerStyle={styles.terminalScrollContent}
-                            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+                            onLayout={(event) => {
+                                terminalScrollStateRef.current = reduceTerminalScrollState(
+                                    terminalScrollStateRef.current,
+                                    {
+                                        type: "viewport_resize",
+                                        viewportHeight: event.nativeEvent.layout.height,
+                                    },
+                                ).state;
+                            }}
+                            onContentSizeChange={(_, contentHeight) => {
+                                const transition = reduceTerminalScrollState(
+                                    terminalScrollStateRef.current,
+                                    { type: "content_resize", contentHeight },
+                                );
+                                terminalScrollStateRef.current = transition.state;
+                                if (transition.shouldScrollToEnd) {
+                                    scheduleScrollToEnd();
+                                }
+                            }}
+                            onScroll={handleTerminalScroll}
+                            onScrollBeginDrag={() => setTerminalDragging(true)}
+                            onScrollEndDrag={() => setTerminalDragging(false)}
+                            onMomentumScrollBegin={() => setTerminalDragging(true)}
+                            onMomentumScrollEnd={() => setTerminalDragging(false)}
+                            scrollEventThrottle={32}
                         >
                             <Text style={styles.terminalText}>
                                 {terminalOutput || t("src.components.chat.interactiveterminalcard.waiting_for_terminal_output")}

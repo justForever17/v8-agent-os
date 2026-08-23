@@ -14,10 +14,12 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Gauge } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useIsFocused } from "@react-navigation/native";
 import Animated, {
     Easing,
     cancelAnimation,
     useAnimatedStyle,
+    useReducedMotion,
     useSharedValue,
     withRepeat,
     withTiming,
@@ -31,6 +33,8 @@ import type { SupervisorRuntimeMode } from "@v8/session-realtime";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
+import { shouldRunContinuousMotion } from "@/src/lib/motion-policy";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
 import { PhoneReasoningEffortControl } from "./ReasoningEffortControl";
@@ -83,24 +87,16 @@ function SpecModeOrbitIcon({
     color: string;
 }) {
     const spin = useSharedValue(0);
+    const reduceMotion = useReducedMotion();
 
     useEffect(() => {
-        if (!active) {
-            cancelAnimation(spin);
-            spin.value = withTiming(0, { duration: 180 });
-            return;
-        }
-
-        spin.value = withRepeat(
-            withTiming(1, { duration: 1600, easing: Easing.linear }),
-            -1,
-            false,
-        );
-
-        return () => {
-            cancelAnimation(spin);
-        };
-    }, [active, spin]);
+        cancelAnimation(spin);
+        spin.value = reduceMotion ? (active ? 1 : 0) : withTiming(active ? 1 : 0, {
+            duration: 420,
+            easing: Easing.out(Easing.cubic),
+        });
+        return () => cancelAnimation(spin);
+    }, [active, reduceMotion, spin]);
 
     const orbitStyle = useAnimatedStyle(() => ({
         transform: [{ rotate: `${spin.value * 360}deg` }],
@@ -130,6 +126,15 @@ function ComposerActionButton({
 }) {
     const { themeMode } = useUiPrefs();
     const spin = useSharedValue(0);
+    const reduceMotion = useReducedMotion();
+    const isFocused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const animationEnabled = shouldRunContinuousMotion({
+        reducedMotion: reduceMotion,
+        executionActive: mode === "stop" && !disabled,
+        surfaceVisible: isFocused,
+        appVisible,
+    });
 
     const getSpinDuration = () => {
         if (mode === "stop") return 800;
@@ -140,10 +145,10 @@ function ComposerActionButton({
     };
 
     useEffect(() => {
-        if (disabled) {
-            cancelAnimation(spin);
-            spin.value = withTiming(0, { duration: 180 });
-            return;
+        cancelAnimation(spin);
+        if (!animationEnabled) {
+            spin.value = 0;
+            return undefined;
         }
 
         const duration = getSpinDuration();
@@ -156,7 +161,7 @@ function ComposerActionButton({
         return () => {
             cancelAnimation(spin);
         };
-    }, [disabled, mode, specMode, spin]);
+    }, [animationEnabled, mode, specMode, spin]);
 
     const orbitStyle = useAnimatedStyle(() => ({
         opacity: !disabled ? 1 : 0,

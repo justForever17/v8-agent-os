@@ -92,8 +92,8 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                 <div className="absolute inset-0 bg-blue-500/10 blur-xl rounded-lg -z-10 animate-pulse" />
             )}
 
-            <motion.div layout className={cn(
-                "w-full overflow-hidden rounded-lg border backdrop-blur-md transition-all duration-500 ease-out",
+            <div className={cn(
+                "w-full overflow-hidden rounded-lg border backdrop-blur-md transition-[background-color,border-color,box-shadow] duration-300 ease-out",
                     isExpanded
                     ? isSuccessful
                         ? "bg-white/40 dark:bg-zinc-900/40 border-teal-500/30 dark:border-teal-500/20 shadow-[0_4px_24px_-8px_rgba(20,184,166,0.3)]"
@@ -192,7 +192,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                         </motion.div>
                     )}
                 </AnimatePresence>
-            </motion.div>
+            </div>
         </div>
     );
 }, (prev, next) => (

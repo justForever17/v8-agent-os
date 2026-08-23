@@ -3,6 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from "r
 import * as Clipboard from "expo-clipboard";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { useIsFocused } from "@react-navigation/native";
 import {
     buildCollaborationMicroStages,
     buildMessageTimelineSegments,
@@ -24,6 +25,7 @@ import Animated, {
     Easing,
     cancelAnimation,
     useAnimatedStyle,
+    useReducedMotion,
     useSharedValue,
     withDelay,
     withRepeat,
@@ -32,8 +34,10 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
 import { buildPhoneToolExecutionView } from "@/src/lib/chat-node-visibility";
 import { buildVoicePlaybackKey, parsePhoneContentBlocks } from "@/src/lib/content-detector";
+import { shouldRunContinuousMotion } from "@/src/lib/motion-policy";
 import { formatClock } from "@/src/lib/time";
 import { resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -531,6 +535,15 @@ function AssistantActivityDots({
     const dotA = useSharedValue(0);
     const dotB = useSharedValue(0);
     const dotC = useSharedValue(0);
+    const reduceMotion = useReducedMotion();
+    const isFocused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const animationEnabled = shouldRunContinuousMotion({
+        reducedMotion: reduceMotion,
+        executionActive: active,
+        surfaceVisible: isFocused,
+        appVisible,
+    });
 
     useEffect(() => {
         const start = (dot: typeof dotA, delayMs: number) => {
@@ -548,14 +561,14 @@ function AssistantActivityDots({
             );
         };
 
-        if (!active) {
+        if (!animationEnabled) {
             cancelAnimation(dotA);
             cancelAnimation(dotB);
             cancelAnimation(dotC);
-            dotA.value = withTiming(0, { duration: 120 });
-            dotB.value = withTiming(0, { duration: 120 });
-            dotC.value = withTiming(0, { duration: 120 });
-            return;
+            dotA.value = 0;
+            dotB.value = 0;
+            dotC.value = 0;
+            return undefined;
         }
 
         start(dotA, 0);
@@ -567,7 +580,7 @@ function AssistantActivityDots({
             cancelAnimation(dotB);
             cancelAnimation(dotC);
         };
-    }, [active, dotA, dotB, dotC]);
+    }, [animationEnabled, dotA, dotB, dotC]);
 
     const dotAStyle = useAnimatedStyle(() => ({
         opacity: 0.38 + (dotA.value * 0.56),

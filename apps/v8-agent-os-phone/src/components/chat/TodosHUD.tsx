@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "react-native";
+import { Animated as RNAnimated, Easing, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
+import Animated, { FadeOutUp, LinearTransition, ReduceMotion, useReducedMotion } from "react-native-reanimated";
 
 import { Card, CardContent } from "@/src/components/ui/card";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -14,6 +15,9 @@ type TodosHUDProps = {
     dismissDelayMs?: number;
 };
 
+const HUD_EXIT = FadeOutUp.duration(180).reduceMotion(ReduceMotion.System);
+const HUD_LAYOUT = LinearTransition.duration(220).reduceMotion(ReduceMotion.System);
+
 export const TodosHUD = memo(function TodosHUD({
     items,
     shouldAutoHide = false,
@@ -22,7 +26,8 @@ export const TodosHUD = memo(function TodosHUD({
     const { colors, themeMode, t } = useUiPrefs();
     const [isCollapsed, setIsCollapsed] = useState(true);
     const [dismissed, setDismissed] = useState(false);
-    const progress = useRef(new Animated.Value(0)).current;
+    const progress = useRef(new RNAnimated.Value(0)).current;
+    const reduceMotion = useReducedMotion();
 
     const todos = useMemo(
         () => items.filter((item) => String(item.content || "").trim()),
@@ -56,7 +61,12 @@ export const TodosHUD = memo(function TodosHUD({
     const toggle = () => {
         const nextCollapsed = !isCollapsed;
         setIsCollapsed(nextCollapsed);
-        Animated.timing(progress, {
+        progress.stopAnimation();
+        if (reduceMotion) {
+            progress.setValue(nextCollapsed ? 1 : 0);
+            return;
+        }
+        RNAnimated.timing(progress, {
             toValue: nextCollapsed ? 1 : 0,
             duration: 220,
             easing: Easing.out(Easing.cubic),
@@ -73,15 +83,16 @@ export const TodosHUD = memo(function TodosHUD({
     };
 
     return (
-        <Card
-            style={[
-                styles.wrap,
-                {
-                    backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.44)" : "rgba(255,255,255,0.46)",
-                    borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.30)",
-                },
-            ]}
-        >
+        <Animated.View exiting={HUD_EXIT} layout={HUD_LAYOUT}>
+            <Card
+                style={[
+                    styles.wrap,
+                    {
+                        backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.44)" : "rgba(255,255,255,0.46)",
+                        borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.30)",
+                    },
+                ]}
+            >
             <Pressable
                 style={[
                     styles.header,
@@ -101,9 +112,9 @@ export const TodosHUD = memo(function TodosHUD({
                         <Text style={[styles.counterText, { color: colors.textMuted }]}>{completedCount}/{todos.length}</Text>
                     </View>
                 </View>
-                <Animated.View style={{ transform: [{ rotate: rotation }] }}>
+                <RNAnimated.View style={{ transform: [{ rotate: rotation }] }}>
                     <MaterialCommunityIcons name="chevron-down" size={18} color={colors.textSoft} />
-                </Animated.View>
+                </RNAnimated.View>
             </Pressable>
 
             {!isCollapsed ? (
@@ -172,7 +183,8 @@ export const TodosHUD = memo(function TodosHUD({
                     </GestureScrollView>
                 </CardContent>
             ) : null}
-        </Card>
+            </Card>
+        </Animated.View>
     );
 });
 

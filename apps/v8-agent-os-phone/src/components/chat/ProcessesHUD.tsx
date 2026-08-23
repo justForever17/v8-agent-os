@@ -1,7 +1,8 @@
 import { memo, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Animated as RNAnimated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { isActiveCommandSessionStatus, type AdminProcessRef } from "@v8/session-realtime";
+import Animated, { FadeOutDown, LinearTransition, ReduceMotion, useReducedMotion } from "react-native-reanimated";
 
 import { InteractiveTerminalCard } from "@/src/components/chat/InteractiveTerminalCard";
 import { Card, CardContent } from "@/src/components/ui/card";
@@ -13,6 +14,8 @@ type ProcessesHUDProps = {
 };
 
 const PROCESS_FINISHED_GRACE_SECONDS = 3;
+const HUD_EXIT = FadeOutDown.duration(180).reduceMotion(ReduceMotion.System);
+const HUD_LAYOUT = LinearTransition.duration(220).reduceMotion(ReduceMotion.System);
 
 function isActiveProcess(process: AdminProcessRef) {
     return isActiveCommandSessionStatus(process.status);
@@ -39,7 +42,8 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
     const { colors, themeMode, t } = useUiPrefs();
     const [terminatedIds, setTerminatedIds] = useState<Set<string>>(new Set());
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const progress = useRef(new Animated.Value(0)).current;
+    const progress = useRef(new RNAnimated.Value(0)).current;
+    const reduceMotion = useReducedMotion();
     const visibleProcesses = useMemo(
         () => processes.filter((process) => (isActiveProcess(process) || isRecentlyFinishedProcess(process)) && !terminatedIds.has(process.processId)),
         [processes, terminatedIds],
@@ -52,7 +56,12 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
     const toggle = () => {
         const nextCollapsed = !isCollapsed;
         setIsCollapsed(nextCollapsed);
-        Animated.timing(progress, {
+        progress.stopAnimation();
+        if (reduceMotion) {
+            progress.setValue(nextCollapsed ? 1 : 0);
+            return;
+        }
+        RNAnimated.timing(progress, {
             toValue: nextCollapsed ? 1 : 0,
             duration: 220,
             easing: Easing.out(Easing.cubic),
@@ -66,15 +75,16 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
     });
 
     return (
-        <Card
-            style={[
-                styles.wrap,
-                {
-                    backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.44)" : "rgba(255,255,255,0.46)",
-                    borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.30)",
-                },
-            ]}
-        >
+        <Animated.View exiting={HUD_EXIT} layout={HUD_LAYOUT}>
+            <Card
+                style={[
+                    styles.wrap,
+                    {
+                        backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.44)" : "rgba(255,255,255,0.46)",
+                        borderColor: themeMode === "dark" ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.30)",
+                    },
+                ]}
+            >
             <Pressable
                 style={[
                     styles.header,
@@ -97,9 +107,9 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
                         <Text style={[styles.counterText, { color: colors.textMuted }]}>{visibleProcesses.length}</Text>
                     </View>
                 </View>
-                <Animated.View style={{ transform: [{ rotate: rotation }] }}>
+                <RNAnimated.View style={{ transform: [{ rotate: rotation }] }}>
                     <MaterialCommunityIcons name="chevron-down" size={18} color={colors.textSoft} />
-                </Animated.View>
+                </RNAnimated.View>
             </Pressable>
 
             {!isCollapsed ? (
@@ -122,7 +132,8 @@ export const ProcessesHUD = memo(function ProcessesHUD({ processes }: ProcessesH
                     </ScrollView>
                 </CardContent>
             ) : null}
-        </Card>
+            </Card>
+        </Animated.View>
     );
 });
 

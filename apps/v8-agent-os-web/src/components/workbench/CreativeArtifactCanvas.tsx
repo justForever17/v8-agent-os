@@ -72,6 +72,15 @@ import {
     CreativeCanvasMedia,
 } from "./CreativeCanvasMedia";
 import {
+    appendCanvasRecordingChunk,
+    consumeCanvasRecordingChunks,
+    createCanvasRecordingSession,
+    discardCanvasRecordingSession,
+    isCanvasCaptureRequestCurrent,
+    releaseCanvasCapture,
+    type CanvasRecordingSession,
+} from "./workbench-motion-behavior";
+import {
     CreativeCanvasPsdCompositionEditor,
     CreativeCanvasPsdLayerEditor,
     type CanvasPsdComposition,
@@ -349,10 +358,10 @@ export function CreativeArtifactCanvas({
     const boardRef = useRef<HTMLDivElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const cameraPreviewRef = useRef<HTMLVideoElement | null>(null);
-    const cameraRecorderRef = useRef<MediaRecorder | null>(null);
+    const cameraRecordingSessionRef = useRef<CanvasRecordingSession<MediaRecorder, Blob> | null>(null);
     const cameraStreamRef = useRef<MediaStream | null>(null);
-    const cameraChunksRef = useRef<Blob[]>([]);
-    const discardCameraRecordingRef = useRef(false);
+    const cameraRequestEpochRef = useRef(0);
+    const visibleRef = useRef(visible);
     const sessionRunningRef = useRef(upstreamSessionRunning);
     const sessionIdRef = useRef(sessionId);
     const mountedRef = useRef(true);
@@ -442,6 +451,10 @@ export function CreativeArtifactCanvas({
         snapshotRef.current = snapshot;
         hydratedKeyRef.current = hydratedKey;
     }, [hydratedKey, snapshot]);
+
+    useLayoutEffect(() => {
+        visibleRef.current = visible;
+    }, [visible]);
 
     useEffect(() => {
         sessionRunningRef.current = sessionRunning;
@@ -2278,25 +2291,34 @@ export function CreativeArtifactCanvas({
         void uploadFiles(files);
     }, [uploadFiles]);
 
-    const closeCamera = useCallback((discard = true) => {
-        discardCameraRecordingRef.current = discard;
-        const recorder = cameraRecorderRef.current;
-        if (recorder && recorder.state !== "inactive") recorder.stop();
-        cameraRecorderRef.current = null;
-        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    const discardCameraCapture = useCallback(() => {
+        cameraRequestEpochRef.current += 1;
+        const recording = cameraRecordingSessionRef.current;
+        if (recording) discardCanvasRecordingSession(recording);
+        releaseCanvasCapture({
+            recorder: recording?.recorder || null,
+            stream: cameraStreamRef.current,
+            chunks: recording?.chunks || [],
+        });
+        if (cameraRecordingSessionRef.current === recording) cameraRecordingSessionRef.current = null;
         cameraStreamRef.current = null;
+    }, []);
+
+    const closeCamera = useCallback(() => {
+        discardCameraCapture();
         setCameraStream(null);
         setCameraRecording(false);
         setCameraSeconds(0);
         setCameraOpen(false);
-    }, []);
+    }, [discardCameraCapture]);
 
     const openCamera = useCallback(async () => {
-        if (sessionRunning || uploading) return;
+        if (sessionRunning || uploading || !visibleRef.current) return;
         if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
             setError(t("web.workbench.canvas.camera.unavailable"));
             return;
         }
+        const requestEpoch = ++cameraRequestEpochRef.current;
         setError("");
         setCameraOpen(true);
         try {
@@ -2304,14 +2326,29 @@ export function CreativeArtifactCanvas({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 60 } },
                 audio: false,
             });
-            if (sessionIdRef.current !== sessionId || sessionRunningRef.current) {
+            if (!isCanvasCaptureRequestCurrent({
+                requestEpoch,
+                currentEpoch: cameraRequestEpochRef.current,
+                visible: visibleRef.current,
+                requestSessionId: sessionId,
+                currentSessionId: sessionIdRef.current,
+                sessionRunning: sessionRunningRef.current,
+            })) {
                 stream.getTracks().forEach((track) => track.stop());
-                setCameraOpen(false);
+                if (requestEpoch === cameraRequestEpochRef.current) setCameraOpen(false);
                 return;
             }
             cameraStreamRef.current = stream;
             setCameraStream(stream);
         } catch (reason) {
+            if (!isCanvasCaptureRequestCurrent({
+                requestEpoch,
+                currentEpoch: cameraRequestEpochRef.current,
+                visible: visibleRef.current,
+                requestSessionId: sessionId,
+                currentSessionId: sessionIdRef.current,
+                sessionRunning: sessionRunningRef.current,
+            })) return;
             setCameraOpen(false);
             setError(reason instanceof Error ? reason.message : t("web.workbench.canvas.camera.unavailable"));
         }
@@ -2321,15 +2358,15 @@ export function CreativeArtifactCanvas({
         if (!cameraStream || cameraRecording || sessionRunning) return;
         const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
         const mimeType = candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
-        cameraChunksRef.current = [];
-        discardCameraRecordingRef.current = false;
         const recorder = new MediaRecorder(cameraStream, mimeType ? { mimeType } : undefined);
-        recorder.ondataavailable = (event) => { if (event.data.size > 0) cameraChunksRef.current.push(event.data); };
+        const recording = createCanvasRecordingSession<MediaRecorder, Blob>(recorder);
+        recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) appendCanvasRecordingChunk(recording, event.data);
+        };
         recorder.onstop = () => {
-            const chunks = cameraChunksRef.current;
-            cameraChunksRef.current = [];
-            cameraRecorderRef.current = null;
-            if (!discardCameraRecordingRef.current && chunks.length) {
+            const chunks = consumeCanvasRecordingChunks(recording);
+            if (cameraRecordingSessionRef.current === recording) cameraRecordingSessionRef.current = null;
+            if (chunks.length) {
                 const type = recorder.mimeType || mimeType || "video/webm";
                 const extension = type.includes("mp4") ? "mp4" : "webm";
                 const file = new File(chunks, `canvas-motion-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`, { type });
@@ -2337,15 +2374,16 @@ export function CreativeArtifactCanvas({
             }
         };
         recorder.start(1000);
-        cameraRecorderRef.current = recorder;
+        cameraRecordingSessionRef.current = recording;
         setCameraSeconds(0);
         setCameraRecording(true);
     }, [cameraRecording, cameraStream, sessionRunning, uploadFiles]);
 
     const finishCameraRecording = useCallback(() => {
-        if (!cameraRecorderRef.current || cameraRecorderRef.current.state === "inactive") return;
-        discardCameraRecordingRef.current = false;
-        cameraRecorderRef.current.stop();
+        const recording = cameraRecordingSessionRef.current;
+        if (!recording || recording.recorder.state === "inactive") return;
+        recording.discarded = false;
+        recording.recorder.stop();
         cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
         cameraStreamRef.current = null;
         setCameraStream(null);
@@ -2364,18 +2402,11 @@ export function CreativeArtifactCanvas({
         return () => window.clearInterval(timer);
     }, [cameraRecording]);
 
-    useEffect(() => () => {
-        discardCameraRecordingRef.current = true;
-        const recorder = cameraRecorderRef.current;
-        if (recorder && recorder.state !== "inactive") recorder.stop();
-        cameraRecorderRef.current = null;
-        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
-        cameraStreamRef.current = null;
-        setCameraStream(null);
-        setCameraRecording(false);
-        setCameraSeconds(0);
-        setCameraOpen(false);
-    }, [sessionId]);
+    useEffect(() => {
+        if (!visible) closeCamera();
+    }, [closeCamera, visible]);
+
+    useEffect(() => () => discardCameraCapture(), [discardCameraCapture, sessionId]);
 
     const freezeMask = useCallback(async (node: CanvasNode, resource: CanvasResource) => {
         if (!node.mask?.strokes.length) return null;
@@ -3657,7 +3688,7 @@ export function CreativeArtifactCanvas({
                         <span className="text-[11px] font-medium">{cameraRecording ? t("web.workbench.canvas.camera.recording") : t("web.workbench.canvas.camera.ready")}</span>
                         <div className="flex items-center gap-1.5">
                             {!cameraRecording ? <button type="button" disabled={!cameraStream} onClick={startCameraRecording} className="grid h-9 w-9 place-items-center rounded-full bg-red-500 text-white hover:bg-red-600 disabled:opacity-35" aria-label={t("web.workbench.canvas.camera.start")} title={t("web.workbench.canvas.camera.start")}><span className="h-3.5 w-3.5 rounded-full bg-white" /></button> : <button type="button" onClick={finishCameraRecording} className="grid h-9 w-9 place-items-center rounded-full bg-white text-neutral-950 hover:bg-white/85" aria-label={t("web.workbench.canvas.camera.stop")} title={t("web.workbench.canvas.camera.stop")}><Square className="h-3.5 w-3.5 fill-current" /></button>}
-                            <button type="button" onClick={() => closeCamera(true)} className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20" aria-label={t("web.workbench.canvas.camera.discard")} title={t("web.workbench.canvas.camera.discard")}><X className="h-4 w-4" /></button>
+                            <button type="button" onClick={closeCamera} className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20" aria-label={t("web.workbench.canvas.camera.discard")} title={t("web.workbench.canvas.camera.discard")}><X className="h-4 w-4" /></button>
                         </div>
                     </div>
                 </div>

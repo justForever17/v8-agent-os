@@ -24,6 +24,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { useIsFocused } from "@react-navigation/native";
+import { useReducedMotion } from "react-native-reanimated";
 import {
     RecordingPresets,
     requestRecordingPermissionsAsync,
@@ -78,6 +80,9 @@ import { mergeSessionHistoryOverlay, sortSessionHistory } from "@/src/lib/sessio
 import { saveResponseToCache } from "@/src/lib/file-transfer";
 import { createTranslator, translateCurrent } from "@/src/lib/locale";
 import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
+import { resolveHiddenControlBehavior } from "@/src/lib/motion-behavior";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
+import { shouldRunContinuousMotion } from "@/src/lib/motion-policy";
 import {
     emitPhonePerfAuditSample,
     isPhonePerfAuditEnabled,
@@ -2119,6 +2124,9 @@ export default function ChatScreen() {
     const ttsStatus = useAudioPlayerStatus(ttsPlayer);
     const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
     const recorderState = useAudioRecorderState(recorder);
+    const reduceMotion = useReducedMotion();
+    const isFocused = useIsFocused();
+    const appVisible = useAppVisibility();
     const { width, height } = useWindowDimensions();
     const safeAreaInsets = useSafeAreaInsets();
     const isLandscape = width > height;
@@ -2139,6 +2147,7 @@ export default function ChatScreen() {
     const historyBtnTranslateY = useRef(new Animated.Value(0)).current;
     const lastScrollY = useRef(0);
     const isHistoryBtnVisible = useRef(true);
+    const [isHistoryBtnInteractive, setIsHistoryBtnInteractive] = useState(true);
 
     const pulseAnim = useRef(new Animated.Value(0.4)).current;
     const neonOpacity = useRef(new Animated.Value(0)).current;
@@ -6139,27 +6148,75 @@ export default function ChatScreen() {
     const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
     const hasRuntimeItems = projection.runtimeStageModel.items.length > 0;
     const showOverviewRail = Boolean(activeConversationId);
+    const sessionPulseEnabled = shouldRunContinuousMotion({
+        reducedMotion: reduceMotion,
+        executionActive: isSessionRunning,
+        surfaceVisible: isFocused,
+        appVisible,
+    });
 
     useEffect(() => {
-        if (isSessionRunning) {
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(pulseAnim, { toValue: 1.0, duration: 1200, useNativeDriver: true }),
-                    Animated.timing(pulseAnim, { toValue: 0.4, duration: 1200, useNativeDriver: true }),
-                ])
-            ).start();
-        } else {
+        if (!sessionPulseEnabled) {
+            pulseAnim.stopAnimation();
             pulseAnim.setValue(1.0);
+            return undefined;
         }
-    }, [isSessionRunning, pulseAnim]);
+
+        const animation = Animated.loop(
+            Animated.sequence([
+                Animated.timing(pulseAnim, { toValue: 1.0, duration: 1200, useNativeDriver: true }),
+                Animated.timing(pulseAnim, { toValue: 0.4, duration: 1200, useNativeDriver: true }),
+            ]),
+        );
+        animation.start();
+        return () => animation.stop();
+    }, [pulseAnim, sessionPulseEnabled]);
 
     useEffect(() => {
-        Animated.timing(neonOpacity, {
+        neonOpacity.stopAnimation();
+        if (reduceMotion) {
+            neonOpacity.setValue(showOverviewRail ? 1 : 0);
+            return undefined;
+        }
+        const animation = Animated.timing(neonOpacity, {
             toValue: showOverviewRail ? 1 : 0,
             duration: 400,
             useNativeDriver: true,
-        }).start();
-    }, [showOverviewRail, neonOpacity]);
+        });
+        animation.start();
+        return () => animation.stop();
+    }, [showOverviewRail, neonOpacity, reduceMotion]);
+
+    const animateHistoryButton = useCallback((visible: boolean) => {
+        isHistoryBtnVisible.current = visible;
+        if (!visible) {
+            setIsHistoryBtnInteractive(false);
+        }
+        historyBtnOpacity.stopAnimation();
+        historyBtnTranslateY.stopAnimation();
+        if (reduceMotion) {
+            historyBtnOpacity.setValue(visible ? 1 : 0);
+            historyBtnTranslateY.setValue(visible ? 0 : -15);
+            setIsHistoryBtnInteractive(visible);
+            return;
+        }
+        Animated.parallel([
+            Animated.timing(historyBtnOpacity, {
+                toValue: visible ? 1 : 0,
+                duration: 150,
+                useNativeDriver: true,
+            }),
+            Animated.timing(historyBtnTranslateY, {
+                toValue: visible ? 0 : -15,
+                duration: 150,
+                useNativeDriver: true,
+            }),
+        ]).start(({ finished }) => {
+            if (finished && visible && isHistoryBtnVisible.current) {
+                setIsHistoryBtnInteractive(true);
+            }
+        });
+    }, [historyBtnOpacity, historyBtnTranslateY, reduceMotion]);
 
     const handleScroll = useCallback((event: any) => {
         const currentY = event.nativeEvent.contentOffset.y;
@@ -6167,31 +6224,21 @@ export default function ChatScreen() {
 
         if (currentY <= 20) {
             if (!isHistoryBtnVisible.current) {
-                isHistoryBtnVisible.current = true;
-                Animated.parallel([
-                    Animated.timing(historyBtnOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
-                    Animated.timing(historyBtnTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }),
-                ]).start();
+                animateHistoryButton(true);
             }
         } else if (diff > 15 && currentY > 50) {
             if (isHistoryBtnVisible.current) {
-                isHistoryBtnVisible.current = false;
-                Animated.parallel([
-                    Animated.timing(historyBtnOpacity, { toValue: 0, duration: 150, useNativeDriver: true }),
-                    Animated.timing(historyBtnTranslateY, { toValue: -15, duration: 150, useNativeDriver: true }),
-                ]).start();
+                animateHistoryButton(false);
             }
         } else if (diff < -15) {
             if (!isHistoryBtnVisible.current) {
-                isHistoryBtnVisible.current = true;
-                Animated.parallel([
-                    Animated.timing(historyBtnOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
-                    Animated.timing(historyBtnTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }),
-                ]).start();
+                animateHistoryButton(true);
             }
         }
         lastScrollY.current = currentY;
-    }, [historyBtnOpacity, historyBtnTranslateY]);
+    }, [animateHistoryButton]);
+
+    const historyButtonBehavior = resolveHiddenControlBehavior(isHistoryBtnInteractive);
 
     const openOverviewPanel = useCallback(() => {
         setOverviewPanelOpen(true);
@@ -7052,11 +7099,6 @@ export default function ChatScreen() {
         && !["running", "waiting_input", "waiting_approval", "queued", "pending", "starting", "streaming"].includes(runControlStatus);
     const composerRunActive = isQueueEligibleRunStatus(runControlStatus);
     const composerCanStop = Boolean(composerRunActive && (projection.runControlState.canInterrupt || projection.runControlState.runId));
-    const hasOverlayLayer = Boolean(
-        pickerOverlayVisible
-        || hudProcesses.length > 0
-        || todosVisible,
-    );
     const accessoryBottomOffset = bottomLayerHeight > 0 ? bottomLayerHeight + 8 : 144;
     const hudBottomOffset = accessoryBottomOffset + 10;
     const pickerBottomOffset = accessoryBottomOffset;
@@ -7127,7 +7169,7 @@ export default function ChatScreen() {
         setComposerSelection({ start: inserted.caret, end: inserted.caret });
     };
 
-    const overlayDockContent = hasOverlayLayer ? (
+    const overlayDockContent = (
         <View pointerEvents="box-none" style={styles.keyboardOverlayHost}>
             {pickerOverlayVisible ? (
                 <ComposerPickerOverlay
@@ -7154,19 +7196,15 @@ export default function ChatScreen() {
                     },
                 ]}
             >
-                {hudProcesses.length > 0 ? (
-                    <View style={styles.processesOverlayDock} pointerEvents="box-none">
-                        <ProcessesHUD processes={hudProcesses} />
-                    </View>
-                ) : null}
-                {todosVisible ? (
-                    <View style={styles.todosOverlayDock} pointerEvents="auto">
-                        <TodosHUD items={projection.todos} shouldAutoHide={todoHudShouldAutoHide} />
-                    </View>
-                ) : null}
+                <View style={styles.processesOverlayDock} pointerEvents={hudProcesses.length > 0 ? "box-none" : "none"}>
+                    <ProcessesHUD processes={hudProcesses} />
+                </View>
+                <View style={styles.todosOverlayDock} pointerEvents={todosVisible ? "auto" : "none"}>
+                    <TodosHUD items={projection.todos} shouldAutoHide={todoHudShouldAutoHide} />
+                </View>
             </View>
         </View>
-    ) : null;
+    );
 
     const composerDockContent = (
         <View
@@ -7561,6 +7599,9 @@ export default function ChatScreen() {
                             )}
 
                             <Animated.View
+                                pointerEvents={historyButtonBehavior.pointerEvents}
+                                accessibilityElementsHidden={historyButtonBehavior.accessibilityElementsHidden}
+                                importantForAccessibility={historyButtonBehavior.importantForAccessibility}
                                 style={[
                                     styles.floatingHistoryBtnWrap,
                                     {
@@ -7573,6 +7614,9 @@ export default function ChatScreen() {
                                 <Pressable
                                     accessibilityRole="button"
                                     accessibilityLabel={t("src.components.layout.historydrawer.history")}
+                                    accessibilityState={{ disabled: historyButtonBehavior.disabled }}
+                                    accessible={historyButtonBehavior.accessible}
+                                    disabled={historyButtonBehavior.disabled}
                                     style={[styles.floatingHistoryBtn, { backgroundColor: palette.surface, borderColor: palette.border }]}
                                     onPress={() => setHistoryOpen(true)}
                                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

@@ -1,10 +1,54 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, useEffect, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import Animated, {
+    cancelAnimation,
+    Easing,
+    useAnimatedStyle,
+    useReducedMotion,
+    useSharedValue,
+    withRepeat,
+    withTiming,
+    type SharedValue,
+} from "react-native-reanimated";
 
 import { Button } from "@/src/components/ui/button";
+import { useAppVisibility } from "@/src/hooks/use-app-visibility";
+import { voiceWavePhase } from "@/src/lib/motion-policy";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
+
+const BAR_HEIGHTS = [10, 14, 18, 12, 20, 13, 17, 11] as const;
+
+const VoiceWaveBar = memo(function VoiceWaveBar({
+    clock,
+    color,
+    height,
+    phase,
+}: {
+    clock: SharedValue<number>;
+    color: string;
+    height: number;
+    phase: number;
+}) {
+    const animatedStyle = useAnimatedStyle(() => {
+        const sample = 0.34 + Math.abs(Math.sin((clock.value + phase) * Math.PI * 2)) * 0.66;
+        return {
+            opacity: 0.45 + sample * 0.55,
+            transform: [
+                { translateY: height * (1 - sample) / 2 },
+                { scaleY: sample },
+            ],
+        };
+    }, [height, phase]);
+
+    return (
+        <Animated.View
+            style={[styles.waveBar, { backgroundColor: color, height }, animatedStyle]}
+        />
+    );
+});
 
 export const VoiceCard = memo(function VoiceCard({
     text,
@@ -18,71 +62,31 @@ export const VoiceCard = memo(function VoiceCard({
     const { colors, t } = useUiPrefs();
     const [expanded, setExpanded] = useState(false);
     const [hasPlayed, setHasPlayed] = useState(false);
-    const wave = useRef(Array.from({ length: 8 }, () => new Animated.Value(0.32))).current;
-    const pulse = useRef(new Animated.Value(0)).current;
-    const barHeights = useMemo(() => [10, 14, 18, 12, 20, 13, 17, 11], []);
+    const clock = useSharedValue(0);
+    const reduceMotion = useReducedMotion();
+    const isFocused = useIsFocused();
+    const appVisible = useAppVisibility();
+    const animationEnabled = speaking && isFocused && appVisible && !reduceMotion;
 
     useEffect(() => {
-        if (!speaking) {
-            wave.forEach((value) => value.stopAnimation());
-            wave.forEach((value) => value.setValue(0.32));
-            pulse.stopAnimation();
-            pulse.setValue(0);
-            return;
-        }
+        cancelAnimation(clock);
+        clock.value = 0;
+        if (!animationEnabled) return undefined;
+        clock.value = withRepeat(
+            withTiming(1, { duration: 1100, easing: Easing.linear }),
+            -1,
+            false,
+        );
+        return () => cancelAnimation(clock);
+    }, [animationEnabled, clock]);
 
-        const loops = wave.map((value, index) =>
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(value, {
-                        toValue: 1,
-                        duration: 240 + index * 30,
-                        easing: Easing.inOut(Easing.ease),
-                        useNativeDriver: false,
-                    }),
-                    Animated.timing(value, {
-                        toValue: 0.28,
-                        duration: 260 + (index % 3) * 40,
-                        easing: Easing.inOut(Easing.ease),
-                        useNativeDriver: false,
-                    }),
-                ]),
-            ),
-        );
-        const pulseLoop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulse, {
-                    toValue: 1,
-                    duration: 420,
-                    easing: Easing.inOut(Easing.ease),
-                    useNativeDriver: true,
-                }),
-                Animated.timing(pulse, {
-                    toValue: 0,
-                    duration: 420,
-                    easing: Easing.inOut(Easing.ease),
-                    useNativeDriver: true,
-                }),
-            ]),
-        );
-        loops.forEach((loop) => loop.start());
-        pulseLoop.start();
-        return () => {
-            loops.forEach((loop) => loop.stop());
-            wave.forEach((value) => value.setValue(0.32));
-            pulseLoop.stop();
-            pulse.setValue(0);
+    const pulseStyle = useAnimatedStyle(() => {
+        const pulse = (Math.sin(clock.value * Math.PI * 2) + 1) / 2;
+        return {
+            opacity: animationEnabled ? 0.18 + pulse * 0.14 : 0,
+            transform: [{ scale: animationEnabled ? 1 + pulse * 0.08 : 1 }],
         };
-    }, [pulse, speaking, wave]);
-
-    const pulseScale = pulse.interpolate({
-        inputRange: [0, 1],
-        outputRange: [1, 1.08],
-    });
-    const pulseOpacity = pulse.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0.18, 0.32],
-    });
+    }, [animationEnabled]);
 
     return (
         <View style={styles.wrap}>
@@ -107,9 +111,8 @@ export const VoiceCard = memo(function VoiceCard({
                             styles.actionIconGlow,
                             {
                                 backgroundColor: colors.primary,
-                                opacity: speaking ? pulseOpacity : 0,
-                                transform: [{ scale: speaking ? pulseScale : 1 }],
                             },
+                            pulseStyle,
                         ]}
                     />
                     <View style={[styles.actionIcon, { backgroundColor: colors.primary }]}>
@@ -133,23 +136,13 @@ export const VoiceCard = memo(function VoiceCard({
                                     {t("src.components.chat.voicecard.playing")}
                                 </Text>
                                 <View style={styles.waveRow}>
-                                    {wave.map((value, index) => (
-                                        <Animated.View
+                                    {BAR_HEIGHTS.map((height, index) => (
+                                        <VoiceWaveBar
                                             key={String(index)}
-                                            style={[
-                                                styles.waveBar,
-                                                {
-                                                    backgroundColor: colors.primary,
-                                                    height: value.interpolate({
-                                                        inputRange: [0.28, 1],
-                                                        outputRange: [6, barHeights[index]],
-                                                    }),
-                                                    opacity: value.interpolate({
-                                                        inputRange: [0.28, 1],
-                                                        outputRange: [0.45, 1],
-                                                    }),
-                                                },
-                                            ]}
+                                            clock={clock}
+                                            color={colors.primary}
+                                            height={height}
+                                            phase={voiceWavePhase(index, BAR_HEIGHTS.length)}
                                         />
                                     ))}
                                 </View>

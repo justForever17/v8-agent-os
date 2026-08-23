@@ -46,11 +46,10 @@ export function ProcessesHUD({ processes }: ProcessesHUDProps) {
         setTerminatedIds((prev) => new Set(prev).add(processId));
     }, []);
 
-    if (visibleProcesses.length === 0) return null;
-
     return (
-        <AnimatePresence>
-            <motion.div
+        <AnimatePresence initial={false}>
+            {visibleProcesses.length > 0 ? <motion.div
+                key="processes-hud"
                 initial={{ opacity: 0, y: 20, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -107,7 +106,7 @@ export function ProcessesHUD({ processes }: ProcessesHUDProps) {
                         )}
                     </AnimatePresence>
                 </div>
-            </motion.div>
+            </motion.div> : null}
         </AnimatePresence>
     );
 }

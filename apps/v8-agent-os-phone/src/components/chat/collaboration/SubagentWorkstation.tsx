@@ -2,6 +2,7 @@ import { memo, useEffect, useState } from "react";
 import { Image, StyleSheet, View } from "react-native";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 import Animated, {
+    cancelAnimation,
     Easing,
     useAnimatedStyle,
     useSharedValue,
@@ -12,6 +13,7 @@ import type {
     CollaborationMicroStageCue,
     CollaborationMicroStageStatus,
 } from "@v8/session-realtime";
+import { nextMotionFrameIndex } from "@/src/lib/motion-policy";
 
 export type SubagentRobotPhase =
     | "entering"
@@ -101,7 +103,11 @@ export function subagentRobotActionFor({
     return "idle";
 }
 
-function useSubagentRobotFrame(action: SubagentRobotAction) {
+function useSubagentRobotFrame(
+    action: SubagentRobotAction,
+    motionEnabled: boolean,
+    continuousMotionEnabled: boolean,
+) {
     const frames = ROBOT_ACTION_FRAMES[action];
     const durations = ROBOT_ACTION_DURATIONS[action];
     const loops = LOOPING_ROBOT_ACTIONS.has(action);
@@ -115,13 +121,14 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let current = 0;
-        if (frames.length <= 1) return undefined;
+        if (!motionEnabled || (loops && !continuousMotionEnabled) || frames.length <= 1) return undefined;
 
         const scheduleNext = () => {
             timer = setTimeout(() => {
                 if (cancelled) return;
-                if (!loops && current >= frames.length - 1) return;
-                current = (current + 1) % frames.length;
+                const next = nextMotionFrameIndex(current, frames.length, loops);
+                if (next === null) return;
+                current = next;
                 setFrameState({ action, index: current });
                 scheduleNext();
             }, durations[Math.min(current, durations.length - 1)] || 240);
@@ -131,7 +138,7 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
             cancelled = true;
             if (timer) clearTimeout(timer);
         };
-    }, [action, durations, frames, loops]);
+    }, [action, continuousMotionEnabled, durations, frames, loops, motionEnabled]);
 
     return frames[frameIndex] ?? frames[0] ?? 0;
 }
@@ -139,11 +146,15 @@ function useSubagentRobotFrame(action: SubagentRobotAction) {
 export const SubagentRobotSprite = memo(function SubagentRobotSprite({
     action,
     color,
+    motionEnabled = true,
+    continuousMotionEnabled = true,
 }: {
     action: SubagentRobotAction;
     color: string;
+    motionEnabled?: boolean;
+    continuousMotionEnabled?: boolean;
 }) {
-    const frame = useSubagentRobotFrame(action);
+    const frame = useSubagentRobotFrame(action, motionEnabled, continuousMotionEnabled);
     const column = frame % ROBOT_SHEET.columns;
     const row = Math.floor(frame / ROBOT_SHEET.columns);
     const sheetWidth = ROBOT_SHEET.frameSize * ROBOT_SHEET.columns;
@@ -319,22 +330,30 @@ const EventScreen = memo(function EventScreen({
     color,
     phase,
     status,
+    continuousMotionEnabled,
 }: {
     cue: CollaborationMicroStageCue;
     color: string;
     phase: SubagentRobotPhase;
     status: CollaborationMicroStageStatus;
+    continuousMotionEnabled: boolean;
 }) {
     const pattern = screenPatternFor(cue, status, phase);
     const progress = useSharedValue(0);
 
     useEffect(() => {
+        cancelAnimation(progress);
+        if (!continuousMotionEnabled) {
+            progress.value = 0;
+            return undefined;
+        }
         progress.value = withRepeat(
             withTiming(1, { duration: pattern === "waiting" ? 1350 : 1600, easing: Easing.inOut(Easing.ease) }),
             -1,
             false,
         );
-    }, [pattern, progress]);
+        return () => cancelAnimation(progress);
+    }, [continuousMotionEnabled, pattern, progress]);
 
     const markerStyle = useAnimatedStyle(() => {
         let translateX = 0;
@@ -400,11 +419,13 @@ export const WorkstationDisplay = memo(function WorkstationDisplay({
     color,
     phase,
     status,
+    continuousMotionEnabled = true,
 }: {
     cue: CollaborationMicroStageCue;
     color: string;
     phase: SubagentRobotPhase;
     status: CollaborationMicroStageStatus;
+    continuousMotionEnabled?: boolean;
 }) {
     return (
         <View style={styles.workstation} pointerEvents="none">
@@ -414,7 +435,13 @@ export const WorkstationDisplay = memo(function WorkstationDisplay({
                 resizeMode="contain"
                 fadeDuration={0}
             />
-            <EventScreen cue={cue} color={color} phase={phase} status={status} />
+            <EventScreen
+                cue={cue}
+                color={color}
+                phase={phase}
+                status={status}
+                continuousMotionEnabled={continuousMotionEnabled}
+            />
         </View>
     );
 });

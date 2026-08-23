@@ -182,7 +182,7 @@ test("canvas is one floating surface and reuses normal chat plus lazy 3D preview
   assert.doesNotMatch(canvas, /grid-cols-\[168px_/);
   assert.doesNotMatch(canvas, /<textarea[^>]+taskPlaceholder/);
   assert.match(shell, /sessionRunning=\{props\.sessionRunning\}/);
-  assert.match(shell, /visible=\{document\.kind === "creative_canvas"\}/);
+  assert.match(shell, /visible=\{shouldShow && document\.kind === "creative_canvas"\}/);
   assert.match(shell, /containerWidth > 0 && containerWidth < 760/);
   assert.match(shell, /mode === "focus" \|\| compactWorkbench \? "focus" : "split"/);
   assert.match(shell, /dynamic\([\s\S]*import\("\.\/CreativeArtifactCanvas"\)/);

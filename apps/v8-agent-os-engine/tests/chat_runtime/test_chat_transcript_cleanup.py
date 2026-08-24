@@ -179,6 +179,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
         self.assertEqual(emitted[0]["ownerAgentId"], "worker-one")
         self.assertFalse(emitted[0]["displayInMessage"])
+        self.assertEqual(self.chat_run.events[-1]["payload"]["snapshot"], "先核对委派边界。")
 
     def test_unknown_explicit_subagent_model_ref_does_not_inherit_supervisor_reasoning_surface(self):
         self.stream_state.reasoning_surface_contract = {
@@ -461,6 +462,12 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reasoning_nodes), 1)
         self.assertEqual(reasoning_nodes[0]["content"], "用户正在查询 LangChain")
         self.assertEqual("".join(self.stream_state.reasoning_buffer), "用户正在查询 LangChain")
+        reasoning_events = [
+            event for event in self.chat_run.events
+            if event["topic"] == "run.reasoning.delta"
+        ]
+        self.assertTrue(reasoning_events)
+        self.assertTrue(all("snapshot" not in event["payload"] for event in reasoning_events))
 
     async def test_tool_internal_model_stream_does_not_mutate_assistant_transcript(self):
         emitted = await self.runtime.handle_stream_event(

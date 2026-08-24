@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const ts = require("typescript");
 
 const repoRoot = path.resolve(__dirname, "../../..");
 
@@ -12,6 +13,28 @@ function readText(relativePath) {
 function readJson(relativePath) {
   return JSON.parse(readText(relativePath));
 }
+
+function loadTypeScriptModule(relativePath) {
+  const modulePath = path.join(repoRoot, relativePath);
+  const output = ts.transpileModule(readText(relativePath), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    fileName: modulePath,
+  }).outputText;
+  const moduleRecord = { exports: {} };
+  new Function("require", "module", "exports", output)(require, moduleRecord, moduleRecord.exports);
+  return moduleRecord.exports;
+}
+
+const { preserveLiveSessionTitles } = loadTypeScriptModule("apps/v8-agent-os-web/src/lib/session-history.ts");
+
+test("a delayed placeholder refresh cannot overwrite an already-derived live title", () => {
+  const current = [{ id: "session-a", sessionId: "session-a", title: "Read the VERSION file" }];
+  const placeholderRefresh = [{ id: "session-a", sessionId: "session-a", title: "New Chat" }];
+  const canonicalRefresh = [{ id: "session-a", sessionId: "session-a", title: "Canonical title" }];
+
+  assert.equal(preserveLiveSessionTitles(current, placeholderRefresh)[0].title, "Read the VERSION file");
+  assert.equal(preserveLiveSessionTitles(current, canonicalRefresh)[0].title, "Canonical title");
+});
 
 test("web history items expose a lightweight V8OS session ID context menu", () => {
   const source = readText("apps/v8-agent-os-web/src/components/layout/Sidebar.tsx");

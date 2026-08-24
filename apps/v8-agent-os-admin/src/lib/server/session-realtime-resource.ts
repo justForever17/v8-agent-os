@@ -6,7 +6,10 @@ import {
     type AdminResourceRef,
 } from "@v8/session-realtime";
 import { buildSignedClientSurfaceUrl } from "@/lib/server/client-surface-resource";
-import { buildRuntimeEventDedupeKey } from "@/lib/server/runtime-event-delivery";
+import {
+    buildRuntimeEventDedupeKey,
+    shouldOmitRealtimeRawEnvelope,
+} from "@/lib/server/runtime-event-delivery";
 
 type JsonRecord = Record<string, unknown>;
 type SurfaceNormalizationOptions = {
@@ -528,6 +531,7 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
 
     const normalizedContent = normalizeSurfaceContent(record.content, options);
     const dedupeKey = buildRuntimeEventDedupeKey(record, data, payload);
+    const omitRawEnvelope = shouldOmitRealtimeRawEnvelope(record);
 
     return {
         ...record,
@@ -553,7 +557,7 @@ export function normalizeRuntimeEventForRealtimeSurface(raw: unknown, options?: 
             image: normalizeSurfaceUrl(data.image, options),
             url: normalizeSurfaceUrl(data.url, options),
         } : record.data,
-        raw: Object.keys(rawPayload).length ? {
+        raw: omitRawEnvelope ? undefined : Object.keys(rawPayload).length ? {
             ...rawPayload,
             payload: Object.keys(payload).length ? {
                 ...payload,

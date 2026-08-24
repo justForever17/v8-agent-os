@@ -30,6 +30,13 @@ export function shouldRequestSnapshotForEmptyEventPage(latestSeq: unknown, conti
   return latest > 0 && latest > contiguous;
 }
 
+export function shouldOmitRealtimeRawEnvelope(record: unknown) {
+    const candidate = asRecord(record);
+    const topic = readString(candidate.topic, candidate.name).toLowerCase();
+    const eventType = readString(candidate.type).toLowerCase();
+    return eventType === "reasoning_chunk" || topic === "run.reasoning.delta" || topic.endsWith(".reasoning.delta");
+}
+
 export class RuntimeEventGapRecoveryThrottle {
     private active = false;
     private lastRequestAt = 0;

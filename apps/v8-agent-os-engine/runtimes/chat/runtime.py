@@ -6602,7 +6602,8 @@ class ChatRuntime:
         run_key = self._normalized_stream_run_id(model_run_id)
         owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
         stream_key = f"{owner_runtime_id}:{owner_agent_id}:reasoning:{run_key}"
-        topic = "run.reasoning.delta" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.reasoning.delta"
+        display_in_message = bool(owner.get("displayInMessage"))
+        topic = "run.reasoning.delta" if display_in_message else f"{self._runtime_topic_prefix(owner_runtime_id)}.reasoning.delta"
         node_content = snapshot or stream_state.reasoning_snapshots_by_run.get(run_key) or reasoning_delta
         reasoning_surface_payload = reasoning_surface or {}
         reasoning_unverified = bool(reasoning_surface_payload.get("unverified")) or str(
@@ -6614,7 +6615,6 @@ class ChatRuntime:
         reasoning_event = {
             "type": "reasoning_chunk",
             "content": reasoning_delta,
-            "snapshot": node_content,
             "reasoningKind": reasoning_kind,
             "reasoningSurface": reasoning_surface_payload,
             "reasoningUnverified": reasoning_unverified,
@@ -6630,10 +6630,12 @@ class ChatRuntime:
                 model_run_id=model_run_id,
             ),
         }
+        if not display_in_message:
+            reasoning_event["snapshot"] = node_content
         reasoning_node = {
             "id": (
                 f"{self._ensure_assistant_canonical_message(chat_run, stream_state)}:reasoning:{stream_key}"
-                if bool(owner.get("displayInMessage"))
+                if display_in_message
                 else f"runtime:{chat_run.active_run_id}:reasoning:{stream_key}"
             ),
             "kind": "execution",
@@ -6682,7 +6684,7 @@ class ChatRuntime:
                     "displayInMessage": payload.get("displayInMessage"),
                 }
             )
-        if bool(owner.get("displayInMessage")):
+        if display_in_message:
             self._append_chat_projection_safe(
                 chat_run,
                 stream_state,

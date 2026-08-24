@@ -38,11 +38,14 @@ test("web realtime keeps the full detail stream and refreshes durable resources 
   assert.match(chatClient, /mergeRuntimeTimeline\(\s*normalizeRuntimeTimeline\(current\.runtimeTimeline/);
   assert.match(chatClient, /deriveLiveConversationTitle\(messages\)/);
   assert.match(chatClient, /title: liveConversationTitle/);
+  assert.match(chatClient, /updateConversationPresentation\([\s\S]*?\{ title: liveConversationTitle \}[\s\S]*?\{ applyResponse: false \}/);
   assert.ok(
     chatClient.indexOf("title: liveConversationTitle") < chatClient.indexOf("conversationSummaryTimerRef.current = setTimeout"),
     "the first-user-message title must update before the debounced runtime summary",
   );
   assert.match(chatClient, /conversationSummaryTimerRef\.current = setTimeout/);
+  assert.match(chatClient, /const processRefreshIntervalMs = activeConversationRunning \? 1800 : 5000/);
+  assert.match(chatClient, /setInterval\(\(\) => \{[\s\S]*?loadSessionProcesses\(activeConversationId\)[\s\S]*?processRefreshIntervalMs/);
   assert.match(runtimeStage, /\.slice\(0, 1200\)/);
   assert.match(adminStream, /RUNTIME_EVENT_PAGE_LIMIT = 128/);
   assert.match(adminStream, /events\.length >= RUNTIME_EVENT_PAGE_LIMIT \? 0 : 260/);

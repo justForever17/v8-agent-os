@@ -186,8 +186,19 @@ test("Web rejects a delayed terminal event from a previous run", () => {
   assert.equal(shouldApplyRunScopedStatus("run-current", "run-current"), true);
   assert.equal(shouldApplyRunScopedStatus("run-previous", "", true), false);
   assert.match(chatClientSource, /isRunAcceptancePending\(\)/);
-  assert.match(chatClientSource, /getSubmittedRunId\(\) \|\| localSubmittedRunId \|\| projectionRunId/);
+  assert.match(chatClientSource, /getSubmittedRunId\(\) \|\| projectionRunIdRef\.current/);
   assert.match(chatClientSource, /if \(terminalTargetsCurrentRun\) \{[\s\S]*?patchConversationSummary\(conversationId, \{ status: terminalRunStatus \}\)/);
+});
+
+test("session realtime subscription remains stable while the active run identity changes", () => {
+  assert.match(chatClientSource, /const projectionRunIdRef = useRef<string \| undefined>\(projectionRunId\)/);
+  assert.match(chatClientSource, /localRunId: getSubmittedRunId\(\)/);
+  const streamEffectStart = chatClientSource.indexOf('const eventSource = new EventSource(`/api/realtime/sessions/');
+  const streamEffectEnd = chatClientSource.indexOf("useEffect(() => {", streamEffectStart + 1);
+  const streamEffect = chatClientSource.slice(streamEffectStart, streamEffectEnd);
+  assert.ok(streamEffectStart > 0 && streamEffectEnd > streamEffectStart);
+  assert.doesNotMatch(streamEffect, /localSubmittedRunId/);
+  assert.doesNotMatch(streamEffect, /projectionRunId[,\]]/);
 });
 
 test("external active run keeps the composer busy without a local HTTP stream", () => {

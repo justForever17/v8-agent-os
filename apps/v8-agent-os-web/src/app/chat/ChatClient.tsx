@@ -1639,6 +1639,8 @@ export default function ChatClient() {
     );
     const localSubmittedRunId = localConversationLoading ? submittedRunId : null;
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
+    const projectionRunIdRef = useRef<string | undefined>(projectionRunId);
+    projectionRunIdRef.current = projectionRunId;
     const activeConversationRunning = useMemo(() => {
         const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
         return deriveComposerRunActivity({
@@ -1895,11 +1897,17 @@ export default function ChatClient() {
             title: liveConversationTitle,
             lastActivityAt: new Date().toISOString(),
         });
+        void updateConversationPresentation(
+            activeConversationId,
+            { title: liveConversationTitle },
+            { applyResponse: false },
+        );
     }, [
         activeConversationId,
         activeConversationSummary?.title,
         liveConversationTitle,
         patchConversationSummary,
+        updateConversationPresentation,
     ]);
 
     useEffect(() => {
@@ -2769,15 +2777,16 @@ export default function ChatClient() {
         }
 
         applySessionProcessSurface([], { forceClear: true });
+        const processRefreshIntervalMs = activeConversationRunning ? 1800 : 5000;
         void loadSessionProcesses(activeConversationId);
         const timer = window.setInterval(() => {
             void loadSessionProcesses(activeConversationId);
-        }, 1800);
+        }, processRefreshIntervalMs);
 
         return () => {
             window.clearInterval(timer);
         };
-    }, [activeConversationId, applySessionProcessSurface, loadSessionProcesses, status]);
+    }, [activeConversationId, activeConversationRunning, applySessionProcessSurface, loadSessionProcesses, status]);
 
     const buildScopePayload = useCallback((conversationId?: string | null) => ({
         conversationId: conversationId || activeConversationIdRef.current || undefined,
@@ -3244,7 +3253,7 @@ export default function ChatClient() {
                 || readString((normalizedEvent as Record<string, unknown>).runId)
                 || readString(terminalEventData.run_id)
                 || readString(terminalEventData.runId);
-            const currentRunId = getSubmittedRunId() || localSubmittedRunId || projectionRunId;
+            const currentRunId = getSubmittedRunId() || projectionRunIdRef.current;
             const terminalTargetsCurrentRun = shouldApplyRunScopedStatus(
                 terminalRunId,
                 currentRunId,
@@ -3465,7 +3474,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, localSubmittedRunId, patchConversationSummary, projectionRunId, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, getSubmittedRunId, isLocalNdjsonStreamActive, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, patchConversationSummary, removeGovernanceApproval, setMessages, settleTerminalStream, upsertGovernanceApproval, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -3954,7 +3963,7 @@ export default function ChatClient() {
                 const snapshotLatestSeq = Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0);
                 const terminalProjection = nextView && localStreamActive
                     ? deriveMatchingTerminalProjection({
-                        localRunId: getSubmittedRunId() || localSubmittedRunId,
+                        localRunId: getSubmittedRunId(),
                         acceptancePending: isRunAcceptancePending(),
                         runtimeStatus: nextView.runtimeStatus,
                         projectedRunId: nextView.controls?.runId
@@ -4055,7 +4064,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, localSubmittedRunId, settleTerminalStream, status]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, getSubmittedRunId, isLocalStreamActive, isRunAcceptancePending, loadConversationHistory, loadRuns, settleTerminalStream, status]);
 
     useEffect(() => {
         if (!activeConversationId) {

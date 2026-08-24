@@ -8,6 +8,7 @@ import {
     mergeSessionHistoryOverlay,
     normalizeSessionHistoryItem,
     normalizeSessionHistoryList,
+    preserveLiveSessionTitles,
     sortSessionHistory,
 } from "@/lib/session-history";
 import {
@@ -102,7 +103,10 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
                     const data = await res.json();
                     const sessionList = Array.isArray(data) ? data : (data.sessions || []);
                     const normalized = normalizeSessionHistoryList(sessionList);
-                    setConversations((prev) => (isSameConversationList(prev, normalized) ? prev : normalized));
+                    setConversations((prev) => {
+                        const reconciled = preserveLiveSessionTitles(prev, normalized);
+                        return isSameConversationList(prev, reconciled) ? prev : reconciled;
+                    });
                 }
             } catch (error) {
                 console.error("Failed to fetch conversations", error);

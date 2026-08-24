@@ -33,6 +33,7 @@ const {
     buildRuntimeEventDedupeKey,
     buildRuntimeEventDeliveryIdentity,
     RuntimeEventGapRecoveryThrottle,
+    shouldOmitRealtimeRawEnvelope,
     shouldRequestSnapshotForEmptyEventPage,
     shouldDeliverRuntimeEventObservation,
 } = loadTypeScriptModule(sourcePath);
@@ -53,6 +54,14 @@ test("durable event ids take precedence over a shared fallback dedupe key", () =
     dedupeKey: "coarse-progress-key",
     topic: "runtime.episode.progress",
   }), "event:event-progress-b");
+});
+
+test("human realtime omits redundant raw envelopes only for reasoning deltas", () => {
+  assert.equal(shouldOmitRealtimeRawEnvelope({ type: "reasoning_chunk", topic: "run.reasoning.delta" }), true);
+  assert.equal(shouldOmitRealtimeRawEnvelope({ topic: "research.reasoning.delta" }), true);
+  assert.equal(shouldOmitRealtimeRawEnvelope({ topic: "subagent.reasoning.delta" }), true);
+  assert.equal(shouldOmitRealtimeRawEnvelope({ type: "tool_result", topic: "tool.finished" }), false);
+  assert.equal(shouldOmitRealtimeRawEnvelope({ topic: "handoff.ref.created" }), false);
 });
 
 test("progress fallback keeps distinct timeline, tool, and segment identities", () => {

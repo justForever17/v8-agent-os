@@ -521,6 +521,12 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
 
     role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
     message_id = str(getattr(message, "id", None) or uuid.uuid4().hex).strip()
+    additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+    stream_node_ids = (
+        dict(additional_kwargs.get("v8_subagent_stream_node_ids") or {})
+        if isinstance(additional_kwargs.get("v8_subagent_stream_node_ids"), dict)
+        else {}
+    )
     nodes: list[dict[str, Any]] = []
     if role in {"ai", "assistant"}:
         visible_text, reasoning = extract_text_and_reasoning(message)
@@ -528,22 +534,26 @@ def _subagent_timeline_nodes_from_message(message: Any) -> list[dict[str, Any]]:
         if safe_reasoning:
             nodes.append(
                 {
-                    "id": f"{message_id}:reasoning",
+                    "id": str(stream_node_ids.get("analysis") or f"{message_id}:reasoning"),
                     "kind": "execution",
                     "executionType": "reasoning",
                     "topic": "subagent.reasoning.delta",
                     "content": safe_reasoning,
+                    "finalized": True,
+                    "partial": False,
                 }
             )
         safe_text = str(_sanitize_subagent_timeline_value(visible_text) or "").strip()
         if safe_text:
             nodes.append(
                 {
-                    "id": f"{message_id}:text",
+                    "id": str(stream_node_ids.get("text") or f"{message_id}:text"),
                     "kind": "narrative",
                     "role": "assistant",
                     "topic": "subagent.text.delta",
                     "content": safe_text,
+                    "finalized": True,
+                    "partial": False,
                 }
             )
         for ordinal, call in enumerate(_tool_call_dicts_from_message(message)):
@@ -2421,6 +2431,7 @@ async def _run_parallel_agent_branch(
     artifact_stall_rounds = 0
     artifact_stall_limit = 80
     last_progress_node = ""
+    model_turn_index = 0
     _publish_parallel_progress(
         progress_callback,
         stage="started",
@@ -2454,6 +2465,14 @@ async def _run_parallel_agent_branch(
             )
         if current_node == agent_id:
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
+            model_turn_index += 1
+            runtime_context.update(
+                {
+                    "subagent_stream_progress_callback": progress_callback,
+                    "subagent_model_turn": model_turn_index,
+                    "subagent_display_name": branch.get("agentName") or agent_id,
+                }
+            )
 
             def _invoke_agent_node() -> Any:
                 with bind_runtime_context(**runtime_context):
@@ -2478,6 +2497,14 @@ async def _run_parallel_agent_branch(
             if reviewer is None:
                 raise RuntimeError(f"{agent_id} 没有可用的 reviewer 节点。")
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
+            model_turn_index += 1
+            runtime_context.update(
+                {
+                    "subagent_stream_progress_callback": progress_callback,
+                    "subagent_model_turn": model_turn_index,
+                    "subagent_display_name": f"{branch.get('agentName') or agent_id} Reviewer",
+                }
+            )
 
             def _invoke_reviewer_node() -> Any:
                 with bind_runtime_context(**runtime_context):
@@ -3412,7 +3439,13 @@ def build_parallel_delegate_task_node(
             status = str(progress.get("status") or "running").strip().lower()
             timeline_node = progress.get("timelineNode") if isinstance(progress.get("timelineNode"), dict) else None
             timeline_identity = str((timeline_node or {}).get("id") or (timeline_node or {}).get("toolCallId") or "")
-            fingerprint = (f"{stage}:{timeline_identity}", status)
+            timeline_revision = str(
+                (timeline_node or {}).get("streamSequence")
+                or (timeline_node or {}).get("finalized")
+                or len(str((timeline_node or {}).get("content") or ""))
+                or ""
+            )
+            fingerprint = (f"{stage}:{timeline_identity}:{timeline_revision}", status)
             if fingerprint in emitted_progress:
                 return
             emitted_progress.add(fingerprint)

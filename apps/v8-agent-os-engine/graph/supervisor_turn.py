@@ -749,6 +749,17 @@ def _authoritative_runtime_route_kinds(state, user_query: str = "") -> list[str]
         return ["engineering"]
     if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
         return ["engineering"]
+    engineering_trigger = (
+        dict(route_context.get("engineeringTriggerDecision") or {})
+        if isinstance(route_context.get("engineeringTriggerDecision"), dict)
+        else {}
+    )
+    if (
+        selected_runtime_mode == "auto"
+        and bool(engineering_trigger.get("active"))
+        and not bool(engineering_trigger.get("deferred"))
+    ):
+        return ["engineering"]
     return []
 
 
@@ -1021,7 +1032,15 @@ def _should_use_runtime_route_compiler(
     if bool(route_context.get("canvasSupervisorDirect")):
         return False
     required_kind = pending_required_runtime_kinds[0]
-    if _selected_supervisor_runtime_mode(state) != required_kind:
+    selected_mode_matches = _selected_supervisor_runtime_mode(state) == required_kind
+    engineering_trigger = dict(route_context.get("engineeringTriggerDecision") or {})
+    governed_inferred_match = bool(
+        required_kind == "engineering"
+        and _selected_supervisor_runtime_mode(state) == "auto"
+        and engineering_trigger.get("active")
+        and not engineering_trigger.get("deferred")
+    )
+    if not selected_mode_matches and not governed_inferred_match:
         return False
     gate_status = str(getattr(gate_decision, "status", "clean") or "clean").strip().lower()
     if gate_status == "clean":
@@ -3008,6 +3027,25 @@ def execute_supervisor_turn(
     )
     explicit_coordination_send = _looks_like_session_coordination_request(user_query, session_id)
     current_route_context = dict(state.get("current_route_context") or {})
+    engineering_trigger = dict(current_route_context.get("engineeringTriggerDecision") or {})
+    selected_runtime_mode = _selected_supervisor_runtime_mode(state)
+    runtime_intent_source = (
+        "selected_runtime_mode"
+        if required_orchestration_kind and selected_runtime_mode == required_orchestration_kind
+        else "engineering_trigger_decision"
+        if (
+            required_orchestration_kind == "engineering"
+            and engineering_trigger.get("active")
+            and not engineering_trigger.get("deferred")
+        )
+        else "engineering_required"
+        if required_orchestration_kind == "engineering" and current_route_context.get("engineeringRequired")
+        else "explicit_user_orchestration"
+        if explicit_runtime_kinds
+        else "authoritative_runtime_contract"
+        if authoritative_runtime_kinds
+        else "none"
+    )
     route_context_token = extensions_runtime_service.bind_execution_context(
         session_id=session_id,
         conversation_id=session_id,
@@ -3056,11 +3094,7 @@ def execute_supervisor_turn(
             route_duration_ms = 0.0
         elif pending_required_runtime_kinds:
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
-            route_bundle.candidate_summary["reason"] = (
-                "authoritative_runtime_route_uses_narrow_tool_surface"
-                if authoritative_runtime_kinds
-                else "explicit_runtime_orchestration_uses_narrow_tool_surface"
-            )
+            route_bundle.candidate_summary["reason"] = f"{runtime_intent_source}_uses_narrow_tool_surface"
             route_duration_ms = 0.0
         elif _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
@@ -3188,6 +3222,7 @@ def execute_supervisor_turn(
                     "scope": current_scope,
                     "sessionId": session_id,
                     "promptProfile": "deterministic_runtime_route",
+                    "runtimeIntentSource": runtime_intent_source,
                     "modelInvocationRequired": False,
                     "deterministicRuntimeRoute": dict(direct_marker),
                     "runtimeReflex": reflex_decision.as_dict(),
@@ -3293,7 +3328,7 @@ def execute_supervisor_turn(
             passive_rag_duration_ms = 0.0
             passive_rag_diagnostics = {
                 "injection_allowed": False,
-                "reject_reason": "explicit_runtime_route_compiler_uses_current_request_only",
+                "reject_reason": "governed_runtime_route_compiler_uses_current_request_only",
                 "promptProfile": "runtime_route_compiler",
             }
         elif session_coordination or explicit_coordination_send:
@@ -3426,6 +3461,7 @@ def execute_supervisor_turn(
                     if use_runtime_route_compiler
                     else "full_supervisor"
                 ),
+                "runtimeIntentSource": runtime_intent_source,
                 "modelInvocationRequired": True,
                 "runtimeReflex": reflex_decision.as_dict(),
                 "runtimeGate": gate_decision.as_dict(),

@@ -188,13 +188,15 @@ def _run_provider_cell(target: dict[str, Any], model: dict[str, Any]) -> dict[st
             run_id=run_id,
             agent_id="prompt_cache_streaming_live_matrix",
         ):
-            model_instance = llm_factory.create_chat_model(
-                model_ref,
-                streaming=True,
-                temperature=0,
-                max_tokens=64,
-                _role="prompt_cache_streaming_live",
-            )
+            model_kwargs: dict[str, Any] = {
+                "streaming": True,
+                "temperature": 0,
+                "_role": "prompt_cache_streaming_live",
+            }
+            configured_limit = llm_factory.get_model_max_output_tokens(model_ref)
+            if configured_limit:
+                model_kwargs["max_tokens"] = int(configured_limit)
+            model_instance = llm_factory.create_chat_model(model_ref, **model_kwargs)
             for chunk in model_instance.stream(_build_live_messages(target["id"])):
                 text = _chunk_text(chunk)
                 if text:

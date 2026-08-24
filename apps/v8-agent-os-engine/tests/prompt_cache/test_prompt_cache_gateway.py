@@ -12,7 +12,7 @@ from core import prompt_cache_gateway as gateway_module
 from core import model_telemetry as telemetry_module
 from core.native_tools import grep_search
 from core.observability_db import ObservabilityDatabaseManager
-from core.model_telemetry import ModelTelemetryCallback, _find_cached_input_tokens
+from core.model_telemetry import ModelTelemetryCallback, _find_cached_input_tokens, _public_invocation_record
 from core.prompt_cache_gateway import PromptCacheGateway, load_prompt_cache_profiles, prompt_cache_profile_for_provider
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 
@@ -365,3 +365,116 @@ def test_streaming_prompt_cache_diagnostics_are_accumulated(monkeypatch):
     metadata = fake_db.invocations[0]["metadata"]
     assert metadata["promptCache"]["eventId"] == "evt-stream"
     assert metadata["promptCache"]["skipReason"] == "streaming_request"
+
+
+def test_streaming_telemetry_records_provider_chunk_timing_usage_and_finish_reason(monkeypatch):
+    class FakeTelemetryDb:
+        def __init__(self) -> None:
+            self.invocations: list[dict] = []
+
+        def add_model_invocation_log(self, record: dict) -> None:
+            self.invocations.append(dict(record))
+
+        def upsert_usage_ledger(self, record: dict) -> None:
+            pass
+
+        def add_provider_health_log(self, record: dict) -> None:
+            pass
+
+    ticks = iter([10.0, 10.125, 10.425, 10.5])
+    monkeypatch.setattr(telemetry_module.time, "perf_counter", lambda: next(ticks))
+    fake_db = FakeTelemetryDb()
+    monkeypatch.setattr(telemetry_module, "db", fake_db)
+    callback = ModelTelemetryCallback(
+        model_id="fake-stream",
+        provider_id="compatible",
+        provider_name="Compatible",
+        role="supervisor",
+        is_streaming=True,
+        requested_max_tokens=4096,
+        stream_usage_requested=True,
+    )
+    run_id = uuid.uuid4()
+    callback.on_chat_model_start({}, [[SystemMessage(content="stable")]], run_id=run_id)
+    callback.on_llm_new_token("a", run_id=run_id, chunk=AIMessageChunk(content="a"))
+    callback.on_llm_new_token(
+        "bc",
+        run_id=run_id,
+        chunk=AIMessageChunk(
+            content="bc",
+            response_metadata={"finish_reason": "length", "service_tier": "default"},
+        ),
+    )
+    callback.on_llm_end(
+        LLMResult(
+            generations=[[ChatGeneration(message=AIMessage(content="abc"))]],
+            llm_output={
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3,
+                    "total_tokens": 15,
+                },
+                "finish_reason": "stop",
+            },
+        ),
+        run_id=run_id,
+    )
+
+    invocation = fake_db.invocations[0]
+    metadata = invocation["metadata"]
+    assert invocation["input_tokens"] == 12
+    assert invocation["output_tokens"] == 3
+    assert metadata["usageReported"] is True
+    assert metadata["usageSource"] == "llm_output.usage"
+    assert metadata["finishReason"] == "stop"
+    assert metadata["serviceTier"] == "default"
+    assert metadata["timeToFirstChunkMs"] == 125.0
+    assert metadata["timeToFirstContentChunkMs"] == 125.0
+    assert metadata["streamChunkCount"] == 2
+    assert metadata["streamChunkCharCount"] == 3
+    assert metadata["maxInterChunkGapMs"] == 300.0
+    assert metadata["streamActiveMs"] == 300.0
+    assert metadata["tailAfterLastChunkMs"] == 75.0
+    assert metadata["requestedMaxTokens"] == 4096
+    assert metadata["streamUsageRequested"] is True
+    public = _public_invocation_record(fake_db.invocations[0], prefix_use_counts={})
+    assert public["telemetry"]["timeToFirstChunkMs"] == 125.0
+    assert public["telemetry"]["finishReason"] == "stop"
+    assert public["telemetry"]["usageReported"] is True
+
+
+def test_generic_llm_callback_contract_keeps_stream_timing(monkeypatch):
+    class FakeTelemetryDb:
+        def __init__(self) -> None:
+            self.invocations: list[dict] = []
+
+        def add_model_invocation_log(self, record: dict) -> None:
+            self.invocations.append(dict(record))
+
+        def upsert_usage_ledger(self, record: dict) -> None:
+            pass
+
+        def add_provider_health_log(self, record: dict) -> None:
+            pass
+
+    ticks = iter([20.0, 20.25, 20.5])
+    monkeypatch.setattr(telemetry_module.time, "perf_counter", lambda: next(ticks))
+    fake_db = FakeTelemetryDb()
+    monkeypatch.setattr(telemetry_module, "db", fake_db)
+    callback = ModelTelemetryCallback(
+        model_id="generic-llm",
+        provider_id="compatible",
+        provider_name="Compatible",
+        is_streaming=True,
+    )
+    run_id = uuid.uuid4()
+    callback.on_llm_start({}, ["prompt"], run_id=run_id)
+    callback.on_llm_new_token("ok", run_id=run_id, chunk=AIMessageChunk(content="ok"))
+    callback.on_llm_end(
+        LLMResult(generations=[[ChatGeneration(message=AIMessage(content="ok"))]], llm_output={}),
+        run_id=run_id,
+    )
+    metadata = fake_db.invocations[0]["metadata"]
+    assert metadata["streamChunkCount"] == 1
+    assert metadata["timeToFirstChunkMs"] == 250.0
+    assert metadata["timeToFirstContentChunkMs"] == 250.0

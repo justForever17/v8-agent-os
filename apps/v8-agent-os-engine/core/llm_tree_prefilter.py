@@ -5,12 +5,17 @@ import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.background_model_output import sanitize_background_model_output
+from core.background_model_timeout import (
+    BackgroundModelTimeoutError,
+    invoke_background_model_with_timeout,
+    run_cancellable_background_call,
+)
 from core.llm_factory import llm_factory
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
@@ -89,9 +94,20 @@ def _write_prefilter_cache(cache_key: str, *, selected_keys: list[str], state: d
     return list(normalized_keys), dict(normalized_state)
 
 
-def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    model = llm_factory.create_for_role(role, streaming=False, temperature=0)
-    response = model.invoke(
+def _invoke_prefilter_model(
+    *,
+    role: str,
+    prompt_payload: str,
+    timeout_seconds: float,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    model = llm_factory.create_for_role(
+        role,
+        streaming=False,
+        temperature=0,
+        timeout=timeout_seconds,
+    )
+    response = invoke_background_model_with_timeout(
+        model,
         [
             SystemMessage(
                 content=(
@@ -107,6 +123,7 @@ def _invoke_prefilter_model(*, role: str, prompt_payload: str) -> tuple[str, dic
             ),
             HumanMessage(content=prompt_payload),
         ],
+        timeout_seconds=timeout_seconds,
         config={"callbacks": []},
     )
     sanitized = sanitize_background_model_output(response)
@@ -210,12 +227,16 @@ def select_family_keys_with_llm(
     started_at = time.perf_counter()
     timeout_budget = max(float(timeout_seconds or _PREFILTER_TIMEOUT_SECONDS), 0.05)
     try:
-        raw_response, payload, sanitizer_diagnostics = _PREFILTER_EXECUTOR.submit(
-            _invoke_prefilter_model,
-            role=role,
-            prompt_payload=prompt_payload,
-        ).result(timeout=timeout_budget)
-    except FuturesTimeoutError:
+        raw_response, payload, sanitizer_diagnostics = run_cancellable_background_call(
+            _PREFILTER_EXECUTOR,
+            lambda: _invoke_prefilter_model(
+                role=role,
+                prompt_payload=prompt_payload,
+                timeout_seconds=timeout_budget,
+            ),
+            timeout_seconds=timeout_budget,
+        )
+    except BackgroundModelTimeoutError as exc:
         duration_ms = max(0, int((time.perf_counter() - started_at) * 1000))
         return _write_prefilter_cache(
             cache_key,
@@ -227,6 +248,7 @@ def select_family_keys_with_llm(
                 "timedOut": True,
                 "cacheHit": False,
                 "durationMs": duration_ms,
+                **exc.diagnostics(),
             },
         )
     except Exception as exc:

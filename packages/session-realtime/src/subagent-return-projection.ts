@@ -296,9 +296,8 @@ function addActivityEvent(
 ) {
   const eventSeq = eventSeqOf(node, fallbackIndex);
   const eventId = deterministicEventId(node, topic, item.delegationId || item.id, eventSeq);
-  if (item.events.some((event) => event.eventId === eventId)) return;
   const timestamp = eventTimestampOf(node, eventSeq);
-  item.events.push({
+  const projectedEvent: SubagentActivityEvent = {
     eventId,
     eventSeq,
     ownerMessageId: text(node.ownerMessageId || mergedPayload(node).ownerMessageId || mergedPayload(node).message_id) || null,
@@ -316,7 +315,13 @@ function addActivityEvent(
       ownerAgentKind: "subagent",
       ownerAgentId: item.name,
     },
-  });
+  };
+  const existingIndex = item.events.findIndex((event) => event.eventId === eventId);
+  if (existingIndex >= 0) {
+    item.events[existingIndex] = projectedEvent;
+  } else {
+    item.events.push(projectedEvent);
+  }
   item.timestamp = Math.max(item.timestamp, timestamp);
 }
 
@@ -528,10 +533,14 @@ export function buildSubagentReturnProjection(
       if (Object.keys(timelineNode).length) {
         const embeddedTopic = text(timelineNode.topic).toLowerCase();
         if (embeddedTopic) {
+          const stableStreamEventId = (
+            embeddedTopic === "subagent.reasoning.delta"
+            || embeddedTopic === "subagent.text.delta"
+          ) ? text(timelineNode.id) : "";
           activityFromNode(item, {
             ...timelineNode,
             id: text(timelineNode.id) || `${text(node.id || node.eventId)}:timeline`,
-            eventId: text(node.eventId || node.id),
+            eventId: stableStreamEventId || text(node.eventId || node.id),
             eventSeq: numberValue(node.eventSeq, index + 1),
             timestamp: numberValue(node.timestamp, index + 1),
             ownerMessageId: node.ownerMessageId,

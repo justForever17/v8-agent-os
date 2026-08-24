@@ -10,6 +10,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
 from core.database import db
+from core.response_normalizer import extract_text_and_reasoning
 from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 
@@ -58,38 +59,91 @@ def _extract_usage_from_mapping(payload: Mapping[str, Any]) -> Dict[str, int]:
     }
 
 
-def extract_token_usage(response: Any) -> Dict[str, int]:
-    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+_USAGE_FIELD_KEYS = {
+    "prompt_tokens",
+    "input_tokens",
+    "inputTokenCount",
+    "prompt_token_count",
+    "completion_tokens",
+    "output_tokens",
+    "candidates_token_count",
+    "outputTokenCount",
+    "total_tokens",
+    "totalTokenCount",
+    "total_token_count",
+}
+
+
+def _usage_from_mapping_tree(
+    payload: Mapping[str, Any],
+    *,
+    source: str,
+    depth: int = 0,
+) -> tuple[Dict[str, int], str, bool]:
+    direct_reported = any(key in payload for key in _USAGE_FIELD_KEYS)
+    best = _extract_usage_from_mapping(payload)
+    best_source = source if direct_reported else ""
+    reported = direct_reported
+    if depth >= 5:
+        return best, best_source, reported
+    for key, value in payload.items():
+        if not isinstance(value, Mapping):
+            continue
+        nested, nested_source, nested_reported = _usage_from_mapping_tree(
+            value,
+            source=f"{source}.{key}" if source else str(key),
+            depth=depth + 1,
+        )
+        reported = reported or nested_reported
+        if nested["total_tokens"] > best["total_tokens"]:
+            best = nested
+            best_source = nested_source
+        elif not best_source and nested_reported:
+            best_source = nested_source
+    return best, best_source, reported
+
+
+def extract_token_usage_details(response: Any) -> tuple[Dict[str, int], str, bool]:
+    candidates: list[tuple[Dict[str, int], str, bool]] = []
     llm_output = getattr(response, "llm_output", None)
     if isinstance(llm_output, Mapping):
-        for key in ("token_usage", "usage", "usage_metadata"):
-            payload = llm_output.get(key)
-            if isinstance(payload, Mapping):
-                usage = _extract_usage_from_mapping(payload)
-                if usage["total_tokens"]:
-                    return usage
+        candidates.append(_usage_from_mapping_tree(llm_output, source="llm_output"))
+    for label, candidate in (
+        ("response.usage_metadata", getattr(response, "usage_metadata", None)),
+        ("response.response_metadata", getattr(response, "response_metadata", None)),
+    ):
+        if isinstance(candidate, Mapping):
+            candidates.append(_usage_from_mapping_tree(candidate, source=label))
 
     generations = getattr(response, "generations", None) or []
-    for generation_group in generations:
-        if not isinstance(generation_group, list):
+    for group_index, generation_group in enumerate(generations):
+        if not isinstance(generation_group, (list, tuple)):
             continue
-        for generation in generation_group:
+        for generation_index, generation in enumerate(generation_group):
             message = getattr(generation, "message", None)
-            for candidate in (
-                getattr(message, "usage_metadata", None),
-                getattr(message, "response_metadata", None),
-                getattr(generation, "generation_info", None),
+            for label, candidate in (
+                ("message.usage_metadata", getattr(message, "usage_metadata", None)),
+                ("message.response_metadata", getattr(message, "response_metadata", None)),
+                ("generation.generation_info", getattr(generation, "generation_info", None)),
             ):
                 if isinstance(candidate, Mapping):
-                    usage = _extract_usage_from_mapping(candidate)
-                    if usage["total_tokens"]:
-                        return usage
-                    nested = candidate.get("usage_metadata") or candidate.get("token_usage") or candidate.get("usage")
-                    if isinstance(nested, Mapping):
-                        usage = _extract_usage_from_mapping(nested)
-                        if usage["total_tokens"]:
-                            return usage
+                    candidates.append(
+                        _usage_from_mapping_tree(
+                            candidate,
+                            source=f"generations[{group_index}][{generation_index}].{label}",
+                        )
+                    )
 
+    if not candidates:
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "", False
+    usage, source, reported = max(candidates, key=lambda item: item[0]["total_tokens"])
+    if not source:
+        source = next((item[1] for item in candidates if item[2] and item[1]), "")
+    return usage, source, any(item[2] for item in candidates)
+
+
+def extract_token_usage(response: Any) -> Dict[str, int]:
+    usage, _source, _reported = extract_token_usage_details(response)
     return usage
 
 
@@ -228,8 +282,31 @@ def _public_invocation_record(item: Mapping[str, Any], *, prefix_use_counts: Map
         "started_at": item.get("started_at"),
         "role": item.get("role"),
     }
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+    telemetry_keys = (
+        "timeToFirstChunkMs",
+        "timeToFirstContentChunkMs",
+        "streamChunkCount",
+        "streamChunkCharCount",
+        "maxInterChunkGapMs",
+        "streamActiveMs",
+        "tailAfterLastChunkMs",
+        "usageReported",
+        "usageSource",
+        "finishReason",
+        "serviceTier",
+        "requestedMaxTokens",
+        "streamUsageRequested",
+    )
+    telemetry = {
+        key: metadata.get(key)
+        for key in telemetry_keys
+        if metadata.get(key) not in (None, "")
+    }
+    if telemetry:
+        public["telemetry"] = telemetry
     prompt_cache = _public_prompt_cache_summary(
-        item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {},
+        metadata,
         prefix_use_counts=prefix_use_counts,
         input_tokens=input_tokens,
     )
@@ -256,6 +333,14 @@ def _runtime_diagnostics_from_mapping(payload: Mapping[str, Any]) -> Dict[str, A
         diagnostics["promptCache"] = _normalize_prompt_cache_payload(payload.get("v8_prompt_cache"))
     if payload.get("promptCache"):
         diagnostics.setdefault("promptCache", _normalize_prompt_cache_payload(payload.get("promptCache")))
+    for key in ("finish_reason", "finishReason", "stop_reason", "stopReason"):
+        if payload.get(key) not in (None, ""):
+            diagnostics["finishReason"] = str(payload.get(key))[:120]
+            break
+    for key in ("service_tier", "serviceTier"):
+        if payload.get(key) not in (None, ""):
+            diagnostics["serviceTier"] = str(payload.get(key))[:120]
+            break
     return diagnostics
 
 
@@ -283,6 +368,10 @@ def _merge_runtime_diagnostics(base: Dict[str, Any], update: Mapping[str, Any] |
                     continue
                 existing[nested_key] = nested_value
             base["promptCache"] = existing
+        elif key in {"finishReason", "serviceTier"}:
+            # Provider chunks may expose a provisional value before the
+            # terminal response carries the authoritative reason/tier.
+            base[key] = value
         elif key not in base:
             base[key] = value
     return base
@@ -311,6 +400,7 @@ def _extract_runtime_diagnostics_from_any(value: Any) -> Dict[str, Any]:
 
 def extract_runtime_diagnostics(response: Any) -> Dict[str, Any]:
     diagnostics: Dict[str, Any] = {}
+    _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(response))
     llm_output = getattr(response, "llm_output", None)
     if isinstance(llm_output, Mapping):
         _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(llm_output))
@@ -351,6 +441,12 @@ class _InvocationStart:
     started_at_iso: str
     context: Dict[str, Any]
     message_batches: int
+    first_chunk_at: float | None = None
+    first_content_chunk_at: float | None = None
+    last_chunk_at: float | None = None
+    chunk_count: int = 0
+    chunk_char_count: int = 0
+    max_inter_chunk_gap_ms: float = 0.0
 
 
 class ModelTelemetryCallback(BaseCallbackHandler):
@@ -374,6 +470,8 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         tool_calling_mode: str = "",
         structured_output_mode: str = "",
         stream_mode: str = "",
+        requested_max_tokens: int = 0,
+        stream_usage_requested: bool = False,
     ):
         self.model_id = model_id
         self.provider_id = provider_id
@@ -389,12 +487,25 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         self.tool_calling_mode = tool_calling_mode
         self.structured_output_mode = structured_output_mode
         self.stream_mode = stream_mode
+        self.requested_max_tokens = max(0, _safe_int(requested_max_tokens))
+        self.stream_usage_requested = bool(stream_usage_requested)
         self._starts: Dict[str, _InvocationStart] = {}
         self._streaming_diagnostics: Dict[str, Dict[str, Any]] = {}
 
     @property
     def ignore_chat_model(self) -> bool:
         return False
+
+    def _record_start(self, run_id: Any, message_batches: int) -> None:
+        key = str(run_id)
+        if key in self._starts:
+            return
+        self._starts[key] = _InvocationStart(
+            started_at=time.perf_counter(),
+            started_at_iso=_utc_now(),
+            context=get_runtime_context(),
+            message_batches=max(int(message_batches or 0), 0),
+        )
 
     def on_chat_model_start(
         self,
@@ -407,12 +518,23 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         metadata=None,
         **kwargs: Any,
     ) -> None:
-        self._starts[str(run_id)] = _InvocationStart(
-            started_at=time.perf_counter(),
-            started_at_iso=_utc_now(),
-            context=get_runtime_context(),
-            message_batches=sum(len(batch) for batch in messages or []),
-        )
+        self._record_start(run_id, sum(len(batch) for batch in messages or []))
+
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        *,
+        run_id,
+        parent_run_id=None,
+        tags=None,
+        metadata=None,
+        **kwargs: Any,
+    ) -> None:
+        # Some compatible adapters expose the generic LLM callback contract
+        # instead of the chat-model contract. Keep the same timing truth for
+        # both surfaces without resetting a chat start event for one run.
+        self._record_start(run_id, len(prompts or []))
 
     def on_llm_end(
         self,
@@ -425,12 +547,17 @@ class ModelTelemetryCallback(BaseCallbackHandler):
     ) -> None:
         start = self._starts.pop(str(run_id), None)
         ctx = start.context if start else get_runtime_context()
-        usage = extract_token_usage(response)
+        usage, usage_source, usage_reported = extract_token_usage_details(response)
         runtime_diagnostics = extract_runtime_diagnostics(response)
         stream_diagnostics = self._streaming_diagnostics.pop(str(run_id), {})
         if stream_diagnostics:
-            _merge_runtime_diagnostics(runtime_diagnostics, stream_diagnostics)
-        latency_ms = (time.perf_counter() - start.started_at) * 1000 if start else 0.0
+            merged_diagnostics = dict(stream_diagnostics)
+            # The terminal LLMResult is authoritative for finish reason and
+            # service tier; retain stream-only diagnostics alongside it.
+            _merge_runtime_diagnostics(merged_diagnostics, runtime_diagnostics)
+            runtime_diagnostics = merged_diagnostics
+        finished_at = time.perf_counter()
+        latency_ms = (finished_at - start.started_at) * 1000 if start else 0.0
         cost_input = _estimate_cost(usage["input_tokens"], self.cost_per_input)
         cost_output = _estimate_cost(usage["output_tokens"], self.cost_per_output)
         cost_total = cost_input + cost_output
@@ -456,6 +583,13 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "streamMode": runtime_diagnostics.get("streamMode") or self.stream_mode,
                 "toolCallCount": runtime_diagnostics.get("toolCallCount", 0),
                 "promptCache": runtime_diagnostics.get("promptCache") or {},
+                "finishReason": runtime_diagnostics.get("finishReason") or "",
+                "serviceTier": runtime_diagnostics.get("serviceTier") or "",
+                "usageReported": usage_reported,
+                "usageSource": usage_source,
+                "requestedMaxTokens": self.requested_max_tokens,
+                "streamUsageRequested": self.stream_usage_requested,
+                **self._stream_timing_metadata(start, finished_at),
             },
         )
 
@@ -469,9 +603,10 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         start = self._starts.pop(str(run_id), None)
-        self._streaming_diagnostics.pop(str(run_id), None)
+        stream_diagnostics = self._streaming_diagnostics.pop(str(run_id), {})
         ctx = start.context if start else get_runtime_context()
-        latency_ms = (time.perf_counter() - start.started_at) * 1000 if start else 0.0
+        finished_at = time.perf_counter()
+        latency_ms = (finished_at - start.started_at) * 1000 if start else 0.0
         self._record_invocation(
             ctx=ctx,
             status="failed",
@@ -491,6 +626,13 @@ class ModelTelemetryCallback(BaseCallbackHandler):
                 "toolCallingMode": self.tool_calling_mode,
                 "structuredOutputMode": self.structured_output_mode,
                 "streamMode": self.stream_mode,
+                "finishReason": stream_diagnostics.get("finishReason") or "",
+                "serviceTier": stream_diagnostics.get("serviceTier") or "",
+                "usageReported": False,
+                "usageSource": "",
+                "requestedMaxTokens": self.requested_max_tokens,
+                "streamUsageRequested": self.stream_usage_requested,
+                **self._stream_timing_metadata(start, finished_at),
             },
         )
 
@@ -503,16 +645,60 @@ class ModelTelemetryCallback(BaseCallbackHandler):
         chunk=None,
         **kwargs: Any,
     ) -> None:
+        run_key = str(run_id)
+        start = self._starts.get(run_key)
+        now = time.perf_counter()
+        if start is not None:
+            if start.first_chunk_at is None:
+                start.first_chunk_at = now
+            if start.last_chunk_at is not None:
+                start.max_inter_chunk_gap_ms = max(
+                    start.max_inter_chunk_gap_ms,
+                    (now - start.last_chunk_at) * 1000,
+                )
+            start.last_chunk_at = now
+            start.chunk_count += 1
+            text, reasoning = extract_text_and_reasoning(chunk)
+            visible_chars = max(len(str(token or "")), len(text) + len(reasoning))
+            start.chunk_char_count += visible_chars
+            if visible_chars > 0 and start.first_content_chunk_at is None:
+                start.first_content_chunk_at = now
         diagnostics = _extract_runtime_diagnostics_from_any(chunk)
         for candidate_key in ("generation_info", "generationInfo", "response_metadata", "responseMetadata", "llm_output", "llmOutput"):
             candidate = kwargs.get(candidate_key)
             if isinstance(candidate, Mapping):
                 _merge_runtime_diagnostics(diagnostics, _extract_runtime_diagnostics_from_any(candidate))
-        if not diagnostics:
-            return
-        run_key = str(run_id)
-        existing = self._streaming_diagnostics.setdefault(run_key, {})
-        _merge_runtime_diagnostics(existing, diagnostics)
+        if diagnostics:
+            existing = self._streaming_diagnostics.setdefault(run_key, {})
+            _merge_runtime_diagnostics(existing, diagnostics)
+
+    @staticmethod
+    def _stream_timing_metadata(
+        start: _InvocationStart | None,
+        finished_at: float,
+    ) -> Dict[str, Any]:
+        if start is None:
+            return {
+                "timeToFirstChunkMs": None,
+                "timeToFirstContentChunkMs": None,
+                "streamChunkCount": 0,
+                "streamChunkCharCount": 0,
+                "maxInterChunkGapMs": 0.0,
+                "streamActiveMs": 0.0,
+                "tailAfterLastChunkMs": None,
+            }
+        first_chunk = start.first_chunk_at
+        first_content = start.first_content_chunk_at
+        last_chunk = start.last_chunk_at
+        return {
+            "timeToFirstChunkMs": round((first_chunk - start.started_at) * 1000, 2) if first_chunk is not None else None,
+            "timeToFirstContentChunkMs": round((first_content - start.started_at) * 1000, 2) if first_content is not None else None,
+            "streamChunkCount": start.chunk_count,
+            "streamChunkCharCount": start.chunk_char_count,
+            "maxInterChunkGapMs": round(start.max_inter_chunk_gap_ms, 2),
+            "streamActiveMs": round((last_chunk - first_chunk) * 1000, 2) if first_chunk is not None and last_chunk is not None else 0.0,
+            "tailAfterLastChunkMs": round((finished_at - last_chunk) * 1000, 2) if last_chunk is not None else None,
+        }
 
     def _record_invocation(
         self,
@@ -617,6 +803,8 @@ class ModelTelemetryService:
         tool_calling_mode: str = "",
         structured_output_mode: str = "",
         stream_mode: str = "",
+        requested_max_tokens: int = 0,
+        stream_usage_requested: bool = False,
     ) -> ModelTelemetryCallback:
         return ModelTelemetryCallback(
             model_id=model_id,
@@ -633,6 +821,8 @@ class ModelTelemetryService:
             tool_calling_mode=tool_calling_mode,
             structured_output_mode=structured_output_mode,
             stream_mode=stream_mode,
+            requested_max_tokens=requested_max_tokens,
+            stream_usage_requested=stream_usage_requested,
         )
 
     def record_aux_model_invocation(

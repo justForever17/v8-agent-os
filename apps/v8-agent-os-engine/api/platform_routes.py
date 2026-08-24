@@ -2063,7 +2063,15 @@ async def connect_model_provider(data: dict = Body(...)):
         safe_existing_provider = {
             key: value
             for key, value in existing_provider.items()
-            if key not in {"api_key", "credentialRef", "credentialSource"}
+            if key not in {
+                "api_key",
+                "credentialRef",
+                "credentialSource",
+                # These are runtime-derived projections. They must not make
+                # an otherwise exact provider target look like a user patch.
+                "credentialStatus",
+                "reasoningSurface",
+            }
         }
         plan = build_catalog_model_connection_plan(
             provider=provider,

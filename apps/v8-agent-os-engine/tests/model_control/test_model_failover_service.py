@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 from core.model_control_plane import model_control_plane
 from core.model_failover_service import ModelFailoverService
@@ -42,6 +43,17 @@ class FakeLLM:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+
+class FakeStreamingLLM(FakeLLM):
+    def __init__(self, *chunks: AIMessageChunk):
+        super().__init__()
+        self.chunks = list(chunks)
+
+    def stream(self, _messages, config=None):
+        self.calls += 1
+        self.invocation_configs.append(config)
+        yield from self.chunks
 
 
 def _config(**governance_overrides: Any) -> dict[str, Any]:
@@ -232,6 +244,32 @@ def test_invocation_config_is_forwarded_to_callback_events(monkeypatch: pytest.M
 
     assert result == "ok"
     assert primary.invocation_configs == [invocation_config]
+
+
+def test_stream_observer_receives_chunks_and_failover_returns_aggregated_message(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeStreamingLLM(
+        AIMessageChunk(content="first "),
+        AIMessageChunk(content="second"),
+    )
+    observed: list[str] = []
+
+    result = service.invoke_with_failover(
+        config=_config(maxTotalAttempts=1, maxFailoverSeconds=30),
+        base_llm_instance=primary,
+        messages=[],
+        tools=None,
+        role="agent:worker-one",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _model_id: FakeLLM("unused"),
+        invocation_config={"metadata": {"v8_owner_runtime_kind": "subagent"}},
+        stream_observer=lambda chunk: observed.append(str(chunk.content)),
+    )
+
+    assert result.content == "first second"
+    assert observed == ["first ", "second"]
+    assert primary.calls == 1
 
 
 def test_required_tool_choice_is_forwarded_to_every_failover_candidate(monkeypatch: pytest.MonkeyPatch):

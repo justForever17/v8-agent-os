@@ -1101,6 +1101,12 @@ class LLMFactory:
             if key not in {"temperature", "max_tokens", "base_url", "api_key", "model", "model_kwargs", "timeout"}:
                 final_kwargs[key] = value
 
+        capabilities = dict(meta.get("capabilities") or {})
+        if bool(kwargs.get("streaming")) and bool(
+            capabilities.get("streamUsage") or capabilities.get("supportsStreamUsage")
+        ):
+            final_kwargs.setdefault("stream_usage", True)
+
         final_kwargs = merge_model_request_patch(final_kwargs, no_think_request_patch(meta.get("thinking_control")))
         final_kwargs = merge_model_request_patch(
             final_kwargs,
@@ -1318,6 +1324,8 @@ class LLMFactory:
                 tool_calling_mode=tool_calling_mode,
                 structured_output_mode=structured_output_mode,
                 stream_mode=stream_mode,
+                requested_max_tokens=int(kwargs.get("max_tokens") or meta.get("global_max_tokens") or 0),
+                stream_usage_requested=bool(kwargs.get("stream_usage")),
             )
         )
         kwargs["callbacks"] = callbacks

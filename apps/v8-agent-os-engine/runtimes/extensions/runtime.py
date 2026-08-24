@@ -19,6 +19,10 @@ from typing import Any, Iterable
 
 from core.database import db
 from core.background_model_output import parse_background_json_object, sanitize_background_model_output
+from core.background_model_timeout import (
+    invoke_background_model_with_timeout,
+    run_cancellable_background_call,
+)
 from core.model_control_plane import model_control_plane
 from core.tools.plugin_cli import plugin_cli
 from core.skills_install_service import get_skill_dependency_policy
@@ -2464,7 +2468,12 @@ class ExtensionsRuntimeService:
             from core.background_context_guard import prepare_background_model_messages
             from core.llm_factory import llm_factory
 
-            model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
+            model = llm_factory.create_for_role(
+                "extensions_prefilter",
+                streaming=False,
+                temperature=0,
+                timeout=_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
             prepared = prepare_background_model_messages(
                 system_prompt=(
                     "你是 V8 Agent OS 的扩展族级画像归一器。\n"
@@ -2491,12 +2500,21 @@ class ExtensionsRuntimeService:
                 component="extensions",
                 node="family_profile_context",
             )
-            response = model.invoke(prepared.messages, config={"callbacks": []})
+            response = invoke_background_model_with_timeout(
+                model,
+                prepared.messages,
+                timeout_seconds=_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS,
+                config={"callbacks": []},
+            )
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 
         try:
-            return _PROFILE_INFERENCE_EXECUTOR.submit(_invoke).result(timeout=_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS)
+            return run_cancellable_background_call(
+                _PROFILE_INFERENCE_EXECUTOR,
+                _invoke,
+                timeout_seconds=_DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
         except Exception:
             return None
 

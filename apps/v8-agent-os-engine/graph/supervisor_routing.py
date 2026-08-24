@@ -30,6 +30,7 @@ def create_robust_invoke(
         invocation_config=None,
         tool_choice=None,
         result_validator=None,
+        stream_observer=None,
     ):
         import logging
 
@@ -71,6 +72,7 @@ def create_robust_invoke(
             invocation_config=invocation_config,
             tool_choice=tool_choice,
             result_validator=result_validator,
+            stream_observer=stream_observer,
         )
 
     return _robust_invoke

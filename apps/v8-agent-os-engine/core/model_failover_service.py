@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Sequence
 
+from langchain_core.messages import BaseMessageChunk, message_chunk_to_message
+
 from core.model_capability_matrix import (
     build_effective_capability_matrix,
     evaluate_capability_matrix,
@@ -306,6 +308,7 @@ class ModelFailoverService:
         invocation_config: Dict[str, Any] | None = None,
         tool_choice: Any | None = None,
         result_validator: Callable[[Any], str | None] | None = None,
+        stream_observer: Callable[[Any], None] | None = None,
     ) -> Any:
         ctx = get_runtime_context()
         run_id = ctx.get("run_id")
@@ -414,11 +417,32 @@ class ModelFailoverService:
                     break
                 total_attempts += 1
                 try:
-                    result = (
-                        bound_llm.invoke(messages, config=invocation_config)
-                        if invocation_config
-                        else bound_llm.invoke(messages)
-                    )
+                    if stream_observer is None:
+                        result = (
+                            bound_llm.invoke(messages, config=invocation_config)
+                            if invocation_config
+                            else bound_llm.invoke(messages)
+                        )
+                    else:
+                        stream = (
+                            bound_llm.stream(messages, config=invocation_config)
+                            if invocation_config
+                            else bound_llm.stream(messages)
+                        )
+                        aggregate = None
+                        for chunk in stream:
+                            try:
+                                stream_observer(chunk)
+                            except Exception:
+                                logger.debug("Subagent stream observer failed", exc_info=True)
+                            aggregate = chunk if aggregate is None else aggregate + chunk
+                        if aggregate is None:
+                            raise RuntimeError("stream_completed_without_message")
+                        result = (
+                            message_chunk_to_message(aggregate)
+                            if isinstance(aggregate, BaseMessageChunk)
+                            else aggregate
+                        )
                     validation_error = ""
                     if result_validator is not None:
                         try:

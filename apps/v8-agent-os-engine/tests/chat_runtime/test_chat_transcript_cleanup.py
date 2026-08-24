@@ -423,6 +423,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
                     "data": {"chunk": {"additional_kwargs": {"reasoning_content": token}}},
                 },
             )
+        await self.runtime.flush_stream_state(self.chat_run, self.stream_state)
 
         expected = "I need to inspect the workspace.\n下一步读取文件。"
         self.assertEqual("".join(self.stream_state.reasoning_buffer), expected)
@@ -431,6 +432,14 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             if event["topic"] == "run.reasoning.delta"
         ]
         self.assertEqual("".join(str(event["payload"].get("content") or "") for event in reasoning_events), expected)
+        self.assertLess(len(reasoning_events), 4)
+        diagnostics = next(
+            event["payload"]
+            for event in self.chat_run.events
+            if event["topic"] == "run.reasoning_stream.diagnostics"
+        )
+        self.assertEqual(diagnostics["rawReasoningChunkCount"], 4)
+        self.assertEqual(diagnostics["emittedReasoningBatchCount"], len(reasoning_events))
 
     async def test_trusted_reasoning_cumulative_snapshots_patch_one_canonical_node(self):
         self.stream_state.reasoning_surface_contract = {
@@ -452,6 +461,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
                     "data": {"chunk": {"additional_kwargs": {"reasoning_content": snapshot}}},
                 },
             )
+        await self.runtime.flush_stream_state(self.chat_run, self.stream_state)
 
         row = chat_runtime_module.db.get_chat_canonical_message(self.stream_state.assistant_message_id)
         reasoning_nodes = [

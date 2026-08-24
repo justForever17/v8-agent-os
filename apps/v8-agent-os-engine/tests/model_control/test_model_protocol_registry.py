@@ -279,6 +279,55 @@ def test_quick_connect_exposes_but_does_not_persist_first_party_protocol_suggest
     assert binding["protocolConfidence"] == "reviewed"
 
 
+def test_quick_connect_ignores_runtime_derived_provider_fields(monkeypatch):
+    _use_in_memory_model_hub_commit(monkeypatch)
+    provider = {
+        "id": "openai",
+        "name": "OpenAI",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiStandard": "openai",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "models": [{"id": "gpt-test", "type": "TEXT", "capabilities": ["chat"]}],
+    }
+    captured: dict = {}
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda _provider_id: provider)
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "get_config",
+        lambda: {
+            "providers": {
+                "openai": {
+                    "provider": {
+                        "base_url": "https://api.openai.com/v1",
+                        "api_standard": "openai",
+                        "type": "API",
+                        "credentialRef": "cred:v8-model:existing",
+                        "credentialStatus": "configured",
+                        "reasoningSurface": {},
+                    },
+                    "models": {},
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        platform_routes,
+        "_execute_model_hub_connection",
+        lambda **kwargs: captured.update(kwargs)
+        or {"ok": True, "transactionId": "txn-derived-fields", "ownerId": "test", "config": {"providers": {}}},
+    )
+
+    result = asyncio.run(
+        platform_routes.connect_model_provider(
+            {"providerId": "openai", "modelId": "gpt-test", "apiKey": "sk-test"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert "credentialStatus" not in captured["plan"]["providerPatch"]
+    assert "reasoningSurface" not in captured["plan"]["providerPatch"]
+
+
 def test_quick_connect_custom_provider_keeps_chat_suggestion_without_silent_binding(monkeypatch):
     _use_in_memory_model_hub_commit(monkeypatch)
     saved: dict = {}

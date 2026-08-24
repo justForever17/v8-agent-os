@@ -703,6 +703,12 @@ class ModelControlPlane:
             "vision": bool(raw_caps.get("vision", multimodal)),
             "multimodal": bool(raw_caps.get("multimodal", raw_caps.get("vision", multimodal))),
             "streaming": bool(raw_caps.get("streaming", chat_like)),
+            "streamUsage": bool(
+                raw_caps.get(
+                    "streamUsage",
+                    raw_caps.get("supportsStreamUsage", raw_caps.get("stream_usage", False)),
+                )
+            ),
             "embedding": bool(raw_caps.get("embedding", embedding)),
             "rerank": bool(raw_caps.get("rerank", rerank)),
             "image": bool(raw_caps.get("image", media_like and model_type in {"MEDIA", "IMAGE"})),

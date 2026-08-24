@@ -19,7 +19,12 @@ from core.graph_stream_watchdog import (
     next_graph_stream_event,
 )
 from langchain_core.messages import AIMessage, ToolMessage
-from runtimes.chat.runtime import ChatExecutionBundle, ChatRuntime, ChatStreamState
+from runtimes.chat.runtime import (
+    ChatExecutionBundle,
+    ChatRuntime,
+    ChatStreamState,
+    PendingReasoningBatch,
+)
 
 
 class DownstreamTimeoutIterator:
@@ -556,6 +561,32 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(event)
         topics = [runtime_event["topic"] for runtime_event in chat_run.events]
         self.assertNotIn("run.watchdog.stream_idle_timeout", topics)
+
+    async def test_reasoning_flush_deadline_keeps_pending_provider_stream_alive(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        stream_state = ChatStreamState()
+        iterator = ControlledIterator()
+        stream_state.pending_reasoning_by_run["model-reasoning"] = PendingReasoningBatch(
+            delta_parts=["pending reasoning"],
+        )
+        stream_state.reasoning_flush_deadlines_by_run["model-reasoning"] = (
+            asyncio.get_running_loop().time() + 0.01
+        )
+
+        try:
+            await asyncio.sleep(0.02)
+            signal_kind, event = await runtime._wait_for_stream_signal(
+                stream_iter=iterator,
+                chat_run=chat_run,
+                stream_state=stream_state,
+            )
+            self.assertEqual(signal_kind, "reasoning_flush")
+            self.assertIsNone(event)
+            self.assertIsNotNone(stream_state.pending_stream_event_task)
+            self.assertFalse(stream_state.pending_stream_event_task.done())
+        finally:
+            await runtime._cancel_pending_stream_event_task(stream_state)
 
 
 if __name__ == "__main__":

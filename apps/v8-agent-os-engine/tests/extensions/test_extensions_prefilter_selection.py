@@ -37,6 +37,9 @@ class _FakeModel:
         self._calls.append(str(messages[-1].content))
         return _FakeResponse(self._content)
 
+    async def ainvoke(self, messages, config=None):  # noqa: ANN001
+        return self.invoke(messages, config=config)
+
 
 class _FakeLlmFactory:
     def __init__(self, content: str, calls: list[str]) -> None:

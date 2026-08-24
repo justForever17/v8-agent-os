@@ -14,6 +14,10 @@ import yaml
 from langchain_core.tools import tool
 
 from core.background_model_output import parse_background_json_object
+from core.background_model_timeout import (
+    invoke_background_model_with_timeout,
+    run_cancellable_background_call,
+)
 from core.model_control_plane import model_control_plane
 from core.storage import storage
 from core.extensions_capability_index import (
@@ -1132,7 +1136,12 @@ class SkillLoader:
             from core.background_context_guard import prepare_background_model_messages
             from core.llm_factory import llm_factory
 
-            model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
+            model = llm_factory.create_for_role(
+                "extensions_prefilter",
+                streaming=False,
+                temperature=0,
+                timeout=_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
             prepared = prepare_background_model_messages(
                 system_prompt=(
                     "你是 V8 Agent OS 的 skill 主题画像归一器。\n"
@@ -1156,12 +1165,21 @@ class SkillLoader:
                 component="extensions",
                 node="skill_theme_profile_context",
             )
-            response = model.invoke(prepared.messages, config={"callbacks": []})
+            response = invoke_background_model_with_timeout(
+                model,
+                prepared.messages,
+                timeout_seconds=_PROFILE_LLM_TIMEOUT_SECONDS,
+                config={"callbacks": []},
+            )
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 
         try:
-            return _PROFILE_INFERENCE_EXECUTOR.submit(_invoke).result(timeout=_PROFILE_LLM_TIMEOUT_SECONDS)
+            return run_cancellable_background_call(
+                _PROFILE_INFERENCE_EXECUTOR,
+                _invoke,
+                timeout_seconds=_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
         except Exception:
             return None
 
@@ -1305,7 +1323,12 @@ class SkillLoader:
             from core.background_context_guard import prepare_background_model_messages
             from core.llm_factory import llm_factory
 
-            model = llm_factory.create_for_role("extensions_prefilter", streaming=False, temperature=0)
+            model = llm_factory.create_for_role(
+                "extensions_prefilter",
+                streaming=False,
+                temperature=0,
+                timeout=_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
             prepared = prepare_background_model_messages(
                 system_prompt=(
                     "你是 V8 Agent OS 的 skill 能力画像归一器。\n"
@@ -1330,12 +1353,21 @@ class SkillLoader:
                 component="extensions",
                 node="skill_capability_profile_context",
             )
-            response = model.invoke(prepared.messages, config={"callbacks": []})
+            response = invoke_background_model_with_timeout(
+                model,
+                prepared.messages,
+                timeout_seconds=_PROFILE_LLM_TIMEOUT_SECONDS,
+                config={"callbacks": []},
+            )
             payload, _sanitized, _error = parse_background_json_object(response)
             return payload if isinstance(payload, dict) else None
 
         try:
-            return _PROFILE_INFERENCE_EXECUTOR.submit(_invoke).result(timeout=_PROFILE_LLM_TIMEOUT_SECONDS)
+            return run_cancellable_background_call(
+                _PROFILE_INFERENCE_EXECUTOR,
+                _invoke,
+                timeout_seconds=_PROFILE_LLM_TIMEOUT_SECONDS,
+            )
         except Exception:
             return None
 

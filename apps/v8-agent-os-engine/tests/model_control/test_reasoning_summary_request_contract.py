@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.llm_factory import LLMFactory
+from core.model_control_plane import model_control_plane
 from core.model_thinking_control import provider_reasoning_transport_patch, reasoning_summary_request_patch
 
 
@@ -78,3 +79,45 @@ def test_split_reasoning_transport_is_not_inferred_for_other_chat_models():
     }
 
     assert provider_reasoning_transport_patch(metadata) == {}
+
+
+def test_openai_compatible_stream_usage_is_capability_driven() -> None:
+    supported = LLMFactory._build_openai_kwargs(
+        "configured-model",
+        {
+            "api_key": "sk-test",
+            "capabilities": {"streaming": True, "streamUsage": True},
+        },
+        streaming=True,
+    )
+    unsupported = LLMFactory._build_openai_kwargs(
+        "another-model",
+        {
+            "api_key": "sk-test",
+            "capabilities": {"streaming": True, "streamUsage": False},
+        },
+        streaming=True,
+    )
+
+    assert supported["stream_usage"] is True
+    assert "stream_usage" not in unsupported
+
+
+def test_modelhub_stream_usage_alias_is_normalized_without_model_name_logic() -> None:
+    config = model_control_plane.normalize_config(
+        {
+            "providers": {
+                "alias-provider": {
+                    "provider": {"name": "Alias Provider", "api_standard": "openai"},
+                    "models": {
+                        "alias-model": {
+                            "type": "CHAT",
+                            "capabilities": {"chat": True, "stream_usage": True},
+                        }
+                    },
+                }
+            }
+        }
+    )
+    record = model_control_plane.get_model_record("alias-provider::alias-model", config)
+    assert record["model"]["capabilities"]["streamUsage"] is True

@@ -2371,6 +2371,7 @@ class ModelProviderCatalog:
             "vision": "vision" in tags,
             "multimodal": "multimodal" in tags or "vision" in tags,
             "streaming": streaming,
+            "streamUsage": bool(tags.intersection({"streamusage", "stream_usage", "stream-usage"})),
             "embedding": embedding,
             "rerank": rerank,
             "image": "image" in tags,

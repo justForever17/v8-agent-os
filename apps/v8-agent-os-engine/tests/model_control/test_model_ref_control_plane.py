@@ -476,6 +476,7 @@ def test_minimax_providers_use_official_models_endpoint_and_reasoning_contract()
     assert normalized["contextWindow"] == 1_000_000
     assert normalized["capabilities"]["reasoning"] is True
     assert normalized["capabilities"]["vision"] is True
+    assert normalized["capabilities"]["streamUsage"] is True
     assert normalized["reasoningSurface"]["mode"] == "provider_reasoning"
     assert normalized["reasoningSurface"]["trust"] == "official"
     assert "reasoning_details" in normalized["reasoningSurface"]["responseFields"]

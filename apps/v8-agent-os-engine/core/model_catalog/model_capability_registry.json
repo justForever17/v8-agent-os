@@ -11793,6 +11793,7 @@
         "longContext",
         "multimodal",
         "reasoning",
+        "streamUsage",
         "text",
         "thinking",
         "tools",

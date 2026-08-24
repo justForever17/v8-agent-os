@@ -28,6 +28,7 @@ from core.runtime.extensions_runtime import ExtensionRouteBundle, extensions_run
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content, extract_text_and_reasoning
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
+from core.subagent_streaming import SubagentStreamProgressAggregator
 from core.runtime_tool_access import (
     filter_visible_tools_for_actor,
     normalize_runtime_access,
@@ -74,6 +75,25 @@ def create_subagent_chat_model(
         normalized_model_id,
         _role=role,
         **model_kwargs,
+    )
+
+
+def _build_subagent_stream_aggregator(
+    *,
+    agent_id: str,
+    agent_name: str,
+    delegation_id: str = "",
+) -> SubagentStreamProgressAggregator | None:
+    runtime_context = get_runtime_context()
+    progress_callback = runtime_context.get("subagent_stream_progress_callback")
+    if not callable(progress_callback):
+        return None
+    return SubagentStreamProgressAggregator(
+        progress_callback=progress_callback,
+        agent_id=agent_id,
+        agent_name=str(runtime_context.get("subagent_display_name") or agent_name),
+        delegation_id=str(delegation_id or runtime_context.get("delegation_id") or ""),
+        model_turn=int(runtime_context.get("subagent_model_turn") or 1),
     )
 
 
@@ -1994,6 +2014,11 @@ def build_agent_node(
                 delegation_depth=inherited_route_context.get("delegationDepth"),
                 plugin_references=delegated_plugin_references,
             )
+            stream_aggregator = _build_subagent_stream_aggregator(
+                agent_id=agent_id,
+                agent_name=effective_agent_name,
+                delegation_id=str(inherited_route_context.get("delegationId") or ""),
+            )
             try:
                 available_tool_signature = sorted(
                     _canonical_tool_name(tool_ref) or str(getattr(tool_ref, "name", "") or "").strip()
@@ -2208,21 +2233,34 @@ def build_agent_node(
                         or inherited_route_context.get("safetyApprovalMode")
                     ),
                 ):
-                    response = robust_invoke(
-                        agent_specific_llm,
-                        run_messages,
-                        combined_tools,
-                        role=f"agent:{agent_id}",
-                        preferred_model_id=agent_model_id or supervisor_model_id,
-                        invocation_config=build_runtime_callback_config(),
-                        tool_choice=required_tool_choice,
-                        build_model=lambda candidate_model_id: create_subagent_chat_model(
-                            candidate_model_id,
+                    try:
+                        response = robust_invoke(
+                            agent_specific_llm,
+                            run_messages,
+                            combined_tools,
                             role=f"agent:{agent_id}",
-                            streaming=True,
-                            timeout=180,
-                        ),
-                    )
+                            preferred_model_id=agent_model_id or supervisor_model_id,
+                            invocation_config=build_runtime_callback_config(),
+                            tool_choice=required_tool_choice,
+                            stream_observer=(stream_aggregator.observe if stream_aggregator else None),
+                            build_model=lambda candidate_model_id: create_subagent_chat_model(
+                                candidate_model_id,
+                                role=f"agent:{agent_id}",
+                                streaming=True,
+                                timeout=180,
+                            ),
+                        )
+                    except Exception:
+                        if stream_aggregator is not None:
+                            stream_aggregator.flush(finalized=False)
+                        raise
+                    if stream_aggregator is not None:
+                        stream_node_ids = stream_aggregator.finish(response)
+                        if stream_node_ids:
+                            response.additional_kwargs = {
+                                **dict(getattr(response, "additional_kwargs", {}) or {}),
+                                "v8_subagent_stream_node_ids": stream_node_ids,
+                            }
                     extensions_runtime_service.emit_response_tool_calls(response)
                     extensions_runtime_service.emit_execution_completed(response=response)
             finally:
@@ -2493,6 +2531,12 @@ def build_reviewer_node(
             from core.automation.hooks import hooks_manager
 
             hooks_manager.execute_hook("on_reviewer_start", agent_name=agent_name, agent_id=agent_id)
+            delegation_id = str((state.get("current_route_context") or {}).get("delegationId") or "")
+            stream_aggregator = _build_subagent_stream_aggregator(
+                agent_id=agent_id,
+                agent_name=f"{agent_name} Reviewer",
+                delegation_id=delegation_id,
+            )
             with bind_runtime_context(
                 runtime_kind="subagent",
                 trigger_source="delegation_reviewer",
@@ -2504,24 +2548,37 @@ def build_reviewer_node(
                     or (state.get("current_route_context") or {}).get("root_episode_id")
                 ),
             ):
-                response = robust_invoke(
-                    agent_specific_llm,
-                    run_messages,
-                    None,
-                    role=f"reviewer:{agent_id}",
-                    preferred_model_id=agent_model_id or supervisor_model_id,
-                    invocation_config=build_runtime_callback_config(),
-                    build_model=lambda candidate_model_id: create_subagent_chat_model(
-                        candidate_model_id,
+                try:
+                    response = robust_invoke(
+                        agent_specific_llm,
+                        run_messages,
+                        None,
                         role=f"reviewer:{agent_id}",
-                        streaming=True,
-                        timeout=180,
-                    ),
-                )
+                        preferred_model_id=agent_model_id or supervisor_model_id,
+                        invocation_config=build_runtime_callback_config(),
+                        stream_observer=(stream_aggregator.observe if stream_aggregator else None),
+                        build_model=lambda candidate_model_id: create_subagent_chat_model(
+                            candidate_model_id,
+                            role=f"reviewer:{agent_id}",
+                            streaming=True,
+                            timeout=180,
+                        ),
+                    )
+                except Exception:
+                    if stream_aggregator is not None:
+                        stream_aggregator.flush(finalized=False)
+                    raise
+                if stream_aggregator is not None:
+                    stream_node_ids = stream_aggregator.finish(response)
+                    if stream_node_ids:
+                        response.additional_kwargs = {
+                            **dict(getattr(response, "additional_kwargs", {}) or {}),
+                            "v8_subagent_stream_node_ids": stream_node_ids,
+                        }
             response = _mark_delegated_message_owner(
                 response,
                 agent_id=agent_id,
-                delegation_id=str((state.get("current_route_context") or {}).get("delegationId") or ""),
+                delegation_id=delegation_id,
             )
             hooks_manager.execute_hook("on_reviewer_end", agent_name=agent_name, agent_id=agent_id)
 

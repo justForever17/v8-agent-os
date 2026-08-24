@@ -722,6 +722,37 @@ def test_auto_spec_and_handoff_never_use_explicit_route_compiler() -> None:
         **kwargs,
     ) is False
 
+    governed_engineering = {
+        **base,
+        "current_route_context": {
+            "supervisorRuntimeMode": "auto",
+            "engineeringTriggerDecision": {
+                "active": True,
+                "deferred": False,
+                "repoDetected": True,
+                "reason": "engineering_signals_and_repo",
+            },
+        },
+    }
+    assert _authoritative_runtime_route_kinds(
+        governed_engineering,
+        "修复当前项目里失败的测试并验证结果。",
+    ) == ["engineering"]
+    assert _should_use_runtime_route_compiler(
+        state=governed_engineering,
+        runtime_handoff_ready=False,
+        **kwargs,
+    ) is True
+
+    deferred_engineering = {
+        **governed_engineering,
+        "current_route_context": {
+            **governed_engineering["current_route_context"],
+            "engineeringTriggerDecision": {"active": True, "deferred": True},
+        },
+    }
+    assert _authoritative_runtime_route_kinds(deferred_engineering, "修复测试") == []
+
     selected = {
         **base,
         "current_route_context": {"supervisorRuntimeMode": "engineering"},

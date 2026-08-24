@@ -774,9 +774,10 @@ def build_runtime_route_compiler_system_content(
     reflex_prompt_addition: str = "",
     gate_prompt_addition: str = "",
 ):
-    """Build the bounded system prompt used only to compile one explicit route.
+    """Build the bounded system prompt used only to compile one governed route.
 
-    The mode controller has already fixed the runtime family. This profile must
+    The mode controller or an authoritative task/workspace trigger has already
+    fixed the runtime family. This profile must
     not pay for capability discovery, Memory, specialist reveal, artifacts,
     plugins, or Todos; those remain available when Auto mode runs the full
     Supervisor turn.
@@ -839,12 +840,14 @@ def build_runtime_route_compiler_system_content(
     )
     compiler_contract = (
         "[Runtime Route Compiler]\n"
-        "The user explicitly selected one execution runtime in the composer. Compile the current user message "
-        "into exactly one native runtime_broker route call for the fixed runtimeKind. Do not reveal families, "
+        "The engine has already selected one owning execution runtime from the current request, task shape, "
+        "workspace evidence, and governance state. The user does not need to name that runtime or use an exact "
+        "routing phrase. Compile the current user message into exactly one native runtime_broker route call for "
+        "the fixed runtimeKind. Do not reveal families, "
         "select an Agent, emit a prose plan, answer the task, or print pseudo tool syntax. Preserve the user's "
         "request without summarizing away constraints. Use attachment-opening results already present in the "
         "latest user turn; do not bypass or repeat normal attachment analysis.\n"
-        "The selected mode fixes this first authoritative handoff only. After its typed handoff, the full "
+        "The selected mode or governed trigger fixes this first authoritative handoff only. After its typed handoff, the full "
         "Supervisor may continue with another runtime when the remaining deliverable requires it.\n"
         "Do not invent write authority, source lineage, action coordinates, approvals, or plugin grants. For the "
         "same atomic operation, an explicit user choice wins; otherwise capability order is owning Runtime, then "

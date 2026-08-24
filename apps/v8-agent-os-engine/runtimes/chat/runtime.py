@@ -318,6 +318,21 @@ def _compat_ingress_diagnostics_from_request(request: ChatRequest) -> dict[str, 
 
 
 @dataclass(slots=True)
+class PendingReasoningBatch:
+    delta_parts: list[str] = field(default_factory=list)
+    snapshot: str | None = None
+    reasoning_kind: str = "provider_reasoning"
+    reasoning_surface: dict[str, Any] = field(default_factory=dict)
+    provider_delta_at_ms: int | None = None
+    canonical_event_at_ms: int | None = None
+    owner: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def char_count(self) -> int:
+        return sum(len(part) for part in self.delta_parts)
+
+
+@dataclass(slots=True)
 class ChatStreamState:
     current_agent: str = "supervisor"
     output_buffer: list[str] = field(default_factory=list)
@@ -337,6 +352,14 @@ class ChatStreamState:
     reasoning_snapshots_by_run: dict[str, str] = field(default_factory=dict)
     reasoning_surfaces_by_run: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_started_at_ms_by_run: dict[str, int] = field(default_factory=dict)
+    pending_reasoning_by_run: dict[str, PendingReasoningBatch] = field(default_factory=dict)
+    reasoning_flush_deadlines_by_run: dict[str, float] = field(default_factory=dict)
+    reasoning_immediate_run_ids: set[str] = field(default_factory=set)
+    reasoning_raw_chunks: int = 0
+    reasoning_raw_chars: int = 0
+    reasoning_emitted_batches: int = 0
+    reasoning_timer_flushes: int = 0
+    reasoning_final_flush_chars: int = 0
     last_text_delta: str = ""
     last_text_delta_run_id: str = ""
     last_text_delta_at_ms: int | None = None
@@ -430,6 +453,8 @@ class ChatRuntime:
 
     kind = "chat"
     TEXT_FLUSH_INTERVAL_SECONDS = 0.22
+    REASONING_FLUSH_INTERVAL_SECONDS = 0.75
+    REASONING_FLUSH_MAX_CHARS = 512
     MAX_TOOL_WATCHDOG_RECOVERIES = 1
     DELEGATION_CLAIM_RE = re.compile(
         r"(派|派发|分配|交给|delegate|dispatch).{0,32}(子\s*agent|子代理|subagent|agent|工程子|工程师)",
@@ -6694,6 +6719,131 @@ class ChatRuntime:
             )
         return reasoning_event
 
+    def _queue_reasoning_delta(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        reasoning_delta: str,
+        *,
+        model_run_id: str,
+        snapshot: str | None,
+        reasoning_kind: str,
+        reasoning_surface: dict[str, Any],
+        provider_delta_at_ms: int | None,
+        canonical_event_at_ms: int | None,
+        owner: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not reasoning_delta:
+            return []
+        run_key = self._normalized_stream_run_id(model_run_id)
+        stream_state.reasoning_raw_chunks += 1
+        stream_state.reasoning_raw_chars += len(reasoning_delta)
+        if run_key not in stream_state.reasoning_immediate_run_ids:
+            stream_state.reasoning_immediate_run_ids.add(run_key)
+            stream_state.reasoning_emitted_batches += 1
+            event = self._emit_reasoning_delta(
+                chat_run,
+                stream_state,
+                reasoning_delta,
+                model_run_id=model_run_id,
+                snapshot=snapshot,
+                reasoning_kind=reasoning_kind,
+                reasoning_surface=reasoning_surface,
+                provider_delta_at_ms=provider_delta_at_ms,
+                canonical_event_at_ms=canonical_event_at_ms,
+                owner=owner,
+            )
+            return [event] if event is not None else []
+
+        batch = stream_state.pending_reasoning_by_run.setdefault(
+            run_key,
+            PendingReasoningBatch(),
+        )
+        batch.delta_parts.append(reasoning_delta)
+        batch.snapshot = snapshot or batch.snapshot
+        batch.reasoning_kind = reasoning_kind
+        batch.reasoning_surface = dict(reasoning_surface or {})
+        batch.provider_delta_at_ms = batch.provider_delta_at_ms or provider_delta_at_ms
+        batch.canonical_event_at_ms = canonical_event_at_ms
+        batch.owner = dict(owner or {})
+        if batch.char_count >= self.REASONING_FLUSH_MAX_CHARS:
+            return self._flush_pending_reasoning_batches(
+                chat_run,
+                stream_state,
+                run_ids=[run_key],
+            )
+        try:
+            clock = asyncio.get_running_loop().time()
+        except RuntimeError:
+            # Direct unit callers may exercise the queue outside an async
+            # stream; use the same monotonic clock as the async loop.
+            clock = time.monotonic()
+        stream_state.reasoning_flush_deadlines_by_run.setdefault(
+            run_key,
+            clock + self.REASONING_FLUSH_INTERVAL_SECONDS,
+        )
+        return []
+
+    def _flush_pending_reasoning_batches(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        run_ids: list[str] | None = None,
+        from_timer: bool = False,
+        final: bool = False,
+    ) -> list[dict[str, Any]]:
+        emitted: list[dict[str, Any]] = []
+        target_ids = list(run_ids or stream_state.pending_reasoning_by_run.keys())
+        for run_key in target_ids:
+            batch = stream_state.pending_reasoning_by_run.pop(run_key, None)
+            stream_state.reasoning_flush_deadlines_by_run.pop(run_key, None)
+            if batch is None or not batch.delta_parts:
+                continue
+            delta = "".join(batch.delta_parts)
+            event = self._emit_reasoning_delta(
+                chat_run,
+                stream_state,
+                delta,
+                model_run_id=run_key,
+                snapshot=batch.snapshot,
+                reasoning_kind=batch.reasoning_kind,
+                reasoning_surface=batch.reasoning_surface,
+                provider_delta_at_ms=batch.provider_delta_at_ms,
+                canonical_event_at_ms=(self._now_timestamp_ms() if from_timer else batch.canonical_event_at_ms),
+                owner=batch.owner,
+            )
+            if event is not None:
+                emitted.append(event)
+                stream_state.reasoning_emitted_batches += 1
+                if from_timer:
+                    stream_state.reasoning_timer_flushes += 1
+                if final:
+                    stream_state.reasoning_final_flush_chars += len(delta)
+        return emitted
+
+    def _emit_reasoning_stream_diagnostics(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+    ) -> None:
+        if stream_state.reasoning_raw_chunks <= 0:
+            return
+        chat_run.emit_runtime_event(
+            "run.reasoning_stream.diagnostics",
+            {
+                "rawReasoningChunkCount": stream_state.reasoning_raw_chunks,
+                "rawReasoningChars": stream_state.reasoning_raw_chars,
+                "emittedReasoningBatchCount": stream_state.reasoning_emitted_batches,
+                "timerFlushCount": stream_state.reasoning_timer_flushes,
+                "finalFlushChars": stream_state.reasoning_final_flush_chars,
+                "flushIntervalMs": int(self.REASONING_FLUSH_INTERVAL_SECONDS * 1000),
+                "flushMaxChars": self.REASONING_FLUSH_MAX_CHARS,
+            },
+            agent_id=None,
+            node="reasoning_chunk_aggregator",
+        )
+
     async def _emit_text_delta(
         self,
         chat_run: ChatRunContext,
@@ -6843,13 +6993,23 @@ class ChatRuntime:
             if flush_timeout <= effective_timeout:
                 effective_timeout = flush_timeout
                 selected_deadline_kind = "text_flush"
+        active_reasoning_deadlines = [
+            deadline
+            for run_key, deadline in stream_state.reasoning_flush_deadlines_by_run.items()
+            if run_key in stream_state.pending_reasoning_by_run
+        ]
+        if active_reasoning_deadlines:
+            reasoning_timeout = max(min(active_reasoning_deadlines) - now, 0.0)
+            if reasoning_timeout <= effective_timeout:
+                effective_timeout = reasoning_timeout
+                selected_deadline_kind = "reasoning_flush"
         if stream_state.pending_stream_event_task is None:
             stream_state.pending_stream_event_task = asyncio.create_task(anext(stream_iter))
         next_event_task = stream_state.pending_stream_event_task
         done, _ = await asyncio.wait({next_event_task}, timeout=effective_timeout)
         if next_event_task not in done:
-            if selected_deadline_kind == "text_flush":
-                return "text_flush", None
+            if selected_deadline_kind in {"text_flush", "reasoning_flush"}:
+                return selected_deadline_kind, None
 
             failure_class = "episode_stalled" if phase == "runtime_episode_wait" else "stream_idle_timeout"
             recommended_next_action = (
@@ -8586,6 +8746,13 @@ class ChatRuntime:
                 model_run_id = model_event.model_run_id
                 stream_state.streamed_model_run_ids.add(model_run_id)
                 if model_event.event_type == "text_delta":
+                    emitted_events.extend(
+                        self._flush_pending_reasoning_batches(
+                            chat_run,
+                            stream_state,
+                            run_ids=[self._normalized_stream_run_id(model_run_id)],
+                        )
+                    )
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
                     owner = event_owner
@@ -8663,20 +8830,20 @@ class ChatRuntime:
                         model_run_id=model_run_id,
                         owner=event_owner,
                     )
-                    reasoning_event = self._emit_reasoning_delta(
-                        chat_run,
-                        stream_state,
-                        reasoning_delta,
-                        model_run_id=model_run_id,
-                        snapshot=model_event.snapshot,
-                        reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
-                        provider_delta_at_ms=provider_delta_at_ms,
-                        canonical_event_at_ms=canonical_event_at_ms,
-                        owner=event_owner,
+                    emitted_events.extend(
+                        self._queue_reasoning_delta(
+                            chat_run,
+                            stream_state,
+                            reasoning_delta,
+                            model_run_id=model_run_id,
+                            snapshot=model_event.snapshot,
+                            reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
+                            reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
+                            provider_delta_at_ms=provider_delta_at_ms,
+                            canonical_event_at_ms=canonical_event_at_ms,
+                            owner=event_owner,
+                        )
                     )
-                    if reasoning_event is not None:
-                        emitted_events.append(reasoning_event)
             return emitted_events
 
         if kind == "on_chat_model_end":
@@ -8685,6 +8852,13 @@ class ChatRuntime:
             provider_delta_at_ms = self._now_timestamp_ms()
             event_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
             model_run_id = (event.get("run_id") or "").strip()
+            emitted_events.extend(
+                self._flush_pending_reasoning_batches(
+                    chat_run,
+                    stream_state,
+                    run_ids=[self._normalized_stream_run_id(model_run_id)],
+                )
+            )
             reasoning_surface = self._reasoning_surface_for_event(stream_state, event)
             model_events = canonical_model_event_adapter.normalize_chat_model_end(
                 event,
@@ -8702,6 +8876,13 @@ class ChatRuntime:
                 canonical_event_at_ms = self._now_timestamp_ms()
                 model_end_run_ids.add(model_event.model_run_id)
                 if model_event.event_type == "text_delta":
+                    emitted_events.extend(
+                        self._flush_pending_reasoning_batches(
+                            chat_run,
+                            stream_state,
+                            run_ids=[self._normalized_stream_run_id(model_event.model_run_id)],
+                        )
+                    )
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
                     owner = event_owner
@@ -8787,20 +8968,27 @@ class ChatRuntime:
                         model_run_id=model_event.model_run_id,
                         owner=event_owner,
                     )
-                    reasoning_event = self._emit_reasoning_delta(
-                        chat_run,
-                        stream_state,
-                        reasoning_delta,
-                        model_run_id=model_event.model_run_id,
-                        snapshot=model_event.snapshot,
-                        reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
-                        reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
-                        provider_delta_at_ms=provider_delta_at_ms,
-                        canonical_event_at_ms=canonical_event_at_ms,
-                        owner=event_owner,
+                    emitted_events.extend(
+                        self._queue_reasoning_delta(
+                            chat_run,
+                            stream_state,
+                            reasoning_delta,
+                            model_run_id=model_event.model_run_id,
+                            snapshot=model_event.snapshot,
+                            reasoning_kind=str(model_event.diagnostics.get("reasoningKind") or "provider_reasoning"),
+                            reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or reasoning_surface),
+                            provider_delta_at_ms=provider_delta_at_ms,
+                            canonical_event_at_ms=canonical_event_at_ms,
+                            owner=event_owner,
+                        )
                     )
-                    if reasoning_event is not None:
-                        emitted_events.append(reasoning_event)
+            emitted_events.extend(
+                self._flush_pending_reasoning_batches(
+                    chat_run,
+                    stream_state,
+                    run_ids=[self._normalized_stream_run_id(item) for item in model_end_run_ids],
+                )
+            )
             for ended_model_run_id in model_end_run_ids:
                 self._maybe_fire_supervisor_thinking_end(
                     chat_run,
@@ -8811,6 +8999,9 @@ class ChatRuntime:
             return emitted_events
 
         if kind == "on_tool_start":
+            emitted_events.extend(
+                self._flush_pending_reasoning_batches(chat_run, stream_state)
+            )
             emitted_events.extend(
                 await self._flush_pending_text_aggregator(
                     chat_run,
@@ -9137,6 +9328,13 @@ class ChatRuntime:
 
     async def flush_stream_state(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
+        emitted_events.extend(
+            self._flush_pending_reasoning_batches(
+                chat_run,
+                stream_state,
+                final=True,
+            )
+        )
         self._finish_active_supervisor_thinking_hooks(
             chat_run,
             stream_state,
@@ -9162,6 +9360,7 @@ class ChatRuntime:
         emitted_events.extend(await self._flush_pending_text_aggregator(chat_run, stream_state, final=True))
         self._emit_delegation_claim_diagnostic(chat_run, stream_state)
         self._emit_text_stream_diagnostics(chat_run, stream_state)
+        self._emit_reasoning_stream_diagnostics(chat_run, stream_state)
         return emitted_events
 
     def persist_final_assistant_message(
@@ -11286,6 +11485,14 @@ class ChatRuntime:
                                         ):
                                             yield emitted_event
                                         continue
+                                    if signal_kind == "reasoning_flush":
+                                        for emitted_event in self._flush_pending_reasoning_batches(
+                                            chat_run,
+                                            stream_state,
+                                            from_timer=True,
+                                        ):
+                                            yield emitted_event
+                                        continue
                                     try:
                                         control_signal = self.consume_control_signal(chat_run.active_run_id)
                                         if control_signal and control_signal.get("command") == "guidance":
@@ -11315,6 +11522,12 @@ class ChatRuntime:
                             finally:
                                 await self._cancel_pending_stream_event_task(stream_state)
                     if guidance_signal:
+                        for flushed_event in self._flush_pending_reasoning_batches(
+                            chat_run,
+                            stream_state,
+                            final=True,
+                        ):
+                            yield flushed_event
                         for flushed_event in await self._flush_pending_text_aggregator(
                             chat_run,
                             stream_state,
@@ -11396,6 +11609,12 @@ class ChatRuntime:
                             )
                         continue
                     if coordination_signal:
+                        for flushed_event in self._flush_pending_reasoning_batches(
+                            chat_run,
+                            stream_state,
+                            final=True,
+                        ):
+                            yield flushed_event
                         for flushed_event in await self._flush_pending_text_aggregator(
                             chat_run,
                             stream_state,

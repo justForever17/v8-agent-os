@@ -342,6 +342,49 @@ test("subagent progress unfolds as an ordered human timeline without terminal su
   assert.equal(projection[0].summary, null);
 });
 
+test("subagent streaming progress replaces a stable aggregate instead of duplicating chunks", () => {
+  const episode = {
+    episodeId: "subagent::delegation-stream::0::review::code-review-architect",
+    kind: "delegation",
+    targetKind: "local_agent",
+    targetLabel: "Code Review Architect",
+    state: "active",
+  };
+  const progressNode = (eventSeq, content, finalized) => ({
+    id: `progress-${eventSeq}`,
+    eventId: `progress-${eventSeq}`,
+    eventSeq,
+    timestamp: eventSeq,
+    kind: "execution",
+    topic: "runtime.episode.progress",
+    data: {
+      episode,
+      progress: {
+        agentName: "Code Review Architect",
+        status: "running",
+        timelineNode: {
+          id: "stable-reasoning-stream",
+          kind: "execution",
+          executionType: "reasoning",
+          topic: "subagent.reasoning.delta",
+          content,
+          finalized,
+        },
+      },
+    },
+  });
+
+  const projection = buildSubagentReturnProjection([], [
+    progressNode(1, "先核对", false),
+    progressNode(2, "先核对，再验证。", true),
+  ]);
+
+  assert.equal(projection[0].events.length, 1);
+  assert.equal(projection[0].events[0].eventId, "stable-reasoning-stream");
+  assert.equal(projection[0].events[0].eventSeq, 2);
+  assert.equal(projection[0].events[0].node.content, "先核对，再验证。");
+});
+
 test("subagent overview order is anchored to activation and failure stays failed", () => {
   const episode = (episodeId, targetLabel, state = "active") => ({
     episodeId,

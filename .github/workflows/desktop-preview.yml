@@ -220,8 +220,8 @@ jobs:
 
       - name: Build and verify shared Product UI package
         working-directory: packages/product-ui
-        timeout-minutes: 8
-        run: npm ci --include=dev --workspaces=false
+        timeout-minutes: 15
+        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
       - name: Verify shared Product UI archive
         timeout-minutes: 3
@@ -229,31 +229,31 @@ jobs:
 
       - name: Install shared realtime package dependencies
         working-directory: packages/session-realtime
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
-          npm ci --include=dev --workspaces=false
+          node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
           npm exec -- tsc --version
           npm run build
 
       - name: Install Admin dependencies
         working-directory: apps/v8-agent-os-admin
-        timeout-minutes: 8
-        run: npm ci --include=dev --workspaces=false
+        timeout-minutes: 15
+        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
       - name: Install Web dependencies
         working-directory: apps/v8-agent-os-web
-        timeout-minutes: 8
-        run: npm ci --include=dev --workspaces=false
+        timeout-minutes: 15
+        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
       - name: Install desktop pet dependencies
         working-directory: apps/v8-agent-os-desktop-pet
-        timeout-minutes: 8
-        run: npm ci --include=dev --workspaces=false
+        timeout-minutes: 15
+        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
       - name: Install Shell dependencies
         working-directory: apps/v8-agent-os-shell
-        timeout-minutes: 8
-        run: npm ci --include=dev --workspaces=false
+        timeout-minutes: 15
+        run: node "${{ github.workspace }}/scripts/desktop/npm-ci-with-retry.mjs"
 
       - name: Acquire and verify pinned Electron runtimes
         timeout-minutes: 20

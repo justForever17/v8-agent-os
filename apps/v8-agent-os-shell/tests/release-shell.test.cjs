@@ -540,6 +540,12 @@ test('desktop reusable workflow builds explicit native targets and only uploads 
   assert.match(workflow, /packages\/product-ui\/package-lock\.json/);
   assert.match(workflow, /NPM_CONFIG_FETCH_RETRIES: "5"/);
   assert.match(workflow, /NPM_CONFIG_FETCH_TIMEOUT: "300000"/);
+  assert.equal(
+    (workflow.match(/scripts\/desktop\/npm-ci-with-retry\.mjs/g) || []).length,
+    6,
+  );
+  assert.equal((workflow.match(/timeout-minutes: 15/g) || []).length >= 6, true);
+  assert.doesNotMatch(workflow, /^\s+npm ci --include=dev --workspaces=false\s*$/m);
   assert.match(workflow, /Reject unsigned stable desktop releases/);
   assert.match(workflow, /this workflow is unsigned preview only/);
   assert.match(workflow, /Build and verify shared Product UI package/);

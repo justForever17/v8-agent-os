@@ -104,6 +104,30 @@ def test_runtime_event_history_preserves_live_envelope_identity(tmp_path) -> Non
         assert historical["seq"] == event["seq"]
 
 
+def test_runtime_event_replay_limit_pages_forward_from_after_sequence(tmp_path) -> None:
+    database = DatabaseManager(tmp_path / "state.db")
+    database.create_or_update_session("session-page", "Replay page test", user_id="test-user")
+    for index in range(1, 8):
+        database.add_runtime_event({
+            "event_id": f"event-page-{index}",
+            "session_id": "session-page",
+            "seq": index,
+            "topic": "run.progress",
+            "ts": f"2026-08-17T00:00:0{index}Z",
+            "payload": {"index": index},
+        })
+
+    first_page = database.get_runtime_events("session-page", after_seq=0, limit=3)
+    second_page = database.get_runtime_events(
+        "session-page",
+        after_seq=first_page[-1]["seq"],
+        limit=3,
+    )
+
+    assert [event["seq"] for event in first_page] == [1, 2, 3]
+    assert [event["seq"] for event in second_page] == [4, 5, 6]
+
+
 def test_runtime_event_sequence_does_not_reuse_pruned_snapshot_watermark(tmp_path) -> None:
     database = DatabaseManager(tmp_path / "state.db")
     database.create_or_update_session("session-retention", "Retention sequence test", user_id="test-user")

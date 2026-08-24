@@ -6388,11 +6388,17 @@ def test_verification_contract_requires_successful_read_and_command_results():
     branch = {
         "taskBrief": {
             "readOnly": True,
-            "readSet": ["src/sandbox_live.py"],
+            "readSet": [
+                "verification_command=python src/sandbox_live.py",
+                "src/sandbox_live.py",
+            ],
             "expectedOutputs": ["实际执行文件并返回退出码、stdout 和 stderr"],
             "engineeringTaskCapsule": {
                 "executionMode": "verify",
-                "mustRead": ["src/sandbox_live.py"],
+                "mustRead": [
+                    "verification_command=python src/sandbox_live.py",
+                    "src/sandbox_live.py",
+                ],
                 "acceptance": "执行退出码为 0，stdout 为 sandbox-live-ok，stderr 为空",
             },
         }
@@ -6496,7 +6502,7 @@ def test_verification_contract_requires_successful_read_and_command_results():
     assert unrelated is not None
     assert unrelated["error"] == "verification_evidence_mismatch"
     assert unrelated["verificationEvidenceMismatches"] == [
-        "command_target_not_executed:src/sandbox_live.py"
+        "required_command_not_executed:python src/sandbox_live.py"
     ]
 
 

@@ -1279,10 +1279,14 @@ async def resolve_scope(payload: ScopeResolvePayload):
 
 
 @router.get("/sessions/{session_id}/runtime-events")
-async def get_session_runtime_events(session_id: str, after_seq: int | None = None):
+async def get_session_runtime_events(
+    session_id: str,
+    after_seq: int | None = None,
+    limit: int | None = Query(None, ge=1, le=500),
+):
     started_at_ms = _now_perf_ms()
     try:
-        payload = runtime_command_router.get_events(session_id, after_seq=after_seq)
+        payload = runtime_command_router.get_events(session_id, after_seq=after_seq, limit=limit)
         events = payload.get("events") if isinstance(payload, dict) else []
         event_count = len(events) if isinstance(events, list) else 0
         latest_seq = max((int(event.get("seq") or 0) for event in events if isinstance(event, dict)), default=0)
@@ -1292,6 +1296,7 @@ async def get_session_runtime_events(session_id: str, after_seq: int | None = No
             started_at_ms=started_at_ms,
             extra={
                 "afterSeq": after_seq,
+                "limit": limit,
                 "returnedEventCount": event_count,
                 "latestReturnedSeq": latest_seq,
             },

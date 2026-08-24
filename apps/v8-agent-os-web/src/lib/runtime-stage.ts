@@ -603,7 +603,11 @@ export function buildRuntimeStageModel(
             if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
             return right.timestamp - left.timestamp;
         })
-        .slice(0, 240);
+        // Keep enough durable worker timeline for the right-side subagent
+        // document. The compact runtime cards below still use the 80-entry
+        // summary; this list is the detail surface and must not collapse to
+        // the final status after a long delegated run.
+        .slice(0, 1200);
     const summaryActivities = compactRuntimeStatusActivities(messageActivities);
 
     const realActivities = summaryActivities.filter((activity) => !activity.synthetic);

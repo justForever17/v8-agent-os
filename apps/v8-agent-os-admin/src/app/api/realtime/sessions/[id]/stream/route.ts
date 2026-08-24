@@ -26,6 +26,7 @@ import {
 } from "@/lib/server/runtime-event-delivery";
 
 const ENGINE_URL = resolveEngineBaseUrl();
+const RUNTIME_EVENT_PAGE_LIMIT = 128;
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -267,7 +268,7 @@ export async function GET(
                 while (!closed) {
                     try {
                         const eventsStartedAt = Date.now();
-                        const eventsRes = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/runtime-events?after_seq=${runtimeCursor.contiguousSeq}`, {
+                        const eventsRes = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/runtime-events?after_seq=${runtimeCursor.contiguousSeq}&limit=${RUNTIME_EVENT_PAGE_LIMIT}`, {
                             method: "GET",
                             headers: { "Content-Type": "application/json" },
                             cache: "no-store",
@@ -286,7 +287,7 @@ export async function GET(
                             const latestEventsSeq = Number(eventsData?.latestSeq || 0) || 0;
                             if (events.length > 0) {
                                 idlePollCount = 0;
-                                idleBackoffMs = 260;
+                                idleBackoffMs = events.length >= RUNTIME_EVENT_PAGE_LIMIT ? 0 : 260;
                             } else if (shouldRequestSnapshotForEmptyEventPage(
                                 latestEventsSeq,
                                 runtimeCursor.contiguousSeq,
@@ -322,7 +323,9 @@ export async function GET(
                         idleBackoffMs = Math.min(1200 + idlePollCount * 1000, 5200);
                     }
 
-                    await sleep(idleBackoffMs);
+                    if (idleBackoffMs > 0) {
+                        await sleep(idleBackoffMs);
+                    }
                 }
             })();
 

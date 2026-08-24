@@ -3,8 +3,8 @@
   "sourceRouterDefaults": {
     "enabled": true,
     "defaultNetworkRoute": "auto",
-    "cnPreferred": ["bocha", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng"],
-    "globalPreferred": ["brave", "tavily", "exa", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
+    "cnPreferred": ["bocha", "bing_cn", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng"],
+    "globalPreferred": ["brave", "tavily", "exa", "bing_cn", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng"]
   },
   "providers": {
     "brave": {
@@ -194,6 +194,18 @@
       "costTier": "free_public",
       "latencyTier": "medium",
       "requiresProxy": "auto",
+      "outputFormats": ["search_results"],
+      "implemented": true,
+      "enabledByDefault": true
+    },
+    "bing_cn": {
+      "displayName": "Bing China",
+      "region": "cn",
+      "role": "discovery",
+      "supports": ["search", "cn_web", "lightweight_html"],
+      "costTier": "free_public",
+      "latencyTier": "fast",
+      "requiresProxy": false,
       "outputFormats": ["search_results"],
       "implemented": true,
       "enabledByDefault": true

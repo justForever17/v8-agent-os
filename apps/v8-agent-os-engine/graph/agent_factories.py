@@ -41,6 +41,11 @@ from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
 
 
+_MAX_DELEGATED_CONTEXT_MESSAGES = 28
+_MAX_DELEGATED_TOOL_CALLS = 48
+_MAX_DELEGATED_EXACT_TOOL_REPEATS = 3
+
+
 def subagent_model_kwargs(model_id: str | None) -> dict[str, int]:
     normalized_model_id = str(model_id or "").strip()
     if not normalized_model_id:
@@ -330,14 +335,18 @@ def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, 
         if str(additional_kwargs.get("v8_governance_type") or "").strip() == "delegated_task_instruction":
             marked_index = index
     if marked_index >= 0:
-        # Preserve the complete current delegated branch. In particular, the
-        # next agent turn must see its own AI tool call and the corresponding
-        # ToolMessage; dropping either makes the worker restart the task and
-        # can trigger an infinite write/read loop. Cross-task history remains
-        # excluded by anchoring at the latest delegated instruction, while the
-        # shared context orchestrator remains responsible for model-window
-        # compaction.
-        return source_messages[marked_index:]
+        branch = source_messages[marked_index:]
+        if len(branch) <= _MAX_DELEGATED_CONTEXT_MESSAGES:
+            return branch
+        # Keep the delegated instruction and the most recent tool pairs. Older
+        # transcript turns are durable in Runtime Surface and do not justify
+        # rebuilding a 30k+ character prompt on every tool loop.
+        tail_budget = max(1, _MAX_DELEGATED_CONTEXT_MESSAGES - 2)
+        tail_start = max(1, len(branch) - tail_budget)
+        if isinstance(branch[tail_start], ToolMessage) and tail_start > 1:
+            tail_start -= 1
+        tail = branch[tail_start:]
+        return [branch[0], *tail]
     query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
     return [
         HumanMessage(
@@ -348,6 +357,61 @@ def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, 
             },
         )
     ]
+
+
+def _delegated_tool_loop_observation(
+    messages: list[Any],
+    *,
+    agent_id: str,
+    current_message: AIMessage | None = None,
+) -> dict[str, Any]:
+    """Detect an exact tool loop before another provider round is started."""
+
+    signatures: list[str] = []
+    for message in list(messages or []):
+        if not isinstance(message, AIMessage) or _delegated_message_owner_id(message) != agent_id:
+            continue
+        for call in _delegated_tool_call_dicts(message):
+            name = str(call.get("name") or "").strip()
+            if not name:
+                continue
+            args = call.get("args")
+            try:
+                encoded = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+            except Exception:
+                encoded = str(args or "")
+            signatures.append(f"{name}:{encoded[:4000]}")
+    counts: dict[str, int] = {}
+    for signature in signatures:
+        counts[signature] = counts.get(signature, 0) + 1
+    current_signatures: list[str] = []
+    if isinstance(current_message, AIMessage):
+        for call in _delegated_tool_call_dicts(current_message):
+            name = str(call.get("name") or "").strip()
+            if not name:
+                continue
+            args = call.get("args")
+            try:
+                encoded = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+            except Exception:
+                encoded = str(args or "")
+            current_signatures.append(f"{name}:{encoded[:4000]}")
+    current_repeated = max(
+        (counts.get(signature, 0) for signature in current_signatures),
+        default=0,
+    )
+    historical_repeated = max(counts.values(), default=0)
+    blocked = (
+        len(signatures) >= _MAX_DELEGATED_TOOL_CALLS
+        or current_repeated >= _MAX_DELEGATED_EXACT_TOOL_REPEATS
+    )
+    return {
+        "toolCallCount": len(signatures),
+        "exactRepeatCount": current_repeated,
+        "historicalExactRepeatCount": historical_repeated,
+        "blocked": blocked,
+        "reason": "delegated_tool_call_budget_exhausted" if len(signatures) >= _MAX_DELEGATED_TOOL_CALLS else "delegated_exact_tool_loop" if current_repeated >= _MAX_DELEGATED_EXACT_TOOL_REPEATS else None,
+    }
 
 
 def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtime_access: list[str]) -> list:
@@ -1744,6 +1808,11 @@ def build_agent_node(
         if agent_model_id
         else default_agent_llm
     )
+    # Route/inventory resolution is stable for one delegated run. Reusing it
+    # across tool turns avoids re-running the extension prefilter (and its
+    # model/context work) while keeping the cache key bound to session, run,
+    # task, grants, and the visible tool surface.
+    route_reuse_cache: dict[str, tuple[ExtensionRouteBundle, list[Any]]] = {}
 
     def agent_node_func(state):
         try:
@@ -1926,7 +1995,32 @@ def build_agent_node(
                 plugin_references=delegated_plugin_references,
             )
             try:
-                if atomic_delegated_worker:
+                available_tool_signature = sorted(
+                    _canonical_tool_name(tool_ref) or str(getattr(tool_ref, "name", "") or "").strip()
+                    for tool_ref in available_tools
+                )
+                route_cache_key = json.dumps(
+                    {
+                        "session": state.get("session_id") or state.get("sessionId"),
+                        "run": state.get("run_id") or state.get("runId"),
+                        "delegation": inherited_route_context.get("delegationId"),
+                        "task": (delegated_task_brief or {}).get("taskBriefId"),
+                        "agent": agent_id,
+                        "mode": agent_tool_mode,
+                        "depth": delegation_depth,
+                        "tools": available_tool_signature,
+                        "skills": inherited_skill_ids,
+                        "mcp": inherited_route_context.get("selectedMcpTools") or [],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                cached_route = route_reuse_cache.get(route_cache_key)
+                route_cache_hit = cached_route is not None
+                if cached_route is not None:
+                    route_bundle, combined_tools = cached_route
+                elif atomic_delegated_worker:
                     combined_tools = _apply_task_tool_policy(
                         available_tools,
                         delegated_task_brief,
@@ -1955,6 +2049,10 @@ def build_agent_node(
                         route_bundle,
                         combined_tools,
                     )
+                if not route_cache_hit:
+                    route_reuse_cache[route_cache_key] = (route_bundle, list(combined_tools))
+                    if len(route_reuse_cache) > 256:
+                        route_reuse_cache.pop(next(iter(route_reuse_cache)))
                 tool_surface = _tool_surface_names(combined_tools)
                 write_required = _task_brief_requires_artifact_write(delegated_task_brief)
                 write_tool_visible = "write_native_file" in {
@@ -1976,10 +2074,11 @@ def build_agent_node(
                     if write_required and not write_tool_visible
                     else None
                 )
-                extensions_runtime_service.emit_route_selected(
-                    user_query=extensions_route_query,
-                    route_bundle=route_bundle,
-                )
+                if not route_cache_hit:
+                    extensions_runtime_service.emit_route_selected(
+                        user_query=extensions_route_query,
+                        route_bundle=route_bundle,
+                    )
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
@@ -2049,6 +2148,7 @@ def build_agent_node(
                 "toolCallCount": write_observation["toolCallCount"],
                 "writeToolSucceeded": write_observation["successful"] if write_required else None,
                 "missingRequiredTool": missing_required_tool,
+                "routingCacheHit": route_cache_hit,
             }
             for key in ("parentDelegationId", "delegationId", "delegationDepth", "delegationNodeCount", "delegationBudget"):
                 if key in inherited_route_context:
@@ -2178,6 +2278,59 @@ def build_agent_node(
                     ),
                 }
             )
+
+            tool_loop = _delegated_tool_loop_observation(
+                [*messages, response],
+                agent_id=agent_id,
+                current_message=response,
+            )
+            route_context_record.update(
+                {
+                    "delegatedToolCallBudget": _MAX_DELEGATED_TOOL_CALLS,
+                    "delegatedExactToolRepeatLimit": _MAX_DELEGATED_EXACT_TOOL_REPEATS,
+                    "delegatedToolLoopBlocked": tool_loop["blocked"],
+                    "delegatedToolLoopReason": tool_loop["reason"],
+                }
+            )
+            if getattr(response, "tool_calls", None) and tool_loop["blocked"]:
+                # Do not send another provider request once the worker is
+                # repeating an identical call or has exhausted its bounded
+                # tool budget. The Supervisor receives a typed degraded
+                # result and can decide whether a fresh, narrower retry is
+                # justified.
+                loop_summary = (
+                    "子代理达到有界工具调用上限，已停止继续请求。"
+                    if tool_loop["reason"] == "delegated_tool_call_budget_exhausted"
+                    else "子代理重复发出相同工具调用，已熔断该循环。"
+                )
+                refined_msg = HumanMessage(
+                    content=(
+                        f"[{agent_name} 执行被运行时熔断]\n{loop_summary}\n"
+                        f"已观察工具调用 {tool_loop['toolCallCount']} 次，"
+                        f"相同调用最高重复 {tool_loop['exactRepeatCount']} 次。\n"
+                        "请 Supervisor 依据已有产物和证据决定是否缩小范围后重试；不得把未完成的 prose 当作交付。"
+                    ),
+                    id=str(uuid.uuid4()),
+                    additional_kwargs={
+                        "v8_governance_type": "delegation_result",
+                        "v8_owner_runtime_kind": "subagent",
+                        "v8_owner_agent_kind": "subagent",
+                        "v8_owner_agent_id": agent_id,
+                        "v8_owner_delegation_id": str(inherited_route_context.get("delegationId") or ""),
+                        "v8_subagent_tools_used": _delegated_tool_names([*messages, response], agent_id=agent_id),
+                        "v8_tool_call_count": tool_loop["toolCallCount"],
+                        "v8_delegation_status": "degraded",
+                        "v8_delegation_error": tool_loop["reason"],
+                    },
+                )
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [refined_msg],
+                        "delegation_contexts": [route_context_record],
+                        "current_route_context": _merged_route_context(state, route_context_record),
+                    },
+                )
 
             if getattr(response, "tool_calls", None):
                 return Command(

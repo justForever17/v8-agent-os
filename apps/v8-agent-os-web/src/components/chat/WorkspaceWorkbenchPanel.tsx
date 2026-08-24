@@ -189,6 +189,10 @@ export function WorkspaceWorkbenchPanel({
         [messages, sessionSources],
     );
     const activeProcesses = useMemo(() => processes.filter(activeProcess), [processes]);
+    const workbenchIsLive = useMemo(
+        () => runtimeModel.items.some((item) => item.status === "active" || item.status === "attention"),
+        [runtimeModel.items],
+    );
     const visibleTodos = useMemo(() => todos.filter((item) => text(item.content || item.text)), [todos]);
     const currentRuntime = useMemo(
         () => runtimeModel.items.find((item) => item.status === "attention")
@@ -274,6 +278,37 @@ export function WorkspaceWorkbenchPanel({
             });
         return () => controller.abort();
     }, [resourceRevision, sessionId]);
+
+    // Durable artifact/source rows can be committed between two compact
+    // runtime milestones. Poll only while a run is live so the sidebar does
+    // not depend on a manual page refresh, while keeping the steady-state
+    // surface event-driven.
+    useEffect(() => {
+        if (!sessionId || !workbenchIsLive) return;
+        let disposed = false;
+        const refresh = () => {
+            if (disposed || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+            const query = new URLSearchParams({ sessionId, limit: "100" });
+            void Promise.allSettled([
+                fetch(`/api/artifacts?${query.toString()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+                fetch(`/api/sources?${query.toString()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+            ]).then(([artifactsResult, sourcesResult]) => {
+                if (disposed) return;
+                if (artifactsResult.status === "fulfilled" && Array.isArray(artifactsResult.value?.artifacts)) {
+                    setRuntimeArtifacts(artifactsResult.value.artifacts);
+                }
+                if (sourcesResult.status === "fulfilled" && Array.isArray(sourcesResult.value?.sources)) {
+                    setSessionSources(sourcesResult.value.sources);
+                }
+            });
+        };
+        refresh();
+        const timer = window.setInterval(refresh, 2000);
+        return () => {
+            disposed = true;
+            window.clearInterval(timer);
+        };
+    }, [sessionId, workbenchIsLive]);
 
     useEffect(() => {
         if (!sessionId) return;

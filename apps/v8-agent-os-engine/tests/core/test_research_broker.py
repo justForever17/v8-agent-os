@@ -17,6 +17,7 @@ import core.tools.research_broker as research_module
 from core.agents import default_subagent_configs
 from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_for_actor
 from core.tools.research_quality import (
+    MIN_RESEARCH_SOURCE_COUNT,
     TARGET_RESEARCH_ANSWER_CHARS,
     TARGET_RESEARCH_DATED_SOURCE_COUNT,
     TARGET_RESEARCH_DISTINCT_HOST_COUNT,
@@ -190,7 +191,7 @@ def _high_quality_architect_pack(**kwargs):
     return pack
 
 
-def _unique_search_result_batch(call_index: int) -> list[dict]:
+def _unique_search_result_batch(call_index: int, query: str = "") -> list[dict]:
     authoritative_hosts = (
         "platform.openai.com",
         "docs.anthropic.com",
@@ -210,7 +211,11 @@ def _unique_search_result_batch(call_index: int) -> list[dict]:
                 f"https://{authoritative_hosts[((call_index - 1) * 2 + offset - 1) % len(authoritative_hosts)]}"
                 f"/research/{call_index}-{offset}"
             ),
-            "snippet": "research runtime evidence contract primary source analysis limitations",
+            "snippet": (
+                f"{query} primary source analysis limitations"
+                if query
+                else "research runtime evidence contract primary source analysis limitations"
+            ),
             "publishedAt": f"2026-07-{10 + call_index + offset:02d}T00:00:00Z",
         }
         for offset in (1, 2)
@@ -1034,6 +1039,77 @@ def test_source_gate_rejects_obvious_root_subject_collision_across_all_shards():
     }[ema_url] is False
 
 
+def test_chinese_document_title_is_a_root_subject_anchor_across_quality_layers():
+    question = (
+        "依据中国政府公开资料，概括《生成式人工智能服务管理暂行办法》对训练数据、"
+        "生成内容治理、用户权益和投诉举报提出的要求。"
+    )
+    relevant = {
+        "title": "生成式人工智能服务管理暂行办法",
+        "url": "https://www.gov.cn/zhengce/content/2023-07/13/content_6891752.htm",
+        "evidenceCandidates": [
+            {
+                "text": "生成式人工智能服务管理暂行办法规定了训练数据、生成内容治理和投诉举报要求。",
+                "relevanceScore": 100,
+            }
+        ],
+    }
+    unrelated = {
+        "title": "个人信息处理活动一般合规提示",
+        "url": "https://court.gov.cn/privacy-guidance.html",
+        "evidenceCandidates": [
+            {
+                "text": "个人信息处理者应当向用户说明处理目的，并提供一般投诉渠道。",
+                "relevanceScore": 30,
+            }
+        ],
+    }
+
+    assert "生成式人工智能服务管理暂行办法" in research_module._research_root_subject_anchors(question)
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title=relevant["title"],
+        url=relevant["url"],
+        text=relevant["evidenceCandidates"][0]["text"],
+    ) is True
+    assert research_module._research_source_matches_root_subject(
+        question,
+        title=unrelated["title"],
+        url=unrelated["url"],
+        text=unrelated["evidenceCandidates"][0]["text"],
+    ) is False
+    assert research_module._architect_source_subject_focused(relevant, question) is True
+    assert research_module._architect_source_subject_focused(unrelated, question) is False
+
+
+def test_authority_cannot_replace_body_relevance_for_chinese_research():
+    question = (
+        "概括《生成式人工智能服务管理暂行办法》对训练数据、个人信息、内容标识、"
+        "算法备案、用户权益和投诉举报的要求。"
+    )
+    unrelated_body = (
+        "本页介绍传统医药管理机构的行政职责、年度工作计划和一般政务公开事项。"
+        "公众可以通过网站提交意见，工作人员会依法处理。"
+    ) * 30
+    gate = research_module._source_quality_gate(
+        question=question,
+        result={
+            "url": "https://www.natcm.gov.cn/policy/article-15.html",
+            "title": "第十五条",
+            "snippet": "政府部门公开的政策页面",
+            "sourceQualityHints": {
+                "authorityScore": 95,
+                "authorityTier": "primary",
+            },
+        },
+        read_payload={"ok": True, "status": 200, "text": unrelated_body},
+        source_policy="authoritative",
+    )
+
+    assert gate["selectedForEvidence"] is False
+    assert gate["rejectedReason"] == "relevance_too_low"
+
+
 def test_parallel_search_shards_do_not_repeat_a_transient_failure_in_same_round(
     monkeypatch,
 ):
@@ -1380,6 +1456,93 @@ def test_search_shard_enforces_site_operator_before_read(monkeypatch):
     assert completed["fetchedTopSources"][0]["preflightSourceQualityGate"]["selectedForEvidence"] is True
 
 
+def test_bing_cn_site_query_can_read_a_marked_domestic_mirror_after_official_timeout(monkeypatch):
+    read_urls: list[str] = []
+
+    def fake_search(**_kwargs):
+        return json.dumps(
+            {
+                "ok": True,
+                "provider": "bing_cn",
+                "networkRoute": "cn_direct",
+                "results": [
+                    {
+                        "title": "LangChain v1 official reference",
+                        "url": "https://docs.langchain.com/oss/python/releases/langchain-v1",
+                        "snippet": "LangChain v1 current capabilities and migration changes.",
+                    },
+                    {
+                        "title": "LangChain v1 中文镜像",
+                        "url": "https://langchain-doc.cn/releases/langchain-v1",
+                        "snippet": "LangChain v1 当前能力、迁移路径和兼容性变化。",
+                    },
+                ],
+            }
+        )
+
+    def fake_read(**kwargs):
+        read_urls.append(kwargs["url"])
+        if "docs.langchain.com" in kwargs["url"]:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failureClass": "network_timeout",
+                    "error": "international route unavailable",
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "status": 200,
+                "finalUrl": kwargs["url"],
+                "title": "LangChain v1 中文镜像",
+                "text": "LangChain v1 当前能力包括 Agent、工具调用、中间件和迁移兼容说明。 " * 24,
+            }
+        )
+
+    monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=fake_read))
+
+    completed = research_module._run_search_shard(
+        {
+            "shardId": "domestic-site-fallback",
+            "kind": "facet:capabilities",
+            "query": "site:docs.langchain.com LangChain v1 current capabilities",
+            "sourceIntent": "official_primary",
+        },
+        allowed_domains=[],
+        blocked_domains=[],
+        source_policy="authoritative",
+        max_rounds=1,
+        use_agent_browser_profile=False,
+        tool_call_id="domestic-site-fallback-test",
+    )
+
+    assert read_urls == [
+        "https://docs.langchain.com/oss/python/releases/langchain-v1",
+        "https://langchain-doc.cn/releases/langchain-v1",
+    ]
+    mirror = next(item for item in completed["results"] if item["url"].startswith("https://langchain-doc.cn"))
+    assert mirror["siteConstraintRelaxed"] is True
+    assert mirror["sourceIntent"] == "mixed"
+    fetched_mirror = next(
+        item for item in completed["fetchedTopSources"] if "langchain-doc.cn" in item["finalUrl"]
+    )
+    assert fetched_mirror["preflightSourceQualityGate"]["selectedForEvidence"] is True
+    assert "domestic_mirror_for_unreachable_site_constraint" in mirror["sourceQualityHints"]["reasons"]
+
+
+def test_source_noise_gate_does_not_reject_an_ordinary_cloudflare_mention():
+    ordinary = (
+        "LangChain is used by engineering teams at Replit, Cloudflare, Workday, and other companies. "
+        "This page documents agents, tools, middleware, and migration behavior. "
+    ) * 12
+    challenge = "Performance & Security by Cloudflare. Cloudflare Ray ID: abc123."
+
+    assert research_module._source_noise_reasons(ordinary) == []
+    assert "noise:cloudflare ray id" in research_module._source_noise_reasons(challenge)
+
+
 def test_search_shard_reads_explicit_official_site_before_applying_evidence_gate(monkeypatch):
     read_urls: list[str] = []
 
@@ -1452,6 +1615,8 @@ def test_research_catalog_rewrites_retired_langchain_host_and_exposes_current_hi
     "diagnostic",
     [
         "Research should continue until at least 8 readable sources are available; 5 is only the rejection floor.",
+        "Research needs at least 5 readable sources before a reviewed answer can be delivered.",
+        "Architect-answerable source minimum not met: 3/5.",
         "No source-backed claims were extracted from readable page bodies.",
         "research_source_transport_exhausted",
     ],
@@ -3205,7 +3370,7 @@ def test_web_research_architect_prompt_allows_source_backed_composition(monkeypa
         assert prompt.count("How should pathlib and argparse be combined in a CLI?") == 1
 
 
-def test_research_architect_uses_gap_review_until_structural_targets_are_met():
+def test_research_architect_synthesizes_at_minimum_floor_without_claiming_target_quality():
     def sources(count: int) -> list[dict]:
         return [
             {
@@ -3219,12 +3384,20 @@ def test_research_architect_uses_gap_review_until_structural_targets_are_met():
 
     assert research_module._research_architect_mode(
         "current runtime contract",
-        sources(TARGET_RESEARCH_SOURCE_COUNT - 1),
+        sources(MIN_RESEARCH_SOURCE_COUNT - 1),
         freshness="current",
     ) == "gap_review"
+    minimum_sources = sources(MIN_RESEARCH_SOURCE_COUNT)
+    minimum_stats = research_module._research_architect_structural_stats(
+        "current runtime contract",
+        minimum_sources,
+        freshness="current",
+    )
+    assert minimum_stats["structuralMinimumMet"] is True
+    assert minimum_stats["structuralTargetMet"] is False
     assert research_module._research_architect_mode(
         "current runtime contract",
-        sources(TARGET_RESEARCH_SOURCE_COUNT),
+        minimum_sources,
         freshness="current",
     ) == "full_synthesis"
 
@@ -3349,7 +3522,7 @@ def test_research_architect_gap_review_disables_thinking(monkeypatch):
     assert resolved_model_refs == ["minimax-cn::MiniMax-M3"]
 
 
-def test_research_architect_mode_counts_only_subject_focused_answerable_sources():
+def test_research_architect_quality_target_counts_only_subject_focused_answerable_sources():
     question = "What are the current best practices for using Python pathlib in CLI tools?"
     sources = [
         {
@@ -3368,11 +3541,18 @@ def test_research_architect_mode_counts_only_subject_focused_answerable_sources(
         for index in range(TARGET_RESEARCH_SOURCE_COUNT)
     ]
 
+    stats = research_module._research_architect_structural_stats(
+        question,
+        sources,
+        freshness="current",
+    )
+    assert stats["structuralMinimumMet"] is True
+    assert stats["structuralTargetMet"] is False
     assert research_module._research_architect_mode(
         question,
         sources,
         freshness="current",
-    ) == "gap_review"
+    ) == "full_synthesis"
 
     sources[-1]["subjectFocused"] = True
     assert research_module._research_architect_mode(
@@ -3515,7 +3695,7 @@ def test_pathlib_cli_subject_focus_rejects_generic_click_type_page_without_path_
     assert research_module._architect_source_subject_focused(source, question) is False
 
 
-def test_research_architect_runs_one_gap_review_and_caps_full_syntheses(monkeypatch):
+def test_research_architect_defers_model_below_minimum_and_caps_full_syntheses(monkeypatch):
     calls: list[str] = []
 
     def fake_invoke(**kwargs):
@@ -3565,7 +3745,7 @@ def test_research_architect_runs_one_gap_review_and_caps_full_syntheses(monkeypa
         ]
         return source_matrix, shards
 
-    gap_sources, gap_shards = fixtures(TARGET_RESEARCH_SOURCE_COUNT - 1, 5)
+    gap_sources, gap_shards = fixtures(MIN_RESEARCH_SOURCE_COUNT - 1, 3)
     gap_state: dict = {}
     first_gap = research_module._web_research_architect_pack(
         question="current runtime contract",
@@ -3586,10 +3766,11 @@ def test_research_architect_runs_one_gap_review_and_caps_full_syntheses(monkeypa
         architect_call_state=gap_state,
     )
     assert first_gap["modelSynthesis"]["mode"] == "gap_review"
-    assert first_gap["modelSynthesis"]["used"] is True
-    assert repeated_gap["modelSynthesis"]["fallbackReason"] == "architect_gap_review_attempt_budget_exhausted"
-    assert calls.count("gap_review") == 1
-    assert gap_state["gapReviewAttempts"] == 1
+    assert first_gap["modelSynthesis"]["used"] is False
+    assert first_gap["modelSynthesis"]["fallbackReason"] == "architect_gap_review_deferred_until_minimum_floor"
+    assert repeated_gap["modelSynthesis"]["fallbackReason"] == "architect_gap_review_deferred_until_minimum_floor"
+    assert calls.count("gap_review") == 0
+    assert gap_state.get("gapReviewAttempts", 0) == 0
 
     full_sources, full_shards = fixtures(TARGET_RESEARCH_SOURCE_COUNT, 5)
     full_state: dict = {}
@@ -4742,6 +4923,30 @@ def test_claim_excerpt_verifier_resolves_runtime_evidence_candidate_key():
     )
     assert rejected == []
     assert rejected_issues == ["claim_1_evidence_key_source_mismatch"]
+
+    corrected, corrected_issues = research_module._verify_architect_claim_excerpts(
+        [
+            {
+                "claim": "A directly supported atomic premise is available.",
+                "supportingSources": ["S2"],
+                "evidenceExcerptKey": candidate["evidenceExcerptKey"],
+            }
+        ],
+        [
+            source,
+            {
+                "sourceId": "src-2",
+                "citationKey": "S2",
+                "url": "https://docs.example/two",
+                "text": "A separate source body with enough content for the mismatch fixture.",
+            },
+        ],
+        require_evidence_key=True,
+    )
+    assert corrected_issues == []
+    assert corrected[0]["supportBindingCorrected"] is True
+    assert corrected[0]["supportingSources"][0]["citationKey"] == "S1"
+    assert corrected[0]["evidenceExcerpt"] == candidate["text"]
 
 
 def test_evidence_candidate_relevance_ignores_markdown_url_destinations():
@@ -9182,7 +9387,7 @@ def test_research_transport_treats_missing_packaged_fetcher_as_terminal() -> Non
     ]
 
 
-def test_research_loop_allows_one_refinement_for_reachable_irrelevant_results(monkeypatch):
+def test_research_loop_stops_when_reachable_results_are_transport_exhausted(monkeypatch):
     calls = 0
 
     def fake_run_search_shards(shards, **_kwargs):
@@ -9262,8 +9467,8 @@ def test_research_loop_allows_one_refinement_for_reachable_irrelevant_results(mo
         tool_call_id="transport-relevance-test",
     )
 
-    assert calls == 2
-    assert len(state["rounds"]) == 2
+    assert calls == 1
+    assert len(state["rounds"]) == 1
     assert state["stopReason"] == "source_transport_exhausted"
     assert state["transportSummary"]["reachableButIrrelevant"] is True
 
@@ -15576,7 +15781,7 @@ def test_research_broker_run_returns_evidence_bundle(monkeypatch):
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -15783,7 +15988,7 @@ def test_research_broker_uses_web_research_architect_agent_when_available(monkey
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -16750,6 +16955,58 @@ def test_web_research_architect_merge_resolves_string_citation_keys():
     ]
 
 
+def test_minimum_qualified_reviewed_answer_remains_deliverable():
+    sources = [
+        {
+            "sourceId": f"minimum-{index}",
+            "citationKey": f"S{index}",
+            "title": f"Minimum evidence {index}",
+            "url": f"https://minimum-{index}.example/research",
+            "host": f"minimum-{index}.example",
+            "selectedForEvidence": True,
+            "retrievedAt": "2026-08-24T00:00:00Z",
+            "contentChars": 6000,
+            "readEvidence": {
+                "verified": True,
+                "contentChars": 6000,
+                "contentSha256": hashlib.sha256(f"minimum-{index}".encode()).hexdigest(),
+                "retrievedAt": "2026-08-24T00:00:00Z",
+            },
+        }
+        for index in range(1, MIN_RESEARCH_SOURCE_COUNT + 1)
+    ]
+    agent_pack = _high_quality_architect_pack(
+        question="restricted network minimum delivery",
+        source_matrix=sources,
+    )
+    merged = research_module._merge_web_research_architect_agent_pack(
+        {
+            "sourceUrls": sources,
+            "confidence": "medium",
+            "asOf": "2026-08-24T00:00:00Z",
+            "_sourceTexts": _test_source_text_map(sources),
+        },
+        agent_pack,
+        question="restricted network minimum delivery",
+    )
+    answer_pack = research_module._research_answer_pack(
+        {
+            "evidenceBundleId": "minimum-qualified-bundle",
+            "finalExperiencePack": merged,
+            "sourceMatrix": sources,
+            "claimTable": merged["claimTable"],
+        }
+    )
+
+    assert merged["reviewDecision"] == "accept"
+    assert answer_pack["score"]["qualityTier"] == "minimum_qualified"
+    assert answer_pack["score"]["minimumQualified"] is True
+    assert answer_pack["score"]["deliveryReady"] is True
+    assert answer_pack["answer"].startswith("结论：")
+    assert f"target_source_count_not_met:{TARGET_RESEARCH_SOURCE_COUNT}" in answer_pack["missingOrStaleReasons"]
+    assert answer_pack["recommendedNextAction"] == "use_research_answer_pack"
+
+
 def test_web_research_architect_merge_keeps_the_exact_reviewed_read_receipts():
     full_sources = [
         {
@@ -17044,7 +17301,7 @@ def test_research_broker_reuses_existing_experience_pack(monkeypatch):
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                    "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -17136,7 +17393,7 @@ def test_research_broker_refreshes_when_reused_pack_revalidation_fails(monkeypat
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                    "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -17213,7 +17470,7 @@ def test_research_broker_does_not_retry_rejected_synthesis_without_new_evidence(
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                    "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -17283,7 +17540,7 @@ def test_research_broker_does_not_search_again_for_architect_protocol_failure(mo
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                    "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -17346,7 +17603,7 @@ def test_research_broker_does_not_reuse_unrelated_pack(monkeypatch):
             {
                 "ok": True,
                 "provider": "fake",
-                "results": _unique_search_result_batch(search_calls),
+                    "results": _unique_search_result_batch(search_calls, kwargs.get("query", "")),
             }
         )
 
@@ -17720,7 +17977,8 @@ def test_research_broker_reads_explicit_direct_official_url_without_search_fallb
 
     assert "https://docs.python.org/3/library/pathlib.html" in read_urls
     assert not any("site:peps.python.org" in query for query in queries)
-    assert payload["researchLoopState"]["rounds"][1]["directUrlFallbackCount"] == 0
+    assert len(payload["researchLoopState"]["rounds"]) == 1
+    assert payload["researchLoopState"]["stopReason"] != "architect_evidence_repair_completed"
 
 
 def test_research_broker_video_policy_uses_popularity_signals_and_stays_compact(monkeypatch):

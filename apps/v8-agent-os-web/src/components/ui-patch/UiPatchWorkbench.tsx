@@ -36,7 +36,7 @@ type SourceCandidate = {
     candidateId: string;
     workspacePath: string;
     selector: string;
-    sourceKind: "css" | "html_style" | string;
+    sourceKind: "css" | "html_style" | "html_text" | string;
     declarations: Record<string, string>;
     reason: string;
 };
@@ -47,6 +47,8 @@ type MappedSelection = {
     tagName: string;
     label: string;
     computedStyles: Record<string, string>;
+    textContent?: string;
+    textEditable?: boolean;
     sourceCandidates: SourceCandidate[];
     writable: boolean;
     unsupportedReason?: string | null;
@@ -58,6 +60,8 @@ type RawSelection = {
     tagName?: string;
     label?: string;
     computedStyles?: Record<string, string>;
+    textContent?: string;
+    textEditable?: boolean;
     rules?: Array<Record<string, unknown>>;
 };
 
@@ -163,8 +167,61 @@ function safeReturnPath(value: string | null) {
     return value && value.startsWith("/chat") ? value : "/chat";
 }
 
-function propertyLabel(property: string) {
-    return property.replaceAll("-", " ");
+const PROPERTY_LABEL_KEYS: Record<string, string> = {
+    display: "web.uiPatch.property.display",
+    width: "web.uiPatch.property.width",
+    height: "web.uiPatch.property.height",
+    "min-width": "web.uiPatch.property.minWidth",
+    "min-height": "web.uiPatch.property.minHeight",
+    "max-width": "web.uiPatch.property.maxWidth",
+    "max-height": "web.uiPatch.property.maxHeight",
+    gap: "web.uiPatch.property.gap",
+    "row-gap": "web.uiPatch.property.rowGap",
+    "column-gap": "web.uiPatch.property.columnGap",
+    flex: "web.uiPatch.property.flex",
+    "flex-direction": "web.uiPatch.property.flexDirection",
+    "flex-wrap": "web.uiPatch.property.flexWrap",
+    "align-items": "web.uiPatch.property.alignItems",
+    "justify-content": "web.uiPatch.property.justifyContent",
+    "grid-template-columns": "web.uiPatch.property.gridColumns",
+    "grid-template-rows": "web.uiPatch.property.gridRows",
+    padding: "web.uiPatch.property.padding",
+    "padding-top": "web.uiPatch.property.paddingTop",
+    "padding-right": "web.uiPatch.property.paddingRight",
+    "padding-bottom": "web.uiPatch.property.paddingBottom",
+    "padding-left": "web.uiPatch.property.paddingLeft",
+    margin: "web.uiPatch.property.margin",
+    "margin-top": "web.uiPatch.property.marginTop",
+    "margin-right": "web.uiPatch.property.marginRight",
+    "margin-bottom": "web.uiPatch.property.marginBottom",
+    "margin-left": "web.uiPatch.property.marginLeft",
+    position: "web.uiPatch.property.position",
+    top: "web.uiPatch.property.top",
+    right: "web.uiPatch.property.right",
+    bottom: "web.uiPatch.property.bottom",
+    left: "web.uiPatch.property.left",
+    "z-index": "web.uiPatch.property.zIndex",
+    overflow: "web.uiPatch.property.overflow",
+    "background-color": "web.uiPatch.property.backgroundColor",
+    background: "web.uiPatch.property.background",
+    border: "web.uiPatch.property.border",
+    "border-width": "web.uiPatch.property.borderWidth",
+    "border-style": "web.uiPatch.property.borderStyle",
+    "border-color": "web.uiPatch.property.borderColor",
+    "border-radius": "web.uiPatch.property.borderRadius",
+    "box-shadow": "web.uiPatch.property.boxShadow",
+    opacity: "web.uiPatch.property.opacity",
+    color: "web.uiPatch.property.color",
+    "font-size": "web.uiPatch.property.fontSize",
+    "font-weight": "web.uiPatch.property.fontWeight",
+    "line-height": "web.uiPatch.property.lineHeight",
+    "letter-spacing": "web.uiPatch.property.letterSpacing",
+    "text-align": "web.uiPatch.property.textAlign",
+};
+
+function propertyLabel(property: string, t: ReturnType<typeof useT>) {
+    const key = PROPERTY_LABEL_KEYS[property];
+    return key ? t(key) : property.replaceAll("-", " ");
 }
 
 function isHexColor(value: string) {
@@ -233,6 +290,13 @@ export function UiPatchWorkbench() {
     const selectedCandidate = useMemo(
         () => selection?.sourceCandidates.find((candidate) => candidate.candidateId === candidateId) || selection?.sourceCandidates[0] || null,
         [candidateId, selection?.sourceCandidates],
+    );
+    const styleEditingEnabled = Boolean(selection?.writable && selectedCandidate?.sourceKind !== "html_text");
+    const textEditingEnabled = Boolean(
+        selection?.writable
+        && selection.textEditable
+        && selectedCandidate
+        && (selectedCandidate.sourceKind === "html_style" || selectedCandidate.sourceKind === "html_text"),
     );
 
     const postToPreview = useCallback((message: Record<string, unknown>) => {
@@ -434,7 +498,11 @@ export function UiPatchWorkbench() {
         try {
             const expectedStyles = await requestPreviewComputed();
             const changedProperties = Object.keys(changes);
-            const missingPreviewValues = changedProperties.filter((property) => !String(expectedStyles[property] || "").trim());
+            const missingPreviewValues = changedProperties.filter((property) => (
+                property === "__text_content"
+                    ? !Object.prototype.hasOwnProperty.call(expectedStyles, property)
+                    : !String(expectedStyles[property] || "").trim()
+            ));
             if (missingPreviewValues.length) {
                 throw new Error(t("web.uiPatch.previewVerificationUnavailable"));
             }
@@ -523,15 +591,16 @@ export function UiPatchWorkbench() {
     }, [lastCommit, postToPreview, savePatch, undoPatch]);
 
     const baseValue = useCallback((property: string) => {
+        if (property === "__text_content") return selection?.textContent || "";
         const declaration = selectedCandidate?.declarations[property];
         return String(declaration || selection?.computedStyles[property] || "").replace(/\s*!important\s*$/i, "").trim();
-    }, [selectedCandidate?.declarations, selection?.computedStyles]);
+    }, [selectedCandidate?.declarations, selection?.computedStyles, selection?.textContent]);
 
     const updateProperty = useCallback((property: string, value: string) => {
-        const normalized = value.trim();
+        const normalized = property === "__text_content" ? value : value.trim();
         setChanges((current) => {
             const next = { ...current };
-            if (!normalized || normalized === baseValue(property)) delete next[property];
+            if ((property !== "__text_content" && !normalized) || normalized === baseValue(property)) delete next[property];
             else next[property] = normalized;
             return next;
         });
@@ -701,6 +770,22 @@ export function UiPatchWorkbench() {
                                     )}
                                 </div>
                                 <div className="min-h-0 flex-1 overflow-auto">
+                                    <details open className="group border-b border-border/70">
+                                        <summary className="flex h-8 cursor-pointer list-none items-center px-3 text-[11px] font-medium text-foreground hover:bg-muted/45">
+                                            {t("web.uiPatch.content.text")}
+                                            <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-180" />
+                                        </summary>
+                                        <div className="space-y-1.5 px-3 pb-3">
+                                            <textarea
+                                                id="ui-patch-text-content"
+                                                value={Object.prototype.hasOwnProperty.call(changes, "__text_content") ? changes.__text_content : (selection.textContent || "")}
+                                                disabled={!textEditingEnabled}
+                                                onChange={(event) => updateProperty("__text_content", event.target.value)}
+                                                className="min-h-20 w-full resize-y rounded border border-border bg-background px-2 py-1.5 text-[11px] leading-4 outline-none disabled:opacity-45 focus:border-primary focus:ring-2 focus:ring-primary/15"
+                                            />
+                                            {!textEditingEnabled ? <p className="text-[10px] leading-4 text-muted-foreground">{t("web.uiPatch.content.readOnly")}</p> : null}
+                                        </div>
+                                    </details>
                                     {PROPERTY_SECTIONS.map((section) => (
                                         <details key={section.id} open className="group border-b border-border/70">
                                             <summary className="flex h-8 cursor-pointer list-none items-center px-3 text-[11px] font-medium text-foreground hover:bg-muted/45">
@@ -715,19 +800,19 @@ export function UiPatchWorkbench() {
                                                     const options = ENUM_VALUES[property];
                                                     return (
                                                         <div key={property} className="grid min-h-8 grid-cols-[116px_minmax(0,1fr)_24px] items-center gap-1 px-3 py-0.5 hover:bg-muted/30">
-                                                            <label htmlFor={`ui-patch-${property}`} className={`truncate font-mono text-[10px] ${changed ? "text-primary" : "text-muted-foreground"}`}>{propertyLabel(property)}</label>
+                                                            <label htmlFor={`ui-patch-${property}`} className={`truncate text-[10px] ${changed ? "text-primary" : "text-muted-foreground"}`}>{propertyLabel(property, t)}</label>
                                                             {options ? (
-                                                                <select id={`ui-patch-${property}`} value={value} disabled={!selection.writable} onChange={(event) => updateProperty(property, event.target.value)} className="h-7 min-w-0 rounded border border-border bg-background px-2 text-[11px] outline-none disabled:opacity-45 focus:border-primary focus:ring-2 focus:ring-primary/15">
+                                                                <select id={`ui-patch-${property}`} value={value} disabled={!styleEditingEnabled} onChange={(event) => updateProperty(property, event.target.value)} className="h-7 min-w-0 rounded border border-border bg-background px-2 text-[11px] outline-none disabled:opacity-45 focus:border-primary focus:ring-2 focus:ring-primary/15">
                                                                     {!options.includes(value) ? <option value={value}>{value || "—"}</option> : null}
                                                                     {options.map((option) => <option key={option} value={option}>{option}</option>)}
                                                                 </select>
                                                             ) : (
                                                                 <div className="flex min-w-0 items-center gap-1">
-                                                                    {(property === "color" || property.includes("color")) && isHexColor(value) ? <input type="color" value={value} disabled={!selection.writable} onChange={(event) => updateProperty(property, event.target.value)} className="h-6 w-6 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0" aria-label={`${property} color`} /> : null}
-                                                                    <input id={`ui-patch-${property}`} value={value} disabled={!selection.writable} onChange={(event) => updateProperty(property, event.target.value)} onBlur={(event) => updateProperty(property, event.target.value)} className="h-7 min-w-0 flex-1 rounded border border-border bg-background px-2 font-mono text-[10px] outline-none disabled:opacity-45 focus:border-primary focus:ring-2 focus:ring-primary/15" />
+                                                                     {(property === "color" || property.includes("color")) && isHexColor(value) ? <input type="color" value={value} disabled={!styleEditingEnabled} onChange={(event) => updateProperty(property, event.target.value)} className="h-6 w-6 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0" aria-label={`${property} color`} /> : null}
+                                                                     <input id={`ui-patch-${property}`} value={value} disabled={!styleEditingEnabled} onChange={(event) => updateProperty(property, event.target.value)} onBlur={(event) => updateProperty(property, event.target.value)} className="h-7 min-w-0 flex-1 rounded border border-border bg-background px-2 font-mono text-[10px] outline-none disabled:opacity-45 focus:border-primary focus:ring-2 focus:ring-primary/15" />
                                                                 </div>
                                                             )}
-                                                            <button type="button" disabled={!changed} onClick={() => updateProperty(property, base)} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground disabled:opacity-0 hover:bg-muted hover:text-foreground" aria-label={`${t("web.uiPatch.resetProperty")} ${property}`}>
+                                                             <button type="button" disabled={!changed} onClick={() => updateProperty(property, base)} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground disabled:opacity-0 hover:bg-muted hover:text-foreground" aria-label={`${t("web.uiPatch.resetProperty")} ${propertyLabel(property, t)}`}>
                                                                 <Undo2 className="h-3 w-3" />
                                                             </button>
                                                         </div>

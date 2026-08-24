@@ -89,6 +89,24 @@ def test_configured_provider_preferences_adopt_new_registry_order_for_untouched_
     assert web_fetcher._configured_source_provider_order("global") == list(current_order)
 
 
+def test_configured_provider_preferences_migrate_previous_shipped_order_to_bing_cn(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "cnPreferred": list(web_fetcher._LEGACY_CN_SOURCE_PROVIDERS_V2),
+                "globalPreferred": list(web_fetcher._LEGACY_GLOBAL_SOURCE_PROVIDERS_V2),
+            },
+        },
+    )
+
+    assert web_fetcher._configured_source_provider_order("cn") == list(web_fetcher.DEFAULT_CN_SOURCE_PROVIDERS)
+    assert web_fetcher._configured_source_provider_order("global") == list(web_fetcher.DEFAULT_GLOBAL_SOURCE_PROVIDERS)
+    assert "bing_cn" in web_fetcher._configured_source_provider_order("cn")
+    assert "bing_cn" in web_fetcher._configured_source_provider_order("global")
+
+
 def test_configured_cn_preferences_append_new_fallback_only_for_untouched_legacy_default(monkeypatch) -> None:
     legacy_order = list(web_fetcher._LEGACY_CN_SOURCE_PROVIDERS_V1)
     monkeypatch.setattr(
@@ -163,6 +181,170 @@ def test_auto_router_prioritizes_allowlisted_agent_browser_search_hosts(monkeypa
     assert plan["profilePromotedProviders"] == ["metaso", "baidu"]
     assert plan["networkRoute"] == "agent_browser"
     assert web_fetcher._source_router_payload_fields(plan)["networkRoute"] == "agent_browser"
+
+
+def test_auto_router_keeps_public_cn_direct_ahead_of_login_profile_routes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "globalPreferred": ["yahoo", "metaso", "bing_cn", "baidu"],
+            },
+            "providers": {
+                provider: {"enabled": True}
+                for provider in ("yahoo", "metaso", "bing_cn", "baidu")
+            },
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn", "baidu.com"],
+        },
+    )
+
+    plan = web_fetcher._source_router_plan(
+        query="LangChain current capabilities official documentation",
+        requested_provider="auto",
+    )
+
+    assert plan["plannedProviders"] == ["bing_cn", "metaso", "baidu", "yahoo"]
+    assert plan["providers"] == ["bing_cn", "metaso", "baidu", "yahoo"]
+    assert plan["profilePromotedProviders"] == ["metaso", "baidu"]
+    assert plan["networkRoute"] == "cn_direct"
+
+
+def test_metaso_profile_configuration_still_tries_structured_search_first(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {"cnPreferred": ["metaso"]},
+            "providers": {"metaso": {"enabled": True}},
+            "useAgentBrowserProfile": True,
+            "agentBrowserProfileAllowlist": ["metaso.cn"],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_search_public",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "results": [
+                {
+                    "title": "LangChain v1 中文参考",
+                    "url": "https://docs.example.cn/langchain-v1",
+                    "snippet": "LangChain v1 current capabilities.",
+                }
+            ],
+            "eventsSeen": 3,
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_fetch_with_scrapling_internal",
+        lambda *_args, **_kwargs: pytest.fail("browser page fallback should not run after structured success"),
+    )
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="LangChain v1 current capabilities",
+            search_engine="metaso",
+            useAgentBrowserProfile=True,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "metaso"
+    assert payload["attemptedProviders"][-1]["route"] == "public_sse"
+    assert payload["metaso"]["route"] == "public_sse"
+
+
+def test_auto_search_continues_when_provider_ignores_site_constraint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "sourceRouter": {
+                "cnPreferred": ["bing_cn", "metaso"],
+                "globalPreferred": ["bing_cn", "metaso"],
+            },
+            "providers": {
+                "bing_cn": {"enabled": True},
+                "metaso": {"enabled": True},
+            },
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_html_search_public",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "statusCode": 200,
+            "finalUrl": "https://cn.bing.com/search?q=langchain",
+            "results": [
+                {
+                    "title": "LangChain product home",
+                    "url": "https://www.langchain.com/langchain",
+                    "snippet": "LangChain agent framework.",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_search_public",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "results": [
+                {
+                    "title": "LangChain v1 migration guide",
+                    "url": "https://docs.langchain.com/oss/python/migrate/langchain-v1",
+                    "snippet": "Official v1 migration guide.",
+                }
+            ],
+        },
+    )
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="site:docs.langchain.com LangChain v1 migration guide",
+            search_engine="auto",
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "metaso"
+    assert payload.get("siteConstraintRelaxed") is not True
+    assert payload["attemptedProviders"][0]["status"] == "relaxed_candidate"
+    assert payload["attemptedProviders"][0]["failureClass"] == "site_constraint_not_honored"
+
+
+def test_explicit_metaso_empty_results_fail_instead_of_reporting_success(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_fetcher,
+        "get_web_fetch_config",
+        lambda: {
+            "providers": {"metaso": {"enabled": True}},
+            "useAgentBrowserProfile": False,
+            "agentBrowserProfileAllowlist": [],
+        },
+    )
+    monkeypatch.setattr(
+        web_fetcher,
+        "_metaso_search_public",
+        lambda *_args, **_kwargs: {"ok": True, "results": []},
+    )
+
+    payload = json.loads(
+        web_fetcher.web_search.func(
+            query="site:docs.example.com current API",
+            search_engine="metaso",
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["failureClass"] == "no_results"
+    assert payload["attemptedProviders"][-1]["status"] == "empty"
 
 
 def test_auto_search_failure_preserves_operational_error_and_has_no_selected_provider(monkeypatch) -> None:
@@ -535,6 +717,24 @@ def test_html_search_public_uses_one_bounded_request_and_existing_bing_parser(mo
     assert payload["ok"] is True
     assert payload["results"][0]["url"] == "https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng"
     assert request_timeouts == [7.5]
+
+
+def test_bing_cn_reuses_bing_parser_with_a_cn_direct_url() -> None:
+    soup = _soup(
+        "<li class='b_algo'><h2><a href='https://docs.example.cn/reference'>"
+        "国内可读参考资料</a></h2><div class='b_caption'><p>可引用正文入口。</p></div></li>"
+    )
+
+    assert web_fetcher._provider_search_url("bing_cn", "LangChain reference").startswith(
+        "https://cn.bing.com/search?q="
+    )
+    assert web_fetcher._extract_search_results(soup, provider="bing_cn", limit=5) == [
+        {
+            "title": "国内可读参考资料",
+            "url": "https://docs.example.cn/reference",
+            "snippet": "可引用正文入口。",
+        }
+    ]
 
 
 def test_yahoo_html_search_serializes_parallel_anonymous_requests(monkeypatch) -> None:

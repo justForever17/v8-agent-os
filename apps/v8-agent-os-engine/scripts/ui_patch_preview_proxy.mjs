@@ -139,6 +139,7 @@ function uiPatchBridgeRuntime() {
   let selected = null;
   let frame = 0;
   let previewStyle = null;
+  let previewTextOriginal = null;
   let selectedNodeId = "";
 
   const overlay = document.createElement("div");
@@ -302,6 +303,8 @@ function uiPatchBridgeRuntime() {
       selector: uniqueSelector(element),
       tagName: element.tagName.toLowerCase(),
       label: safeText(element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent, 100) || elementLabel(element),
+      textContent: String(element.textContent || "").slice(0, 2000),
+      textEditable: element instanceof HTMLElement,
       rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       computedStyles,
       rules: collectRules(element),
@@ -309,6 +312,8 @@ function uiPatchBridgeRuntime() {
   }
 
   function setSelected(element, notifyParent = true) {
+    if (selected && previewTextOriginal !== null) selected.textContent = previewTextOriginal;
+    previewTextOriginal = null;
     if (selected && selected !== element && selectedNodeId) selected.removeAttribute("data-v8-ui-patch-node");
     selected = element;
     selectedNodeId = "node_" + Math.random().toString(16).slice(2);
@@ -320,6 +325,12 @@ function uiPatchBridgeRuntime() {
   function applyPreview(changes) {
     if (!selected || !selectedNodeId) return;
     if (previewStyle) previewStyle.remove();
+    if (previewTextOriginal !== null) selected.textContent = previewTextOriginal;
+    previewTextOriginal = null;
+    if (Object.prototype.hasOwnProperty.call(changes || {}, "__text_content") && selected instanceof HTMLElement) {
+      previewTextOriginal = selected.textContent || "";
+      selected.textContent = String(changes.__text_content || "");
+    }
     previewStyle = document.createElement("style");
     previewStyle.dataset.v8UiPatchPreview = "true";
     const declarations = Object.entries(changes || {})
@@ -332,7 +343,11 @@ function uiPatchBridgeRuntime() {
       updateOverlay(selected);
       const style = getComputedStyle(selected);
       const computedStyles = {};
-      for (const property of Object.keys(changes || {})) computedStyles[property] = style.getPropertyValue(property).trim();
+      for (const property of Object.keys(changes || {})) {
+        computedStyles[property] = property === "__text_content"
+          ? String(selected.textContent || "").slice(0, 2000)
+          : style.getPropertyValue(property).trim();
+      }
       post({ type: "v8-ui-patch:preview-applied", computedStyles });
     });
   }
@@ -348,7 +363,9 @@ function uiPatchBridgeRuntime() {
     const observedStyles = {};
     let ok = true;
     for (const [property, expected] of Object.entries(expectedStyles || {})) {
-      const observed = style.getPropertyValue(property).trim();
+      const observed = property === "__text_content"
+        ? String(element.textContent || "").slice(0, 2000)
+        : style.getPropertyValue(property).trim();
       observedStyles[property] = observed;
       if (observed !== String(expected || "").trim()) ok = false;
     }
@@ -399,6 +416,8 @@ function uiPatchBridgeRuntime() {
     } else if (message.type === "v8-ui-patch:clear-preview") {
       if (previewStyle) previewStyle.remove();
       previewStyle = null;
+      if (selected && previewTextOriginal !== null) selected.textContent = previewTextOriginal;
+      previewTextOriginal = null;
       requestAnimationFrame(refreshOverlay);
     } else if (message.type === "v8-ui-patch:reload") {
       window.location.reload();

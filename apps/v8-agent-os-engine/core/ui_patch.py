@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import difflib
+import html
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -84,6 +86,7 @@ ALLOWED_STYLE_PROPERTIES = frozenset(
         "line-height",
         "letter-spacing",
         "text-align",
+        "__text_content",
     }
 )
 
@@ -116,6 +119,25 @@ def _utc_now() -> str:
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _resolve_node_executable() -> str | None:
+    """Use the packaged Playwright Node driver on clean desktop installs."""
+
+    for module_name in ("playwright", "patchright"):
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        for package_root in spec.submodule_search_locations:
+            driver_root = Path(package_root) / "driver"
+            for executable_name in ("node.exe", "node"):
+                candidate = driver_root / executable_name
+                if candidate.is_file():
+                    return str(candidate)
+    return shutil.which("node")
 
 
 def _safe_preview(value: Any, limit: int = 180) -> str:
@@ -262,7 +284,93 @@ def _apply_html_style_changes(text: str, style_index: int, selector: str, change
     return text[:start] + patched_style + text[end:]
 
 
+def _html_element_spans(text: str, selector: str) -> list[tuple[int, int, int, int]]:
+    """Return conservative spans for simple unique HTML element selectors."""
+
+    normalized = _normalize_selector(selector)
+    leaf = normalized.split(">")[-1].strip()
+    leaf = re.sub(r":nth-of-type\(\d+\)", "", leaf)
+    match = re.match(
+        r"^(?P<tag>[a-zA-Z][\w:-]*|\*)?"
+        r"(?P<qualifiers>(?:#[\w:-]+|\.[\w-]+)*)"
+        r"(?P<attributes>(?:\[[^\]]+\])*)$",
+        leaf,
+    )
+    if not match:
+        return []
+    tag = match.group("tag") or "*"
+    qualifiers = match.group("qualifiers")
+    attributes = match.group("attributes") or ""
+    spans: list[tuple[int, int, int, int]] = []
+    opening_pattern = re.compile(
+        r"<(?P<tag>[a-zA-Z][\w:-]*)\b(?P<attrs>[^>]*)>",
+        flags=re.IGNORECASE,
+    )
+    for opening in opening_pattern.finditer(text):
+        element_tag = opening.group("tag")
+        if tag != "*" and element_tag.lower() != tag.lower():
+            continue
+        attrs = opening.group("attrs") or ""
+        if attrs.rstrip().endswith("/"):
+            continue
+        attr_values: dict[str, str] = {}
+        for name, double_quoted, single_quoted, unquoted in re.findall(
+            r"""([a-zA-Z_:][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""",
+            attrs,
+        ):
+            attr_values[name.lower()] = double_quoted or single_quoted or unquoted or ""
+        id_values = re.findall(r"#[\w:-]+", qualifiers)
+        if any(attr_values.get("id", "") != qualifier[1:] for qualifier in id_values):
+            continue
+        class_tokens = set(attr_values.get("class", "").split())
+        if any(qualifier[1:] not in class_tokens for qualifier in re.findall(r"\.[\w-]+", qualifiers)):
+            continue
+        attribute_matches = re.findall(r"\[\s*([a-zA-Z_:][\w:.-]*)(?:\s*=\s*(?:['\"]([^'\"]*)['\"]|([^\]\s]+)))?\s*\]", attributes)
+        attribute_mismatch = False
+        for name, quoted_value, unquoted_value in attribute_matches:
+            normalized_name = name.lower()
+            expected_value = quoted_value or unquoted_value
+            if normalized_name not in attr_values or (
+                expected_value and attr_values.get(normalized_name, "") != expected_value
+            ):
+                attribute_mismatch = True
+                break
+        if attribute_mismatch:
+            continue
+        element_pattern = re.compile(
+            rf"<\s*(?P<closing>/)?\s*{re.escape(element_tag)}\b(?P<attrs>[^>]*)>",
+            flags=re.IGNORECASE,
+        )
+        depth = 0
+        for token in element_pattern.finditer(text, opening.start()):
+            if token.group("closing"):
+                depth -= 1
+                if depth == 0:
+                    spans.append((opening.start(), token.end(), opening.end(), token.start()))
+                    break
+            elif not (token.group("attrs") or "").rstrip().endswith("/"):
+                depth += 1
+    return spans
+
+
+def _apply_html_text_change(text: str, selector: str, value: str) -> str:
+    spans = _html_element_spans(text, selector)
+    if len(spans) != 1:
+        raise LookupError("The selected HTML element is not uniquely writable")
+    _start, _end, body_start, body_end = spans[0]
+    body = text[body_start:body_end]
+    if re.search(r"<\s*(?:script|style|iframe|object)\b", body, re.I):
+        raise ValueError("Text editing is disabled for nested executable or embedded content")
+    escaped = html.escape(value, quote=False)
+    return text[:body_start] + escaped + text[body_end:]
+
+
 def _validate_style_value(property_name: str, raw_value: Any) -> str:
+    if property_name == "__text_content":
+        value = str(raw_value if raw_value is not None else "")
+        if len(value) > 2000 or "\x00" in value:
+            raise ValueError("text content contains unsupported characters or is too long")
+        return value
     value = str(raw_value or "").strip()
     if not value:
         raise ValueError(f"{property_name} requires a value")
@@ -399,6 +507,7 @@ class SelectionRecord:
     selector: str
     tag_name: str
     label: str
+    text_content: str
     computed_styles: dict[str, str]
     candidates: dict[str, SourceCandidate]
     created_monotonic: float = field(default_factory=time.monotonic)
@@ -505,7 +614,7 @@ class UiPatchService:
             if existing:
                 self._close_locked(existing)
 
-            node_path = shutil.which("node")
+            node_path = _resolve_node_executable()
             script_path = Path(__file__).resolve().parents[1] / "scripts" / "ui_patch_preview_proxy.mjs"
             if not node_path:
                 raise RuntimeError("Node.js is required by UI Patch Workbench")
@@ -818,7 +927,28 @@ class UiPatchService:
                         declarations=declarations,
                         reason=reason,
                     )
+            if not candidates and not raw_rules and item.entry_path:
+                try:
+                    html_path = (item.workspace_root / item.entry_path).resolve(strict=True)
+                    html_bytes, html_text, _ = self._read_source(html_path)
+                    if html_path.suffix.lower() in {".html", ".htm"} and len(_html_element_spans(html_text, selector)) == 1:
+                        workspace_path = html_path.relative_to(item.workspace_root).as_posix()
+                        candidate_id = f"source_{uuid.uuid4().hex}"
+                        candidates[candidate_id] = SourceCandidate(
+                            candidate_id=candidate_id,
+                            workspace_path=workspace_path,
+                            absolute_path=html_path,
+                            selector=selector,
+                            source_kind="html_text",
+                            style_index=None,
+                            source_hash=_sha256_bytes(html_bytes),
+                            declarations={},
+                            reason="matched_unique_html_text",
+                        )
+                except (OSError, UnicodeError, ValueError):
+                    pass
             selection_ref = f"selection_{uuid.uuid4().hex}"
+            text_content = str(selection.get("textContent") or "").replace("\x00", "")[:2000]
             computed_styles = {
                 str(key).strip().lower(): _safe_preview(value, 220)
                 for key, value in dict(selection.get("computedStyles") or {}).items()
@@ -831,6 +961,7 @@ class UiPatchService:
                 selector=selector,
                 tag_name=_safe_preview(selection.get("tagName"), 80),
                 label=_safe_preview(selection.get("label"), 160),
+                text_content=text_content,
                 computed_styles=computed_styles,
                 candidates=candidates,
             )
@@ -840,11 +971,13 @@ class UiPatchService:
                 "selector": selector,
                 "tagName": record.tag_name,
                 "label": record.label,
+                "textContent": record.text_content,
+                "textEditable": any(candidate.source_kind in {"html_style", "html_text"} for candidate in candidates.values()),
                 "computedStyles": computed_styles,
                 "sourceCandidates": [candidate.public() for candidate in candidates.values()],
                 "writable": bool(candidates),
                 "unsupportedReason": None if candidates else "No unique local CSS source rule could be proven for this component.",
-                "allowedProperties": sorted(ALLOWED_STYLE_PROPERTIES),
+                "allowedProperties": sorted(property_name for property_name in ALLOWED_STYLE_PROPERTIES if property_name != "__text_content"),
             }
 
     def _require_selection(self, item: PreviewSession, selection_ref: str) -> SelectionRecord:
@@ -918,15 +1051,31 @@ class UiPatchService:
             before_hash = _sha256_bytes(before_bytes)
             if before_hash != candidate.source_hash:
                 raise RuntimeError("UI Patch source changed after selection; select the component again")
+            text_change = normalized_changes.get("__text_content")
+            style_changes = {
+                key: value for key, value in normalized_changes.items() if key != "__text_content"
+            }
+            if text_change is not None and candidate.source_kind not in {"html_style", "html_text"}:
+                raise ValueError("Text editing requires a writable HTML source")
             if candidate.source_kind == "html_style":
-                after_text = _apply_html_style_changes(
-                    before_text,
-                    int(candidate.style_index or 0),
-                    candidate.selector,
-                    normalized_changes,
+                after_text = (
+                    _apply_html_style_changes(
+                        before_text,
+                        int(candidate.style_index or 0),
+                        candidate.selector,
+                        style_changes,
+                    )
+                    if style_changes
+                    else before_text
                 )
+                if text_change is not None:
+                    after_text = _apply_html_text_change(after_text, candidate.selector, text_change)
+            elif candidate.source_kind == "html_text":
+                if style_changes:
+                    raise ValueError("This HTML selection only supports text changes")
+                after_text = _apply_html_text_change(before_text, candidate.selector, text_change or "")
             else:
-                after_text = _apply_rule_changes(before_text, candidate.selector, normalized_changes)
+                after_text = _apply_rule_changes(before_text, candidate.selector, style_changes)
             if after_text == before_text:
                 raise ValueError("UI Patch did not produce a source change")
             codec = "utf-8-sig" if encoding == "utf-8-sig" else encoding

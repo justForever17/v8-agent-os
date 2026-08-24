@@ -125,6 +125,30 @@ def _sanitize_tool_payload_value(value: Any) -> Any:
     return to_jsonable(value)
 
 
+def _bounded_runtime_timeline_value(value: Any, *, depth: int = 0) -> Any:
+    """Keep worker timeline cards useful without shipping full tool payloads."""
+
+    if depth >= 4:
+        return "[structured value omitted]" if isinstance(value, (dict, list)) else to_jsonable(value)
+    if isinstance(value, str):
+        normalized = value
+        if len(normalized) <= 4000:
+            return normalized
+        return f"{normalized[:3600]}\n…[已截断 {len(normalized) - 3600} 字符]"
+    if isinstance(value, dict):
+        items = list(value.items())[:48]
+        result = {str(key): _bounded_runtime_timeline_value(raw, depth=depth + 1) for key, raw in items}
+        if len(value) > len(items):
+            result["_truncatedKeys"] = len(value) - len(items)
+        return result
+    if isinstance(value, list):
+        items = [_bounded_runtime_timeline_value(item, depth=depth + 1) for item in value[:24]]
+        if len(value) > len(items):
+            items.append(f"…[已截断 {len(value) - len(items)} 项]")
+        return items
+    return to_jsonable(value)
+
+
 def _normalize_source_group(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"web", "cron", "hooks"}:
@@ -1420,7 +1444,7 @@ def _runtime_episode_progress_metadata(payload: Dict[str, Any]) -> Dict[str, Any
         "artifact",
     }
     compact_node = {
-        str(key): _sanitize_tool_payload_value(value)
+        str(key): _bounded_runtime_timeline_value(_sanitize_tool_payload_value(value))
         for key, value in timeline_node.items()
         if key in allowed_node_keys and value not in (None, "", [], {})
     }
@@ -1736,7 +1760,43 @@ def select_runtime_timeline_window(
     recent_count = max(1, int(recent_limit or 160))
     milestone_count = max(0, int(milestone_limit or 0))
     recent = list(timeline[-recent_count:])
-    if len(timeline) <= recent_count or milestone_count <= 0:
+
+    # The compact global window is intentionally small, but a subagent detail
+    # panel must not collapse to the last "completed" status. Preserve the
+    # bounded worker timeline nodes for the most recent delegation episodes;
+    # phone/desktop compact surfaces still apply their own 160-entry limit.
+    subagent_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in timeline:
+        if str(entry.get("topic") or "").strip().lower() != "runtime.episode.progress":
+            continue
+        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        progress = metadata.get("progress") if isinstance(metadata.get("progress"), dict) else {}
+        if not isinstance(progress.get("timelineNode"), dict):
+            continue
+        episode_id = str(metadata.get("episodeId") or progress.get("delegationId") or "").strip()
+        if not episode_id:
+            continue
+        subagent_groups.setdefault(episode_id, []).append(entry)
+    selected_subagent: List[Dict[str, Any]] = []
+    latest_groups = sorted(
+        subagent_groups.items(),
+        key=lambda item: max(int(row.get("seq") or 0) for row in item[1]),
+        reverse=True,
+    )[:4]
+    for _episode_id, rows in latest_groups:
+        selected_subagent.extend(rows[-320:])
+
+    selected_by_identity = {
+        (str(entry.get("id") or ""), int(entry.get("seq") or 0)): entry
+        for entry in [*recent, *selected_subagent]
+    }
+    recent = sorted(
+        selected_by_identity.values(),
+        key=lambda entry: int(entry.get("seq") or 0),
+    )
+    if len(timeline) <= recent_count and not selected_subagent:
+        return recent
+    if milestone_count <= 0:
         return recent
     recent_ids = {
         (str(entry.get("id") or ""), int(entry.get("seq") or 0))

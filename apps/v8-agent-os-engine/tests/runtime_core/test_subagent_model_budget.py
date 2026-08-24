@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from api.models import EngineConfig
 from core.llm_factory import LLMFactory
 from graph.agent_factories import (
+    _bounded_delegated_task_messages,
+    _delegated_tool_loop_observation,
     build_agent_node,
     build_reviewer_node,
     create_subagent_chat_model,
@@ -22,6 +24,63 @@ def test_subagent_model_budget_uses_configured_model_limit(monkeypatch):
     )
 
     assert subagent_model_kwargs("provider::long-output-model") == {"max_tokens": 131072}
+
+
+def _owned_tool_call(name: str, call_id: str, args: dict) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"id": call_id, "name": name, "args": args}],
+        additional_kwargs={
+            "v8_owner_agent_id": "worker",
+            "v8_owner_subagent_id": "worker",
+        },
+    )
+
+
+def test_delegated_context_window_keeps_instruction_and_tool_pair_boundary():
+    instruction = HumanMessage(
+        content="delegated",
+        additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+    )
+    messages = [instruction]
+    for index in range(20):
+        messages.extend([
+            _owned_tool_call("read_native_file", f"read-{index}", {"path": f"file-{index}.txt"}),
+            ToolMessage(content=f"file-{index}", name="read_native_file", tool_call_id=f"read-{index}"),
+        ])
+
+    bounded = _bounded_delegated_task_messages(messages, {"goal": "Inspect files"})
+
+    assert bounded[0] is instruction
+    assert len(bounded) <= 28
+    assert not isinstance(bounded[1], ToolMessage)
+
+
+def test_delegated_tool_loop_blocks_current_repeat_but_allows_a_new_recovery_call():
+    repeated_history = [
+        _owned_tool_call("read_native_file", f"repeat-{index}", {"path": "same.txt"})
+        for index in range(3)
+    ]
+    new_call = _owned_tool_call("write_native_file", "write-new", {"path": "result.txt", "content": "done"})
+    recovered = _delegated_tool_loop_observation(
+        [*repeated_history, new_call],
+        agent_id="worker",
+        current_message=new_call,
+    )
+
+    third_repeat = repeated_history[-1]
+    blocked = _delegated_tool_loop_observation(
+        repeated_history,
+        agent_id="worker",
+        current_message=third_repeat,
+    )
+
+    assert recovered["historicalExactRepeatCount"] == 3
+    assert recovered["exactRepeatCount"] == 1
+    assert recovered["blocked"] is False
+    assert blocked["exactRepeatCount"] == 3
+    assert blocked["blocked"] is True
+    assert blocked["reason"] == "delegated_exact_tool_loop"
 
 
 def test_request_model_override_compares_provider_qualified_identity(monkeypatch):
@@ -215,6 +274,7 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
 
 def test_write_required_subagent_forces_tool_choice_until_successful_write(monkeypatch):
     captured = []
+    route_selected = []
     write_tool = SimpleNamespace(name="write_native_file", metadata={})
     task_brief = {
         "taskBriefId": "brief-write",
@@ -255,7 +315,10 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
     monkeypatch.setattr("graph.agent_factories.build_delegation_context", lambda **_kwargs: {})
     monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.bind_execution_context", lambda **_kwargs: object())
     monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.reset_execution_context", lambda *_args: None)
-    monkeypatch.setattr("graph.agent_factories.extensions_runtime_service.emit_route_selected", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "graph.agent_factories.extensions_runtime_service.emit_route_selected",
+        lambda **kwargs: route_selected.append(kwargs),
+    )
     monkeypatch.setattr("graph.agent_factories.bind_runtime_context", lambda **_kwargs: nullcontext())
 
     def _invoke(_llm, _messages, _tools, **kwargs):
@@ -323,6 +386,7 @@ def test_write_required_subagent_forces_tool_choice_until_successful_write(monke
         }
     )
     assert captured == ["required", None]
+    assert len(route_selected) == 1
     assert second.goto == "supervisor"
 
 

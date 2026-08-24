@@ -1201,6 +1201,12 @@ def _verification_declared_path(value: Any) -> str:
     """Normalize common task-brief labels without treating them as paths."""
 
     text = str(value or "").strip().strip("`'\"")
+    if re.match(
+        r"^(?:verification[_ -]?command|command|expected[_ -]?(?:stdout|stderr|exit[_ -]?code|return[_ -]?code))\s*[:=]",
+        text,
+        re.IGNORECASE,
+    ):
+        return ""
     labeled = re.match(
         r"^(?:target[_ -]?file|source[_ -]?file|file|path|target)\s*[:=]\s*(.+)$",
         text,
@@ -1228,15 +1234,16 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
         values = value if isinstance(value, (list, tuple, set)) else [value]
         return list(dict.fromkeys(str(item or "").strip() for item in values if str(item or "").strip()))
 
+    declared_read_values = _texts(
+        explicit.get("requiredReadPaths")
+        or capsule.get("mustRead")
+        or capsule.get("readSet")
+        or task_brief.get("readSet")
+    )
     read_paths = list(
         dict.fromkeys(
             path
-            for item in _texts(
-                explicit.get("requiredReadPaths")
-                or capsule.get("mustRead")
-                or capsule.get("readSet")
-                or task_brief.get("readSet")
-            )
+            for item in declared_read_values
             if (path := _verification_declared_path(item))
         )
     )
@@ -1251,6 +1258,19 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     )
     contract_blob = "\n".join(_stringify_for_acceptance(value) for value in contract_values)
     required_commands = _texts(explicit.get("requiredCommands"))
+    required_commands.extend(
+        command
+        for item in declared_read_values
+        for match in [
+            re.match(
+                r"^verification[_ -]?command\s*[:=]\s*(.+)$",
+                str(item or "").strip(),
+                re.IGNORECASE,
+            )
+        ]
+        if match and (command := _verification_command_text(match.group(1)))
+    )
+    required_commands = list(dict.fromkeys(required_commands))
     if not required_commands:
         command_pattern = re.compile(
             r"(?:执行|运行|execute|executing|run|running)\s+(?:命令\s*)?[`'\"]?"

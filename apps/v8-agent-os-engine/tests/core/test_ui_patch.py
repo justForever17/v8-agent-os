@@ -63,6 +63,58 @@ def test_style_value_allowlist_blocks_external_content_and_unknown_properties():
         ui_patch._validate_changes({"transform": "scale(2)"})
 
 
+def test_html_text_patch_matches_unique_selectors_and_escapes_markup():
+    source = '<main><h1 id="hero" class="title primary">Original</h1></main>'
+
+    assert len(ui_patch._html_element_spans(source, "#hero")) == 1
+    assert len(ui_patch._html_element_spans(source, "h1.title:nth-of-type(1)")) == 1
+    assert ui_patch._apply_html_text_change(source, "#hero", "Updated <safe>") == (
+        '<main><h1 id="hero" class="title primary">Updated &lt;safe&gt;</h1></main>'
+    )
+    assert ui_patch._validate_changes({"__text_content": ""}) == {"__text_content": ""}
+
+
+def test_static_preview_can_commit_and_undo_plain_html_text(scoped_service):
+    service, workspace = scoped_service
+    html = workspace / "index.html"
+    html.write_text('<main><h1 id="hero">Original title</h1></main>', encoding="utf-8")
+    if not ui_patch._resolve_node_executable():
+        pytest.skip("Packaged or system Node.js is unavailable")
+
+    preview = service.create_preview(
+        session_id="session-text",
+        parent_origin="http://127.0.0.1:9527",
+        entry_path="index.html",
+    )
+    mapped = service.map_selection(
+        session_id="session-text",
+        patch_session_id=preview["patchSessionId"],
+        selection={
+            "selector": "#hero",
+            "tagName": "h1",
+            "label": "Original title",
+            "textContent": "Original title",
+            "computedStyles": {},
+            "rules": [],
+        },
+    )
+
+    assert mapped["writable"] is True
+    assert mapped["textEditable"] is True
+    assert mapped["sourceCandidates"][0]["sourceKind"] == "html_text"
+    committed = service.commit(
+        session_id="session-text",
+        patch_session_id=preview["patchSessionId"],
+        selection_ref=mapped["selectionRef"],
+        candidate_id=mapped["sourceCandidates"][0]["candidateId"],
+        changes={"__text_content": "Updated <safe>"},
+    )
+    assert "Updated &lt;safe&gt;" in html.read_text(encoding="utf-8")
+
+    service.undo(session_id="session-text", transaction_id=committed["transactionId"])
+    assert "Original title" in html.read_text(encoding="utf-8")
+
+
 def test_transaction_id_rejects_path_like_values(scoped_service):
     service, _ = scoped_service
 

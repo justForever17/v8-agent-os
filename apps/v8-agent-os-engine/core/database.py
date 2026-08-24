@@ -5261,19 +5261,25 @@ class DatabaseManager:
         data["payload"] = json.loads(data["payload_json"]) if data.get("payload_json") else {}
         return data
 
-    def get_runtime_events(self, session_id: str, after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_runtime_events(
+        self,
+        session_id: str,
+        after_seq: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            bounded_limit = max(1, min(int(limit), 500)) if limit is not None else None
             if after_seq is None:
-                cursor.execute(
-                    'SELECT * FROM runtime_events WHERE session_id = ? ORDER BY seq ASC',
-                    (session_id,),
-                )
+                query = 'SELECT * FROM runtime_events WHERE session_id = ? ORDER BY seq ASC'
+                params: tuple[Any, ...] = (session_id,)
             else:
-                cursor.execute(
-                    'SELECT * FROM runtime_events WHERE session_id = ? AND seq > ? ORDER BY seq ASC',
-                    (session_id, after_seq),
-                )
+                query = 'SELECT * FROM runtime_events WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+                params = (session_id, after_seq)
+            if bounded_limit is not None:
+                query += ' LIMIT ?'
+                params = (*params, bounded_limit)
+            cursor.execute(query, params)
             rows = []
             for row in cursor.fetchall():
                 rows.append(self._hydrate_runtime_event_row(dict(row)))

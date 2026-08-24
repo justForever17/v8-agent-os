@@ -43,6 +43,7 @@ from core.tools.research_ledger import (
 )
 from core.tools.research_quality import (
     MIN_RESEARCH_ANSWER_CHARS,
+    MIN_RESEARCH_CLAIM_COUNT,
     MIN_RESEARCH_DISTINCT_HOST_COUNT,
     MIN_RESEARCH_SOURCE_BODY_CHARS,
     MIN_RESEARCH_SOURCE_COUNT,
@@ -412,7 +413,9 @@ _SOURCE_NOISE_MARKERS = (
     "unusual activity from your network",
     "verify you are human",
     "just a moment",
-    "cloudflare",
+    "cloudflare ray id",
+    "performance & security by cloudflare",
+    "checking your browser before accessing",
     "captcha",
     "access denied",
     "enable javascript",
@@ -649,7 +652,11 @@ def _research_answer_pack(payload: dict[str, Any]) -> dict[str, Any]:
     if answer_was_low_quality:
         missing_reasons.append("low_quality_answer_surface")
     quality_tier = research_quality_tier(validation_payload)
-    delivery_ready = quality_tier == "high_quality" and not answer_was_low_quality
+    # ``high_quality`` is the normal Research target, not the minimum useful
+    # delivery contract.  Keeping a fully reviewed minimum-qualified answer
+    # hidden made restricted-network runs indistinguishable from runs with no
+    # readable evidence at all.
+    delivery_ready = quality_tier in {"minimum_qualified", "high_quality"} and not answer_was_low_quality
     if not delivery_ready:
         answer = ""
     evidence_id = _safe_text(payload.get("evidenceBundleId"))
@@ -1710,13 +1717,23 @@ _RESEARCH_ROOT_SUBJECT_GENERIC_TERMS = {
 
 
 def _research_root_subject_anchors(question: str) -> list[str]:
+    # A document title written with Chinese title marks is an explicit subject
+    # identity, not ordinary query vocabulary.  Preserve it even when the
+    # question is not decomposed into multiple facets so authoritative but
+    # unrelated pages cannot pass merely because they share generic legal or
+    # AI terms.
+    title_anchors = [
+        re.sub(r"\s+", " ", match).strip()
+        for match in re.findall(r"《([^》]{4,120})》", _safe_text(question))
+        if len(re.sub(r"\s+", "", match)) >= 6
+    ]
     facets = [
         goal
         for goal, _kind in _build_explicit_question_facets(question)
         if _safe_text(goal)
     ]
     if len(facets) < 2:
-        return []
+        return list(dict.fromkeys(title_anchors))[:4]
     required_occurrences = max(2, (len(facets) + 1) // 2)
     counts: dict[str, int] = {}
     for goal in facets:
@@ -1729,7 +1746,7 @@ def _research_root_subject_anchors(question: str) -> list[str]:
         }
         for term in terms:
             counts[term] = counts.get(term, 0) + 1
-    anchors = [
+    recurring_anchors = [
         term
         for term, count in sorted(
             counts.items(),
@@ -1737,7 +1754,7 @@ def _research_root_subject_anchors(question: str) -> list[str]:
         )
         if count >= required_occurrences
     ][:4]
-    return anchors
+    return list(dict.fromkeys([*title_anchors, *recurring_anchors]))[:4]
 
 
 def _research_source_matches_root_subject(
@@ -1884,12 +1901,13 @@ def _source_quality_gate(
     intent_match = _source_matches_intent(quality, effective_source_intent)
     if effective_source_intent == "official_primary":
         authority_floor = max(authority_floor, 70)
+    minimum_relevance = 15
     source_selected = bool(
         read_payload.get("ok") is not False
         and not error_page
         and (not navigation_page or navigation_requested)
         and has_read_body
-        and relevance >= 15
+        and relevance >= minimum_relevance
         and authority >= authority_floor
         and intent_match
     )
@@ -1903,7 +1921,7 @@ def _source_quality_gate(
             rejected_reason = ", ".join(noise_reasons[:3])
         elif not has_read_body:
             rejected_reason = "readable_body_required"
-        elif relevance < 15:
+        elif relevance < minimum_relevance:
             rejected_reason = "relevance_too_low"
         elif authority < authority_floor:
             rejected_reason = "authority_too_low"
@@ -3713,10 +3731,13 @@ def _deterministic_web_research_architect_pack(
     headline = "Readable evidence is prepared for independent Research review."
     limitations: list[str] = []
     critical_missing: list[str] = []
-    if len(source_urls) < TARGET_RESEARCH_SOURCE_COUNT:
+    if len(source_urls) < MIN_RESEARCH_SOURCE_COUNT:
         critical_missing.append(
-            f"Research should continue until at least {TARGET_RESEARCH_SOURCE_COUNT} readable sources are available; "
-            f"{MIN_RESEARCH_SOURCE_COUNT} is only the rejection floor."
+            f"Research needs at least {MIN_RESEARCH_SOURCE_COUNT} readable sources before a reviewed answer can be delivered."
+        )
+    elif len(source_urls) < TARGET_RESEARCH_SOURCE_COUNT:
+        limitations.append(
+            f"The normal {TARGET_RESEARCH_SOURCE_COUNT}-source quality target was not met; a minimum-qualified answer may still be delivered with this limitation."
         )
     if not findings:
         critical_missing.append("No source-backed claims were extracted from readable page bodies.")
@@ -5392,8 +5413,6 @@ def _architect_source_subject_focused(
     if isinstance(explicit, bool):
         return explicit
     lowered_question = _safe_text(question).lower()
-    if "pathlib" not in lowered_question and "path object" not in lowered_question:
-        return True
     candidates = [
         item
         for item in list(
@@ -5408,6 +5427,18 @@ def _architect_source_subject_focused(
             source,
             question,
             limit=_RESEARCH_ARCHITECT_EVIDENCE_CANDIDATE_COUNT,
+        )
+    if "pathlib" not in lowered_question and "path object" not in lowered_question:
+        return _research_source_matches_root_subject(
+            question,
+            title=_safe_text(source.get("title")),
+            url=_safe_text(source.get("url")),
+            text=" ".join(
+                [
+                    _safe_text(source.get("text")),
+                    *[_safe_text(candidate.get("text")) for candidate in candidates],
+                ]
+            ),
         )
     candidate_has_subject = bool(
         candidates
@@ -5556,6 +5587,11 @@ def _research_architect_structural_stats(
     missing_facet_ids = [
         facet_id for facet_id in required_facet_ids if facet_id not in covered_facet_ids
     ]
+    minimum_met = bool(
+        len(identities) >= MIN_RESEARCH_SOURCE_COUNT
+        and len(hosts) >= MIN_RESEARCH_DISTINCT_HOST_COUNT
+        and not missing_facet_ids
+    )
     target_met = bool(
         len(identities) >= TARGET_RESEARCH_SOURCE_COUNT
         and len(hosts) >= TARGET_RESEARCH_DISTINCT_HOST_COUNT
@@ -5571,6 +5607,7 @@ def _research_architect_structural_stats(
         "coveredFacetIds": covered_facet_ids,
         "missingFacetIds": missing_facet_ids,
         "facetEvidenceComplete": not missing_facet_ids,
+        "structuralMinimumMet": minimum_met,
         "structuralTargetMet": target_met,
     }
 
@@ -8214,6 +8251,7 @@ def _verify_architect_claim_excerpts(
                     matched_sources.append(source)
         keyed_evidence = evidence_by_key.get(excerpt_key)
         keyed_candidate: dict[str, Any] = {}
+        support_binding_corrected = False
         if require_evidence_key and not excerpt_key:
             issues.append(f"claim_{index}_evidence_key_required")
             continue
@@ -8223,8 +8261,16 @@ def _verify_architect_claim_excerpts(
         if keyed_evidence:
             keyed_source, keyed_excerpt, keyed_candidate = keyed_evidence
             if keyed_source not in matched_sources:
-                issues.append(f"claim_{index}_evidence_key_source_mismatch")
-                continue
+                if not require_evidence_key:
+                    issues.append(f"claim_{index}_evidence_key_source_mismatch")
+                    continue
+                # In the staged planner contract the Runtime-issued excerpt key
+                # is the canonical source binding. Some providers copy the
+                # adjacent S# into supportingSources while preserving the right
+                # excerpt key. Rebind that redundant field mechanically; the
+                # exact excerpt, hard-assertion checks, and independent review
+                # still decide whether the claim itself is acceptable.
+                support_binding_corrected = True
             excerpt = keyed_excerpt
             matched_sources = [keyed_source]
         normalized_excerpt = _normalized_evidence_text(excerpt)
@@ -8593,6 +8639,11 @@ def _verify_architect_claim_excerpts(
                 # S# labels are prompt-local and can change after a repair round.
                 # Persist canonical source identity so final merge/review stays bound.
                 "supportingSources": canonical_supporting,
+                **(
+                    {"supportBindingCorrected": True}
+                    if support_binding_corrected
+                    else {}
+                ),
                 **({"evidenceExcerptKey": excerpt_key} if excerpt_key else {}),
                 "evidenceExcerpt": excerpt,
                 # The acceptance layer validates the stored, whitespace-
@@ -14339,7 +14390,7 @@ def _research_architect_mode(
     freshness: str,
 ) -> str:
     stats = _research_architect_structural_stats(question, sources, freshness=freshness)
-    return "full_synthesis" if stats.get("structuralTargetMet") is True else "gap_review"
+    return "full_synthesis" if stats.get("structuralMinimumMet") is True else "gap_review"
 
 
 def _architect_review_claim_ledger(
@@ -14704,6 +14755,27 @@ def _invoke_web_research_architect_staged(
         prompt_sources,
         required_plan_facet_ids,
     )
+    synthesis_structural_stats = _research_architect_structural_stats(
+        question,
+        compact_sources,
+        freshness=freshness,
+    )
+    normal_target_mode = synthesis_structural_stats.get("structuralTargetMet") is True
+    required_source_count = (
+        TARGET_RESEARCH_SOURCE_COUNT
+        if normal_target_mode
+        else MIN_RESEARCH_SOURCE_COUNT
+    )
+    required_claim_count = (
+        TARGET_RESEARCH_CLAIM_COUNT
+        if normal_target_mode
+        else MIN_RESEARCH_CLAIM_COUNT
+    )
+    required_answer_chars = (
+        TARGET_RESEARCH_ANSWER_CHARS
+        if normal_target_mode
+        else MIN_RESEARCH_ANSWER_CHARS
+    )
     plan_claim_upper = min(
         _RESEARCH_ARCHITECT_MAX_CLAIM_COUNT,
         max(
@@ -14714,21 +14786,21 @@ def _invoke_web_research_architect_staged(
     plan_claim_lower = min(
         plan_claim_upper,
         max(
-            TARGET_RESEARCH_CLAIM_COUNT,
+            required_claim_count,
             len(required_plan_facet_ids),
         ),
     )
     required_claim_sources = _architect_required_claim_source_keys(
         prompt_sources,
-        limit=TARGET_RESEARCH_SOURCE_COUNT,
+        limit=required_source_count,
         question=question,
     )
-    if len(required_claim_sources) < TARGET_RESEARCH_SOURCE_COUNT:
+    if len(required_claim_sources) < required_source_count:
         return {
             "_agentError": "architect_evidence_candidates_insufficient",
             "_architectMode": "full_synthesis",
             "_modelFallbackAttempts": [
-                f"evidence_candidate_source_coverage:{len(required_claim_sources)}/{TARGET_RESEARCH_SOURCE_COUNT}"
+                f"evidence_candidate_source_coverage:{len(required_claim_sources)}/{required_source_count}"
             ],
         }
     plan_claim_source_floor = MIN_RESEARCH_SOURCE_COUNT
@@ -14795,7 +14867,7 @@ def _invoke_web_research_architect_staged(
             f"保持紧凑：reviewReasons 最多2项且每项不超过100字符；accept 时 claimTable 为 "
             f"{plan_claim_lower}-{plan_claim_upper} 项、"
             "区间前值是最低目标、后值只是上限；达到最低目标并覆盖问题后就停止，禁止把上限误读成必需数量或为上限凑 claim。"
-            f"覆盖至少 {TARGET_RESEARCH_SOURCE_COUNT} 个不同 SOURCES；"
+            f"覆盖至少 {required_source_count} 个不同 SOURCES；"
             f"必须为这些来源各写至少一个独立 claim：{', '.join(required_claim_sources)}。"
             "每项含唯一 claimId、claim、claimType、supportingSources、evidenceExcerptKey、confidence，claim 为20-180个有效字符；"
             "explicit_normative 还必须包含 normativeCue，且该短语必须逐字出现在所选 evidenceExcerptKey 的摘录中。"
@@ -14818,7 +14890,7 @@ def _invoke_web_research_architect_staged(
             "只根据 SOURCES 返回一个紧凑、完整、可解析的 JSON 对象。不要输出长答案。"
             f"accept 必须有 {plan_claim_lower}-{plan_claim_upper} 个紧凑原子 claim、"
             "区间后值只是上限而非必达数量；不得因无法填满上限而 retry/reject。"
-            f"覆盖 {TARGET_RESEARCH_SOURCE_COUNT} 个不同来源，"
+            f"覆盖 {required_source_count} 个不同来源，"
             f"且必须逐一覆盖 {', '.join(required_claim_sources)}；每项使用 supporting source 自己的 evidenceExcerptKey。"
             "answerOutline 使用4-6个 sectionId/title/objective/claimIds 对象并恰好覆盖全部 claimId。"
             "严格保持首个提示定义的字段名和 JSON schema；如果客户端习惯布尔 accept，可额外输出 accept，但仍应保留 reviewDecision。\n"
@@ -15649,14 +15721,14 @@ def _invoke_web_research_architect_staged(
                 }
             )
             plan_issues = list(excerpt_issues)
-            if plan_metrics["claimCount"] < TARGET_RESEARCH_CLAIM_COUNT:
-                plan_issues.append(f"claim_target_not_met:{TARGET_RESEARCH_CLAIM_COUNT}")
-            if plan_metrics["uniqueClaimCount"] < TARGET_RESEARCH_CLAIM_COUNT:
-                plan_issues.append(f"distinct_claim_target_not_met:{TARGET_RESEARCH_CLAIM_COUNT}")
+            if plan_metrics["claimCount"] < required_claim_count:
+                plan_issues.append(f"claim_target_not_met:{required_claim_count}")
+            if plan_metrics["uniqueClaimCount"] < required_claim_count:
+                plan_issues.append(f"distinct_claim_target_not_met:{required_claim_count}")
             if plan_metrics["evidenceVerifiedClaimCount"] != plan_metrics["claimCount"]:
                 plan_issues.append("unverified_claim_excerpt_present")
             missing_citations: list[str] = []
-            if plan_metrics["claimSupportedSourceCount"] < TARGET_RESEARCH_SOURCE_COUNT:
+            if plan_metrics["claimSupportedSourceCount"] < required_source_count:
                 covered_citations = {
                     _safe_text(support.get("citationKey")).strip("[]")
                     for claim in candidate_claims
@@ -15670,7 +15742,7 @@ def _invoke_web_research_architect_staged(
                 ]
                 source_coverage_gap = (
                     "claim_source_coverage_target_not_met:"
-                    f"{plan_metrics['claimSupportedSourceCount']}/{TARGET_RESEARCH_SOURCE_COUNT}"
+                    f"{plan_metrics['claimSupportedSourceCount']}/{required_source_count}"
                     + (f":missing={','.join(missing_citations)}" if missing_citations else "")
                 )
                 if plan_metrics["claimSupportedSourceCount"] < plan_claim_source_floor:
@@ -15795,9 +15867,9 @@ def _invoke_web_research_architect_staged(
             repair_candidate_eligible = bool(
                 repair_gap_count <= 3
                 and len(candidate_claims)
-                >= TARGET_RESEARCH_CLAIM_COUNT - repair_gap_count
+                >= required_claim_count - repair_gap_count
                 and int(plan_metrics.get("uniqueClaimCount") or 0)
-                >= TARGET_RESEARCH_CLAIM_COUNT - repair_gap_count
+                >= required_claim_count - repair_gap_count
                 and int(plan_metrics.get("evidenceVerifiedClaimCount") or 0)
                 == int(plan_metrics.get("claimCount") or 0)
                 and not critical_missing_evidence
@@ -16030,7 +16102,7 @@ def _invoke_web_research_architect_staged(
             )
             <= 3
             and len(best_repair_claims)
-            >= TARGET_RESEARCH_CLAIM_COUNT
+            >= required_claim_count
             - len(
                 set(
                     [
@@ -16125,8 +16197,8 @@ def _invoke_web_research_architect_staged(
                     repaired_inferences = runtime_inferences
             repair_failed = bool(
                 repair_failed
-                or repair_metrics["claimCount"] < TARGET_RESEARCH_CLAIM_COUNT
-                or repair_metrics["uniqueClaimCount"] < TARGET_RESEARCH_CLAIM_COUNT
+                or repair_metrics["claimCount"] < required_claim_count
+                or repair_metrics["uniqueClaimCount"] < required_claim_count
                 or repair_metrics["evidenceVerifiedClaimCount"] != repair_metrics["claimCount"]
                 or repair_metrics["claimSupportedSourceCount"] < plan_claim_source_floor
                 or missing_verified_claim_facets(combined_claims)
@@ -16226,8 +16298,8 @@ def _invoke_web_research_architect_staged(
             runtime_inferences,
         )
         runtime_plan_ready = bool(
-            runtime_metrics["claimCount"] >= TARGET_RESEARCH_CLAIM_COUNT
-            and runtime_metrics["uniqueClaimCount"] >= TARGET_RESEARCH_CLAIM_COUNT
+            runtime_metrics["claimCount"] >= required_claim_count
+            and runtime_metrics["uniqueClaimCount"] >= required_claim_count
             and runtime_metrics["evidenceVerifiedClaimCount"]
             == runtime_metrics["claimCount"]
             and runtime_metrics["claimSupportedSourceCount"]
@@ -16646,9 +16718,9 @@ def _invoke_web_research_architect_staged(
     writer_prompt = (
         f"用与 QUESTION 相同的主要语言撰写详细 Markdown 答案。正常目标是去空白后 "
         f"{_RESEARCH_ARCHITECT_IDEAL_ANSWER_MIN_CHARS}-{_RESEARCH_ARCHITECT_IDEAL_ANSWER_MAX_CHARS} 个有效 Unicode 字符；"
-        f"{TARGET_RESEARCH_ANSWER_CHARS} 只是硬拒收线，不得把达到拒收线当作完成，也不得重复凑字。"
+        f"本次可交付下限是 {required_answer_chars} 个有效字符，不得重复凑字。"
         f"答案不得超过 {_MAX_RESEARCH_VISIBLE_ANSWER_CHARS} 字。先给直接结论，再逐层回答问题；至少形成 "
-        f"{TARGET_RESEARCH_CLAIM_COUNT} 个有实质内容的证据单元，并让至少 {TARGET_RESEARCH_SOURCE_COUNT} 个不同来源分别出现在相关段落的 [S#] 引用中。"
+        f"{required_claim_count} 个有实质内容的证据单元，并让至少 {required_source_count} 个不同来源分别出现在相关段落的 [S#] 引用中。"
         "必须明确 as-of 时点，区分来源直接事实、跨来源综合推论、冲突或限制；结尾列出实际使用的来源标题、URL、日期/版本。"
         "只输出答案正文，不要 JSON、不要代码围栏。完成全部正文和来源列表后，最后单独输出完成标记 "
         f"{_RESEARCH_ARCHITECT_ANSWER_COMPLETE_MARKER}。\nQUESTION: {question}"
@@ -16692,9 +16764,14 @@ def _invoke_web_research_architect_staged(
             "criticalMissingEvidence": [],
             "asOf": verified_plan["asOf"],
         }
+        quality_check = (
+            research_high_quality_issues
+            if normal_target_mode
+            else research_acceptance_issues
+        )
         issues = [
             issue
-            for issue in research_high_quality_issues(candidate_payload)
+            for issue in quality_check(candidate_payload)
             if issue != "independent_semantic_review_not_accepted"
         ]
         brief_coverage = _research_brief_coverage(
@@ -18457,7 +18534,12 @@ def _invoke_web_research_architect_staged(
         "consensusReviews": bound_consensus_reviews,
     }
     validation_payload["independentReview"] = independent_review
-    quality_issues = research_high_quality_issues(validation_payload)
+    quality_check = (
+        research_high_quality_issues
+        if normal_target_mode
+        else research_acceptance_issues
+    )
+    quality_issues = quality_check(validation_payload)
     if quality_issues:
         return {
             "_agentError": "architect_post_review_quality_gate_failed",
@@ -18596,7 +18678,7 @@ def _invoke_web_research_architect_agent(
         prompt = (
             "只输出严格 JSON：reviewDecision, reviewReasons, criticalMissingEvidence, recommendedNextQueries。"
             "reviewDecision 必须是 retry 或 reject；recommendedNextQueries 最多4项，每项应能直接交给搜索工具。"
-            f"最低结构目标：{TARGET_RESEARCH_SOURCE_COUNT} 个逻辑来源、{TARGET_RESEARCH_DISTINCT_HOST_COUNT} 个独立主机；"
+            f"最低结构目标：{MIN_RESEARCH_SOURCE_COUNT} 个逻辑来源、{MIN_RESEARCH_DISTINCT_HOST_COUNT} 个独立主机；"
             "时效充分性不是固定发布日期数量门槛：根据每个来源明确标注的发布/更新/版本/检索时间与问题风险判断，"
             "只有确实无法判断关键当前性时才建议补搜。检索时间只表示本轮读取时间，不等于文档发布时间。"
             f"\nQUESTION: {question}"
@@ -19086,7 +19168,7 @@ def _merge_web_research_architect_agent_pack(
             ),
         },
     }
-    issues = research_high_quality_issues(candidate)
+    issues = research_acceptance_issues(candidate)
     if decision == "accept" and issues:
         return {
             **candidate,
@@ -19144,7 +19226,7 @@ def _web_research_architect_pack(
         prompt_sources,
         freshness=freshness,
     )
-    mode = "full_synthesis" if structural_stats.get("structuralTargetMet") is True else "gap_review"
+    mode = "full_synthesis" if structural_stats.get("structuralMinimumMet") is True else "gap_review"
     call_state = architect_call_state if isinstance(architect_call_state, dict) else {}
     if not prompt_sources:
         return {
@@ -19158,15 +19240,15 @@ def _web_research_architect_pack(
         }
     if mode == "gap_review":
         structural_gaps: list[str] = []
-        if int(structural_stats.get("selectedSourceCount") or 0) < TARGET_RESEARCH_SOURCE_COUNT:
+        if int(structural_stats.get("selectedSourceCount") or 0) < MIN_RESEARCH_SOURCE_COUNT:
             structural_gaps.append(
-                "Architect-answerable source target not met: "
-                f"{structural_stats.get('selectedSourceCount', 0)}/{TARGET_RESEARCH_SOURCE_COUNT}."
+                "Architect-answerable source minimum not met: "
+                f"{structural_stats.get('selectedSourceCount', 0)}/{MIN_RESEARCH_SOURCE_COUNT}."
             )
-        if int(structural_stats.get("distinctHostCount") or 0) < TARGET_RESEARCH_DISTINCT_HOST_COUNT:
+        if int(structural_stats.get("distinctHostCount") or 0) < MIN_RESEARCH_DISTINCT_HOST_COUNT:
             structural_gaps.append(
-                "Architect-answerable independent host target not met: "
-                f"{structural_stats.get('distinctHostCount', 0)}/{TARGET_RESEARCH_DISTINCT_HOST_COUNT}."
+                "Architect-answerable independent host minimum not met: "
+                f"{structural_stats.get('distinctHostCount', 0)}/{MIN_RESEARCH_DISTINCT_HOST_COUNT}."
             )
         missing_facet_ids = [
             _safe_text(value)
@@ -19292,7 +19374,8 @@ def _web_research_architect_pack(
     )
     merged["modelSynthesis"] = {
         **model_synthesis,
-        "structuralTargetMet": True,
+        "structuralMinimumMet": structural_stats.get("structuralMinimumMet") is True,
+        "structuralTargetMet": structural_stats.get("structuralTargetMet") is True,
         "structuralStats": structural_stats,
     }
     return merged
@@ -19935,6 +20018,11 @@ def _run_search_shard(
     raw_results = search_payload.get("results") if isinstance(search_payload.get("results"), list) else []
     results: list[dict[str, Any]] = []
     read_eligible_urls: set[str] = set()
+    domestic_site_mirror_fallback = bool(
+        site_domains
+        and _safe_text(search_payload.get("provider")).lower() == "bing_cn"
+        and _safe_text(search_payload.get("networkRoute")).lower() == "cn_direct"
+    )
     for index, result in enumerate(raw_results, start=1):
         url = _safe_text((result or {}).get("url"))
         host = _host(url)
@@ -19942,7 +20030,9 @@ def _run_search_shard(
             continue
         if allowed_domains and not any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains):
             continue
-        if site_domains and not _host_matches_domains(host, site_domains):
+        site_domain_match = not site_domains or _host_matches_domains(host, site_domains)
+        site_constraint_relaxed = bool(domestic_site_mirror_fallback and not site_domain_match)
+        if not site_domain_match and not site_constraint_relaxed:
             continue
         title = _safe_text((result or {}).get("title"))[:300]
         snippet = _safe_text((result or {}).get("snippet"))[:600]
@@ -19960,8 +20050,17 @@ def _run_search_shard(
             title=title,
             snippet=snippet,
         )
-        if (site_domains or _source_matches_intent(quality, source_intent)) and (
-            discovery_relevance >= 10 or int(quality.get("authorityScore") or 0) >= 70
+        effective_source_intent = "mixed" if site_constraint_relaxed else source_intent
+        discovery_subject_match = _research_source_matches_root_subject(
+            query,
+            title=title,
+            url=url,
+            snippet=snippet,
+        )
+        if (
+            (site_domains or _source_matches_intent(quality, effective_source_intent))
+            and discovery_subject_match
+            and discovery_relevance >= 10
         ):
             read_eligible_urls.add(url)
         results.append(
@@ -19976,7 +20075,10 @@ def _run_search_shard(
                 "publishedAt": (result or {}).get("publishedAt") or (result or {}).get("publishedDate"),
                 "updatedAt": (result or {}).get("updatedAt") or (result or {}).get("updatedDate"),
                 "version": (result or {}).get("version"),
-                "sourceIntent": source_intent or None,
+                "sourceIntent": effective_source_intent or None,
+                "requestedSourceIntent": source_intent or None,
+                "siteConstraintRelaxed": site_constraint_relaxed,
+                "siteConstraintDomains": site_domains if site_constraint_relaxed else [],
             }
         )
     top_results = sorted(
@@ -20115,7 +20217,8 @@ def _run_search_shard(
                     ),
                 )
             final_host = _host(final_url)
-            if site_domains and not _host_matches_domains(final_host, site_domains):
+            final_site_domain_match = not site_domains or _host_matches_domains(final_host, site_domains)
+            if not final_site_domain_match and not result.get("siteConstraintRelaxed"):
                 continue
             final_quality = _source_quality(
                 final_url,
@@ -20130,8 +20233,18 @@ def _run_search_shard(
                 video_research=video_research,
                 question=query,
             )
+            if result.get("siteConstraintRelaxed") and not final_site_domain_match:
+                final_quality = {
+                    **final_quality,
+                    "reasons": [
+                        *list(final_quality.get("reasons") or []),
+                        "domestic_mirror_for_unreachable_site_constraint",
+                    ],
+                    "siteConstraintRelaxed": True,
+                    "siteConstraintDomains": list(result.get("siteConstraintDomains") or []),
+                }
             result["sourceQualityHints"] = final_quality
-            if not _source_matches_intent(final_quality, source_intent):
+            if not _source_matches_intent(final_quality, result.get("sourceIntent")):
                 continue
             result["finalUrl"] = final_url
             fetched.append(
@@ -20736,6 +20849,8 @@ def _build_refinement_shards(
 
 _RESEARCH_RUNTIME_DIAGNOSTIC_GAP_PATTERNS = (
     re.compile(r"research should continue until at least \d+ readable sources", re.IGNORECASE),
+    re.compile(r"research needs at least \d+ readable sources", re.IGNORECASE),
+    re.compile(r"architect-answerable (?:source|independent host) minimum not met", re.IGNORECASE),
     re.compile(r"no source-backed claims were extracted from readable page bodies", re.IGNORECASE),
     re.compile(r"(?:answer|evidence|source|host|claim|coverage)_floor_not_met", re.IGNORECASE),
     re.compile(
@@ -23514,13 +23629,14 @@ def _run_research_loop(
             }
             loop_state["nextQueries"] = [shard.get("query") for shard in pending_shards]
             continue
+        # A second discovery round cannot repair a transport circuit that has
+        # already produced no readable source.  It only repeats the same
+        # provider deadlines (and, on a constrained network, can consume
+        # several additional minutes).  Keep the diagnostic and let the
+        # caller decide whether to retry after repairing access.
         if (
             int(final_stats.get("selectedSourceCount") or 0) == 0
             and transport_summary.get("exhaustedForRun") is True
-            and (
-                transport_summary.get("reachableButIrrelevant") is not True
-                or round_index >= min(2, discovery_round_cap)
-            )
         ):
             loop_state["stopReason"] = "source_transport_exhausted"
             loop_state["transportSummary"] = transport_summary

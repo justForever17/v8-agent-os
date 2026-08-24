@@ -45,10 +45,16 @@ class SessionRuntimeService:
                 )
         return payload
 
-    def get_runtime_events(self, session_id: str, *, after_seq: Optional[int] = None) -> Dict[str, Any]:
+    def get_runtime_events(
+        self,
+        session_id: str,
+        *,
+        after_seq: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
         return {
             "session_id": session_id,
-            "events": db.get_runtime_events(session_id, after_seq=after_seq),
+            "events": db.get_runtime_events(session_id, after_seq=after_seq, limit=limit),
             "latestSeq": db.get_latest_runtime_seq(session_id),
         }
 

@@ -367,6 +367,14 @@ function deriveHistoryPreview(
     return undefined;
 }
 
+function deriveLiveConversationTitle(messages: Message[]): string | undefined {
+    const firstUserMessage = messages.find((message) => message.role === "user" && String(message.content || "").trim());
+    if (!firstUserMessage) return undefined;
+    const normalized = String(firstUserMessage.content || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return undefined;
+    return normalized.length > 50 ? `${normalized.slice(0, 50)}...` : normalized;
+}
+
 function findPendingAskUserToolCall(messages: Message[]) {
     const completedToolCallIds = new Set<string>();
     for (const message of messages) {
@@ -1012,6 +1020,7 @@ export default function ChatClient() {
 
     const [input, setInput] = useState("");
     const { conversations, refreshConversations, createConversation, patchConversationSummary, updateConversationPresentation } = useConversationContext();
+    const conversationSummaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [supervisorRuntimeModeDrafts, setSupervisorRuntimeModeDrafts] = useState<Record<string, SupervisorRuntimeMode>>({});
     const supervisorRuntimeModeRef = useRef<SupervisorRuntimeMode>("auto");
     const supervisorRuntimeModeRequestSeqRef = useRef<Record<string, number>>({});
@@ -1858,6 +1867,10 @@ export default function ChatClient() {
         () => deriveHistoryPreview(messages, sessionProjection?.summary),
         [messages, sessionProjection?.summary],
     );
+    const liveConversationTitle = useMemo(
+        () => deriveLiveConversationTitle(messages),
+        [messages],
+    );
     const contentShellClassName = "w-full max-w-[68rem]";
     const greetingText = useMemo(() => {
         const hour = localHour;
@@ -1871,32 +1884,63 @@ export default function ChatClient() {
     }, []);
 
     useEffect(() => {
-        if (!activeConversationId) {
+        if (!activeConversationId || !liveConversationTitle) {
+            return;
+        }
+        const currentTitle = String(activeConversationSummary?.title || "").trim();
+        if (currentTitle && currentTitle !== "New Chat" && currentTitle !== "新对话") {
             return;
         }
         patchConversationSummary(activeConversationId, {
+            title: liveConversationTitle,
             lastActivityAt: new Date().toISOString(),
-            workflowStatus: effectiveStatus,
-            statusLabel: sessionProjection?.summary?.workflowStatus === effectiveStatus
-                ? (sessionProjection?.summary as Record<string, unknown> | null)?.statusLabel as string | undefined
-                : undefined,
-            ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || undefined,
-            currentStepTitle: sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || undefined,
-            previewExcerpt: historyPreview,
-            lastNarrativeExcerpt: historyPreview,
-            lastRuntimeSummary: sessionProjection?.summary && typeof (sessionProjection.summary as Record<string, unknown>).lastRuntimeSummary === "string"
-                ? String((sessionProjection.summary as Record<string, unknown>).lastRuntimeSummary)
-                : (sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || undefined),
-            pendingApprovalCount: effectivePendingApproval
-                ? Math.max(
-                    Number(governanceApprovals.length || 0),
-                    Number(sessionProjection?.controls?.pendingApprovalCount || 0),
-                )
-                : 0,
-            hasPendingApproval: effectivePendingApproval,
-            recoverable: Boolean(sessionProjection?.recoverable?.recoverable),
-            controls: sessionProjection?.controls || undefined,
         });
+    }, [
+        activeConversationId,
+        activeConversationSummary?.title,
+        liveConversationTitle,
+        patchConversationSummary,
+    ]);
+
+    useEffect(() => {
+        if (!activeConversationId) {
+            return;
+        }
+        if (conversationSummaryTimerRef.current) {
+            clearTimeout(conversationSummaryTimerRef.current);
+        }
+        conversationSummaryTimerRef.current = setTimeout(() => {
+            conversationSummaryTimerRef.current = null;
+            patchConversationSummary(activeConversationId, {
+                lastActivityAt: new Date().toISOString(),
+                workflowStatus: effectiveStatus,
+                statusLabel: sessionProjection?.summary?.workflowStatus === effectiveStatus
+                    ? (sessionProjection?.summary as Record<string, unknown> | null)?.statusLabel as string | undefined
+                    : undefined,
+                ownerRuntime: sessionProjection?.workflow?.ownerRuntime || sessionProjection?.summary?.ownerRuntime || undefined,
+                currentStepTitle: sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || undefined,
+                previewExcerpt: historyPreview,
+                lastNarrativeExcerpt: historyPreview,
+                lastRuntimeSummary: sessionProjection?.summary && typeof (sessionProjection.summary as Record<string, unknown>).lastRuntimeSummary === "string"
+                    ? String((sessionProjection.summary as Record<string, unknown>).lastRuntimeSummary)
+                    : (sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || undefined),
+                pendingApprovalCount: effectivePendingApproval
+                    ? Math.max(
+                        Number(governanceApprovals.length || 0),
+                        Number(sessionProjection?.controls?.pendingApprovalCount || 0),
+                    )
+                    : 0,
+                hasPendingApproval: effectivePendingApproval,
+                recoverable: Boolean(sessionProjection?.recoverable?.recoverable),
+                controls: sessionProjection?.controls || undefined,
+            });
+        }, 500);
+        return () => {
+            if (conversationSummaryTimerRef.current) {
+                clearTimeout(conversationSummaryTimerRef.current);
+                conversationSummaryTimerRef.current = null;
+            }
+        };
     }, [
         activeConversationId,
         effectivePendingApproval,
@@ -3907,6 +3951,7 @@ export default function ChatClient() {
                 applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 const localStreamActive = isLocalStreamActive(activeConversationId);
+                const snapshotLatestSeq = Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0);
                 const terminalProjection = nextView && localStreamActive
                     ? deriveMatchingTerminalProjection({
                         localRunId: getSubmittedRunId() || localSubmittedRunId,
@@ -3939,6 +3984,15 @@ export default function ChatClient() {
                     }
                     return {
                         ...nextView,
+                        runtimeTimeline: (
+                            localStreamActive
+                            || snapshotLatestSeq < latestRealtimeSeqRef.current
+                        )
+                            ? mergeRuntimeTimeline(
+                                normalizeRuntimeTimeline(current.runtimeTimeline || []),
+                                normalizeRuntimeTimeline(nextView.runtimeTimeline || []),
+                            )
+                            : nextView.runtimeTimeline,
                         contextGovernance: nextView.contextGovernance || current.contextGovernance,
                         contextGovernanceHistory:
                             Array.isArray(nextView.contextGovernanceHistory) && nextView.contextGovernanceHistory.length > 0
@@ -3963,7 +4017,7 @@ export default function ChatClient() {
                 if (snapshotMessages && !messagesOmitted && !preserveLegacyCompactSnapshot) {
                     applyProjectedSnapshot(
                         snapshotMessages,
-                        Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),
+                        snapshotLatestSeq,
                         { mergeWithCurrent: localStreamActive && !terminalStreamSettled },
                     );
                 } else if (

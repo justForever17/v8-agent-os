@@ -228,6 +228,61 @@ def test_pure_case_forces_a_fresh_research_run(monkeypatch) -> None:
     ]
 
 
+def test_domestic_delivery_case_restricts_and_restores_source_router(monkeypatch) -> None:
+    from core.tools import research_quality, web_fetcher
+
+    original_provider_order = web_fetcher._configured_source_provider_order
+
+    def fake_research_run(question, **kwargs):
+        assert "生成式人工智能服务管理暂行办法" in question
+        assert kwargs["source_policy"] == "authoritative"
+        assert web_fetcher._configured_source_provider_order("global") == [
+            "bing_cn",
+            "metaso",
+            "baidu",
+        ]
+        return {
+            "ok": True,
+            "deliveryReady": True,
+            "qualityTier": "minimum_qualified",
+            "researchAnswerPack": {
+                "answer": "有证据绑定的国内网络调研答案。",
+                "score": {
+                    "qualityTier": "minimum_qualified",
+                    "acceptanceMetrics": {"selectedSourceCount": 5},
+                },
+            },
+            "sourceMatrix": [
+                {
+                    "provider": "bing_cn",
+                    "networkRoute": "cn_direct",
+                    "title": "生成式人工智能服务管理暂行办法",
+                    "selectedForEvidence": True,
+                },
+                {
+                    "provider": "metaso",
+                    "networkRoute": "cn_direct",
+                    "title": "政策解读",
+                    "snippet": "《生成式人工智能服务管理暂行办法》官方解读",
+                    "selectedForEvidence": True,
+                },
+            ],
+            "shards": [],
+        }
+
+    monkeypatch.setattr(audit, "_research_run", fake_research_run)
+    monkeypatch.setattr(audit, "_persisted_research_bundle", lambda payload: payload)
+    monkeypatch.setattr(audit, "_compact_delivery_evidence", lambda _payload: {})
+    monkeypatch.setattr(audit, "_persisted_research_diagnostic", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(research_quality, "research_acceptance_issues", lambda _payload: [])
+
+    result = audit._run_domestic_delivery_case()
+
+    assert result.status == "ok"
+    assert result.providers == ["bing_cn", "metaso"]
+    assert web_fetcher._configured_source_provider_order is original_provider_order
+
+
 def test_pure_semantic_gate_requires_every_product_and_decision_coverage() -> None:
     answer = (
         "在 Windows 和 PowerShell 上，OpenAI Codex CLI、Claude Code、Gemini CLI 与 "

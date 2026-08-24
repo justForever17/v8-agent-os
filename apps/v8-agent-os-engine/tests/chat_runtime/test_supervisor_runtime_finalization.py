@@ -1037,6 +1037,40 @@ def test_second_degraded_research_handoff_exhausts_retry_and_blocks_false_comple
     assert decision.details["missingTaskBriefIds"] == ["sqlite-jsonb"]
 
 
+def test_exhausted_research_transport_can_deliver_a_truthful_blocker_report():
+    handoff = {
+        "kind": "research_evidence_bundle",
+        "status": "degraded",
+        "missingTaskBriefIds": ["strict-network"],
+        "sourceAcquisition": {
+            "state": "exhausted",
+            "readableSourceCount": 0,
+            "selectedSourceCount": 0,
+            "failureClasses": ["network_timeout", "needs_agent_browser_login"],
+        },
+        "taskBriefResults": [
+            {
+                "taskBriefId": "strict-network",
+                "status": "degraded",
+                "sourceAcquisition": {
+                    "state": "exhausted",
+                    "readableSourceCount": 0,
+                    "selectedSourceCount": 0,
+                },
+            }
+        ],
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[{"episodeId": "episode-research", "kind": "research", "state": "degraded"}],
+        handoffs_by_episode={"episode-research": [{"payload": handoff}]},
+        final_text="研究阻塞：无可读证据，无法验证该问题。请修复登录态或 allowlist 后重新调研。",
+    )
+
+    assert decision.action == "complete"
+    assert decision.reason == "research_transport_blocker_reported"
+    assert decision.details["missingTaskBriefIds"] == ["strict-network"]
+
+
 def test_exhausted_research_gap_does_not_swallow_pending_engineering_milestone():
     handoff = {
         "kind": "research_evidence_bundle",

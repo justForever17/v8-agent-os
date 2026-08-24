@@ -673,6 +673,119 @@ def _run_cn_case() -> AuditCaseResult:
     return result
 
 
+def _run_domestic_delivery_case() -> AuditCaseResult:
+    result = AuditCaseResult(
+        "domestic_delivery",
+        "仅依赖国内可达网络：检索、正文证据、模型综合与最低合格交付",
+    )
+    started = time.perf_counter()
+    try:
+        from core.tools.research_quality import research_acceptance_issues
+        from core.tools import web_fetcher
+        from core.tools.research_broker import _research_source_matches_root_subject
+
+        domestic_providers = ("bing_cn", "metaso", "baidu")
+        domestic_question = (
+            "依据中国政府公开资料，概括《生成式人工智能服务管理暂行办法》对面向境内公众提供"
+            "生成式人工智能服务的适用范围、训练数据与个人信息、生成内容治理与标识、"
+            "安全评估或算法备案、用户权益和投诉举报分别提出了什么要求。"
+            "请明确区分法规或官方解读中的事实与面向产品团队的实施建议。"
+        )
+        original_provider_order = web_fetcher._configured_source_provider_order
+        web_fetcher._configured_source_provider_order = lambda _locale: list(domestic_providers)
+        try:
+            payload = _research_run(
+                domestic_question,
+                source_policy="authoritative",
+                freshness="current",
+                max_shards=8,
+                max_rounds=2,
+                force_refresh=True,
+            )
+        finally:
+            web_fetcher._configured_source_provider_order = original_provider_order
+        persisted_bundle = _persisted_research_bundle(payload)
+        answer_pack = (
+            payload.get("researchAnswerPack")
+            if isinstance(payload.get("researchAnswerPack"), dict)
+            else {}
+        )
+        score = answer_pack.get("score") if isinstance(answer_pack.get("score"), dict) else {}
+        route_rows = [
+            *list((persisted_bundle or payload).get("sourceMatrix") or []),
+            *list((persisted_bundle or payload).get("shards") or []),
+        ]
+        routes = {
+            str(item.get("networkRoute") or "")
+            for item in route_rows
+            if isinstance(item, dict) and item.get("networkRoute")
+        }
+        providers = {
+            str(item.get("provider") or "")
+            for item in route_rows
+            if isinstance(item, dict) and item.get("provider")
+        }
+        validation_payload = persisted_bundle if isinstance(persisted_bundle, dict) else payload
+        result.failures.extend(research_acceptance_issues(validation_payload))
+        if payload.get("deliveryReady") is not True:
+            result.failures.append("domestic_research_not_delivery_ready")
+        if not str(answer_pack.get("answer") or "").strip():
+            result.failures.append("domestic_research_answer_missing")
+        if "cn_direct" not in routes and not providers.intersection({"bing_cn", "metaso", "baidu"}):
+            result.failures.append("domestic_source_route_not_observed")
+        unexpected_providers = sorted(providers.difference(domestic_providers))
+        if unexpected_providers:
+            result.failures.append(
+                "non_domestic_provider_selected:" + ",".join(unexpected_providers)
+            )
+        selected_sources = [
+            item
+            for item in list(validation_payload.get("sourceMatrix") or [])
+            if isinstance(item, dict)
+            and (
+                item.get("selectedForEvidence") is True
+                or bool((item.get("sourceQualityGate") or {}).get("selectedForEvidence"))
+            )
+        ]
+        off_topic_hosts = sorted(
+            {
+                str(item.get("host") or "unknown")
+                for item in selected_sources
+                if not _research_source_matches_root_subject(
+                    domestic_question,
+                    title=str(item.get("title") or ""),
+                    url=str(item.get("url") or ""),
+                    snippet=str(item.get("snippet") or ""),
+                )
+            }
+        )
+        if off_topic_hosts:
+            result.failures.append(
+                "domestic_selected_source_subject_mismatch:" + ",".join(off_topic_hosts)
+            )
+        result.status = "ok" if not result.failures else "failed"
+        result.providers = sorted(providers)
+        result.summary = (
+            f"quality={score.get('qualityTier') or payload.get('qualityTier')} "
+            f"sources={((score.get('acceptanceMetrics') or {}).get('selectedSourceCount'))} "
+            f"routes={','.join(sorted(routes)) or 'none'}"
+        )
+        result.evidence.append(_redact(_compact_delivery_evidence(payload)))
+        result.evidence.append(
+            _redact(
+                _persisted_research_diagnostic(
+                    payload,
+                    bundle=persisted_bundle,
+                )
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - live audit reports diagnostic failure.
+        result.status = "failed"
+        result.failures.append(_redact(f"{type(exc).__name__}: {exc}"))
+    result.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result
+
+
 def _run_continuation_case() -> AuditCaseResult:
     result = AuditCaseResult("continuation", "长页面读取：raw_ref 续读稳定")
     started = time.perf_counter()
@@ -928,6 +1041,7 @@ def _run_conflict_case() -> AuditCaseResult:
 CASES = {
     "technical": _run_technical_case,
     "cn": _run_cn_case,
+    "domestic_delivery": _run_domestic_delivery_case,
     "pure": _run_pure_research_case,
     "continuation": _run_continuation_case,
     "reuse": _run_reuse_case,

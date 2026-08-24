@@ -78,8 +78,18 @@ class RuntimeCommandRouter:
             recovery_class=payload.get("recoveryClass"),
         ).as_dict()
 
-    def get_events(self, session_id: str, *, after_seq: Optional[int] = None) -> Dict[str, Any]:
-        payload = session_runtime_service.get_runtime_events(session_id, after_seq=after_seq)
+    def get_events(
+        self,
+        session_id: str,
+        *,
+        after_seq: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload = session_runtime_service.get_runtime_events(
+            session_id,
+            after_seq=after_seq,
+            limit=limit,
+        )
         return RuntimeEventsPayload(
             session_id=payload["session_id"],
             latest_seq=int(payload.get("latestSeq") or 0),

@@ -46,6 +46,7 @@ WebSearchEngine = Literal[
     "auto",
     "metaso",
     "bing",
+    "bing_cn",
     "google",
     "baidu",
     "duckduckgo",
@@ -1561,6 +1562,7 @@ METASO_API_SCOPES: dict[str, str] = {
 SEARCH_PROVIDER_URLS: dict[str, str] = {
     "metaso": "https://metaso.cn/?q={query}",
     "bing": "https://www.bing.com/search?q={query}",
+    "bing_cn": "https://cn.bing.com/search?q={query}",
     "google": "https://www.google.com/search?q={query}&hl=en",
     "baidu": "https://www.baidu.com/s?wd={query}",
     "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
@@ -1578,6 +1580,7 @@ IMPLEMENTED_SEARCH_PROVIDERS = (
     "duckduckgo",
     "google",
     "bing",
+    "bing_cn",
     "baidu",
     "yahoo",
     "searxng",
@@ -1712,6 +1715,16 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "outputFormats": ["search_results"],
         "implemented": True,
     },
+    "bing_cn": {
+        "region": "cn",
+        "role": "discovery",
+        "supports": ["search", "cn_web", "lightweight_html"],
+        "costTier": "free_public",
+        "latencyTier": "fast",
+        "requiresProxy": False,
+        "outputFormats": ["search_results"],
+        "implemented": True,
+    },
     "yahoo": {
         "region": "global",
         "role": "discovery",
@@ -1733,8 +1746,8 @@ SOURCE_PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "implemented": True,
     },
 }
-DEFAULT_CN_SOURCE_PROVIDERS = ("bocha", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng")
-DEFAULT_GLOBAL_SOURCE_PROVIDERS = ("brave", "tavily", "exa", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng")
+DEFAULT_CN_SOURCE_PROVIDERS = ("bocha", "bing_cn", "metaso", "baidu", "yahoo", "duckduckgo", "google", "bing", "searxng")
+DEFAULT_GLOBAL_SOURCE_PROVIDERS = ("brave", "tavily", "exa", "bing_cn", "yahoo", "duckduckgo", "google", "bing", "metaso", "baidu", "searxng")
 _LEGACY_CN_SOURCE_PROVIDERS_V1 = (
     "bocha",
     "metaso",
@@ -1748,6 +1761,28 @@ _LEGACY_GLOBAL_SOURCE_PROVIDERS_V1 = (
     "brave",
     "tavily",
     "exa",
+    "duckduckgo",
+    "google",
+    "bing",
+    "metaso",
+    "baidu",
+    "searxng",
+)
+_LEGACY_CN_SOURCE_PROVIDERS_V2 = (
+    "bocha",
+    "metaso",
+    "baidu",
+    "yahoo",
+    "duckduckgo",
+    "google",
+    "bing",
+    "searxng",
+)
+_LEGACY_GLOBAL_SOURCE_PROVIDERS_V2 = (
+    "brave",
+    "tavily",
+    "exa",
+    "yahoo",
     "duckduckgo",
     "google",
     "bing",
@@ -2074,9 +2109,15 @@ def _configured_source_provider_order(locale: str) -> list[str]:
         ordered = _ordered_unique(configured)
         # Migrate only untouched legacy defaults. A user-curated provider list
         # is authoritative and must not regain removed sources.
-        if locale == "cn" and ordered == list(_LEGACY_CN_SOURCE_PROVIDERS_V1):
+        if locale == "cn" and tuple(ordered) in {
+            tuple(_LEGACY_CN_SOURCE_PROVIDERS_V1),
+            tuple(_LEGACY_CN_SOURCE_PROVIDERS_V2),
+        }:
             return _ordered_unique(defaults)
-        if locale == "global" and ordered == list(_LEGACY_GLOBAL_SOURCE_PROVIDERS_V1):
+        if locale == "global" and tuple(ordered) in {
+            tuple(_LEGACY_GLOBAL_SOURCE_PROVIDERS_V1),
+            tuple(_LEGACY_GLOBAL_SOURCE_PROVIDERS_V2),
+        }:
             return _ordered_unique(defaults)
         return ordered
 
@@ -2094,6 +2135,7 @@ def _prioritize_governed_browser_providers(candidates: list[str]) -> tuple[list[
     exhaust the total search budget before the governed route is attempted.
     """
 
+    domestic_public: list[str] = []
     promoted: list[str] = []
     remaining: list[str] = []
     for provider in candidates:
@@ -2104,8 +2146,11 @@ def _prioritize_governed_browser_providers(candidates: list[str]) -> tuple[list[
             and search_url
             and _agent_browser_profile_allowed(search_url)[0]
         )
-        (promoted if profile_ready else remaining).append(provider)
-    return [*promoted, *remaining], promoted
+        if provider == "bing_cn" and not profile_ready:
+            domestic_public.append(provider)
+        else:
+            (promoted if profile_ready else remaining).append(provider)
+    return [*domestic_public, *promoted, *remaining], promoted
 
 
 def _provider_network_route(provider: str, locale: str, *, needs_login: bool = False) -> str:
@@ -2398,7 +2443,10 @@ def _provider_prefers_agent_browser_profile(provider: str) -> bool:
 def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[str, Any] | None:
     if not _provider_prefers_agent_browser_profile(provider):
         return None
-    if str(provider or "").strip().lower() == "metaso" and _provider_api_key("metaso"):
+    # MetaSo has a bounded structured public/API route which does not need
+    # profile cookies. A configured profile is a fallback for challenge/rate
+    # limit cases, not a reason to skip the structured route entirely.
+    if str(provider or "").strip().lower() == "metaso":
         return None
     allowed, matched_host = _agent_browser_profile_allowed(search_url)
     if allowed:
@@ -2642,6 +2690,7 @@ def _fetch_with_scrapling_internal(
     referer_url: str = "",
     timeout_seconds: float | None = None,
     use_agent_browser_profile: bool = False,
+    browser_wait_ms: int = 0,
 ) -> WebPagePayload:
     attempted_modes: list[str] = []
     errors: dict[str, str] = {}
@@ -2831,6 +2880,8 @@ def _fetch_with_scrapling_internal(
             agent_browser_kind = context["browserKind"]
             options["cdp_url"] = context["cdpUrl"]
             options.pop("user_data_dir", None)
+        if browser_wait_ms > 0:
+            options["wait"] = max(0, min(int(browser_wait_ms), 5_000))
         return options
 
     auto_degraded_pages: list[tuple[str, WebPagePayload, str]] = []
@@ -4545,9 +4596,11 @@ def _search_result_destination_url(href: str, *, provider: str) -> str:
     if not raw_href:
         return ""
     provider_base = {
+        "metaso": "https://metaso.cn/",
         "duckduckgo": "https://duckduckgo.com/",
         "google": "https://www.google.com/",
         "bing": "https://www.bing.com/",
+        "bing_cn": "https://cn.bing.com/",
         "baidu": "https://www.baidu.com/",
         "yahoo": "https://search.yahoo.co.jp/",
     }.get(provider, "")
@@ -4572,6 +4625,7 @@ def _search_result_destination_url(href: str, *, provider: str) -> str:
 
 
 def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -> list[dict[str, str]]:
+    normalized_provider = "bing" if provider == "bing_cn" else provider
     selectors = {
         "bing": [
             ("li.b_algo", "h2 a", ".b_caption p"),
@@ -4589,7 +4643,7 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
             ("div.sw-Card.Algo", ".sw-Card__titleInner", ".sw-Card__summary"),
             ("div.algo", "h3 a", ".compText, .fc-falcon, p"),
         ],
-    }.get(provider, [])
+    }.get(normalized_provider, [])
     results: list[dict[str, str]] = []
     seen: set[str] = set()
     for node_selector, anchor_selector, snippet_selector in selectors:
@@ -4609,6 +4663,33 @@ def _extract_search_results(soup: BeautifulSoup, *, provider: str, limit: int) -
                 return results
         if results:
             return results
+    if provider == "metaso":
+        # MetaSo renders references after the initial Next.js document. The
+        # exact class names are not stable, so inspect only external anchors
+        # and let the query-relevance gate reject navigation or account links.
+        for anchor in soup.select("main a[href], article a[href], body a[href]"):
+            href = _search_result_destination_url(_safe_text(anchor.get("href")), provider=provider)
+            parsed = urlparse(href)
+            host = (parsed.hostname or "").lower()
+            if (
+                not _looks_like_url(href)
+                or host == "metaso.cn"
+                or host.endswith(".metaso.cn")
+                or href in seen
+            ):
+                continue
+            title = _safe_text(
+                anchor.get("title")
+                or anchor.get_text(" ", strip=True)
+            )
+            if not title:
+                continue
+            seen.add(href)
+            container = anchor.find_parent(["li", "article", "section", "div"])
+            snippet = _safe_text(container.get_text(" ", strip=True) if container else "")
+            results.append({"title": title[:300], "url": href, "snippet": snippet[:600]})
+            if len(results) >= max(1, min(limit, 10)):
+                break
     return results
 
 
@@ -5903,6 +5984,22 @@ def web_search(
     attempted_providers: list[dict[str, Any]] = list(router_plan.get("skippedProviders") or [])
     started_at = time.monotonic()
     last_error = ""
+    site_hosts = list(_search_query_relevance_signals(query).get("siteHosts") or [])
+    relaxed_site_fallback: dict[str, Any] | None = None
+
+    def _matches_requested_site(results: list[Any]) -> bool:
+        if not site_hosts:
+            return True
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            result_host = (urlparse(_safe_text(item.get("url"))).hostname or "").lower()
+            if any(
+                result_host == host or result_host.endswith(f".{host}")
+                for host in site_hosts
+            ):
+                return True
+        return False
 
     def _assess_provider_results(
         provider: str,
@@ -5910,8 +6007,75 @@ def web_search(
         *,
         final_url: str = "",
     ) -> tuple[bool, str | None, dict[str, Any]]:
-        nonlocal last_error
+        nonlocal last_error, relaxed_site_fallback
         relevance = _assess_search_result_relevance(query, results)
+        if not results:
+            failure_class = "no_results"
+            attempted_providers.append(
+                {
+                    "provider": provider,
+                    "status": "empty",
+                    "failureClass": failure_class,
+                    "reason": failure_class,
+                    "resultCount": 0,
+                    "relevance": relevance,
+                }
+            )
+            last_error = failure_class
+            if requested_provider == "auto":
+                return False, None, relevance
+            return (
+                False,
+                json.dumps(
+                    {
+                        "ok": False,
+                        "query": query,
+                        "requestedProvider": requested_provider,
+                        "searchVertical": requested_vertical,
+                        "attemptedProviders": attempted_providers,
+                        "failureClass": failure_class,
+                        "elapsedMs": int((time.monotonic() - started_at) * 1000),
+                        "retryable": True,
+                        "recommendedNextAction": "该搜索源没有返回结果；请缩小关键词、换 provider，或让 auto 继续降级。",
+                        "error": last_error,
+                        "searchRelevance": relevance,
+                        **_source_router_payload_fields(
+                            router_plan,
+                            selected_provider=provider,
+                            attempted_providers=attempted_providers,
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                relevance,
+            )
+        if (
+            requested_provider == "auto"
+            and site_hosts
+            and bool(relevance.get("relevant"))
+            and not _matches_requested_site(results)
+        ):
+            if relaxed_site_fallback is None:
+                relaxed_site_fallback = {
+                    "provider": provider,
+                    "results": list(results),
+                    "relevance": relevance,
+                }
+            failure_class = "site_constraint_not_honored"
+            attempted_providers.append(
+                {
+                    "provider": provider,
+                    "status": "relaxed_candidate",
+                    "failureClass": failure_class,
+                    "reason": failure_class,
+                    "resultCount": len(results),
+                    "requestedSiteHosts": site_hosts,
+                    "relevance": relevance,
+                }
+            )
+            last_error = failure_class
+            return False, None, relevance
         # Bing's public HTML endpoint is known to return a normal-looking result
         # page for an unrelated localized query. Keep this failover narrow:
         # explicit provider requests and other adapters retain their established
@@ -5919,7 +6083,7 @@ def web_search(
         # configured source instead of accepting that polluted page.
         should_reject = (
             requested_provider == "auto"
-            and provider == "bing"
+            and provider in {"bing", "bing_cn"}
             and "cn.bing.com" in _safe_text(final_url).lower()
         )
         if bool(relevance.get("relevant")) or not should_reject:
@@ -5971,7 +6135,7 @@ def web_search(
         recommended = (
             "该 provider 需要配置 API key 或启用适配器；请检查 systemBase.webFetch.providers，或使用 search_engine=auto 让 Source Router 自动降级。"
             if failure_class in {"credential_missing", "provider_adapter_unavailable", "provider_unconfigured"}
-            else "使用 search_engine=auto，或选择 metaso/duckduckgo/baidu/bing/google/searxng 中的一个。"
+            else "使用 search_engine=auto，或选择 metaso/bing_cn/duckduckgo/baidu/bing/google/searxng 中的一个。"
         )
         return json.dumps(
             {
@@ -6178,6 +6342,91 @@ def web_search(
                 return json.dumps(response, ensure_ascii=False, indent=2)
             if provider == "metaso":
                 use_browser_for_provider = bool(useAgentBrowserProfile) or bool(_agent_browser_profile_allowed(search_url)[0])
+                if use_browser_for_provider:
+                    structured_route = "api" if _provider_api_key("metaso") else "public_sse"
+                    metaso_structured = (
+                        _metaso_api_search(
+                            query,
+                            limit=limit,
+                            vertical=requested_vertical,
+                            timeout_seconds=provider_timeout,
+                        )
+                        if structured_route == "api"
+                        else _metaso_search_public(
+                            query,
+                            limit=limit,
+                            vertical=requested_vertical,
+                            timeout_seconds=provider_timeout,
+                        )
+                    )
+                    if bool(metaso_structured.get("ok")):
+                        structured_results = (
+                            metaso_structured.get("results")
+                            if isinstance(metaso_structured.get("results"), list)
+                            else []
+                        )
+                        accepted, rejection, relevance = _assess_provider_results(
+                            provider,
+                            structured_results,
+                        )
+                        if accepted:
+                            attempted_providers.append(
+                                {
+                                    "provider": provider,
+                                    "route": structured_route,
+                                    "status": "ok",
+                                    "resultCount": len(structured_results),
+                                    "searchVertical": requested_vertical,
+                                    "relevance": relevance,
+                                }
+                            )
+                            return json.dumps(
+                                {
+                                    "ok": True,
+                                    "query": query,
+                                    "provider": provider,
+                                    "requestedProvider": requested_provider,
+                                    "searchVertical": requested_vertical,
+                                    "attemptedProviders": attempted_providers,
+                                    "searchUrl": search_url,
+                                    "resultCount": len(structured_results),
+                                    "results": structured_results,
+                                    "searchRelevance": relevance,
+                                    "metaso": {
+                                        "route": structured_route,
+                                        "engineType": metaso_structured.get("engineType"),
+                                        "scope": metaso_structured.get("scope"),
+                                        "apiEndpoint": metaso_structured.get("apiEndpoint"),
+                                        "resultId": metaso_structured.get("resultId"),
+                                        "groupId": metaso_structured.get("groupId"),
+                                        "eventsSeen": metaso_structured.get("eventsSeen"),
+                                    },
+                                    **_source_router_payload_fields(
+                                        router_plan,
+                                        selected_provider=provider,
+                                        attempted_providers=attempted_providers,
+                                    ),
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                        if rejection:
+                            return rejection
+                    else:
+                        attempted_providers.append(
+                            {
+                                "provider": provider,
+                                "route": structured_route,
+                                "status": "error",
+                                "failureClass": metaso_structured.get("failureClass") or "search_failed",
+                                "reason": metaso_structured.get("reason") or "metaso_structured_search_failed",
+                                "eventsSeen": metaso_structured.get("eventsSeen"),
+                            }
+                        )
+                        last_error = _safe_text(
+                            metaso_structured.get("reason")
+                            or metaso_structured.get("failureClass")
+                        )
                 if not use_browser_for_provider:
                     if _provider_api_key("metaso"):
                         metaso_result = _metaso_api_search(
@@ -6279,7 +6528,7 @@ def web_search(
                 _provider_prefers_agent_browser_profile(provider) and _agent_browser_profile_allowed(search_url)[0]
             )
             if (
-                provider in {"duckduckgo", "google", "bing", "baidu", "yahoo"}
+                provider in {"duckduckgo", "google", "bing", "bing_cn", "baidu", "yahoo"}
                 and not effective_use_agent_browser_profile
                 and mode in {"auto", "static"}
             ):
@@ -6380,6 +6629,7 @@ def web_search(
                 referer_url=referer_url,
                 timeout_seconds=provider_timeout,
                 use_agent_browser_profile=effective_use_agent_browser_profile,
+                browser_wait_ms=1_500 if provider == "metaso" else 0,
             )
             soup = BeautifulSoup(payload.html, "html.parser")
             results = _extract_search_results(soup, provider=provider, limit=limit)
@@ -6477,6 +6727,33 @@ def web_search(
                 "reason": error[:1000],
                 "elapsedMs": _error_elapsed_ms(error),
             })
+
+    if relaxed_site_fallback is not None:
+        fallback_provider = _safe_text(relaxed_site_fallback.get("provider"))
+        fallback_results = list(relaxed_site_fallback.get("results") or [])
+        return json.dumps(
+            {
+                "ok": True,
+                "query": query,
+                "provider": fallback_provider,
+                "requestedProvider": requested_provider,
+                "searchVertical": requested_vertical,
+                "attemptedProviders": attempted_providers,
+                "searchUrl": _provider_search_url(fallback_provider, query),
+                "resultCount": len(fallback_results),
+                "results": fallback_results,
+                "searchRelevance": relaxed_site_fallback.get("relevance") or {},
+                "siteConstraintRelaxed": True,
+                "requestedSiteHosts": site_hosts,
+                **_source_router_payload_fields(
+                    router_plan,
+                    selected_provider=fallback_provider,
+                    attempted_providers=attempted_providers,
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     aggregate_failure = "search_failed"
     operational_attempts = [

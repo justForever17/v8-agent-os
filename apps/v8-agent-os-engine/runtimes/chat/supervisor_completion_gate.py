@@ -1363,6 +1363,128 @@ def _completed_downstream_carrying_research_gaps(
     return None
 
 
+def _explicit_research_transport_blocker_report(
+    *,
+    final_text: str,
+    research_gaps: Iterable[Mapping[str, Any]],
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> dict[str, Any] | None:
+    """Allow a truthful transport blocker to be delivered as the answer.
+
+    This is deliberately narrower than Research acceptance.  It never turns
+    missing evidence into an accepted fact: every unresolved brief must have
+    a typed, exhausted source-acquisition diagnostic, and the Supervisor's
+    final text must explicitly say that no verified answer can be given and
+    tell the user how to repair/retry it.  Without that acknowledgement the
+    normal fail-closed evidence gate remains in force.
+    """
+
+    normalized_text = str(final_text or "").strip().lower()
+    if not normalized_text:
+        return None
+    acknowledgement_markers = (
+        "无可读证据",
+        "没有可读证据",
+        "无法验证",
+        "无法完成调研",
+        "研究阻塞",
+        "调研阻塞",
+        "no readable evidence",
+        "no verified answer",
+        "research is blocked",
+        "research blocker",
+    )
+    repair_markers = (
+        "重新调研",
+        "修复",
+        "登录态",
+        "allowlist",
+        "配置",
+        "重试",
+        "retry",
+        "repair",
+        "configure",
+        "重新运行",
+    )
+    if not any(marker in normalized_text for marker in acknowledgement_markers):
+        return None
+    if not any(marker in normalized_text for marker in repair_markers):
+        return None
+
+    def bounded_count(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    missing_ids = {
+        str(item.get("taskBriefId") or "").strip()
+        for item in research_gaps
+        if str(item.get("taskBriefId") or "").strip()
+    }
+    if not missing_ids:
+        return None
+
+    exhausted_ids: set[str] = set()
+    exhausted_episode_ids: set[str] = set()
+    for episode in episodes:
+        if str(episode.get("kind") or "").strip().lower() != "research":
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            continue
+        for raw_handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            if not isinstance(raw_handoff, Mapping):
+                continue
+            handoff = _handoff_payload(raw_handoff)
+            if str(handoff.get("status") or "").strip().lower() != "degraded":
+                continue
+            acquisition = handoff.get("sourceAcquisition")
+            acquisition = acquisition if isinstance(acquisition, Mapping) else {}
+            by_brief = {
+                str(item.get("taskBriefId") or "").strip(): item
+                for item in list(handoff.get("sourceAcquisitionByBrief") or [])
+                if isinstance(item, Mapping) and str(item.get("taskBriefId") or "").strip()
+            }
+            results = [item for item in list(handoff.get("taskBriefResults") or []) if isinstance(item, Mapping)]
+            for result in results:
+                brief_id = str(result.get("taskBriefId") or "").strip()
+                if not brief_id:
+                    continue
+                result_acquisition = result.get("sourceAcquisition")
+                result_acquisition = result_acquisition if isinstance(result_acquisition, Mapping) else by_brief.get(brief_id, {})
+                if (
+                    str(result_acquisition.get("state") or acquisition.get("state") or "").strip().lower() == "exhausted"
+                    and bounded_count(result_acquisition.get("readableSourceCount") or acquisition.get("readableSourceCount")) == 0
+                    and bounded_count(result_acquisition.get("selectedSourceCount") or acquisition.get("selectedSourceCount")) == 0
+                ):
+                    exhausted_ids.add(brief_id)
+                    exhausted_episode_ids.add(episode_id)
+            # Older handoffs may omit taskBriefResults.  In that case the
+            # episode-level acquisition diagnostic still binds the gap.
+            if not results and str(acquisition.get("state") or "").strip().lower() == "exhausted":
+                handoff_missing_ids = {
+                    str(item.get("taskBriefId") if isinstance(item, Mapping) else item or "").strip()
+                    for item in list(handoff.get("missingTaskBriefIds") or [])
+                    if str(item.get("taskBriefId") if isinstance(item, Mapping) else item or "").strip()
+                }
+                exhausted_ids.update(
+                    missing_id
+                    for missing_id in missing_ids
+                    if not handoff_missing_ids or missing_id in handoff_missing_ids
+                )
+                exhausted_episode_ids.add(episode_id)
+
+    if not missing_ids.issubset(exhausted_ids) or not exhausted_episode_ids:
+        return None
+    return {
+        "episodeIds": sorted(exhausted_episode_ids)[:12],
+        "missingTaskBriefIds": sorted(missing_ids)[:12],
+        "delivery": "truthful_transport_blocker_report",
+    }
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -1500,6 +1622,18 @@ def evaluate_supervisor_completion(
             research_gaps,
         )
         if research_gap_continuation is None:
+            transport_blocker = _explicit_research_transport_blocker_report(
+                final_text=final_text,
+                research_gaps=research_gaps,
+                episodes=effective_episodes,
+                handoffs_by_episode=current_handoffs,
+            )
+            if transport_blocker is not None:
+                return SupervisorCompletionDecision(
+                    action="complete",
+                    reason="research_transport_blocker_reported",
+                    details=transport_blocker,
+                )
             return SupervisorCompletionDecision(
                 action="fail",
                 reason="research_brief_evidence_incomplete",

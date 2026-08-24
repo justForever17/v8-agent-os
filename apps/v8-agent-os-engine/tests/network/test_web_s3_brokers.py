@@ -528,18 +528,34 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertIn("Research episode", payload["researchRuntimeWarning"])
         self.assertNotIn("research.core", payload["researchRuntimeWarning"])
 
-    def test_web_search_explicit_metaso_requires_agent_browser_profile_when_not_allowlisted(self):
+    def test_web_search_explicit_metaso_uses_structured_public_route_without_profile(self):
         with patch(
             "core.tools.web_fetcher.get_web_fetch_config",
             return_value={"useAgentBrowserProfile": False, "agentBrowserProfileAllowlist": []},
+        ), patch(
+            "core.tools.web_fetcher._metaso_search_public",
+            return_value={
+                "ok": True,
+                "results": [
+                    {
+                        "title": "中国象棋规则",
+                        "url": "https://example.cn/chess",
+                        "snippet": "中国象棋规则与合法走法。",
+                    }
+                ],
+            },
         ):
-            result = web_broker.func(target="中国象棋规则", mode="search", search_engine="metaso")
+            result = web_broker.func(
+                target="中国象棋规则",
+                mode="search",
+                search_engine="metaso",
+                debug=True,
+            )
 
         payload = json.loads(result)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["failureClass"], "needs_agent_browser_login")
-        self.assertEqual(payload["attemptedProviders"][0]["status"], "skipped")
-        self.assertIn("Agent 浏览器", payload["recommendedNextAction"])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["provider"], "metaso")
+        self.assertEqual(payload["debug"]["networkRoute"], "cn_direct")
 
     def test_web_search_source_router_prefers_cn_route_for_chinese_query(self):
         config = {

@@ -24,7 +24,10 @@ export async function GET(
     const { id } = await params;
 
     try {
-        const res = await fetch(`${adminApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web&compact=1`, {
+        // Web is the rich local workbench surface. Phone/desktop compact
+        // snapshots are intentionally bounded, but collapsing the Web stream
+        // drops subagent timeline nodes and delays durable artifact refresh.
+        const res = await fetch(`${adminApiBaseUrl}/realtime/sessions/${encodeURIComponent(id)}/stream?surface=web`, {
             method: "GET",
             headers: {
                 "Content-Type": "text/event-stream",
@@ -44,6 +47,7 @@ export async function GET(
             headers: {
                 "Content-Type": "text/event-stream; charset=utf-8",
                 "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
             }
         });

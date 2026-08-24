@@ -705,6 +705,44 @@ class RuntimeProjectionContractTests(unittest.TestCase):
         self.assertEqual(compact[0]["id"], "handoff")
         self.assertEqual(compact[-1]["id"], "noise-219")
 
+
+    def test_runtime_window_keeps_bounded_subagent_detail_outside_global_recent_tail(self):
+        subagent_entries = [
+            {
+                "id": f"subagent-{index}",
+                "seq": index,
+                "topic": "runtime.episode.progress",
+                "metadata": {
+                    "episodeId": "subagent::delegation-live::worker",
+                    "progress": {
+                        "timelineNode": {
+                            "id": f"worker-node-{index}",
+                            "topic": "subagent.reasoning.delta",
+                        }
+                    },
+                },
+            }
+            for index in range(1, 7)
+        ]
+        noise = [
+            {
+                "id": f"noise-{index}",
+                "seq": index,
+                "topic": "extension.route.selected",
+            }
+            for index in range(7, 240)
+        ]
+
+        selected = select_runtime_timeline_window(
+            [*subagent_entries, *noise],
+            recent_limit=12,
+            milestone_limit=0,
+        )
+
+        selected_ids = {entry["id"] for entry in selected}
+        self.assertTrue({entry["id"] for entry in subagent_entries}.issubset(selected_ids))
+        self.assertEqual(selected[-1]["id"], "noise-239")
+
     def test_tool_started_projection_sanitizes_runtime_internal_args(self):
         events = [
             {

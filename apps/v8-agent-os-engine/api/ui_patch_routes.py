@@ -32,6 +32,20 @@ async def create_ui_patch_preview(session_id: str, body: dict[str, Any] = Body(.
             parent_origin=str(body.get("parentOrigin") or body.get("parent_origin") or ""),
             entry_path=str(body.get("entryPath") or body.get("entry_path") or ""),
             target_url=str(body.get("targetUrl") or body.get("target_url") or ""),
+            project_path=str(body.get("projectPath") or body.get("project_path") or ""),
+            start_dev_server=bool(body.get("startDevServer", body.get("start_dev_server", True))),
+        )
+    except Exception as exc:
+        _raise_http_error(exc)
+
+
+@router.post("/sessions/{session_id}/ui-patch/projects/inspect")
+async def inspect_ui_patch_project(session_id: str, body: dict[str, Any] = Body(...)):
+    try:
+        return await asyncio.to_thread(
+            ui_patch_service.inspect_project,
+            session_id=session_id,
+            project_path=str(body.get("projectPath") or body.get("project_path") or ""),
         )
     except Exception as exc:
         _raise_http_error(exc)

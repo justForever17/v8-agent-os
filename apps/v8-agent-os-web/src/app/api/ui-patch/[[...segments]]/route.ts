@@ -16,11 +16,12 @@ function enginePath(segments: string[]) {
             || (tail.length === 2 && /^[A-Za-z0-9_-]+$/.test(tail[1]))
             || (tail.length === 3 && /^[A-Za-z0-9_-]+$/.test(tail[1]) && new Set(["selections", "commits"]).has(tail[2]))
         );
+    const projectRoute = tail.length === 2 && tail[0] === "projects" && tail[1] === "inspect";
     const transactionRoute = tail[0] === "transactions"
         && tail.length === 3
         && /^[A-Za-z0-9_-]+$/.test(tail[1])
         && new Set(["verification", "undo"]).has(tail[2]);
-    if (!previewRoute && !transactionRoute) return "";
+    if (!previewRoute && !transactionRoute && !projectRoute) return "";
     return `/sessions/${encodeURIComponent(decoded[1])}/ui-patch/${tail.map(encodeURIComponent).join("/")}`;
 }
 

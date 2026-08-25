@@ -224,12 +224,13 @@ export function WorkspaceFileRenderer({
         return `/api/workbench/sessions/${encodeURIComponent(sessionId)}/files/read?${params.toString()}`;
     }, [sessionId, workspacePath]);
     const uiPatchUrl = useMemo(() => {
-        if (document.renderer !== "html") return "";
-        const params = new URLSearchParams({
-            sessionId,
-            entryPath: workspacePath,
-            returnTo: `/chat?id=${encodeURIComponent(sessionId)}`,
-        });
+        const suffix = workspacePath.toLowerCase().slice(workspacePath.lastIndexOf("."));
+        const staticEntry = document.renderer === "html" && [".html", ".htm"].includes(suffix);
+        const projectSource = document.renderer === "code" && [".css", ".scss", ".sass", ".less", ".js", ".jsx", ".ts", ".tsx", ".vue"].includes(suffix);
+        if (!staticEntry && !projectSource) return "";
+        const params = new URLSearchParams({ sessionId, returnTo: `/chat?id=${encodeURIComponent(sessionId)}` });
+        if (staticEntry) params.set("entryPath", workspacePath);
+        else params.set("projectPath", workspacePath);
         return `/ui-patch?${params.toString()}`;
     }, [document.renderer, sessionId, workspacePath]);
 

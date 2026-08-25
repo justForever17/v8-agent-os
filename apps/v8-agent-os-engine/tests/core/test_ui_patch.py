@@ -5,6 +5,7 @@ import threading
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -436,3 +437,301 @@ def test_local_dev_proxy_blocks_redirects_outside_selected_origin(scoped_service
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_project_inspection_resolves_nearest_package_and_fixed_dev_command(scoped_service):
+    service, workspace = scoped_service
+    project = workspace / "apps" / "demo"
+    source = project / "src" / "App.tsx"
+    source.parent.mkdir(parents=True)
+    source.write_text("export default () => <main />", encoding="utf-8")
+    (project / "package.json").write_text(
+        '{"scripts":{"dev":"vite --host 127.0.0.1"},"dependencies":{"react":"19"},"devDependencies":{"vite":"7"}}',
+        encoding="utf-8",
+    )
+    (project / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+
+    result = service.inspect_project(session_id="session-project", project_path="apps/demo/src/App.tsx")
+
+    assert result["projectPath"] == "apps/demo"
+    assert result["framework"] == "react"
+    assert result["packageManager"] == "pnpm"
+    assert result["devCommand"] == "pnpm run dev"
+    assert "react-jsx-inline-style" in result["sourceAdapters"]
+    assert result["dynamicBindings"] == "read_only"
+
+
+def test_project_inspection_rejects_missing_dev_script_and_outside_workspace(scoped_service, tmp_path: Path):
+    service, workspace = scoped_service
+    (workspace / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "package.json").write_text('{"scripts":{"dev":"vite"}}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="scripts.dev"):
+        service.inspect_project(session_id="session-project", project_path=".")
+    with pytest.raises(PermissionError, match="inside"):
+        service.inspect_project(session_id="session-project", project_path=str(outside))
+
+
+def test_project_inspection_rejects_workspace_without_side_effect_authority(scoped_service, monkeypatch: pytest.MonkeyPatch):
+    service, workspace = scoped_service
+    (workspace / "package.json").write_text('{"scripts":{"dev":"vite"}}', encoding="utf-8")
+    blocked_authority = SimpleNamespace(
+        workspace_root=str(workspace),
+        workspace_id="workspace-blocked",
+        project_id="project-blocked",
+        side_effects_allowed=False,
+    )
+    monkeypatch.setattr(ui_patch.workspace_authority_service, "resolve", lambda **_: blocked_authority)
+
+    with pytest.raises(PermissionError, match="does not allow"):
+        service.inspect_project(session_id="session-project", project_path=".")
+
+
+def test_project_dev_start_uses_terminal_session_and_proven_output_url(scoped_service, monkeypatch: pytest.MonkeyPatch):
+    service, workspace = scoped_service
+    (workspace / "package.json").write_text(
+        '{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}',
+        encoding="utf-8",
+    )
+    (workspace / "package-lock.json").write_text("{}", encoding="utf-8")
+    sent: list[tuple[str, str]] = []
+    terminated: list[str] = []
+
+    monkeypatch.setattr("core.client_terminal_broker.create_terminal_session", lambda **_: {"sessionId": "term_project"})
+    monkeypatch.setattr(
+        "core.client_terminal_broker.send_terminal_input",
+        lambda session_id, value: sent.append((session_id, value)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "core.client_terminal_broker.read_terminal_session",
+        lambda _session_id: {"isRunning": True, "outputDelta": "Local: http://localhost:4317/\n"},
+    )
+    monkeypatch.setattr(
+        "core.client_terminal_broker.terminate_terminal_session",
+        lambda session_id: terminated.append(session_id) or {"ok": True},
+    )
+    monkeypatch.setattr(service, "_probe_local_url", lambda url: url == "http://127.0.0.1:4317")
+
+    project, target_url, terminal_id = service._start_project_dev(session_id="session-project", project_path=".")
+
+    assert project["devCommand"] == "npm run dev"
+    assert target_url == "http://127.0.0.1:4317"
+    assert terminal_id == "term_project"
+    assert sent == [("term_project", "npm run dev" + ("\r" if ui_patch.os.name == "nt" else "\n"))]
+    assert terminated == []
+
+
+def test_project_dev_start_terminates_owned_session_when_readiness_is_unproven(scoped_service, monkeypatch: pytest.MonkeyPatch):
+    service, workspace = scoped_service
+    (workspace / "package.json").write_text('{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}', encoding="utf-8")
+    terminated: list[str] = []
+    monkeypatch.setattr(ui_patch, "PROJECT_DEV_START_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("core.client_terminal_broker.create_terminal_session", lambda **_: {"sessionId": "term_project"})
+    monkeypatch.setattr("core.client_terminal_broker.send_terminal_input", lambda *_args: {"ok": True})
+    monkeypatch.setattr("core.client_terminal_broker.read_terminal_session", lambda _session_id: {"isRunning": False, "outputDelta": "failed"})
+    monkeypatch.setattr(
+        "core.client_terminal_broker.terminate_terminal_session",
+        lambda session_id: terminated.append(session_id) or {"ok": True},
+    )
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        service._start_project_dev(session_id="session-project", project_path=".")
+    assert terminated == ["term_project"]
+
+
+def test_project_preview_replacement_closes_existing_proxy_before_dev_start(scoped_service, monkeypatch: pytest.MonkeyPatch):
+    service, workspace = scoped_service
+    if not ui_patch._resolve_node_executable():
+        pytest.skip("Node.js is unavailable")
+    (workspace / "index.html").write_text("<main>preview</main>", encoding="utf-8")
+    (workspace / "package.json").write_text('{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}', encoding="utf-8")
+    existing = service.create_preview(
+        session_id="session-project",
+        parent_origin="http://127.0.0.1:9527",
+        entry_path="index.html",
+    )
+    existing_process = service._sessions[existing["patchSessionId"]].process
+    terminated: list[str] = []
+
+    def fake_start_project_dev(**_kwargs):
+        assert existing_process.poll() is not None
+        return service.inspect_project(session_id="session-project", project_path="."), "http://127.0.0.1:4317", "term_replacement"
+
+    monkeypatch.setattr(service, "_start_project_dev", fake_start_project_dev)
+    monkeypatch.setattr(service, "_terminate_dev_session", lambda terminal_id: terminated.append(terminal_id))
+
+    replacement = service.create_preview(
+        session_id="session-project",
+        parent_origin="http://127.0.0.1:9527",
+        project_path=".",
+        start_dev_server=True,
+    )
+
+    with pytest.raises(LookupError):
+        service.get_preview(session_id="session-project", patch_session_id=existing["patchSessionId"])
+    assert replacement["mode"] == "project"
+    service.close_preview(session_id="session-project", patch_session_id=replacement["patchSessionId"])
+    assert terminated == ["term_replacement"]
+
+
+def test_project_proxy_spawn_failure_terminates_owned_dev_session(scoped_service, monkeypatch: pytest.MonkeyPatch):
+    service, workspace = scoped_service
+    if not ui_patch._resolve_node_executable():
+        pytest.skip("Node.js is unavailable")
+    (workspace / "package.json").write_text('{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}', encoding="utf-8")
+    project = service.inspect_project(session_id="session-project", project_path=".")
+    terminated: list[str] = []
+    monkeypatch.setattr(service, "_start_project_dev", lambda **_kwargs: (project, "http://127.0.0.1:4317", "term_failed_proxy"))
+    monkeypatch.setattr(service, "_terminate_dev_session", lambda terminal_id: terminated.append(terminal_id))
+    monkeypatch.setattr(ui_patch.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        service.create_preview(
+            session_id="session-project",
+            parent_origin="http://127.0.0.1:9527",
+            project_path=".",
+            start_dev_server=True,
+        )
+    assert terminated == ["term_failed_proxy"]
+
+
+def test_vue_sfc_scoped_style_maps_commits_and_undoes(scoped_service):
+    service, workspace = scoped_service
+    html_path = workspace / "index.html"
+    vue_path = workspace / "src" / "App.vue"
+    vue_path.parent.mkdir(parents=True)
+    html_path.write_text('<main><div class="card">Hello</div></main>', encoding="utf-8")
+    vue_path.write_text(
+        '<template><div class="card">Hello</div></template>\n<style scoped>\n.card { width: 100px; color: red; }\n</style>\n',
+        encoding="utf-8",
+    )
+    preview = service.create_preview(
+        session_id="session-vue",
+        parent_origin="http://127.0.0.1:9527",
+        entry_path="index.html",
+    )
+    mapped = service.map_selection(
+        session_id="session-vue",
+        patch_session_id=preview["patchSessionId"],
+        selection={
+            "selector": ".card[data-v-a1b2c3]",
+            "tagName": "div",
+            "textContent": "Hello",
+            "computedStyles": {"width": "100px"},
+            "rules": [{
+                "selector": ".card[data-v-a1b2c3]",
+                "sourceHint": {"kind": "vite", "value": f"{vue_path}?vue&type=style&index=0&scoped=a1b2c3&lang.css"},
+                "declarations": {"width": "100px"},
+            }],
+        },
+    )
+    candidate = next(item for item in mapped["sourceCandidates"] if item["sourceKind"] == "vue_style")
+    committed = service.commit(
+        session_id="session-vue",
+        patch_session_id=preview["patchSessionId"],
+        selection_ref=mapped["selectionRef"],
+        candidate_id=candidate["candidateId"],
+        changes={"width": "144px"},
+    )
+
+    assert committed["selector"] == ".card[data-v-a1b2c3]"
+    assert "width: 144px" in vue_path.read_text(encoding="utf-8")
+    service.undo(session_id="session-vue", transaction_id=committed["transactionId"])
+    assert "width: 100px" in vue_path.read_text(encoding="utf-8")
+
+
+def test_css_module_runtime_selector_maps_back_to_source_class(scoped_service):
+    service, workspace = scoped_service
+    html_path = workspace / "index.html"
+    css_path = workspace / "src" / "card.module.css"
+    css_path.parent.mkdir(parents=True)
+    html_path.write_text('<div class="card_a1b2c">Hello</div>', encoding="utf-8")
+    css_path.write_text(".card { width: 100px; }\n", encoding="utf-8")
+    preview = service.create_preview(session_id="session-css-module", parent_origin="http://127.0.0.1:9527", entry_path="index.html")
+    mapped = service.map_selection(
+        session_id="session-css-module",
+        patch_session_id=preview["patchSessionId"],
+        selection={
+            "selector": ".card_a1b2c",
+            "computedStyles": {"width": "100px"},
+            "rules": [{
+                "selector": ".card_a1b2c",
+                "sourceHint": {"kind": "vite", "value": str(css_path)},
+                "declarations": {"width": "100px"},
+            }],
+        },
+    )
+
+    assert mapped["sourceCandidates"][0]["selector"] == ".card"
+    assert mapped["sourceCandidates"][0]["runtimeSelector"] == ".card_a1b2c"
+
+
+def test_react_static_inline_style_and_text_are_separate_writable_candidates(scoped_service):
+    service, workspace = scoped_service
+    html_path = workspace / "index.html"
+    react_path = workspace / "src" / "App.tsx"
+    react_path.parent.mkdir(parents=True)
+    html_path.write_text('<div class="card">Hello</div>', encoding="utf-8")
+    react_path.write_text(
+        'export function App() { return <div className="card" style={{ width: "100px", color: "#111827" }}>Hello</div>; }\n',
+        encoding="utf-8",
+    )
+    preview = service.create_preview(session_id="session-react", parent_origin="http://127.0.0.1:9527", target_url="http://127.0.0.1:4317")
+    mapped = service.map_selection(
+        session_id="session-react",
+        patch_session_id=preview["patchSessionId"],
+        selection={
+            "selector": ".card",
+            "textContent": "Hello",
+            "inlineStyle": {"width": "100px", "color": "rgb(17, 24, 39)"},
+            "computedStyles": {"width": "100px"},
+            "rules": [],
+        },
+    )
+    by_kind = {item["sourceKind"]: item for item in mapped["sourceCandidates"]}
+    assert {"react_inline_style", "component_text"}.issubset(by_kind)
+
+    style_commit = service.commit(
+        session_id="session-react",
+        patch_session_id=preview["patchSessionId"],
+        selection_ref=mapped["selectionRef"],
+        candidate_id=by_kind["react_inline_style"]["candidateId"],
+        changes={"width": "128px", "border-radius": "8px"},
+    )
+    assert 'width: "128px"' in react_path.read_text(encoding="utf-8")
+    assert 'borderRadius: "8px"' in react_path.read_text(encoding="utf-8")
+    service.undo(session_id="session-react", transaction_id=style_commit["transactionId"])
+
+    mapped = service.map_selection(
+        session_id="session-react",
+        patch_session_id=preview["patchSessionId"],
+        selection={"selector": ".card", "textContent": "Hello", "inlineStyle": {"width": "100px"}, "rules": []},
+    )
+    text_candidate = next(item for item in mapped["sourceCandidates"] if item["sourceKind"] == "component_text")
+    service.commit(
+        session_id="session-react",
+        patch_session_id=preview["patchSessionId"],
+        selection_ref=mapped["selectionRef"],
+        candidate_id=text_candidate["candidateId"],
+        changes={"__text_content": "Updated <safe>"},
+    )
+    assert "Updated &lt;safe&gt;" in react_path.read_text(encoding="utf-8")
+
+
+def test_react_dynamic_inline_style_stays_read_only(scoped_service):
+    service, workspace = scoped_service
+    (workspace / "index.html").write_text('<div class="card">Hello</div>', encoding="utf-8")
+    source = workspace / "src" / "App.tsx"
+    source.parent.mkdir(parents=True)
+    source.write_text('export const App = ({ size }) => <div className="card" style={{ width: size }}>Hello</div>;\n', encoding="utf-8")
+    preview = service.create_preview(session_id="session-dynamic", parent_origin="http://127.0.0.1:9527", target_url="http://127.0.0.1:4317")
+    mapped = service.map_selection(
+        session_id="session-dynamic",
+        patch_session_id=preview["patchSessionId"],
+        selection={"selector": ".card", "textContent": "Hello", "inlineStyle": {"width": "100px"}, "rules": []},
+    )
+
+    assert all(item["sourceKind"] != "react_inline_style" for item in mapped["sourceCandidates"])
+    assert any(item["sourceKind"] == "component_text" for item in mapped["sourceCandidates"])

@@ -24,19 +24,23 @@ import { useT } from "@/components/providers/LocaleProvider";
 type PreviewSession = {
     patchSessionId: string;
     sessionId: string;
-    mode: "static" | "dev";
+    mode: "static" | "dev" | "project";
     entryPath?: string | null;
     targetUrl?: string | null;
     state: string;
     previewOrigin: string;
     previewUrl: string;
+    projectPath?: string | null;
+    framework?: string | null;
+    devSessionId?: string | null;
+    devCommand?: string | null;
 };
 
 type SourceCandidate = {
     candidateId: string;
     workspacePath: string;
     selector: string;
-    sourceKind: "css" | "html_style" | "html_text" | string;
+    sourceKind: "css" | "html_style" | "html_text" | "vue_style" | "react_inline_style" | string;
     declarations: Record<string, string>;
     reason: string;
 };
@@ -62,6 +66,7 @@ type RawSelection = {
     computedStyles?: Record<string, string>;
     textContent?: string;
     textEditable?: boolean;
+    inlineStyle?: Record<string, string>;
     rules?: Array<Record<string, unknown>>;
 };
 
@@ -94,6 +99,16 @@ type BridgeMessage = {
 };
 
 type VerificationState = "idle" | "saving" | "reloading" | "verified" | "failed" | "undone";
+
+type ProjectInfo = {
+    projectPath: string;
+    framework: string;
+    packageManager: string;
+    devCommand: string;
+    entryCandidates: string[];
+    sourceAdapters: string[];
+    dynamicBindings: string;
+};
 
 const PROPERTY_SECTIONS = [
     {
@@ -151,6 +166,8 @@ const VIEWPORTS = [
     { id: "laptop", width: 1280, label: "1280" },
     { id: "compact", width: 1024, label: "1024" },
 ] as const;
+
+const PROJECT_SOURCE_SETTLE_MS = 900;
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, {
@@ -259,6 +276,7 @@ export function UiPatchWorkbench() {
     const sessionId = String(searchParams.get("sessionId") || "").trim();
     const initialEntryPath = String(searchParams.get("entryPath") || "").trim();
     const initialTargetUrl = String(searchParams.get("targetUrl") || "").trim();
+    const initialProjectPath = String(searchParams.get("projectPath") || "").trim();
     const returnTo = safeReturnPath(searchParams.get("returnTo"));
 
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -268,11 +286,15 @@ export function UiPatchWorkbench() {
     const previewResolverRef = useRef<((value: Record<string, string>) => void) | null>(null);
     const pendingVerificationRef = useRef<PendingVerification | null>(null);
     const verificationTimerRef = useRef<number | null>(null);
+    const sourceReloadTimerRef = useRef<number | null>(null);
     const autoStartedRef = useRef(false);
 
-    const [sourceMode, setSourceMode] = useState<"static" | "dev">(initialTargetUrl ? "dev" : "static");
+    const [sourceMode, setSourceMode] = useState<"static" | "dev" | "project">(initialProjectPath ? "project" : initialTargetUrl ? "dev" : "static");
     const [entryPath, setEntryPath] = useState(initialEntryPath);
     const [targetUrl, setTargetUrl] = useState(initialTargetUrl || "http://127.0.0.1:3000");
+    const [projectPath, setProjectPath] = useState(initialProjectPath || initialEntryPath);
+    const [projectInfo, setProjectInfo] = useState<ProjectInfo | null>(null);
+    const [runtimeChanged, setRuntimeChanged] = useState(false);
     const [preview, setPreview] = useState<PreviewSession | null>(null);
     const [previewOrigin, setPreviewOrigin] = useState("");
     const [starting, setStarting] = useState(false);
@@ -291,12 +313,12 @@ export function UiPatchWorkbench() {
         () => selection?.sourceCandidates.find((candidate) => candidate.candidateId === candidateId) || selection?.sourceCandidates[0] || null,
         [candidateId, selection?.sourceCandidates],
     );
-    const styleEditingEnabled = Boolean(selection?.writable && selectedCandidate?.sourceKind !== "html_text");
+    const styleEditingEnabled = Boolean(selection?.writable && selectedCandidate && !["html_text", "component_text"].includes(selectedCandidate.sourceKind));
     const textEditingEnabled = Boolean(
         selection?.writable
         && selection.textEditable
         && selectedCandidate
-        && (selectedCandidate.sourceKind === "html_style" || selectedCandidate.sourceKind === "html_text"),
+        && (["html_style", "html_text", "component_text"].includes(selectedCandidate.sourceKind)),
     );
 
     const postToPreview = useCallback((message: Record<string, unknown>) => {
@@ -306,6 +328,16 @@ export function UiPatchWorkbench() {
             previewOrigin,
         );
     }, [preview, previewOrigin]);
+
+    const reloadPreviewAfterSourceWrite = useCallback(() => {
+        if (sourceReloadTimerRef.current) window.clearTimeout(sourceReloadTimerRef.current);
+        setReady(false);
+        const delay = preview?.mode === "project" ? PROJECT_SOURCE_SETTLE_MS : 0;
+        sourceReloadTimerRef.current = window.setTimeout(() => {
+            sourceReloadTimerRef.current = null;
+            postToPreview({ type: "v8-ui-patch:reload" });
+        }, delay);
+    }, [postToPreview, preview?.mode]);
 
     const sendVerification = useCallback(() => {
         const pending = pendingVerificationRef.current;
@@ -364,6 +396,7 @@ export function UiPatchWorkbench() {
             if (message.patchSessionId !== preview.patchSessionId) return;
             if (message.type === "v8-ui-patch:ready") {
                 setReady(true);
+                setRuntimeChanged(false);
                 postToPreview({ type: "v8-ui-patch:set-mode", mode: interactionMode });
                 if (pendingVerificationRef.current) {
                     if (verificationTimerRef.current) window.clearTimeout(verificationTimerRef.current);
@@ -373,6 +406,13 @@ export function UiPatchWorkbench() {
             }
             if (message.type === "v8-ui-patch:selected" && message.selection) {
                 void mapRawSelection(message.selection);
+                return;
+            }
+            if (message.type === "v8-ui-patch:runtime-changed") {
+                setRuntimeChanged(true);
+                if (selection?.selector && !Object.keys(changes).length && !pendingVerificationRef.current) {
+                    postToPreview({ type: "v8-ui-patch:refresh-selection", selector: selection.selector });
+                }
                 return;
             }
             if (message.type === "v8-ui-patch:preview-applied") {
@@ -404,7 +444,7 @@ export function UiPatchWorkbench() {
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [interactionMode, mapRawSelection, postToPreview, preview, previewOrigin, recordVerification, sendVerification]);
+    }, [changes, interactionMode, mapRawSelection, postToPreview, preview, previewOrigin, recordVerification, selection?.selector, sendVerification]);
 
     useEffect(() => {
         postToPreview({ type: "v8-ui-patch:set-mode", mode: interactionMode });
@@ -434,7 +474,18 @@ export function UiPatchWorkbench() {
 
     useEffect(() => () => {
         if (verificationTimerRef.current) window.clearTimeout(verificationTimerRef.current);
+        if (sourceReloadTimerRef.current) window.clearTimeout(sourceReloadTimerRef.current);
     }, []);
+
+    const inspectProject = useCallback(async () => {
+        if (!sessionId || !projectPath.trim()) return null;
+        const payload = await jsonRequest<ProjectInfo>(
+            `/api/ui-patch/sessions/${encodeURIComponent(sessionId)}/projects/inspect`,
+            { method: "POST", body: JSON.stringify({ projectPath: projectPath.trim() }) },
+        );
+        setProjectInfo(payload);
+        return payload;
+    }, [projectPath, sessionId]);
 
     const startPreview = useCallback(async () => {
         if (!sessionId || starting) return;
@@ -445,31 +496,40 @@ export function UiPatchWorkbench() {
         setChanges({});
         setLastCommit(null);
         setVerificationState("idle");
+        setRuntimeChanged(false);
         try {
+            if (sourceMode === "project") await inspectProject();
             const payload = await jsonRequest<PreviewSession>(
                 `/api/ui-patch/sessions/${encodeURIComponent(sessionId)}/previews`,
                 {
                     method: "POST",
                     body: JSON.stringify({
                         parentOrigin: window.location.origin,
-                        ...(sourceMode === "static" ? { entryPath: entryPath.trim() } : { targetUrl: targetUrl.trim() }),
+                        ...(sourceMode === "static"
+                            ? { entryPath: entryPath.trim() }
+                            : sourceMode === "project"
+                                ? { projectPath: projectPath.trim(), startDevServer: true }
+                                : { targetUrl: targetUrl.trim() }),
                     }),
                 },
             );
             setPreview(payload);
             setPreviewOrigin(new URL(payload.previewUrl).origin);
+            if (sourceMode === "project" && payload.framework) {
+                setProjectInfo((current) => current ? { ...current, framework: payload.framework || current.framework, devCommand: payload.devCommand || current.devCommand } : current);
+            }
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
             setStarting(false);
         }
-    }, [entryPath, sessionId, sourceMode, starting, targetUrl]);
+    }, [entryPath, inspectProject, projectPath, sessionId, sourceMode, starting, targetUrl]);
 
     useEffect(() => {
-        if (autoStartedRef.current || !sessionId || (!initialEntryPath && !initialTargetUrl)) return;
+        if (autoStartedRef.current || !sessionId || (!initialEntryPath && !initialTargetUrl && !initialProjectPath)) return;
         autoStartedRef.current = true;
         void startPreview();
-    }, [initialEntryPath, initialTargetUrl, sessionId, startPreview]);
+    }, [initialEntryPath, initialProjectPath, initialTargetUrl, sessionId, startPreview]);
 
     const requestPreviewComputed = useCallback(() => new Promise<Record<string, string>>((resolve) => {
         if (!Object.keys(changes).length) {
@@ -525,13 +585,12 @@ export function UiPatchWorkbench() {
                 attempts: 0,
             };
             setVerificationState("reloading");
-            setReady(false);
-            postToPreview({ type: "v8-ui-patch:reload" });
+            reloadPreviewAfterSourceWrite();
         } catch (reason) {
             setVerificationState("failed");
             setError(reason instanceof Error ? reason.message : String(reason));
         }
-    }, [changes, preview, requestPreviewComputed, selectedCandidate, selection, sessionId, verificationState, postToPreview, t]);
+    }, [changes, preview, reloadPreviewAfterSourceWrite, requestPreviewComputed, selectedCandidate, selection, sessionId, verificationState, t]);
 
     const undoPatch = useCallback(async () => {
         if (!lastCommit || !sessionId) return;
@@ -545,12 +604,11 @@ export function UiPatchWorkbench() {
             setVerificationState("undone");
             setSelection(null);
             setChanges({});
-            setReady(false);
-            postToPreview({ type: "v8-ui-patch:reload" });
+            reloadPreviewAfterSourceWrite();
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         }
-    }, [lastCommit, postToPreview, sessionId]);
+    }, [lastCommit, reloadPreviewAfterSourceWrite, sessionId]);
 
     const closePreview = useCallback(async () => {
         const current = preview;
@@ -561,6 +619,8 @@ export function UiPatchWorkbench() {
         setChanges({});
         setLastCommit(null);
         pendingVerificationRef.current = null;
+        if (sourceReloadTimerRef.current) window.clearTimeout(sourceReloadTimerRef.current);
+        sourceReloadTimerRef.current = null;
         if (!current || !sessionId) return;
         try {
             await jsonRequest(
@@ -637,9 +697,10 @@ export function UiPatchWorkbench() {
                 <div className="flex min-w-0 items-center gap-2">
                     <FileCode2 className="h-4 w-4 text-primary" />
                     <span className="text-sm font-semibold">{t("web.uiPatch.title")}</span>
-                    {preview ? <span className="max-w-[36vw] truncate font-mono text-[10px] text-muted-foreground">{preview.entryPath || preview.targetUrl}</span> : null}
+                    {preview ? <span className="max-w-[36vw] truncate font-mono text-[10px] text-muted-foreground">{preview.projectPath || preview.entryPath || preview.targetUrl}</span> : null}
                 </div>
                 <div className="ml-auto flex items-center gap-1.5">
+                    {runtimeChanged ? <span className="inline-flex h-6 items-center rounded border border-sky-500/35 px-2 text-[10px] text-sky-600 dark:text-sky-400">{t("web.uiPatch.status.runtimeChanged")}</span> : null}
                     {verificationLabel ? (
                         <span className={`inline-flex h-6 items-center gap-1 rounded border px-2 text-[10px] ${verificationState === "verified" ? "border-emerald-500/35 text-emerald-600 dark:text-emerald-400" : verificationState === "failed" ? "border-rose-500/35 text-rose-600 dark:text-rose-400" : "border-border text-muted-foreground"}`}>
                             {verificationState === "verified" ? <Check className="h-3 w-3" /> : verificationState === "reloading" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
@@ -673,24 +734,32 @@ export function UiPatchWorkbench() {
                         <div className="flex border-b border-border">
                             <button type="button" onClick={() => setSourceMode("static")} className={`h-9 flex-1 border-b-2 text-xs ${sourceMode === "static" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{t("web.uiPatch.source.static")}</button>
                             <button type="button" onClick={() => setSourceMode("dev")} className={`h-9 flex-1 border-b-2 text-xs ${sourceMode === "dev" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{t("web.uiPatch.source.dev")}</button>
+                            <button type="button" onClick={() => setSourceMode("project")} className={`h-9 flex-1 border-b-2 text-xs ${sourceMode === "project" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{t("web.uiPatch.source.project")}</button>
                         </div>
                         <div className="space-y-3 p-5">
                             <label className="block text-xs font-medium">
-                                {sourceMode === "static" ? t("web.uiPatch.entryPath") : t("web.uiPatch.targetUrl")}
+                                {sourceMode === "static" ? t("web.uiPatch.entryPath") : sourceMode === "project" ? t("web.uiPatch.projectPath") : t("web.uiPatch.targetUrl")}
                                 <input
-                                    value={sourceMode === "static" ? entryPath : targetUrl}
-                                    onChange={(event) => sourceMode === "static" ? setEntryPath(event.target.value) : setTargetUrl(event.target.value)}
+                                    value={sourceMode === "static" ? entryPath : sourceMode === "project" ? projectPath : targetUrl}
+                                    onChange={(event) => sourceMode === "static" ? setEntryPath(event.target.value) : sourceMode === "project" ? setProjectPath(event.target.value) : setTargetUrl(event.target.value)}
                                     onKeyDown={(event) => { if (event.key === "Enter") void startPreview(); }}
-                                    placeholder={sourceMode === "static" ? "index.html" : "http://127.0.0.1:3000"}
+                                    placeholder={sourceMode === "static" ? "index.html" : sourceMode === "project" ? "src/App.tsx 或项目目录" : "http://127.0.0.1:3000"}
                                     className="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                                 />
                             </label>
                             <div className="border-l-2 border-amber-500/50 pl-3 text-[11px] leading-5 text-muted-foreground">
-                                {sourceMode === "static" ? t("web.uiPatch.source.staticHint") : t("web.uiPatch.source.devHint")}
+                                {sourceMode === "static" ? t("web.uiPatch.source.staticHint") : sourceMode === "project" ? t("web.uiPatch.source.projectHint") : t("web.uiPatch.source.devHint")}
                             </div>
+                            {sourceMode === "project" && projectInfo ? (
+                                <div className="grid grid-cols-2 gap-2 border border-border/70 bg-muted/20 px-3 py-2 text-[10px] text-muted-foreground">
+                                    <span>{t("web.uiPatch.project.framework")}: <strong className="text-foreground">{projectInfo.framework}</strong></span>
+                                    <span>{t("web.uiPatch.project.manager")}: <strong className="text-foreground">{projectInfo.packageManager}</strong></span>
+                                    <span className="col-span-2">{t("web.uiPatch.project.command")}: <code className="text-foreground">{projectInfo.devCommand}</code></span>
+                                </div>
+                            ) : null}
                             {error ? <div role="alert" className="border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-600 dark:text-rose-300">{error}</div> : null}
                             <div className="flex justify-end">
-                                <button type="button" disabled={starting || (sourceMode === "static" ? !entryPath.trim() : !targetUrl.trim())} onClick={() => void startPreview()} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-xs font-medium text-primary-foreground disabled:opacity-40">
+                                <button type="button" disabled={starting || (sourceMode === "static" ? !entryPath.trim() : sourceMode === "project" ? !projectPath.trim() : !targetUrl.trim())} onClick={() => void startPreview()} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-xs font-medium text-primary-foreground disabled:opacity-40">
                                     {starting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
                                     {t("web.uiPatch.start.action")}
                                 </button>

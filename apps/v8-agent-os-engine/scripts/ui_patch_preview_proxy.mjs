@@ -22,7 +22,7 @@ const authToken = String(config.authToken || "");
 const bootstrapTicket = String(config.bootstrapTicket || "");
 const descriptorPath = path.resolve(String(config.descriptorPath || ""));
 const entryPath = String(config.entryPath || "").replaceAll("\\", "/").replace(/^\/+/, "");
-const targetUrl = mode === "dev" ? new URL(String(config.targetUrl || "")) : null;
+const targetUrl = mode === "dev" || mode === "project" ? new URL(String(config.targetUrl || "")) : null;
 const cookieName = `v8_ui_patch_${sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(-18)}`;
 let ticketConsumed = false;
 const STATIC_ASSET_EXTENSIONS = new Set([
@@ -45,7 +45,7 @@ const STATIC_CONTENT_SECURITY_POLICY = [
 if (!sessionId || !parentOrigin || !authToken || !bootstrapTicket || !descriptorPath) {
   throw new Error("ui patch preview proxy config is incomplete");
 }
-if (!new Set(["static", "dev"]).has(mode)) {
+if (!new Set(["static", "dev", "project"]).has(mode)) {
   throw new Error(`unsupported ui patch preview mode: ${mode}`);
 }
 
@@ -141,6 +141,8 @@ function uiPatchBridgeRuntime() {
   let previewStyle = null;
   let previewTextOriginal = null;
   let selectedNodeId = "";
+  let runtimeMutationTimer = 0;
+  let suppressRuntimeMutationUntil = 0;
 
   const overlay = document.createElement("div");
   overlay.dataset.v8UiPatchOverlay = "true";
@@ -298,6 +300,11 @@ function uiPatchBridgeRuntime() {
     const style = getComputedStyle(element);
     const computedStyles = {};
     for (const property of ALLOWED) computedStyles[property] = style.getPropertyValue(property).trim();
+    const inlineStyle = {};
+    for (const property of ALLOWED) {
+      const value = element.style && element.style.getPropertyValue(property);
+      if (value) inlineStyle[property] = value.trim();
+    }
     const rect = element.getBoundingClientRect();
     return {
       selector: uniqueSelector(element),
@@ -305,10 +312,19 @@ function uiPatchBridgeRuntime() {
       label: safeText(element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent, 100) || elementLabel(element),
       textContent: String(element.textContent || "").slice(0, 2000),
       textEditable: element instanceof HTMLElement,
+      inlineStyle,
       rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       computedStyles,
       rules: collectRules(element),
     };
+  }
+
+  function notifyRuntimeChanged() {
+    if (runtimeMutationTimer) window.clearTimeout(runtimeMutationTimer);
+    runtimeMutationTimer = window.setTimeout(() => {
+      runtimeMutationTimer = 0;
+      post({ type: "v8-ui-patch:runtime-changed" });
+    }, 90);
   }
 
   function setSelected(element, notifyParent = true) {
@@ -324,6 +340,7 @@ function uiPatchBridgeRuntime() {
 
   function applyPreview(changes) {
     if (!selected || !selectedNodeId) return;
+    suppressRuntimeMutationUntil = performance.now() + 250;
     if (previewStyle) previewStyle.remove();
     if (previewTextOriginal !== null) selected.textContent = previewTextOriginal;
     previewTextOriginal = null;
@@ -414,6 +431,7 @@ function uiPatchBridgeRuntime() {
     } else if (message.type === "v8-ui-patch:apply-preview") {
       applyPreview(message.changes || {});
     } else if (message.type === "v8-ui-patch:clear-preview") {
+      suppressRuntimeMutationUntil = performance.now() + 250;
       if (previewStyle) previewStyle.remove();
       previewStyle = null;
       if (selected && previewTextOriginal !== null) selected.textContent = previewTextOriginal;
@@ -427,8 +445,28 @@ function uiPatchBridgeRuntime() {
       let element = null;
       try { element = document.querySelector(String(message.selector || "")); } catch {}
       if (element) setSelected(element, false);
+    } else if (message.type === "v8-ui-patch:refresh-selection") {
+      let element = null;
+      try { element = document.querySelector(String(message.selector || "")); } catch {}
+      if (element) setSelected(element, true);
     }
   });
+
+  const runtimeObserver = new MutationObserver((records) => {
+    if (performance.now() < suppressRuntimeMutationUntil) return;
+    const meaningful = records.some((record) => {
+      if (record.type === "attributes" && ["data-v8-ui-patch-node", "data-v8-ui-patch-overlay"].includes(record.attributeName || "")) return false;
+      const target = record.target instanceof Element ? record.target : null;
+      const changedNodes = [...Array.from(record.addedNodes || []), ...Array.from(record.removedNodes || [])];
+      if (changedNodes.length && changedNodes.every((node) => node instanceof Element && (
+        node.matches("[data-v8-ui-patch-overlay]") || node.matches("style[data-v8-ui-patch-preview]")
+      ))) return false;
+      return !target || (!target.closest("[data-v8-ui-patch-overlay]")
+        && !(target instanceof HTMLStyleElement && target.dataset.v8UiPatchPreview === "true"));
+    });
+    if (meaningful) notifyRuntimeChanged();
+  });
+  runtimeObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style", "data-v8-ui-patch-node"] });
 
   document.documentElement.style.cursor = "crosshair";
   post({ type: "v8-ui-patch:ready", href: window.location.href, title: document.title });
@@ -587,7 +625,7 @@ const server = http.createServer((request, response) => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  if (mode !== "dev" || !isAuthorized(request)) {
+  if ((mode !== "dev" && mode !== "project") || !isAuthorized(request)) {
     socket.destroy();
     return;
   }

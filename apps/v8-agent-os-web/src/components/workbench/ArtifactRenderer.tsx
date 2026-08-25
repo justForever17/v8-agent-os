@@ -107,12 +107,12 @@ export function ArtifactRenderer({
     const uiPatchUrl = useMemo(() => {
         const artifactPath = String(artifact?.workspaceRelativePath || artifact?.workspacePath || "").trim();
         const artifactSessionId = String(document.subjectRef.sessionId || artifact?.sessionId || "").trim();
-        if (document.renderer !== "html" || !artifactPath || !artifactSessionId) return "";
-        const params = new URLSearchParams({
-            sessionId: artifactSessionId,
-            entryPath: artifactPath,
-            returnTo: `/chat?id=${encodeURIComponent(artifactSessionId)}`,
-        });
+        const suffix = artifactPath.toLowerCase().slice(artifactPath.lastIndexOf("."));
+        const staticEntry = document.renderer === "html" && [".html", ".htm"].includes(suffix);
+        const projectSource = document.renderer === "code" && [".css", ".scss", ".sass", ".less", ".js", ".jsx", ".ts", ".tsx", ".vue"].includes(suffix);
+        if ((!staticEntry && !projectSource) || !artifactPath || !artifactSessionId) return "";
+        const params = new URLSearchParams({ sessionId: artifactSessionId, returnTo: `/chat?id=${encodeURIComponent(artifactSessionId)}` });
+        params.set(staticEntry ? "entryPath" : "projectPath", artifactPath);
         return `/ui-patch?${params.toString()}`;
     }, [artifact?.sessionId, artifact?.workspacePath, artifact?.workspaceRelativePath, document.renderer, document.subjectRef.sessionId]);
 

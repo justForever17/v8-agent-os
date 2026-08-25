@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import unquote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import Request, urlopen
 
 from core.storage import storage
 from core.workbench_files import workbench_file_service
@@ -28,6 +30,8 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_SELECTION_RULES = 120
 MAX_CSS_SCAN_FILES = 400
 PREVIEW_START_TIMEOUT_SECONDS = 6.0
+PROJECT_DEV_START_TIMEOUT_SECONDS = 25.0
+PROJECT_PROBE_TIMEOUT_SECONDS = 0.8
 PREVIEW_SESSION_TTL_SECONDS = 4 * 60 * 60
 SELECTION_TTL_SECONDS = 30 * 60
 
@@ -103,7 +107,33 @@ _BLOCKED_SOURCE_DIRS = frozenset(
         "out",
     }
 )
-_SUPPORTED_SOURCE_SUFFIXES = frozenset({".css", ".html", ".htm"})
+_SUPPORTED_SOURCE_SUFFIXES = frozenset(
+    {
+        ".css",
+        ".scss",
+        ".sass",
+        ".less",
+        ".html",
+        ".htm",
+        ".vue",
+        ".jsx",
+        ".tsx",
+        ".js",
+        ".ts",
+    }
+)
+_STYLE_SOURCE_SUFFIXES = frozenset({".css", ".scss", ".sass", ".less", ".html", ".htm", ".vue"})
+_COMPONENT_SOURCE_SUFFIXES = frozenset({".jsx", ".tsx", ".js", ".ts", ".vue"})
+_PROJECT_LOCKFILES = (
+    ("pnpm-lock.yaml", "pnpm"),
+    ("yarn.lock", "yarn"),
+    ("bun.lockb", "bun"),
+    ("bun.lock", "bun"),
+    ("package-lock.json", "npm"),
+)
+_LOCAL_DEV_URL_RE = re.compile(
+    r"(?i)(?:(?:https?|webpack|vite)://)?(?P<host>localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]|::1)(?::(?P<port>\d{2,5}))"
+)
 _LENGTH_TOKEN = re.compile(r"^-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|%|vw|vh|vmin|vmax|ch|ex)?$", re.I)
 _NUMBER_TOKEN = re.compile(r"^-?(?:\d+(?:\.\d+)?|\.\d+)$")
 _VAR_TOKEN = re.compile(r"^var\(--[a-zA-Z0-9_-]+(?:\s*,\s*[^{};]+)?\)$")
@@ -142,6 +172,138 @@ def _resolve_node_executable() -> str | None:
 
 def _safe_preview(value: Any, limit: int = 180) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _camel_to_css(value: str) -> str:
+    return re.sub(r"([A-Z])", lambda match: f"-{match.group(1).lower()}", str(value or "").strip()).lstrip("-")
+
+
+def _css_to_js(value: str) -> str:
+    return re.sub(r"-([a-z])", lambda match: match.group(1).upper(), str(value or "").strip())
+
+
+def _style_block_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return style block content spans and their optional preprocessor language."""
+
+    blocks: list[tuple[int, int, str]] = []
+    pattern = re.compile(r"<style\b(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</style\s*>", flags=re.I)
+    for match in pattern.finditer(text):
+        attrs = str(match.group("attrs") or "")
+        lang_match = re.search(r"(?:^|\s)lang\s*=\s*['\"]([^'\"]+)['\"]", attrs, flags=re.I)
+        blocks.append((match.start("body"), match.end("body"), str(lang_match.group(1) if lang_match else "css").lower()))
+    return blocks
+
+
+def _selector_identity_tokens(selector: str) -> tuple[set[str], set[str]]:
+    normalized = _normalize_selector(selector)
+    ids = set(re.findall(r"#([\w:-]+)", normalized))
+    classes = set(re.findall(r"\.([\w-]+)", normalized))
+    return ids, classes
+
+
+def _literal_selector_matches_context(selector: str, context: str) -> bool:
+    ids, classes = _selector_identity_tokens(selector)
+    if not ids and not classes:
+        return False
+    for value in ids:
+        if not re.search(rf"\bid\s*=\s*['\"][^'\"]*\b{re.escape(value)}\b[^'\"]*['\"]", context):
+            return False
+    class_value = re.search(r"(?:className|class)\s*=\s*['\"]([^'\"]+)['\"]", context)
+    class_tokens = set((class_value.group(1) if class_value else "").split())
+    return classes.issubset(class_tokens)
+
+
+def _parse_inline_style_body(body: str) -> dict[str, str]:
+    declarations: dict[str, str] = {}
+    # Keep this intentionally conservative: dynamic expressions and nested objects are read-only.
+    for match in re.finditer(
+        r"(?P<property>[A-Za-z_$][\w$-]*)\s*:\s*(?P<value>(?:\"[^\"]*\"|'[^']*'|`[^`]*`|[^,\n}])+)",
+        body,
+    ):
+        raw_property = str(match.group("property") or "").strip()
+        raw_value = str(match.group("value") or "").strip()
+        if raw_value.startswith(("\"", "'", "`")) and raw_value[-1:] == raw_value[:1]:
+            if raw_value.startswith("`") and "${" in raw_value:
+                continue
+            raw_value = raw_value[1:-1]
+        elif not _NUMBER_TOKEN.fullmatch(raw_value):
+            continue
+        property_name = _camel_to_css(raw_property).lower()
+        if property_name in ALLOWED_STYLE_PROPERTIES:
+            declarations[property_name] = raw_value
+    return declarations
+
+
+def _find_react_inline_style_spans(text: str, selector: str) -> list[tuple[int, int, int, int, dict[str, str]]]:
+    """Find static React style objects associated with a literal class/id selector."""
+
+    spans: list[tuple[int, int, int, int, dict[str, str]]] = []
+    pattern = re.compile(r"style\s*=\s*\{\{(?P<body>[\s\S]{0,2400}?)\}\}", flags=re.I)
+    for match in pattern.finditer(text):
+        context_start = text.rfind("<", max(0, match.start() - 1200), match.start())
+        context_end = text.find(">", match.end(), min(len(text), match.end() + 1200))
+        if context_start < 0 or context_end < 0:
+            continue
+        context = text[context_start:context_end]
+        if not _literal_selector_matches_context(selector, context):
+            continue
+        body = str(match.group("body") or "")
+        declarations = _parse_inline_style_body(body)
+        if not declarations:
+            continue
+        spans.append((match.start("body"), match.end("body"), match.start(), match.end(), declarations))
+    return spans
+
+
+def _replace_react_inline_style_body(body: str, changes: dict[str, str]) -> str:
+    static_declarations = _parse_inline_style_body(body)
+    patched = body
+    for property_name, value in changes.items():
+        js_property = _css_to_js(property_name)
+        if re.search(rf"(?:^|[,\n])\s*{re.escape(js_property)}\s*:", body) and property_name not in static_declarations:
+            raise ValueError(f"React inline style {js_property} is dynamic and remains read-only")
+        value_literal = json.dumps(value, ensure_ascii=False)
+        property_pattern = re.compile(
+            rf"(?P<prefix>(?:^|[,\n])\s*{re.escape(js_property)}\s*:\s*)(?P<value>(?:\"[^\"]*\"|'[^']*'|`[^`]*`|[^,\n}}]+))",
+        )
+        match = property_pattern.search(patched)
+        if match:
+            patched = patched[: match.start("value")] + value_literal + patched[match.end("value") :]
+            continue
+        trimmed = patched.rstrip()
+        separator = "," if trimmed and not trimmed.endswith(",") else ""
+        newline = "\n" if "\n" in patched else " "
+        patched = f"{trimmed}{separator}{newline}{js_property}: {value_literal}{patched[len(trimmed):]}"
+    return patched
+
+
+def _find_static_component_text_spans(text: str, selector: str) -> list[tuple[int, int, str]]:
+    """Find direct literal JSX/Vue text for a uniquely identified element."""
+
+    matches: list[tuple[int, int, str]] = []
+    pattern = re.compile(
+        r"<(?P<tag>[A-Za-z][\w:.-]*)\b(?P<attrs>[^>]*)>(?P<body>[^<]{0,4000}?)</(?P=tag)\s*>",
+        flags=re.I,
+    )
+    for match in pattern.finditer(text):
+        opening = f"<{match.group('tag')} {match.group('attrs') or ''}>"
+        if not _literal_selector_matches_context(selector, opening):
+            continue
+        body = str(match.group("body") or "")
+        if "{" in body or "}" in body or re.search(r"\bv-(?:html|text)\s*=", opening, flags=re.I):
+            continue
+        if not body.strip():
+            continue
+        leading = len(body) - len(body.lstrip())
+        trailing = len(body) - len(body.rstrip())
+        start = match.start("body") + leading
+        end = match.end("body") - trailing if trailing else match.end("body")
+        matches.append((start, end, html.unescape(text[start:end])))
+    return matches
+
+
+def _strip_vue_scope_selector(selector: str) -> str:
+    return re.sub(r"\[data-v-[a-z0-9]+\]", "", str(selector or ""), flags=re.I).strip()
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -280,6 +442,15 @@ def _apply_html_style_changes(text: str, style_index: int, selector: str, change
     if style_index < 0 or style_index >= len(spans):
         raise LookupError("The mapped inline style block no longer exists")
     start, end = spans[style_index]
+    patched_style = _apply_rule_changes(text[start:end], selector, changes)
+    return text[:start] + patched_style + text[end:]
+
+
+def _apply_style_block_changes(text: str, style_index: int, selector: str, changes: dict[str, str]) -> str:
+    blocks = _style_block_spans(text)
+    if style_index < 0 or style_index >= len(blocks):
+        raise LookupError("The mapped style block no longer exists")
+    start, end, _lang = blocks[style_index]
     patched_style = _apply_rule_changes(text[start:end], selector, changes)
     return text[:start] + patched_style + text[end:]
 
@@ -487,6 +658,9 @@ class SourceCandidate:
     source_hash: str
     declarations: dict[str, str]
     reason: str
+    source_start: int | None = None
+    source_end: int | None = None
+    runtime_selector: str | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -496,6 +670,7 @@ class SourceCandidate:
             "sourceKind": self.source_kind,
             "declarations": dict(self.declarations),
             "reason": self.reason,
+            "runtimeSelector": self.runtime_selector or self.selector,
         }
 
 
@@ -526,6 +701,10 @@ class PreviewSession:
     port: int
     preview_url: str
     runtime_dir: Path
+    project_path: str = ""
+    project_framework: str = ""
+    dev_session_id: str = ""
+    dev_command: str = ""
     created_monotonic: float = field(default_factory=time.monotonic)
 
 
@@ -544,6 +723,38 @@ class UiPatchService:
             return Path(authority.workspace_root).expanduser().resolve(strict=True)
         except OSError as exc:
             raise FileNotFoundError("Active session workspace is unavailable") from exc
+
+    @staticmethod
+    def _source_scan_root(item: PreviewSession) -> Path:
+        if not item.project_path or item.project_path == ".":
+            return item.workspace_root
+        candidate = (item.workspace_root / item.project_path).resolve()
+        return candidate if _is_within(candidate, item.workspace_root) and candidate.is_dir() else item.workspace_root
+
+    def _iter_source_files(self, item: PreviewSession, suffixes: frozenset[str]) -> Iterable[Path]:
+        scan_root = self._source_scan_root(item).resolve()
+        yielded = 0
+        for directory, child_directories, filenames in os.walk(scan_root, topdown=True, followlinks=False):
+            directory_path = Path(directory)
+            child_directories[:] = sorted(
+                name
+                for name in child_directories
+                if name.lower() not in _BLOCKED_SOURCE_DIRS and not (directory_path / name).is_symlink()
+            )
+            for filename in sorted(filenames):
+                if Path(filename).suffix.lower() not in suffixes:
+                    continue
+                candidate = directory_path / filename
+                try:
+                    resolved = candidate.resolve(strict=True)
+                except OSError:
+                    continue
+                if not _is_within(resolved, scan_root) or not _is_within(resolved, item.workspace_root):
+                    continue
+                yield resolved
+                yielded += 1
+                if yielded >= MAX_CSS_SCAN_FILES:
+                    return
 
     @staticmethod
     def _validate_parent_origin(value: str) -> str:
@@ -566,6 +777,175 @@ class UiPatchService:
         if resolved.absolute_path.suffix.lower() not in {".html", ".htm"}:
             raise ValueError("Static UI Patch previews require an HTML entry file")
         return resolved.absolute_path, resolved.workspace_relative_path
+
+    def _resolve_project_root(self, session_id: str, requested_path: str = "") -> tuple[Path, str]:
+        workspace_root = self._workspace_root(session_id)
+        authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=session_id)
+        if hasattr(authority, "side_effects_allowed") and not bool(authority.side_effects_allowed):
+            raise PermissionError("The active workspace does not allow project processes or source writes")
+        raw = str(requested_path or ".").strip() or "."
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = workspace_root / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise FileNotFoundError("Project path is unavailable in the active workspace") from exc
+        if resolved.is_file():
+            resolved = resolved.parent
+        if not _is_within(resolved, workspace_root):
+            raise PermissionError("Project path must remain inside the active workspace")
+        project_root = resolved
+        while _is_within(project_root, workspace_root):
+            if (project_root / "package.json").is_file():
+                relative = project_root.relative_to(workspace_root).as_posix()
+                return project_root, "." if relative == "." else relative
+            if project_root == workspace_root:
+                break
+            project_root = project_root.parent
+        raise ValueError("No package.json project was found at or above the selected path")
+
+    @staticmethod
+    def _project_manager(root: Path) -> str:
+        for filename, manager in _PROJECT_LOCKFILES:
+            if (root / filename).is_file():
+                return manager
+        return "npm"
+
+    @staticmethod
+    def _project_framework(package_payload: dict[str, Any], root: Path) -> str:
+        dependencies: dict[str, Any] = {}
+        for key in ("dependencies", "devDependencies", "peerDependencies"):
+            value = package_payload.get(key)
+            if isinstance(value, dict):
+                dependencies.update({str(name).lower(): version for name, version in value.items()})
+        if "next" in dependencies:
+            return "next"
+        if "nuxt" in dependencies:
+            return "nuxt"
+        if any(name == "vue" or name.startswith("@vue/") for name in dependencies):
+            return "vue"
+        if "react" in dependencies or "react-dom" in dependencies:
+            return "react"
+        if any(name == "svelte" or name.startswith("@sveltejs/") for name in dependencies):
+            return "svelte"
+        if "vite" in dependencies or (root / "vite.config.ts").is_file() or (root / "vite.config.js").is_file():
+            return "vite"
+        return "unknown"
+
+    def inspect_project(self, *, session_id: str, project_path: str = "") -> dict[str, Any]:
+        root, relative_root = self._resolve_project_root(session_id, project_path)
+        package_path = root / "package.json"
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Project package.json is unreadable") from exc
+        if not isinstance(package, dict):
+            raise ValueError("Project package.json must contain an object")
+        scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+        dev_script = str(scripts.get("dev") or "").strip()
+        if not dev_script:
+            raise ValueError("Project package.json has no scripts.dev entry")
+        manager = self._project_manager(root)
+        framework = self._project_framework(package, root)
+        entry_candidates: list[str] = []
+        for candidate in ("index.html", "src/main.tsx", "src/main.jsx", "src/main.ts", "src/main.js", "src/App.vue"):
+            if (root / candidate).is_file():
+                entry_candidates.append(candidate)
+        adapters = ["css"]
+        if framework in {"react", "next"}:
+            adapters.append("react-jsx-inline-style")
+            adapters.append("react-jsx-text")
+        if framework in {"vue", "nuxt"}:
+            adapters.append("vue-sfc-style")
+            adapters.append("vue-sfc-text")
+        return {
+            "sessionId": str(session_id),
+            "projectPath": relative_root,
+            "framework": framework,
+            "packageManager": manager,
+            "devCommand": f"{manager} {'dev' if manager in {'yarn', 'bun'} else 'run dev'}",
+            "devScriptConfigured": True,
+            "entryCandidates": entry_candidates,
+            "sourceAdapters": adapters,
+            "dynamicBindings": "read_only",
+            "state": "ready",
+        }
+
+    @staticmethod
+    def _project_url_candidates(output: str) -> list[str]:
+        candidates: list[str] = []
+        for match in _LOCAL_DEV_URL_RE.finditer(str(output or "")):
+            port = int(match.group("port") or 0)
+            if not 1 <= port <= 65535:
+                continue
+            candidates.append(f"http://127.0.0.1:{port}")
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _probe_local_url(url: str) -> bool:
+        try:
+            request = Request(url, headers={"Accept": "text/html,application/xhtml+xml"})
+            with urlopen(request, timeout=PROJECT_PROBE_TIMEOUT_SECONDS) as response:  # noqa: S310 - URL is loopback-validated.
+                content_type = str(response.headers.get("content-type") or "").lower()
+                return int(getattr(response, "status", 500) or 500) < 500 and (
+                    "text/html" in content_type or "application/xhtml+xml" in content_type
+                )
+        except (HTTPError, URLError, TimeoutError, OSError):
+            return False
+
+    def _start_project_dev(self, *, session_id: str, project_path: str) -> tuple[dict[str, Any], str, str]:
+        project = self.inspect_project(session_id=session_id, project_path=project_path)
+        root, _ = self._resolve_project_root(session_id, project_path)
+        authority = workspace_authority_service.resolve(runtime_kind="chat", session_id=session_id)
+        from core.client_terminal_broker import create_terminal_session, send_terminal_input, read_terminal_session, terminate_terminal_session
+
+        terminal = create_terminal_session(
+            cwd=str(root),
+            conversation_id=str(session_id),
+            workspace_id=str(getattr(authority, "workspace_id", "") or "") or None,
+            project_id=str(getattr(authority, "project_id", "") or "") or None,
+        )
+        terminal_id = str(terminal.get("sessionId") or "").strip()
+        if not terminal_id:
+            raise RuntimeError("Project terminal session could not be created")
+        command = str(project["devCommand"])
+        try:
+            send_terminal_input(terminal_id, command + ("\r" if os.name == "nt" else "\n"))
+            deadline = time.monotonic() + PROJECT_DEV_START_TIMEOUT_SECONDS
+            output_parts: list[str] = []
+            while time.monotonic() < deadline:
+                snapshot = read_terminal_session(terminal_id)
+                output = str(snapshot.get("outputDelta") or "")
+                if output:
+                    output_parts.append(output)
+                combined = "".join(output_parts)[-12000:]
+                candidates = self._project_url_candidates(combined)
+                for candidate in candidates:
+                    if self._probe_local_url(candidate):
+                        return project, candidate, terminal_id
+                if snapshot.get("isRunning") is False:
+                    break
+                time.sleep(0.25)
+            safe_tail = _safe_preview("".join(output_parts)[-1600:], 700)
+            raise RuntimeError(f"Project dev server did not become ready{': ' + safe_tail if safe_tail else ''}")
+        except Exception:
+            try:
+                terminate_terminal_session(terminal_id)
+            except Exception:
+                pass
+            raise
+
+    @staticmethod
+    def _terminate_dev_session(terminal_id: str) -> None:
+        if not terminal_id:
+            return
+        try:
+            from core.client_terminal_broker import terminate_terminal_session
+
+            terminate_terminal_session(terminal_id)
+        except Exception:
+            pass
 
     def _cleanup_expired_locked(self) -> None:
         now = time.monotonic()
@@ -591,16 +971,50 @@ class UiPatchService:
         parent_origin: str,
         entry_path: str = "",
         target_url: str = "",
+        project_path: str = "",
+        start_dev_server: bool = True,
     ) -> dict[str, Any]:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             raise ValueError("sessionId is required")
         normalized_parent = self._validate_parent_origin(parent_origin)
         workspace_root = self._workspace_root(normalized_session_id)
+        node_path = _resolve_node_executable()
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "ui_patch_preview_proxy.mjs"
+        if not node_path:
+            raise RuntimeError("Node.js is required by UI Patch Workbench")
+        if not script_path.is_file():
+            raise RuntimeError("UI Patch preview proxy is missing")
         normalized_entry = ""
         normalized_target = ""
+        normalized_project = ""
+        project_framework = ""
+        dev_session_id = ""
+        dev_command = ""
         mode = "static"
-        if str(target_url or "").strip():
+        if str(project_path or "").strip():
+            mode = "project"
+            project_info = self.inspect_project(session_id=normalized_session_id, project_path=project_path)
+            normalized_project = str(project_info.get("projectPath") or "").strip()
+            project_framework = str(project_info.get("framework") or "unknown")
+            dev_command = str(project_info.get("devCommand") or "")
+            if start_dev_server:
+                with self._lock:
+                    self._cleanup_expired_locked()
+                    existing = self._session_index.get(normalized_session_id)
+                    if existing:
+                        self._close_locked(existing)
+                project_info, normalized_target, dev_session_id = self._start_project_dev(
+                    session_id=normalized_session_id,
+                    project_path=project_path,
+                )
+                project_framework = str(project_info.get("framework") or project_framework)
+                dev_command = str(project_info.get("devCommand") or dev_command)
+            elif str(target_url or "").strip():
+                normalized_target = self._validate_target_url(target_url)
+            else:
+                raise ValueError("Project previews require a target URL or startDevServer=true")
+        elif str(target_url or "").strip():
             mode = "dev"
             normalized_target = self._validate_target_url(target_url)
         elif str(entry_path or "").strip():
@@ -614,16 +1028,8 @@ class UiPatchService:
             if existing:
                 self._close_locked(existing)
 
-            node_path = _resolve_node_executable()
-            script_path = Path(__file__).resolve().parents[1] / "scripts" / "ui_patch_preview_proxy.mjs"
-            if not node_path:
-                raise RuntimeError("Node.js is required by UI Patch Workbench")
-            if not script_path.is_file():
-                raise RuntimeError("UI Patch preview proxy is missing")
-
             patch_session_id = f"ui_patch_{uuid.uuid4().hex}"
             runtime_dir = self._runtime_root / "previews" / patch_session_id
-            runtime_dir.mkdir(parents=True, exist_ok=True)
             config_path = runtime_dir / "proxy-config.json"
             descriptor_path = runtime_dir / "proxy-descriptor.json"
             log_path = runtime_dir / "proxy.log"
@@ -641,13 +1047,18 @@ class UiPatchService:
                 "bootstrapTicket": bootstrap_ticket,
                 "descriptorPath": str(descriptor_path),
             }
-            config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
             try:
-                os.chmod(config_path, 0o600)
-            except OSError:
-                pass
+                runtime_dir.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+                try:
+                    os.chmod(config_path, 0o600)
+                except OSError:
+                    pass
+                log_handle = log_path.open("a", encoding="utf-8", errors="replace")
+            except Exception:
+                self._terminate_dev_session(dev_session_id)
+                raise
 
-            log_handle = log_path.open("a", encoding="utf-8", errors="replace")
             popen_kwargs: dict[str, Any] = {
                 "stdin": subprocess.DEVNULL,
                 "stdout": log_handle,
@@ -662,6 +1073,7 @@ class UiPatchService:
                         **popen_kwargs,
                     )
                 except Exception as exc:
+                    self._terminate_dev_session(dev_session_id)
                     config_path.unlink(missing_ok=True)
                     raise RuntimeError("UI Patch preview proxy could not start") from exc
             finally:
@@ -686,6 +1098,7 @@ class UiPatchService:
                 pass
             port = int(descriptor.get("port") or 0)
             if port <= 0 or process.poll() is not None:
+                self._terminate_dev_session(dev_session_id)
                 try:
                     process.terminate()
                 except OSError:
@@ -712,6 +1125,10 @@ class UiPatchService:
                 port=port,
                 preview_url=preview_url,
                 runtime_dir=runtime_dir,
+                project_path=normalized_project,
+                project_framework=project_framework,
+                dev_session_id=dev_session_id,
+                dev_command=dev_command,
             )
             self._sessions[patch_session_id] = item
             self._session_index[normalized_session_id] = patch_session_id
@@ -726,6 +1143,10 @@ class UiPatchService:
             "mode": item.mode,
             "entryPath": item.entry_path or None,
             "targetUrl": item.target_url or None,
+            "projectPath": item.project_path or None,
+            "framework": item.project_framework or None,
+            "devSessionId": item.dev_session_id or None,
+            "devCommand": item.dev_command or None,
             "state": "ready" if item.process.poll() is None else "stopped",
             "previewOrigin": f"{parsed_preview.scheme}://{parsed_preview.netloc}",
             **({"previewUrl": item.preview_url} if include_preview_url else {}),
@@ -758,8 +1179,13 @@ class UiPatchService:
             except Exception:
                 try:
                     item.process.kill()
+                    item.process.wait(timeout=1.5)
                 except OSError:
                     pass
+                except subprocess.TimeoutExpired:
+                    pass
+        if item.dev_session_id:
+            self._terminate_dev_session(item.dev_session_id)
         for secret_file in (item.runtime_dir / "proxy-config.json", item.runtime_dir / "proxy-descriptor.json"):
             try:
                 secret_file.unlink(missing_ok=True)
@@ -799,7 +1225,8 @@ class UiPatchService:
                     style_index = int(value)
                 except (TypeError, ValueError):
                     style_index = 0
-                return (item.workspace_root / item.entry_path).resolve(), "html_style", style_index
+                entry_suffix = Path(item.entry_path).suffix.lower()
+                return (item.workspace_root / item.entry_path).resolve(), "vue_style" if entry_suffix == ".vue" else "html_style", style_index
             return None, "", None
         if not value:
             return None, "", None
@@ -825,49 +1252,109 @@ class UiPatchService:
             return None, "", None
         if any(part.lower() in _BLOCKED_SOURCE_DIRS for part in relative_parts):
             return None, "", None
-        return resolved, "html_style" if resolved.suffix.lower() in {".html", ".htm"} else "css", 0 if resolved.suffix.lower() in {".html", ".htm"} else None
+        suffix = resolved.suffix.lower()
+        query = parse_qs(parsed.query) if parsed.query else {}
+        if suffix in {".html", ".htm"}:
+            return resolved, "html_style", int((query.get("index") or [0])[0] or 0)
+        if suffix == ".vue":
+            return resolved, "vue_style", int((query.get("index") or [0])[0] or 0)
+        if suffix in {".css", ".scss", ".sass", ".less"}:
+            return resolved, "css", None
+        return None, "", None
 
     @staticmethod
     def _rule_exists(path: Path, *, source_kind: str, style_index: int | None, selector: str) -> bool:
         _, text, _ = UiPatchService._read_source(path)
-        if source_kind == "html_style":
-            spans = _html_style_spans(text)
+        if source_kind in {"html_style", "vue_style"}:
+            spans = _style_block_spans(text)
             if style_index is None or style_index < 0 or style_index >= len(spans):
                 return False
-            start, end = spans[style_index]
+            start, end, _lang = spans[style_index]
             return len(_matching_rule_spans(text[start:end], selector)) == 1
         return len(_matching_rule_spans(text, selector)) == 1
 
     def _scan_workspace_for_selector(self, item: PreviewSession, selector: str) -> list[tuple[Path, str, int | None]]:
         matches: list[tuple[Path, str, int | None]] = []
-        checked = 0
-        for path_item in item.workspace_root.rglob("*"):
-            if checked >= MAX_CSS_SCAN_FILES:
-                break
-            if not path_item.is_file() or path_item.suffix.lower() not in _SUPPORTED_SOURCE_SUFFIXES:
-                continue
-            try:
-                relative_parts = path_item.relative_to(item.workspace_root).parts
-            except ValueError:
-                continue
-            if any(part in _BLOCKED_SOURCE_DIRS for part in relative_parts):
-                continue
-            try:
-                resolved_path = path_item.resolve(strict=True)
-            except OSError:
-                continue
-            if not _is_within(resolved_path, item.workspace_root):
-                continue
-            checked += 1
+        for resolved_path in self._iter_source_files(item, _STYLE_SOURCE_SUFFIXES):
             try:
                 _, text, _ = self._read_source(resolved_path)
-                if resolved_path.suffix.lower() == ".css":
-                    if len(_matching_rule_spans(text, selector)) == 1:
+                suffix = resolved_path.suffix.lower()
+                if suffix in {".css", ".scss", ".sass", ".less"}:
+                    source_selector = selector
+                    rule_matches = _matching_rule_spans(text, source_selector)
+                    if not rule_matches and ".module." in resolved_path.name:
+                        source_selector = self._css_module_source_selector(text, selector)
+                        rule_matches = _matching_rule_spans(text, source_selector) if source_selector else []
+                    if len(rule_matches) == 1:
                         matches.append((resolved_path, "css", None))
                 else:
-                    for style_index, (start, end) in enumerate(_html_style_spans(text)):
-                        if len(_matching_rule_spans(text[start:end], selector)) == 1:
-                            matches.append((resolved_path, "html_style", style_index))
+                    for style_index, (start, end, _lang) in enumerate(_style_block_spans(text)):
+                        source_selector = _strip_vue_scope_selector(selector) if suffix == ".vue" else selector
+                        if len(_matching_rule_spans(text[start:end], source_selector)) == 1:
+                            matches.append((resolved_path, "vue_style" if suffix == ".vue" else "html_style", style_index))
+            except (OSError, UnicodeError, ValueError):
+                continue
+        return matches
+
+    @staticmethod
+    def _css_module_source_selector(text: str, runtime_selector: str) -> str:
+        normalized = _normalize_selector(runtime_selector)
+        pieces = re.findall(r"\.([\w-]+)", normalized)
+        if not pieces:
+            return ""
+        candidates: list[str] = []
+        for token in pieces:
+            base = re.split(r"(?:_[a-z0-9]{4,}|__[a-z0-9]{4,})$", token, flags=re.I)[0]
+            if base and base != token:
+                candidates.append(base)
+        if len(candidates) != len(pieces):
+            return ""
+        source = normalized
+        for original, base in zip(pieces, candidates):
+            source = source.replace(f".{original}", f".{base}", 1)
+        return source if len(_matching_rule_spans(text, source)) == 1 else ""
+
+    def _source_selector(self, path: Path, source_kind: str, runtime_selector: str) -> str:
+        selector = str(runtime_selector or "").strip()
+        if source_kind == "vue_style":
+            return _strip_vue_scope_selector(selector)
+        if source_kind == "css" and ".module." in path.name:
+            try:
+                _, text, _ = self._read_source(path)
+                return self._css_module_source_selector(text, selector) or selector
+            except (OSError, UnicodeError, ValueError):
+                return selector
+        return selector
+
+    def _scan_workspace_for_inline_style(
+        self,
+        item: PreviewSession,
+        selector: str,
+    ) -> list[tuple[Path, str, int, int, dict[str, str]]]:
+        matches: list[tuple[Path, str, int, int, dict[str, str]]] = []
+        for resolved in self._iter_source_files(item, _COMPONENT_SOURCE_SUFFIXES):
+            try:
+                _, text, _ = self._read_source(resolved)
+                for body_start, body_end, _attribute_start, _attribute_end, declarations in _find_react_inline_style_spans(text, selector):
+                    matches.append((resolved, "react_inline_style", body_start, body_end, declarations))
+            except (OSError, UnicodeError, ValueError):
+                continue
+        return matches
+
+    def _scan_workspace_for_component_text(
+        self,
+        item: PreviewSession,
+        selector: str,
+        expected_text: str,
+    ) -> list[tuple[Path, int, int, str]]:
+        matches: list[tuple[Path, int, int, str]] = []
+        for resolved in self._iter_source_files(item, _COMPONENT_SOURCE_SUFFIXES):
+            try:
+                _, text, _ = self._read_source(resolved)
+                for start, end, value in _find_static_component_text_spans(text, selector):
+                    if expected_text.strip() and value.strip() != expected_text.strip():
+                        continue
+                    matches.append((resolved, start, end, value))
             except (OSError, UnicodeError, ValueError):
                 continue
         return matches
@@ -901,7 +1388,8 @@ class UiPatchService:
                 }
                 path_item, source_kind, style_index = self._source_from_hint(item, dict(raw_rule.get("sourceHint") or {}))
                 mapped: list[tuple[Path, str, int | None, str]] = []
-                if path_item and self._rule_exists(path_item, source_kind=source_kind, style_index=style_index, selector=rule_selector):
+                source_selector = self._source_selector(path_item, source_kind, rule_selector) if path_item else rule_selector
+                if path_item and self._rule_exists(path_item, source_kind=source_kind, style_index=style_index, selector=source_selector):
                     mapped.append((path_item, source_kind, style_index, "matched_local_stylesheet"))
                 else:
                     fallback = self._scan_workspace_for_selector(item, rule_selector)
@@ -910,7 +1398,8 @@ class UiPatchService:
                         mapped.append((fallback_path, fallback_kind, fallback_index, "unique_workspace_selector_match"))
                 for mapped_path, mapped_kind, mapped_index, reason in mapped:
                     workspace_path = mapped_path.relative_to(item.workspace_root).as_posix()
-                    identity = (workspace_path, _normalize_selector(rule_selector), mapped_index)
+                    candidate_selector = self._source_selector(mapped_path, mapped_kind, rule_selector)
+                    identity = (workspace_path, _normalize_selector(candidate_selector), mapped_index)
                     if identity in seen:
                         continue
                     seen.add(identity)
@@ -920,12 +1409,65 @@ class UiPatchService:
                         candidate_id=candidate_id,
                         workspace_path=workspace_path,
                         absolute_path=mapped_path,
-                        selector=rule_selector,
+                        selector=candidate_selector,
                         source_kind=mapped_kind,
                         style_index=mapped_index,
                         source_hash=_sha256_bytes(source_raw),
                         declarations=declarations,
                         reason=reason,
+                        runtime_selector=rule_selector if candidate_selector != rule_selector else None,
+                    )
+            inline_style = {
+                str(key).strip().lower(): _safe_preview(value, 220)
+                for key, value in dict(selection.get("inlineStyle") or {}).items()
+                if str(key).strip().lower() in ALLOWED_STYLE_PROPERTIES
+            }
+            if inline_style and item.mode in {"project", "dev"}:
+                inline_matches = self._scan_workspace_for_inline_style(item, selector)
+                for path_item, source_kind, body_start, body_end, declarations in (inline_matches if len(inline_matches) == 1 else []):
+                    workspace_path = path_item.relative_to(item.workspace_root).as_posix()
+                    identity = (workspace_path, "react_inline_style", body_start)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    source_raw = path_item.read_bytes()
+                    candidate_id = f"source_{uuid.uuid4().hex}"
+                    candidates[candidate_id] = SourceCandidate(
+                        candidate_id=candidate_id,
+                        workspace_path=workspace_path,
+                        absolute_path=path_item,
+                        selector=selector,
+                        source_kind=source_kind,
+                        style_index=None,
+                        source_hash=_sha256_bytes(source_raw),
+                        declarations=declarations,
+                        reason="matched_unique_react_inline_style",
+                        source_start=body_start,
+                        source_end=body_end,
+                    )
+            text_content = str(selection.get("textContent") or "").replace("\x00", "")[:2000]
+            if text_content.strip() and item.mode in {"project", "dev"}:
+                text_matches = self._scan_workspace_for_component_text(item, selector, text_content)
+                for path_item, body_start, body_end, source_text in (text_matches if len(text_matches) == 1 else []):
+                    workspace_path = path_item.relative_to(item.workspace_root).as_posix()
+                    identity = (workspace_path, "component_text", body_start)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    source_raw = path_item.read_bytes()
+                    candidate_id = f"source_{uuid.uuid4().hex}"
+                    candidates[candidate_id] = SourceCandidate(
+                        candidate_id=candidate_id,
+                        workspace_path=workspace_path,
+                        absolute_path=path_item,
+                        selector=selector,
+                        source_kind="component_text",
+                        style_index=None,
+                        source_hash=_sha256_bytes(source_raw),
+                        declarations={},
+                        reason="matched_unique_component_text",
+                        source_start=body_start,
+                        source_end=body_end,
                     )
             if not candidates and not raw_rules and item.entry_path:
                 try:
@@ -948,7 +1490,6 @@ class UiPatchService:
                 except (OSError, UnicodeError, ValueError):
                     pass
             selection_ref = f"selection_{uuid.uuid4().hex}"
-            text_content = str(selection.get("textContent") or "").replace("\x00", "")[:2000]
             computed_styles = {
                 str(key).strip().lower(): _safe_preview(value, 220)
                 for key, value in dict(selection.get("computedStyles") or {}).items()
@@ -972,11 +1513,11 @@ class UiPatchService:
                 "tagName": record.tag_name,
                 "label": record.label,
                 "textContent": record.text_content,
-                "textEditable": any(candidate.source_kind in {"html_style", "html_text"} for candidate in candidates.values()),
+                "textEditable": any(candidate.source_kind in {"html_style", "html_text", "component_text"} for candidate in candidates.values()),
                 "computedStyles": computed_styles,
                 "sourceCandidates": [candidate.public() for candidate in candidates.values()],
                 "writable": bool(candidates),
-                "unsupportedReason": None if candidates else "No unique local CSS source rule could be proven for this component.",
+                "unsupportedReason": None if candidates else "No unique local source rule could be proven for this component.",
                 "allowedProperties": sorted(property_name for property_name in ALLOWED_STYLE_PROPERTIES if property_name != "__text_content"),
             }
 
@@ -1055,11 +1596,11 @@ class UiPatchService:
             style_changes = {
                 key: value for key, value in normalized_changes.items() if key != "__text_content"
             }
-            if text_change is not None and candidate.source_kind not in {"html_style", "html_text"}:
-                raise ValueError("Text editing requires a writable HTML source")
-            if candidate.source_kind == "html_style":
+            if text_change is not None and candidate.source_kind not in {"html_style", "html_text", "component_text"}:
+                raise ValueError("Text editing requires a writable static component source")
+            if candidate.source_kind in {"html_style", "vue_style"}:
                 after_text = (
-                    _apply_html_style_changes(
+                    _apply_style_block_changes(
                         before_text,
                         int(candidate.style_index or 0),
                         candidate.selector,
@@ -1074,6 +1615,23 @@ class UiPatchService:
                 if style_changes:
                     raise ValueError("This HTML selection only supports text changes")
                 after_text = _apply_html_text_change(before_text, candidate.selector, text_change or "")
+            elif candidate.source_kind == "react_inline_style":
+                if text_change is not None:
+                    raise ValueError("React component text remains read-only")
+                if candidate.source_start is None or candidate.source_end is None:
+                    raise ValueError("React inline style source range is unavailable")
+                if not style_changes:
+                    raise ValueError("React inline style requires a style property change")
+                body = before_text[candidate.source_start : candidate.source_end]
+                after_body = _replace_react_inline_style_body(body, style_changes)
+                after_text = before_text[: candidate.source_start] + after_body + before_text[candidate.source_end :]
+            elif candidate.source_kind == "component_text":
+                if style_changes:
+                    raise ValueError("This component source candidate only supports text changes")
+                if candidate.source_start is None or candidate.source_end is None:
+                    raise ValueError("Component text source range is unavailable")
+                replacement = html.escape(text_change or "", quote=False)
+                after_text = before_text[: candidate.source_start] + replacement + before_text[candidate.source_end :]
             else:
                 after_text = _apply_rule_changes(before_text, candidate.selector, style_changes)
             if after_text == before_text:
@@ -1097,6 +1655,7 @@ class UiPatchService:
                 "patchSessionId": item.patch_session_id,
                 "workspacePath": candidate.workspace_path,
                 "selector": candidate.selector,
+                "runtimeSelector": selection.selector,
                 "changes": normalized_changes,
                 "beforeHash": before_hash,
                 "afterHash": after_hash,
@@ -1143,7 +1702,7 @@ class UiPatchService:
             return {
                 "transactionId": transaction_id,
                 "workspacePath": candidate.workspace_path,
-                "selector": candidate.selector,
+                "selector": selection.selector,
                 "changes": normalized_changes,
                 "diff": diff[:256_000],
                 "beforeHash": before_hash,
